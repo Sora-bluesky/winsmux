@@ -19,12 +19,11 @@ use crate::ledger::{attach_evidence_chain_to_event, public_changed_files};
 use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
 use crate::types::VERSION;
+use crate::workflow::normalize_workspace_plan_payload;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
 #[cfg(test)]
 use crate::workspace_recipe::normalize_workspace_plan;
-use crate::workspace_recipe::{
-    normalize_workspace_plan_from_value, parse_workspace_yaml, SlotCapabilities,
-};
+use crate::workspace_recipe::{parse_workspace_yaml, SlotCapabilities};
 
 #[path = "workspace_builtin_provider.rs"]
 mod workspace_builtin_provider;
@@ -273,13 +272,14 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
             supports_structured_result: effective.supports_structured_result,
         });
     }
-    let plan = normalize_workspace_plan_from_value(
+    let payload = normalize_workspace_plan_payload(
         &root,
         &options.recipe_id,
         options.workflow_id.as_deref(),
+        options.run_id.as_deref(),
         &slots,
     )?;
-    write_json(&plan)
+    write_json(&payload)
 }
 
 pub fn run_operator_jobs_command(args: &[&String]) -> io::Result<()> {
@@ -1742,6 +1742,7 @@ struct ProviderCapabilitiesOptions {
 struct WorkspacePlanOptions {
     recipe_id: String,
     workflow_id: Option<String>,
+    run_id: Option<String>,
     project_dir: PathBuf,
 }
 
@@ -2005,8 +2006,7 @@ fn parse_provider_capabilities_options(
 }
 
 fn parse_workspace_plan_options(args: &[&String]) -> io::Result<WorkspacePlanOptions> {
-    let mut recipe_id: Option<String> = None;
-    let mut workflow_id: Option<String> = None;
+    let mut option_values = BTreeMap::new();
     let mut project_dir = env::current_dir()?;
     let mut project_dir_seen = false;
     let mut json = false;
@@ -2014,24 +2014,14 @@ fn parse_workspace_plan_options(args: &[&String]) -> io::Result<WorkspacePlanOpt
 
     while index < args.len() {
         match args[index].as_str() {
-            "--recipe-id" => {
-                if recipe_id.is_some() {
+            flag @ ("--recipe-id" | "--workflow-id" | "--run-id") => {
+                let value = required_option_value(args, index, flag)?;
+                if option_values.insert(flag, value).is_some() {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "--recipe-id may be specified only once.",
+                        format!("{flag} may be specified only once."),
                     ));
                 }
-                recipe_id = Some(required_option_value(args, index, "--recipe-id")?);
-                index += 2;
-            }
-            "--workflow-id" => {
-                if workflow_id.is_some() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "--workflow-id may be specified only once.",
-                    ));
-                }
-                workflow_id = Some(required_option_value(args, index, "--workflow-id")?);
                 index += 2;
             }
             "--project-dir" => {
@@ -2068,12 +2058,14 @@ fn parse_workspace_plan_options(args: &[&String]) -> io::Result<WorkspacePlanOpt
         }
     }
 
-    let recipe_id = recipe_id.ok_or_else(|| {
+    let recipe_id = option_values.remove("--recipe-id").ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "workspace-plan requires --recipe-id <id>.",
         )
     })?;
+    let workflow_id = option_values.remove("--workflow-id");
+    let run_id = option_values.remove("--run-id");
     if !json {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2083,6 +2075,7 @@ fn parse_workspace_plan_options(args: &[&String]) -> io::Result<WorkspacePlanOpt
     Ok(WorkspacePlanOptions {
         recipe_id,
         workflow_id,
+        run_id,
         project_dir,
     })
 }
@@ -6987,7 +6980,7 @@ fn usage_for(command: &str) -> &'static str {
             "usage: winsmux meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]"
         }
         "workspace-plan" => {
-            "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json [--project-dir <path>]"
+            "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] [--run-id <id>] --json [--project-dir <path>]"
         }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"

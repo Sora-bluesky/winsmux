@@ -4387,6 +4387,7 @@ function Resolve-SendInvocationArguments {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $taskSlug = ''
+    $workflowPromptStdin = $false
     $messageParts = New-Object System.Collections.Generic.List[string]
     for ($index = 0; $index -lt $Arguments.Count; $index++) {
         $token = [string]$Arguments[$index]
@@ -4403,13 +4404,27 @@ function Resolve-SendInvocationArguments {
         if ($token -eq '--delivery-class') {
             throw '--delivery-class is internal-only and cannot be supplied through argv'
         }
+        if ($token -eq '--workflow-prompt-stdin') {
+            if ($workflowPromptStdin) {
+                throw 'workflow_dispatch_transport_invalid: duplicate workflow prompt stdin marker.'
+            }
+            $workflowPromptStdin = $true
+            continue
+        }
 
         $messageParts.Add($token) | Out-Null
     }
+    if ($workflowPromptStdin -and (
+            $messageParts.Count -gt 0 -or
+            -not [string]::IsNullOrWhiteSpace($taskSlug)
+        )) {
+        throw 'workflow_dispatch_transport_invalid: workflow prompt stdin cannot be mixed with message argv.'
+    }
 
     return [ordered]@{
-        TaskSlug     = $taskSlug
-        MessageParts = @($messageParts)
+        TaskSlug            = $taskSlug
+        MessageParts        = @($messageParts)
+        WorkflowPromptStdin = $workflowPromptStdin
     }
 }
 
@@ -4603,6 +4618,29 @@ function Invoke-Send {
     $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
     $taskSlug = [string]$resolvedSendArguments['TaskSlug']
     $messageParts = @($resolvedSendArguments['MessageParts'])
+    $workflowPromptStdin = [bool]$resolvedSendArguments['WorkflowPromptStdin']
+
+    if ($workflowPromptStdin) {
+        $workflowAuthorityValues = @(
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR,
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME,
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_GENERATION_ID,
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID
+        )
+        if (@(
+                $workflowAuthorityValues |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            ).Count -ne $workflowAuthorityValues.Count) {
+            throw 'workflow_dispatch_transport_invalid: workflow prompt stdin requires the complete authority tuple.'
+        }
+        Assert-WinsmuxWorkflowDispatchAuthority -ProjectDir (Get-Location).Path
+        [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+        $stdinPrompt = [Console]::In.ReadToEnd()
+        if ([string]::IsNullOrEmpty($stdinPrompt)) {
+            throw 'workflow_dispatch_transport_invalid: workflow prompt stdin is empty.'
+        }
+        $messageParts = @($stdinPrompt)
+    }
 
     if ($messageParts.Count -lt 1) {
         Stop-WithError "usage: winsmux send <target> <text>"
@@ -4801,6 +4839,7 @@ function Invoke-Send {
             -RuntimeOperation $sendRuntimeOperation -ExpectedGenerationId $sendExpectedGenerationId
 
         if ($transportPlan['Mode'] -eq 'codex_exec_file') {
+            Assert-WinsmuxWorkflowDispatchAuthority -ProjectDir $projectDir
             Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['ExecInstruction']) `
                 -RuntimeProjectDir $sendRuntimeProjectDir -RuntimeOperation $sendRuntimeOperation `
                 -ExpectedGenerationId $sendExpectedGenerationId -DeliveryState $deliveryState
@@ -4811,6 +4850,7 @@ function Invoke-Send {
             Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $SendTarget, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
         }
 
+        Assert-WinsmuxWorkflowDispatchAuthority -ProjectDir $projectDir
         Send-ResolvedTransportPlan `
             -PaneId $paneId `
             -TransportPlan $transportPlan `
@@ -4825,18 +4865,94 @@ function Invoke-Send {
     } catch {
         $failureMessage = [string]$_.Exception.Message
         $submissionCommitted = [bool](Get-SendConfigValue -InputObject $deliveryState -Name 'SubmissionCommitted' -Default $false)
+        $preSubmissionRefusal = (
+            $failureMessage -match '^runtime dispatch refused \([^)]+\):' -or
+            $failureMessage -match '^workflow_dispatch_authority_changed:'
+        )
         if ($null -ne $context -and $materializationBegan -and -not $submissionCommitted -and
-            $failureMessage -match '^runtime dispatch refused \([^)]+\):') {
+            $preSubmissionRefusal) {
             $materializedPromptPath = if ($null -eq $transportPlan) { '' } else { [string]$transportPlan['PromptPath'] }
             try {
                 Restore-SendPromptArtifactCheckpoint -Checkpoint $artifactCheckpoint -MaterializedPromptPath $materializedPromptPath
             } catch {
-                Write-Warning ("send artifact rollback failed after runtime refusal: {0}" -f $_.Exception.Message)
+                Write-Warning ("send artifact rollback failed after pre-submission refusal: {0}" -f $_.Exception.Message)
             }
         }
         throw
     } finally {
         Exit-SendPromptArtifactCheckpoint -Checkpoint $artifactCheckpoint
+    }
+}
+
+function Assert-WinsmuxWorkflowDispatchAuthority {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $expected = [ordered]@{
+        project_dir = [string]$env:WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR
+        session_name = [string]$env:WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME
+        generation_id = [string]$env:WINSMUX_INTERNAL_WORKFLOW_GENERATION_ID
+        server_session_id = [string]$env:WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID
+    }
+    $present = @(
+        $expected.Values |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    ).Count
+    if ($present -eq 0) {
+        return
+    }
+    if ($present -ne $expected.Count) {
+        throw 'workflow_dispatch_authority_changed: incomplete workflow authority tuple.'
+    }
+
+    $normalizePath = {
+        param([Parameter(Mandatory = $true)][string]$Value)
+
+        $normalized = [IO.Path]::GetFullPath($Value)
+        if ($normalized.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+            $normalized = '\\' + $normalized.Substring(8)
+        } elseif ($normalized.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+            $normalized = $normalized.Substring(4)
+        }
+        $trimmed = $normalized.TrimEnd(
+            [IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar
+        )
+        if ($trimmed -match '^[A-Za-z]:$') {
+            $trimmed += [IO.Path]::DirectorySeparatorChar
+        }
+        return $trimmed
+    }
+
+    $expectedProject = & $normalizePath $expected.project_dir
+    $currentProject = & $normalizePath $ProjectDir
+    if (-not [string]::Equals(
+            $expectedProject,
+            $currentProject,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'workflow_dispatch_authority_changed: selected project changed before pane submission.'
+    }
+    if (-not (Get-Command Get-WinsmuxManifest -CommandType Function -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-WinsmuxVerifiedManifestIdentity -CommandType Function -ErrorAction SilentlyContinue)) {
+        throw 'workflow_dispatch_authority_changed: verified manifest helpers are unavailable.'
+    }
+
+    $identity = Get-WinsmuxVerifiedManifestIdentity -Manifest (
+        Get-WinsmuxManifest -ProjectDir $currentProject
+    )
+    if ($null -eq $identity -or
+        -not [string]::Equals(
+            [string]$identity.session_name,
+            $expected.session_name,
+            [StringComparison]::Ordinal) -or
+        -not [string]::Equals(
+            [string]$identity.generation_id,
+            $expected.generation_id,
+            [StringComparison]::Ordinal) -or
+        -not [string]::Equals(
+            [string]$identity.server_session_id,
+            $expected.server_session_id,
+            [StringComparison]::Ordinal)) {
+        throw 'workflow_dispatch_authority_changed: verified session identity changed before pane submission.'
     }
 }
 
@@ -18067,8 +18183,9 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   dispatch-route <text>   Route text to appropriate pane by keyword detection
-  pipeline <task>       Run plan-exec-verify-fix loop for a task
-  task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
+  pipeline <task>       Run the legacy plan-exec-verify-fix loop for a task
+  pipeline --workflow-action start|resume ...  Run or resume a durable declarative workflow
+  task-run <task>       Alias for pipeline; one-shot orchestration entrypoint (legacy task bytes only)
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
   orchestra-smoke [--json] [--auto-start] [--project-dir <path>]  Report structured startup contract + UI attach state (use --auto-start to start if needed)
   orchestra-attach [--json] [--project-dir <path>]  Launch a visible attach window for an existing orchestra session
@@ -18335,12 +18452,13 @@ function Invoke-MailboxCreate {
 
 function Invoke-MailboxSend {
     if (-not $Target) { Stop-WithError "usage: winsmux mailbox-send <channel> <json>" }
-    if (-not $Rest -or $Rest.Count -eq 0) {
+    $mailboxArguments = @($Rest)
+    if ($mailboxArguments.Count -eq 0) {
         Stop-WithError "usage: winsmux mailbox-send <channel> <json>"
     }
 
     $pipeName = Get-MailboxPipeName $Target
-    $payload = $Rest -join ' '
+    $payload = $mailboxArguments -join ' '
 
     # Validate JSON
     try {
@@ -18580,7 +18698,7 @@ switch ($Command) {
     'dispatch-task'   { Invoke-WinsmuxDispatchTaskCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'dispatch-route'  { Invoke-WinsmuxDispatchRouteCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'task-split'      { Invoke-WinsmuxTaskSplitCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
-    'pipeline'        { Invoke-WinsmuxTeamPipelineCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'pipeline'        { Invoke-WinsmuxTeamPipelineCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest -AllowDeclarativeWorkflow }
     'task-run'        { Invoke-WinsmuxTeamPipelineCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'builder-queue'   { Invoke-WinsmuxBuilderQueueCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'orchestra-smoke' { Invoke-WinsmuxOrchestraSmokeCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }

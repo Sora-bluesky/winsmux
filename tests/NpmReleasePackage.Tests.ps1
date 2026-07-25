@@ -697,10 +697,40 @@ param(
     }
 
     It 'verifies every installer download target against the release tree and rejects a missing target' {
+        $candidateIndex = Join-Path $TestDrive 'install-download-candidate.index'
+        $originalIndex = [Environment]::GetEnvironmentVariable(
+            'GIT_INDEX_FILE',
+            [EnvironmentVariableTarget]::Process
+        )
+        try {
+            $env:GIT_INDEX_FILE = $candidateIndex
+            & git -C $script:RepoRoot read-tree HEAD
+            $LASTEXITCODE | Should -Be 0
+            & git -C $script:RepoRoot add -- `
+                install.ps1 `
+                winsmux-core/scripts/declarative-workflow.ps1
+            $LASTEXITCODE | Should -Be 0
+            $candidateTree = [string](& git -C $script:RepoRoot write-tree)
+            $LASTEXITCODE | Should -Be 0
+            $candidateTree = $candidateTree.Trim()
+            $candidateTree | Should -Match '^[0-9a-f]{40}$'
+        } finally {
+            if ($null -eq $originalIndex) {
+                Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
+            } else {
+                $env:GIT_INDEX_FILE = $originalIndex
+            }
+        }
+        if ($null -eq $originalIndex) {
+            Test-Path Env:GIT_INDEX_FILE | Should -BeFalse
+        } else {
+            $env:GIT_INDEX_FILE | Should -BeExactly $originalIndex
+        }
+
         $valid = Invoke-PwshProcess -Arguments @(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
             '-RepositoryRoot', $script:RepoRoot,
-            '-Treeish', 'HEAD'
+            '-Treeish', $candidateTree
         )
         $valid.ExitCode | Should -Be 0
         $valid.StdErr | Should -Be ''
@@ -708,7 +738,9 @@ param(
         $validSummary.download_target_count | Should -BeGreaterThan 0
         $validSummary.runtime_dependency_count | Should -BeGreaterThan 0
         @($validSummary.download_targets) | Should -Contain 'scripts/winsmux-core.ps1'
+        @($validSummary.download_targets) | Should -Contain 'winsmux-core/scripts/declarative-workflow.ps1'
         @($validSummary.download_targets) | Should -Not -Contain 'winsmux.ps1'
+        @($validSummary.runtime_dependencies) | Should -Contain 'declarative-workflow.ps1'
         @($validSummary.runtime_dependencies) | Should -Contain 'json-compat.ps1'
 
         $invalidInstaller = Join-Path $TestDrive 'install-with-missing-download.ps1'
@@ -724,7 +756,7 @@ param(
             '-NoProfile', '-File', $script:InstallDownloadGatePath,
             '-RepositoryRoot', $script:RepoRoot,
             '-InstallScriptPath', $invalidInstaller,
-            '-Treeish', 'HEAD'
+            '-Treeish', $candidateTree
         )
         $missing.ExitCode | Should -Not -Be 0
         $missing.StdErr | Should -Match 'missing/installer-entrypoint\.ps1'
@@ -776,7 +808,7 @@ param(
                 '-NoProfile', '-File', $script:InstallDownloadGatePath,
                 '-RepositoryRoot', $script:RepoRoot,
                 '-InstallScriptPath', $casePath,
-                '-Treeish', 'HEAD'
+                '-Treeish', $candidateTree
             )
             $caseResult.ExitCode | Should -Not -Be 0 -Because $case.Name
             $caseResult.StdErr | Should -Match $case.Error -Because $case.Name

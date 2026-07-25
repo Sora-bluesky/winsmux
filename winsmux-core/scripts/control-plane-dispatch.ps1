@@ -339,18 +339,148 @@ function Invoke-WinsmuxTeamPipelineCommand {
     param(
         [Parameter(Mandatory = $true)][string]$BridgeScriptRoot,
         [AllowNull()][string]$CommandTarget,
-        [AllowNull()][string[]]$CommandRest
+        [AllowNull()][string[]]$CommandRest,
+        [switch]$AllowDeclarativeWorkflow
     )
 
-    $taskText = Join-WinsmuxControlPlaneText -Arguments (Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest)
-    $pipelineArgs = @()
+    $declarative = $null
+    if ($AllowDeclarativeWorkflow) {
+        $declarative = ConvertTo-WinsmuxDeclarativePipelineArguments `
+            -CommandTarget $CommandTarget -CommandRest $CommandRest
+    }
+    if ($null -ne $declarative) {
+        if (-not (Get-Command Resolve-WinsmuxRawCommand -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw 'workflow_plan_unavailable: parent executable resolver is not loaded.'
+        }
+        $workflowPlanCommand = [string](Resolve-WinsmuxRawCommand)
+        if ([string]::IsNullOrWhiteSpace($workflowPlanCommand)) {
+            throw 'workflow_plan_unavailable: parent executable resolver returned an empty command.'
+        }
+        $pipelineArgs = @(
+            '-WorkflowAction', [string]$declarative.workflow_action,
+            '-RunId', [string]$declarative.run_id,
+            '-TaskFile', [string]$declarative.task_file,
+            '-ProjectDir', [string]$declarative.project_dir,
+            '-WorkflowPlanCommand', $workflowPlanCommand
+        )
+        if ($declarative.workflow_action -ceq 'start') {
+            $pipelineArgs += @(
+                '-RecipeId', [string]$declarative.recipe_id,
+                '-WorkflowId', [string]$declarative.workflow_id
+            )
+        }
+        if ($declarative.as_json) {
+            $pipelineArgs += '-AsJson'
+        }
+        Invoke-WinsmuxControlPlaneScript `
+            -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'team-pipeline.ps1') `
+            -Arguments $pipelineArgs `
+            -PropagateExitCode
+        return
+    }
+
+    $taskText = Join-WinsmuxControlPlaneText -Arguments (
+        Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    )
+    $legacyPipelineArgs = @()
     if ($taskText) {
-        $pipelineArgs = @('-Task', $taskText)
+        $legacyPipelineArgs = @('-Task', $taskText)
     }
 
     Invoke-WinsmuxControlPlaneScript `
         -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'team-pipeline.ps1') `
-        -Arguments $pipelineArgs
+        -Arguments $legacyPipelineArgs
+}
+
+function ConvertTo-WinsmuxDeclarativePipelineArguments {
+    param(
+        [AllowNull()][string]$CommandTarget,
+        [AllowNull()][string[]]$CommandRest
+    )
+
+    if ($CommandTarget -cne '--workflow-action') {
+        return $null
+    }
+
+    $usage = 'usage: winsmux pipeline --workflow-action start --recipe-id <id> --workflow-id <id> --run-id <id> --task-file <path> --project-dir <path> --json | winsmux pipeline --workflow-action resume --run-id <id> --task-file <path> --project-dir <path> --json'
+    $tokens = @($CommandRest)
+    if ($tokens.Count -lt 1) {
+        Stop-WithError '--workflow-action requires start or resume.'
+    }
+    $action = [string]$tokens[0]
+    if ($action -cnotin @('start', 'resume')) {
+        Stop-WithError '--workflow-action requires start or resume.'
+    }
+
+    $values = [ordered]@{
+        recipe_id = ''
+        workflow_id = ''
+        run_id = ''
+        task_file = ''
+        project_dir = ''
+    }
+    $seenJson = $false
+    $index = 1
+    while ($index -lt $tokens.Count) {
+        $token = [string]$tokens[$index]
+        if ($token -ceq '--json') {
+            if ($seenJson) {
+                Stop-WithError $usage
+            }
+            $seenJson = $true
+            $index++
+            continue
+        }
+
+        $name = switch -CaseSensitive ($token) {
+            '--recipe-id' { 'recipe_id' }
+            '--workflow-id' { 'workflow_id' }
+            '--run-id' { 'run_id' }
+            '--task-file' { 'task_file' }
+            '--project-dir' { 'project_dir' }
+            default { '' }
+        }
+        if ([string]::IsNullOrWhiteSpace($name) -or
+            $index + 1 -ge $tokens.Count -or
+            -not [string]::IsNullOrWhiteSpace([string]$values[$name])) {
+            Stop-WithError $usage
+        }
+        $index++
+        $value = [string]$tokens[$index]
+        if ([string]::IsNullOrWhiteSpace($value) -or $value.StartsWith('--')) {
+            Stop-WithError $usage
+        }
+        $values[$name] = $value
+        $index++
+    }
+
+    foreach ($required in @('run_id', 'task_file', 'project_dir')) {
+        if ([string]::IsNullOrWhiteSpace([string]$values[$required])) {
+            Stop-WithError $usage
+        }
+    }
+    if (-not $seenJson) {
+        Stop-WithError $usage
+    }
+    if ($action -ceq 'start') {
+        if ([string]::IsNullOrWhiteSpace([string]$values.recipe_id) -or
+            [string]::IsNullOrWhiteSpace([string]$values.workflow_id)) {
+            Stop-WithError $usage
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$values.recipe_id) -or
+        -not [string]::IsNullOrWhiteSpace([string]$values.workflow_id)) {
+        Stop-WithError $usage
+    }
+
+    return [PSCustomObject][ordered]@{
+        workflow_action = $action
+        recipe_id = [string]$values.recipe_id
+        workflow_id = [string]$values.workflow_id
+        run_id = [string]$values.run_id
+        task_file = [string]$values.task_file
+        project_dir = [string]$values.project_dir
+        as_json = $seenJson
+    }
 }
 
 function Invoke-WinsmuxBuilderQueueCommand {

@@ -23,6 +23,7 @@ mod server;
 mod terminal_engine;
 mod manifest_contract;
 mod workspace_recipe;
+mod workflow;
 mod workspace_project_settings;
 mod event_contract;
 mod ledger;
