@@ -4827,13 +4827,17 @@ function Invoke-Send {
     } catch {
         $failureMessage = [string]$_.Exception.Message
         $submissionCommitted = [bool](Get-SendConfigValue -InputObject $deliveryState -Name 'SubmissionCommitted' -Default $false)
+        $preSubmissionRefusal = (
+            $failureMessage -match '^runtime dispatch refused \([^)]+\):' -or
+            $failureMessage -match '^workflow_dispatch_authority_changed:'
+        )
         if ($null -ne $context -and $materializationBegan -and -not $submissionCommitted -and
-            $failureMessage -match '^runtime dispatch refused \([^)]+\):') {
+            $preSubmissionRefusal) {
             $materializedPromptPath = if ($null -eq $transportPlan) { '' } else { [string]$transportPlan['PromptPath'] }
             try {
                 Restore-SendPromptArtifactCheckpoint -Checkpoint $artifactCheckpoint -MaterializedPromptPath $materializedPromptPath
             } catch {
-                Write-Warning ("send artifact rollback failed after runtime refusal: {0}" -f $_.Exception.Message)
+                Write-Warning ("send artifact rollback failed after pre-submission refusal: {0}" -f $_.Exception.Message)
             }
         }
         throw

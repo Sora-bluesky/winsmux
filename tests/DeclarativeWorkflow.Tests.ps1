@@ -1349,6 +1349,152 @@ $ErrorActionPreference = 'Stop'
             $env:WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID = $sinkEnvironment.server_session_id
         }
 
+        $rollbackProject = Join-Path $TestDrive 'dw15-rollback-project'
+        $rollbackProbePath = Join-Path $TestDrive 'dw15-rollback-probe.ps1'
+        $rollbackProbeSource = @'
+param(
+    [Parameter(Mandatory = $true)][string]$CorePath,
+    [Parameter(Mandatory = $true)][string]$ProjectDir
+)
+
+$ErrorActionPreference = 'Stop'
+$WarningPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+. $CorePath 'version' *> $null
+
+[IO.Directory]::CreateDirectory((Join-Path $ProjectDir '.winsmux')) | Out-Null
+$manifest = [ordered]@{
+    version = 2
+    session = [ordered]@{
+        name = 'winsmux-orchestra'
+        generation_id = 'generation-dw15-current'
+        server_session_id = '$659'
+        session_ready = $true
+    }
+    panes = [ordered]@{
+        'worker-1' = [ordered]@{
+            slot_id = 'worker-1'
+            pane_id = '%2'
+            worker_backend = 'codex'
+            role = 'Worker'
+            title = 'W1'
+            status = 'ready'
+            runtime_ready = $true
+            exec_mode = $false
+        }
+    }
+    tasks = [ordered]@{ queued = @(); in_progress = @(); completed = @() }
+    worktrees = [ordered]@{}
+}
+Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $manifest
+$manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+$script:rollbackProjectDir = $ProjectDir
+$script:rollbackContext = [PSCustomObject]@{
+    ManifestPath = $manifestPath
+    ProjectDir = $ProjectDir
+    SessionName = 'winsmux-orchestra'
+    Label = 'worker-1'
+    PaneId = '%2'
+    Role = 'Worker'
+    Status = 'ready'
+    SecurityPolicy = $null
+    LaunchDir = $ProjectDir
+    GitWorktreeDir = (Join-Path $ProjectDir '.git')
+    Branch = 'codex/task-659-red'
+    HeadSha = 'red659'
+}
+$script:rollbackManifest = $manifest
+$script:rollbackSubmissionCount = 0
+
+function Resolve-Target { return '%2' }
+function Resolve-TerminalBackend { return 'tauri' }
+function Get-SlotAgentConfig {
+    return [PSCustomObject]@{
+        Agent = 'codex'
+        Model = 'gpt-5.5'
+        PromptTransport = 'argv'
+        CapabilityAdapter = 'codex'
+        CapabilityCommand = 'codex'
+    }
+}
+function Get-RoleAgentConfig { return Get-SlotAgentConfig }
+function Assert-WinsmuxTargetRuntimeWriteAllowed {
+    return [PSCustomObject]@{
+        Managed = $true
+        ProjectDir = $script:rollbackProjectDir
+        Context = $script:rollbackContext
+        Operation = 'dispatch'
+        GenerationId = 'generation-dw15-current'
+    }
+}
+function Start-DeferredPaneFromManifestEntry { return $false }
+function Get-WinsmuxManifest { return $script:rollbackManifest }
+function Get-WinsmuxVerifiedManifestIdentity {
+    return [PSCustomObject]@{
+        session_name = 'winsmux-orchestra'
+        generation_id = 'generation-dw15-current'
+        server_session_id = '$659'
+    }
+}
+function Send-TextToPane {
+    $script:rollbackSubmissionCount++
+    throw 'pane submission must not occur'
+}
+
+$env:WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR = [IO.Path]::GetFullPath($ProjectDir)
+$env:WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME = 'winsmux-orchestra'
+$env:WINSMUX_INTERNAL_WORKFLOW_GENERATION_ID = 'generation-dw15-planned'
+$env:WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID = '$659'
+$marker = 'private-task-callback-dw15'
+$prompt = $marker + ' ' + ('x' * 5000)
+$errorText = ''
+Push-Location $ProjectDir
+try {
+    try {
+        Invoke-Send -SendTarget '%2' -SendArguments @($prompt)
+    } catch {
+        $errorText = [string]$_.Exception.Message
+    }
+} finally {
+    Pop-Location
+}
+
+$promptDir = Join-Path (Join-Path $ProjectDir '.winsmux') 'dispatch-prompts'
+$promptFiles = @(
+    if (Test-Path -LiteralPath $promptDir -PathType Container) {
+        Get-ChildItem -LiteralPath $promptDir -File
+    }
+)
+$containsMarker = @(
+    $promptFiles |
+        Where-Object {
+            [IO.File]::ReadAllText(
+                $_.FullName,
+                [Text.UTF8Encoding]::new($false, $true)
+            ).Contains($marker)
+        }
+).Count -gt 0
+[ordered]@{
+    error = $errorText
+    prompt_file_count = $promptFiles.Count
+    prompt_contains_private_marker = $containsMarker
+    submission_count = $script:rollbackSubmissionCount
+} | ConvertTo-Json -Compress
+'@
+        [IO.File]::WriteAllText(
+            $rollbackProbePath,
+            $rollbackProbeSource,
+            [Text.UTF8Encoding]::new($false)
+        )
+        [IO.Directory]::CreateDirectory($rollbackProject) | Out-Null
+        $rollbackOutput = & pwsh -NoProfile -File $rollbackProbePath `
+            -CorePath $script:Task659BridgePath `
+            -ProjectDir $rollbackProject 2>&1
+        $rollbackExitCode = $LASTEXITCODE
+        $rollbackText = ($rollbackOutput | Out-String).Trim()
+        $rollbackExitCode | Should -Be 0 -Because $rollbackText
+        $rollbackProbe = $rollbackText | ConvertFrom-Json
+
         $authorityDefects = [Collections.Generic.List[string]]::new()
         if (-not [string]::IsNullOrWhiteSpace($bridgeError)) {
             $authorityDefects.Add("transport: $bridgeError") | Out-Null
@@ -1373,6 +1519,10 @@ $ErrorActionPreference = 'Stop'
         $authorityCallCount | Should -BeGreaterOrEqual 2
         $authorityBeforeEverySink | Should -BeTrue
         $sinkValidationError | Should -Match 'workflow_dispatch_authority_changed'
+        $rollbackProbe.error | Should -Match 'workflow_dispatch_authority_changed'
+        $rollbackProbe.prompt_file_count | Should -Be 0
+        $rollbackProbe.prompt_contains_private_marker | Should -BeFalse
+        $rollbackProbe.submission_count | Should -Be 0
     }
 
     It 'DW16 gives normal and extended path spellings one machine-wide run-adjacent file lease' {
