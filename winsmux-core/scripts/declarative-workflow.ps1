@@ -311,29 +311,14 @@ function Invoke-DeclarativeWorkflowWorkspacePlan {
         [Parameter(Mandatory = $true)][string]$RecipeId,
         [Parameter(Mandatory = $true)][string]$WorkflowId,
         [Parameter(Mandatory = $true)][string]$RunId,
-        [Parameter(Mandatory = $true)][string]$ProjectDir
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$WorkspacePlanCommand
     )
 
-    $command = ''
-    foreach ($candidate in @(
-        [string]$env:WINSMUX_RAW_EXE,
-        [string]$env:WINSMUX_BIN,
-        (Join-Path $ProjectDir 'target\release\winsmux.exe'),
-        (Join-Path $ProjectDir 'target\debug\winsmux.exe')
-    )) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
-            (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            $command = [System.IO.Path]::GetFullPath($candidate)
-            break
-        }
+    if ([string]::IsNullOrWhiteSpace($WorkspacePlanCommand)) {
+        throw 'workflow_plan_unavailable: parent-resolved winsmux command is required.'
     }
-    if ([string]::IsNullOrWhiteSpace($command)) {
-        $resolved = Get-Command winsmux.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($null -eq $resolved) {
-            throw 'workflow_plan_unavailable: winsmux executable was not found.'
-        }
-        $command = [string]$resolved.Path
-    }
+    $command = $WorkspacePlanCommand
 
     $output = @(
         & $command workspace-plan `
@@ -1064,6 +1049,7 @@ function Invoke-DeclarativeWorkflow {
         [Parameter(Mandatory = $true)][string]$RunId,
         [Parameter(Mandatory = $true)][string]$TaskFile,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$WorkspacePlanCommand = '',
         [scriptblock]$WorkspacePlanInvoker,
         [scriptblock]$ManifestIdentityReader,
         [scriptblock]$SourceHeadReader,
@@ -1077,12 +1063,17 @@ function Invoke-DeclarativeWorkflow {
     $resolvedProject = [System.IO.Path]::GetFullPath($ProjectDir)
     $task = Get-DeclarativeWorkflowTaskSnapshot -TaskFile $TaskFile
     if ($null -eq $WorkspacePlanInvoker) {
+        if ([string]::IsNullOrWhiteSpace($WorkspacePlanCommand)) {
+            throw 'workflow_plan_unavailable: parent-resolved winsmux command is required.'
+        }
+        $resolvedWorkspacePlanCommand = $WorkspacePlanCommand
         $WorkspacePlanInvoker = {
             param($SelectedRecipeId, $SelectedWorkflowId, $SelectedRunId, $SelectedProjectDir)
             Invoke-DeclarativeWorkflowWorkspacePlan `
                 -RecipeId $SelectedRecipeId -WorkflowId $SelectedWorkflowId `
-                -RunId $SelectedRunId -ProjectDir $SelectedProjectDir
-        }
+                -RunId $SelectedRunId -ProjectDir $SelectedProjectDir `
+                -WorkspacePlanCommand $resolvedWorkspacePlanCommand
+        }.GetNewClosure()
     }
     if ($null -eq $ManifestIdentityReader) {
         $ManifestIdentityReader = {

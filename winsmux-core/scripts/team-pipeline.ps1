@@ -18,6 +18,7 @@ param(
     [string]$RunId = '',
     [string]$TaskFile = '',
     [string]$ProjectDir = '',
+    [string]$WorkflowPlanCommand = '',
     [switch]$WorkflowResult,
     [string]$WorkflowResultNodeId = '',
     [string]$WorkflowResultOutcome = '',
@@ -1929,7 +1930,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             -WorkflowId $WorkflowId `
             -RunId $RunId `
             -TaskFile $TaskFile `
-            -ProjectDir $workflowProjectDir
+            -ProjectDir $workflowProjectDir `
+            -WorkspacePlanCommand $WorkflowPlanCommand
     } else {
         $pipelineResult = Invoke-TeamPipeline -Task $Task -Builder $Builder -Researcher $Researcher -Reviewer $Reviewer -ManifestPath $ManifestPath -BuilderWorktreePath $BuilderWorktreePath -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds -MaxFixRounds $MaxFixRounds -SkipPlan:$SkipPlan -SkipVerify:$SkipVerify
     }

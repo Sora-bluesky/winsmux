@@ -349,11 +349,19 @@ function Invoke-WinsmuxTeamPipelineCommand {
             -CommandTarget $CommandTarget -CommandRest $CommandRest
     }
     if ($null -ne $declarative) {
+        if (-not (Get-Command Resolve-WinsmuxRawCommand -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw 'workflow_plan_unavailable: parent executable resolver is not loaded.'
+        }
+        $workflowPlanCommand = [string](Resolve-WinsmuxRawCommand)
+        if ([string]::IsNullOrWhiteSpace($workflowPlanCommand)) {
+            throw 'workflow_plan_unavailable: parent executable resolver returned an empty command.'
+        }
         $pipelineArgs = @(
             '-WorkflowAction', [string]$declarative.workflow_action,
             '-RunId', [string]$declarative.run_id,
             '-TaskFile', [string]$declarative.task_file,
-            '-ProjectDir', [string]$declarative.project_dir
+            '-ProjectDir', [string]$declarative.project_dir,
+            '-WorkflowPlanCommand', $workflowPlanCommand
         )
         if ($declarative.workflow_action -ceq 'start') {
             $pipelineArgs += @(

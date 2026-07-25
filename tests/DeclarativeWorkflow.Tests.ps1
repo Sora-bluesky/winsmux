@@ -612,6 +612,174 @@ Invoke-DeclarativeWorkflow `
         }
         return [string]$functionAst.Extent.Text
     }
+
+    function New-Task659WorkspacePlanShim {
+        param(
+            [Parameter(Mandatory = $true)][string]$Directory,
+            [Parameter(Mandatory = $true)][string]$FileName
+        )
+
+        [IO.Directory]::CreateDirectory($Directory) | Out-Null
+        $path = Join-Path $Directory $FileName
+        $source = @'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+
+if ([string]::IsNullOrWhiteSpace([string]$env:TASK659_WORKSPACE_PLAN_LOG)) {
+    throw 'TASK659_WORKSPACE_PLAN_LOG is required.'
+}
+$arguments = @($args | ForEach-Object { [string]$_ })
+$record = [ordered]@{
+    command = [string]$MyInvocation.MyCommand.Name
+    arguments = $arguments
+}
+[IO.File]::AppendAllText(
+    $env:TASK659_WORKSPACE_PLAN_LOG,
+    ($record | ConvertTo-Json -Depth 10 -Compress) + [Environment]::NewLine,
+    [Text.UTF8Encoding]::new($false)
+)
+if ($arguments.Count -lt 1 -or $arguments[0] -cne 'workspace-plan') {
+    throw 'Expected workspace-plan.'
+}
+$values = [ordered]@{}
+for ($index = 1; $index -lt $arguments.Count;) {
+    if ($arguments[$index] -ceq '--json') {
+        $values['--json'] = $true
+        $index++
+        continue
+    }
+    if ($index + 1 -ge $arguments.Count) {
+        throw "Missing value for $($arguments[$index])."
+    }
+    $values[$arguments[$index]] = $arguments[$index + 1]
+    $index += 2
+}
+foreach ($name in @('--recipe-id', '--workflow-id', '--run-id', '--project-dir')) {
+    if (-not $values.Contains($name)) {
+        throw "Missing $name."
+    }
+}
+$runId = [string]$values['--run-id']
+$plan = [ordered]@{
+    schema_version = 1
+    config_fingerprint = 'sha256:' + ('1' * 64)
+    recipe_id = [string]$values['--recipe-id']
+    workflow_id = [string]$values['--workflow-id']
+    panes = @([ordered]@{ pane_key = 'implement'; slot_id = 'builder-1' })
+    resolved_bindings = [ordered]@{ implement = 'builder-1' }
+    workflow = [ordered]@{
+        schema_version = 1
+        workflow_id = [string]$values['--workflow-id']
+        recipe_ref = [string]$values['--recipe-id']
+        run_id = $runId
+        topological_order = @('build')
+        nodes = @(
+            [ordered]@{
+                node_id = 'build'
+                pane_ref = 'builder-1'
+                depends_on = @()
+                action = 'operator-dispatch'
+                idempotency_key = "$runId`:build"
+            }
+        )
+    }
+}
+$global:LASTEXITCODE = 0
+$plan | ConvertTo-Json -Depth 30 -Compress
+'@
+        [IO.File]::WriteAllText(
+            $path,
+            $source,
+            [Text.UTF8Encoding]::new($false)
+        )
+        return $path
+    }
+
+    function Get-Task659WorkspacePlanInvocations {
+        param([Parameter(Mandatory = $true)][string]$Path)
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return ,@()
+        }
+        return ,@(
+            Get-Content -LiteralPath $Path -Encoding UTF8 |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                ForEach-Object { $_ | ConvertFrom-Json -Depth 20 }
+        )
+    }
+
+    function Invoke-Task659PublicWorkflowProcess {
+        param(
+            [Parameter(Mandatory = $true)]
+            [ValidateSet('start', 'resume')]
+            [string]$Action,
+            [Parameter(Mandatory = $true)][string]$RunId,
+            [Parameter(Mandatory = $true)][string]$TaskFile,
+            [Parameter(Mandatory = $true)][string]$ProjectDir
+        )
+
+        $arguments = @(
+            '-NoProfile',
+            '-File',
+            $script:Task659BridgePath,
+            'pipeline',
+            '--workflow-action',
+            $Action
+        )
+        if ($Action -ceq 'start') {
+            $arguments += @(
+                '--recipe-id',
+                'bugfix-two-slot',
+                '--workflow-id',
+                'bugfix'
+            )
+        }
+        $arguments += @(
+            '--run-id',
+            $RunId,
+            '--task-file',
+            $TaskFile,
+            '--project-dir',
+            $ProjectDir,
+            '--json'
+        )
+
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command pwsh -ErrorAction Stop).Source
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in $arguments) {
+            $null = $startInfo.ArgumentList.Add([string]$argument)
+        }
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        try {
+            if (-not $process.Start()) {
+                throw 'TASK-659 public workflow process did not start.'
+            }
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(30000)) {
+                $process.Kill($true)
+                $null = $process.WaitForExit(5000)
+                throw 'TASK-659 public workflow process timed out.'
+            }
+            return [PSCustomObject]@{
+                ExitCode = $process.ExitCode
+                Output = (
+                    @(
+                        $stdout.GetAwaiter().GetResult()
+                        $stderr.GetAwaiter().GetResult()
+                    ) -join [Environment]::NewLine
+                ).Trim()
+            }
+        } finally {
+            $process.Dispose()
+        }
+    }
 }
 
 Describe 'TASK-659 v0.36.30 production-path closure' {
@@ -2321,5 +2489,176 @@ $hash = [Security.Cryptography.SHA256]::Create().ComputeHash($payloadBytes)
             Get-Task659Sha256 -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($largeTask))
         )
         $probe.contains_private_marker | Should -BeTrue
+    }
+
+    It 'DW22 carries command-valued RAW and BIN overrides through public start and resume to one exact child planner' {
+        Assert-Task659RuntimeLoaded
+        $shimDir = Join-Path $TestDrive 'dw22-path'
+        $logPath = Join-Path $TestDrive 'dw22-workspace-plan.jsonl'
+        $rawPath = New-Task659WorkspacePlanShim `
+            -Directory $shimDir -FileName 'task659-dw22-raw.ps1'
+        $binPath = New-Task659WorkspacePlanShim `
+            -Directory $shimDir -FileName 'task659-dw22-bin.ps1'
+        $rawCommandName = [IO.Path]::GetFileName($rawPath)
+        $binCommandName = [IO.Path]::GetFileName($binPath)
+        $previousPath = $env:PATH
+        $previousRaw = $env:WINSMUX_RAW_EXE
+        $previousBin = $env:WINSMUX_BIN
+        $previousLog = $env:TASK659_WORKSPACE_PLAN_LOG
+
+        try {
+            $env:PATH = $shimDir + [IO.Path]::PathSeparator + $previousPath
+            $env:TASK659_WORKSPACE_PLAN_LOG = $logPath
+            $env:WINSMUX_RAW_EXE = $rawCommandName
+            $env:WINSMUX_BIN = $binCommandName
+
+            $startProject = Join-Path $TestDrive 'dw22-start'
+            [IO.Directory]::CreateDirectory((Join-Path $startProject '.winsmux')) | Out-Null
+            $startTaskFile = Join-Path $startProject 'task.txt'
+            [IO.File]::WriteAllText(
+                $startTaskFile,
+                'DW22 public start task',
+                [Text.UTF8Encoding]::new($false)
+            )
+            $startStatePath = Get-DeclarativeWorkflowRunStatePath `
+                -ProjectDir $startProject -RunId 'run-dw22-start'
+            $startResult = Invoke-Task659PublicWorkflowProcess `
+                -Action start -RunId 'run-dw22-start' `
+                -TaskFile $startTaskFile -ProjectDir $startProject
+
+            Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            $resumeFixture = New-Task659Fixture `
+                -Name 'dw22-resume' -RunId 'run-dw22-resume'
+            $null = Invoke-Task659Start -Fixture $resumeFixture
+            $resumeStateBefore = Get-Task659StateBytes -Fixture $resumeFixture
+            $resumeResult = Invoke-Task659PublicWorkflowProcess `
+                -Action resume -RunId $resumeFixture.RunId `
+                -TaskFile $resumeFixture.TaskFile -ProjectDir $resumeFixture.ProjectDir
+
+            $invocations = Get-Task659WorkspacePlanInvocations -Path $logPath
+            @($invocations).Count | Should -Be 2
+            $startInvocation = $invocations[0]
+            $resumeInvocation = $invocations[1]
+            $startInvocation.command | Should -BeExactly $rawCommandName
+            $resumeInvocation.command | Should -BeExactly $binCommandName
+
+            $startArguments = @($startInvocation.arguments | ForEach-Object { [string]$_ })
+            $resumeArguments = @($resumeInvocation.arguments | ForEach-Object { [string]$_ })
+            $startArguments[0] | Should -BeExactly 'workspace-plan'
+            $resumeArguments[0] | Should -BeExactly 'workspace-plan'
+            $startArgumentMap = [ordered]@{}
+            for ($index = 1; $index + 1 -lt $startArguments.Count; $index += 2) {
+                $startArgumentMap[$startArguments[$index]] = $startArguments[$index + 1]
+            }
+            $resumeArgumentMap = [ordered]@{}
+            for ($index = 1; $index + 1 -lt $resumeArguments.Count; $index += 2) {
+                $resumeArgumentMap[$resumeArguments[$index]] = $resumeArguments[$index + 1]
+            }
+            $startArgumentMap['--recipe-id'] | Should -BeExactly 'bugfix-two-slot'
+            $startArgumentMap['--workflow-id'] | Should -BeExactly 'bugfix'
+            $startArgumentMap['--run-id'] | Should -BeExactly 'run-dw22-start'
+            $startArgumentMap['--project-dir'] |
+                Should -BeExactly ([IO.Path]::GetFullPath($startProject))
+            $resumeArgumentMap['--run-id'] | Should -BeExactly $resumeFixture.RunId
+            $resumeArgumentMap['--project-dir'] |
+                Should -BeExactly ([IO.Path]::GetFullPath($resumeFixture.ProjectDir))
+
+            $startResult.ExitCode | Should -Not -Be 0
+            $resumeResult.ExitCode | Should -Not -Be 0
+            $startResult.Output | Should -Not -Match 'workflow_plan_unavailable'
+            $resumeResult.Output | Should -Not -Match 'workflow_plan_unavailable'
+            Test-Path -LiteralPath $startStatePath | Should -BeFalse
+            Get-Task659StateBytes -Fixture $resumeFixture | Should -Be $resumeStateBefore
+            (Get-Task659MailboxFiles -Fixture $resumeFixture -State pending).Count |
+                Should -Be 0
+        } finally {
+            $env:PATH = $previousPath
+            if ($null -eq $previousRaw) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRaw
+            }
+            if ($null -eq $previousBin) {
+                Remove-Item Env:\WINSMUX_BIN -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BIN = $previousBin
+            }
+            if ($null -eq $previousLog) {
+                Remove-Item Env:\TASK659_WORKSPACE_PLAN_LOG -ErrorAction SilentlyContinue
+            } else {
+                $env:TASK659_WORKSPACE_PLAN_LOG = $previousLog
+            }
+        }
+    }
+
+    It 'DW23 rejects an invalid RAW override before child launch without BIN fallback or state mutation' {
+        Assert-Task659RuntimeLoaded
+        $shimDir = Join-Path $TestDrive 'dw23-path'
+        $logPath = Join-Path $TestDrive 'dw23-workspace-plan.jsonl'
+        $binPath = New-Task659WorkspacePlanShim `
+            -Directory $shimDir -FileName 'task659-dw23-bin.ps1'
+        $binCommandName = [IO.Path]::GetFileName($binPath)
+        $missingCommand = 'task659-dw23-missing-' + [guid]::NewGuid().ToString('N') + '.ps1'
+        $previousPath = $env:PATH
+        $previousRaw = $env:WINSMUX_RAW_EXE
+        $previousBin = $env:WINSMUX_BIN
+        $previousLog = $env:TASK659_WORKSPACE_PLAN_LOG
+
+        try {
+            $env:PATH = $shimDir + [IO.Path]::PathSeparator + $previousPath
+            $env:TASK659_WORKSPACE_PLAN_LOG = $logPath
+            $env:WINSMUX_RAW_EXE = $missingCommand
+            $env:WINSMUX_BIN = $binCommandName
+
+            $startProject = Join-Path $TestDrive 'dw23-start'
+            [IO.Directory]::CreateDirectory((Join-Path $startProject '.winsmux')) | Out-Null
+            $startTaskFile = Join-Path $startProject 'task.txt'
+            [IO.File]::WriteAllText(
+                $startTaskFile,
+                'DW23 public start task',
+                [Text.UTF8Encoding]::new($false)
+            )
+            $startStatePath = Get-DeclarativeWorkflowRunStatePath `
+                -ProjectDir $startProject -RunId 'run-dw23-start'
+            $startResult = Invoke-Task659PublicWorkflowProcess `
+                -Action start -RunId 'run-dw23-start' `
+                -TaskFile $startTaskFile -ProjectDir $startProject
+
+            $resumeFixture = New-Task659Fixture `
+                -Name 'dw23-resume' -RunId 'run-dw23-resume'
+            $null = Invoke-Task659Start -Fixture $resumeFixture
+            $resumeStateBefore = Get-Task659StateBytes -Fixture $resumeFixture
+            $resumeResult = Invoke-Task659PublicWorkflowProcess `
+                -Action resume -RunId $resumeFixture.RunId `
+                -TaskFile $resumeFixture.TaskFile -ProjectDir $resumeFixture.ProjectDir
+
+            $startResult.ExitCode | Should -Not -Be 0
+            $resumeResult.ExitCode | Should -Not -Be 0
+            $startResult.Output | Should -Match 'configured winsmux executable is missing'
+            $resumeResult.Output | Should -Match 'configured winsmux executable is missing'
+            Test-Path -LiteralPath $startStatePath | Should -BeFalse
+            Get-Task659StateBytes -Fixture $resumeFixture | Should -Be $resumeStateBefore
+            Test-Path -LiteralPath $logPath | Should -BeFalse
+            Test-Path -LiteralPath (
+                Join-Path $startProject '.winsmux\workflow-mailbox\run-dw23-start'
+            ) | Should -BeFalse
+        } finally {
+            $env:PATH = $previousPath
+            if ($null -eq $previousRaw) {
+                Remove-Item Env:\WINSMUX_RAW_EXE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_RAW_EXE = $previousRaw
+            }
+            if ($null -eq $previousBin) {
+                Remove-Item Env:\WINSMUX_BIN -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BIN = $previousBin
+            }
+            if ($null -eq $previousLog) {
+                Remove-Item Env:\TASK659_WORKSPACE_PLAN_LOG -ErrorAction SilentlyContinue
+            } else {
+                $env:TASK659_WORKSPACE_PLAN_LOG = $previousLog
+            }
+        }
     }
 }
