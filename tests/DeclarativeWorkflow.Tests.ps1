@@ -1810,6 +1810,7 @@ $script:CapturedWorkflowDispatches = [Collections.Generic.List[object]]::new()
 function Invoke-TeamPipelineBridge {
     param(
         [string[]]$Arguments,
+        [AllowNull()][string]$InputText,
         [switch]$AllowFailure,
         [string]$ProjectDir,
         [string]$ExpectedSessionName,
@@ -1819,6 +1820,7 @@ function Invoke-TeamPipelineBridge {
 
     $script:CapturedWorkflowDispatches.Add([ordered]@{
             arguments = @($Arguments)
+            input_text = $InputText
             project_dir = $ProjectDir
             session_name = $ExpectedSessionName
             generation_id = $ExpectedGenerationId
@@ -1897,7 +1899,8 @@ $result = Invoke-DeclarativeWorkflow @invokeParameters
         $firstDispatch = $startCapture.calls[0]
         $firstDispatch.arguments[0] | Should -BeExactly 'send'
         $firstDispatch.arguments[1] | Should -BeExactly 'builder-1'
-        $prompt = [string]$firstDispatch.arguments[2]
+        $firstDispatch.arguments[2] | Should -BeExactly '--workflow-prompt-stdin'
+        $prompt = [string]$firstDispatch.input_text
         $prompt.Substring(0, $fixture.TaskText.Length) |
             Should -BeExactly $fixture.TaskText
         $callbackMatch = [regex]::Match(
@@ -1971,6 +1974,8 @@ $result = Invoke-DeclarativeWorkflow @invokeParameters
         $after.nodes.verify.state | Should -BeExactly 'running'
         @($resumeCapture.calls).Count | Should -Be 1
         [string]$resumeCapture.calls[0].arguments[2] |
+            Should -BeExactly '--workflow-prompt-stdin'
+        [string]$resumeCapture.calls[0].input_text |
             Should -Match '"node_id":"verify"'
     }
 
@@ -2091,5 +2096,230 @@ $result = Invoke-DeclarativeWorkflow @invokeParameters
         $fixture.Dispatches[0].node_id | Should -BeExactly 'verify'
         (Get-Task659MailboxFiles -Fixture $fixture -State consumed).Count |
             Should -Be 1
+    }
+
+    It 'TB01 acknowledges only already-admitted terminal pending proofs across every adjacent move crash cut' {
+        Assert-Task659RuntimeLoaded
+        $cases = @(
+            [ordered]@{
+                name = 'succeeded'
+                outcome = 'succeeded'
+                exit_code = 0
+            },
+            [ordered]@{
+                name = 'failed'
+                outcome = 'failed'
+                exit_code = 23
+            }
+        )
+
+        foreach ($case in $cases) {
+            $fixture = New-Task659Fixture `
+                -Name "tb01-$($case.name)" `
+                -RunId "run-tb01-$($case.name)" `
+                -SingleNode
+            $null = Invoke-Task659Start -Fixture $fixture
+            $send = Send-Task659InternalResult `
+                -Fixture $fixture `
+                -Outcome ([string]$case.outcome) `
+                -ExitCode ([int]$case.exit_code)
+            $send.ExitCode | Should -Be 0 -Because $send.Output
+            (Get-Task659MailboxFiles -Fixture $fixture -State pending).Count |
+                Should -Be 1
+
+            $consumedPath = Join-Path $fixture.ProjectDir (
+                ".winsmux\workflow-mailbox\$($fixture.RunId)\consumed"
+            )
+            if (Test-Path -LiteralPath $consumedPath -PathType Container) {
+                Remove-Item -LiteralPath $consumedPath
+            }
+            [IO.File]::WriteAllText(
+                $consumedPath,
+                'TB01 injected adjacent-cut blocker',
+                [Text.UTF8Encoding]::new($false)
+            )
+
+            { Invoke-Task659Resume -Fixture $fixture } | Should -Throw
+            $terminal = Read-DeclarativeWorkflowRunState `
+                -ProjectDir $fixture.ProjectDir -RunId $fixture.RunId
+            $terminal.state | Should -BeExactly ([string]$case.outcome)
+            $terminal.nodes.build.state | Should -BeExactly ([string]$case.outcome)
+            @($terminal.admitted_messages).Count | Should -Be 1
+            (Get-Task659MailboxFiles -Fixture $fixture -State pending).Count |
+                Should -Be 1
+            (Test-Path -LiteralPath $consumedPath -PathType Container) |
+                Should -BeFalse
+            $fixture.Dispatches.Count | Should -Be 1
+            $stateAfterPersist = Get-Task659StateBytes -Fixture $fixture
+
+            Remove-Item -LiteralPath $consumedPath -Force
+            $reconciled = Invoke-Task659Resume -Fixture $fixture
+            $reconciled.state | Should -BeExactly ([string]$case.outcome)
+            [Linq.Enumerable]::SequenceEqual[byte](
+                [byte[]]$stateAfterPersist,
+                [byte[]](Get-Task659StateBytes -Fixture $fixture)
+            ) | Should -BeTrue
+            (Get-Task659MailboxFiles -Fixture $fixture -State pending).Count |
+                Should -Be 0
+            (Get-Task659MailboxFiles -Fixture $fixture -State consumed).Count |
+                Should -Be 1
+            $fixture.Dispatches.Count | Should -Be 1
+
+            $stateAfterReconciliation = Get-Task659StateBytes -Fixture $fixture
+            { Invoke-Task659Resume -Fixture $fixture } | Should -Throw '*terminal*'
+            [Linq.Enumerable]::SequenceEqual[byte](
+                [byte[]]$stateAfterReconciliation,
+                [byte[]](Get-Task659StateBytes -Fixture $fixture)
+            ) | Should -BeTrue
+            (Get-Task659MailboxFiles -Fixture $fixture -State consumed).Count |
+                Should -Be 1
+            $fixture.Dispatches.Count | Should -Be 1
+        }
+    }
+
+    It 'TB02 carries an unbounded internal workflow payload through real child stdin with metadata-only argv' {
+        Assert-Task659RuntimeLoaded
+        $fixture = New-Task659Fixture -Name 'tb02' -RunId 'run-tb02'
+        $privateMarker = 'TB02-private-task-marker'
+        $largeTask = $privateMarker + "`n" + ('x' * 70000)
+        [IO.File]::WriteAllText(
+            $fixture.TaskFile,
+            $largeTask,
+            [Text.UTF8Encoding]::new($false)
+        )
+        $fixture.TaskText = $largeTask
+        $expectedPayloadBytes = [Text.UTF8Encoding]::new($false).GetByteCount($largeTask)
+        $expectedPayloadBytes | Should -BeGreaterThan 65536
+
+        $probePath = Join-Path $fixture.ProjectDir 'tb02-child-probe.ps1'
+        $corePathLiteral = $script:Task659BridgePath.Replace("'", "''")
+        $probeSource = @'
+param()
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$requestedArguments = @($args)
+trap {
+    try {
+        $null = [Console]::In.ReadToEnd()
+    } catch {
+    }
+    [Console]::Error.WriteLine(
+        'TB02_CHILD_ERROR: ' + [string]$_.Exception.Message
+    )
+    [Console]::Error.WriteLine(
+        'TB02_CHILD_PROJECT: expected=' +
+        [string]$env:WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR +
+        '; current=' +
+        [string](Get-Location).Path
+    )
+    exit 97
+}
+. '__TASK659_CORE_PATH__' 'version' *> $null
+
+$script:tb02CapturedText = $null
+$script:tb02Identity = [PSCustomObject]@{
+    session_name = [string]$env:WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME
+    generation_id = [string]$env:WINSMUX_INTERNAL_WORKFLOW_GENERATION_ID
+    server_session_id = [string]$env:WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID
+}
+function Get-WinsmuxManifest {
+    param([string]$ProjectDir)
+    return [ordered]@{}
+}
+function Get-WinsmuxVerifiedManifestIdentity {
+    param($Manifest)
+    return $script:tb02Identity
+}
+function Resolve-Target {
+    param([string]$Label)
+    return '%2'
+}
+function Resolve-TerminalBackend { return 'tauri' }
+function Assert-WinsmuxTargetRuntimeWriteAllowed {
+    param(
+        [string]$PaneId,
+        [string]$CurrentProjectDir,
+        [string]$Operation,
+        [string]$ExpectedGenerationId
+    )
+    return [PSCustomObject]@{
+        Managed = $false
+        ProjectDir = $CurrentProjectDir
+        Context = $null
+        Operation = 'dispatch'
+        GenerationId = ''
+    }
+}
+function Resolve-SendTransportIntent {
+    param(
+        [string]$Text,
+        [string]$ProjectDir,
+        [int]$LengthLimit,
+        [string]$PromptTransport,
+        [string]$TaskSlug,
+        [bool]$ExecMode,
+        [string]$LaunchDir,
+        [string]$GitWorktreeDir,
+        [string]$Model,
+        [string]$ExecCommand
+    )
+    $script:tb02CapturedText = $Text
+    throw 'TB02_CAPTURED_AFTER_STDIN'
+}
+
+$captureError = ''
+try {
+    Invoke-Send `
+        -SendTarget ([string]$requestedArguments[1]) `
+        -SendArguments @([string]$requestedArguments[2])
+} catch {
+    $captureError = [string]$_.Exception.Message
+}
+if ($captureError -cne 'TB02_CAPTURED_AFTER_STDIN' -or
+    $null -eq $script:tb02CapturedText) {
+    throw "TB02 child consumer did not capture stdin: $captureError"
+}
+$payloadBytes = [Text.UTF8Encoding]::new($false).GetBytes(
+    [string]$script:tb02CapturedText
+)
+$hash = [Security.Cryptography.SHA256]::Create().ComputeHash($payloadBytes)
+[ordered]@{
+    arguments = @($requestedArguments)
+    payload_bytes = $payloadBytes.Length
+    payload_sha256 = 'sha256:' + (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+    contains_private_marker = ([string]$script:tb02CapturedText).Contains('TB02-private-task-marker')
+} | ConvertTo-Json -Depth 10 -Compress
+'@.Replace('__TASK659_CORE_PATH__', $corePathLiteral)
+        [IO.File]::WriteAllText(
+            $probePath,
+            $probeSource,
+            [Text.UTF8Encoding]::new($false)
+        )
+
+        $originalBridgeScript = $script:TeamPipelineBridgeScript
+        try {
+            $script:TeamPipelineBridgeScript = $probePath
+            $bridgeReceipt = Invoke-TeamPipelineBridge `
+                -Arguments @('send', 'builder-1', '--workflow-prompt-stdin') `
+                -InputText $largeTask `
+                -ProjectDir $fixture.ProjectDir `
+                -ExpectedSessionName ([string]$fixture.Identity.session_name) `
+                -ExpectedGenerationId ([string]$fixture.Identity.generation_id) `
+                -ExpectedServerSessionId ([string]$fixture.Identity.server_session_id)
+        } finally {
+            $script:TeamPipelineBridgeScript = $originalBridgeScript
+        }
+        $bridgeReceipt.ExitCode | Should -Be 0 -Because $bridgeReceipt.Output
+        $probe = $bridgeReceipt.Output | ConvertFrom-Json
+        @($probe.arguments).Count | Should -Be 3
+        [string]$probe.arguments[0] | Should -BeExactly 'send'
+        [string]$probe.arguments[1] | Should -BeExactly 'builder-1'
+        [string]$probe.arguments[2] | Should -BeExactly '--workflow-prompt-stdin'
+        (@($probe.arguments) -join ' ') | Should -Not -Match $privateMarker
+        [int64]$probe.payload_bytes | Should -Be $expectedPayloadBytes
+        [string]$probe.payload_sha256 | Should -BeExactly (
+            Get-Task659Sha256 -Bytes ([Text.UTF8Encoding]::new($false).GetBytes($largeTask))
+        )
+        $probe.contains_private_marker | Should -BeTrue
     }
 }

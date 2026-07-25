@@ -471,6 +471,7 @@ function Get-TeamPipelineConsultRole {
 function Invoke-TeamPipelineBridge {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [AllowNull()][string]$InputText,
         [switch]$AllowFailure,
         [string]$ProjectDir = '',
         [string]$ExpectedSessionName = '',
@@ -478,6 +479,7 @@ function Invoke-TeamPipelineBridge {
         [string]$ExpectedServerSessionId = ''
     )
 
+    $hasInputText = $PSBoundParameters.ContainsKey('InputText')
     $authorityValues = [ordered]@{
         WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR = $ProjectDir
         WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME = $ExpectedSessionName
@@ -490,6 +492,17 @@ function Invoke-TeamPipelineBridge {
     ).Count
     if ($authorityPresent -notin @(0, $authorityValues.Count)) {
         throw 'workflow_dispatch_authority_invalid: project and exact session tuple are required together.'
+    }
+    if ($hasInputText) {
+        if ($authorityPresent -ne $authorityValues.Count) {
+            throw 'workflow_dispatch_authority_invalid: workflow prompt stdin requires the complete authority tuple.'
+        }
+        if ($Arguments.Count -ne 3 -or
+            [string]$Arguments[0] -cne 'send' -or
+            [string]::IsNullOrWhiteSpace([string]$Arguments[1]) -or
+            [string]$Arguments[2] -cne '--workflow-prompt-stdin') {
+            throw 'workflow_dispatch_transport_invalid: stdin prompt requires send, target, and the internal marker only.'
+        }
     }
     if ($authorityPresent -gt 0) {
         $authorityValues['WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR'] =
@@ -517,9 +530,56 @@ function Invoke-TeamPipelineBridge {
             $pushed = $true
         }
 
-        $output = & pwsh -NoProfile -File $script:TeamPipelineBridgeScript @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-        $text = ($output | Out-String).TrimEnd()
+        if ($hasInputText) {
+            $pwshCommand = Get-Command pwsh -ErrorAction Stop
+            $pwshPath = if (-not [string]::IsNullOrWhiteSpace([string]$pwshCommand.Source)) {
+                [string]$pwshCommand.Source
+            } else {
+                [string]$pwshCommand.Path
+            }
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $pwshPath
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.WorkingDirectory =
+                [string]$authorityValues['WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR']
+            $startInfo.RedirectStandardInput = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            $startInfo.StandardInputEncoding = [System.Text.UTF8Encoding]::new($false)
+            $startInfo.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+            $startInfo.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+            foreach ($argument in @('-NoProfile', '-File', $script:TeamPipelineBridgeScript) + @($Arguments)) {
+                $startInfo.ArgumentList.Add([string]$argument)
+            }
+
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            try {
+                if (-not $process.Start()) {
+                    throw 'workflow_dispatch_transport_failed: child process did not start.'
+                }
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+                $process.StandardInput.Write($InputText)
+                $process.StandardInput.Close()
+                $process.WaitForExit()
+                $stdoutText = $stdoutTask.GetAwaiter().GetResult()
+                $stderrText = $stderrTask.GetAwaiter().GetResult()
+                $exitCode = $process.ExitCode
+                $text = @(
+                    ([string]$stdoutText).TrimEnd()
+                    ([string]$stderrText).TrimEnd()
+                ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                    Join-String -Separator ([Environment]::NewLine)
+            } finally {
+                $process.Dispose()
+            }
+        } else {
+            $output = & pwsh -NoProfile -File $script:TeamPipelineBridgeScript @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+            $text = ($output | Out-String).TrimEnd()
+        }
     } finally {
         if ($pushed) {
             Pop-Location
@@ -983,6 +1043,7 @@ function Invoke-TeamPipelineGuardedSend {
         [Parameter(Mandatory = $true)][string]$SessionName,
         [string]$ExpectedGenerationId = '',
         [string]$ExpectedServerSessionId = '',
+        [switch]$WorkflowPromptStdin,
         [string]$Role = '',
         [string]$Task = '',
         [int]$Attempt = 0
@@ -991,7 +1052,14 @@ function Invoke-TeamPipelineGuardedSend {
     $violation = Find-TeamPipelineSecurityViolation -StageName $StageName -Text $Prompt
     if ($null -eq $violation) {
         $bridgeParameters = @{
-            Arguments = @('send', $Target, $Prompt)
+            Arguments = if ($WorkflowPromptStdin) {
+                @('send', $Target, '--workflow-prompt-stdin')
+            } else {
+                @('send', $Target, $Prompt)
+            }
+        }
+        if ($WorkflowPromptStdin) {
+            $bridgeParameters['InputText'] = $Prompt
         }
         if (-not [string]::IsNullOrWhiteSpace($ExpectedGenerationId) -or
             -not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) {

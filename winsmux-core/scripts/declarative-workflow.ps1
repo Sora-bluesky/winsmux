@@ -1114,6 +1114,7 @@ function Invoke-DeclarativeWorkflow {
                 -ProjectDir $resolvedProject -ResultAdapterPath $resultAdapterPath
             $blocked = Invoke-TeamPipelineGuardedSend `
                 -StageName 'WORKFLOW' -Target $target -Prompt $prompt `
+                -WorkflowPromptStdin `
                 -ProjectDir $resolvedProject -SessionName ([string]$Run['session']['session_name']) `
                 -ExpectedGenerationId ([string]$Run['session']['generation_id']) `
                 -ExpectedServerSessionId ([string]$Run['session']['server_session_id']) `
@@ -1156,12 +1157,52 @@ function Invoke-DeclarativeWorkflow {
         }
 
         $state = Read-DeclarativeWorkflowRunState -ProjectDir $resolvedProject -RunId $RunId
-        if ([string]$state['state'] -in @('succeeded', 'failed', 'cancelled')) {
-            throw "workflow_terminal: $([string]$state['state'])"
-        }
+        $terminalState = [string]$state['state'] -in @('succeeded', 'failed', 'cancelled')
         $persistedFingerprint = Get-DeclarativeWorkflowContentDigest -Workflow $state['workflow']
         if ($persistedFingerprint -cne [string]$state['workflow_fingerprint']) {
             throw 'workflow fingerprint mismatch: persisted content changed.'
+        }
+        if ($terminalState) {
+            if ($task.digest -cne [string]$state['task_digest'] -or
+                [int64]$task.bytes.Length -ne [int64]$state['task_bytes']) {
+                throw 'workflow task identity changed.'
+            }
+            if ([string]$state['state'] -ceq 'cancelled') {
+                throw "workflow_terminal: $([string]$state['state'])"
+            }
+
+            $terminalMailbox = Get-DeclarativeWorkflowMailboxRecords `
+                -ProjectDir $resolvedProject -RunId $RunId -Run $state
+            $terminalPending = @(
+                $terminalMailbox.Values |
+                    Where-Object {
+                        -not [string]::IsNullOrWhiteSpace([string]($_['pending_path']))
+                    }
+            )
+            if ($terminalPending.Count -eq 0) {
+                throw "workflow_terminal: $([string]$state['state'])"
+            }
+
+            Assert-DeclarativeWorkflowStateProofConsistency `
+                -State $state -Mailbox $terminalMailbox
+            $terminalAdmitted = [System.Collections.Generic.HashSet[string]]::new(
+                [System.StringComparer]::Ordinal
+            )
+            foreach ($messageId in @($state['admitted_messages'])) {
+                $null = $terminalAdmitted.Add([string]$messageId)
+            }
+            foreach ($entry in @($terminalMailbox.Values)) {
+                $messageId = [string]$entry['record']['message_id']
+                if (-not $terminalAdmitted.Contains($messageId)) {
+                    throw 'workflow_mailbox_invalid: terminal run contains unadmitted proof.'
+                }
+            }
+            foreach ($entry in $terminalPending) {
+                Move-DeclarativeWorkflowMessageToConsumed `
+                    -ProjectDir $resolvedProject -RunId $RunId -MailboxEntry $entry
+            }
+            return Read-DeclarativeWorkflowRunState `
+                -ProjectDir $resolvedProject -RunId $RunId
         }
         $plan = & $WorkspacePlanInvoker `
             ([string]$state['recipe_id']) ([string]$state['workflow_id']) $RunId $resolvedProject

@@ -4387,6 +4387,7 @@ function Resolve-SendInvocationArguments {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $taskSlug = ''
+    $workflowPromptStdin = $false
     $messageParts = New-Object System.Collections.Generic.List[string]
     for ($index = 0; $index -lt $Arguments.Count; $index++) {
         $token = [string]$Arguments[$index]
@@ -4403,13 +4404,27 @@ function Resolve-SendInvocationArguments {
         if ($token -eq '--delivery-class') {
             throw '--delivery-class is internal-only and cannot be supplied through argv'
         }
+        if ($token -eq '--workflow-prompt-stdin') {
+            if ($workflowPromptStdin) {
+                throw 'workflow_dispatch_transport_invalid: duplicate workflow prompt stdin marker.'
+            }
+            $workflowPromptStdin = $true
+            continue
+        }
 
         $messageParts.Add($token) | Out-Null
     }
+    if ($workflowPromptStdin -and (
+            $messageParts.Count -gt 0 -or
+            -not [string]::IsNullOrWhiteSpace($taskSlug)
+        )) {
+        throw 'workflow_dispatch_transport_invalid: workflow prompt stdin cannot be mixed with message argv.'
+    }
 
     return [ordered]@{
-        TaskSlug     = $taskSlug
-        MessageParts = @($messageParts)
+        TaskSlug            = $taskSlug
+        MessageParts        = @($messageParts)
+        WorkflowPromptStdin = $workflowPromptStdin
     }
 }
 
@@ -4603,6 +4618,29 @@ function Invoke-Send {
     $resolvedSendArguments = Resolve-SendInvocationArguments -Arguments $SendArguments
     $taskSlug = [string]$resolvedSendArguments['TaskSlug']
     $messageParts = @($resolvedSendArguments['MessageParts'])
+    $workflowPromptStdin = [bool]$resolvedSendArguments['WorkflowPromptStdin']
+
+    if ($workflowPromptStdin) {
+        $workflowAuthorityValues = @(
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR,
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME,
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_GENERATION_ID,
+            [string]$env:WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID
+        )
+        if (@(
+                $workflowAuthorityValues |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            ).Count -ne $workflowAuthorityValues.Count) {
+            throw 'workflow_dispatch_transport_invalid: workflow prompt stdin requires the complete authority tuple.'
+        }
+        Assert-WinsmuxWorkflowDispatchAuthority -ProjectDir (Get-Location).Path
+        [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false, $true)
+        $stdinPrompt = [Console]::In.ReadToEnd()
+        if ([string]::IsNullOrEmpty($stdinPrompt)) {
+            throw 'workflow_dispatch_transport_invalid: workflow prompt stdin is empty.'
+        }
+        $messageParts = @($stdinPrompt)
+    }
 
     if ($messageParts.Count -lt 1) {
         Stop-WithError "usage: winsmux send <target> <text>"
