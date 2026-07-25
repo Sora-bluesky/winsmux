@@ -12,6 +12,16 @@ param(
     [int]$MaxFixRounds = 2,
     [switch]$SkipPlan,
     [switch]$SkipVerify,
+    [string]$WorkflowAction = '',
+    [string]$RecipeId = '',
+    [string]$WorkflowId = '',
+    [string]$RunId = '',
+    [string]$TaskFile = '',
+    [string]$ProjectDir = '',
+    [switch]$WorkflowResult,
+    [string]$WorkflowResultNodeId = '',
+    [string]$WorkflowResultOutcome = '',
+    [int]$WorkflowResultExitCode = [int]::MinValue,
     [switch]$AsJson
 )
 
@@ -19,12 +29,18 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+$script:TeamPipelineInvocationProjectDir = $ProjectDir
+$script:TeamPipelineInvocationAsJson = [bool]$AsJson
 $script:TeamPipelineBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
 $script:TeamPipelineLoggerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'logger.ps1'))
 $script:TeamPipelinePaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'pane-env.ps1'))
 $script:TeamPipelineDangerousApprovalPattern = '(?im)(rm\s+-rf|Remove-Item\s+.+-Recurse.+-Force|git\s+push\s+--force|git\s+reset\s+--hard|DROP\s+TABLE|DELETE\s+FROM)'
 
 . (Join-Path $PSScriptRoot 'manifest.ps1')
+$script:DeclarativeWorkflowScript = Join-Path $PSScriptRoot 'declarative-workflow.ps1'
+if (Test-Path -LiteralPath $script:DeclarativeWorkflowScript -PathType Leaf) {
+    . $script:DeclarativeWorkflowScript
+}
 if (Test-Path $script:TeamPipelineLoggerScript -PathType Leaf) {
     . $script:TeamPipelineLoggerScript
 }
@@ -455,12 +471,67 @@ function Get-TeamPipelineConsultRole {
 function Invoke-TeamPipelineBridge {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+        [string]$ProjectDir = '',
+        [string]$ExpectedSessionName = '',
+        [string]$ExpectedGenerationId = '',
+        [string]$ExpectedServerSessionId = ''
     )
 
-    $output = & pwsh -NoProfile -File $script:TeamPipelineBridgeScript @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    $text = ($output | Out-String).TrimEnd()
+    $authorityValues = [ordered]@{
+        WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR = $ProjectDir
+        WINSMUX_INTERNAL_WORKFLOW_SESSION_NAME = $ExpectedSessionName
+        WINSMUX_INTERNAL_WORKFLOW_GENERATION_ID = $ExpectedGenerationId
+        WINSMUX_INTERNAL_WORKFLOW_SERVER_SESSION_ID = $ExpectedServerSessionId
+    }
+    $authorityPresent = @(
+        $authorityValues.Values |
+            Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    ).Count
+    if ($authorityPresent -notin @(0, $authorityValues.Count)) {
+        throw 'workflow_dispatch_authority_invalid: project and exact session tuple are required together.'
+    }
+    if ($authorityPresent -gt 0) {
+        $authorityValues['WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR'] =
+            [System.IO.Path]::GetFullPath($ProjectDir)
+    }
+
+    $originalEnvironment = [ordered]@{}
+    foreach ($name in $authorityValues.Keys) {
+        $originalEnvironment[$name] = [Environment]::GetEnvironmentVariable(
+            $name,
+            [EnvironmentVariableTarget]::Process
+        )
+    }
+    $pushed = $false
+    try {
+        if ($authorityPresent -gt 0) {
+            foreach ($name in $authorityValues.Keys) {
+                [Environment]::SetEnvironmentVariable(
+                    $name,
+                    [string]$authorityValues[$name],
+                    [EnvironmentVariableTarget]::Process
+                )
+            }
+            Push-Location ([string]$authorityValues['WINSMUX_INTERNAL_WORKFLOW_PROJECT_DIR'])
+            $pushed = $true
+        }
+
+        $output = & pwsh -NoProfile -File $script:TeamPipelineBridgeScript @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $text = ($output | Out-String).TrimEnd()
+    } finally {
+        if ($pushed) {
+            Pop-Location
+        }
+        foreach ($name in $originalEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                $originalEnvironment[$name],
+                [EnvironmentVariableTarget]::Process
+            )
+        }
+    }
 
     if ($exitCode -ne 0 -and -not $AllowFailure) {
         if ([string]::IsNullOrWhiteSpace($text)) {
@@ -910,6 +981,8 @@ function Invoke-TeamPipelineGuardedSend {
         [Parameter(Mandatory = $true)][string]$Prompt,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName,
+        [string]$ExpectedGenerationId = '',
+        [string]$ExpectedServerSessionId = '',
         [string]$Role = '',
         [string]$Task = '',
         [int]$Attempt = 0
@@ -917,7 +990,17 @@ function Invoke-TeamPipelineGuardedSend {
 
     $violation = Find-TeamPipelineSecurityViolation -StageName $StageName -Text $Prompt
     if ($null -eq $violation) {
-        Invoke-TeamPipelineBridge -Arguments @('send', $Target, $Prompt) | Out-Null
+        $bridgeParameters = @{
+            Arguments = @('send', $Target, $Prompt)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($ExpectedGenerationId) -or
+            -not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) {
+            $bridgeParameters['ProjectDir'] = $ProjectDir
+            $bridgeParameters['ExpectedSessionName'] = $SessionName
+            $bridgeParameters['ExpectedGenerationId'] = $ExpectedGenerationId
+            $bridgeParameters['ExpectedServerSessionId'] = $ExpectedServerSessionId
+        }
+        Invoke-TeamPipelineBridge @bridgeParameters | Out-Null
         return $null
     }
 
@@ -1744,9 +1827,46 @@ function Invoke-TeamPipeline {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $pipelineResult = Invoke-TeamPipeline -Task $Task -Builder $Builder -Researcher $Researcher -Reviewer $Reviewer -ManifestPath $ManifestPath -BuilderWorktreePath $BuilderWorktreePath -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds -MaxFixRounds $MaxFixRounds -SkipPlan:$SkipPlan -SkipVerify:$SkipVerify
-    if ($AsJson) {
-        $pipelineResult | ConvertTo-Json -Depth 8
+    $workflowProjectDir = $script:TeamPipelineInvocationProjectDir
+    if ($WorkflowResult) {
+        if (-not [string]::IsNullOrWhiteSpace($WorkflowAction)) {
+            throw 'workflow_result_invalid: result production and workflow execution are mutually exclusive.'
+        }
+        if ([string]::IsNullOrWhiteSpace($workflowProjectDir) -or
+            [string]::IsNullOrWhiteSpace($RunId) -or
+            [string]::IsNullOrWhiteSpace($WorkflowResultNodeId) -or
+            $WorkflowResultOutcome -cnotin @('succeeded', 'failed') -or
+            $WorkflowResultExitCode -eq [int]::MinValue) {
+            throw 'workflow_result_invalid: project, run, node, ordinal outcome, and exit code are required.'
+        }
+        if (-not (Get-Command Write-DeclarativeWorkflowNodeResult -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw "Declarative workflow result adapter not found: $script:DeclarativeWorkflowScript"
+        }
+        $pipelineResult = Write-DeclarativeWorkflowNodeResult `
+            -ProjectDir $workflowProjectDir `
+            -RunId $RunId `
+            -NodeId $WorkflowResultNodeId `
+            -Outcome $WorkflowResultOutcome `
+            -ExitCode $WorkflowResultExitCode
+    } elseif (-not [string]::IsNullOrWhiteSpace($WorkflowAction)) {
+        if (-not (Get-Command Invoke-DeclarativeWorkflow -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw "Declarative workflow runtime not found: $script:DeclarativeWorkflowScript"
+        }
+        if ([string]::IsNullOrWhiteSpace($workflowProjectDir)) {
+            $workflowProjectDir = (Get-Location).Path
+        }
+        $pipelineResult = Invoke-DeclarativeWorkflow `
+            -Action $WorkflowAction `
+            -RecipeId $RecipeId `
+            -WorkflowId $WorkflowId `
+            -RunId $RunId `
+            -TaskFile $TaskFile `
+            -ProjectDir $workflowProjectDir
+    } else {
+        $pipelineResult = Invoke-TeamPipeline -Task $Task -Builder $Builder -Researcher $Researcher -Reviewer $Reviewer -ManifestPath $ManifestPath -BuilderWorktreePath $BuilderWorktreePath -PollIntervalSeconds $PollIntervalSeconds -StageTimeoutSeconds $StageTimeoutSeconds -MaxFixRounds $MaxFixRounds -SkipPlan:$SkipPlan -SkipVerify:$SkipVerify
+    }
+    if ($script:TeamPipelineInvocationAsJson) {
+        $pipelineResult | ConvertTo-Json -Depth 50
     } else {
         $pipelineResult
     }

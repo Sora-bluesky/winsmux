@@ -406,15 +406,22 @@ desktop release parity.
 
 ### 6.2 TASK-659: resumable workflow and pipeline
 
-**Owns:** workflow DAG validation; the run/node state machines; dependency
-release; persisted idempotency records; operator-confirmed resume; structured
-dispatch acknowledgement; retry accounting; checkpoint reconciliation;
-journaled cleanup; and declared rollback. It evolves or wraps
-`winsmux-core/scripts/team-pipeline.ps1` so the current pipeline remains the
-single dispatch behavior.
+**Owns:** workflow DAG validation; one durable run/node state authority;
+dependency release; content-derived workflow, task, source, and persistent
+session identity; one run-adjacent, machine-wide file lease; operator-confirmed
+`start`/`resume`; structured real-mailbox result reconciliation; and persisted
+idempotency records. The only public declarative entry is
+`winsmux pipeline --workflow-action start|resume`; `task-run` and every
+mailbox channel, including names beginning with `workflow-`, retain their
+legacy contracts. An installed internal `team-pipeline.ps1` result adapter
+derives the complete mailbox envelope from durable run/node state. The same
+adapter and the existing guarded send remain the only result and dispatch
+behaviors.
 
 **Does not own:** recipe parsing beyond consuming TASK-658's normalized plan,
-repository context selection, gallery content, or final desktop/CLI parity.
+repository context selection, gallery content, final desktop/CLI parity,
+public cancel recovery, a separate proof store, cleanup of unrelated runs,
+declared rollback, or a filesystem-sandbox guarantee.
 
 **Acceptance gate:**
 
@@ -422,11 +429,15 @@ repository context selection, gallery content, or final desktop/CLI parity.
 - an interruption is simulated at every side-effect boundary and resume
   continues only unfinished nodes;
 - repeating the same idempotency key cannot repeat a completed side effect;
-- ambiguous `dispatching`/`running` state becomes `blocked`, not guessed
-  success or failure;
-- cleanup can itself be interrupted and resumed, and each compensation runs at
-  most once;
-- completed/cancelled/rolled-back runs reject automatic resume; and
+- ambiguous, missing, malformed, or identity-mismatched mailbox evidence makes
+  `dispatching`/`running` state `blocked` or rejected, never guessed success;
+- every terminal node is bidirectionally bound to exactly one admitted durable
+  mailbox proof, and every admitted proof is owned by exactly one terminal node;
+- the selected project and exact session identity are carried to the child
+  process and reverified immediately before every pane submission;
+- duplicate concurrent `start`/`resume` for one project/run is rejected before
+  another dispatch;
+- terminal runs reject resume; and
 - the existing non-declarative team pipeline still passes its focused tests
   and uses the same operator approval/review boundaries.
 
