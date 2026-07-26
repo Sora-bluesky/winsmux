@@ -199,13 +199,16 @@ workflows:
 The current workflow v1 parser derives every node idempotency key as
 `<run-id>:<node-id>`; it does not accept an authored `idempotency-key`.
 Workflow-level `resume-policy` and `cleanup-policy`, and node-level
-`verification` actions or `context-pack-ref`, are target concepts owned by
-later child tasks. They are not executable TASK-659 fields and require a new
-implemented schema contract before they may appear in a runnable example.
+`verification` actions or `context-pack-ref`, remain target concepts owned by
+later child tasks. They are not executable TASK-659 fields. TASK-660 does not
+add a workflow field or route/resume authority.
 
-The following context-pack fragment is therefore an illustrative,
-non-executable TASK-660 target, not part of the current workflow v1 contract:
+The following marker-delimited context-pack policy is executable byte-for-byte
+through the public, side-effect-free `winsmux workspace-plan` TASK-660 preview.
+It remains inert until explicitly selected and is not part of the workflow v1
+schema:
 
+<!-- TASK660-RUNNABLE-CONTEXT-PACK-V1:START -->
 ```yaml
 context-packs:
   review-pack:
@@ -221,6 +224,7 @@ context-packs:
       secrets: false
       private-local-paths: false
 ```
+<!-- TASK660-RUNNABLE-CONTEXT-PACK-V1:END -->
 
 Normative field rules:
 
@@ -250,18 +254,25 @@ Normative field rules:
   node's stable idempotency key from the public run and node identities;
   authored idempotency, compensation, and cleanup fields are not workflow v1
   inputs.
-- For the non-executable TASK-660 target, context-pack `include` values are
-  allowlisted projections. Omitted limits use conservative defaults;
-  disabling privacy exclusions is not supported.
+- TASK-660 context-pack `include` values are allowlisted projections. Omitted
+  limits use conservative defaults; enabling any privacy escape is rejected.
+  The closed input schema accepts only attributable repository-relative
+  identities and safe evidence refs, never free-form content. Every admitted
+  repository-relative path segment also uses Win32 identity rules: trailing
+  periods or spaces, reserved device basenames (including extensions), and
+  private `.git` or `.winsmux` namespace aliases are rejected before
+  projection.
 
-Recipe selection is explicit. The TASK-658 preview entry point is
-`winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json
---project-dir <path>`. Merely adding `workspace-recipes` does not select a
-recipe or alter startup. A `{{workflow-id}}` template requires the explicit
+Recipe and context-pack selection are explicit. The preview entry point is
+`winsmux workspace-plan --recipe-id <id> [--workflow-id <id>]
+[--context-pack-id <id> --context-pack-input -] --json --project-dir <path>`.
+Merely adding `workspace-recipes` or `context-packs` does not select either
+contract or alter startup. A `{{workflow-id}}` template requires the explicit
 `--workflow-id` value; recipe IDs are never substituted for missing workflow
-identity. Preview normalizes and validates the complete selected recipe before
-returning deterministic JSON and does not create logs, evidence, temporary
-files, manifests, processes, panes, branches, directories, or worktrees.
+identity. Preview normalizes and validates the complete selected recipe and,
+when selected, a stdin object capped at 4 MiB before returning deterministic
+JSON. It does not create logs, evidence, temporary files, manifests, processes,
+panes, branches, directories, or worktrees.
 
 ### 3.3 Runtime manifest projection
 
@@ -297,14 +308,12 @@ workflow_runs:
         checkpoint_ref: checkpoint:...
     cleanup_journal: []
     rollback_state: not_requested
-    context_pack_refs: [context-pack:...]
 ```
 
-The PowerShell writer in `winsmux-core/scripts/manifest.ps1` currently emits a
-fixed section set, so child implementation must preserve unknown additive
-sections on read/write and add focused round-trip tests. The Rust
-`WinsmuxManifest`/`NormalizedManifestPane` path must continue to accept a
-manifest containing these sections even before every consumer uses them.
+The PowerShell writer in `winsmux-core/scripts/manifest.ps1` emits this fixed
+declarative-workspace schema. The Rust
+`WinsmuxManifest`/`NormalizedManifestPane` path accepts the same fields and
+rejects unknown fields within this versioned section.
 
 Runtime values are projections, not re-parsed intent:
 
@@ -313,9 +322,10 @@ Runtime values are projections, not re-parsed intent:
 - workflow entries receive the normalized DAG, node states, attempts,
   idempotency records, checkpoint refs, and cleanup journal;
 - ledger events receive state transitions and attributable evidence refs;
-- context packs receive public repository-relative refs and digests only;
-- Context Capsule and Checkpoint package receive the context-pack ref and
-  freshness/config fingerprint needed to judge safe resume.
+- TASK-660 exposes a read-only context-pack preview, but schema version 1 does
+  not persist that result or connect it to Context Capsule, Checkpoint package,
+  routing, or resume. No current declarative-workspace or workflow-run manifest
+  field carries the preview result.
 
 ## 4. Resumable workflow state model
 
@@ -355,18 +365,15 @@ The repository context pack is a bounded projection layered on the context
 budget contract in `core/src/ledger.rs`. It is not a transcript summary and is
 not a replacement for Context Capsule v1 or Checkpoint package v1.
 
-Required projection groups are:
+The canonical package contains `schema_version`, `pack_id`, `source_head`,
+`policy_fingerprint`, applied `limits`, projection `groups`, `omissions`, and
+`privacy_result`. Its four projection groups are:
 
-- `code_map`: repository-relative modules or symbols selected by deterministic
-  rules, with source head and optional digests;
-- `changed_files`: public repository-relative paths and bounded diff summaries,
-  reusing the current `public_changed_files` privacy behavior;
-- `tests`: check identifiers, commands when public-safe, outcomes, timestamps,
-  and evidence refs rather than raw output;
-- `evidence_refs`: allowlisted durable refs already attributable through the
-  ledger; and
-- `freshness`: source head, config fingerprint, creation time, limits applied,
-  omissions, and redaction counts.
+- `code_map`: repository-relative path and content SHA-256 pairs;
+- `changed_files`: repository-relative paths, typed change status, and content
+  SHA-256;
+- `tests`: test ID, typed outcome, and one attributable evidence ref; and
+- `evidence_refs`: allowlisted refs already attributable through the ledger.
 
 Generation is deterministic for the same source head, policy, and evidence
 set. When a limit is reached, the pack reports truncation and omitted counts;
@@ -375,10 +382,13 @@ raw terminal transcript, prompt body, secret, credential material, provider
 hidden metadata, an absolute private path, or a reference outside the allowed
 project/evidence namespaces.
 
-The manifest stores only pack ID, schema version, digest, freshness, limits,
-and durable reference. The ledger's context contract carries the ref and the
-summary quality/privacy result. A stale, invalid, source-head-mismatched, or
-over-budget pack is not routable and cannot authorize resume.
+The public preview envelope contains exactly `canonical_json`, `digest`, and
+`byte_count`. The producer derives the digest and byte count from the exact
+canonical UTF-8 bytes. It writes no manifest, registry, artifact, reference, or
+other durable state. Existing ledger context-pack references are a separate pre-existing mechanism;
+TASK-660 neither produces nor consumes them. An invalid input is rejected
+without public output or durable mutation, and a preview result cannot
+authorize routing or resume.
 
 ## 6. Child task contracts
 
@@ -453,27 +463,33 @@ declared rollback, or a filesystem-sandbox guarantee.
 
 ### 6.3 TASK-660: repository context package
 
-**Owns:** the `context-packs` schema; deterministic `code_map`, changed-file,
-test, and evidence-ref projections; byte/item budgets; freshness and source-head
-checks; redaction; pack digests; and integration with the existing ledger
-context contract, Context Capsule, and Checkpoint package.
+**Owns:** the `context-packs` policy schema; the read-only context-pack preview
+selected explicitly through `workspace-plan`; deterministic `code_map`,
+changed-file, test, and evidence-ref projections; byte/item budgets; strict
+source-head and content-identity shapes; and the producer-only public envelope
+of `canonical_json`, `digest`, and `byte_count`.
 
 **Does not own:** raw transcript capture, general-purpose repository indexing,
-prompt storage, provider memory, workflow state transitions, or preset UX.
+prompt storage, provider memory, workflow state transitions, freshness
+admission, route/resume authority, ledger event generation, manifest/reference/
+registry/artifact persistence, Context Capsule, Checkpoint package, or preset
+UX.
 
 **Acceptance gate:**
 
 - identical public inputs produce the same digest and bounded ordering;
 - every projection enforces file, byte, and reference limits and reports
   truncation/omissions;
-- synthetic secrets, absolute private paths, prompt bodies, raw transcripts,
-  and refs outside allowlisted namespaces are rejected or redacted with a
-  failing privacy result where required;
+- absolute/private paths, prompt bodies, raw transcripts, secret/provider/body
+  fields, and refs outside allowlisted namespaces are rejected through one
+  non-reflective outcome; accepted packs have `privacy_result: pass`;
 - changed files and tests remain attributable to source head and evidence refs;
-- stale/source-mismatched/invalid packs are not routable and cannot satisfy a
-  resume gate; and
-- context-pack metadata round-trips without persisting raw diff/tool output in
-  `.winsmux/manifest.yaml`.
+- pack output is inert data and cannot itself authorize routing or resume;
+- the public envelope contains no fields other than `canonical_json`, `digest`,
+  and `byte_count`, with both derived values bound to the exact canonical UTF-8
+  bytes; and
+- `workspace-plan` does not persist the context-pack result and leaves project
+  and runtime bytes unchanged on both acceptance and rejection.
 
 ### 6.4 TASK-661: templates, gallery, and migration path
 
@@ -503,8 +519,9 @@ flow.
 
 **Owns:** the aggregate release gate for declarative workflows: dry-run purity,
 rollback/cleanup recovery, interruption/resume, docs/examples, public-surface
-audit, and desktop/CLI parity. It also verifies the combined Lane A/Lane B
-config after TASK-718.
+audit, and desktop/CLI parity. It verifies the combined read-only context-pack
+preview and privacy result, and the combined Lane A/Lane B config after
+TASK-718. It does not implement context-pack persistence.
 
 **Does not own:** feature implementation hidden inside gate code, weakening
 tests to obtain a pass, GitHub Release publication without the separate release
@@ -513,8 +530,9 @@ approval, or automatic merge/release authority.
 **Acceptance gate:**
 
 - CLI and desktop load the same config fixture and report the same normalized
-  recipe, workflow, resolved slots, context-pack metadata, run state, and
-  blocking reasons;
+  recipe, workflow, resolved slots, run state, and blocking reasons; the
+  TASK-660 sub-gate separately verifies the read-only context-pack preview and
+  privacy result without adding a persistent consumer;
 - dry-run proves no panes, worktrees, messages, workflow state, or cleanup
   actions were mutated;
 - restart tests cover interruption before dispatch, after dispatch/before ack,

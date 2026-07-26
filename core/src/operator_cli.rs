@@ -59,7 +59,6 @@ const WORKSPACE_PLAN_GLOBAL_OPTIONS: [&str; 13] = [
     "@bridge-external-commander",
     "@bridge-commanders",
 ];
-
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
         .any(|arg| matches!(arg.as_str(), "--json" | "-h" | "--help"))
@@ -254,7 +253,8 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
         return Ok(());
     }
 
-    let options = parse_workspace_plan_options(args)?;
+    let (context_pack, options) =
+        crate::context_pack::split_cli(args, parse_workspace_plan_options)?;
     let (_yaml, root, settings) = read_workspace_plan_snapshot(&options.project_dir)?;
     let mut slots = Vec::with_capacity(settings.agent_slots.len());
     for slot in &settings.agent_slots {
@@ -279,7 +279,11 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
         options.run_id.as_deref(),
         &slots,
     )?;
-    write_json(&payload)
+    write_json(&crate::context_pack::apply_cli(
+        &root,
+        context_pack,
+        payload,
+    )?)
 }
 
 pub fn run_operator_jobs_command(args: &[&String]) -> io::Result<()> {
@@ -6980,7 +6984,7 @@ fn usage_for(command: &str) -> &'static str {
             "usage: winsmux meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]"
         }
         "workspace-plan" => {
-            "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] [--run-id <id>] --json [--project-dir <path>]"
+            "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] [--run-id <id>] [--context-pack-id <id> --context-pack-input -] --json [--project-dir <path>]"
         }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"

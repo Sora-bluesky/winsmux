@@ -59,6 +59,10 @@ name = "workflow_contract"
 path = "tests-rs/workflow_contract.rs"
 
 [[test]]
+name = "context_pack_contract"
+path = "tests-rs/context_pack_contract.rs"
+
+[[test]]
 name = "search_ledger_contract"
 path = "tests-rs/search_ledger_contract.rs"
 

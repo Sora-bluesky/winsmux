@@ -16,6 +16,7 @@ pub struct WinsmuxManifest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeclarativeWorkspaceManifest {
     pub schema_version: ManifestU32,
     pub config_fingerprint: String,
@@ -535,6 +536,61 @@ fn is_safe_declarative_workspace_evidence_ref(value: &str) -> bool {
                 || byte.is_ascii_digit()
                 || matches!(byte, b'.' | b'_' | b'-' | b'/')
         })
+        && is_safe_public_path_identity(value, path, PUBLIC_REF_MAX_BYTES)
+}
+
+pub(crate) const PUBLIC_REPO_PATH_MAX_BYTES: usize = 240;
+pub(crate) const PUBLIC_REF_MAX_BYTES: usize = 256;
+const PUBLIC_PATH_COMPONENT_MAX_BYTES: usize = 240;
+
+pub(crate) fn canonical_public_path_key(value: &str) -> String {
+    value.to_ascii_lowercase()
+}
+
+pub(crate) fn is_safe_public_path_identity(
+    full_value: &str,
+    path: &str,
+    total_max_bytes: usize,
+) -> bool {
+    !full_value.is_empty()
+        && full_value.len() <= total_max_bytes
+        && full_value.is_ascii()
+        && !path.is_empty()
+        && path.split('/').all(is_safe_win32_public_segment)
+}
+
+fn is_safe_win32_public_segment(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > PUBLIC_PATH_COMPONENT_MAX_BYTES
+        || value.ends_with('.')
+        || value.ends_with(' ')
+        || matches!(value, "." | "..")
+        || value.eq_ignore_ascii_case(".git")
+        || value.eq_ignore_ascii_case(".winsmux")
+    {
+        return false;
+    }
+
+    let basename = value.split('.').next().unwrap_or(value);
+    if basename.eq_ignore_ascii_case("con")
+        || basename.eq_ignore_ascii_case("prn")
+        || basename.eq_ignore_ascii_case("aux")
+        || basename.eq_ignore_ascii_case("nul")
+    {
+        return false;
+    }
+    let bytes = basename.as_bytes();
+    if bytes.len() == 4 && matches!(bytes[3], b'1'..=b'9') {
+        let prefix = [
+            bytes[0].to_ascii_lowercase(),
+            bytes[1].to_ascii_lowercase(),
+            bytes[2].to_ascii_lowercase(),
+        ];
+        if prefix == *b"com" || prefix == *b"lpt" {
+            return false;
+        }
+    }
+    true
 }
 
 fn normalize_manifest_pane(

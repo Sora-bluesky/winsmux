@@ -1845,6 +1845,39 @@ function ConvertFrom-ManifestYaml {
     return $manifest
 }
 
+function Test-WinsmuxPublicReferenceIdentity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('evidence:', 'context-packs/')][string]$Prefix
+    )
+
+    if ([System.Text.Encoding]::UTF8.GetByteCount($Value) -gt 256 -or
+        -not $Value.StartsWith($Prefix, [System.StringComparison]::Ordinal)) {
+        return $false
+    }
+    $path = $Value.Substring($Prefix.Length)
+    if ($path -cnotmatch '^[a-z0-9][a-z0-9._/-]*$' -or
+        $path.EndsWith('/') -or $path.Contains('..') -or
+        $path.Contains('\') -or $path.Contains('//')) {
+        return $false
+    }
+
+    foreach ($segment in $path.Split([char]'/', [System.StringSplitOptions]::None)) {
+        if ([System.Text.Encoding]::UTF8.GetByteCount($segment) -gt 240 -or
+            [string]::IsNullOrEmpty($segment) -or
+            $segment.EndsWith('.') -or $segment.EndsWith(' ') -or
+            $segment -ieq '.git' -or $segment -ieq '.winsmux') {
+            return $false
+        }
+        $baseName = ($segment -split '\.', 2)[0]
+        if ($baseName -imatch '^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$') {
+            return $false
+        }
+    }
+    return $true
+}
+
 function New-WinsmuxDeclarativeWorkspaceProjection {
     param(
         [Parameter(Mandatory = $true)]$Plan,
@@ -1861,8 +1894,7 @@ function New-WinsmuxDeclarativeWorkspaceProjection {
         throw 'Workspace plan recipe_id must be a stable lowercase ASCII identifier.'
     }
     if (-not [string]::IsNullOrWhiteSpace($DryRunPlanRef) -and
-        ($DryRunPlanRef -cnotmatch '^evidence:[a-z0-9][a-z0-9._/-]*$' -or
-            $DryRunPlanRef.Contains('..') -or $DryRunPlanRef.Contains('\'))) {
+        -not (Test-WinsmuxPublicReferenceIdentity -Value $DryRunPlanRef -Prefix 'evidence:')) {
         throw 'Workspace dry_run_plan_ref must be a safe evidence reference.'
     }
 
