@@ -1391,6 +1391,128 @@ declarative_workspace:
     }
 }
 
+#[test]
+fn cp21_public_string_grammars_reject_path_shapes_before_output() {
+    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
+    let before = snapshot_tree(fixture.path());
+    let unsafe_test_ids = [
+        "c:/users/alice/private-test",
+        "c:users-private-test",
+        "suite/../../private-test",
+        "suite/.winsmux/private-test",
+        "module:case",
+        "module::::case",
+        "module::.winsmux",
+        "module::case/child",
+    ];
+    let mut admitted_path_shapes = Vec::new();
+
+    for test_id in unsafe_test_ids {
+        let mut input = sample_input();
+        input["tests"][0]["test_id"] = serde_json::json!(test_id);
+        let output = run_pack(fixture.path(), &input);
+        if output.status.success() {
+            assert!(
+                output.stderr.is_empty(),
+                "an admitted path-shaped test ID must not produce a mixed outcome"
+            );
+            let payload: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("accepted output must be JSON");
+            let canonical_json = payload["context_pack"]["canonical_json"]
+                .as_str()
+                .expect("accepted output must include canonical_json");
+            let canonical: serde_json::Value =
+                serde_json::from_str(canonical_json).expect("canonical_json must parse");
+            assert_eq!(
+                canonical["groups"]["tests"][0]["test_id"],
+                serde_json::json!(test_id),
+                "an admitted path-shaped test ID must be observed at the protected output sink"
+            );
+            assert_eq!(
+                canonical["privacy_result"],
+                serde_json::json!("pass"),
+                "privacy_result must expose the false privacy claim for RED evidence"
+            );
+            assert_eq!(
+                snapshot_tree(fixture.path()),
+                before,
+                "project_runtime_bytes must remain unchanged while collecting RED cases"
+            );
+            admitted_path_shapes.push(test_id.to_string());
+        } else {
+            assert_rejected(&output, &before, fixture.path());
+        }
+    }
+
+    let mut invalid_pack_args = workspace_plan_args(fixture.path());
+    let pack_id_index = invalid_pack_args
+        .iter()
+        .position(|arg| arg == "--context-pack-id")
+        .expect("public entry must carry the pack ID")
+        + 1;
+    invalid_pack_args[pack_id_index] = "review/pack".into();
+    assert_rejected(
+        &run_binary(
+            &invalid_pack_args,
+            serde_json::to_vec(&sample_input())
+                .expect("serialize invalid pack input")
+                .as_slice(),
+        ),
+        &before,
+        fixture.path(),
+    );
+    assert!(
+        snapshot_tree(fixture.path()) == before,
+        "pack ID path shape must reject before write_json"
+    );
+
+    let mut invalid_changed_digest = sample_input();
+    invalid_changed_digest["changed_files"][0]["content_sha256"] = serde_json::json!("sha256:ABC");
+    assert_rejected(
+        &run_pack(fixture.path(), &invalid_changed_digest),
+        &before,
+        fixture.path(),
+    );
+    assert!(
+        snapshot_tree(fixture.path()) == before,
+        "changed-file content identity must reject before write_json"
+    );
+
+    let mut valid = sample_input();
+    valid["tests"][0]["test_id"] = serde_json::json!("module.name::case_1");
+    let first = parse_success(&run_pack(fixture.path(), &valid));
+    let second = parse_success(&run_pack(fixture.path(), &valid));
+    let first_canonical: serde_json::Value = serde_json::from_str(
+        first["context_pack"]["canonical_json"]
+            .as_str()
+            .expect("valid logical namespace must include canonical_json"),
+    )
+    .expect("valid logical namespace canonical_json must parse");
+    assert_eq!(
+        first_canonical["groups"]["tests"][0]["test_id"],
+        serde_json::json!("module.name::case_1"),
+        "valid logical namespace must remain accepted"
+    );
+    assert_eq!(
+        first["context_pack"]["canonical_json"], second["context_pack"]["canonical_json"],
+        "valid logical namespace must preserve deterministic bytes"
+    );
+    assert_eq!(
+        first["context_pack"]["digest"], second["context_pack"]["digest"],
+        "valid logical namespace must preserve deterministic digest"
+    );
+    assert_eq!(
+        snapshot_tree(fixture.path()),
+        before,
+        "project_runtime_bytes must remain unchanged for valid logical IDs"
+    );
+
+    assert!(
+        admitted_path_shapes.is_empty(),
+        "public string grammar must reject every path-shaped value before write_json; admitted={admitted_path_shapes:?}"
+    );
+}
+
 #[cfg(windows)]
 fn render_manifest_with_powershell(
     project: &Path,

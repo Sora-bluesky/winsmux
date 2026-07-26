@@ -553,20 +553,20 @@ fn is_stable_id(value: &str) -> bool {
 }
 
 fn is_stable_test_id(value: &str) -> bool {
-    if value.is_empty()
-        || value.len() > MAX_ID_BYTES
-        || !value.is_ascii()
-        || !value
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    {
+    if value.is_empty() || value.len() > MAX_ID_BYTES || !value.is_ascii() {
         return false;
     }
-    value.bytes().all(|byte| {
-        byte.is_ascii_lowercase()
-            || byte.is_ascii_digit()
-            || matches!(byte, b'.' | b'_' | b'-' | b'/' | b':')
+    value.split("::").all(|segment| {
+        !segment.is_empty()
+            && segment
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            && segment.bytes().all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-')
+            })
     })
 }
 
