@@ -11,9 +11,44 @@ const CONTENT_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const CONTENT_B: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const CONTENT_C: &str = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const CONTEXT_REJECTION: &str = "winsmux: context pack rejected.\n";
+const ARCHITECTURE_DOC: &str =
+    include_str!("../../docs/project/v03629-declarative-workspace-architecture.md");
+const RUNNABLE_CONTEXT_PACK_V1_START: &str = "<!-- TASK660-RUNNABLE-CONTEXT-PACK-V1:START -->";
+const RUNNABLE_CONTEXT_PACK_V1_END: &str = "<!-- TASK660-RUNNABLE-CONTEXT-PACK-V1:END -->";
 
 fn base_yaml() -> String {
     include_str!("../../tests/fixtures/workspace-recipes/valid-v1.yaml").to_string()
+}
+
+fn documented_context_pack_policy_v1() -> &'static str {
+    assert_eq!(
+        ARCHITECTURE_DOC
+            .matches(RUNNABLE_CONTEXT_PACK_V1_START)
+            .count(),
+        1,
+        "architecture doc must contain exactly one runnable context-pack v1 start marker"
+    );
+    assert_eq!(
+        ARCHITECTURE_DOC
+            .matches(RUNNABLE_CONTEXT_PACK_V1_END)
+            .count(),
+        1,
+        "architecture doc must contain exactly one runnable context-pack v1 end marker"
+    );
+    let (_, after_start) = ARCHITECTURE_DOC
+        .split_once(RUNNABLE_CONTEXT_PACK_V1_START)
+        .expect("architecture doc must contain the runnable context-pack v1 start marker");
+    let (marked_block, _) = after_start
+        .split_once(RUNNABLE_CONTEXT_PACK_V1_END)
+        .expect("architecture doc must contain the runnable context-pack v1 end marker");
+    let fenced_block = marked_block.trim();
+    let yaml = fenced_block
+        .strip_prefix("```yaml\r\n")
+        .or_else(|| fenced_block.strip_prefix("```yaml\n"))
+        .expect("runnable context-pack v1 must start with a YAML fence");
+    yaml.strip_suffix("\r\n```")
+        .or_else(|| yaml.strip_suffix("\n```"))
+        .expect("runnable context-pack v1 must end with a YAML fence")
 }
 
 fn context_pack_policy(max_files: usize, max_bytes: usize, max_evidence_refs: usize) -> String {
@@ -1189,6 +1224,104 @@ fn cp24_public_context_pack_envelope_is_canonical_only() {
         "public context-pack envelope must contain only canonical_json, digest, and byte_count; \
          rejection emits no public output; rejection preserves durable state bytes; \
          project and runtime bytes must remain unchanged; violations={violations:?}"
+    );
+}
+
+#[test]
+fn cp25_documented_task660_contract_matches_public_preview_and_excludes_persistence() {
+    let documented_policy = documented_context_pack_policy_v1();
+    let fixture = make_project(documented_policy);
+    let before = snapshot_tree(fixture.path());
+    let payload = parse_success(&run_pack(fixture.path(), &sample_input()));
+    let pack = payload["context_pack"]
+        .as_object()
+        .expect("documented public context_pack must be an object");
+    let mut actual_keys = pack.keys().cloned().collect::<Vec<_>>();
+    actual_keys.sort();
+    let expected_keys = vec![
+        "byte_count".to_string(),
+        "canonical_json".to_string(),
+        "digest".to_string(),
+    ];
+    let canonical = pack["canonical_json"]
+        .as_str()
+        .expect("documented canonical_json must be a UTF-8 string");
+    let stale_claims = [
+        "The manifest stores only pack ID",
+        "metadata-only PowerShell/Rust manifest projection",
+        "context-pack metadata round-trips",
+        "TASK-662 owns any future verified cross-runtime persistence contract",
+    ];
+    let workflow_context_ref_claim = ["context", "_pack_", "refs: [context-pack:...]"].concat();
+    let task660_section = ARCHITECTURE_DOC
+        .split_once("### 6.3 TASK-660: repository context package")
+        .expect("architecture doc must contain the TASK-660 section")
+        .1
+        .split_once("### 6.4 TASK-661: templates, gallery, and migration path")
+        .expect("TASK-660 section must end before TASK-661")
+        .0;
+    let task662_section = ARCHITECTURE_DOC
+        .split_once("### 6.5 TASK-662: workflow pre-release gate")
+        .expect("architecture doc must contain the TASK-662 section")
+        .1;
+
+    let mut violations = Vec::new();
+    if actual_keys != expected_keys {
+        violations.push(format!(
+            "documented public context-pack key set is {actual_keys:?}, expected {expected_keys:?}"
+        ));
+    }
+    if pack["digest"] != serde_json::json!(sha256(canonical.as_bytes())) {
+        violations
+            .push("documented digest is not derived from exact canonical UTF-8 bytes".to_string());
+    }
+    if pack["byte_count"] != serde_json::json!(canonical.len()) {
+        violations
+            .push("documented byte_count is not the exact canonical UTF-8 byte length".to_string());
+    }
+    for stale_claim in stale_claims {
+        if ARCHITECTURE_DOC.contains(stale_claim) {
+            violations.push(format!(
+                "architecture doc retains stale persistence claim: {stale_claim}"
+            ));
+        }
+    }
+    if ARCHITECTURE_DOC.contains(&workflow_context_ref_claim) {
+        violations.push("current workflow manifest example retains a context-pack ref".to_string());
+    }
+    for required_claim in [
+        "read-only context-pack preview",
+        "does not persist the context-pack result",
+        "canonical_json",
+        "byte_count",
+    ] {
+        if !task660_section.contains(required_claim) {
+            violations.push(format!(
+                "TASK-660 section is missing current contract claim: {required_claim}"
+            ));
+        }
+    }
+    if !task662_section.contains("does not implement context-pack persistence") {
+        violations.push(
+            "TASK-662 section does not exclude context-pack persistence implementation".to_string(),
+        );
+    }
+    if !ARCHITECTURE_DOC
+        .contains("Existing ledger context-pack references are a separate pre-existing mechanism")
+    {
+        violations.push(
+            "architecture doc does not distinguish the existing ledger reference mechanism"
+                .to_string(),
+        );
+    }
+    if snapshot_tree(fixture.path()) != before {
+        violations.push("documented preview changed project or runtime bytes".to_string());
+    }
+    assert!(
+        violations.is_empty(),
+        "documented TASK-660 contract must run through the public context-pack entry, \
+         expose only canonical_json, digest, and byte_count, exclude persistence ownership, \
+         and keep project and runtime bytes unchanged; violations={violations:?}"
     );
 }
 
