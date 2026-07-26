@@ -31,6 +31,7 @@ mod read_path;
 mod search_ledger;
 mod dogfood;
 mod machine_contract;
+mod context_pack;
 mod operator_cli;
 mod project_settings_render;
 mod client;

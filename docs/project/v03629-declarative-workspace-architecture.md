@@ -199,12 +199,13 @@ workflows:
 The current workflow v1 parser derives every node idempotency key as
 `<run-id>:<node-id>`; it does not accept an authored `idempotency-key`.
 Workflow-level `resume-policy` and `cleanup-policy`, and node-level
-`verification` actions or `context-pack-ref`, are target concepts owned by
-later child tasks. They are not executable TASK-659 fields and require a new
-implemented schema contract before they may appear in a runnable example.
+`verification` actions or `context-pack-ref`, remain target concepts owned by
+later child tasks. They are not executable TASK-659 fields. TASK-660 does not
+add a workflow field or route/resume authority.
 
-The following context-pack fragment is therefore an illustrative,
-non-executable TASK-660 target, not part of the current workflow v1 contract:
+The following context-pack policy is executable through the side-effect-free
+TASK-660 preview entry. It remains inert until explicitly selected and is not
+part of the workflow v1 schema:
 
 ```yaml
 context-packs:
@@ -250,18 +251,24 @@ Normative field rules:
   node's stable idempotency key from the public run and node identities;
   authored idempotency, compensation, and cleanup fields are not workflow v1
   inputs.
-- For the non-executable TASK-660 target, context-pack `include` values are
-  allowlisted projections. Omitted limits use conservative defaults;
-  disabling privacy exclusions is not supported.
+- TASK-660 context-pack `include` values are allowlisted projections. Omitted
+  limits use conservative defaults; enabling any privacy escape is rejected.
+  The closed input schema accepts only attributable repository-relative
+  identities and safe evidence refs, never free-form content. Every persisted
+  path segment also uses Win32 identity rules: trailing periods or spaces,
+  reserved device basenames (including extensions), and private `.git` or
+  `.winsmux` namespace aliases are rejected before projection.
 
-Recipe selection is explicit. The TASK-658 preview entry point is
-`winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] --json
---project-dir <path>`. Merely adding `workspace-recipes` does not select a
-recipe or alter startup. A `{{workflow-id}}` template requires the explicit
+Recipe and context-pack selection are explicit. The preview entry point is
+`winsmux workspace-plan --recipe-id <id> [--workflow-id <id>]
+[--context-pack-id <id> --context-pack-input -] --json --project-dir <path>`.
+Merely adding `workspace-recipes` or `context-packs` does not select either
+contract or alter startup. A `{{workflow-id}}` template requires the explicit
 `--workflow-id` value; recipe IDs are never substituted for missing workflow
-identity. Preview normalizes and validates the complete selected recipe before
-returning deterministic JSON and does not create logs, evidence, temporary
-files, manifests, processes, panes, branches, directories, or worktrees.
+identity. Preview normalizes and validates the complete selected recipe and,
+when selected, a stdin object capped at 4 MiB before returning deterministic
+JSON. It does not create logs, evidence, temporary files, manifests, processes,
+panes, branches, directories, or worktrees.
 
 ### 3.3 Runtime manifest projection
 
@@ -278,6 +285,25 @@ declarative_workspace:
     implement: worker-1
     verify: worker-2
   dry_run_plan_ref: evidence:...
+  context_packs:
+    review-pack:
+      schema_version: 1
+      digest: sha256:...
+      byte_count: 1234
+      source_head: 0123456789abcdef0123456789abcdef01234567
+      policy_fingerprint: sha256:...
+      limits:
+        max_files: 100
+        max_bytes: 262144
+        max_evidence_refs: 50
+      omissions:
+        code_map: 0
+        changed_files: 0
+        tests: 0
+        evidence_refs: 0
+        omitted_by_bytes: 0
+      privacy_result: pass
+      durable_ref: context-packs/review-pack.json
 
 workflow_runs:
   run-123:
@@ -313,9 +339,12 @@ Runtime values are projections, not re-parsed intent:
 - workflow entries receive the normalized DAG, node states, attempts,
   idempotency records, checkpoint refs, and cleanup journal;
 - ledger events receive state transitions and attributable evidence refs;
-- context packs receive public repository-relative refs and digests only;
-- Context Capsule and Checkpoint package receive the context-pack ref and
-  freshness/config fingerprint needed to judge safe resume.
+- context-pack manifest entries receive bounded metadata and one safe durable
+  ref only; canonical JSON, source entries, prompt bodies, transcripts, and
+  secrets are not manifest fields;
+- TASK-660 does not connect the ref to Context Capsule, Checkpoint package,
+  routing, or resume. A later integration owner must compare the metadata with
+  current source/config state before consumption.
 
 ## 4. Resumable workflow state model
 
@@ -453,26 +482,28 @@ declared rollback, or a filesystem-sandbox guarantee.
 
 ### 6.3 TASK-660: repository context package
 
-**Owns:** the `context-packs` schema; deterministic `code_map`, changed-file,
-test, and evidence-ref projections; byte/item budgets; freshness and source-head
-checks; redaction; pack digests; and integration with the existing ledger
-context contract, Context Capsule, and Checkpoint package.
+**Owns:** the `context-packs` policy schema; explicit `workspace-plan`
+selection; deterministic `code_map`, changed-file, test, and evidence-ref
+projections; byte/item budgets; strict source-head and content-identity shapes;
+pack digests; and metadata-only PowerShell/Rust manifest projection.
 
 **Does not own:** raw transcript capture, general-purpose repository indexing,
-prompt storage, provider memory, workflow state transitions, or preset UX.
+prompt storage, provider memory, workflow state transitions, freshness
+admission, route/resume authority, ledger event generation, Context Capsule,
+Checkpoint package, or preset UX.
 
 **Acceptance gate:**
 
 - identical public inputs produce the same digest and bounded ordering;
 - every projection enforces file, byte, and reference limits and reports
   truncation/omissions;
-- synthetic secrets, absolute private paths, prompt bodies, raw transcripts,
-  and refs outside allowlisted namespaces are rejected or redacted with a
-  failing privacy result where required;
+- absolute/private paths, prompt bodies, raw transcripts, secret/provider/body
+  fields, and refs outside allowlisted namespaces are rejected through one
+  non-reflective outcome; accepted packs have `privacy_result: pass`;
 - changed files and tests remain attributable to source head and evidence refs;
-- stale/source-mismatched/invalid packs are not routable and cannot satisfy a
-  resume gate; and
-- context-pack metadata round-trips without persisting raw diff/tool output in
+- pack output is inert data and cannot itself authorize routing or resume; and
+- context-pack metadata round-trips without persisting canonical JSON, source
+  entries, raw diff/tool output, prompt bodies, or transcripts in
   `.winsmux/manifest.yaml`.
 
 ### 6.4 TASK-661: templates, gallery, and migration path
