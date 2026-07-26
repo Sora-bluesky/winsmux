@@ -17,10 +17,19 @@ fn base_yaml() -> String {
 }
 
 fn context_pack_policy(max_files: usize, max_bytes: usize, max_evidence_refs: usize) -> String {
+    context_pack_policy_for_id("review-pack", max_files, max_bytes, max_evidence_refs)
+}
+
+fn context_pack_policy_for_id(
+    pack_id: &str,
+    max_files: usize,
+    max_bytes: usize,
+    max_evidence_refs: usize,
+) -> String {
     format!(
         r#"
 context-packs:
-  review-pack:
+  {pack_id}:
     schema-version: 1
     include: [code-map, changed-files, tests, evidence-refs]
     limits:
@@ -96,6 +105,10 @@ fn permuted_input() -> serde_json::Value {
 }
 
 fn workspace_plan_args(project: &Path) -> Vec<String> {
+    workspace_plan_args_with_pack_id(project, "review-pack")
+}
+
+fn workspace_plan_args_with_pack_id(project: &Path, pack_id: &str) -> Vec<String> {
     vec![
         "workspace-plan".into(),
         "--recipe-id".into(),
@@ -103,7 +116,7 @@ fn workspace_plan_args(project: &Path) -> Vec<String> {
         "--workflow-id".into(),
         "bugfix".into(),
         "--context-pack-id".into(),
-        "review-pack".into(),
+        pack_id.into(),
         "--context-pack-input".into(),
         "-".into(),
         "--json".into(),
@@ -1623,6 +1636,260 @@ fn cp21_public_string_grammars_reject_path_shapes_before_output() {
     );
 }
 
+#[test]
+fn cp22_rust_manifest_pack_id_bound_matches_cli_authority() {
+    let pack_id_edge = "a".repeat(64);
+    let pack_id_over = "a".repeat(65);
+    let long_generic_recipe = "r".repeat(65);
+    assert_eq!(
+        pack_id_edge.as_bytes().len(),
+        64,
+        "exact 64-byte context-pack ID edge must be explicit"
+    );
+    assert_eq!(
+        pack_id_over.as_bytes().len(),
+        65,
+        "context-pack ID edge+1 must be explicit"
+    );
+
+    let producer = make_project(&context_pack_policy_for_id(&pack_id_edge, 100, 262_144, 50));
+    let project_runtime_bytes = snapshot_tree(producer.path());
+    let edge_input = serde_json::to_vec(&sample_input()).expect("serialize exact-edge input");
+    let accepted_producer = run_binary(
+        &workspace_plan_args_with_pack_id(producer.path(), &pack_id_edge),
+        &edge_input,
+    );
+    let accepted_payload = parse_success(&accepted_producer);
+    assert_eq!(
+        accepted_payload["context_pack"]["manifest_projection"]["pack_id"],
+        serde_json::json!(pack_id_edge),
+        "exact 64-byte context-pack ID must remain accepted by the producer"
+    );
+    assert_eq!(
+        snapshot_tree(producer.path()),
+        project_runtime_bytes,
+        "project_runtime_bytes must remain unchanged for the accepted ID edge"
+    );
+    assert_rejected(
+        &run_binary(
+            &workspace_plan_args_with_pack_id(producer.path(), &pack_id_over),
+            &edge_input,
+        ),
+        &project_runtime_bytes,
+        producer.path(),
+    );
+
+    let manifest_fixture = make_project("");
+    let manifest_path = manifest_fixture
+        .path()
+        .join(".winsmux")
+        .join("manifest.yaml");
+    let status_args = vec![
+        "status".into(),
+        "--json".into(),
+        "--project-dir".into(),
+        manifest_fixture.path().display().to_string(),
+    ];
+    let manifest_yaml = |pack_id: &str| {
+        format!(
+            r#"version: 1
+session:
+  name: test
+  project_dir: ''
+  started: ''
+  ended: ''
+panes: {{}}
+declarative_workspace:
+  schema_version: 1
+  config_fingerprint: {CONTENT_A}
+  recipe_id: {long_generic_recipe}
+  resolved_bindings: {{}}
+  context_packs:
+    {pack_id}:
+      schema_version: 1
+      digest: {CONTENT_B}
+      byte_count: 100
+      source_head: {SOURCE_HEAD}
+      policy_fingerprint: {CONTENT_C}
+      limits:
+        max_files: 100
+        max_bytes: 262144
+        max_evidence_refs: 50
+      omissions:
+        code_map: 0
+        changed_files: 0
+        tests: 0
+        evidence_refs: 0
+        omitted_by_bytes: 0
+      privacy_result: pass
+      durable_ref: context-packs/{pack_id}.json
+"#
+        )
+    };
+
+    let manifest_edge_yaml = manifest_yaml(&pack_id_edge);
+    fs::write(&manifest_path, &manifest_edge_yaml).expect("write exact-edge manifest");
+    let manifest_edge_before = fs::read(&manifest_path).expect("read exact-edge manifest");
+    let manifest_edge_output = run_binary(&status_args, b"");
+    assert!(
+        manifest_edge_output.status.success(),
+        "exact 64-byte manifest pack ID must remain accepted: {}",
+        String::from_utf8_lossy(&manifest_edge_output.stderr)
+    );
+    serde_json::from_slice::<serde_json::Value>(&manifest_edge_output.stdout)
+        .expect("accepted manifest read must emit one JSON payload");
+    assert_eq!(
+        fs::read(&manifest_path).unwrap(),
+        manifest_edge_before,
+        "manifest bytes must remain unchanged for the accepted ID edge"
+    );
+    assert!(
+        manifest_edge_yaml.contains(&format!("recipe_id: {long_generic_recipe}")),
+        "generic workspace identifiers must not inherit the context-pack 64-byte bound"
+    );
+
+    let manifest_over_yaml = manifest_yaml(&pack_id_over);
+    fs::write(&manifest_path, &manifest_over_yaml).expect("write edge+1 manifest");
+    let manifest_over_before = fs::read(&manifest_path).expect("read edge+1 manifest");
+    let manifest_over_output = run_binary(&status_args, b"");
+    let mut rust_boundary_violations = Vec::new();
+    if manifest_over_output.status.success()
+        || !manifest_over_output.stdout.is_empty()
+        || fs::read(&manifest_path).unwrap() != manifest_over_before
+    {
+        rust_boundary_violations.push(format!(
+            "65-byte context-pack ID reached public read output: status={:?}, stdout_bytes={}",
+            manifest_over_output.status,
+            manifest_over_output.stdout.len()
+        ));
+    }
+    if String::from_utf8_lossy(&manifest_over_output.stderr).contains(&pack_id_over) {
+        rust_boundary_violations
+            .push("65-byte context-pack ID was reflected by manifest rejection".to_string());
+    }
+    assert!(
+        rust_boundary_violations.is_empty(),
+        "Rust manifest and CLI context-pack ID boundaries must agree at 64 bytes; \
+         65-byte context-pack ID must reject before public read output; \
+         manifest bytes must remain unchanged; violations={rust_boundary_violations:?}"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn cp23_powershell_projection_pack_id_bound_matches_cli_authority() {
+    let pack_id_edge = "a".repeat(64);
+    let pack_id_over = "a".repeat(65);
+    let long_generic_recipe = "r".repeat(65);
+    let producer = make_project(&context_pack_policy_for_id(&pack_id_edge, 100, 262_144, 50));
+    let producer_before = snapshot_tree(producer.path());
+    let input = serde_json::to_vec(&sample_input()).expect("serialize projection input");
+    parse_success(&run_binary(
+        &workspace_plan_args_with_pack_id(producer.path(), &pack_id_edge),
+        &input,
+    ));
+    assert_rejected(
+        &run_binary(
+            &workspace_plan_args_with_pack_id(producer.path(), &pack_id_over),
+            &input,
+        ),
+        &producer_before,
+        producer.path(),
+    );
+
+    let plan = |pack_id: &str| {
+        serde_json::json!({
+            "config_fingerprint": CONTENT_A,
+            "recipe_id": long_generic_recipe,
+            "resolved_bindings": {},
+            "context_pack": {
+                "manifest_projection": {
+                    "pack_id": pack_id,
+                    "schema_version": 1,
+                    "digest": CONTENT_B,
+                    "byte_count": 100,
+                    "source_head": SOURCE_HEAD,
+                    "policy_fingerprint": CONTENT_C,
+                    "limits": {
+                        "max_files": 100,
+                        "max_bytes": 262144,
+                        "max_evidence_refs": 50
+                    },
+                    "omissions": {
+                        "code_map": 0,
+                        "changed_files": 0,
+                        "tests": 0,
+                        "evidence_refs": 0,
+                        "omitted_by_bytes": 0
+                    },
+                    "privacy_result": "pass"
+                }
+            }
+        })
+    };
+
+    let edge_fixture = make_project("");
+    let edge_plan = plan(&pack_id_edge);
+    let (edge_output, edge_before, edge_after) = render_manifest_process_with_refs_and_state(
+        edge_fixture.path(),
+        &edge_plan,
+        "",
+        &format!("context-packs/{pack_id_edge}.json"),
+    );
+    assert!(
+        edge_output.status.success(),
+        "exact 64-byte external-plan pack ID must remain accepted: {}",
+        String::from_utf8_lossy(&edge_output.stderr)
+    );
+    let edge_yaml =
+        String::from_utf8(edge_output.stdout).expect("accepted projection YAML must be UTF-8");
+    assert!(
+        edge_yaml.contains(&pack_id_edge),
+        "accepted projection must preserve the exact authored 64-byte map key"
+    );
+    assert_eq!(
+        edge_before, edge_after,
+        "PowerShell projection must preserve runtime bytes after test setup"
+    );
+    assert_eq!(
+        edge_plan["recipe_id"],
+        serde_json::json!(long_generic_recipe),
+        "generic workspace identifiers must not inherit the context-pack 64-byte bound"
+    );
+
+    let over_fixture = make_project("");
+    let over_plan = plan(&pack_id_over);
+    let (over_output, over_before, over_after) = render_manifest_process_with_refs_and_state(
+        over_fixture.path(),
+        &over_plan,
+        "",
+        &format!("context-packs/{pack_id_over}.json"),
+    );
+    let mut powershell_boundary_violations = Vec::new();
+    if over_output.status.success() || !over_output.stdout.is_empty() {
+        powershell_boundary_violations.push(format!(
+            "65-byte external-plan pack ID reached projection YAML: status={:?}, stdout_bytes={}",
+            over_output.status,
+            over_output.stdout.len()
+        ));
+    }
+    if over_before != over_after {
+        powershell_boundary_violations
+            .push("PowerShell projection rejection must preserve runtime bytes".to_string());
+    }
+    if String::from_utf8_lossy(&over_output.stderr).contains(&pack_id_over) {
+        powershell_boundary_violations.push(
+            "65-byte external-plan pack ID was reflected by projection rejection".to_string(),
+        );
+    }
+    assert!(
+        powershell_boundary_violations.is_empty(),
+        "PowerShell projection and CLI context-pack ID boundaries must agree at 64 bytes; \
+         65-byte external-plan pack ID must reject before projection, YAML, or save; \
+         external-plan rejection must emit no YAML; violations={powershell_boundary_violations:?}"
+    );
+}
+
 #[cfg(windows)]
 fn render_manifest_with_powershell(
     project: &Path,
@@ -1650,6 +1917,16 @@ fn render_manifest_process_with_refs(
     dry_run_ref: &str,
     durable_ref: &str,
 ) -> Output {
+    render_manifest_process_with_refs_and_state(project, plan, dry_run_ref, durable_ref).0
+}
+
+#[cfg(windows)]
+fn render_manifest_process_with_refs_and_state(
+    project: &Path,
+    plan: &serde_json::Value,
+    dry_run_ref: &str,
+    durable_ref: &str,
+) -> (Output, Vec<(String, Vec<u8>)>, Vec<(String, Vec<u8>)>) {
     let plan_path = project.join("task660-plan.json");
     let script_path = project.join("task660-render.ps1");
     fs::write(
@@ -1685,11 +1962,14 @@ $manifest = [ordered]@{{
         durable_ref.replace('\'', "''"),
     );
     fs::write(&script_path, script).expect("write PowerShell fixture");
-    Command::new("pwsh")
+    let before = snapshot_tree(project);
+    let output = Command::new("pwsh")
         .args(["-NoProfile", "-NonInteractive", "-File"])
         .arg(&script_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .expect("run PowerShell manifest projection")
+        .expect("run PowerShell manifest projection");
+    let after = snapshot_tree(project);
+    (output, before, after)
 }

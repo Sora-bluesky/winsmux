@@ -1878,6 +1878,17 @@ function Test-WinsmuxPublicReferenceIdentity {
     return $true
 }
 
+function Test-WinsmuxContextPackId {
+    param(
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    return (
+        [System.Text.Encoding]::UTF8.GetByteCount($Value) -le 64 -and
+        $Value -cmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
+    )
+}
+
 function New-WinsmuxDeclarativeWorkspaceProjection {
     param(
         [Parameter(Mandatory = $true)]$Plan,
@@ -1958,7 +1969,7 @@ function New-WinsmuxDeclarativeWorkspaceProjection {
         $sourceHead = [string]$metadata['source_head']
         $policyFingerprint = [string]$metadata['policy_fingerprint']
         $privacyResult = [string]$metadata['privacy_result']
-        if ($packId -cnotmatch $idPattern -or $schemaVersion -ne 1 -or
+        if (-not (Test-WinsmuxContextPackId -Value $packId) -or $schemaVersion -ne 1 -or
             $digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
             $null -eq $byteCount -or $byteCount -le 0 -or
             $sourceHead -cnotmatch '^[0-9a-f]{40}$' -or

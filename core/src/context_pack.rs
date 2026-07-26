@@ -1,6 +1,6 @@
 use crate::manifest_contract::{
-    canonical_public_path_key, is_safe_public_path_identity, PUBLIC_REF_MAX_BYTES,
-    PUBLIC_REPO_PATH_MAX_BYTES,
+    canonical_public_path_key, is_context_pack_id, is_safe_public_path_identity,
+    PUBLIC_REF_MAX_BYTES, PUBLIC_REPO_PATH_MAX_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -252,7 +252,7 @@ pub(crate) fn split_cli<T>(
     }
     let selection = match (pack_id, input) {
         (None, None) => None,
-        (Some(pack_id), Some(input)) if input == "-" && is_stable_id(&pack_id) => {
+        (Some(pack_id), Some(input)) if input == "-" && is_context_pack_id(&pack_id) => {
             Some(ContextPackCliSelection { pack_id })
         }
         _ => return Err(context_pack_rejected()),
@@ -298,7 +298,7 @@ pub(crate) fn build_context_pack(
     pack_id: &str,
     input_bytes: &[u8],
 ) -> ContextPackResult<ContextPackProjection> {
-    if !is_stable_id(pack_id) {
+    if !is_context_pack_id(pack_id) {
         return Err(ContextPackError);
     }
     let (include, limits, policy_fingerprint) = normalize_policy(root, pack_id)?;
@@ -525,33 +525,6 @@ fn remove_one_for_byte_limit(pack: &mut CanonicalContextPack) -> bool {
     }
     pack.omissions.omitted_by_bytes += 1;
     true
-}
-
-fn is_stable_id(value: &str) -> bool {
-    if value.is_empty() || value.len() > 64 || !value.is_ascii() {
-        return false;
-    }
-    let mut parts = value.split('-');
-    let Some(first) = parts.next() else {
-        return false;
-    };
-    if first.is_empty()
-        || !first
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase())
-        || !first
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    {
-        return false;
-    }
-    parts.all(|part| {
-        !part.is_empty()
-            && part
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    })
 }
 
 fn is_stable_test_id(value: &str) -> bool {

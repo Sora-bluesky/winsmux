@@ -536,7 +536,7 @@ fn validate_context_pack_manifest(
     pack_id: &str,
     context_pack: &ContextPackManifest,
 ) -> Result<(), String> {
-    if !is_declarative_workspace_id(pack_id)
+    if !is_context_pack_id(pack_id)
         || context_pack.schema_version.value() != Some(1)
         || !is_manifest_sha256(&context_pack.digest)
         || !is_manifest_sha256(&context_pack.policy_fingerprint)
@@ -603,6 +603,10 @@ fn is_declarative_workspace_id(value: &str) -> bool {
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     })
+}
+
+pub(crate) fn is_context_pack_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64 && value.is_ascii() && is_declarative_workspace_id(value)
 }
 
 fn is_safe_declarative_workspace_evidence_ref(value: &str) -> bool {
