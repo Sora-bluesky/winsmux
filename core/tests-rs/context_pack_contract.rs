@@ -3,6 +3,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const SOURCE_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 const CONTENT_A: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -122,6 +124,41 @@ fn run_binary(args: &[String], stdin_bytes: &[u8]) -> Output {
         let _ = stdin.write_all(stdin_bytes);
     }
     child.wait_with_output().expect("collect winsmux output")
+}
+
+fn run_binary_holding_stdin(args: &[String]) -> (Output, bool) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run winsmux binary with held stdin");
+    let held_stdin = child.stdin.take().expect("hold child stdin open");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let exited_while_stdin_open = loop {
+        if child
+            .try_wait()
+            .expect("poll winsmux binary with held stdin")
+            .is_some()
+        {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    drop(held_stdin);
+    if !exited_while_stdin_open {
+        let _ = child.kill();
+    }
+    (
+        child
+            .wait_with_output()
+            .expect("collect winsmux output with held stdin"),
+        exited_while_stdin_open,
+    )
 }
 
 fn run_pack(project: &Path, input: &serde_json::Value) -> Output {
@@ -1443,6 +1480,79 @@ fn cp21_public_string_grammars_reject_path_shapes_before_output() {
             assert_rejected(&output, &before, fixture.path());
         }
     }
+
+    let mut pack_id_boundary_violations = Vec::new();
+    let bot_example_args = vec![
+        "workspace-plan".into(),
+        "--context-pack-id".into(),
+        "--json".into(),
+        "--context-pack-input".into(),
+        "-".into(),
+    ];
+    let bot_example = run_binary(&bot_example_args, b"");
+    if bot_example.status.success()
+        || !bot_example.stdout.is_empty()
+        || String::from_utf8_lossy(&bot_example.stderr) != CONTEXT_REJECTION
+        || snapshot_tree(fixture.path()) != before
+    {
+        pack_id_boundary_violations.push(format!(
+            "option-token pack ID reached legacy outcome: status={:?}, stderr={:?}",
+            bot_example.status,
+            String::from_utf8_lossy(&bot_example.stderr)
+        ));
+    }
+
+    let mut held_stdin_args = workspace_plan_args(fixture.path());
+    let held_pack_id_index = held_stdin_args
+        .iter()
+        .position(|arg| arg == "--context-pack-id")
+        .expect("public entry must carry the held-stdin pack ID")
+        + 1;
+    held_stdin_args[held_pack_id_index] = "--json".into();
+    let (held_stdin_output, exited_while_stdin_open) = run_binary_holding_stdin(&held_stdin_args);
+    if !exited_while_stdin_open
+        || held_stdin_output.status.success()
+        || !held_stdin_output.stdout.is_empty()
+        || String::from_utf8_lossy(&held_stdin_output.stderr) != CONTEXT_REJECTION
+        || snapshot_tree(fixture.path()) != before
+    {
+        pack_id_boundary_violations.push(format!(
+            "invalid pack ID reached snapshot or stdin: exited_while_stdin_open={exited_while_stdin_open}, status={:?}, stderr={:?}",
+            held_stdin_output.status,
+            String::from_utf8_lossy(&held_stdin_output.stderr)
+        ));
+    }
+
+    let poisoned_project = tempfile::tempdir().expect("create poisoned project boundary");
+    let poisoned_before = snapshot_tree(poisoned_project.path());
+    let mut poisoned_args = workspace_plan_args(poisoned_project.path());
+    let poisoned_pack_id_index = poisoned_args
+        .iter()
+        .position(|arg| arg == "--context-pack-id")
+        .expect("public entry must carry the poisoned-project pack ID")
+        + 1;
+    poisoned_args[poisoned_pack_id_index] = "review/pack".into();
+    let poisoned_output = run_binary(
+        &poisoned_args,
+        serde_json::to_vec(&sample_input())
+            .expect("serialize poisoned-project pack input")
+            .as_slice(),
+    );
+    if poisoned_output.status.success()
+        || !poisoned_output.stdout.is_empty()
+        || String::from_utf8_lossy(&poisoned_output.stderr) != CONTEXT_REJECTION
+        || snapshot_tree(poisoned_project.path()) != poisoned_before
+    {
+        pack_id_boundary_violations.push(format!(
+            "invalid pack ID reached poisoned project snapshot: status={:?}, stderr={:?}",
+            poisoned_output.status,
+            String::from_utf8_lossy(&poisoned_output.stderr)
+        ));
+    }
+    assert!(
+        pack_id_boundary_violations.is_empty(),
+        "pack ID grammar must reject before legacy parsing, project snapshot, stdin, and write_json; violations={pack_id_boundary_violations:?}"
+    );
 
     let mut invalid_pack_args = workspace_plan_args(fixture.path());
     let pack_id_index = invalid_pack_args

@@ -252,7 +252,9 @@ pub(crate) fn split_cli<T>(
     }
     let selection = match (pack_id, input) {
         (None, None) => None,
-        (Some(pack_id), Some(input)) if input == "-" => Some(ContextPackCliSelection { pack_id }),
+        (Some(pack_id), Some(input)) if input == "-" && is_stable_id(&pack_id) => {
+            Some(ContextPackCliSelection { pack_id })
+        }
         _ => return Err(context_pack_rejected()),
     };
     Ok((selection, parse_legacy(&legacy_args)?))
