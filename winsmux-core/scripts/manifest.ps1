@@ -1878,22 +1878,10 @@ function Test-WinsmuxPublicReferenceIdentity {
     return $true
 }
 
-function Test-WinsmuxContextPackId {
-    param(
-        [Parameter(Mandatory = $true)][string]$Value
-    )
-
-    return (
-        [System.Text.Encoding]::UTF8.GetByteCount($Value) -le 64 -and
-        $Value -cmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$'
-    )
-}
-
 function New-WinsmuxDeclarativeWorkspaceProjection {
     param(
         [Parameter(Mandatory = $true)]$Plan,
-        [AllowEmptyString()][string]$DryRunPlanRef = '',
-        [AllowEmptyString()][string]$ContextPackRef = ''
+        [AllowEmptyString()][string]$DryRunPlanRef = ''
     )
 
     $configFingerprint = [string]$Plan.config_fingerprint
@@ -1927,119 +1915,6 @@ function New-WinsmuxDeclarativeWorkspaceProjection {
     }
     if (-not [string]::IsNullOrWhiteSpace($DryRunPlanRef)) {
         $projection['dry_run_plan_ref'] = $DryRunPlanRef
-    }
-    if (-not [string]::IsNullOrWhiteSpace($ContextPackRef)) {
-        if (-not (Test-WinsmuxPublicReferenceIdentity -Value $ContextPackRef -Prefix 'context-packs/')) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-
-        $planMap = ConvertTo-ManifestPropertyMap -Value $Plan
-        if (-not (@($planMap.Keys) -ccontains 'context_pack')) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-        $contextPackMap = ConvertTo-ManifestPropertyMap -Value $planMap['context_pack']
-        if (-not (@($contextPackMap.Keys) -ccontains 'manifest_projection')) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-        $metadata = ConvertTo-ManifestPropertyMap -Value $contextPackMap['manifest_projection']
-        $metadataKeys = @(
-            'pack_id',
-            'schema_version',
-            'digest',
-            'byte_count',
-            'source_head',
-            'policy_fingerprint',
-            'limits',
-            'omissions',
-            'privacy_result'
-        )
-        if ($metadata.Count -ne $metadataKeys.Count) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-        foreach ($key in $metadata.Keys) {
-            if ($metadataKeys -cnotcontains [string]$key) {
-                throw 'Context-pack manifest projection rejected.'
-            }
-        }
-
-        $packId = [string]$metadata['pack_id']
-        $schemaVersion = ConvertTo-WinsmuxRuntimeInteger -Value $metadata['schema_version']
-        $digest = [string]$metadata['digest']
-        $byteCount = ConvertTo-WinsmuxRuntimeInteger -Value $metadata['byte_count']
-        $sourceHead = [string]$metadata['source_head']
-        $policyFingerprint = [string]$metadata['policy_fingerprint']
-        $privacyResult = [string]$metadata['privacy_result']
-        if (-not (Test-WinsmuxContextPackId -Value $packId) -or $schemaVersion -ne 1 -or
-            $digest -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            $null -eq $byteCount -or $byteCount -le 0 -or
-            $sourceHead -cnotmatch '^[0-9a-f]{40}$' -or
-            $policyFingerprint -cnotmatch '^sha256:[0-9a-f]{64}$' -or
-            $privacyResult -cne 'pass') {
-            throw 'Context-pack manifest projection rejected.'
-        }
-
-        $limits = ConvertTo-ManifestPropertyMap -Value $metadata['limits']
-        $limitKeys = @('max_files', 'max_bytes', 'max_evidence_refs')
-        if ($limits.Count -ne $limitKeys.Count) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-        foreach ($key in $limits.Keys) {
-            if ($limitKeys -cnotcontains [string]$key) {
-                throw 'Context-pack manifest projection rejected.'
-            }
-        }
-        $maxFiles = ConvertTo-WinsmuxRuntimeInteger -Value $limits['max_files']
-        $maxBytes = ConvertTo-WinsmuxRuntimeInteger -Value $limits['max_bytes']
-        $maxEvidenceRefs = ConvertTo-WinsmuxRuntimeInteger -Value $limits['max_evidence_refs']
-        if ($null -eq $maxFiles -or $maxFiles -le 0 -or $maxFiles -gt 1000 -or
-            $null -eq $maxBytes -or $maxBytes -le 0 -or $maxBytes -gt 1048576 -or
-            $null -eq $maxEvidenceRefs -or $maxEvidenceRefs -le 0 -or
-            $maxEvidenceRefs -gt 500 -or $byteCount -gt $maxBytes) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-
-        $omissions = ConvertTo-ManifestPropertyMap -Value $metadata['omissions']
-        $omissionKeys = @(
-            'code_map',
-            'changed_files',
-            'tests',
-            'evidence_refs',
-            'omitted_by_bytes'
-        )
-        if ($omissions.Count -ne $omissionKeys.Count) {
-            throw 'Context-pack manifest projection rejected.'
-        }
-        $normalizedOmissions = [ordered]@{}
-        foreach ($key in $omissions.Keys) {
-            if ($omissionKeys -cnotcontains [string]$key) {
-                throw 'Context-pack manifest projection rejected.'
-            }
-        }
-        foreach ($key in $omissionKeys) {
-            $value = ConvertTo-WinsmuxRuntimeInteger -Value $omissions[$key]
-            if ($null -eq $value -or $value -lt 0) {
-                throw 'Context-pack manifest projection rejected.'
-            }
-            $normalizedOmissions[$key] = $value
-        }
-
-        $contextPacks = [ordered]@{}
-        $contextPacks[$packId] = [ordered]@{
-            schema_version    = $schemaVersion
-            digest            = $digest
-            byte_count        = $byteCount
-            source_head       = $sourceHead
-            policy_fingerprint = $policyFingerprint
-            limits            = [ordered]@{
-                max_files         = $maxFiles
-                max_bytes         = $maxBytes
-                max_evidence_refs = $maxEvidenceRefs
-            }
-            omissions         = $normalizedOmissions
-            privacy_result    = $privacyResult
-            durable_ref       = $ContextPackRef
-        }
-        $projection['context_packs'] = $contextPacks
     }
     return $projection
 }

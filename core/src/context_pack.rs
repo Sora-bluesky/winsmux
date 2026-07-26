@@ -1,6 +1,6 @@
 use crate::manifest_contract::{
-    canonical_public_path_key, is_context_pack_id, is_safe_public_path_identity,
-    PUBLIC_REF_MAX_BYTES, PUBLIC_REPO_PATH_MAX_BYTES,
+    canonical_public_path_key, is_safe_public_path_identity, PUBLIC_REF_MAX_BYTES,
+    PUBLIC_REPO_PATH_MAX_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,20 +41,6 @@ pub(crate) struct ContextPackProjection {
     canonical_json: String,
     digest: String,
     byte_count: usize,
-    manifest_projection: ContextPackManifestProjection,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct ContextPackManifestProjection {
-    pack_id: String,
-    schema_version: u64,
-    digest: String,
-    byte_count: usize,
-    source_head: String,
-    policy_fingerprint: String,
-    limits: ContextPackLimits,
-    omissions: ContextPackOmissions,
-    privacy_result: &'static str,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -392,22 +378,37 @@ pub(crate) fn build_context_pack(
     let digest = sha256(&canonical_bytes);
     let byte_count = canonical_bytes.len();
     let canonical_json = String::from_utf8(canonical_bytes).map_err(|_| ContextPackError)?;
-    let manifest_projection = ContextPackManifestProjection {
-        pack_id: pack_id.to_string(),
-        schema_version: CONTEXT_PACK_SCHEMA_VERSION,
-        digest: digest.clone(),
-        byte_count,
-        source_head: canonical.source_head.clone(),
-        policy_fingerprint,
-        limits,
-        omissions: canonical.omissions,
-        privacy_result: "pass",
-    };
     Ok(ContextPackProjection {
         canonical_json,
         digest,
         byte_count,
-        manifest_projection,
+    })
+}
+
+fn is_context_pack_id(value: &str) -> bool {
+    if value.is_empty() || value.len() > 64 || !value.is_ascii() {
+        return false;
+    }
+    let mut parts = value.split('-');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if first.is_empty()
+        || !first
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase())
+        || !first
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    parts.all(|part| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     })
 }
 

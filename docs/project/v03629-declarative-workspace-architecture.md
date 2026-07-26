@@ -285,25 +285,6 @@ declarative_workspace:
     implement: worker-1
     verify: worker-2
   dry_run_plan_ref: evidence:...
-  context_packs:
-    review-pack:
-      schema_version: 1
-      digest: sha256:...
-      byte_count: 1234
-      source_head: 0123456789abcdef0123456789abcdef01234567
-      policy_fingerprint: sha256:...
-      limits:
-        max_files: 100
-        max_bytes: 262144
-        max_evidence_refs: 50
-      omissions:
-        code_map: 0
-        changed_files: 0
-        tests: 0
-        evidence_refs: 0
-        omitted_by_bytes: 0
-      privacy_result: pass
-      durable_ref: context-packs/review-pack.json
 
 workflow_runs:
   run-123:
@@ -326,11 +307,10 @@ workflow_runs:
     context_pack_refs: [context-pack:...]
 ```
 
-The PowerShell writer in `winsmux-core/scripts/manifest.ps1` currently emits a
-fixed section set, so child implementation must preserve unknown additive
-sections on read/write and add focused round-trip tests. The Rust
-`WinsmuxManifest`/`NormalizedManifestPane` path must continue to accept a
-manifest containing these sections even before every consumer uses them.
+The PowerShell writer in `winsmux-core/scripts/manifest.ps1` emits this fixed
+declarative-workspace schema. The Rust
+`WinsmuxManifest`/`NormalizedManifestPane` path accepts the same fields and
+rejects unknown fields within this versioned section.
 
 Runtime values are projections, not re-parsed intent:
 
@@ -339,12 +319,11 @@ Runtime values are projections, not re-parsed intent:
 - workflow entries receive the normalized DAG, node states, attempts,
   idempotency records, checkpoint refs, and cleanup journal;
 - ledger events receive state transitions and attributable evidence refs;
-- context-pack manifest entries receive bounded metadata and one safe durable
-  ref only; canonical JSON, source entries, prompt bodies, transcripts, and
-  secrets are not manifest fields;
-- TASK-660 does not connect the ref to Context Capsule, Checkpoint package,
-  routing, or resume. A later integration owner must compare the metadata with
-  current source/config state before consumption.
+- TASK-660 exposes a read-only context-pack preview, but schema version 1 does
+  not persist that result or connect it to Context Capsule, Checkpoint package,
+  routing, or resume. TASK-662 owns any future verified cross-runtime
+  persistence contract and must bind one typed consumer to the exact canonical
+  bytes before adding a runnable manifest field.
 
 ## 4. Resumable workflow state model
 

@@ -372,42 +372,6 @@ fn cp03_byte_limit_uses_deterministic_reverse_group_reduction() {
 }
 
 #[test]
-#[cfg(windows)]
-fn cp04_metadata_only_manifest_round_trips_across_powershell_and_rust() {
-    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
-    let payload = parse_success(&run_pack(fixture.path(), &sample_input()));
-    let yaml =
-        render_manifest_with_powershell(fixture.path(), &payload, "context-packs/review-pack.json");
-    assert!(
-        !yaml.contains("canonical_json")
-            && !yaml.contains("core/src/workflow.rs")
-            && !yaml.contains("prompt")
-            && !yaml.contains("transcript"),
-        "manifest protected sink must contain metadata only"
-    );
-    assert!(
-        yaml.contains("context_packs:") && yaml.contains("durable_ref:"),
-        "New-WinsmuxDeclarativeWorkspaceProjection must materialize bounded metadata"
-    );
-    fs::write(fixture.path().join(".winsmux").join("manifest.yaml"), yaml)
-        .expect("write generated manifest fixture");
-    let args = vec![
-        "status".into(),
-        "--json".into(),
-        "--project-dir".into(),
-        fixture.path().display().to_string(),
-    ];
-    let output = run_binary(&args, b"");
-    assert!(
-        output.status.success(),
-        "WinsmuxManifest::from_yaml and LedgerSnapshot must consume metadata: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice::<serde_json::Value>(&output.stdout)
-        .expect("Rust public status output must remain valid JSON");
-}
-
-#[test]
 fn cp05_unselected_or_absent_context_pack_preserves_legacy_bytes() {
     let legacy = make_project("");
     let configured = make_project(&context_pack_policy(100, 262_144, 50));
@@ -712,112 +676,6 @@ fn cp12_metadata_only_body_that_cannot_fit_rejects_without_partial_output() {
 }
 
 #[test]
-#[cfg(windows)]
-fn cp13_manifest_rejects_raw_fields_in_both_runtime_owners() {
-    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
-    let mut plan = serde_json::json!({
-        "config_fingerprint": CONTENT_A,
-        "recipe_id": "bugfix-two-slot",
-        "resolved_bindings": {},
-        "context_pack": {
-            "manifest_projection": {
-                "pack_id": "review-pack",
-                "schema_version": 1,
-                "digest": CONTENT_B,
-                "byte_count": 100,
-                "source_head": SOURCE_HEAD,
-                "policy_fingerprint": CONTENT_C,
-                "limits": {"max_files": 100, "max_bytes": 262144, "max_evidence_refs": 50},
-                "omissions": {"code_map": 0, "changed_files": 0, "tests": 0, "evidence_refs": 0, "omitted_by_bytes": 0},
-                "privacy_result": "pass"
-            }
-        }
-    });
-    plan["context_pack"]["manifest_projection"]["canonical_json"] =
-        serde_json::json!("secret-marker-body");
-    let output = render_manifest_process(fixture.path(), &plan, "context-packs/review-pack.json");
-    assert!(
-        !output.status.success(),
-        "PowerShell authority must reject unknown raw metadata"
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "Save-WinsmuxManifest must not run"
-    );
-    assert!(
-        !String::from_utf8_lossy(&output.stderr).contains("secret-marker"),
-        "PowerShell rejection must not reflect raw body"
-    );
-
-    let invalid_yaml = format!(
-        r#"version: 1
-session:
-  name: test
-  project_dir: ''
-  started: ''
-  ended: ''
-panes: {{}}
-declarative_workspace:
-  schema_version: 1
-  config_fingerprint: {CONTENT_A}
-  recipe_id: bugfix-two-slot
-  resolved_bindings: {{}}
-  context_packs:
-    review-pack:
-      schema_version: 1
-      digest: {CONTENT_B}
-      byte_count: 100
-      source_head: {SOURCE_HEAD}
-      policy_fingerprint: {CONTENT_C}
-      limits:
-        max_files: 100
-        max_bytes: 262144
-        max_evidence_refs: 50
-      omissions:
-        code_map: 0
-        changed_files: 0
-        tests: 0
-        evidence_refs: 0
-        omitted_by_bytes: 0
-      privacy_result: pass
-      durable_ref: context-packs/review-pack.json
-      raw_transcript: secret-marker-transcript
-"#
-    );
-    fs::write(
-        fixture.path().join(".winsmux").join("manifest.yaml"),
-        invalid_yaml,
-    )
-    .expect("write invalid manifest");
-    let before = fs::read(fixture.path().join(".winsmux").join("manifest.yaml"))
-        .expect("read invalid manifest");
-    let args = vec![
-        "status".into(),
-        "--json".into(),
-        "--project-dir".into(),
-        fixture.path().display().to_string(),
-    ];
-    let status = run_binary(&args, b"");
-    assert!(
-        !status.status.success(),
-        "Rust manifest consumer must reject"
-    );
-    assert!(
-        status.stdout.is_empty(),
-        "invalid manifest must not produce partial status"
-    );
-    assert!(
-        !String::from_utf8_lossy(&status.stderr).contains("secret-marker"),
-        "Rust manifest rejection must not reflect raw value"
-    );
-    assert_eq!(
-        fs::read(fixture.path().join(".winsmux").join("manifest.yaml")).unwrap(),
-        before,
-        "preexisting manifest bytes remain unchanged"
-    );
-}
-
-#[test]
 fn cp14_win32_repository_path_aliases_fail_closed() {
     let fixture = make_project(&context_pack_policy(100, 262_144, 50));
     let before = snapshot_tree(fixture.path());
@@ -865,223 +723,6 @@ fn cp15_win32_evidence_ref_aliases_fail_closed() {
         before,
         "Win32 evidence ref rejection must preserve project and runtime bytes"
     );
-}
-
-#[test]
-#[cfg(windows)]
-fn cp16_powershell_public_refs_share_one_segment_identity_authority() {
-    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
-    let plan = serde_json::json!({
-        "config_fingerprint": CONTENT_A,
-        "recipe_id": "bugfix-two-slot",
-        "resolved_bindings": {},
-        "context_pack": {
-            "manifest_projection": {
-                "pack_id": "review-pack",
-                "schema_version": 1,
-                "digest": CONTENT_B,
-                "byte_count": 100,
-                "source_head": SOURCE_HEAD,
-                "policy_fingerprint": CONTENT_C,
-                "limits": {"max_files": 100, "max_bytes": 262144, "max_evidence_refs": 50},
-                "omissions": {"code_map": 0, "changed_files": 0, "tests": 0, "evidence_refs": 0, "omitted_by_bytes": 0},
-                "privacy_result": "pass"
-            }
-        }
-    });
-    let runtime = fixture.path().join(".winsmux");
-    let before = snapshot_tree(&runtime);
-    let cases = [
-        (
-            "PowerShell DryRunPlanRef private alias must reject",
-            "evidence:review/.winsmux./secret",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "PowerShell DryRunPlanRef dot segment must reject",
-            "evidence:review/./plan.json",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "PowerShell DryRunPlanRef empty segment must reject",
-            "evidence:review//plan.json",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "PowerShell DryRunPlanRef reserved device must reject",
-            "evidence:review/nul.txt",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "PowerShell DryRunPlanRef trailing period must reject",
-            "evidence:review/public.",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "PowerShell ContextPackRef private alias must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/.winsmux./secret",
-        ),
-        (
-            "PowerShell ContextPackRef dot segment must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/./plan.json",
-        ),
-        (
-            "PowerShell ContextPackRef empty segment must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack//plan.json",
-        ),
-        (
-            "PowerShell ContextPackRef reserved device must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/lpt1.log",
-        ),
-        (
-            "PowerShell ContextPackRef trailing period must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/public.",
-        ),
-    ];
-    for (segment_invariant, dry_run_ref, durable_ref) in cases {
-        let output =
-            render_manifest_process_with_refs(fixture.path(), &plan, dry_run_ref, durable_ref);
-        assert!(!output.status.success(), "{segment_invariant}");
-        assert!(
-            output.stdout.is_empty(),
-            "rejection must occur before projection or manifest serialization"
-        );
-        assert!(
-            !String::from_utf8_lossy(&output.stderr).contains(dry_run_ref)
-                && !String::from_utf8_lossy(&output.stderr).contains(durable_ref),
-            "PowerShell public reference rejection must not reflect an unsafe value"
-        );
-        assert_eq!(
-            snapshot_tree(&runtime),
-            before,
-            "PowerShell rejection must preserve runtime bytes"
-        );
-    }
-}
-
-#[test]
-#[cfg(windows)]
-fn cp17_rust_manifest_public_refs_share_one_segment_identity_authority() {
-    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
-    let manifest_path = fixture.path().join(".winsmux").join("manifest.yaml");
-    let args = vec![
-        "status".into(),
-        "--json".into(),
-        "--project-dir".into(),
-        fixture.path().display().to_string(),
-    ];
-    let cases = [
-        (
-            "Rust dry_run_plan_ref private alias must reject",
-            "evidence:review/.winsmux./secret",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "Rust dry_run_plan_ref dot segment must reject",
-            "evidence:review/./plan.json",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "Rust dry_run_plan_ref empty segment must reject",
-            "evidence:review//plan.json",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "Rust dry_run_plan_ref reserved device must reject",
-            "evidence:review/nul.txt",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "Rust dry_run_plan_ref trailing period must reject",
-            "evidence:review/public.",
-            "context-packs/review-pack.json",
-        ),
-        (
-            "Rust durable_ref private alias must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/.winsmux./secret",
-        ),
-        (
-            "Rust durable_ref dot segment must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/./plan.json",
-        ),
-        (
-            "Rust durable_ref empty segment must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack//plan.json",
-        ),
-        (
-            "Rust durable_ref reserved device must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/lpt1.log",
-        ),
-        (
-            "Rust durable_ref trailing period must reject",
-            "evidence:workspace-plan.json",
-            "context-packs/review-pack/public.",
-        ),
-    ];
-    for (segment_invariant, dry_run_ref, durable_ref) in cases {
-        let yaml = format!(
-            r#"version: 1
-session:
-  name: test
-  project_dir: ''
-  started: ''
-  ended: ''
-panes: {{}}
-declarative_workspace:
-  schema_version: 1
-  config_fingerprint: {CONTENT_A}
-  recipe_id: bugfix-two-slot
-  resolved_bindings: {{}}
-  dry_run_plan_ref: {dry_run_ref}
-  context_packs:
-    review-pack:
-      schema_version: 1
-      digest: {CONTENT_B}
-      byte_count: 100
-      source_head: {SOURCE_HEAD}
-      policy_fingerprint: {CONTENT_C}
-      limits:
-        max_files: 100
-        max_bytes: 262144
-        max_evidence_refs: 50
-      omissions:
-        code_map: 0
-        changed_files: 0
-        tests: 0
-        evidence_refs: 0
-        omitted_by_bytes: 0
-      privacy_result: pass
-      durable_ref: {durable_ref}
-"#
-        );
-        fs::write(&manifest_path, yaml).expect("write Win32 alias manifest");
-        let before = fs::read(&manifest_path).expect("read Win32 alias manifest");
-        let output = run_binary(&args, b"");
-        assert!(!output.status.success(), "{segment_invariant}");
-        assert!(
-            output.stdout.is_empty(),
-            "invalid durable ref must not produce a public read payload"
-        );
-        assert!(
-            !String::from_utf8_lossy(&output.stderr).contains(dry_run_ref)
-                && !String::from_utf8_lossy(&output.stderr).contains(durable_ref),
-            "Rust public reference rejection must not reflect an unsafe value"
-        );
-        assert_eq!(
-            fs::read(&manifest_path).unwrap(),
-            before,
-            "Rust manifest rejection must preserve durable bytes"
-        );
-    }
 }
 
 #[test]
@@ -1178,265 +819,6 @@ fn cp18_rust_context_pack_path_fields_enforce_exact_total_and_component_byte_edg
                 assert!(!output.status.success(), "{boundary_invariant}");
                 assert_rejected(&output, &before, fixture.path());
             }
-        }
-    }
-}
-
-#[test]
-#[cfg(windows)]
-fn cp19_powershell_public_refs_enforce_exact_total_and_component_byte_edges() {
-    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
-    let evidence_component_edge = format!("evidence:{}", "a".repeat(240));
-    let evidence_component_over = format!("evidence:{}", "a".repeat(241));
-    let evidence_total_edge = format!("evidence:{}/{}", "a".repeat(240), "b".repeat(6));
-    let evidence_total_over = format!("evidence:{}/{}", "a".repeat(240), "b".repeat(7));
-    let plan = serde_json::json!({
-        "config_fingerprint": CONTENT_A,
-        "recipe_id": "bugfix-two-slot",
-        "resolved_bindings": {},
-        "context_pack": {
-            "manifest_projection": {
-                "pack_id": "review-pack",
-                "schema_version": 1,
-                "digest": CONTENT_B,
-                "byte_count": 100,
-                "source_head": SOURCE_HEAD,
-                "policy_fingerprint": CONTENT_C,
-                "limits": {"max_files": 100, "max_bytes": 262144, "max_evidence_refs": 50},
-                "omissions": {"code_map": 0, "changed_files": 0, "tests": 0, "evidence_refs": 0, "omitted_by_bytes": 0},
-                "privacy_result": "pass"
-            }
-        }
-    });
-    let context_component_edge = format!("context-packs/{}", "a".repeat(240));
-    let context_component_over = format!("context-packs/{}", "a".repeat(241));
-    let context_total_edge = format!("context-packs/{}/b", "a".repeat(240));
-    let context_total_over = format!("context-packs/{}/bb", "a".repeat(240));
-    assert_eq!(
-        context_total_edge.as_bytes().len(),
-        256,
-        "PF06 exact total byte edge must be 256"
-    );
-    assert_eq!(
-        context_component_edge
-            .strip_prefix("context-packs/")
-            .unwrap()
-            .split('/')
-            .map(str::len)
-            .max(),
-        Some(240),
-        "PF06 exact component byte edge must be 240"
-    );
-    let powershell_cases = [
-        (
-            evidence_component_edge.as_str(),
-            "context-packs/review-pack.json",
-            true,
-            "PF05 exact component byte edge must accept",
-        ),
-        (
-            evidence_component_over.as_str(),
-            "context-packs/review-pack.json",
-            false,
-            "PF05 component byte edge+1 must reject",
-        ),
-        (
-            evidence_total_edge.as_str(),
-            "context-packs/review-pack.json",
-            true,
-            "PF05 exact total byte edge must accept",
-        ),
-        (
-            evidence_total_over.as_str(),
-            "context-packs/review-pack.json",
-            false,
-            "PF05 total byte edge+1 must reject",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_component_edge.as_str(),
-            true,
-            "PF06 exact component byte edge must accept",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_component_over.as_str(),
-            false,
-            "PF06 component byte edge+1 must reject",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_total_edge.as_str(),
-            true,
-            "PF06 exact total byte edge must accept",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_total_over.as_str(),
-            false,
-            "PF06 total byte edge+1 must reject",
-        ),
-    ];
-    let runtime_before = snapshot_tree(&fixture.path().join(".winsmux"));
-    for (dry_run_ref, durable_ref, should_accept, boundary_invariant) in powershell_cases {
-        let output =
-            render_manifest_process_with_refs(fixture.path(), &plan, dry_run_ref, durable_ref);
-        assert_eq!(
-            snapshot_tree(&fixture.path().join(".winsmux")),
-            runtime_before,
-            "{boundary_invariant}: PowerShell boundary must preserve runtime bytes"
-        );
-        if should_accept {
-            assert!(output.status.success(), "{boundary_invariant}");
-            assert!(
-                !output.stdout.is_empty(),
-                "{boundary_invariant}: accepted projection must be complete"
-            );
-        } else {
-            assert!(!output.status.success(), "{boundary_invariant}");
-            assert!(
-                output.stdout.is_empty(),
-                "{boundary_invariant}: rejected projection must emit no YAML"
-            );
-        }
-    }
-}
-
-#[test]
-#[cfg(windows)]
-fn cp20_rust_manifest_public_refs_enforce_exact_total_and_component_byte_edges() {
-    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
-    let evidence_component_edge = format!("evidence:{}", "a".repeat(240));
-    let evidence_component_over = format!("evidence:{}", "a".repeat(241));
-    let evidence_total_edge = format!("evidence:{}/{}", "a".repeat(240), "b".repeat(6));
-    let evidence_total_over = format!("evidence:{}/{}", "a".repeat(240), "b".repeat(7));
-    let context_component_edge = format!("context-packs/{}", "a".repeat(240));
-    let context_component_over = format!("context-packs/{}", "a".repeat(241));
-    let context_total_edge = format!("context-packs/{}/b", "a".repeat(240));
-    let context_total_over = format!("context-packs/{}/bb", "a".repeat(240));
-    assert_eq!(
-        evidence_total_edge.as_bytes().len(),
-        256,
-        "PF07 exact total byte edge must be 256"
-    );
-    assert_eq!(
-        context_total_edge.as_bytes().len(),
-        256,
-        "PF08 exact total byte edge must be 256"
-    );
-    let manifest_path = fixture.path().join(".winsmux").join("manifest.yaml");
-    let status_args = vec![
-        "status".into(),
-        "--json".into(),
-        "--project-dir".into(),
-        fixture.path().display().to_string(),
-    ];
-    let manifest_cases = [
-        (
-            evidence_component_edge.as_str(),
-            "context-packs/review-pack.json",
-            true,
-            "PF07 exact component byte edge must accept",
-        ),
-        (
-            evidence_component_over.as_str(),
-            "context-packs/review-pack.json",
-            false,
-            "PF07 component byte edge+1 must reject",
-        ),
-        (
-            evidence_total_edge.as_str(),
-            "context-packs/review-pack.json",
-            true,
-            "PF07 exact total byte edge must accept",
-        ),
-        (
-            evidence_total_over.as_str(),
-            "context-packs/review-pack.json",
-            false,
-            "PF07 total byte edge+1 must reject",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_component_edge.as_str(),
-            true,
-            "PF08 exact component byte edge must accept",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_component_over.as_str(),
-            false,
-            "PF08 component byte edge+1 must reject",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_total_edge.as_str(),
-            true,
-            "PF08 exact total byte edge must accept",
-        ),
-        (
-            "evidence:workspace-plan.json",
-            context_total_over.as_str(),
-            false,
-            "PF08 total byte edge+1 must reject",
-        ),
-    ];
-    for (dry_run_ref, durable_ref, should_accept, boundary_invariant) in manifest_cases {
-        let yaml = format!(
-            r#"version: 1
-session:
-  name: test
-  project_dir: ''
-  started: ''
-  ended: ''
-panes: {{}}
-declarative_workspace:
-  schema_version: 1
-  config_fingerprint: {CONTENT_A}
-  recipe_id: bugfix-two-slot
-  resolved_bindings: {{}}
-  dry_run_plan_ref: {dry_run_ref}
-  context_packs:
-    review-pack:
-      schema_version: 1
-      digest: {CONTENT_B}
-      byte_count: 100
-      source_head: {SOURCE_HEAD}
-      policy_fingerprint: {CONTENT_C}
-      limits:
-        max_files: 100
-        max_bytes: 262144
-        max_evidence_refs: 50
-      omissions:
-        code_map: 0
-        changed_files: 0
-        tests: 0
-        evidence_refs: 0
-        omitted_by_bytes: 0
-      privacy_result: pass
-      durable_ref: {durable_ref}
-"#
-        );
-        fs::write(&manifest_path, yaml).expect("write boundary manifest");
-        let manifest_before = fs::read(&manifest_path).expect("read boundary manifest");
-        let output = run_binary(&status_args, b"");
-        assert_eq!(
-            fs::read(&manifest_path).unwrap(),
-            manifest_before,
-            "{boundary_invariant}: Rust manifest read must preserve durable bytes"
-        );
-        if should_accept {
-            assert!(output.status.success(), "{boundary_invariant}");
-            assert!(
-                !output.stdout.is_empty(),
-                "{boundary_invariant}: accepted manifest read must emit one payload"
-            );
-        } else {
-            assert!(!output.status.success(), "{boundary_invariant}");
-            assert!(
-                output.stdout.is_empty(),
-                "{boundary_invariant}: rejected manifest read must emit no payload"
-            );
         }
     }
 }
@@ -1637,48 +1019,7 @@ fn cp21_public_string_grammars_reject_path_shapes_before_output() {
 }
 
 #[test]
-fn cp22_rust_manifest_pack_id_bound_matches_cli_authority() {
-    let pack_id_edge = "a".repeat(64);
-    let pack_id_over = "a".repeat(65);
-    let long_generic_recipe = "r".repeat(65);
-    assert_eq!(
-        pack_id_edge.as_bytes().len(),
-        64,
-        "exact 64-byte context-pack ID edge must be explicit"
-    );
-    assert_eq!(
-        pack_id_over.as_bytes().len(),
-        65,
-        "context-pack ID edge+1 must be explicit"
-    );
-
-    let producer = make_project(&context_pack_policy_for_id(&pack_id_edge, 100, 262_144, 50));
-    let project_runtime_bytes = snapshot_tree(producer.path());
-    let edge_input = serde_json::to_vec(&sample_input()).expect("serialize exact-edge input");
-    let accepted_producer = run_binary(
-        &workspace_plan_args_with_pack_id(producer.path(), &pack_id_edge),
-        &edge_input,
-    );
-    let accepted_payload = parse_success(&accepted_producer);
-    assert_eq!(
-        accepted_payload["context_pack"]["manifest_projection"]["pack_id"],
-        serde_json::json!(pack_id_edge),
-        "exact 64-byte context-pack ID must remain accepted by the producer"
-    );
-    assert_eq!(
-        snapshot_tree(producer.path()),
-        project_runtime_bytes,
-        "project_runtime_bytes must remain unchanged for the accepted ID edge"
-    );
-    assert_rejected(
-        &run_binary(
-            &workspace_plan_args_with_pack_id(producer.path(), &pack_id_over),
-            &edge_input,
-        ),
-        &project_runtime_bytes,
-        producer.path(),
-    );
-
+fn cp22_rust_manifest_context_pack_persistence_is_unsupported() {
     let manifest_fixture = make_project("");
     let manifest_path = manifest_fixture
         .path()
@@ -1690,9 +1031,9 @@ fn cp22_rust_manifest_pack_id_bound_matches_cli_authority() {
         "--project-dir".into(),
         manifest_fixture.path().display().to_string(),
     ];
-    let manifest_yaml = |pack_id: &str| {
-        format!(
-            r#"version: 1
+    let removed_section = ["context_", "packs"].concat();
+    let manifest_yaml = format!(
+        r#"version: 1
 session:
   name: test
   project_dir: ''
@@ -1702,10 +1043,10 @@ panes: {{}}
 declarative_workspace:
   schema_version: 1
   config_fingerprint: {CONTENT_A}
-  recipe_id: {long_generic_recipe}
+  recipe_id: review-workspace
   resolved_bindings: {{}}
-  context_packs:
-    {pack_id}:
+  {removed_section}:
+    review-pack:
       schema_version: 1
       digest: {CONTENT_B}
       byte_count: 100
@@ -1722,202 +1063,133 @@ declarative_workspace:
         evidence_refs: 0
         omitted_by_bytes: 0
       privacy_result: pass
-      durable_ref: context-packs/{pack_id}.json
+      durable_ref: context-packs/review-pack.json
 "#
-        )
-    };
-
-    let manifest_edge_yaml = manifest_yaml(&pack_id_edge);
-    fs::write(&manifest_path, &manifest_edge_yaml).expect("write exact-edge manifest");
-    let manifest_edge_before = fs::read(&manifest_path).expect("read exact-edge manifest");
-    let manifest_edge_output = run_binary(&status_args, b"");
-    assert!(
-        manifest_edge_output.status.success(),
-        "exact 64-byte manifest pack ID must remain accepted: {}",
-        String::from_utf8_lossy(&manifest_edge_output.stderr)
     );
-    serde_json::from_slice::<serde_json::Value>(&manifest_edge_output.stdout)
-        .expect("accepted manifest read must emit one JSON payload");
-    assert_eq!(
-        fs::read(&manifest_path).unwrap(),
-        manifest_edge_before,
-        "manifest bytes must remain unchanged for the accepted ID edge"
-    );
-    assert!(
-        manifest_edge_yaml.contains(&format!("recipe_id: {long_generic_recipe}")),
-        "generic workspace identifiers must not inherit the context-pack 64-byte bound"
-    );
-
-    let manifest_over_yaml = manifest_yaml(&pack_id_over);
-    fs::write(&manifest_path, &manifest_over_yaml).expect("write edge+1 manifest");
-    let manifest_over_before = fs::read(&manifest_path).expect("read edge+1 manifest");
-    let manifest_over_output = run_binary(&status_args, b"");
-    let mut rust_boundary_violations = Vec::new();
-    if manifest_over_output.status.success()
-        || !manifest_over_output.stdout.is_empty()
-        || fs::read(&manifest_path).unwrap() != manifest_over_before
-    {
-        rust_boundary_violations.push(format!(
-            "65-byte context-pack ID reached public read output: status={:?}, stdout_bytes={}",
-            manifest_over_output.status,
-            manifest_over_output.stdout.len()
+    fs::write(&manifest_path, &manifest_yaml).expect("write removed-surface manifest");
+    let manifest_before = fs::read(&manifest_path).expect("read removed-surface manifest");
+    let output = run_binary(&status_args, b"");
+    let mut violations = Vec::new();
+    if output.status.success() {
+        violations.push("hand-authored context-pack persistence reached public read".to_string());
+    }
+    if !output.stdout.is_empty() {
+        violations.push(format!(
+            "removed manifest surface emitted {} stdout bytes",
+            output.stdout.len()
         ));
     }
-    if String::from_utf8_lossy(&manifest_over_output.stderr).contains(&pack_id_over) {
-        rust_boundary_violations
-            .push("65-byte context-pack ID was reflected by manifest rejection".to_string());
+    if fs::read(&manifest_path).unwrap() != manifest_before {
+        violations.push("manifest bytes changed during removed-surface rejection".to_string());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains(CONTENT_B) || stderr.contains("context-packs/review-pack.json") {
+        violations.push("removed manifest metadata was reflected by rejection".to_string());
     }
     assert!(
-        rust_boundary_violations.is_empty(),
-        "Rust manifest and CLI context-pack ID boundaries must agree at 64 bytes; \
-         65-byte context-pack ID must reject before public read output; \
-         manifest bytes must remain unchanged; violations={rust_boundary_violations:?}"
+        violations.is_empty(),
+        "hand-authored context-pack persistence must reject before public read output; \
+         manifest bytes must remain unchanged; violations={violations:?}"
     );
 }
 
 #[test]
 #[cfg(windows)]
-fn cp23_powershell_projection_pack_id_bound_matches_cli_authority() {
-    let pack_id_edge = "a".repeat(64);
-    let pack_id_over = "a".repeat(65);
-    let long_generic_recipe = "r".repeat(65);
-    let producer = make_project(&context_pack_policy_for_id(&pack_id_edge, 100, 262_144, 50));
+fn cp23_powershell_context_pack_persistence_is_unsupported() {
+    let producer = make_project(&context_pack_policy(100, 262_144, 50));
     let producer_before = snapshot_tree(producer.path());
-    let input = serde_json::to_vec(&sample_input()).expect("serialize projection input");
-    parse_success(&run_binary(
-        &workspace_plan_args_with_pack_id(producer.path(), &pack_id_edge),
-        &input,
-    ));
-    assert_rejected(
-        &run_binary(
-            &workspace_plan_args_with_pack_id(producer.path(), &pack_id_over),
-            &input,
-        ),
-        &producer_before,
-        producer.path(),
-    );
-
-    let plan = |pack_id: &str| {
-        serde_json::json!({
-            "config_fingerprint": CONTENT_A,
-            "recipe_id": long_generic_recipe,
-            "resolved_bindings": {},
-            "context_pack": {
-                "manifest_projection": {
-                    "pack_id": pack_id,
-                    "schema_version": 1,
-                    "digest": CONTENT_B,
-                    "byte_count": 100,
-                    "source_head": SOURCE_HEAD,
-                    "policy_fingerprint": CONTENT_C,
-                    "limits": {
-                        "max_files": 100,
-                        "max_bytes": 262144,
-                        "max_evidence_refs": 50
-                    },
-                    "omissions": {
-                        "code_map": 0,
-                        "changed_files": 0,
-                        "tests": 0,
-                        "evidence_refs": 0,
-                        "omitted_by_bytes": 0
-                    },
-                    "privacy_result": "pass"
-                }
-            }
-        })
-    };
-
-    let edge_fixture = make_project("");
-    let edge_plan = plan(&pack_id_edge);
-    let (edge_output, edge_before, edge_after) = render_manifest_process_with_refs_and_state(
-        edge_fixture.path(),
-        &edge_plan,
-        "",
-        &format!("context-packs/{pack_id_edge}.json"),
-    );
-    assert!(
-        edge_output.status.success(),
-        "exact 64-byte external-plan pack ID must remain accepted: {}",
-        String::from_utf8_lossy(&edge_output.stderr)
-    );
-    let edge_yaml =
-        String::from_utf8(edge_output.stdout).expect("accepted projection YAML must be UTF-8");
-    assert!(
-        edge_yaml.contains(&pack_id_edge),
-        "accepted projection must preserve the exact authored 64-byte map key"
-    );
+    let producer_plan = parse_success(&run_pack(producer.path(), &sample_input()));
     assert_eq!(
-        edge_before, edge_after,
-        "PowerShell projection must preserve runtime bytes after test setup"
+        snapshot_tree(producer.path()),
+        producer_before,
+        "public producer must preserve project and runtime bytes"
     );
-    assert_eq!(
-        edge_plan["recipe_id"],
-        serde_json::json!(long_generic_recipe),
-        "generic workspace identifiers must not inherit the context-pack 64-byte bound"
-    );
+    let mut fabricated_plan = producer_plan.clone();
+    fabricated_plan["context_pack"]
+        .as_object_mut()
+        .expect("context_pack object")
+        .remove("canonical_json");
+    fabricated_plan["context_pack"]
+        .as_object_mut()
+        .expect("context_pack object")
+        .remove("digest");
+    fabricated_plan["context_pack"]
+        .as_object_mut()
+        .expect("context_pack object")
+        .remove("byte_count");
 
-    let over_fixture = make_project("");
-    let over_plan = plan(&pack_id_over);
-    let (over_output, over_before, over_after) = render_manifest_process_with_refs_and_state(
-        over_fixture.path(),
-        &over_plan,
-        "",
-        &format!("context-packs/{pack_id_over}.json"),
+    let cases = [
+        ("producer-payload", producer_plan),
+        ("fabricated-projection-only", fabricated_plan),
+    ];
+    let mut violations = Vec::new();
+    for (case_name, plan) in cases {
+        let fixture = make_project("");
+        let (output, before, after) = render_manifest_process_with_refs_and_state(
+            fixture.path(),
+            &plan,
+            "",
+            "context-packs/review-pack.json",
+        );
+        if output.status.success() || !output.stdout.is_empty() {
+            violations.push(format!(
+                "{case_name} reached projection output: status={:?}, stdout_bytes={}",
+                output.status,
+                output.stdout.len()
+            ));
+        }
+        if before != after {
+            violations.push(format!(
+                "{case_name} changed runtime bytes before old-path rejection"
+            ));
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "old PowerShell context-pack persistence entry must reject before projection, YAML, or save; \
+         runtime bytes must remain unchanged; violations={violations:?}"
     );
-    let mut powershell_boundary_violations = Vec::new();
-    if over_output.status.success() || !over_output.stdout.is_empty() {
-        powershell_boundary_violations.push(format!(
-            "65-byte external-plan pack ID reached projection YAML: status={:?}, stdout_bytes={}",
-            over_output.status,
-            over_output.stdout.len()
+}
+
+#[test]
+fn cp24_public_context_pack_envelope_is_canonical_only() {
+    let fixture = make_project(&context_pack_policy(100, 262_144, 50));
+    let before = snapshot_tree(fixture.path());
+    let payload = parse_success(&run_pack(fixture.path(), &sample_input()));
+    let pack = payload["context_pack"]
+        .as_object()
+        .expect("public context_pack must be an object");
+    let mut actual_keys = pack.keys().cloned().collect::<Vec<_>>();
+    actual_keys.sort();
+    let expected_keys = vec![
+        "byte_count".to_string(),
+        "canonical_json".to_string(),
+        "digest".to_string(),
+    ];
+    let canonical = pack["canonical_json"]
+        .as_str()
+        .expect("canonical_json must be a UTF-8 string");
+    let mut violations = Vec::new();
+    if actual_keys != expected_keys {
+        violations.push(format!(
+            "public context-pack key set is {actual_keys:?}, expected {expected_keys:?}"
         ));
     }
-    if over_before != over_after {
-        powershell_boundary_violations
-            .push("PowerShell projection rejection must preserve runtime bytes".to_string());
+    if pack["digest"] != serde_json::json!(sha256(canonical.as_bytes())) {
+        violations.push("digest is not derived from exact canonical UTF-8 bytes".to_string());
     }
-    if String::from_utf8_lossy(&over_output.stderr).contains(&pack_id_over) {
-        powershell_boundary_violations.push(
-            "65-byte external-plan pack ID was reflected by projection rejection".to_string(),
-        );
+    if pack["byte_count"] != serde_json::json!(canonical.len()) {
+        violations.push("byte_count is not the exact canonical UTF-8 byte length".to_string());
+    }
+    if snapshot_tree(fixture.path()) != before {
+        violations.push("public preview changed project or runtime bytes".to_string());
     }
     assert!(
-        powershell_boundary_violations.is_empty(),
-        "PowerShell projection and CLI context-pack ID boundaries must agree at 64 bytes; \
-         65-byte external-plan pack ID must reject before projection, YAML, or save; \
-         external-plan rejection must emit no YAML; violations={powershell_boundary_violations:?}"
+        violations.is_empty(),
+        "public context-pack envelope must contain only canonical_json, digest, and byte_count; \
+         rejection emits no public output; rejection preserves durable state bytes; \
+         project and runtime bytes must remain unchanged; violations={violations:?}"
     );
-}
-
-#[cfg(windows)]
-fn render_manifest_with_powershell(
-    project: &Path,
-    plan: &serde_json::Value,
-    durable_ref: &str,
-) -> String {
-    let output = render_manifest_process(project, plan, durable_ref);
-    assert!(
-        output.status.success(),
-        "PowerShell manifest projection failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("manifest YAML must be UTF-8")
-}
-
-#[cfg(windows)]
-fn render_manifest_process(project: &Path, plan: &serde_json::Value, durable_ref: &str) -> Output {
-    render_manifest_process_with_refs(project, plan, "", durable_ref)
-}
-
-#[cfg(windows)]
-fn render_manifest_process_with_refs(
-    project: &Path,
-    plan: &serde_json::Value,
-    dry_run_ref: &str,
-    durable_ref: &str,
-) -> Output {
-    render_manifest_process_with_refs_and_state(project, plan, dry_run_ref, durable_ref).0
 }
 
 #[cfg(windows)]
@@ -1940,11 +1212,12 @@ fn render_manifest_process_with_refs_and_state(
         .join("winsmux-core")
         .join("scripts")
         .join("manifest.ps1");
+    let removed_parameter = ["-Context", "PackRef"].concat();
     let script = format!(
         r#"[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 . '{}'
 $plan = Get-Content -Raw -LiteralPath '{}' | ConvertFrom-Json
-$projection = New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan -DryRunPlanRef '{}' -ContextPackRef '{}'
+$projection = New-WinsmuxDeclarativeWorkspaceProjection -Plan $plan -DryRunPlanRef '{}' {} '{}'
 $manifest = [ordered]@{{
   version = 1
   saved_at = '2026-07-26T00:00:00Z'
@@ -1959,6 +1232,7 @@ $manifest = [ordered]@{{
         manifest_script.display().to_string().replace('\'', "''"),
         plan_path.display().to_string().replace('\'', "''"),
         dry_run_ref.replace('\'', "''"),
+        removed_parameter,
         durable_ref.replace('\'', "''"),
     );
     fs::write(&script_path, script).expect("write PowerShell fixture");

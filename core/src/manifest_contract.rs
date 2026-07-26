@@ -16,6 +16,7 @@ pub struct WinsmuxManifest {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeclarativeWorkspaceManifest {
     pub schema_version: ManifestU32,
     pub config_fingerprint: String,
@@ -24,40 +25,6 @@ pub struct DeclarativeWorkspaceManifest {
     pub resolved_bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub dry_run_plan_ref: String,
-    #[serde(default)]
-    pub context_packs: BTreeMap<String, ContextPackManifest>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContextPackManifest {
-    pub schema_version: ManifestU32,
-    pub digest: String,
-    pub byte_count: ManifestU32,
-    pub source_head: String,
-    pub policy_fingerprint: String,
-    pub limits: ContextPackManifestLimits,
-    pub omissions: ContextPackManifestOmissions,
-    pub privacy_result: String,
-    pub durable_ref: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContextPackManifestLimits {
-    pub max_files: ManifestU32,
-    pub max_bytes: ManifestU32,
-    pub max_evidence_refs: ManifestU32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ContextPackManifestOmissions {
-    pub code_map: ManifestU32,
-    pub changed_files: ManifestU32,
-    pub tests: ManifestU32,
-    pub evidence_refs: ManifestU32,
-    pub omitted_by_bytes: ManifestU32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,58 +493,6 @@ fn validate_declarative_workspace(projection: &DeclarativeWorkspaceManifest) -> 
             "declarative_workspace.dry_run_plan_ref must be a safe evidence reference".to_string(),
         );
     }
-    for (pack_id, context_pack) in &projection.context_packs {
-        validate_context_pack_manifest(pack_id, context_pack)?;
-    }
-    Ok(())
-}
-
-fn validate_context_pack_manifest(
-    pack_id: &str,
-    context_pack: &ContextPackManifest,
-) -> Result<(), String> {
-    if !is_context_pack_id(pack_id)
-        || context_pack.schema_version.value() != Some(1)
-        || !is_manifest_sha256(&context_pack.digest)
-        || !is_manifest_sha256(&context_pack.policy_fingerprint)
-        || !is_manifest_lower_hex(&context_pack.source_head, 40)
-        || context_pack.privacy_result != "pass"
-        || !is_safe_context_pack_ref(&context_pack.durable_ref)
-    {
-        return Err("declarative_workspace context-pack metadata is invalid".to_string());
-    }
-    let Some(byte_count) = context_pack.byte_count.value() else {
-        return Err("declarative_workspace context-pack metadata is invalid".to_string());
-    };
-    let Some(max_files) = context_pack.limits.max_files.value() else {
-        return Err("declarative_workspace context-pack metadata is invalid".to_string());
-    };
-    let Some(max_bytes) = context_pack.limits.max_bytes.value() else {
-        return Err("declarative_workspace context-pack metadata is invalid".to_string());
-    };
-    let Some(max_evidence_refs) = context_pack.limits.max_evidence_refs.value() else {
-        return Err("declarative_workspace context-pack metadata is invalid".to_string());
-    };
-    if byte_count == 0
-        || byte_count > max_bytes
-        || max_files == 0
-        || max_files > 1_000
-        || max_bytes == 0
-        || max_bytes > 1_048_576
-        || max_evidence_refs == 0
-        || max_evidence_refs > 500
-        || [
-            &context_pack.omissions.code_map,
-            &context_pack.omissions.changed_files,
-            &context_pack.omissions.tests,
-            &context_pack.omissions.evidence_refs,
-            &context_pack.omissions.omitted_by_bytes,
-        ]
-        .into_iter()
-        .any(|value| value.value().is_none())
-    {
-        return Err("declarative_workspace context-pack metadata is invalid".to_string());
-    }
     Ok(())
 }
 
@@ -605,10 +520,6 @@ fn is_declarative_workspace_id(value: &str) -> bool {
     })
 }
 
-pub(crate) fn is_context_pack_id(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 64 && value.is_ascii() && is_declarative_workspace_id(value)
-}
-
 fn is_safe_declarative_workspace_evidence_ref(value: &str) -> bool {
     let Some(path) = value.strip_prefix("evidence:") else {
         return false;
@@ -626,19 +537,6 @@ fn is_safe_declarative_workspace_evidence_ref(value: &str) -> bool {
                 || matches!(byte, b'.' | b'_' | b'-' | b'/')
         })
         && is_safe_public_path_identity(value, path, PUBLIC_REF_MAX_BYTES)
-}
-
-fn is_manifest_sha256(value: &str) -> bool {
-    value
-        .strip_prefix("sha256:")
-        .is_some_and(|hex| is_manifest_lower_hex(hex, 64))
-}
-
-fn is_manifest_lower_hex(value: &str, expected_len: usize) -> bool {
-    value.len() == expected_len
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
 }
 
 pub(crate) const PUBLIC_REPO_PATH_MAX_BYTES: usize = 240;
@@ -693,27 +591,6 @@ fn is_safe_win32_public_segment(value: &str) -> bool {
         }
     }
     true
-}
-
-fn is_safe_context_pack_ref(value: &str) -> bool {
-    let Some(path) = value.strip_prefix("context-packs/") else {
-        return false;
-    };
-    let mut bytes = path.bytes();
-    let Some(first) = bytes.next() else {
-        return false;
-    };
-    (first.is_ascii_lowercase() || first.is_ascii_digit())
-        && !path.ends_with('/')
-        && !path.contains("..")
-        && !path.contains('\\')
-        && !path.contains("//")
-        && bytes.all(|byte| {
-            byte.is_ascii_lowercase()
-                || byte.is_ascii_digit()
-                || matches!(byte, b'.' | b'_' | b'-' | b'/')
-        })
-        && is_safe_public_path_identity(value, path, PUBLIC_REF_MAX_BYTES)
 }
 
 fn normalize_manifest_pane(
