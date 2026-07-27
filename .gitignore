@@ -95,6 +95,7 @@ tests/bridge/_helpers/*
 !tests/OrchestraPreflight.Tests.ps1
 !tests/PaneBorder.Tests.ps1
 !tests/Integration.WorktreeHook.Tests.ps1
+!tests/PesterGitIsolation.Tests.ps1
 !tests/Integration.PaneMonitorHook.Tests.ps1
 !tests/Integration.PluginHookLoader.Tests.ps1
 !tests/UpstreamReevaluation.Tests.ps1

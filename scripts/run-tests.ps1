@@ -162,6 +162,644 @@ function Get-ObjectProperty {
     return $DefaultValue
 }
 
+function Get-IsolatedGitEnvironment {
+    $globalConfigPath = if ($IsWindows) { 'NUL' } else { '/dev/null' }
+    return [ordered]@{
+        GIT_CONFIG_GLOBAL     = $globalConfigPath
+        GIT_CONFIG_NOSYSTEM   = '1'
+        GIT_CONFIG_COUNT      = '1'
+        GIT_CONFIG_KEY_0      = 'init.defaultBranch'
+        GIT_CONFIG_VALUE_0    = 'main'
+        GIT_CONFIG_PARAMETERS = ''
+    }
+}
+
+function Invoke-WithIsolatedGitEnvironment {
+    param([Parameter(Mandatory = $true)][scriptblock]$ScriptBlock)
+
+    $environment = Get-IsolatedGitEnvironment
+    $previous = [ordered]@{}
+    try {
+        foreach ($entry in $environment.GetEnumerator()) {
+            $name = [string]$entry.Key
+            $previous[$name] = [PSCustomObject]@{
+                Exists = Test-Path -LiteralPath "Env:$name"
+                Value  = [Environment]::GetEnvironmentVariable($name, 'Process')
+            }
+            [Environment]::SetEnvironmentVariable(
+                $name,
+                [string]$entry.Value,
+                'Process'
+            )
+        }
+        return & $ScriptBlock
+    } finally {
+        foreach ($entry in $previous.GetEnumerator()) {
+            $name = [string]$entry.Key
+            if ($entry.Value.Exists) {
+                [Environment]::SetEnvironmentVariable(
+                    $name,
+                    [string]$entry.Value.Value,
+                    'Process'
+                )
+            } else {
+                Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+function Invoke-PesterGitCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [ValidateNotNullOrEmpty()][string]$FailureToken = 'PESTER_GIT_COMMAND_FAILED',
+        [AllowEmptyString()][string]$IndexFile = '',
+        [System.Collections.IDictionary]$AdditionalEnvironment = @{}
+    )
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    if (-not (Test-Path -LiteralPath $repositoryRoot -PathType Container)) {
+        throw "$FailureToken exit=-1 stderr=repository root is missing"
+    }
+    $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1).Source
+    $commandArguments = @(
+        '-c',
+        "safe.directory=$repositoryRoot",
+        '-C',
+        $repositoryRoot,
+        '-c',
+        'core.autocrlf=false'
+    ) + @($Arguments)
+    $argumentBytes = [System.Text.Encoding]::UTF8.GetByteCount(
+        ($commandArguments -join "`0")
+    )
+    if ($argumentBytes -gt 4096) {
+        throw "$FailureToken exit=-1 stderr=bounded argv exceeds 4096 UTF-8 bytes"
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $gitPath
+    foreach ($argument in $commandArguments) {
+        $startInfo.ArgumentList.Add([string]$argument)
+    }
+    $startInfo.WorkingDirectory = $repositoryRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $startInfo.StandardErrorEncoding = [System.Text.UTF8Encoding]::new($false)
+    $startInfo.Environment.Clear()
+    foreach ($name in @('Path', 'SystemRoot', 'TEMP', 'TMP')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if (-not [string]::IsNullOrEmpty($value)) {
+            $startInfo.Environment[$name] = $value
+        }
+    }
+    $isolatedGitEnvironment = [ordered]@{
+        GIT_CONFIG_GLOBAL = $(if ($IsWindows) { 'NUL' } else { '/dev/null' })
+        GIT_CONFIG_NOSYSTEM = '1'
+        GIT_CONFIG_COUNT = '1'
+        GIT_CONFIG_KEY_0 = 'init.defaultBranch'
+        GIT_CONFIG_VALUE_0 = 'main'
+        GIT_CONFIG_PARAMETERS = ''
+    }
+    foreach ($entry in $isolatedGitEnvironment.GetEnumerator()) {
+        $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+    }
+    $startInfo.Environment['GIT_TERMINAL_PROMPT'] = '0'
+    $startInfo.Environment['GCM_INTERACTIVE'] = 'Never'
+    if (-not [string]::IsNullOrWhiteSpace($IndexFile)) {
+        $resolvedIndex = [System.IO.Path]::GetFullPath($IndexFile)
+        if (-not (Test-Path -LiteralPath $resolvedIndex -PathType Leaf)) {
+            throw "$FailureToken exit=-1 stderr=prospective index is missing"
+        }
+        $startInfo.Environment['GIT_INDEX_FILE'] = $resolvedIndex
+    }
+    foreach ($entry in $AdditionalEnvironment.GetEnumerator()) {
+        $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        [void]$process.Start()
+        $process.StandardInput.Close()
+        $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+        $standardErrorTask = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(60000)) {
+            try { $process.Kill($true) } catch {}
+            [void]$process.WaitForExit(5000)
+            throw "$FailureToken exit=-2 stderr=native Git command exceeded 60 seconds"
+        }
+        $standardOutput = $standardOutputTask.GetAwaiter().GetResult()
+        $standardError = $standardErrorTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            $diagnostic = $standardError.Trim()
+            if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                $diagnostic = $standardOutput.Trim()
+            }
+            throw "$FailureToken exit=$($process.ExitCode) stderr=$diagnostic"
+        }
+        if ([string]::IsNullOrEmpty($standardOutput)) {
+            return @()
+        }
+        return @($standardOutput -split '\r?\n' | Where-Object { $_ -cne '' })
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Assert-PesterCandidateTreeMatchesSource {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$CandidateTree,
+        [AllowEmptyString()][string]$IndexFile = ''
+    )
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    if ($CandidateTree -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'SOURCE_CANDIDATE_TREE_MISMATCH invalid candidate tree identity'
+    }
+    $previousIndexExists = Test-Path -LiteralPath 'Env:GIT_INDEX_FILE'
+    $previousIndex = [Environment]::GetEnvironmentVariable(
+        'GIT_INDEX_FILE',
+        'Process'
+    )
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($IndexFile)) {
+            $env:GIT_INDEX_FILE = [System.IO.Path]::GetFullPath($IndexFile)
+        }
+        $output = @(
+            & git -c "safe.directory=$repositoryRoot" -C $repositoryRoot `
+                -c core.autocrlf=true `
+                diff --no-ext-diff --binary --exit-code $CandidateTree -- . 2>&1
+        )
+        $exitCode = $LASTEXITCODE
+    } finally {
+        if ($previousIndexExists) {
+            $env:GIT_INDEX_FILE = $previousIndex
+        } else {
+            Remove-Item -LiteralPath 'Env:GIT_INDEX_FILE' -ErrorAction SilentlyContinue
+        }
+    }
+    if ($exitCode -eq 1) {
+        throw 'SOURCE_CANDIDATE_TREE_MISMATCH normalized tracked bytes differ'
+    }
+    if ($exitCode -ne 0) {
+        throw "SOURCE_CANDIDATE_TREE_MISMATCH inspection failed exit=$exitCode"
+    }
+}
+
+function Get-PesterCandidateTree {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $candidateTree = ''
+    $candidateWasAsserted = $false
+    if (Test-Path -LiteralPath 'Env:GIT_INDEX_FILE') {
+        $prospectiveIndex = [Environment]::GetEnvironmentVariable(
+            'GIT_INDEX_FILE',
+            'Process'
+        )
+        if ([string]::IsNullOrWhiteSpace($prospectiveIndex)) {
+            throw 'SOURCE_CANDIDATE_TREE_MISMATCH GIT_INDEX_FILE is empty'
+        }
+        $prospectiveIndex = [System.IO.Path]::GetFullPath($prospectiveIndex)
+        if (-not (Test-Path -LiteralPath $prospectiveIndex -PathType Leaf)) {
+            throw 'SOURCE_CANDIDATE_TREE_MISMATCH GIT_INDEX_FILE is missing'
+        }
+        $indexCopy = Join-Path (
+            [System.IO.Path]::GetTempPath()
+        ) ('winsmux-candidate-index-' + [guid]::NewGuid().ToString('N'))
+        try {
+            [System.IO.File]::Copy($prospectiveIndex, $indexCopy, $false)
+            $candidateTree = [string](
+                Invoke-PesterGitCommand `
+                    -RepositoryRoot $repositoryRoot `
+                    -Arguments @('write-tree') `
+                    -IndexFile $indexCopy `
+                    -FailureToken 'SOURCE_CANDIDATE_TREE_MISMATCH' |
+                    Select-Object -Last 1
+            )
+            $candidateTree = $candidateTree.Trim().ToLowerInvariant()
+            if ($candidateTree -cnotmatch '^[0-9a-f]{40}$') {
+                throw 'SOURCE_CANDIDATE_TREE_MISMATCH candidate tree is not a 40-character object ID'
+            }
+            Assert-PesterCandidateTreeMatchesSource `
+                -RepositoryRoot $repositoryRoot `
+                -CandidateTree $candidateTree `
+                -IndexFile $indexCopy
+            $candidateWasAsserted = $true
+        } finally {
+            if (Test-Path -LiteralPath $indexCopy -PathType Leaf) {
+                Remove-Item -LiteralPath $indexCopy -Force
+            }
+        }
+    } else {
+        $candidateTree = [string](
+            Invoke-PesterGitCommand `
+                -RepositoryRoot $repositoryRoot `
+                -Arguments @('rev-parse', 'HEAD^{tree}') `
+                -FailureToken 'SOURCE_CANDIDATE_TREE_MISMATCH' |
+                Select-Object -Last 1
+        )
+    }
+    $candidateTree = $candidateTree.Trim().ToLowerInvariant()
+    if ($candidateTree -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'SOURCE_CANDIDATE_TREE_MISMATCH candidate tree is not a 40-character object ID'
+    }
+    if (-not $candidateWasAsserted) {
+        Assert-PesterCandidateTreeMatchesSource `
+            -RepositoryRoot $repositoryRoot `
+            -CandidateTree $candidateTree
+    }
+    return $candidateTree
+}
+
+function Get-PesterRepositoryStateIdentity {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $gitDirectory = [string](
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $repositoryRoot `
+            -Arguments @('rev-parse', '--absolute-git-dir') |
+            Select-Object -Last 1
+    )
+    $configPath = [string](
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $repositoryRoot `
+            -Arguments @('rev-parse', '--path-format=absolute', '--git-path', 'config') |
+            Select-Object -Last 1
+    )
+    $indexPath = Join-Path $gitDirectory.Trim() 'index'
+    $configPath = $configPath.Trim()
+    $indexIdentity = if (Test-Path -LiteralPath $indexPath -PathType Leaf) {
+        (
+            [Convert]::ToHexString(
+                [System.Security.Cryptography.SHA256]::HashData(
+                    [System.IO.File]::ReadAllBytes($indexPath)
+                )
+            )
+        ).ToLowerInvariant()
+    } else {
+        'absent'
+    }
+    $configIdentity = if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+        (
+            [Convert]::ToHexString(
+                [System.Security.Cryptography.SHA256]::HashData(
+                    [System.IO.File]::ReadAllBytes($configPath)
+                )
+            )
+        ).ToLowerInvariant()
+    } else {
+        'absent'
+    }
+    $trackedIdentity = @(
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $repositoryRoot `
+            -Arguments @(
+                '-c',
+                'core.autocrlf=true',
+                'diff',
+                '--no-ext-diff',
+                '--binary',
+                'HEAD',
+                '--'
+            )
+    ) -join "`n"
+    $refsIdentity = @(
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $repositoryRoot `
+            -Arguments @('for-each-ref', '--format=%(refname)%00%(objectname)')
+    ) -join "`n"
+
+    return [PSCustomObject]@{
+        TrackedIdentity = $trackedIdentity
+        IndexIdentity = $indexIdentity
+        ConfigIdentity = $configIdentity
+        RefsIdentity = $refsIdentity
+    }
+}
+
+function Assert-PesterRepositoryStateIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Expected,
+        [Parameter(Mandatory = $true)]$Actual
+    )
+
+    $drift = [System.Collections.Generic.List[string]]::new()
+    if ([string]$Expected.TrackedIdentity -cne [string]$Actual.TrackedIdentity) {
+        $drift.Add('tracked')
+    }
+    if ([string]$Expected.IndexIdentity -cne [string]$Actual.IndexIdentity) {
+        $drift.Add('index')
+    }
+    if ([string]$Expected.ConfigIdentity -cne [string]$Actual.ConfigIdentity) {
+        $drift.Add('config')
+    }
+    if ([string]$Expected.RefsIdentity -cne [string]$Actual.RefsIdentity) {
+        $drift.Add('refs')
+    }
+    if ($drift.Count -gt 0) {
+        throw "SOURCE_REPOSITORY_DRIFT $($drift -join ',')"
+    }
+}
+
+function New-PesterPrivateRepository {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$CandidateTree,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot
+    )
+
+    $sourceRoot = [System.IO.Path]::GetFullPath($SourceRepositoryRoot)
+    $destinationRoot = [System.IO.Path]::GetFullPath($DestinationRoot)
+    if ($CandidateTree -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'PRIVATE_REPOSITORY_MATERIALIZATION_FAILED invalid candidate tree'
+    }
+    if (-not (Test-Path -LiteralPath $sourceRoot -PathType Container)) {
+        throw 'PRIVATE_REPOSITORY_MATERIALIZATION_FAILED source repository is missing'
+    }
+    if (Test-Path -LiteralPath $destinationRoot) {
+        throw 'PRIVATE_REPOSITORY_MATERIALIZATION_FAILED destination already exists'
+    }
+    if (
+        [string]::Equals(
+            $destinationRoot,
+            [System.IO.Path]::GetPathRoot($destinationRoot),
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [string]::Equals(
+            $destinationRoot,
+            $sourceRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw 'PRIVATE_REPOSITORY_MATERIALIZATION_FAILED unsafe destination'
+    }
+    $destinationParent = Split-Path -Parent $destinationRoot
+    [System.IO.Directory]::CreateDirectory($destinationParent) | Out-Null
+    $archivePath = Join-Path $destinationParent (
+        '.winsmux-pester-' + [guid]::NewGuid().ToString('N') + '.zip'
+    )
+    $destinationCreated = $false
+    try {
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $sourceRoot `
+            -Arguments @(
+                'archive',
+                '--format=zip',
+                '--output',
+                $archivePath,
+                $CandidateTree
+            ) `
+            -FailureToken 'PRIVATE_REPOSITORY_ARCHIVE_FAILED' | Out-Null
+        $destinationCreated = $true
+        [System.IO.Compression.ZipFile]::ExtractToDirectory(
+            $archivePath,
+            $destinationRoot
+        )
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $destinationRoot `
+            -Arguments @('init') `
+            -FailureToken 'PRIVATE_REPOSITORY_INIT_FAILED' | Out-Null
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $destinationRoot `
+            -Arguments @('add', '-f', '--all') `
+            -FailureToken 'PRIVATE_REPOSITORY_INDEX_FAILED' | Out-Null
+
+        $treeEntries = @(
+            Invoke-PesterGitCommand `
+                -RepositoryRoot $sourceRoot `
+                -Arguments @('ls-tree', '-r', '--full-tree', $CandidateTree) `
+                -FailureToken 'PRIVATE_REPOSITORY_MODE_READ_FAILED'
+        )
+        foreach ($entry in $treeEntries) {
+            $match = [regex]::Match([string]$entry, '^(?<mode>[0-9]{6})\s+\w+\s+[0-9a-f]{40}\t(?<path>.+)$')
+            if ($match.Success -and [string]$match.Groups['mode'].Value -ceq '100755') {
+                Invoke-PesterGitCommand `
+                    -RepositoryRoot $destinationRoot `
+                    -Arguments @(
+                        'update-index',
+                        '--chmod=+x',
+                        '--',
+                        [string]$match.Groups['path'].Value
+                    ) `
+                    -FailureToken 'PRIVATE_REPOSITORY_MODE_WRITE_FAILED' | Out-Null
+            }
+        }
+
+        $privateTree = [string](
+            Invoke-PesterGitCommand `
+                -RepositoryRoot $destinationRoot `
+                -Arguments @('write-tree') `
+                -FailureToken 'PRIVATE_REPOSITORY_TREE_FAILED' |
+                Select-Object -Last 1
+        )
+        $privateTree = $privateTree.Trim().ToLowerInvariant()
+        if ($privateTree -cne $CandidateTree) {
+            throw "PRIVATE_REPOSITORY_TREE_MISMATCH expected=$CandidateTree actual=$privateTree"
+        }
+
+        $commitEnvironment = [ordered]@{
+            GIT_AUTHOR_NAME = 'winsmux Pester'
+            GIT_AUTHOR_EMAIL = 'pester@winsmux.invalid'
+            GIT_AUTHOR_DATE = '2000-01-01T00:00:00Z'
+            GIT_COMMITTER_NAME = 'winsmux Pester'
+            GIT_COMMITTER_EMAIL = 'pester@winsmux.invalid'
+            GIT_COMMITTER_DATE = '2000-01-01T00:00:00Z'
+        }
+        $privateCommit = [string](
+            Invoke-PesterGitCommand `
+                -RepositoryRoot $destinationRoot `
+                -Arguments @('commit-tree', $privateTree, '-m', 'winsmux Pester candidate') `
+                -AdditionalEnvironment $commitEnvironment `
+                -FailureToken 'PRIVATE_REPOSITORY_COMMIT_FAILED' |
+                Select-Object -Last 1
+        )
+        $privateCommit = $privateCommit.Trim()
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $destinationRoot `
+            -Arguments @('update-ref', 'refs/heads/main', $privateCommit) `
+            -FailureToken 'PRIVATE_REPOSITORY_REF_FAILED' | Out-Null
+        Invoke-PesterGitCommand `
+            -RepositoryRoot $destinationRoot `
+            -Arguments @('symbolic-ref', 'HEAD', 'refs/heads/main') `
+            -FailureToken 'PRIVATE_REPOSITORY_HEAD_FAILED' | Out-Null
+
+        $headTree = [string](
+            Invoke-PesterGitCommand `
+                -RepositoryRoot $destinationRoot `
+                -Arguments @('rev-parse', 'HEAD^{tree}') `
+                -FailureToken 'PRIVATE_REPOSITORY_HEAD_FAILED' |
+                Select-Object -Last 1
+        )
+        if ($headTree.Trim().ToLowerInvariant() -cne $CandidateTree) {
+            throw 'PRIVATE_REPOSITORY_HEAD_TREE_MISMATCH'
+        }
+        $markerPath = Join-Path (
+            Join-Path $destinationRoot '.git'
+        ) 'winsmux-pester-private-owner.json'
+        $marker = [ordered]@{
+            repositoryRoot = $destinationRoot
+            tree = $CandidateTree
+        }
+        [System.IO.File]::WriteAllText(
+            $markerPath,
+            ($marker | ConvertTo-Json -Compress),
+            [System.Text.UTF8Encoding]::new($false)
+        )
+        return [PSCustomObject]@{
+            RepositoryRoot = $destinationRoot
+            Tree = $CandidateTree
+            Commit = $privateCommit
+        }
+    } catch {
+        $materializationFailure = $_
+        if ($destinationCreated -and (Test-Path -LiteralPath $destinationRoot)) {
+            try {
+                Remove-Item -LiteralPath $destinationRoot -Recurse -Force -ErrorAction Stop
+            } catch {
+                throw (
+                    'PRIVATE_REPOSITORY_CLEANUP_FAILED materialization={0} cleanup={1}' -f
+                    $materializationFailure.Exception.Message,
+                    $_.Exception.Message
+                )
+            }
+        }
+        throw $materializationFailure
+    } finally {
+        if (Test-Path -LiteralPath $archivePath -PathType Leaf) {
+            Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+function Remove-PesterPrivateRepository {
+    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    if (
+        [string]::Equals(
+            $repositoryRoot,
+            [System.IO.Path]::GetPathRoot($repositoryRoot),
+            [StringComparison]::OrdinalIgnoreCase
+        )
+    ) {
+        throw 'PRIVATE_REPOSITORY_CLEANUP_FAILED unsafe repository root'
+    }
+    $markerPath = Join-Path (
+        Join-Path $repositoryRoot '.git'
+    ) 'winsmux-pester-private-owner.json'
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+        throw 'PRIVATE_REPOSITORY_CLEANUP_FAILED ownership marker is missing'
+    }
+    $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 |
+        ConvertFrom-Json -ErrorAction Stop
+    if (
+        -not [string]::Equals(
+            [System.IO.Path]::GetFullPath([string]$marker.repositoryRoot),
+            $repositoryRoot,
+            [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [string]$marker.tree -cnotmatch '^[0-9a-f]{40}$'
+    ) {
+        throw 'PRIVATE_REPOSITORY_CLEANUP_FAILED ownership marker is invalid'
+    }
+    try {
+        Remove-Item -LiteralPath $repositoryRoot -Recurse -Force -ErrorAction Stop
+    } catch {
+        throw "PRIVATE_REPOSITORY_CLEANUP_FAILED $($_.Exception.Message)"
+    }
+    if (Test-Path -LiteralPath $repositoryRoot) {
+        throw 'PRIVATE_REPOSITORY_CLEANUP_FAILED repository still exists'
+    }
+}
+
+function Invoke-WithPesterPrivateRepository {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$CandidateTree,
+        [Parameter(Mandatory = $true)][string]$DestinationRoot,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+
+    $privateRepository = $null
+    $result = $null
+    $bodyFailure = $null
+    $cleanupFailure = $null
+    try {
+        $privateRepository = New-PesterPrivateRepository `
+            -SourceRepositoryRoot $SourceRepositoryRoot `
+            -CandidateTree $CandidateTree `
+            -DestinationRoot $DestinationRoot
+        try {
+            $result = & $ScriptBlock $privateRepository
+        } catch {
+            $bodyFailure = $_
+        }
+    } catch {
+        $bodyFailure = $_
+    } finally {
+        if ($null -ne $privateRepository) {
+            try {
+                Remove-PesterPrivateRepository `
+                    -RepositoryRoot ([string]$privateRepository.RepositoryRoot)
+            } catch {
+                $cleanupFailure = $_
+            }
+        }
+    }
+    if ($null -ne $cleanupFailure) {
+        $bodyMessage = if ($null -ne $bodyFailure) {
+            [string]$bodyFailure.Exception.Message
+        } else {
+            'none'
+        }
+        throw (
+            'PRIVATE_REPOSITORY_CLEANUP_FAILED body={0} cleanup={1}' -f
+            $bodyMessage,
+            $cleanupFailure.Exception.Message
+        )
+    }
+    if ($null -ne $bodyFailure) {
+        throw $bodyFailure
+    }
+    return $result
+}
+
+function New-PesterDiscoverySpec {
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [Parameter(Mandatory = $true)][string]$ResultRoot,
+        [Parameter(Mandatory = $true)][string]$TempDirectory,
+        [Parameter(Mandatory = $true)][string]$ProjectDirectory,
+        [Parameter(Mandatory = $true)][string]$PesterModulePath
+    )
+
+    $repositoryRoot = [System.IO.Path]::GetFullPath($RepositoryRoot)
+    $resultRoot = [System.IO.Path]::GetFullPath($ResultRoot)
+    return [PSCustomObject][ordered]@{
+        Mode = 'Discovery'
+        WorkerId = 'discovery'
+        RepositoryRoot = $repositoryRoot
+        TestsPath = Join-Path $repositoryRoot 'tests'
+        ResultPath = Join-Path $resultRoot 'result.json'
+        StdOutPath = Join-Path $resultRoot 'stdout.log'
+        StdErrPath = Join-Path $resultRoot 'stderr.log'
+        TempDirectory = [System.IO.Path]::GetFullPath($TempDirectory)
+        ProjectDirectory = [System.IO.Path]::GetFullPath($ProjectDirectory)
+        PesterModulePath = $PesterModulePath
+    }
+}
+
 function Get-IsolatedChildEnvironment {
     param(
         [Parameter(Mandatory = $true)][string]$TempDirectory,
@@ -196,6 +834,9 @@ function Get-IsolatedChildEnvironment {
     $environment['NO_COLOR'] = '1'
     $environment['GIT_TERMINAL_PROMPT'] = '0'
     $environment['GCM_INTERACTIVE'] = 'Never'
+    foreach ($entry in (Get-IsolatedGitEnvironment).GetEnumerator()) {
+        $environment[[string]$entry.Key] = [string]$entry.Value
+    }
     return $environment
 }
 
@@ -234,7 +875,19 @@ function Invoke-IsolatedPwshWorkers {
                     )) {
                         $startInfo.ArgumentList.Add($argument)
                     }
-                    $startInfo.WorkingDirectory = $RepositoryRoot
+                    if (
+                        $spec.PSObject.Properties.Name -notcontains 'RepositoryRoot' -or
+                        [string]::IsNullOrWhiteSpace([string]$spec.RepositoryRoot)
+                    ) {
+                        throw "Pester worker $($spec.WorkerId) has no repository root."
+                    }
+                    $workerRepositoryRoot = [System.IO.Path]::GetFullPath(
+                        [string]$spec.RepositoryRoot
+                    )
+                    if (-not (Test-Path -LiteralPath $workerRepositoryRoot -PathType Container)) {
+                        throw "Pester worker $($spec.WorkerId) repository root is missing."
+                    }
+                    $startInfo.WorkingDirectory = $workerRepositoryRoot
                     $startInfo.UseShellExecute = $false
                     $startInfo.CreateNoWindow = $true
                     $startInfo.RedirectStandardInput = $true
@@ -619,23 +1272,54 @@ function New-PesterWorkUnits {
     $units = [System.Collections.Generic.List[object]]::new()
     $shards = @(Get-BridgeShards -RepositoryRoot $RepositoryRoot)
     $bridgePaths = @($shards.Paths | ForEach-Object { [System.IO.Path]::GetFullPath([string]$_) } | Sort-Object -Unique)
+    $mutableNames = [System.Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    [void]$mutableNames.Add('HarnessContract.Tests.ps1')
+    [void]$mutableNames.Add('PublicSurfacePolicy.Tests.ps1')
+    $mutablePaths = [System.Collections.Generic.List[string]]::new()
+    $mutableExpectedCount = 0
     foreach ($file in $testFiles | Where-Object { [System.IO.Path]::GetFullPath($_.FullName) -notin $bridgePaths }) {
         $fullPath = [System.IO.Path]::GetFullPath($file.FullName)
         if (-not $testsByFile.ContainsKey($fullPath)) {
             throw "Pester discovery did not return tests for $fullPath"
+        }
+        if ($mutableNames.Contains($file.Name)) {
+            $mutablePaths.Add($fullPath)
+            $mutableExpectedCount += [int]$testsByFile[$fullPath].Count
+            continue
         }
         $units.Add([PSCustomObject]@{
             WorkerId = 'file-' + [System.IO.Path]::GetFileNameWithoutExtension($file.Name).ToLowerInvariant().Replace('.', '-')
             Paths = @($fullPath)
             LineFilters = @()
             ExpectedCount = [int]$testsByFile[$fullPath].Count
+            RepositoryMode = 'source'
         })
     }
+
+    if ($mutablePaths.Count -ne $mutableNames.Count) {
+        throw (
+            'Mutable Pester owner coverage mismatch: expected={0} actual={1}' -f
+            $mutableNames.Count,
+            $mutablePaths.Count
+        )
+    }
+    $units.Add([PSCustomObject]@{
+        WorkerId = 'mutable-repository'
+        Paths = @($mutablePaths | Sort-Object)
+        LineFilters = @()
+        ExpectedCount = $mutableExpectedCount
+        RepositoryMode = 'private'
+    })
 
     foreach ($shard in $shards) {
         $count = 0
         foreach ($path in $shard.Paths) {
             $fullPath = [System.IO.Path]::GetFullPath([string]$path)
+            if ($mutableNames.Contains((Split-Path -Leaf $fullPath))) {
+                throw "Mutable Pester owner cannot belong to bridge shard $($shard.Name): $fullPath"
+            }
             if (-not $testsByFile.ContainsKey($fullPath)) {
                 throw "Pester discovery did not return bridge tests for $fullPath"
             }
@@ -649,6 +1333,7 @@ function New-PesterWorkUnits {
             Paths = @($shard.Paths)
             LineFilters = @()
             ExpectedCount = $count
+            RepositoryMode = 'source'
         })
     }
 
@@ -767,7 +1452,12 @@ function Invoke-ParallelSuite {
 
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $harnessFailures = [System.Collections.Generic.List[string]]::new()
+    $sourceStateBefore = $null
+    $suiteResult = $null
     try {
+        $sourceStateBefore = Get-PesterRepositoryStateIdentity `
+            -RepositoryRoot $RepositoryRoot
+        $candidateTree = Get-PesterCandidateTree -RepositoryRoot $RepositoryRoot
         $runnerPath = $PSCommandPath
         $pwshPath = (Get-Command pwsh -ErrorAction Stop | Select-Object -First 1).Source
         $discoveryRoot = Join-Path $workerResultsRoot '000-discovery'
@@ -775,155 +1465,384 @@ function Invoke-ParallelSuite {
         $discoveryProject = Join-Path $discoveryTemp 'project'
         New-Item -ItemType Directory -Path $discoveryRoot -Force | Out-Null
         New-Item -ItemType Directory -Path $discoveryProject -Force | Out-Null
-        $discoverySpec = [ordered]@{
-            Mode = 'Discovery'
-            WorkerId = 'discovery'
-            TestsPath = Join-Path $RepositoryRoot 'tests'
-            ResultPath = Join-Path $discoveryRoot 'result.json'
-            StdOutPath = Join-Path $discoveryRoot 'stdout.log'
-            StdErrPath = Join-Path $discoveryRoot 'stderr.log'
-            TempDirectory = $discoveryTemp
-            ProjectDirectory = $discoveryProject
-            PesterModulePath = [string]$PesterModule.Path
-        }
-        $discoverySpecPath = Join-Path $discoveryRoot 'spec.json'
-        $discoverySpec | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $discoverySpecPath -Encoding UTF8
-        $discoveryLaunch = @(Invoke-IsolatedPwshWorkers -SpecPaths @($discoverySpecPath) -RunnerPath $runnerPath -PwshPath $pwshPath -RepositoryRoot $RepositoryRoot -ThrottleLimit 1 -TimeoutSeconds $TimeoutSeconds)
-        if (($discoveryLaunch.Count -ne 1) -or ($discoveryLaunch[0].ExitCode -ne 0) -or (-not [string]::IsNullOrWhiteSpace([string]$discoveryLaunch[0].LaunchError))) {
-            $detail = if ($discoveryLaunch.Count -eq 1) { "$($discoveryLaunch[0].LaunchError) $($discoveryLaunch[0].StdErr)" } else { 'no launch result' }
-            throw "Isolated Pester discovery failed: $detail"
-        }
-        if (-not (Test-Path -LiteralPath $discoverySpec.ResultPath -PathType Leaf)) {
-            throw 'Isolated Pester discovery did not write result JSON.'
-        }
-        $discovery = Get-Content -LiteralPath $discoverySpec.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-        if (([string]$discovery.mode -ne 'discovery') -or ([int]$discovery.total -le 0)) {
-            throw 'Isolated Pester discovery returned an invalid payload.'
-        }
+        $discoveryPrivateRoot = Join-Path $executionRoot 'discovery-repository'
+        $discovery = Invoke-WithPesterPrivateRepository `
+            -SourceRepositoryRoot $RepositoryRoot `
+            -CandidateTree $candidateTree `
+            -DestinationRoot $discoveryPrivateRoot `
+            -ScriptBlock {
+                param($privateRepository)
+
+                $privateRoot = [string]$privateRepository.RepositoryRoot
+                $discoverySpec = New-PesterDiscoverySpec `
+                    -RepositoryRoot $privateRoot `
+                    -ResultRoot $discoveryRoot `
+                    -TempDirectory $discoveryTemp `
+                    -ProjectDirectory $discoveryProject `
+                    -PesterModulePath ([string]$PesterModule.Path)
+                $discoverySpecPath = Join-Path $discoveryRoot 'spec.json'
+                $discoverySpec |
+                    ConvertTo-Json -Depth 8 |
+                    Set-Content -LiteralPath $discoverySpecPath -Encoding UTF8
+                $discoveryLaunch = @(
+                    Invoke-IsolatedPwshWorkers `
+                        -SpecPaths @($discoverySpecPath) `
+                        -RunnerPath $runnerPath `
+                        -PwshPath $pwshPath `
+                        -RepositoryRoot $privateRoot `
+                        -ThrottleLimit 1 `
+                        -TimeoutSeconds $TimeoutSeconds
+                )
+                if (
+                    ($discoveryLaunch.Count -ne 1) -or
+                    ($discoveryLaunch[0].ExitCode -ne 0) -or
+                    (-not [string]::IsNullOrWhiteSpace(
+                        [string]$discoveryLaunch[0].LaunchError
+                    ))
+                ) {
+                    $detail = if ($discoveryLaunch.Count -eq 1) {
+                        "$($discoveryLaunch[0].LaunchError) $($discoveryLaunch[0].StdErr)"
+                    } else {
+                        'no launch result'
+                    }
+                    throw "Isolated Pester discovery failed: $detail"
+                }
+                if (
+                    -not (
+                        Test-Path `
+                            -LiteralPath $discoverySpec.ResultPath `
+                            -PathType Leaf
+                    )
+                ) {
+                    throw 'Isolated Pester discovery did not write result JSON.'
+                }
+                $observedDiscovery = Get-Content `
+                    -LiteralPath $discoverySpec.ResultPath `
+                    -Raw `
+                    -Encoding UTF8 |
+                    ConvertFrom-Json -ErrorAction Stop
+                if (
+                    ([string]$observedDiscovery.mode -ne 'discovery') -or
+                    ([int]$observedDiscovery.total -le 0)
+                ) {
+                    throw 'Isolated Pester discovery returned an invalid payload.'
+                }
+                foreach ($test in @($observedDiscovery.tests)) {
+                    $privateFile = [System.IO.Path]::GetFullPath(
+                        [string]$test.file
+                    )
+                    $relativeFile = [System.IO.Path]::GetRelativePath(
+                        $privateRoot,
+                        $privateFile
+                    )
+                    if (
+                        [System.IO.Path]::IsPathRooted($relativeFile) -or
+                        $relativeFile -eq '..' -or
+                        $relativeFile.StartsWith(
+                            '..' + [System.IO.Path]::DirectorySeparatorChar,
+                            [StringComparison]::Ordinal
+                        ) -or
+                        -not $relativeFile.StartsWith(
+                            'tests' + [System.IO.Path]::DirectorySeparatorChar,
+                            [StringComparison]::OrdinalIgnoreCase
+                        )
+                    ) {
+                        throw "Discovery path escaped the private tests root: $privateFile"
+                    }
+                    $test.file = [System.IO.Path]::GetFullPath(
+                        (Join-Path $RepositoryRoot $relativeFile)
+                    )
+                }
+                return $observedDiscovery
+            }
+
         $expectedIdentities = @($discovery.tests.identity | ForEach-Object { [string]$_ } | Sort-Object)
         $units = @(New-PesterWorkUnits -RepositoryRoot $RepositoryRoot -DiscoveryResult $discovery)
-        $specs = [System.Collections.Generic.List[object]]::new()
-        $specPaths = [System.Collections.Generic.List[string]]::new()
-        $index = 0
-        foreach ($unit in $units) {
-            $index++
-            $workerRoot = Join-Path $workerResultsRoot ('{0:d3}-{1}' -f $index, $unit.WorkerId)
-            $workerTemp = Join-Path $executionRoot ('{0:d3}' -f $index)
-            $projectDirectory = Join-Path $workerTemp 'project'
-            New-Item -ItemType Directory -Path $workerRoot -Force | Out-Null
-            New-Item -ItemType Directory -Path $projectDirectory -Force | Out-Null
-            $spec = [ordered]@{
-                Mode = 'Test'
-                WorkerId = [string]$unit.WorkerId
-                RepositoryRoot = $RepositoryRoot
-                Paths = @($unit.Paths)
-                LineFilters = @($unit.LineFilters)
-                ExpectedCount = [int]$unit.ExpectedCount
-                ResultPath = Join-Path $workerRoot 'result.json'
-                NUnitPath = Join-Path $workerRoot 'result.xml'
-                StdOutPath = Join-Path $workerRoot 'stdout.log'
-                StdErrPath = Join-Path $workerRoot 'stderr.log'
-                TempDirectory = $workerTemp
-                ProjectDirectory = $projectDirectory
-                PesterModulePath = [string]$PesterModule.Path
-            }
-            $specPath = Join-Path $workerRoot 'spec.json'
-            $spec | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $specPath -Encoding UTF8
-            $specs.Add([PSCustomObject]$spec)
-            $specPaths.Add($specPath)
-        }
+        $mutablePrivateRoot = Join-Path $executionRoot 'mutable-repository'
+        $aggregate = Invoke-WithPesterPrivateRepository `
+            -SourceRepositoryRoot $RepositoryRoot `
+            -CandidateTree $candidateTree `
+            -DestinationRoot $mutablePrivateRoot `
+            -ScriptBlock {
+                param($privateRepository)
 
-        if (@($specs.TempDirectory | Sort-Object -Unique).Count -ne $specs.Count) {
-            throw 'Pester worker TEMP directories are not unique.'
-        }
-        if (@($specs.ProjectDirectory | Sort-Object -Unique).Count -ne $specs.Count) {
-            throw 'Pester worker project directories are not unique.'
-        }
+                $privateRoot = [string]$privateRepository.RepositoryRoot
+                $specs = [System.Collections.Generic.List[object]]::new()
+                $specPaths = [System.Collections.Generic.List[string]]::new()
+                $index = 0
+                foreach ($unit in $units) {
+                    $index++
+                    $workerRoot = Join-Path $workerResultsRoot (
+                        '{0:d3}-{1}' -f $index, $unit.WorkerId
+                    )
+                    $workerTemp = Join-Path $executionRoot ('{0:d3}' -f $index)
+                    $projectDirectory = Join-Path $workerTemp 'project'
+                    New-Item -ItemType Directory -Path $workerRoot -Force | Out-Null
+                    New-Item -ItemType Directory -Path $projectDirectory -Force | Out-Null
+                    $unitRepositoryRoot = if (
+                        [string]$unit.RepositoryMode -ceq 'private'
+                    ) {
+                        $privateRoot
+                    } else {
+                        $RepositoryRoot
+                    }
+                    $unitPaths = @(
+                        foreach ($path in @($unit.Paths)) {
+                            $sourcePath = [System.IO.Path]::GetFullPath([string]$path)
+                            if ([string]$unit.RepositoryMode -ceq 'private') {
+                                $relativePath = [System.IO.Path]::GetRelativePath(
+                                    $RepositoryRoot,
+                                    $sourcePath
+                                )
+                                if (
+                                    [System.IO.Path]::IsPathRooted($relativePath) -or
+                                    $relativePath -eq '..' -or
+                                    $relativePath.StartsWith(
+                                        '..' + [System.IO.Path]::DirectorySeparatorChar,
+                                        [StringComparison]::Ordinal
+                                    )
+                                ) {
+                                    throw "Mutable Pester path escaped source root: $sourcePath"
+                                }
+                                [System.IO.Path]::GetFullPath(
+                                    (Join-Path $privateRoot $relativePath)
+                                )
+                            } else {
+                                $sourcePath
+                            }
+                        }
+                    )
+                    $spec = [ordered]@{
+                        Mode = 'Test'
+                        WorkerId = [string]$unit.WorkerId
+                        RepositoryRoot = $unitRepositoryRoot
+                        RepositoryMode = [string]$unit.RepositoryMode
+                        Paths = $unitPaths
+                        LineFilters = @($unit.LineFilters)
+                        ExpectedCount = [int]$unit.ExpectedCount
+                        ResultPath = Join-Path $workerRoot 'result.json'
+                        NUnitPath = Join-Path $workerRoot 'result.xml'
+                        StdOutPath = Join-Path $workerRoot 'stdout.log'
+                        StdErrPath = Join-Path $workerRoot 'stderr.log'
+                        TempDirectory = $workerTemp
+                        ProjectDirectory = $projectDirectory
+                        PesterModulePath = [string]$PesterModule.Path
+                    }
+                    $specPath = Join-Path $workerRoot 'spec.json'
+                    $spec |
+                        ConvertTo-Json -Depth 8 |
+                        Set-Content -LiteralPath $specPath -Encoding UTF8
+                    $specs.Add([PSCustomObject]$spec)
+                    $specPaths.Add($specPath)
+                }
 
-        $launches = @(Invoke-IsolatedPwshWorkers -SpecPaths $specPaths.ToArray() -RunnerPath $runnerPath -PwshPath $pwshPath -RepositoryRoot $RepositoryRoot -ThrottleLimit ([math]::Min($ThrottleLimit, $specPaths.Count)) -TimeoutSeconds $TimeoutSeconds)
+                if (
+                    @($specs.TempDirectory | Sort-Object -Unique).Count -ne
+                    $specs.Count
+                ) {
+                    throw 'Pester worker TEMP directories are not unique.'
+                }
+                if (
+                    @($specs.ProjectDirectory | Sort-Object -Unique).Count -ne
+                    $specs.Count
+                ) {
+                    throw 'Pester worker project directories are not unique.'
+                }
 
-        $workerPayloads = [System.Collections.Generic.List[object]]::new()
-        foreach ($launch in $launches | Sort-Object WorkerId) {
-            if (-not [string]::IsNullOrWhiteSpace([string]$launch.LaunchError)) {
-                $harnessFailures.Add("$($launch.WorkerId): launch failed: $($launch.LaunchError)")
-                continue
-            }
-            $spec = Get-Content -LiteralPath $launch.SpecPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if (-not (Test-Path -LiteralPath $spec.ResultPath -PathType Leaf)) {
-                $harnessFailures.Add("$($launch.WorkerId): result JSON is missing")
-                continue
-            }
-            try {
-                $payload = Get-Content -LiteralPath $spec.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
-            } catch {
-                $harnessFailures.Add("$($launch.WorkerId): result JSON is invalid: $($_.Exception.Message)")
-                continue
-            }
-            if ([string]$payload.workerId -ne [string]$launch.WorkerId) {
-                $harnessFailures.Add("$($launch.WorkerId): result worker identity mismatch")
-            }
-            if ([int]$payload.total -ne [int]$spec.ExpectedCount) {
-                $harnessFailures.Add("$($launch.WorkerId): expected $($spec.ExpectedCount) tests, got $($payload.total)")
-            }
-            if (-not (Test-Path -LiteralPath $payload.nunitPath -PathType Leaf)) {
-                $harnessFailures.Add("$($launch.WorkerId): NUnit XML is missing")
-            } else {
-                try {
-                    [xml](Get-Content -LiteralPath $payload.nunitPath -Raw -Encoding UTF8) | Out-Null
-                } catch {
-                    $harnessFailures.Add("$($launch.WorkerId): NUnit XML is invalid: $($_.Exception.Message)")
+                $launches = @(
+                    Invoke-IsolatedPwshWorkers `
+                        -SpecPaths $specPaths.ToArray() `
+                        -RunnerPath $runnerPath `
+                        -PwshPath $pwshPath `
+                        -RepositoryRoot $RepositoryRoot `
+                        -ThrottleLimit (
+                            [math]::Min($ThrottleLimit, $specPaths.Count)
+                        ) `
+                        -TimeoutSeconds $TimeoutSeconds
+                )
+
+                $workerPayloads = [System.Collections.Generic.List[object]]::new()
+                foreach ($launch in $launches | Sort-Object WorkerId) {
+                    if (
+                        -not [string]::IsNullOrWhiteSpace(
+                            [string]$launch.LaunchError
+                        )
+                    ) {
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): launch failed: $($launch.LaunchError)"
+                        )
+                        continue
+                    }
+                    $spec = Get-Content `
+                        -LiteralPath $launch.SpecPath `
+                        -Raw `
+                        -Encoding UTF8 |
+                        ConvertFrom-Json
+                    if (-not (Test-Path -LiteralPath $spec.ResultPath -PathType Leaf)) {
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): result JSON is missing"
+                        )
+                        continue
+                    }
+                    try {
+                        $payload = Get-Content `
+                            -LiteralPath $spec.ResultPath `
+                            -Raw `
+                            -Encoding UTF8 |
+                            ConvertFrom-Json -ErrorAction Stop
+                    } catch {
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): result JSON is invalid: $($_.Exception.Message)"
+                        )
+                        continue
+                    }
+                    if ([string]$payload.workerId -ne [string]$launch.WorkerId) {
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): result worker identity mismatch"
+                        )
+                    }
+                    if ([int]$payload.total -ne [int]$spec.ExpectedCount) {
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): expected $($spec.ExpectedCount) tests, got $($payload.total)"
+                        )
+                    }
+                    if (-not (Test-Path -LiteralPath $payload.nunitPath -PathType Leaf)) {
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): NUnit XML is missing"
+                        )
+                    } else {
+                        try {
+                            [xml](
+                                Get-Content `
+                                    -LiteralPath $payload.nunitPath `
+                                    -Raw `
+                                    -Encoding UTF8
+                            ) | Out-Null
+                        } catch {
+                            $harnessFailures.Add(
+                                "$($launch.WorkerId): NUnit XML is invalid: $($_.Exception.Message)"
+                            )
+                        }
+                    }
+                    if ([int]$launch.ExitCode -ne 0) {
+                        $detail = if (
+                            $payload.PSObject.Properties.Name -contains 'harnessError'
+                        ) {
+                            [string]$payload.harnessError
+                        } else {
+                            [string]$launch.StdErr
+                        }
+                        $harnessFailures.Add(
+                            "$($launch.WorkerId): child exit $($launch.ExitCode) $detail"
+                        )
+                    }
+                    $workerPayloads.Add($payload)
+                }
+
+                $totalCount = [int](
+                    ($workerPayloads | Measure-Object total -Sum).Sum
+                )
+                $passedCount = [int](
+                    ($workerPayloads | Measure-Object passed -Sum).Sum
+                )
+                $failedCount = [int](
+                    ($workerPayloads | Measure-Object failed -Sum).Sum
+                )
+                $skippedCount = [int](
+                    ($workerPayloads | Measure-Object skipped -Sum).Sum
+                )
+                $notRunCount = [int](
+                    ($workerPayloads | Measure-Object notRun -Sum).Sum
+                )
+                $inconclusiveCount = [int](
+                    ($workerPayloads | Measure-Object inconclusive -Sum).Sum
+                )
+                $failedBlocks = [int](
+                    ($workerPayloads | Measure-Object failedBlocks -Sum).Sum
+                )
+                $failedContainers = [int](
+                    ($workerPayloads | Measure-Object failedContainers -Sum).Sum
+                )
+                $actualIdentities = @(
+                    $workerPayloads.identities |
+                        ForEach-Object { [string]$_ } |
+                        Sort-Object
+                )
+                if ($totalCount -ne [int]$discovery.total) {
+                    $harnessFailures.Add(
+                        "aggregate total $totalCount does not match discovery total $($discovery.total)"
+                    )
+                }
+                if ($actualIdentities.Count -ne $expectedIdentities.Count) {
+                    $harnessFailures.Add(
+                        "identity count $($actualIdentities.Count) does not match discovery $($expectedIdentities.Count)"
+                    )
+                } else {
+                    for (
+                        $identityIndex = 0;
+                        $identityIndex -lt $expectedIdentities.Count;
+                        $identityIndex++
+                    ) {
+                        if (
+                            $expectedIdentities[$identityIndex] -cne
+                            $actualIdentities[$identityIndex]
+                        ) {
+                            $harnessFailures.Add(
+                                "test identity multiset mismatch at index $identityIndex"
+                            )
+                            break
+                        }
+                    }
+                }
+
+                return [PSCustomObject]@{
+                    WorkerPayloads = $workerPayloads
+                    TotalCount = $totalCount
+                    PassedCount = $passedCount
+                    FailedCount = $failedCount
+                    SkippedCount = $skippedCount
+                    NotRunCount = $notRunCount
+                    InconclusiveCount = $inconclusiveCount
+                    FailedBlocks = $failedBlocks
+                    FailedContainers = $failedContainers
+                    ActualIdentities = $actualIdentities
                 }
             }
-            if ([int]$launch.ExitCode -ne 0) {
-                $detail = if ($payload.PSObject.Properties.Name -contains 'harnessError') { [string]$payload.harnessError } else { [string]$launch.StdErr }
-                $harnessFailures.Add("$($launch.WorkerId): child exit $($launch.ExitCode) $detail")
-            }
-            $workerPayloads.Add($payload)
-        }
-
-        $totalCount = [int](($workerPayloads | Measure-Object total -Sum).Sum)
-        $passedCount = [int](($workerPayloads | Measure-Object passed -Sum).Sum)
-        $failedCount = [int](($workerPayloads | Measure-Object failed -Sum).Sum)
-        $skippedCount = [int](($workerPayloads | Measure-Object skipped -Sum).Sum)
-        $notRunCount = [int](($workerPayloads | Measure-Object notRun -Sum).Sum)
-        $inconclusiveCount = [int](($workerPayloads | Measure-Object inconclusive -Sum).Sum)
-        $failedBlocks = [int](($workerPayloads | Measure-Object failedBlocks -Sum).Sum)
-        $failedContainers = [int](($workerPayloads | Measure-Object failedContainers -Sum).Sum)
-        $actualIdentities = @($workerPayloads.identities | ForEach-Object { [string]$_ } | Sort-Object)
-        if ($totalCount -ne [int]$discovery.total) {
-            $harnessFailures.Add("aggregate total $totalCount does not match discovery total $($discovery.total)")
-        }
-        if ($actualIdentities.Count -ne $expectedIdentities.Count) {
-            $harnessFailures.Add("identity count $($actualIdentities.Count) does not match discovery $($expectedIdentities.Count)")
-        } else {
-            for ($identityIndex = 0; $identityIndex -lt $expectedIdentities.Count; $identityIndex++) {
-                if ($expectedIdentities[$identityIndex] -cne $actualIdentities[$identityIndex]) {
-                    $harnessFailures.Add("test identity multiset mismatch at index $identityIndex")
-                    break
-                }
-            }
-        }
 
         $stopwatch.Stop()
-        $nunitPaths = @($workerPayloads.nunitPath | ForEach-Object { [string]$_ })
-        if ($nunitPaths.Count -eq $workerPayloads.Count) {
-            Merge-NUnitResults -Paths $nunitPaths -OutputPath $TestResultPath -TotalCount $totalCount -FailedCount $failedCount -ErrorsCount ($failedBlocks + $failedContainers) -SkippedCount $skippedCount -NotRunCount $notRunCount -InconclusiveCount $inconclusiveCount -DurationSeconds $stopwatch.Elapsed.TotalSeconds
+        $nunitPaths = @(
+            $aggregate.WorkerPayloads.nunitPath |
+                ForEach-Object { [string]$_ }
+        )
+        if ($nunitPaths.Count -eq $aggregate.WorkerPayloads.Count) {
+            Merge-NUnitResults `
+                -Paths $nunitPaths `
+                -OutputPath $TestResultPath `
+                -TotalCount $aggregate.TotalCount `
+                -FailedCount $aggregate.FailedCount `
+                -ErrorsCount (
+                    $aggregate.FailedBlocks + $aggregate.FailedContainers
+                ) `
+                -SkippedCount $aggregate.SkippedCount `
+                -NotRunCount $aggregate.NotRunCount `
+                -InconclusiveCount $aggregate.InconclusiveCount `
+                -DurationSeconds $stopwatch.Elapsed.TotalSeconds
         }
 
-        return [PSCustomObject]@{
+        $suiteResult = [PSCustomObject]@{
             RunId = $runId
             DurationSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 3)
             WorkerCount = $units.Count
-            TotalCount = $totalCount
-            PassedCount = $passedCount
-            FailedCount = $failedCount
-            SkippedCount = $skippedCount
-            NotRunCount = $notRunCount
-            FailedBlocksCount = $failedBlocks
-            FailedContainersCount = $failedContainers
-            IdentityHash = Get-IdentityHash -Identities $actualIdentities
+            TotalCount = $aggregate.TotalCount
+            PassedCount = $aggregate.PassedCount
+            FailedCount = $aggregate.FailedCount
+            SkippedCount = $aggregate.SkippedCount
+            NotRunCount = $aggregate.NotRunCount
+            FailedBlocksCount = $aggregate.FailedBlocks
+            FailedContainersCount = $aggregate.FailedContainers
+            IdentityHash = Get-IdentityHash -Identities $aggregate.ActualIdentities
             DiscoveryIdentityHash = Get-IdentityHash -Identities $expectedIdentities
-            HarnessFailures = $harnessFailures
+            HarnessFailures = @()
         }
     } finally {
         if ($stopwatch.IsRunning) {
@@ -936,7 +1855,26 @@ function Invoke-ParallelSuite {
                 $harnessFailures.Add("worker TEMP cleanup failed: $($_.Exception.Message)")
             }
         }
+        if ($null -ne $sourceStateBefore) {
+            try {
+                $sourceStateAfter = Get-PesterRepositoryStateIdentity `
+                    -RepositoryRoot $RepositoryRoot
+                Assert-PesterRepositoryStateIdentity `
+                    -Expected $sourceStateBefore `
+                    -Actual $sourceStateAfter
+            } catch {
+                $harnessFailures.Add([string]$_.Exception.Message)
+                if ($null -eq $suiteResult) {
+                    throw
+                }
+            }
+        }
     }
+    if ($null -eq $suiteResult) {
+        throw 'Pester parallel suite completed without an aggregate result.'
+    }
+    $suiteResult.HarnessFailures = @($harnessFailures)
+    return $suiteResult
 }
 
 if (-not [string]::IsNullOrWhiteSpace($WorkerSpecPath)) {
@@ -1028,7 +1966,10 @@ try {
         exit 1
     }
 
-    $serial = Invoke-SerialSuite -RepositoryRoot $repositoryRoot -TestResultPath $testResultPath -CoverageReportPath $coverageReportPath -PesterModule $pesterModule -EnableCoverage:$Coverage
+    $serial = Invoke-WithIsolatedGitEnvironment -ScriptBlock {
+        $serial = Invoke-SerialSuite -RepositoryRoot $repositoryRoot -TestResultPath $testResultPath -CoverageReportPath $coverageReportPath -PesterModule $pesterModule -EnableCoverage:$Coverage
+        return $serial
+    }
     $result = $serial.Result
     $passedCount = [int](Get-ObjectProperty -InputObject $result -Name 'PassedCount' -DefaultValue 0)
     $failedCount = [int](Get-ObjectProperty -InputObject $result -Name 'FailedCount' -DefaultValue 0)

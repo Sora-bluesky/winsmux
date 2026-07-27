@@ -132,6 +132,7 @@ $whitelistPatterns = @(
     'tests/McpServerContract.Tests.ps1',
     'tests/codex-subagent-worktree-guard.Tests.ps1',
     'tests/HarnessContract.Tests.ps1',
+    'tests/PesterGitIsolation.Tests.ps1',
     'tests/DeclarativeWorkflow.Tests.ps1',
     'tests/NpmReleasePackage.Tests.ps1',
     'tests/VersionSurface.Tests.ps1',
