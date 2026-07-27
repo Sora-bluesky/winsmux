@@ -23,13 +23,20 @@ use crate::workflow::normalize_workspace_plan_payload;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
 #[cfg(test)]
 use crate::workspace_recipe::normalize_workspace_plan;
-use crate::workspace_recipe::{parse_workspace_yaml, SlotCapabilities};
+use crate::workspace_recipe::parse_workspace_yaml;
 
 #[path = "workspace_builtin_provider.rs"]
 mod workspace_builtin_provider;
 use workspace_builtin_provider::resolve_provider_capability_in_registry;
 #[path = "workspace_runtime_overlays.rs"]
 mod workspace_runtime_overlays;
+mod workspace_migration;
+mod workspace_plan_resolution;
+pub use workspace_migration::run as run_workspace_migration_command;
+use workspace_plan_resolution::{
+    finalize_workspace_plan_settings_from_root_with_global_reader,
+    resolve_workspace_plan_slot_capabilities,
+};
 use workspace_runtime_overlays::{
     read_provider_registry as read_provider_registry_envelope, read_runtime_role_preferences,
     reject_retired_commander_options,
@@ -256,22 +263,7 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
     let (context_pack, options) =
         crate::context_pack::split_cli(args, parse_workspace_plan_options)?;
     let (_yaml, root, settings) = read_workspace_plan_snapshot(&options.project_dir)?;
-    let mut slots = Vec::with_capacity(settings.agent_slots.len());
-    for slot in &settings.agent_slots {
-        let effective = resolve_slot_agent_config(&options.project_dir, &settings, &slot.slot_id)
-            .map_err(|_| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "failed to resolve the effective slot catalog.",
-                )
-            })?;
-        slots.push(SlotCapabilities {
-            slot_id: slot.slot_id.clone(),
-            supports_file_edit: effective.supports_file_edit,
-            supports_verification: effective.supports_verification,
-            supports_structured_result: effective.supports_structured_result,
-        });
-    }
+    let slots = resolve_workspace_plan_slot_capabilities(&options.project_dir, &settings)?;
     let payload = normalize_workspace_plan_payload(
         &root,
         &options.recipe_id,
@@ -3706,9 +3698,11 @@ where
 {
     let raw = load_project(&project_dir.join(".winsmux.yaml"))?;
     let root = parse_workspace_yaml(&raw)?;
-    let globals = read_workspace_plan_global_settings(&mut read_global)?;
-    let project = workspace_project_settings::parse_value(&root)?;
-    let settings = finalize_bridge_settings(project_dir, &globals, &project)?;
+    let settings = finalize_workspace_plan_settings_from_root_with_global_reader(
+        project_dir,
+        &root,
+        &mut read_global,
+    )?;
     Ok((raw, root, settings))
 }
 

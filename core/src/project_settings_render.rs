@@ -108,6 +108,29 @@ pub(crate) fn run(args: &[String]) -> io::Result<()> {
         .map_err(|_| generic_error())
 }
 
+pub(crate) fn render_owned_root_settings(
+    original_yaml: &str,
+    desired_settings: serde_json::Map<String, serde_json::Value>,
+    owned_keys: &[&str],
+) -> io::Result<String> {
+    let request = RenderRequest {
+        original_yaml: original_yaml.to_string(),
+        desired_settings,
+        owned_keys: owned_keys.iter().map(|key| (*key).to_string()).collect(),
+        nested_contract: NestedContractRequest {
+            agent_slots: KeyedSequenceContractRequest {
+                identity_key: "slot_id".to_string(),
+                owned_keys: vec!["slot_id".to_string()],
+                aliases: BTreeMap::new(),
+            },
+            roles: MappingValuesContractRequest {
+                owned_keys: Vec::new(),
+            },
+        },
+    };
+    render(request).map_err(|_| generic_error())
+}
+
 fn render_from_stdin(args: &[String]) -> Result<String, ()> {
     if !args.is_empty() {
         return Err(());

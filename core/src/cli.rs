@@ -135,6 +135,7 @@ OPERATOR COMMANDS:
     dogfood                 Record and summarize private dogfooding metrics
     meta-plan               Draft a read-only multi-role planning packet
     workspace-plan          Validate and print a declarative workspace plan
+    workspace-migrate       Preview, apply, or roll back a workspace preset
     provider-capabilities   Inspect the provider capability registry contract
     skills                  Print agent-readable command skill contracts
     machine-contract        Print the hook and agent machine contract JSON
@@ -455,6 +456,7 @@ fn commands_text() -> &'static str {
   machine-contract          - Print the hook and agent machine contract JSON
   meta-plan                 - Draft a read-only multi-role planning packet
   workspace-plan            - Validate and print a declarative workspace plan
+  workspace-migrate         - Preview, apply, or roll back a workspace preset
   rust-canary               - Print the Rust default-on canary gate JSON
   manual-checklist          - Print the versioned manual validation checklist gate
   legacy-compat-gate        - Print the legacy compatibility removal inventory gate

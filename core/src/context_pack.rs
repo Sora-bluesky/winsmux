@@ -385,6 +385,15 @@ pub(crate) fn build_context_pack(
     })
 }
 
+pub(crate) fn validate_context_pack_policy(
+    root: &serde_yaml::Value,
+    pack_id: &str,
+) -> io::Result<()> {
+    normalize_policy(root, pack_id)
+        .map(|_| ())
+        .map_err(|_| context_pack_rejected())
+}
+
 fn is_context_pack_id(value: &str) -> bool {
     if value.is_empty() || value.len() > 64 || !value.is_ascii() {
         return false;

@@ -6397,8 +6397,10 @@ dependencies = [
 name = "winsmux"
 version = "0.36.29"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "crossterm",
+ "getrandom 0.3.4",
  "glob",
  "portable-pty-winsmux",
  "ratatui",

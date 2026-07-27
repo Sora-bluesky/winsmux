@@ -1,0 +1,163 @@
+schema-version: 1
+presets:
+  - preset-id: bugfix
+    display-name: Bug fix
+    purpose: Inspect, implement, and verify one defect.
+    lane-a:
+      workspace-recipes:
+        bugfix:
+          schema-version: 1
+          panes:
+            - pane-key: implement
+              workflow-role: implementer
+              slot-ref: worker-1
+              requires-capabilities: [file-edit]
+              region: main
+              worktree:
+                mode: managed
+                name-template: "{{workflow-id}}-implement"
+          startup-actions:
+            - action-id: prepare-implement-worktree
+              kind: ensure-managed-worktree
+              pane-ref: implement
+      workflows:
+        bugfix:
+          schema-version: 1
+          recipe-ref: bugfix
+          nodes:
+            - node-id: implement
+              pane-ref: implement
+              action: operator-dispatch
+      context-packs:
+        bugfix:
+          schema-version: 1
+          include: [code-map, changed-files, tests, evidence-refs]
+          limits:
+            max-files: 100
+            max-bytes: 262144
+            max-evidence-refs: 50
+          privacy:
+            raw-transcript: false
+            prompt-bodies: false
+            secrets: false
+            private-local-paths: false
+  - preset-id: review
+    display-name: Review
+    purpose: Inspect a frozen change and report bounded findings.
+    lane-a:
+      workspace-recipes:
+        review:
+          schema-version: 1
+          panes:
+            - pane-key: inspect
+              workflow-role: reviewer
+              slot-selector:
+                requires-capabilities: [review]
+              region: side
+              worktree:
+                mode: read-only-reference
+          startup-actions:
+            - action-id: prepare-review-slot
+              kind: ensure-slot-ready
+              pane-ref: inspect
+      workflows:
+        review:
+          schema-version: 1
+          recipe-ref: review
+          nodes:
+            - node-id: inspect
+              pane-ref: inspect
+              action: operator-dispatch
+      context-packs:
+        review:
+          schema-version: 1
+          include: [code-map, changed-files, tests, evidence-refs]
+          limits:
+            max-files: 100
+            max-bytes: 262144
+            max-evidence-refs: 50
+          privacy:
+            raw-transcript: false
+            prompt-bodies: false
+            secrets: false
+            private-local-paths: false
+  - preset-id: research
+    display-name: Research
+    purpose: Gather evidence and produce a source-bound result.
+    lane-a:
+      workspace-recipes:
+        research:
+          schema-version: 1
+          panes:
+            - pane-key: investigate
+              workflow-role: researcher
+              slot-selector:
+                requires-capabilities: [review]
+              region: side
+              worktree:
+                mode: read-only-reference
+          startup-actions:
+            - action-id: prepare-research-slot
+              kind: ensure-slot-ready
+              pane-ref: investigate
+      workflows:
+        research:
+          schema-version: 1
+          recipe-ref: research
+          nodes:
+            - node-id: investigate
+              pane-ref: investigate
+              action: operator-dispatch
+      context-packs:
+        research:
+          schema-version: 1
+          include: [code-map, changed-files, tests, evidence-refs]
+          limits:
+            max-files: 100
+            max-bytes: 262144
+            max-evidence-refs: 50
+          privacy:
+            raw-transcript: false
+            prompt-bodies: false
+            secrets: false
+            private-local-paths: false
+  - preset-id: benchmark
+    display-name: Benchmark
+    purpose: Run one reproducible measurement workflow.
+    lane-a:
+      workspace-recipes:
+        benchmark:
+          schema-version: 1
+          panes:
+            - pane-key: measure
+              workflow-role: benchmark-runner
+              slot-selector:
+                requires-capabilities: [review]
+              region: side
+              worktree:
+                mode: read-only-reference
+          startup-actions:
+            - action-id: prepare-benchmark-slot
+              kind: ensure-slot-ready
+              pane-ref: measure
+      workflows:
+        benchmark:
+          schema-version: 1
+          recipe-ref: benchmark
+          nodes:
+            - node-id: measure
+              pane-ref: measure
+              action: operator-dispatch
+      context-packs:
+        benchmark:
+          schema-version: 1
+          include: [code-map, changed-files, tests, evidence-refs]
+          limits:
+            max-files: 100
+            max-bytes: 262144
+            max-evidence-refs: 50
+          privacy:
+            raw-transcript: false
+            prompt-bodies: false
+            secrets: false
+            private-local-paths: false

@@ -401,16 +401,19 @@ fn bare_session_headless_server_config(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct GlobalPrefixScan {
     command_index: Option<usize>,
+    has_unknown_option: bool,
 }
 
 fn scan_global_prefix(args: &[String]) -> GlobalPrefixScan {
     let mut index = 1;
+    let mut has_unknown_option = false;
     while index < args.len() {
         match args[index].as_str() {
             "-L" | "-S" | "-f" | "-t" => {
                 if index + 1 >= args.len() {
                     return GlobalPrefixScan {
                         command_index: None,
+                        has_unknown_option,
                     };
                 }
                 index += 2;
@@ -419,23 +422,32 @@ fn scan_global_prefix(args: &[String]) -> GlobalPrefixScan {
             "-h" | "--help" | "-V" | "-v" | "--version" => {
                 return GlobalPrefixScan {
                     command_index: Some(index),
+                    has_unknown_option,
                 };
             }
-            value if value.starts_with('-') => index += 1,
+            value if value.starts_with('-') => {
+                has_unknown_option = true;
+                index += 1;
+            }
             _ => {
                 return GlobalPrefixScan {
                     command_index: Some(index),
+                    has_unknown_option,
                 };
             }
         }
     }
     GlobalPrefixScan {
         command_index: None,
+        has_unknown_option,
     }
 }
 
-fn workspace_plan_skips_startup_cleanup(args: &[String]) -> bool {
-    global_prefix_command_is(args, scan_global_prefix(args), "workspace-plan")
+fn workspace_read_or_migration_skips_startup_cleanup(args: &[String]) -> bool {
+    let scan = scan_global_prefix(args);
+    ["workspace-plan", "workspace-migrate"]
+        .into_iter()
+        .any(|command| global_prefix_command_is(args, scan, command))
 }
 
 fn global_prefix_command_is(args: &[String], scan: GlobalPrefixScan, expected: &str) -> bool {
@@ -452,7 +464,7 @@ fn command_args_from_global_prefix(
         return Vec::new();
     };
     let mut result = vec![&args[command_index]];
-    let strip_target = args[command_index] != "wait";
+    let strip_target = !matches!(args[command_index].as_str(), "wait" | "workspace-migrate");
     let mut index = command_index + 1;
     while index < args.len() {
         if strip_target && args[index] == "-t" && index + 1 < args.len() {
@@ -470,7 +482,8 @@ mod tests {
     use super::{
         bare_session_headless_server_config, is_winsmux_core_bridge_command,
         command_args_from_global_prefix, resolve_attach_session_name_from_parts,
-        scan_global_prefix, winsmux_core_script_candidates, workspace_plan_skips_startup_cleanup,
+        scan_global_prefix, winsmux_core_script_candidates,
+        workspace_read_or_migration_skips_startup_cleanup,
     };
 
     #[test]
@@ -541,21 +554,26 @@ mod tests {
     }
 
     #[test]
-    fn workspace_plan_bypasses_startup_cleanup_for_every_accepted_global_prefix() {
-        for args in [
-            vec!["winsmux", "workspace-plan"],
-            vec!["winsmux", "-L", "ops", "workspace-plan"],
-            vec!["winsmux", "-S", "socket-name", "workspace-plan"],
-            vec!["winsmux", "-f", "config", "workspace-plan"],
-            vec!["winsmux", "-t", "target", "workspace-plan"],
-            vec!["winsmux", "-C", "workspace-plan"],
-            vec!["winsmux", "-CC", "workspace-plan"],
-            vec!["winsmux", "-u", "workspace-plan"],
-            vec!["winsmux", "--unknown", "workspace-plan"],
-            vec!["winsmux", "-L", "ops", "-u", "workspace-plan"],
-        ] {
-            let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
-            assert!(workspace_plan_skips_startup_cleanup(&args), "{args:?}");
+    fn workspace_read_or_migration_bypasses_cleanup_for_every_accepted_global_prefix() {
+        for command in ["workspace-plan", "workspace-migrate"] {
+            for args in [
+                vec!["winsmux", command],
+                vec!["winsmux", "-L", "ops", command],
+                vec!["winsmux", "-S", "socket-name", command],
+                vec!["winsmux", "-f", "config", command],
+                vec!["winsmux", "-t", "target", command],
+                vec!["winsmux", "-C", command],
+                vec!["winsmux", "-CC", command],
+                vec!["winsmux", "-u", command],
+                vec!["winsmux", "--unknown", command],
+                vec!["winsmux", "-L", "ops", "-u", command],
+            ] {
+                let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
+                assert!(
+                    workspace_read_or_migration_skips_startup_cleanup(&args),
+                    "{args:?}"
+                );
+            }
         }
     }
 
@@ -574,7 +592,10 @@ mod tests {
             vec!["winsmux", "-u"],
         ] {
             let args = args.into_iter().map(str::to_string).collect::<Vec<_>>();
-            assert!(!workspace_plan_skips_startup_cleanup(&args), "{args:?}");
+            assert!(
+                !workspace_read_or_migration_skips_startup_cleanup(&args),
+                "{args:?}"
+            );
         }
     }
 
@@ -593,6 +614,10 @@ mod tests {
             (
                 vec!["winsmux", "workspace-plan", "-t", "target", "--json"],
                 vec!["workspace-plan", "--json"],
+            ),
+            (
+                vec!["winsmux", "workspace-migrate", "-t", "target", "--json"],
+                vec!["workspace-migrate", "-t", "target", "--json"],
             ),
             (
                 vec!["winsmux", "wait", "channel", "-t", "literal"],
@@ -616,6 +641,23 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "{args:?}");
         }
+    }
+
+    #[test]
+    fn workspace_migration_records_unknown_global_prefix_for_strict_rejection() {
+        let args = ["winsmux", "--surplus", "workspace-migrate", "--action", "list"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let scan = scan_global_prefix(&args);
+        assert!(scan.has_unknown_option);
+        assert_eq!(
+            command_args_from_global_prefix(&args, scan)
+                .into_iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["workspace-migrate", "--action", "list"]
+        );
     }
 
     #[cfg(windows)]
@@ -739,9 +781,10 @@ fn run_main() -> io::Result<()> {
 
     let global_prefix = scan_global_prefix(&args);
 
-    // Public workspace-plan is a read-only preview. It must not mutate session
-    // state before dispatch, including while resolving runtime global options.
-    if !global_prefix_command_is(&args, global_prefix, "workspace-plan") {
+    // Public workspace planning and migration commands own their complete state
+    // contract. Startup cleanup must not mutate unrelated session state before
+    // either command validates its inputs and reaches its declared commit point.
+    if !workspace_read_or_migration_skips_startup_cleanup(&args) {
         cleanup_stale_port_files();
     }
     
@@ -920,6 +963,12 @@ fn run_main() -> io::Result<()> {
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "meta-plan" => return operator_cli::run_meta_plan_command(&cmd_args[1..]),
         "workspace-plan" => return operator_cli::run_workspace_plan_command(&cmd_args[1..]),
+        "workspace-migrate" => {
+            return operator_cli::run_workspace_migration_command(
+                &cmd_args[1..],
+                !global_prefix.has_unknown_option,
+            )
+        }
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),
