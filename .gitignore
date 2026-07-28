@@ -102,6 +102,7 @@ tests/bridge/_helpers/*
 !tests/ReviewLatencyHardening.Tests.ps1
 !tests/Task781RuntimeCompatibility.Tests.ps1
 !tests/DeclarativeWorkflow.Tests.ps1
+!tests/PesterRuntimeContract.Tests.ps1
 !tests/V03619RepoAudit.Tests.ps1
 !tests/V03620CoordinatorFoundation.Tests.ps1
 !tests/V03621LocalRouterShadow.Tests.ps1

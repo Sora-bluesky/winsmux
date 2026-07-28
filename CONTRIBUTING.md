@@ -46,6 +46,10 @@ Keep pull requests narrow and reviewable.
 
 ## Local Validation
 
+Repository Pester validation requires PowerShell 7.6 or later. The canonical
+developer entry point is `scripts/run-tests.ps1`; this does not change the
+PowerShell 7+ requirement for installed winsmux.
+
 Use the narrowest relevant checks for your change. Common entry points include:
 
 ```powershell

@@ -35,7 +35,7 @@ User-facing progress updates must use **operator**. `Operator` is an internal ro
 3. Send: `winsmux send -t <pane> "Read .builder-prompt.txt and implement"` + Enter via `pwsh -NoProfile -File scripts/winsmux-core.ps1 keys <pane> Enter`
 4. Monitor: `winsmux capture-pane -t <pane> -p | tail -15`
 5. Verify: `git -C <worktree> diff --stat HEAD`
-6. **Operator runs tests** when the flow requires it (Builder cannot — CLM #319): `NO_COLOR=1 pwsh -Command "Invoke-Pester <worktree>/tests/ -Output Minimal"`
+6. **Operator runs tests** when the flow requires it (Builder cannot — CLM #319): `$env:NO_COLOR='1'; pwsh -NoProfile -File <worktree>/scripts/run-tests.ps1 -ResultsDirectory <repo-external-results>`
 7. Running tests is allowed; operator-side code review judgement is not. PASS/FAIL review decisions must come from a review-capable slot.
 
 ## Reviewer Dispatch

@@ -267,6 +267,11 @@ jobs:
             timeout_minutes: 12
             paths: tests/V03628PackagedRestoreGate.Tests.ps1
             full_name: ""
+          - name: pester-runtime-contract
+            result: pester-runtime-contract
+            timeout_minutes: 12
+            paths: tests/PesterRuntimeContract.Tests.ps1
+            full_name: ""
     steps:
       - uses: actions/checkout@v6
 
