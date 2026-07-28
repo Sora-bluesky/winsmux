@@ -133,10 +133,88 @@ jobs:
         working-directory: winsmux-app
         run: npm run test:automation-driver-pool
 
+  pester-runtime-contract:
+    name: Pester Runtime Contract
+    runs-on: windows-2025
+    needs: public-surface
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Derive and verify official PowerShell runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $authorityPath = Join-Path $env:GITHUB_WORKSPACE 'scripts/pester-runtime-contract.ps1'
+          $authorityText = Get-Content -LiteralPath $authorityPath -Raw -Encoding utf8
+          function Get-AuthorityLiteral {
+            param([Parameter(Mandatory = $true)][string]$Name)
+            $pattern = "(?m)^\s*" + [regex]::Escape($Name) + "\s*=\s*'(?<value>[^']+)'\s*$"
+            $match = [regex]::Match($authorityText, $pattern)
+            if (-not $match.Success) {
+              throw "Pester runtime authority does not declare '$Name'."
+            }
+            $match.Groups['value'].Value
+          }
+
+          $runtimeTrain = Get-AuthorityLiteral 'runtime_train'
+          $proofVersion = Get-AuthorityLiteral 'ci_proof_version'
+          $archiveName = Get-AuthorityLiteral 'archive_name'
+          $archiveUri = Get-AuthorityLiteral 'archive_uri'
+          $expectedSha256 = Get-AuthorityLiteral 'archive_sha256'
+          $bundlePath = Join-Path $env:GITHUB_WORKSPACE 'pester-runtime-bundle'
+          $archivePath = Join-Path $bundlePath $archiveName
+          $toolPath = Join-Path $env:RUNNER_TEMP 'winsmux-pester-runtime-proof'
+
+          New-Item -ItemType Directory -Force -Path $bundlePath | Out-Null
+          Invoke-WebRequest -Uri $archiveUri -OutFile $archivePath
+          $actualSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "PowerShell archive SHA-256 mismatch: expected $expectedSha256, got $actualSha256"
+          }
+
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $toolPath -Force
+          $runtimePath = Join-Path $toolPath 'pwsh.exe'
+          $runtimeVersion = (& $runtimePath -NoProfile -Command '$PSVersionTable.PSVersion.ToString()').Trim()
+          if ($LASTEXITCODE -ne 0 -or $runtimeVersion -ne $proofVersion) {
+            throw "Expected official PowerShell runtime $proofVersion, got '$runtimeVersion'."
+          }
+
+          $probePath = Join-Path $env:RUNNER_TEMP 'assert-pester-runtime.ps1'
+          @'
+          param([string]$RepositoryRoot)
+          $authorityPath = Join-Path $RepositoryRoot 'scripts/pester-runtime-contract.ps1'
+          . $authorityPath
+          $executable = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+          $contract = Get-WinsmuxPesterRuntimeContract -RepositoryRoot $RepositoryRoot -Executable $executable -Version $PSVersionTable.PSVersion
+          Assert-WinsmuxPesterRuntime -Contract $contract -Executable $executable -Version $PSVersionTable.PSVersion | Out-Null
+          '@ | Set-Content -LiteralPath $probePath -Encoding utf8NoBOM
+          & $runtimePath -NoProfile -NonInteractive -File $probePath -RepositoryRoot $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) {
+            throw "The verified PowerShell runtime rejected the canonical Pester authority."
+          }
+
+          [ordered]@{
+            runtime_train = $runtimeTrain
+            runtime_version = $runtimeVersion
+            archive_name = $archiveName
+            archive_uri = $archiveUri
+            archive_sha256 = $actualSha256
+          } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $bundlePath 'runtime-evidence.json') -Encoding utf8NoBOM
+
+      - name: Upload verified Pester runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: pester-runtime-contract
+          path: pester-runtime-bundle
+          if-no-files-found: error
+
   pester:
     name: Pester Tests (${{ matrix.name }})
     runs-on: windows-latest
-    needs: public-surface
+    needs:
+      - public-surface
+      - pester-runtime-contract
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
@@ -270,9 +348,37 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Download verified Pester runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: pester-runtime-contract
+          path: ${{ runner.temp }}/pester-runtime-bundle
+
+      - name: Prepare verified Pester runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundlePath = Join-Path $env:RUNNER_TEMP 'pester-runtime-bundle'
+          $evidence = Get-Content -LiteralPath (Join-Path $bundlePath 'runtime-evidence.json') -Raw -Encoding utf8 | ConvertFrom-Json
+          $archivePath = Join-Path $bundlePath ([string]$evidence.archive_name)
+          $actualSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+          if ($actualSha256 -ne [string]$evidence.archive_sha256) {
+            throw "Downloaded Pester runtime artifact does not match its verified evidence."
+          }
+          $toolPath = Join-Path $env:RUNNER_TEMP 'winsmux-pester-runtime'
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $toolPath -Force
+          $runtimePath = Join-Path $toolPath 'pwsh.exe'
+          $runtimeVersion = (& $runtimePath -NoProfile -Command '$PSVersionTable.PSVersion.ToString()').Trim()
+          if ($LASTEXITCODE -ne 0 -or $runtimeVersion -ne [string]$evidence.runtime_version) {
+            throw "Downloaded Pester runtime version does not match its verified evidence."
+          }
+          "WINSMUX_PESTER_RUNTIME=$runtimePath" | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Install Pester
         shell: pwsh
         run: |
+          $installerPath = Join-Path $env:RUNNER_TEMP 'install-pester.ps1'
+          @'
           $ErrorActionPreference = 'Stop'
           $existing = Get-Module -ListAvailable Pester |
             Where-Object { $_.Version -ge [version]'5.0.0' } |
@@ -296,13 +402,28 @@ jobs:
           }
           Import-Module Pester -MinimumVersion 5.0 -Force
           Get-Module Pester | Format-Table Name,Version,Path -AutoSize
+          '@ | Set-Content -LiteralPath $installerPath -Encoding utf8NoBOM
+          & $env:WINSMUX_PESTER_RUNTIME -NoProfile -NonInteractive -File $installerPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pester installation failed under the verified runtime."
+          }
 
       - name: Run Pester (${{ matrix.name }})
         shell: pwsh
         run: |
+          $shardScript = Join-Path $env:RUNNER_TEMP 'run-pester-shard.ps1'
+          @'
+          $ErrorActionPreference = 'Stop'
+          $authorityPath = Join-Path $env:GITHUB_WORKSPACE 'scripts/pester-runtime-contract.ps1'
+          . $authorityPath
+          $runtimeExecutable = [System.IO.Path]::GetFullPath(
+            [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+          )
+          $runtimeContract = Get-WinsmuxPesterRuntimeContract -RepositoryRoot $env:GITHUB_WORKSPACE -Executable $runtimeExecutable -Version $PSVersionTable.PSVersion
+          Assert-WinsmuxPesterRuntime -Contract $runtimeContract -Executable $runtimeExecutable -Version $PSVersionTable.PSVersion | Out-Null
           $categoryName = '${{ matrix.name }}'
           if ($categoryName -like 'bridge-*') {
-            pwsh -NoProfile -File scripts/assert-pester-shard-coverage.ps1 | Write-Host
+            & $runtimeExecutable -NoProfile -File scripts/assert-pester-shard-coverage.ps1 | Write-Host
             if ($LASTEXITCODE -ne 0) {
               throw "Bridge shard coverage gate failed."
             }
@@ -329,19 +450,43 @@ jobs:
 
           $config = New-PesterConfiguration
           $config.Run.Path = $resolvedPaths
-          $config.Run.Exit = $true
+          $config.Run.Exit = $false
+          $config.Run.PassThru = $true
           $config.Output.Verbosity = 'Detailed'
           $config.TestResult.Enabled = $true
           $config.TestResult.OutputPath = 'test-results-${{ matrix.result }}.xml'
           $config.TestResult.OutputFormat = 'NUnitXml'
-          Invoke-Pester -Configuration $config
+          $result = Invoke-Pester -Configuration $config
+          [ordered]@{
+            observation_id = [guid]::NewGuid().ToString('N')
+            pid = $PID
+            executable = $runtimeExecutable
+            version = $PSVersionTable.PSVersion.ToString()
+            result = [string]$result.Result
+            passed = [int]$result.PassedCount
+            failed = [int]$result.FailedCount
+            total = [int]$result.TotalCount
+          } | ConvertTo-Json | Set-Content -LiteralPath 'runtime-observation-${{ matrix.result }}.json' -Encoding utf8NoBOM
+          if ([int]$result.FailedCount -gt 0 -or
+              [int]$result.FailedBlocksCount -gt 0 -or
+              [int]$result.FailedContainersCount -gt 0) {
+            exit 1
+          }
+          '@ | Set-Content -LiteralPath $shardScript -Encoding utf8NoBOM
+          & $env:WINSMUX_PESTER_RUNTIME -NoProfile -NonInteractive -File $shardScript
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pester shard failed under the verified runtime."
+          }
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ matrix.result }}
-          path: test-results-${{ matrix.result }}.xml
+          path: |
+            test-results-${{ matrix.result }}.xml
+            runtime-observation-${{ matrix.result }}.json
+          if-no-files-found: error
 
   core-build-test:
     name: Core Build and Test
@@ -399,6 +544,7 @@ jobs:
       - native-lifecycle-source
       - common-contract-drift
       - pester
+      - pester-runtime-contract
       - core-build-test
       - desktop-build-test
     if: always()
@@ -414,6 +560,7 @@ jobs:
             "${{ needs.native-lifecycle-source.result }}" \
             "${{ needs.common-contract-drift.result }}" \
             "${{ needs.pester.result }}" \
+            "${{ needs.pester-runtime-contract.result }}" \
             "${{ needs.core-build-test.result }}" \
             "${{ needs.desktop-build-test.result }}"; do
             if [ "$result" != "success" ]; then

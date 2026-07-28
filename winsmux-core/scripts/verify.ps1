@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.6
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$PRNumber,
@@ -8,6 +8,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$runtimeAuthorityPath = Join-Path $ProjectDir 'scripts\pester-runtime-contract.ps1'
+if (-not (Test-Path -LiteralPath $runtimeAuthorityPath -PathType Leaf)) {
+    throw "Pester runtime contract not found: $runtimeAuthorityPath"
+}
+. $runtimeAuthorityPath
+$selectedPesterRuntime = [System.IO.Path]::GetFullPath(
+    [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+)
+$pesterRuntimeContract = Get-WinsmuxPesterRuntimeContract `
+    -RepositoryRoot $ProjectDir `
+    -Executable $selectedPesterRuntime `
+    -Version $PSVersionTable.PSVersion
+Assert-WinsmuxPesterRuntime `
+    -Contract $pesterRuntimeContract `
+    -Executable $selectedPesterRuntime `
+    -Version $PSVersionTable.PSVersion | Out-Null
 
 $checks = @()
 $allPassed = $true
@@ -23,14 +40,28 @@ try {
         }
         $verifyResults = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-verify-' + [guid]::NewGuid().ToString('N'))
         try {
-            $pwsh = Get-Command pwsh -ErrorAction Stop | Select-Object -First 1
-            & $pwsh.Source -NoProfile -File $runnerPath -ResultsDirectory $verifyResults
+            & $selectedPesterRuntime -NoProfile -File $runnerPath -ResultsDirectory $verifyResults
             $runnerExitCode = $LASTEXITCODE
             $summaryPath = Join-Path $verifyResults 'summary.json'
             if (-not (Test-Path -LiteralPath $summaryPath -PathType Leaf)) {
                 throw 'Pester runner did not produce summary.json.'
             }
             $pesterSummary = Get-Content -LiteralPath $summaryPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $pesterSummary.runtime) {
+                throw 'Pester runner summary did not include runtime evidence.'
+            }
+            Assert-WinsmuxPesterRuntime `
+                -Contract $pesterRuntimeContract `
+                -Executable ([string]$pesterSummary.runtime.executable) `
+                -Version ([version]$pesterSummary.runtime.version) | Out-Null
+            if (-not [string]::Equals(
+                [System.IO.Path]::GetFullPath([string]$pesterSummary.runtime.executable),
+                $selectedPesterRuntime,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+                throw 'Pester runner used a different executable than the parent-selected runtime.'
+            }
+            Write-Host "Pester runtime: $($pesterSummary.runtime.executable) $($pesterSummary.runtime.version)"
         } finally {
             if (Test-Path -LiteralPath $verifyResults) {
                 Remove-Item -LiteralPath $verifyResults -Recurse -Force -ErrorAction SilentlyContinue
@@ -78,7 +109,7 @@ try {
 # Check 4: PR CI status
 try {
     $ciOutput = gh pr checks $PRNumber --json name,state 2>&1
-    $ciChecks = $ciOutput | ConvertFrom-Json
+    $ciChecks = @($ciOutput | ConvertFrom-Json)
     $failedCI = @($ciChecks | Where-Object { $_.state -ne 'SUCCESS' -and $_.state -ne 'SKIPPED' })
     if ($failedCI.Count -eq 0) {
         $checks += [PSCustomObject]@{ Name = 'CI checks'; Status = 'PASS'; Detail = "$($ciChecks.Count) checks passed" }

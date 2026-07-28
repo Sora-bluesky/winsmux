@@ -124,7 +124,7 @@ Documentation or planning-only change:
 git diff --check
 pwsh -NoProfile -File scripts\audit-public-surface.ps1
 pwsh -NoProfile -File scripts\git-guard.ps1 -Mode full
-Invoke-Pester -Path tests\PublicSurfacePolicy.Tests.ps1 -PassThru
+pwsh -NoProfile -File scripts\run-tests.ps1
 ```
 
 Core contract change:
@@ -152,7 +152,6 @@ Full release gate:
 ```powershell
 git diff --check
 pwsh -NoProfile -File scripts\run-tests.ps1
-Invoke-Pester -Path tests\PublicSurfacePolicy.Tests.ps1 -PassThru
 cargo test --manifest-path core\Cargo.toml
 cmd /c "cd winsmux-app && npm run test:common-contract-package"
 cmd /c npm run build

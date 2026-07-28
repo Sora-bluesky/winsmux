@@ -1,4 +1,4 @@
-#Requires -Version 7.0
+#Requires -Version 7.6
 [CmdletBinding()]
 param(
     [ValidateRange(0, 100)]
@@ -31,6 +31,30 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$runtimeAuthorityPath = Join-Path $PSScriptRoot 'pester-runtime-contract.ps1'
+if (-not (Test-Path -LiteralPath $runtimeAuthorityPath -PathType Leaf)) {
+    throw "Pester runtime contract not found: $runtimeAuthorityPath"
+}
+. $runtimeAuthorityPath
+$currentExecutable = [System.IO.Path]::GetFullPath(
+    [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+)
+$pesterRuntimeContract = Get-WinsmuxPesterRuntimeContract `
+    -RepositoryRoot $repositoryRoot `
+    -Executable $currentExecutable `
+    -Version $PSVersionTable.PSVersion
+Assert-WinsmuxPesterRuntime `
+    -Contract $pesterRuntimeContract `
+    -Executable $currentExecutable `
+    -Version $PSVersionTable.PSVersion | Out-Null
+$pesterRuntimeSummary = [ordered]@{
+    observation_id = [guid]::NewGuid().ToString('N')
+    pid = $PID
+    executable = $currentExecutable
+    version = $PSVersionTable.PSVersion.ToString()
+}
 
 function Get-CoverageTargets {
     param([string]$RepositoryRoot)
@@ -320,7 +344,7 @@ function Invoke-IsolatedPwshWorkers {
     return $completed.ToArray()
 }
 
-function Invoke-PesterIsolated {
+function Invoke-IsolatedPester {
     param([Parameter(Mandatory = $true)]$Configuration)
 
     return & {
@@ -367,7 +391,7 @@ function Invoke-SerialSuite {
             $configuration.CodeCoverage.Path = $coverageTargets
             $configuration.CodeCoverage.OutputPath = $CoverageReportPath
         }
-        $result = Invoke-PesterIsolated -Configuration $configuration
+        $result = Invoke-IsolatedPester -Configuration $configuration
     } else {
         if ($EnableCoverage) {
             $result = Invoke-Pester (Join-Path $RepositoryRoot 'tests') -PassThru -Quiet -CodeCoverage $coverageTargets -OutputFormat NUnitXml -OutputFile $TestResultPath
@@ -383,7 +407,7 @@ function Invoke-SerialSuite {
     }
 }
 
-function Invoke-PesterWorker {
+function Invoke-TestWorker {
     param([Parameter(Mandatory = $true)][string]$SpecPath)
 
     $spec = Get-Content -LiteralPath $SpecPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
@@ -442,7 +466,7 @@ function Invoke-PesterWorker {
         }
 
         $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-        $result = Invoke-PesterIsolated -Configuration $configuration
+        $result = Invoke-IsolatedPester -Configuration $configuration
         $stopwatch.Stop()
 
         $selectedTests = if (@($spec.LineFilters).Count -gt 0) {
@@ -531,7 +555,7 @@ function Invoke-TestDiscovery {
     $configuration.Output.Verbosity = 'None'
     $configuration.TestResult.Enabled = $false
     $configuration.CodeCoverage.Enabled = $false
-    $result = Invoke-PesterIsolated -Configuration $configuration
+    $result = Invoke-IsolatedPester -Configuration $configuration
 
     if (($result.FailedBlocksCount -gt 0) -or ($result.FailedContainersCount -gt 0)) {
         throw "Pester discovery failed: blocks=$($result.FailedBlocksCount) containers=$($result.FailedContainersCount)"
@@ -769,7 +793,7 @@ function Invoke-ParallelSuite {
     $harnessFailures = [System.Collections.Generic.List[string]]::new()
     try {
         $runnerPath = $PSCommandPath
-        $pwshPath = (Get-Command pwsh -ErrorAction Stop | Select-Object -First 1).Source
+        $pwshPath = $currentExecutable
         $discoveryRoot = Join-Path $workerResultsRoot '000-discovery'
         $discoveryTemp = Join-Path $executionRoot '000-discovery'
         $discoveryProject = Join-Path $discoveryTemp 'project'
@@ -947,15 +971,14 @@ if (-not [string]::IsNullOrWhiteSpace($WorkerSpecPath)) {
         New-Item -ItemType Directory -Path (Split-Path -Parent $WorkerStdOutPath) -Force | Out-Null
         New-Item -ItemType Directory -Path (Split-Path -Parent $WorkerStdErrPath) -Force | Out-Null
         & {
-            $script:workerExitCode = Invoke-PesterWorker -SpecPath ([System.IO.Path]::GetFullPath($WorkerSpecPath))
+            $script:workerExitCode = Invoke-TestWorker -SpecPath ([System.IO.Path]::GetFullPath($WorkerSpecPath))
         } 1> $WorkerStdOutPath 2> $WorkerStdErrPath
     } else {
-        $workerExitCode = Invoke-PesterWorker -SpecPath ([System.IO.Path]::GetFullPath($WorkerSpecPath))
+        $workerExitCode = Invoke-TestWorker -SpecPath ([System.IO.Path]::GetFullPath($WorkerSpecPath))
     }
     exit $workerExitCode
 }
 
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 if ([string]::IsNullOrWhiteSpace($ResultsDirectory)) {
     $ResultsDirectory = Join-Path $repositoryRoot 'artifacts\test-results'
 } else {
@@ -973,7 +996,7 @@ foreach ($stalePath in @($testResultPath, $coverageReportPath, $summaryPath)) {
 
 $pesterModule = Get-PesterModule
 if (-not $pesterModule) {
-    Write-TestSummary -Path $summaryPath -PassedCount 0 -FailedCount 1 -TotalCount 0 -CoveragePercent $null -CoverageThreshold $CoverageThreshold -Additional @{ mode = 'unavailable' }
+    Write-TestSummary -Path $summaryPath -PassedCount 0 -FailedCount 1 -TotalCount 0 -CoveragePercent $null -CoverageThreshold $CoverageThreshold -Additional @{ mode = 'unavailable'; runtime = $pesterRuntimeSummary }
     Write-Output 'Pester: module not found'
     Write-Output 'Coverage: unavailable'
     exit 1
@@ -1011,6 +1034,7 @@ try {
             identityHash = $parallelResult.IdentityHash
             discoveryIdentityHash = $parallelResult.DiscoveryIdentityHash
             harnessFailures = @($parallelResult.HarnessFailures)
+            runtime = $pesterRuntimeSummary
         }
         Write-TestSummary -Path $summaryPath -PassedCount $parallelResult.PassedCount -FailedCount $parallelResult.FailedCount -TotalCount $parallelResult.TotalCount -CoveragePercent $null -CoverageThreshold $CoverageThreshold -Additional $additional
         Write-Output ('Pester: Passed={0} Failed={1} Total={2}' -f $parallelResult.PassedCount, $parallelResult.FailedCount, $parallelResult.TotalCount)
@@ -1050,6 +1074,7 @@ try {
         durationSeconds = $serial.DurationSeconds
         workerCount = 1
         identityHash = Get-IdentityHash -Identities $identities
+        runtime = $pesterRuntimeSummary
     }
     Write-TestSummary -Path $summaryPath -PassedCount $passedCount -FailedCount $failedCount -TotalCount $totalCount -CoveragePercent $coveragePercent -CoverageThreshold $CoverageThreshold -Additional $additional
     Write-Output ('Pester: Passed={0} Failed={1} Total={2}' -f $passedCount, $failedCount, $totalCount)
@@ -1072,7 +1097,7 @@ try {
     }
     exit 1
 } catch {
-    Write-TestSummary -Path $summaryPath -PassedCount 0 -FailedCount 1 -TotalCount 0 -CoveragePercent $null -CoverageThreshold $CoverageThreshold -Additional @{ mode = 'harness-error'; error = $_.Exception.Message }
+    Write-TestSummary -Path $summaryPath -PassedCount 0 -FailedCount 1 -TotalCount 0 -CoveragePercent $null -CoverageThreshold $CoverageThreshold -Additional @{ mode = 'harness-error'; error = $_.Exception.Message; runtime = $pesterRuntimeSummary }
     Write-Output 'Pester: Passed=0 Failed=1 Total=0'
     Write-Output $(if ($Coverage) { 'Coverage: unavailable' } else { 'Coverage: disabled' })
     Write-Error $_

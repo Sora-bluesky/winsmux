@@ -1,11 +1,12 @@
 # Pester Tests
 
-Requires `Pester` 5.0 or later.
+Requires PowerShell 7.6.x and `Pester` 5.0 or later. This requirement applies
+to the official developer Pester runner; product PowerShell support remains 7+.
 
 ## Run
 
 ```powershell
-Invoke-Pester -Configuration (Import-PowerShellDataFile tests/.pester.ps1)
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-tests.ps1
 ```
 
 ## Naming Convention

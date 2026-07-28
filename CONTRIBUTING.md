@@ -48,6 +48,9 @@ Keep pull requests narrow and reviewable.
 
 Use the narrowest relevant checks for your change. Common entry points include:
 
+Run the canonical Pester entry from PowerShell 7.6.x; product PowerShell
+support remains 7+.
+
 ```powershell
 cargo test --workspace
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/run-tests.ps1

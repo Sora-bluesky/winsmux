@@ -75,8 +75,7 @@ Run these checks before tagging the version:
 
 ```powershell
 git diff --check
-Invoke-Pester -Path tests\ThreatModelContract.Tests.ps1 -PassThru
-Invoke-Pester -Path tests\PublicSurfacePolicy.Tests.ps1 -PassThru
+pwsh -NoProfile -File scripts\run-tests.ps1
 pwsh -NoProfile -File scripts\audit-public-surface.ps1
 pwsh -NoProfile -File scripts\git-guard.ps1 -Mode full
 ```

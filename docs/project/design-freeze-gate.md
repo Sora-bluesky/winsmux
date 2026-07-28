@@ -105,8 +105,12 @@ For v0.36.24, the release PR must stop until these checks are satisfied:
 
 Run these checks for this gate itself:
 
+The public-surface assertions for this document are owned by
+`tests/PublicSurfacePolicy.Tests.ps1`; invoke them only through the canonical
+full-suite runner below.
+
 ```powershell
-pwsh -NoProfile -Command "Import-Module Pester -MinimumVersion 5.0; Invoke-Pester -Path tests/PublicSurfacePolicy.Tests.ps1 -FullName '*design-freeze gate*' -PassThru"
+pwsh -NoProfile -File scripts/run-tests.ps1
 pwsh -NoProfile -File scripts/audit-public-surface.ps1
 pwsh -NoProfile -File .githooks/pre-commit-whitelist.ps1
 rg -n "p(s)?mux|t[m]ux" docs/project/design-freeze-gate.md
