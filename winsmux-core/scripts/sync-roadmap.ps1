@@ -371,6 +371,7 @@ function ConvertFrom-TaskBlock {
         title         = ''
         status        = ''
         priority      = ''
+        roadmap_order = ''
         target_version = ''
         repo          = ''
         files         = @()
@@ -426,6 +427,7 @@ function ConvertFrom-TaskBlock {
         Title         = $values['title']
         Status        = $values['status']
         Priority      = $values['priority']
+        RoadmapOrder  = $values['roadmap_order']
         TargetVersion = $values['target_version']
         Repo          = $values['repo']
         Files         = @($values['files'])
@@ -681,77 +683,80 @@ function Get-StatusLabel {
     }
 }
 
+function Assert-RoadmapDependencyIdsExist {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$Tasks,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$TaskVersionById
+    )
+
+    foreach ($task in $Tasks) {
+        foreach ($dependencyId in @($task.DependsOn)) {
+            if (-not $TaskVersionById.ContainsKey($dependencyId)) {
+                throw ('Roadmap dependency validation failed: task {0} in {1} references missing dependency {2}.' -f $task.Id, $task.TargetVersion, $dependencyId)
+            }
+        }
+    }
+}
+
 function Get-RoadmapTaskOrder {
     param(
         [Parameter(Mandatory = $true)]
         [object[]]$Tasks,
 
         [Parameter(Mandatory = $true)]
-        [string]$Version,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$TaskVersionById
+        [string]$Version
     )
 
     $activeTasks = @($Tasks | Where-Object { $_.Status -ne 'cancelled' })
-    $byId = @{}
-    $inDegree = @{}
-    $dependents = @{}
-    foreach ($task in $activeTasks) {
-        $byId[$task.Id] = $task
-        $inDegree[$task.Id] = 0
-        $dependents[$task.Id] = New-Object System.Collections.Generic.List[string]
-    }
+    $tasksWithExplicitOrder = @($activeTasks | Where-Object { -not [string]::IsNullOrWhiteSpace($_.RoadmapOrder) })
 
-    foreach ($task in $activeTasks) {
-        foreach ($dependencyId in @($task.DependsOn)) {
-            # A task in another release is visible in its own release only; it does
-            # not constrain this release's execution order.
-            if (-not $byId.ContainsKey($dependencyId)) {
-                if (-not $TaskVersionById.ContainsKey($dependencyId)) {
-                    throw ('Roadmap dependency validation failed: task {0} in {1} references missing dependency {2}.' -f $task.Id, $Version, $dependencyId)
-                }
-                continue
-            }
-
-            $inDegree[$task.Id]++
-            $dependents[$dependencyId].Add($task.Id)
-        }
-    }
-
-    $remaining = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::Ordinal)
-    foreach ($task in $activeTasks) {
-        $null = $remaining.Add($task.Id)
-    }
-
-    $ordered = New-Object System.Collections.Generic.List[object]
-    while ($remaining.Count -gt 0) {
-        $ready = @(
-            $remaining |
-                Where-Object { $inDegree[$_] -eq 0 } |
-                ForEach-Object { $byId[$_] } |
+    if ($tasksWithExplicitOrder.Count -eq 0) {
+        return @(
+            $activeTasks |
                 Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } }
         )
-        if ($ready.Count -eq 0) {
-            $unresolved = @(
-                $remaining |
-                    ForEach-Object { $byId[$_] } |
-                    Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } }
-            )
-            throw ('Roadmap dependency validation failed: same-version cycle in {0}; unconsumed tasks: {1}.' -f $Version, (($unresolved | ForEach-Object { $_.Id }) -join ', '))
+    }
+
+    $missingOrder = @(
+        $activeTasks |
+            Where-Object { [string]::IsNullOrWhiteSpace($_.RoadmapOrder) } |
+            Sort-Object @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } } |
+            ForEach-Object { $_.Id }
+    )
+    if ($missingOrder.Count -gt 0) {
+        throw ('Roadmap order validation failed: version {0} requires roadmap_order for every rendered task; missing: {1}.' -f $Version, ($missingOrder -join ', '))
+    }
+
+    $orderByTaskId = @{}
+    $taskIdByOrder = @{}
+    foreach ($task in $activeTasks) {
+        $rawOrder = ([string]$task.RoadmapOrder).Trim()
+        [long]$parsedOrder = 0
+        if ($rawOrder -notmatch '^\d+$' -or -not [long]::TryParse($rawOrder, [ref]$parsedOrder) -or $parsedOrder -le 0) {
+            throw ('Roadmap order validation failed: task {0} in {1} has invalid roadmap_order {2}; expected a positive integer.' -f $task.Id, $Version, $rawOrder)
         }
 
-        # Re-evaluate readiness after every selection. A newly unblocked P0 task
-        # must outrank a P1 task that was already ready.
-        $task = $ready[0]
-        $null = $remaining.Remove($task.Id)
-        $ordered.Add($task)
-        foreach ($dependentId in $dependents[$task.Id]) {
-            $inDegree[$dependentId]--
+        if ($taskIdByOrder.ContainsKey($parsedOrder)) {
+            throw ('Roadmap order validation failed: version {0} reuses roadmap_order {1} for tasks {2} and {3}.' -f $Version, $parsedOrder, $taskIdByOrder[$parsedOrder], $task.Id)
+        }
+
+        $orderByTaskId[$task.Id] = $parsedOrder
+        $taskIdByOrder[$parsedOrder] = $task.Id
+    }
+
+    for ([long]$expectedOrder = 1; $expectedOrder -le $activeTasks.Count; $expectedOrder++) {
+        if (-not $taskIdByOrder.ContainsKey($expectedOrder)) {
+            throw ('Roadmap order validation failed: version {0} must use contiguous roadmap_order values 1..{1}; missing {2}.' -f $Version, $activeTasks.Count, $expectedOrder)
         }
     }
 
-    return @($ordered.ToArray())
+    return @(
+        $activeTasks |
+            Sort-Object @{ Expression = { $orderByTaskId[$_.Id] } }
+    )
 }
 
 function Test-RoadmapVersionFullyDone {
@@ -902,6 +907,7 @@ $taskVersionById = @{}
 foreach ($task in $tasks) {
     $taskVersionById[$task.Id] = $task.TargetVersion
 }
+Assert-RoadmapDependencyIdsExist -Tasks $tasks -TaskVersionById $taskVersionById
 
 $downgradedTasks = New-Object System.Collections.Generic.List[object]
 $validationWarnings = New-Object System.Collections.Generic.List[string]
@@ -986,12 +992,13 @@ $builder = [System.Text.StringBuilder]::new()
 [void]$builder.AppendLine('# ロードマップ')
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('> 外部の計画ファイルから自動生成しています。手で直接編集しないでください。')
-[void]$builder.AppendLine(('> 最終同期: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm (zzz)')))
+[void]$builder.AppendLine('> 同じ計画入力からは同じ内容を生成します。')
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('## 読み方')
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('- まず「バージョン概要」で、どの版が終わっているかを確認します。')
-[void]$builder.AppendLine('- 次に「これから進めるタスク」で、依存関係を満たす実行順を確認します。')
+[void]$builder.AppendLine('- 直近の表は、計画で明示した表示順を確認するための一覧です。`roadmap_order`が未指定の版だけは、優先度とTask IDで決定的に並べます。')
+[void]$builder.AppendLine('- 依存は計画上の宣言です。版をまたぐ依存や循環を含め、実行可否は各タスクの完了契約で確認します。')
 [void]$builder.AppendLine('- 完了済みの古い版は、詳細を畳んでいます。必要な時は GitHub Release を見ます。')
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('## バージョン概要')
@@ -1013,9 +1020,9 @@ foreach ($versionGroup in $versionGroups) {
 }
 
 [void]$builder.AppendLine()
-[void]$builder.AppendLine('## これから進めるタスク')
+[void]$builder.AppendLine('## 直近のタスク')
 [void]$builder.AppendLine()
-[void]$builder.AppendLine('各版では、依存先を先に置き、同時に着手できるタスクは優先度順に並べます。')
+[void]$builder.AppendLine('完了・未完了を含め、取りやめを除いたタスクを計画上の表示順で示します。')
 [void]$builder.AppendLine('詳細表示は、現在の作業版から v1.0.0 までに絞っています。')
 [void]$builder.AppendLine('長期版は、未完了のタスクだけを後ろの一覧で確認できます。')
 [void]$builder.AppendLine()
@@ -1030,6 +1037,9 @@ foreach ($versionGroup in $versionGroups) {
     }
 
     $visibleTasks = @($versionGroup.Group | Where-Object { $_.Status -ne 'cancelled' })
+    if ($visibleTasks.Count -eq 0) {
+        continue
+    }
 
     $vName = $versionGroup.Name
     $defaultVersionTitle = if ($versionTitles.Contains($vName)) { $versionTitles[$vName] } else { '' }
@@ -1037,15 +1047,16 @@ foreach ($versionGroup in $versionGroups) {
     $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
     [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
     [void]$builder.AppendLine()
-    [void]$builder.AppendLine('| 順 | ID | やること | 優先度 | 状態 |')
-    [void]$builder.AppendLine('|----|----|----------|--------|------|')
+    [void]$builder.AppendLine('| 順 | Task | 状態 | 依存 | やること |')
+    [void]$builder.AppendLine('|----|------|------|------|----------|')
 
-    $sortedTasks = @(Get-RoadmapTaskOrder -Tasks $visibleTasks -Version $vName -TaskVersionById $taskVersionById)
+    $sortedTasks = @(Get-RoadmapTaskOrder -Tasks $visibleTasks -Version $vName)
     $sequence = 0
     foreach ($task in $sortedTasks) {
         $sequence++
         $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
-        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $sequence, $task.Id, $localizedTaskTitle.Title, (Get-PriorityLabel -Priority $task.Priority), (Get-StatusLabel -Status $task.Status)))
+        $dependencies = if (@($task.DependsOn).Count -gt 0) { @($task.DependsOn) -join ', ' } else { '—' }
+        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $sequence, $task.Id, (Get-StatusLabel -Status $task.Status), $dependencies, $localizedTaskTitle.Title))
     }
 
     [void]$builder.AppendLine()
@@ -1054,7 +1065,7 @@ foreach ($versionGroup in $versionGroups) {
 [void]$builder.AppendLine('## 長期計画の未完了タスク')
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('この表は、直近の詳細欄に出していない長期版の未完了タスクを確認するための一覧です。')
-[void]$builder.AppendLine('版ごとの見出しを保ち、依存順と優先度を同じ読み方で確認できます。')
+[void]$builder.AppendLine('版ごとの見出しを保ち、計画上の表示順と依存宣言を確認できます。')
 [void]$builder.AppendLine()
 
 foreach ($versionGroup in $versionGroups) {
@@ -1077,29 +1088,20 @@ foreach ($versionGroup in $versionGroups) {
     $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
     [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
     [void]$builder.AppendLine()
-    [void]$builder.AppendLine('| 順 | ID | やること | 優先度 | 状態 |')
-    [void]$builder.AppendLine('|----|----|----------|--------|------|')
+    [void]$builder.AppendLine('| 順 | Task | 状態 | 依存 | やること |')
+    [void]$builder.AppendLine('|----|------|------|------|----------|')
 
-    $sortedTasks = @(Get-RoadmapTaskOrder -Tasks $visibleTasks -Version $vName -TaskVersionById $taskVersionById)
+    $sortedTasks = @(Get-RoadmapTaskOrder -Tasks $visibleTasks -Version $vName)
     $sequence = 0
     foreach ($task in $sortedTasks) {
         $sequence++
         $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
-        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $sequence, $task.Id, $localizedTaskTitle.Title, (Get-PriorityLabel -Priority $task.Priority), (Get-StatusLabel -Status $task.Status)))
+        $dependencies = if (@($task.DependsOn).Count -gt 0) { @($task.DependsOn) -join ', ' } else { '—' }
+        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $sequence, $task.Id, (Get-StatusLabel -Status $task.Status), $dependencies, $localizedTaskTitle.Title))
     }
 
     [void]$builder.AppendLine()
 }
-
-[void]$builder.AppendLine()
-[void]$builder.AppendLine('## 凡例')
-[void]$builder.AppendLine()
-[void]$builder.AppendLine('| 優先度 | 意味 |')
-[void]$builder.AppendLine('|--------|------|')
-[void]$builder.AppendLine('| P0 | 最重要 |')
-[void]$builder.AppendLine('| P1 | 高 |')
-[void]$builder.AppendLine('| P2 | 中 |')
-[void]$builder.AppendLine('| P3 | 低 |')
 
 foreach ($downgradedTask in $downgradedTasks) {
     Write-Output ("Downgraded {0}: review -> backlog (gitignored: {1})" -f $downgradedTask.Id, ($downgradedTask.Files -join ', '))

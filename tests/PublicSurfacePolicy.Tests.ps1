@@ -175,7 +175,7 @@ Describe 'Public surface policy' {
         }
     }
 
-    It 'renders roadmap tasks in dependency-safe priority order with Japanese five-column tables' {
+    It 'renders roadmap tasks in curated order with Japanese five-column tables' {
         $backlog = Join-Path $TestDrive 'roadmap-backlog.yaml'
         $roadmap = Join-Path $TestDrive 'ROADMAP.md'
         $titles = Join-Path $TestDrive 'roadmap-title-ja.psd1'
@@ -191,6 +191,7 @@ Describe 'Public surface policy' {
         Set-Content -LiteralPath $titles -Encoding UTF8 -Value @'
 @{
     VersionTitles = @{
+        "v0.36.29" = "完了済みの旧版"
         "v0.36.30" = "現在版"
         "v0.36.31" = "次版"
         "v1.2.0" = "長期版"
@@ -203,7 +204,10 @@ Describe 'Public surface policy' {
         "TASK-104" = "ブロック形式の依存"
         "TASK-105" = "後続の依存"
         "TASK-106" = "別版の依存"
+        "TASK-107" = "別版の優先度順"
+        "TASK-108" = "完了済みの旧作業"
         "TASK-110" = "長期の作業"
+        "TASK-111" = "長期の完了済み作業"
         "TASK-120" = "欠落参照"
         "TASK-130" = "循環一"
         "TASK-131" = "循環二"
@@ -220,27 +224,32 @@ tasks:
     title: consumer
     status: todo
     priority: P0
+    roadmap_order: 6
     target_version: v0.36.30
     depends_on: [TASK-101]
   - id: TASK-101
     title: prerequisite
     status: done
     priority: P3
+    roadmap_order: 5
     target_version: v0.36.30
   - id: TASK-102
     title: medium
     status: todo
     priority: P1
+    roadmap_order: 3
     target_version: v0.36.30
   - id: TASK-103
     title: highest
     status: wip
     priority: P0
+    roadmap_order: 1
     target_version: v0.36.30
   - id: TASK-104
     title: block dependency
     status: todo
     priority: P0
+    roadmap_order: 2
     target_version: v0.36.30
     depends_on:
       - TASK-103
@@ -248,18 +257,34 @@ tasks:
     title: later dependency
     status: todo
     priority: P2
+    roadmap_order: 4
     target_version: v0.36.30
-    depends_on: [TASK-104]
+    depends_on: [TASK-104, TASK-103]
   - id: TASK-106
     title: cross release
     status: todo
     priority: P0
     target_version: v0.36.31
     depends_on: [TASK-100]
+  - id: TASK-107
+    title: next priority
+    status: todo
+    priority: P1
+    target_version: v0.36.31
+  - id: TASK-108
+    title: completed historical
+    status: done
+    priority: P0
+    target_version: v0.36.29
   - id: TASK-110
     title: long term
     status: todo
     priority: P0
+    target_version: v1.2.0
+  - id: TASK-111
+    title: completed long term
+    status: done
+    priority: P1
     target_version: v1.2.0
 '@
 
@@ -275,16 +300,29 @@ tasks:
         $rendered.IndexOf('TASK-102') | Should -BeLessThan $rendered.IndexOf('TASK-105')
         $rendered.IndexOf('TASK-105') | Should -BeLessThan $rendered.IndexOf('TASK-101')
         $rendered.IndexOf('TASK-101') | Should -BeLessThan $rendered.IndexOf('TASK-100')
-        $rendered.IndexOf('TASK-104') | Should -BeLessThan $rendered.IndexOf('TASK-105')
+        $rendered.IndexOf('TASK-106') | Should -BeLessThan $rendered.IndexOf('TASK-107')
         $rendered | Should -Match '### v0\.36\.31: 次版'
         $rendered | Should -Match '### v1\.2\.0: 長期版'
-        $rendered | Should -Match '\| 順 \| ID \| やること \| 優先度 \| 状態 \|'
-        $rendered | Should -Match '\| 1 \| TASK-103 \| 優先度最優先 \| P0 最優先 \| 作業中 \|'
-        $rendered | Should -Match '\| 5 \| TASK-101 \| 完了済みの前提 \| P3 低 \| 完了 \|'
+        $rendered | Should -Match '\| 順 \| Task \| 状態 \| 依存 \| やること \|'
+        $rendered | Should -Match '\| 1 \| TASK-103 \| 作業中 \| — \| 優先度最優先 \|'
+        $rendered | Should -Match '\| 2 \| TASK-104 \| 未着手 \| TASK-103 \| ブロック形式の依存 \|'
+        $rendered | Should -Match '\| 4 \| TASK-105 \| 未着手 \| TASK-104, TASK-103 \| 後続の依存 \|'
+        $rendered | Should -Match '\| 5 \| TASK-101 \| 完了 \| — \| 完了済みの前提 \|'
+        $rendered | Should -Match '\| 1 \| TASK-106 \| 未着手 \| TASK-100 \| 別版の依存 \|'
+        $rendered | Should -Not -Match '### v0\.36\.29'
+        $rendered | Should -Not -Match 'TASK-108'
+        $rendered | Should -Not -Match 'TASK-111'
         $rendered | Should -Not -Match '\|\s*対象\s*\|'
+        $rendered | Should -Not -Match '\| 順 \| ID \|'
+        $rendered | Should -Not -Match '\|\s*優先度\s*\|'
         $rendered | Should -Not -Match '一意な責任'
         $rendered | Should -Not -Match '\b(todo|wip)\b'
         $rendered | Should -Not -Match '\[x\]|\[-\]|\[R\]|\[ \]'
+
+        $firstBytes = [System.IO.File]::ReadAllBytes($roadmap)
+        $output = @(& pwsh -NoProfile -File $syncScript -BacklogPath $backlog -RoadmapPath $roadmap -RoadmapTitleJaPath $titles 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        [System.IO.File]::ReadAllBytes($roadmap) | Should -Be $firstBytes
 
         Set-Content -LiteralPath $backlog -Encoding UTF8 -Value @'
 # === v0.36.30: current ===
@@ -299,6 +337,7 @@ tasks:
         $output = @(& pwsh -NoProfile -File $syncScript -BacklogPath $backlog -RoadmapPath $roadmap -RoadmapTitleJaPath $titles 2>&1)
         $LASTEXITCODE | Should -Be 1
         ($output -join "`n") | Should -Match 'task TASK-120 in v0\.36\.30 references missing dependency TASK-999'
+        [System.IO.File]::ReadAllBytes($roadmap) | Should -Be $firstBytes
 
         Set-Content -LiteralPath $backlog -Encoding UTF8 -Value @'
 # === v0.36.30: current ===
@@ -307,18 +346,102 @@ tasks:
     title: first cycle
     status: todo
     priority: P1
+    roadmap_order: 2
     target_version: v0.36.30
     depends_on: [TASK-131]
   - id: TASK-131
     title: second cycle
     status: todo
     priority: P0
+    roadmap_order: 1
     target_version: v0.36.30
     depends_on: [TASK-130]
 '@
         $output = @(& pwsh -NoProfile -File $syncScript -BacklogPath $backlog -RoadmapPath $roadmap -RoadmapTitleJaPath $titles 2>&1)
-        $LASTEXITCODE | Should -Be 1
-        ($output -join "`n") | Should -Match 'same-version cycle in v0\.36\.30; unconsumed tasks: TASK-131, TASK-130'
+        $LASTEXITCODE | Should -Be 0
+        $rendered = Get-Content -LiteralPath $roadmap -Raw
+        $rendered | Should -Match '\| 1 \| TASK-131 \| 未着手 \| TASK-130 \| 循環二 \|'
+        $rendered | Should -Match '\| 2 \| TASK-130 \| 未着手 \| TASK-131 \| 循環一 \|'
+
+        $invalidOrderCases = @(
+            [pscustomobject]@{ Name = 'all-or-none'; Body = @'
+  - id: TASK-140
+    title: first
+    status: todo
+    priority: P0
+    roadmap_order: 1
+    target_version: v0.36.30
+  - id: TASK-141
+    title: second
+    status: todo
+    priority: P1
+    target_version: v0.36.30
+'@; Pattern = 'requires roadmap_order for every rendered task' },
+            [pscustomobject]@{ Name = 'duplicate'; Body = @'
+  - id: TASK-142
+    title: first
+    status: todo
+    priority: P0
+    roadmap_order: 1
+    target_version: v0.36.30
+  - id: TASK-143
+    title: second
+    status: todo
+    priority: P1
+    roadmap_order: 1
+    target_version: v0.36.30
+'@; Pattern = 'reuses roadmap_order 1' },
+            [pscustomobject]@{ Name = 'gap'; Body = @'
+  - id: TASK-144
+    title: first
+    status: todo
+    priority: P0
+    roadmap_order: 1
+    target_version: v0.36.30
+  - id: TASK-145
+    title: second
+    status: todo
+    priority: P1
+    roadmap_order: 3
+    target_version: v0.36.30
+'@; Pattern = 'must use contiguous roadmap_order values 1\.\.2; missing 2' },
+            [pscustomobject]@{ Name = 'non-positive'; Body = @'
+  - id: TASK-146
+    title: first
+    status: todo
+    priority: P0
+    roadmap_order: 0
+    target_version: v0.36.30
+  - id: TASK-147
+    title: second
+    status: todo
+    priority: P1
+    roadmap_order: 2
+    target_version: v0.36.30
+'@; Pattern = 'invalid roadmap_order 0' },
+            [pscustomobject]@{ Name = 'non-integer'; Body = @'
+  - id: TASK-148
+    title: first
+    status: todo
+    priority: P0
+    roadmap_order: one
+    target_version: v0.36.30
+  - id: TASK-149
+    title: second
+    status: todo
+    priority: P1
+    roadmap_order: 2
+    target_version: v0.36.30
+'@; Pattern = 'invalid roadmap_order one' }
+        )
+        $preservedBytes = [System.IO.File]::ReadAllBytes($roadmap)
+        foreach ($case in $invalidOrderCases) {
+            Set-Content -LiteralPath $backlog -Encoding UTF8 -Value ("# === v0.36.30: current ===`ntasks:`n" + $case.Body)
+            $output = @(& pwsh -NoProfile -File $syncScript -BacklogPath $backlog -RoadmapPath $roadmap -RoadmapTitleJaPath $titles 2>&1)
+            $LASTEXITCODE | Should -Be 1 -Because $case.Name
+            ($output -join "`n") | Should -Match $case.Pattern
+            [System.IO.File]::ReadAllBytes($roadmap) | Should -Be $preservedBytes
+        }
     }
 
     It 'keeps the tracked roadmap title example scrubbed of live planning data' {
