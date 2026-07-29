@@ -1552,7 +1552,7 @@ tasks:
     It 'includes a four-component release in the focus detail section' {
         $script:SyncExitCode | Should -Be 0 -Because $script:SyncOutput
         $script:RoadmapLines | Should -Contain '### v0.36.28.1: 4要素の修正版'
-        $script:RoadmapLines | Should -Contain '| [ ] | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | winsmux | todo |'
+        $script:RoadmapLines | Should -Contain '| 1 | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | 未着手 |'
         $script:RoadmapLines | Should -Not -Contain '| v0.36.28.1 | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | winsmux | todo |'
     }
 

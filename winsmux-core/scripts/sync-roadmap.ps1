@@ -1062,6 +1062,10 @@ foreach ($versionGroup in $versionGroups) {
         continue
     }
 
+    if (-not (Test-RequiresJapaneseVersionTitle -Version $versionGroup.Name)) {
+        continue
+    }
+
     $visibleTasks = @($versionGroup.Group | Where-Object { $_.Status -ne 'done' -and $_.Status -ne 'cancelled' })
     if ($visibleTasks.Count -eq 0) {
         continue
