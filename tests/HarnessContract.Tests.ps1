@@ -1547,13 +1547,272 @@ tasks:
         $script:SyncExitCode = $LASTEXITCODE
         $script:SyncOutput = $syncOutput -join "`n"
         $script:RoadmapLines = @(Get-Content -LiteralPath $roadmapPath -Encoding UTF8)
+
+        $script:InvokeRoadmapRendererFixture = {
+            param(
+                [Parameter(Mandatory = $true)]
+                [string]$FixtureName,
+
+                [Parameter(Mandatory = $true)]
+                [string]$BacklogContent,
+
+                [Parameter(Mandatory = $true)]
+                [string]$TitleContent
+            )
+
+            $fixtureRoot = Join-Path $TestDrive $FixtureName
+            $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+            $roadmapPath = Join-Path $fixtureRoot 'ROADMAP.md'
+            $titlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+
+            New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+            Set-Content -LiteralPath $backlogPath -Encoding utf8NoBOM -Value $BacklogContent
+            Set-Content -LiteralPath $titlePath -Encoding utf8NoBOM -Value $TitleContent
+
+            $syncOutput = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                    -BacklogPath $backlogPath `
+                    -RoadmapPath $roadmapPath `
+                    -RoadmapTitleJaPath $titlePath 2>&1)
+
+            return [pscustomobject]@{
+                ExitCode    = $LASTEXITCODE
+                Output      = $syncOutput -join "`n"
+                BacklogPath = $backlogPath
+                RoadmapPath = $roadmapPath
+                TitlePath   = $titlePath
+                Lines       = @(Get-Content -LiteralPath $roadmapPath -Encoding UTF8)
+            }
+        }
     }
 
     It 'includes a four-component release in the focus detail section' {
         $script:SyncExitCode | Should -Be 0 -Because $script:SyncOutput
         $script:RoadmapLines | Should -Contain '### v0.36.28.1: 4要素の修正版'
-        $script:RoadmapLines | Should -Contain '| [ ] | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | winsmux | todo |'
+        $script:RoadmapLines | Should -Contain '| 1 | TASK-FOUR-PATCH | 未着手 | — | 4要素の修正タスク |'
         $script:RoadmapLines | Should -Not -Contain '| v0.36.28.1 | TASK-FOUR-PATCH | 4要素の修正タスク | P0 最優先 | winsmux | todo |'
+    }
+
+    It 'RR813-01 renders a complete explicit order before priority and task ID in the five-column detail table' {
+        $result = & $script:InvokeRoadmapRendererFixture -FixtureName 'rr813-01-explicit-order' -BacklogContent @'
+version: 3
+tasks:
+  # === v0.36.29: 明示順版 ===
+  - id: TASK-81301
+    title: Explicit second
+    status: active
+    priority: P0
+    target_version: "v0.36.29"
+    roadmap_order: 2
+    depends_on: []
+    repo: winsmux
+  - id: TASK-81302
+    title: Explicit third
+    status: review
+    priority: P1
+    target_version: "v0.36.29"
+    roadmap_order: 3
+    depends_on: [TASK-81301]
+    repo: winsmux
+  - id: TASK-81303
+    title: Explicit first
+    status: todo
+    priority: P3
+    target_version: "v0.36.29"
+    roadmap_order: 1
+    depends_on: [TASK-81301, TASK-81302]
+    repo: winsmux
+'@ -TitleContent @'
+@{
+    VersionTitles = @{
+        'v0.36.29' = '明示順版'
+    }
+    TaskTitles = @{
+        'TASK-81301' = '明示順の二番目'
+        'TASK-81302' = '明示順の三番目'
+        'TASK-81303' = '明示順の先頭'
+    }
+}
+'@
+
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $result.Lines | Should -Contain '| 順 | Task | 状態 | 依存 | やること |'
+        $result.Lines | Should -Contain '| 1 | TASK-81303 | 未着手 | TASK-81301、TASK-81302 | 明示順の先頭 |'
+        $result.Lines | Should -Contain '| 2 | TASK-81301 | 作業中 | — | 明示順の二番目 |'
+        $result.Lines | Should -Contain '| 3 | TASK-81302 | レビュー中 | TASK-81301 | 明示順の三番目 |'
+
+        $firstIndex = [Array]::IndexOf($result.Lines, '| 1 | TASK-81303 | 未着手 | TASK-81301、TASK-81302 | 明示順の先頭 |')
+        $secondIndex = [Array]::IndexOf($result.Lines, '| 2 | TASK-81301 | 作業中 | — | 明示順の二番目 |')
+        $thirdIndex = [Array]::IndexOf($result.Lines, '| 3 | TASK-81302 | レビュー中 | TASK-81301 | 明示順の三番目 |')
+        $firstIndex | Should -BeGreaterOrEqual 0
+        $secondIndex | Should -BeGreaterThan $firstIndex
+        $thirdIndex | Should -BeGreaterThan $secondIndex
+    }
+
+    It 'RR813-02 preserves priority then task ID ordering and visible numbering for an orderless legacy group' {
+        $result = & $script:InvokeRoadmapRendererFixture -FixtureName 'rr813-02-legacy-order' -BacklogContent @'
+version: 3
+tasks:
+  # === v0.36.29: legacy版 ===
+  - id: TASK-81312
+    title: Legacy third
+    status: review
+    priority: P1
+    target_version: "v0.36.29"
+    repo: winsmux
+  - id: TASK-81313
+    title: Legacy second
+    status: active
+    priority: P0
+    target_version: "v0.36.29"
+    repo: winsmux
+  - id: TASK-81311
+    title: Legacy first
+    status: todo
+    priority: P0
+    target_version: "v0.36.29"
+    repo: winsmux
+'@ -TitleContent @'
+@{
+    VersionTitles = @{
+        'v0.36.29' = 'legacy版'
+    }
+    TaskTitles = @{
+        'TASK-81311' = 'legacyの先頭'
+        'TASK-81312' = 'legacyの三番目'
+        'TASK-81313' = 'legacyの二番目'
+    }
+}
+'@
+
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $result.Lines | Should -Contain '| 1 | TASK-81311 | 未着手 | — | legacyの先頭 |'
+        $result.Lines | Should -Contain '| 2 | TASK-81313 | 作業中 | — | legacyの二番目 |'
+        $result.Lines | Should -Contain '| 3 | TASK-81312 | レビュー中 | — | legacyの三番目 |'
+    }
+
+    It 'RR813-03 uses hidden done and cancelled members to retain explicit order without renumbering visible rows' {
+        $result = & $script:InvokeRoadmapRendererFixture -FixtureName 'rr813-03-hidden-members' -BacklogContent @'
+version: 3
+tasks:
+  # === v0.36.29: 非表示会員版 ===
+  - id: TASK-81321
+    title: Hidden done
+    status: done
+    priority: P0
+    target_version: "v0.36.29"
+    roadmap_order: 1
+    repo: winsmux
+  - id: TASK-81322
+    title: Hidden cancelled
+    status: cancelled
+    priority: P0
+    target_version: "v0.36.29"
+    roadmap_order: 2
+    repo: winsmux
+  - id: TASK-81323
+    title: Visible third
+    status: todo
+    priority: P3
+    target_version: "v0.36.29"
+    roadmap_order: 3
+    repo: winsmux
+  - id: TASK-81324
+    title: Visible fourth
+    status: active
+    priority: P0
+    target_version: "v0.36.29"
+    roadmap_order: 4
+    repo: winsmux
+'@ -TitleContent @'
+@{
+    VersionTitles = @{
+        'v0.36.29' = '非表示会員版'
+    }
+    TaskTitles = @{
+        'TASK-81321' = '非表示の完了'
+        'TASK-81322' = '非表示の取りやめ'
+        'TASK-81323' = '表示する三番目'
+        'TASK-81324' = '表示する四番目'
+    }
+}
+'@
+
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $result.Lines | Should -Contain '| 3 | TASK-81323 | 未着手 | — | 表示する三番目 |'
+        $result.Lines | Should -Contain '| 4 | TASK-81324 | 作業中 | — | 表示する四番目 |'
+        $result.Lines | Should -Not -Match 'TASK-81321|TASK-81322'
+        $result.Lines | Should -Not -Contain '| 1 | TASK-81323 | 未着手 | — | 表示する三番目 |'
+        $result.Lines | Should -Not -Contain '| 2 | TASK-81324 | 作業中 | — | 表示する四番目 |'
+    }
+
+    It 'RR813-04 renders long-term versions as headed five-column tables with a timestamp-normalized renderer body' {
+        $backlogContent = @'
+version: 3
+tasks:
+  # === v1.1.0: 第一長期版 ===
+  - id: TASK-81331
+    title: First long-term task
+    status: todo
+    priority: P2
+    target_version: "v1.1.0"
+    roadmap_order: 2
+    depends_on: [TASK-81332]
+    repo: winsmux
+  - id: TASK-81332
+    title: Second long-term task
+    status: active
+    priority: P0
+    target_version: "v1.1.0"
+    roadmap_order: 1
+    depends_on: []
+    repo: winsmux
+  # === v1.2.0: 第二長期版 ===
+  - id: TASK-81333
+    title: Third long-term task
+    status: review
+    priority: P1
+    target_version: "v1.2.0"
+    repo: winsmux
+'@
+        $titleContent = @'
+@{
+    VersionTitles = @{
+        'v1.1.0' = '第一長期版'
+        'v1.2.0' = '第二長期版'
+    }
+    TaskTitles = @{
+        'TASK-81331' = '第一長期版の二番目'
+        'TASK-81332' = '第一長期版の先頭'
+        'TASK-81333' = '第二長期版のタスク'
+    }
+}
+'@
+        $result = & $script:InvokeRoadmapRendererFixture -FixtureName 'rr813-04-long-term' -BacklogContent $backlogContent -TitleContent $titleContent
+        $firstContent = [System.IO.File]::ReadAllText($result.RoadmapPath)
+        @($firstContent -split "\r?\n" | Where-Object { $_ -match '^> 最終同期:' }).Count | Should -Be 1
+        $firstRenderedContent = [regex]::Replace($firstContent, '(?m)^> 最終同期:.*\r?\n?', '')
+
+        $secondOutput = @(& pwsh -NoProfile -File $script:RoadmapFixtureScriptPath `
+                -BacklogPath $result.BacklogPath `
+                -RoadmapPath $result.RoadmapPath `
+                -RoadmapTitleJaPath $result.TitlePath 2>&1)
+        $secondExitCode = $LASTEXITCODE
+        $secondContent = [System.IO.File]::ReadAllText($result.RoadmapPath)
+        $secondLines = @(Get-Content -LiteralPath $result.RoadmapPath -Encoding UTF8)
+        @($secondContent -split "\r?\n" | Where-Object { $_ -match '^> 最終同期:' }).Count | Should -Be 1
+        $secondRenderedContent = [regex]::Replace($secondContent, '(?m)^> 最終同期:.*\r?\n?', '')
+
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $secondExitCode | Should -Be 0 -Because ($secondOutput -join "`n")
+        foreach ($roadmapLines in @($result.Lines, $secondLines)) {
+            $roadmapLines | Should -Contain '### v1.1.0: 第一長期版'
+            $roadmapLines | Should -Contain '### v1.2.0: 第二長期版'
+            @($roadmapLines | Where-Object { $_ -eq '| 順 | Task | 状態 | 依存 | やること |' }).Count | Should -Be 2
+            $roadmapLines | Should -Contain '| 1 | TASK-81332 | 作業中 | — | 第一長期版の先頭 |'
+            $roadmapLines | Should -Contain '| 2 | TASK-81331 | 未着手 | TASK-81332 | 第一長期版の二番目 |'
+            $roadmapLines | Should -Contain '| 1 | TASK-81333 | レビュー中 | — | 第二長期版のタスク |'
+        }
+        $secondRenderedContent | Should -Be $firstRenderedContent
     }
 
     It 'discovers a four-component title from the backlog heading without an override' {
@@ -1846,14 +2105,19 @@ tasks:
             'post-v1.0.0-Governance',
             'xpost-v1.0.0-governance'
         )
+        $validFocusDetailIndex = [Array]::IndexOf($roadmapLines, '### v0.36.29: 有効な版')
+        $longTermIndex = [Array]::IndexOf($roadmapLines, '## 長期計画の未完了タスク')
+        $validFocusDetailIndex | Should -BeGreaterOrEqual 0
+        $longTermIndex | Should -BeGreaterThan $validFocusDetailIndex
+        $beforeLongTermLines = @($roadmapLines | Select-Object -First $longTermIndex)
         foreach ($invalidVersion in $invalidVersions) {
-            @($roadmapLines | Where-Object { $_ -like "### ${invalidVersion}*" }).Count | Should -Be 0
-        }
-
-        $validIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -like '| v0.36.29 |*' })
-        foreach ($invalidVersion in $invalidVersions) {
-            $invalidIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -like "| ${invalidVersion} |*" })
-            $invalidIndex | Should -BeGreaterThan $validIndex
+            $headingPattern = '^### ' + [regex]::Escape($invalidVersion) + '(?:: .*)?$'
+            @($beforeLongTermLines | Where-Object { $_ -match $headingPattern }).Count | Should -Be 0
+            $headingLines = @($roadmapLines | Where-Object { $_ -match $headingPattern })
+            $headingLines.Count | Should -Be 1
+            $headingIndex = [Array]::FindIndex($roadmapLines, [Predicate[string]] { param($line) $line -match $headingPattern })
+            $headingIndex | Should -BeGreaterThan $longTermIndex
+            $headingIndex | Should -BeGreaterThan $validFocusDetailIndex
         }
     }
 

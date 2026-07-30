@@ -372,6 +372,8 @@ function ConvertFrom-TaskBlock {
         status        = ''
         priority      = ''
         target_version = ''
+        roadmap_order = ''
+        depends_on    = @()
         repo          = ''
         files         = @()
         paths         = @()
@@ -379,7 +381,7 @@ function ConvertFrom-TaskBlock {
         changed_files = @()
     }
 
-    $listKeys = @('files', 'paths', 'artifacts', 'changed_files')
+    $listKeys = @('files', 'paths', 'artifacts', 'changed_files', 'depends_on')
     $currentListKey = $null
 
     for ($index = 1; $index -lt $Lines.Count; $index++) {
@@ -426,6 +428,8 @@ function ConvertFrom-TaskBlock {
         Status        = $values['status']
         Priority      = $values['priority']
         TargetVersion = $values['target_version']
+        RoadmapOrder  = $values['roadmap_order']
+        DependsOn     = @($values['depends_on'])
         Repo          = $values['repo']
         Files         = @($values['files'])
         Paths         = @($values['paths'])
@@ -667,6 +671,7 @@ function Get-StatusLabel {
         'cancelled' { return '取りやめ' }
         'pending' { return '保留' }
         'backlog' { return '未着手' }
+        'todo' { return '未着手' }
         default {
             if ([string]::IsNullOrWhiteSpace($Status)) {
                 return '未着手'
@@ -711,6 +716,92 @@ function Get-PriorityRank {
         'P3' { return 3 }
         default { return 9 }
     }
+}
+
+function Get-RoadmapRenderRows {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$AllTasks,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$VisibleTasks
+    )
+
+    $explicitOrder = @{}
+    $usesExplicitOrder = $AllTasks.Count -gt 0
+    foreach ($task in $AllTasks) {
+        $rawOrder = ConvertTo-StringOrEmpty -Value $task.RoadmapOrder
+        if ($rawOrder -notmatch '^[1-9]\d*$') {
+            $usesExplicitOrder = $false
+            break
+        }
+
+        try {
+            $order = [long]$rawOrder
+        } catch {
+            $usesExplicitOrder = $false
+            break
+        }
+
+        if ($explicitOrder.ContainsKey($order)) {
+            $usesExplicitOrder = $false
+            break
+        }
+
+        $explicitOrder[$order] = $task
+    }
+
+    if ($usesExplicitOrder) {
+        $expectedOrder = 1L
+        foreach ($order in @($explicitOrder.Keys | Sort-Object)) {
+            if ($order -ne $expectedOrder) {
+                $usesExplicitOrder = $false
+                break
+            }
+
+            $expectedOrder++
+        }
+    }
+
+    if ($usesExplicitOrder) {
+        return @(
+            $VisibleTasks |
+                Sort-Object @{ Expression = { [long]$_.RoadmapOrder } }, @{ Expression = { $_.Id } } |
+                ForEach-Object {
+                    [pscustomobject]@{
+                        Task         = $_
+                        DisplayOrder = [long]$_.RoadmapOrder
+                    }
+                }
+        )
+    }
+
+    $legacyOrder = 0
+    return @(
+        $VisibleTasks |
+            Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } } |
+            ForEach-Object {
+                $legacyOrder++
+                [pscustomobject]@{
+                    Task         = $_
+                    DisplayOrder = $legacyOrder
+                }
+            }
+    )
+}
+
+function Get-RoadmapDependencyLabel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Task
+    )
+
+    $dependencies = @($Task.DependsOn | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($dependencies.Count -eq 0) {
+        return '—'
+    }
+
+    return ($dependencies -join '、')
 }
 
 function Test-RoadmapVersionInFocusRange {
@@ -945,13 +1036,14 @@ foreach ($versionGroup in $versionGroups) {
     $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
     [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
     [void]$builder.AppendLine()
-    [void]$builder.AppendLine('| | ID | やること | 優先度 | 対象 | 状態 |')
-    [void]$builder.AppendLine('|-|-----|-------|----------|------|--------|')
+    [void]$builder.AppendLine('| 順 | Task | 状態 | 依存 | やること |')
+    [void]$builder.AppendLine('|----|------|------|------|----------|')
 
-    $sortedTasks = @($visibleTasks | Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } })
-    foreach ($task in $sortedTasks) {
+    $renderRows = @(Get-RoadmapRenderRows -AllTasks @($versionGroup.Group) -VisibleTasks $visibleTasks)
+    foreach ($renderRow in $renderRows) {
+        $task = $renderRow.Task
         $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
-        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f (Get-StatusSymbol -Status $task.Status), $task.Id, $localizedTaskTitle.Title, (Get-PriorityLabel -Priority $task.Priority), $task.Repo, (Get-StatusLabel -Status $task.Status)))
+        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $renderRow.DisplayOrder, $task.Id, (Get-StatusLabel -Status $task.Status), (Get-RoadmapDependencyLabel -Task $task), $localizedTaskTitle.Title))
     }
 
     [void]$builder.AppendLine()
@@ -959,11 +1051,9 @@ foreach ($versionGroup in $versionGroups) {
 
 [void]$builder.AppendLine('## 長期計画の未完了タスク')
 [void]$builder.AppendLine()
-[void]$builder.AppendLine('この表は、直近の詳細欄に出していない長期版を確認するための一覧です。')
-[void]$builder.AppendLine('未完了タスクの題名、対象、状態を残し、後続版の見落としを防ぎます。')
+[void]$builder.AppendLine('この一覧は、直近の詳細欄に出していない長期版を確認するためのものです。')
+[void]$builder.AppendLine('後続版ごとの未完了タスクを、実行順、依存、状態とともに確認できます。')
 [void]$builder.AppendLine()
-[void]$builder.AppendLine('| バージョン | ID | やること | 優先度 | 対象 | 状態 |')
-[void]$builder.AppendLine('|-----------|----|----------|--------|------|------|')
 
 foreach ($versionGroup in $versionGroups) {
     if (Test-RoadmapVersionInFocusRange -Version $versionGroup.Name) {
@@ -975,11 +1065,23 @@ foreach ($versionGroup in $versionGroups) {
         continue
     }
 
-    $sortedTasks = @($visibleTasks | Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } })
-    foreach ($task in $sortedTasks) {
+    $vName = $versionGroup.Name
+    $defaultVersionTitle = if ($versionTitles.Contains($vName)) { $versionTitles[$vName] } else { '' }
+    $localizedVersionTitle = Get-RoadmapVersionTitle -Version $vName -DefaultTitle $defaultVersionTitle -Localization $roadmapLocalization.VersionTitles
+    $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
+    [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
+    [void]$builder.AppendLine()
+    [void]$builder.AppendLine('| 順 | Task | 状態 | 依存 | やること |')
+    [void]$builder.AppendLine('|----|------|------|------|----------|')
+
+    $renderRows = @(Get-RoadmapRenderRows -AllTasks @($versionGroup.Group) -VisibleTasks $visibleTasks)
+    foreach ($renderRow in $renderRows) {
+        $task = $renderRow.Task
         $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
-        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f $versionGroup.Name, $task.Id, $localizedTaskTitle.Title, (Get-PriorityLabel -Priority $task.Priority), $task.Repo, (Get-StatusLabel -Status $task.Status)))
+        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} |' -f $renderRow.DisplayOrder, $task.Id, (Get-StatusLabel -Status $task.Status), (Get-RoadmapDependencyLabel -Task $task), $localizedTaskTitle.Title))
     }
+
+    [void]$builder.AppendLine()
 }
 
 [void]$builder.AppendLine()
