@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -131,13 +132,21 @@ const {
   commonContractPackageVersion,
   commonContractSurfaceIds,
   effortCapabilityIds,
+  evidenceRecords,
+  findDuplicateCapabilityIds,
+  findInvalidRequiredBackends,
+  findUnsupportedDefaultEfforts,
+  getModelEffortIds,
+  getRuntimeCatalogEntries,
   modelCapabilities,
   modelReadinessStates,
   modelSourceIds,
   providerCapabilityIds,
+  providerCapabilityRegistry,
   providerCapabilities,
   runtimeWorkerReadinessStates,
   transportCapabilityIds,
+  validateCapabilityRegistry,
   workerPaneReadinessStates,
 } = await loadModelCapabilitiesModule();
 
@@ -237,6 +246,167 @@ for (const model of modelCapabilities) {
     assert.ok(!model.supportedEffortIds.includes("max"), model.id + " must not claim GPT-5.6 max support");
   }
 }
+
+const expectedClaude5Efforts = ["low", "medium", "high", "max", "xhigh"];
+const expectedClaude5Models = [
+  { id: "claude-fable-5", model: "claude-fable-5" },
+  { id: "claude-opus-5", model: "claude-opus-5" },
+  { id: "claude-sonnet-5", model: "claude-sonnet-5" },
+];
+const claudeProvider = providerCapabilities.find((provider) => provider.id === "claude");
+assert.ok(claudeProvider, "MC714-03: Expected Claude provider capability");
+assert.equal(claudeProvider.defaultModelId, "claude-opus-4-8", "MC714-03: Claude default must not migrate");
+
+assert.deepEqual(findDuplicateCapabilityIds(providerCapabilityRegistry), [], "MC714-01: registry must have unique IDs");
+assert.deepEqual(
+  findUnsupportedDefaultEfforts(providerCapabilityRegistry),
+  [],
+  "MC714-02: registry defaults must remain supported",
+);
+assert.deepEqual(
+  findInvalidRequiredBackends(providerCapabilityRegistry),
+  [],
+  "MC714-05: registry providers and models must use known backends",
+);
+assert.deepEqual(validateCapabilityRegistry(providerCapabilityRegistry), [], "MC714-01: registry validation must pass");
+
+const runtimeCatalogEntries = getRuntimeCatalogEntries(providerCapabilityRegistry);
+for (const expectedModel of expectedClaude5Models) {
+  const model = modelCapabilities.find((entry) => entry.id === expectedModel.id);
+  assert.ok(model, `MC714-01: Expected ${expectedModel.id} model capability`);
+  assert.equal(model.providerId, "claude", `MC714-01: ${expectedModel.id} provider must be Claude`);
+  assert.equal(model.model, expectedModel.model, `MC714-01: ${expectedModel.id} canonical model ID diverged`);
+  assert.equal(model.modelSource, "official-doc", `MC714-01: ${expectedModel.id} must retain official-doc provenance`);
+  assert.ok(model.evidenceIds.includes("official-doc"), `MC714-01: ${expectedModel.id} must retain official evidence`);
+  assert.deepEqual(
+    {
+      promptTransport: model.promptTransport,
+      authMode: model.authMode,
+      requiredBackend: model.requiredBackend,
+      readiness: model.readiness,
+    },
+    {
+      promptTransport: "file",
+      authMode: "claude-pro-max-oauth",
+      requiredBackend: "agent-cli",
+      readiness: {
+        state: "selectable",
+        assignable: true,
+        availability: "Requires local Claude Code access.",
+      },
+    },
+    `MC714-01: ${expectedModel.id} source boundary diverged`,
+  );
+  assert.equal(model.defaultEffortId, "high", `MC714-02: ${expectedModel.id} default effort must be high`);
+  assert.deepEqual(
+    getModelEffortIds(model, providerCapabilityRegistry),
+    expectedClaude5Efforts,
+    `MC714-02: ${expectedModel.id} supported efforts diverged`,
+  );
+
+  const runtimeEntry = runtimeCatalogEntries.find((entry) => entry.id === expectedModel.id);
+  assert.ok(runtimeEntry, `MC714-01: Expected ${expectedModel.id} runtime catalog projection`);
+  assert.equal(runtimeEntry.providerId, "claude", `MC714-01: ${expectedModel.id} runtime provider diverged`);
+  assert.equal(runtimeEntry.model, expectedModel.model, `MC714-01: ${expectedModel.id} runtime model diverged`);
+  assert.deepEqual(
+    {
+      agent: runtimeEntry.agent,
+      providerId: runtimeEntry.providerId,
+      promptTransport: runtimeEntry.promptTransport,
+      authMode: runtimeEntry.authMode,
+      requiredBackend: runtimeEntry.requiredBackend,
+      status: runtimeEntry.status,
+      availability: runtimeEntry.availability,
+    },
+    {
+      agent: "claude",
+      providerId: "claude",
+      promptTransport: "file",
+      authMode: "claude-pro-max-oauth",
+      requiredBackend: "agent-cli",
+      status: "selectable",
+      availability: "Requires local Claude Code access.",
+    },
+    `MC714-01: ${expectedModel.id} runtime boundary diverged`,
+  );
+  assert.equal(runtimeEntry.reasoningEffort, "high", `MC714-02: ${expectedModel.id} runtime default effort diverged`);
+  assert.deepEqual(
+    runtimeEntry.supportedReasoningEfforts,
+    expectedClaude5Efforts,
+    `MC714-02: ${expectedModel.id} runtime supported efforts diverged`,
+  );
+}
+
+const fable = modelCapabilities.find((entry) => entry.id === "claude-fable-5");
+assert.ok(fable, "MC714-04: Expected Fable 5 model capability");
+assert.ok(!fable.readiness.availability.includes("2026-07-07"), "MC714-04: Fable availability must not claim the expired credit window");
+assert.ok(
+  !/usage credits[^.]*2026-07-07/i.test(fable.readiness.availability),
+  "MC714-04: Fable availability must not retain the expired usage-credit claim",
+);
+assert.ok(
+  evidenceRecords.some((record) => record.id === "official-doc" && record.kind === "official-doc"),
+  "MC714-01: official-doc evidence record must remain available",
+);
+
+const openRouterProvider = providerCapabilities.find((provider) => provider.id === "openrouter");
+assert.ok(openRouterProvider, "MC714-05: Expected OpenRouter provider capability");
+assert.deepEqual(
+  openRouterProvider.dynamicModelLoading,
+  {
+    source: "provider-api",
+    url: "https://openrouter.ai/api/v1/models",
+    seedModelIds: ["openrouter-sakana-fugu-ultra", "openrouter-glm-5-2", "openrouter-kimi-k2-7-code"],
+  },
+  "MC714-05: OpenRouter dynamic API authority diverged",
+);
+
+for (const providerId of ["antigravity", "grok-build"]) {
+  const provider = providerCapabilities.find((entry) => entry.id === providerId);
+  assert.ok(provider, `MC714-05: Expected ${providerId} provider capability`);
+  assert.deepEqual(provider.supportedModelSources, ["cli-discovery"], `MC714-05: ${providerId} must stay CLI-discovered`);
+  assert.equal(provider.dynamicModelLoading, undefined, `MC714-05: ${providerId} must not add a provider API boundary`);
+  for (const model of modelCapabilities.filter((entry) => entry.providerId === providerId)) {
+    assert.equal(model.modelSource, "cli-discovery", `MC714-05: ${model.id} must stay on the local CLI boundary`);
+  }
+}
+assert.ok(!providerCapabilities.some((provider) => provider.id === "xai"), "MC714-05: direct xAI provider must not be added");
+assert.ok(
+  !modelCapabilities.some((model) => ["antigravity-preview-05-2026", "grok-4.5", "grok-build-0.1"].includes(model.model)),
+  "MC714-05: managed Antigravity or direct xAI models must not replace local CLI entries",
+);
+
+const benchmarkPackPath = path.resolve("..", "tasks", "cli-bakeoff", "v1", "benchmark-pack.json");
+const benchmarkPackBytes = await readFile(benchmarkPackPath);
+assert.equal(benchmarkPackBytes.byteLength, 34608, "MC714-06: benchmark pack byte length diverged");
+assert.equal(
+  createHash("sha256").update(benchmarkPackBytes).digest("hex"),
+  "274fdc929fe5232880284c53fa068dbd5dffbddeae106bde375aab279831499d",
+  "MC714-06: benchmark pack SHA-256 diverged",
+);
+const benchmarkPack = JSON.parse(benchmarkPackBytes.toString("utf8"));
+assert.equal(benchmarkPack.tasks.length, 27, "MC714-06: benchmark task count diverged");
+assert.equal(benchmarkPack.default_timeout_seconds, 3600, "MC714-06: benchmark timeout diverged");
+assert.deepEqual(
+  benchmarkPack.default_workers.map((worker) => ({
+    pane: worker.pane,
+    cli: worker.cli,
+    provider: worker.agent ?? null,
+    backend: worker.worker_backend ?? null,
+    model: worker.model,
+    modelSource: worker.model_source ?? null,
+    effort: worker.effort ?? null,
+  })),
+  [
+    { pane: "worker-1", cli: "Claude Code", provider: null, backend: null, model: "claude-opus-4-8", modelSource: null, effort: "xhigh" },
+    { pane: "worker-2", cli: "Codex", provider: null, backend: null, model: "gpt-5.5", modelSource: null, effort: "xhigh" },
+    { pane: "worker-3", cli: "Antigravity CLI", provider: "antigravity", backend: "antigravity", model: "Gemini 3.5 Flash (High)", modelSource: "operator-override", effort: null },
+    { pane: "worker-4", cli: "Grok Build", provider: "grok-build", backend: "local", model: "grok-build", modelSource: "cli-discovery", effort: "provider-default" },
+    { pane: "worker-5", cli: "OpenRouter API", provider: "openrouter", backend: "api_llm", model: "sakana/fugu-ultra", modelSource: null, effort: "provider-default" },
+    { pane: "worker-6", cli: "OpenRouter API", provider: "openrouter", backend: "api_llm", model: "z-ai/glm-5.2", modelSource: null, effort: "provider-default" },
+  ],
+  "MC714-06: benchmark worker projection diverged",
+);
 
 assertReadinessVocabularyContract(commonContractPackage);
 
