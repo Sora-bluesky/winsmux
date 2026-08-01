@@ -130,13 +130,17 @@ const {
   commonContractPackage,
   commonContractPackageVersion,
   commonContractSurfaceIds,
+  createOpenRouterApiModelCapability,
+  evidenceRecords,
   effortCapabilityIds,
+  getRuntimeCatalogEntries,
   modelCapabilities,
   modelReadinessStates,
   modelSourceIds,
   providerCapabilityIds,
   providerCapabilities,
   runtimeWorkerReadinessStates,
+  toRuntimeCatalogEntry,
   transportCapabilityIds,
   workerPaneReadinessStates,
 } = await loadModelCapabilitiesModule();
@@ -213,6 +217,132 @@ assert.equal(parsePropertyType(mainSource, "promptTransport"), "TransportCapabil
 assert.equal(parsePropertyType(mainSource, "requiredBackend"), "BackendCapabilityId");
 assert.equal(parseTypeAlias(mainSource, "WorkerPaneReadinessState"), "CommonWorkerPaneReadinessState");
 assert.equal(parseTypeAlias(mainSource, "AgentVaultProviderId"), "AgentVaultCommandProviderId");
+assert.match(mainSource, /const runtimeModelCatalog: RuntimeModelCatalogEntry\[\] = getRuntimeCatalogEntries\(\)\.map\(\(entry\) => \(\{/, "MC823-01: main.ts must consume getRuntimeCatalogEntries into runtimeModelCatalog");
+
+const claude5Models = [
+  {
+    id: "claude-fable-5",
+    evidenceId: "anthropic-claude-fable-5-2026-08-01",
+    sourceLabel: "Anthropic — Redeploying Claude Fable 5",
+    availability: "Requires local Claude Code access and usage credits after 2026-07-07.",
+  },
+  {
+    id: "claude-opus-5",
+    evidenceId: "anthropic-claude-opus-5-2026-08-01",
+    sourceLabel: "Claude Platform — Claude Opus 5 model and effort",
+    availability: "Requires local Claude Code access.",
+  },
+  {
+    id: "claude-sonnet-5",
+    evidenceId: "anthropic-claude-sonnet-5-2026-08-01",
+    sourceLabel: "Claude Platform — Claude Sonnet 5 model and effort",
+    availability: "Requires local Claude Code access.",
+  },
+];
+const expectedClaude5Efforts = ["low", "medium", "high", "max", "xhigh"];
+const runtimeCatalogEntries = getRuntimeCatalogEntries();
+const expectedClaude5ModelIds = claude5Models.map((entry) => entry.id).sort();
+const actualClaude5ModelIds = modelCapabilities
+  .filter((entry) => entry.providerId === "claude" && /^claude-[^-]+-5(?:-|$)/.test(entry.id))
+  .map((entry) => entry.id)
+  .sort();
+assert.deepEqual(actualClaude5ModelIds, expectedClaude5ModelIds, "MC823-01: exact Claude major-5 canonical model ID set");
+
+for (const expected of claude5Models) {
+  assert.ok(modelCapabilities.find((entry) => entry.id === expected.id), `MC823-01: expected ${expected.id} model capability`);
+}
+
+for (const expected of claude5Models) {
+  const model = modelCapabilities.find((entry) => entry.id === expected.id);
+  assert.ok(model, `MC823-01: expected ${expected.id} model capability`);
+  assert.equal(model.providerId, "claude", `MC823-01: ${expected.id} source providerId`);
+  assert.equal(model.model, expected.id, `MC823-01: ${expected.id} source model`);
+  assert.equal(model.modelSource, "official-doc", `MC823-01: ${expected.id} source modelSource`);
+  assert.equal(model.promptTransport, "file", `MC823-01: ${expected.id} source promptTransport`);
+  assert.equal(model.authMode, "claude-pro-max-oauth", `MC823-01: ${expected.id} source authMode`);
+  assert.equal(model.requiredBackend, "agent-cli", `MC823-01: ${expected.id} source requiredBackend`);
+  assert.equal(model.readiness.state, "selectable", `MC823-01: ${expected.id} source readiness state`);
+  assert.equal(model.readiness.assignable, true, `MC823-01: ${expected.id} source assignable`);
+  assert.equal(model.readiness.availability, expected.availability, `MC823-01: ${expected.id} source availability`);
+  assert.deepEqual(model.evidenceIds, [expected.evidenceId], `MC823-01: ${expected.id} source evidenceIds`);
+
+  const evidence = evidenceRecords.find((entry) => entry.id === expected.evidenceId);
+  assert.ok(evidence, `MC823-01: expected ${expected.id} evidence record`);
+  assert.equal(evidence.kind, "official-doc", `MC823-01: ${expected.id} evidence kind`);
+  assert.equal(evidence.sourceLabel, expected.sourceLabel, `MC823-01: ${expected.id} evidence sourceLabel`);
+  assert.equal(evidence.captureDate, "2026-08-01", `MC823-01: ${expected.id} evidence captureDate`);
+
+  const runtime = runtimeCatalogEntries.find((entry) => entry.id === expected.id);
+  assert.ok(runtime, `MC823-01: expected ${expected.id} runtime catalog entry`);
+  assert.equal(runtime.agent, "claude", `MC823-01: ${expected.id} runtime agent`);
+  assert.equal(runtime.providerId, "claude", `MC823-01: ${expected.id} runtime providerId`);
+  assert.equal(runtime.model, expected.id, `MC823-01: ${expected.id} runtime model`);
+  assert.equal(runtime.modelSource, "official-doc", `MC823-01: ${expected.id} runtime modelSource`);
+  assert.equal(runtime.promptTransport, "file", `MC823-01: ${expected.id} runtime promptTransport`);
+  assert.equal(runtime.authMode, "claude-pro-max-oauth", `MC823-01: ${expected.id} runtime authMode`);
+  assert.equal(runtime.requiredBackend, "agent-cli", `MC823-01: ${expected.id} runtime requiredBackend`);
+  assert.equal(runtime.status, "selectable", `MC823-01: ${expected.id} runtime status`);
+  assert.equal(runtime.availability, expected.availability, `MC823-01: ${expected.id} runtime availability`);
+  assert.equal(runtime.evidence, "official-doc", `MC823-01: ${expected.id} runtime evidence kind`);
+  assert.equal(runtime.sourceLabel, expected.sourceLabel, `MC823-01: ${expected.id} runtime sourceLabel`);
+  assert.equal(runtime.captureDate, "2026-08-01", `MC823-01: ${expected.id} runtime captureDate`);
+
+  assert.equal(model.defaultEffortId, "high", `MC823-02: ${expected.id} source default effort`);
+  assert.deepEqual(model.supportedEffortIds, expectedClaude5Efforts, `MC823-02: ${expected.id} source supported efforts`);
+  assert.equal(runtime.reasoningEffort, "high", `MC823-02: ${expected.id} runtime default effort`);
+  assert.deepEqual(runtime.supportedReasoningEfforts, expectedClaude5Efforts, `MC823-02: ${expected.id} runtime supported efforts`);
+}
+
+const fableSource = modelCapabilities.find((entry) => entry.id === "claude-fable-5");
+const fableRuntime = runtimeCatalogEntries.find((entry) => entry.id === "claude-fable-5");
+assert.ok(fableSource && fableRuntime, "MC823-03: expected Claude Fable 5 source and runtime entries");
+assert.equal(fableSource.risk, "usage-credits", "MC823-03: Fable source risk");
+assert.equal(fableRuntime.risk, "usage-credits", "MC823-03: Fable runtime risk");
+assert.equal(fableSource.readiness.availability, claude5Models[0].availability, "MC823-03: Fable source availability");
+assert.equal(fableRuntime.availability, claude5Models[0].availability, "MC823-03: Fable runtime availability");
+assert.equal(fableSource.note, "Fable 5 requires usage credits after 2026-07-07. Verify credits before long runs.", "MC823-03: Fable source note");
+assert.equal(fableRuntime.note, "Fable 5 requires usage credits after 2026-07-07. Verify credits before long runs.", "MC823-03: Fable runtime note");
+assert.equal(fableSource.noteJa, "Fable 5は2026-07-07以降usage creditsが必要です。長時間実行前にcreditsを確認してください。", "MC823-03: Fable source Japanese note");
+assert.equal(fableRuntime.noteJa, "Fable 5は2026-07-07以降usage creditsが必要です。長時間実行前にcreditsを確認してください。", "MC823-03: Fable runtime Japanese note");
+assert.ok(!fableSource.readiness.availability.includes("included usage"), "MC823-03: Fable source availability must exclude expired included-window wording");
+assert.ok(!fableRuntime.availability.includes("included usage"), "MC823-03: Fable runtime availability must exclude expired included-window wording");
+
+const claudeProvider = providerCapabilities.find((provider) => provider.id === "claude");
+assert.ok(claudeProvider, "MC823-04: expected Claude provider capability");
+assert.equal(claudeProvider.defaultModelId, "claude-opus-4-8", "MC823-04: Claude default model must remain claude-opus-4-8");
+
+const openRouterProvider = providerCapabilities.find((provider) => provider.id === "openrouter");
+assert.ok(openRouterProvider, "MC823-05: expected OpenRouter provider capability");
+assert.deepEqual(openRouterProvider.supportedModelSources, ["operator-override", "provider-api"], "MC823-05: OpenRouter source boundary");
+assert.equal(openRouterProvider.authMode, "api-key-env", "MC823-05: OpenRouter auth boundary");
+assert.equal(openRouterProvider.dynamicModelLoading?.source, "provider-api", "MC823-05: OpenRouter dynamic source");
+assert.equal(openRouterProvider.requiredBackend, "api_llm", "MC823-05: OpenRouter backend");
+const openRouterDynamicModel = createOpenRouterApiModelCapability("acme/example", "Acme Example");
+assert.equal(openRouterDynamicModel.modelSource, "provider-api", "MC823-05: createOpenRouterApiModelCapability source");
+assert.equal(openRouterDynamicModel.requiredBackend, "api_llm", "MC823-05: createOpenRouterApiModelCapability backend");
+assert.equal(openRouterDynamicModel.authMode, "api-key-env", "MC823-05: createOpenRouterApiModelCapability auth");
+assert.equal(toRuntimeCatalogEntry(openRouterDynamicModel).modelSource, "provider-api", "MC823-05: OpenRouter runtime source");
+assert.equal(toRuntimeCatalogEntry(openRouterDynamicModel).requiredBackend, "api_llm", "MC823-05: OpenRouter runtime backend");
+assert.equal(toRuntimeCatalogEntry(openRouterDynamicModel).authMode, "api-key-env", "MC823-05: OpenRouter runtime auth");
+for (const [providerId, requiredBackend, authMode] of [
+  ["antigravity", "antigravity", "antigravity-official-cli"],
+  ["grok-build", "agent-cli", "grok-build-local"],
+]) {
+  const provider = providerCapabilities.find((entry) => entry.id === providerId);
+  assert.ok(provider, `MC823-05: expected ${providerId} provider capability`);
+  assert.deepEqual(provider.supportedModelSources, ["cli-discovery"], `MC823-05: ${providerId} source boundary`);
+  assert.equal(provider.requiredBackend, requiredBackend, `MC823-05: ${providerId} backend boundary`);
+  assert.equal(provider.authMode, authMode, `MC823-05: ${providerId} auth boundary`);
+
+  const providerRuntimeEntries = runtimeCatalogEntries.filter((entry) => entry.providerId === providerId);
+  assert.ok(providerRuntimeEntries.length > 0, `MC823-05: expected ${providerId} runtime catalog entries`);
+  for (const runtime of providerRuntimeEntries) {
+    assert.equal(runtime.modelSource, "cli-discovery", `MC823-05: ${runtime.id} runtime source boundary`);
+    assert.equal(runtime.promptTransport, "file", `MC823-05: ${runtime.id} runtime transport boundary`);
+    assert.equal(runtime.requiredBackend, requiredBackend, `MC823-05: ${runtime.id} runtime backend boundary`);
+    assert.equal(runtime.authMode, authMode, `MC823-05: ${runtime.id} runtime auth boundary`);
+  }
+}
 
 const expectedCodexEfforts = ["provider-default", "low", "medium", "high", "xhigh"];
 const expectedGpt56Efforts = ["low", "medium", "high", "max", "xhigh"];
