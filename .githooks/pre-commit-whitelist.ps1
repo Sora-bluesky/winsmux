@@ -194,6 +194,7 @@ $whitelistPatterns = @(
     '.github/workflows/release-core.yml',
     '.github/workflows/release-desktop.yml',
     '.github/workflows/release-npm.yml',
+    '.github/workflows/public-smoke-recovery.yml',
     '.github/workflows/test.yml',
     'tasks/roadmap-title-ja.example.psd1',
     'tasks/cli-bakeoff/v1/**'

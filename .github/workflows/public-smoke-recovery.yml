@@ -1,0 +1,246 @@
+name: Public Smoke Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable annotated release tag to verify.
+        required: true
+        default: v0.36.30
+        type: string
+      release_commit:
+        description: Peeled commit of the immutable annotated release tag.
+        required: true
+        default: 75dcae87538e96a4cf49dc844d8343842d3c3178
+        type: string
+      native_version:
+        description: Exact Core and Desktop product version.
+        required: true
+        default: 0.36.30
+        type: string
+      npm_version:
+        description: Exact public npm package version.
+        required: true
+        default: 0.36.30
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-public-recovery:
+    name: Smoke public ${{ matrix.surface }} recovery
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - surface: Core
+          - surface: Desktop
+          - surface: Npm
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        if: matrix.surface == 'Npm'
+        with:
+          node-version: 24
+
+      - name: Verify immutable public ${{ matrix.surface }} release
+        shell: pwsh
+        env:
+          RECOVERY_RELEASE_TAG: ${{ inputs.release_tag }}
+          RECOVERY_RELEASE_COMMIT: ${{ inputs.release_commit }}
+          RECOVERY_NATIVE_VERSION: ${{ inputs.native_version }}
+          RECOVERY_NPM_VERSION: ${{ inputs.npm_version }}
+          RECOVERY_REPOSITORY: ${{ github.repository }}
+          RECOVERY_WORKFLOW_REF: ${{ github.ref }}
+          RECOVERY_WORKFLOW_SHA: ${{ github.sha }}
+          RECOVERY_SURFACE: ${{ matrix.surface }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          function Assert-ExactProperties {
+            param(
+              [Parameter(Mandatory)]$Object,
+              [Parameter(Mandatory)][string[]]$Expected,
+              [Parameter(Mandatory)][string]$Label
+            )
+
+            $actual = @($Object.PSObject.Properties.Name)
+            if (($actual -join [char]10) -cne ($Expected -join [char]10)) {
+              throw "$Label fields were '$($actual -join ',')'; expected '$($Expected -join ',')'."
+            }
+          }
+
+          function Get-StringSha256 {
+            param([Parameter(Mandatory)][string]$Value)
+
+            $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+            return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+          }
+
+          function Get-RemoteTagIdentity {
+            param([Parameter(Mandatory)][string]$Tag)
+
+            $lines = @(& git ls-remote --tags origin "refs/tags/$Tag" "refs/tags/$Tag^{}")
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to read immutable tag identity for $Tag."
+            }
+            $lines = @($lines | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object)
+            $tagRef = [regex]::Escape("refs/tags/$Tag")
+            $objectLine = @($lines | Where-Object { $_ -match "\s$tagRef$" })
+            $peelLine = @($lines | Where-Object { $_ -match "\s$tagRef\^\{\}$" })
+            if ($lines.Count -ne 2 -or $objectLine.Count -ne 1 -or $peelLine.Count -ne 1) {
+              throw 'Expected exactly one annotated tag object and one peeled tag target.'
+            }
+            return [pscustomobject]@{
+              tag_object_sha = [string](($objectLine[0] -split '\s+', 2)[0])
+              target_commit = [string](($peelLine[0] -split '\s+', 2)[0])
+              serialized = [string]::Join([char]10, $lines)
+            }
+          }
+
+          $releaseTag = [string]$env:RECOVERY_RELEASE_TAG
+          $releaseCommit = [string]$env:RECOVERY_RELEASE_COMMIT
+          $nativeVersion = [string]$env:RECOVERY_NATIVE_VERSION
+          $npmVersion = [string]$env:RECOVERY_NPM_VERSION
+          $repository = [string]$env:RECOVERY_REPOSITORY
+          $workflowRef = [string]$env:RECOVERY_WORKFLOW_REF
+          $workflowSha = [string]$env:RECOVERY_WORKFLOW_SHA
+          $surface = [string]$env:RECOVERY_SURFACE
+          $version = if ($surface -ceq 'Npm') { $npmVersion } else { $nativeVersion }
+
+          if (
+            $releaseTag -cne 'v0.36.30' -or
+            $releaseCommit -cne '75dcae87538e96a4cf49dc844d8343842d3c3178' -or
+            $nativeVersion -cne '0.36.30' -or
+            $npmVersion -cne '0.36.30' -or
+            $repository -cne 'Sora-bluesky/winsmux' -or
+            $workflowRef -cne 'refs/heads/main' -or
+            $surface -notin @('Core', 'Desktop', 'Npm')
+          ) {
+            throw 'Recovery workflow accepts only the immutable v0.36.30 public coordinates from main.'
+          }
+
+          $helperSourceCommit = (& git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $helperSourceCommit -cne $workflowSha) {
+            throw 'Checked-out helper source does not equal the workflow main event commit.'
+          }
+          $helperSourceSha256 = (Get-FileHash -LiteralPath scripts/test-public-release.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+
+          $tagBefore = Get-RemoteTagIdentity -Tag $releaseTag
+          if (
+            $tagBefore.tag_object_sha -cne 'feaab01701ddd1f0930da2e8b72cab1e7b25edb0' -or
+            $tagBefore.target_commit -cne $releaseCommit -or
+            $tagBefore.tag_object_sha -ceq $tagBefore.target_commit
+          ) {
+            throw 'Annotated tag identity did not bind the immutable v0.36.30 object and peeled target.'
+          }
+
+          $helperOutput = @(
+            & ./scripts/test-public-release.ps1 -Surface $surface -Version $version -ReleaseTag $releaseTag -Repository $repository -Json
+          )
+          if ($helperOutput.Count -ne 1) {
+            throw "$surface helper did not produce exactly one terminal JSON receipt."
+          }
+          $helperReceipt = ([string]$helperOutput[0] | ConvertFrom-Json -Depth 20)
+          Assert-ExactProperties -Object $helperReceipt -Expected @(
+            'ok',
+            'surface',
+            'version',
+            'release_tag',
+            'repository',
+            'evidence',
+            'attempts',
+            'retry_delay_seconds',
+            'cleanup'
+          ) -Label "$surface receipt"
+          if (
+            $helperReceipt.ok -ne $true -or
+            [string]$helperReceipt.surface -cne $surface -or
+            [string]$helperReceipt.version -cne $version -or
+            [string]$helperReceipt.release_tag -cne $releaseTag -or
+            [string]$helperReceipt.repository -cne $repository -or
+            [string]$helperReceipt.cleanup -cne 'clean'
+          ) {
+            throw "$surface receipt did not bind the required public identity and cleanup state."
+          }
+
+          switch ($surface) {
+            'Core' {
+              Assert-ExactProperties -Object $helperReceipt.evidence -Expected @('asset', 'sha256', 'version') -Label 'Core evidence'
+              if (
+                [string]$helperReceipt.evidence.asset -cne 'winsmux-x64.exe' -or
+                [string]$helperReceipt.evidence.sha256 -notmatch '^[0-9a-f]{64}$' -or
+                [string]$helperReceipt.evidence.version -cne $nativeVersion
+              ) {
+                throw 'Core evidence did not bind the exact public executable, digest, and native version.'
+              }
+            }
+            'Desktop' {
+              Assert-ExactProperties -Object $helperReceipt.evidence -Expected @('asset', 'sha256', 'version', 'page_url') -Label 'Desktop evidence'
+              if (
+                [string]$helperReceipt.evidence.asset -cne "winsmux_$($nativeVersion)_x64-setup.exe" -or
+                [string]$helperReceipt.evidence.sha256 -notmatch '^[0-9a-f]{64}$' -or
+                [string]$helperReceipt.evidence.version -cne $nativeVersion -or
+                [string]$helperReceipt.evidence.page_url -notmatch '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)'
+              ) {
+                throw 'Desktop evidence did not bind the exact public installer, digest, native version, and production page.'
+              }
+            }
+            'Npm' {
+              Assert-ExactProperties -Object $helperReceipt.evidence -Expected @(
+                'package',
+                'integrity',
+                'release_tag',
+                'node_path',
+                'npm_cli_path'
+              ) -Label 'npm evidence'
+              $nodePath = [string]$helperReceipt.evidence.node_path
+              $npmCliPath = [string]$helperReceipt.evidence.npm_cli_path
+              $expectedNpmCliPath = Join-Path (Split-Path -Parent $nodePath) 'node_modules\npm\bin\npm-cli.js'
+              if (
+                [string]$helperReceipt.evidence.package -cne "winsmux@$npmVersion" -or
+                [string]$helperReceipt.evidence.integrity -notmatch '^sha512-[A-Za-z0-9+/]+={0,2}$' -or
+                [string]$helperReceipt.evidence.release_tag -cne $releaseTag -or
+                [IO.Path]::GetFileName($nodePath) -ine 'node.exe' -or
+                [IO.Path]::GetFileName($npmCliPath) -ine 'npm-cli.js' -or
+                -not [string]::Equals(
+                  [IO.Path]::GetFullPath($npmCliPath),
+                  [IO.Path]::GetFullPath($expectedNpmCliPath),
+                  [StringComparison]::OrdinalIgnoreCase
+                )
+              ) {
+                throw 'npm evidence did not bind the exact package, integrity, release tag, and selected adjacent toolchain.'
+              }
+            }
+          }
+
+          $tagAfter = Get-RemoteTagIdentity -Tag $releaseTag
+          if (
+            $tagAfter.tag_object_sha -cne $tagBefore.tag_object_sha -or
+            $tagAfter.target_commit -cne $tagBefore.target_commit -or
+            $tagAfter.serialized -cne $tagBefore.serialized
+          ) {
+            throw 'Immutable tag identity changed during public smoke recovery.'
+          }
+
+          $recoveryReceipt = [ordered]@{
+            workflow_source_ref = $workflowRef
+            workflow_source_commit = $helperSourceCommit
+            helper_source_sha256 = $helperSourceSha256
+            target_tag_object = $tagBefore.tag_object_sha
+            target_tag_commit = $tagBefore.target_commit
+            target_identity_sha256 = Get-StringSha256 -Value $tagBefore.serialized
+            surface = $surface
+            final_receipt = $helperReceipt
+          }
+          $terminalReceipt = $recoveryReceipt | ConvertTo-Json -Depth 20 -Compress
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $terminalReceipt -Encoding utf8
+          $terminalReceipt

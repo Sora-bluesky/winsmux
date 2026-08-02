@@ -257,7 +257,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -283,7 +283,109 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Npm'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,node_path_precedence_zero,node_path_precedence_one,node_path_precedence_multiple,node_path_precedence_invalid_first,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup'
+    }
+
+    It 'IR668-NODE-01 selects one PATH-precedence Node and couples npm without lower fallback' {
+        $helper = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\test-public-release.ps1') -Raw -Encoding UTF8
+
+        $helper | Should -Match 'function Resolve-NpmPathPrecedenceToolchain'
+        $helper | Should -Match '\$nodeCandidates = @\(Get-Command node\.exe -CommandType Application'
+        $helper | Should -Match '\$nodePath = \[string\]\$candidates\[0\]\.Source'
+        $helper | Should -Match 'npm CLI was not found next to the first PATH-precedence Node application'
+        foreach ($caseId in @('node_path_precedence_zero', 'node_path_precedence_one', 'node_path_precedence_multiple', 'node_path_precedence_invalid_first')) {
+            $helper | Should -Match ([regex]::Escape($caseId))
+        }
+    }
+
+    It 'IR668-DESKTOP-PATH-01 accepts only exact Tauri outer-quoted InstallLocation ownership' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+
+        $helper | Should -Match 'function Get-ExactDesktopInstallLocation'
+        $helper | Should -Match 'Get-ExactDesktopInstallLocation -InstallLocation \$installLocation -ExpectedInstallRoot \$ExpectedInstallRoot'
+        foreach ($caseId in @('desktop_install_location_unquoted', 'desktop_install_location_outer_quoted', 'desktop_install_location_malformed', 'desktop_install_location_foreign')) {
+            $helper | Should -Match ([regex]::Escape($caseId))
+        }
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_lifecycle_ownership_reject_preserves_state'
+    }
+
+    It 'IR668-DESKTOP-UNINSTALL-01 waits for the run-owned NSIS uninstaller before cleanup' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+
+        $helper | Should -Match 'function Invoke-VerifiedDesktopUninstaller'
+        $helper | Should -Match 'function Invoke-DesktopCleanup'
+        $helper | Should -Match ([regex]::Escape('desktop_uninstall_argv_order'))
+        $helper | Should -Match ([regex]::Escape('_?=$installRoot'))
+        $helper | Should -Match 'Invoke-VerifiedDesktopUninstaller -Context \$Context -Environment \$Environment'
+        $helper | Should -Not -Match 'DesktopCleanupAuthorized|-AfterFailure'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        foreach ($caseId in @(
+            'desktop_lifecycle_stop_failure_preserves_state',
+            'desktop_lifecycle_uninstall_failure_preserves_state',
+            'desktop_lifecycle_registration_remains_preserves_state',
+            'desktop_lifecycle_success_orders_cleanup',
+            'desktop_lifecycle_residue_failure_blocks_root_cleanup'
+        )) {
+            @($selfTest.case_ids) | Should -Contain $caseId
+        }
+    }
+
+    It 'IR668-RECOVERY-WORKFLOW-01 runs a main-bound read-only three-surface recovery receipt' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\public-smoke-recovery.yml') -Raw -Encoding UTF8
+
+        $workflow | Should -Match '(?ms)^on:\s*\r?\n\s+workflow_dispatch:'
+        $workflow | Should -Not -Match '(?m)^\s+(push|pull_request|schedule):'
+        $workflow | Should -Match '(?ms)^permissions:\s*\r?\n\s+contents:\s+read\s*$'
+        $workflow | Should -Not -Match '(?i)secrets\.|npm publish|softprops/action-gh-release|git (push|tag)|actions/upload-artifact'
+        (@([regex]::Matches($workflow, 'actions/checkout@v6'))).Count | Should -Be 1
+        (@([regex]::Matches($workflow, 'ref:\s+\$\{\{ github\.sha \}\}'))).Count | Should -Be 1
+        (@([regex]::Matches($workflow, 'persist-credentials:\s+false'))).Count | Should -Be 1
+        (@([regex]::Matches($workflow, 'actions/setup-node@v6'))).Count | Should -Be 1
+        $workflow | Should -Match "if: matrix\.surface == 'Npm'"
+        $workflow | Should -Match '(?m)^\s+fail-fast:\s+false\s*$'
+        foreach ($surface in @('Core', 'Desktop', 'Npm')) {
+            (@([regex]::Matches($workflow, "(?m)^\s+- surface: $surface\s*$"))).Count | Should -Be 1
+        }
+        (@([regex]::Matches($workflow, 'test-public-release\.ps1\s+-Surface\s+\$surface'))).Count | Should -Be 1
+        foreach ($environmentBinding in @(
+            'RECOVERY_RELEASE_TAG: ${{ inputs.release_tag }}',
+            'RECOVERY_RELEASE_COMMIT: ${{ inputs.release_commit }}',
+            'RECOVERY_NATIVE_VERSION: ${{ inputs.native_version }}',
+            'RECOVERY_NPM_VERSION: ${{ inputs.npm_version }}',
+            'RECOVERY_WORKFLOW_REF: ${{ github.ref }}',
+            'RECOVERY_WORKFLOW_SHA: ${{ github.sha }}'
+        )) {
+            $workflow | Should -Match ([regex]::Escape($environmentBinding))
+        }
+        foreach ($coordinate in @(
+            'refs/heads/main',
+            'feaab01701ddd1f0930da2e8b72cab1e7b25edb0',
+            '75dcae87538e96a4cf49dc844d8343842d3c3178',
+            'refs/tags/$Tag^{}',
+            'helperSourceCommit -cne $workflowSha',
+            'tagBefore = Get-RemoteTagIdentity',
+            'tagAfter = Get-RemoteTagIdentity',
+            'Assert-ExactProperties -Object $helperReceipt',
+            "@('asset', 'sha256', 'version')",
+            "@('asset', 'sha256', 'version', 'page_url')",
+            "'node_path',",
+            "'npm_cli_path'",
+            'workflow_source_commit',
+            'helper_source_sha256',
+            'target_tag_object',
+            'target_tag_commit',
+            'target_identity_sha256',
+            'final_receipt'
+        )) {
+            $workflow | Should -Match ([regex]::Escape($coordinate))
+        }
     }
 
     It 'accepts release-grade notes with highlights, safety, validation, and changelog evidence' {
