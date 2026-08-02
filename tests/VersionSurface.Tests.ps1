@@ -170,6 +170,122 @@ Describe 'winsmux version surface' {
         ($terseOutput -join "`n") | Should -Match 'release notes are too terse'
     }
 
+    It 'T668-SMOKE-CORE binds the public Core smoke after Release upload' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        Test-Path -LiteralPath $helperPath -PathType Leaf | Should -BeTrue
+
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-core.yml') -Raw -Encoding UTF8
+        $publishIndex = $workflow.IndexOf('uses: softprops/action-gh-release@v3', [StringComparison]::Ordinal)
+        $smokeIndex = $workflow.IndexOf('smoke-public-core:', [StringComparison]::Ordinal)
+        $publishIndex | Should -BeGreaterThan -1
+        $smokeIndex | Should -BeGreaterThan $publishIndex
+        $smokeJob = $workflow.Substring($smokeIndex)
+        $smokeJob | Should -Match '(?m)^\s+needs:\s+release\s*$'
+        $smokeJob | Should -Match '(?m)^\s+runs-on:\s+windows-latest\s*$'
+        $smokeJob | Should -Match '(?ms)^\s+permissions:\s*\r?\n\s+contents:\s+read\s*$'
+        $smokeJob | Should -Match 'test-public-release\.ps1[^\r\n]*-Surface Core'
+        $smokeJob | Should -Match '-ReleaseTag\s+"?\$\{\{\s*github\.ref_name\s*\}\}"?'
+        $smokeJob | Should -Not -Match 'download-artifact|output/|target/'
+
+        $tokens = $null
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$errors)
+        @($errors).Count | Should -Be 0
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        $selfTest.ok | Should -BeTrue
+        $selfTest.surface | Should -Be 'Core'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,core_asset_inventory,missing_arm64_checksum_entry,duplicate_arm64_checksum_entry,arm64_checksum_mismatch,valid,missing_checksum_entry,duplicate_checksum_entry,checksum_mismatch,version_mismatch,temp_cleanup'
+    }
+
+    It 'T668-SMOKE-CORE-ASSET-INVENTORY requires both public Core executables' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match 'function Get-CoreReleaseAssetNames'
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'core_asset_inventory'
+    }
+
+    It 'T668-SMOKE-CORE-ARM64-MISSING rejects a missing ARM64 checksum entry' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'missing_arm64_checksum_entry'
+    }
+
+    It 'T668-SMOKE-CORE-ARM64-DUPLICATE rejects duplicate ARM64 checksum entries' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'duplicate_arm64_checksum_entry'
+    }
+
+    It 'T668-SMOKE-CORE-ARM64-MISMATCH rejects mismatched ARM64 public bytes' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'arm64_checksum_mismatch'
+    }
+
+    It 'T668-SMOKE-DESKTOP binds the public Desktop smoke after Release upload' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        Test-Path -LiteralPath $helperPath -PathType Leaf | Should -BeTrue
+
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-desktop.yml') -Raw -Encoding UTF8
+        $publishIndex = $workflow.IndexOf('Upload desktop bundles to release', [StringComparison]::Ordinal)
+        $smokeIndex = $workflow.IndexOf('smoke-public-desktop:', [StringComparison]::Ordinal)
+        $publishIndex | Should -BeGreaterThan -1
+        $smokeIndex | Should -BeGreaterThan $publishIndex
+        $smokeJob = $workflow.Substring($smokeIndex)
+        $smokeJob | Should -Match '(?m)^\s+needs:\s+build\s*$'
+        $smokeJob | Should -Match '(?m)^\s+if:\s+github\.event_name == ''push''\s*$'
+        $smokeJob | Should -Match '(?m)^\s+runs-on:\s+windows-latest\s*$'
+        $smokeJob | Should -Match '(?ms)^\s+permissions:\s*\r?\n\s+contents:\s+read\s*$'
+        $smokeJob | Should -Match 'test-public-release\.ps1[^\r\n]*-Surface Desktop'
+        $smokeJob | Should -Not -Match 'download-artifact|output/|target/'
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        $selfTest.ok | Should -BeTrue
+        $selfTest.surface | Should -Be 'Desktop'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url'
+    }
+
+    It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        Test-Path -LiteralPath $helperPath -PathType Leaf | Should -BeTrue
+
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-npm.yml') -Raw -Encoding UTF8
+        $publishIndex = $workflow.IndexOf('name: Publish to npm', [StringComparison]::Ordinal)
+        $smokeIndex = $workflow.IndexOf('smoke-public-npm:', [StringComparison]::Ordinal)
+        $publishIndex | Should -BeGreaterThan -1
+        $smokeIndex | Should -BeGreaterThan $publishIndex
+        $smokeJob = $workflow.Substring($smokeIndex)
+        $smokeJob | Should -Match '(?m)^\s+needs:\s+\[verify, publish\]\s*$'
+        $smokeJob | Should -Match 'needs\.verify\.outputs\.publish_ready == ''true'''
+        $smokeJob | Should -Match 'needs\.publish\.result == ''success'''
+        $smokeJob | Should -Match '(?m)^\s+runs-on:\s+windows-latest\s*$'
+        $smokeJob | Should -Match '(?ms)^\s+permissions:\s*\r?\n\s+contents:\s+read\s*$'
+        $smokeJob | Should -Match 'test-public-release\.ps1[^\r\n]*-Surface Npm'
+        $smokeJob | Should -Not -Match 'download-artifact|output/npm-release'
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        $selfTest.ok | Should -BeTrue
+        $selfTest.surface | Should -Be 'Npm'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup'
+    }
+
     It 'accepts release-grade notes with highlights, safety, validation, and changelog evidence' {
         $qualityScript = Join-Path $script:RepoRoot 'scripts\assert-release-notes-quality.ps1'
         $releaseBody = Join-Path $TestDrive 'release-grade-body.md'

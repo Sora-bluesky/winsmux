@@ -124,3 +124,21 @@ jobs:
         run: npm publish --access public --tag latest
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  smoke-public-npm:
+    needs: [verify, publish]
+    if: >
+      needs.verify.outputs.publish_ready == 'true' &&
+      needs.publish.result == 'success'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Smoke public npm package
+        shell: pwsh
+        run: ./scripts/test-public-release.ps1 -Surface Npm -Version "${{ needs.verify.outputs.version }}" -ReleaseTag "${{ needs.verify.outputs.release_tag }}" -Repository "${{ github.repository }}" -Json

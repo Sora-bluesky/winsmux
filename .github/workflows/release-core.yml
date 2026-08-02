@@ -75,3 +75,17 @@ jobs:
         with:
           body_path: release/release-body.md
           files: release/*
+
+  smoke-public-core:
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Smoke public Core release
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".Substring(1)
+          ./scripts/test-public-release.ps1 -Surface Core -Version $version -ReleaseTag "${{ github.ref_name }}" -Repository "${{ github.repository }}" -Json
