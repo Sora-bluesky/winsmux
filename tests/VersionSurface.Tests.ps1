@@ -257,7 +257,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_cdp_probe_taxonomy,desktop_unexpected_probe_failure'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -283,7 +283,98 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Npm'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,node_path_precedence_zero,node_path_precedence_one,node_path_precedence_multiple,node_path_precedence_invalid_first,npm_complete_toolchain_consumed,npm_incomplete_toolchain_no_effects,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,node_path_precedence_zero,node_path_precedence_one,node_path_precedence_multiple,node_path_precedence_invalid_first,npm_complete_toolchain_consumed,npm_incomplete_toolchain_no_effects,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup,npm_default_real_scope'
+    }
+
+    It 'T826-NPM-RT-01 executes the default npm child-process route in real PowerShell scope' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'npm_default_real_scope'
+
+        $evidence = $selfTest.evidence.npm_default_real_scope
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('child_exit_code', 'child_started', 'default_dispatcher', 'operation', 'raw_output_excluded', 'sibling_operations')
+        $evidence.child_exit_code.GetType().FullName | Should -Be 'System.Int64'
+        foreach ($property in @('child_started', 'default_dispatcher', 'raw_output_excluded')) {
+            $evidence.$property.GetType().FullName | Should -Be 'System.Boolean'
+        }
+        $evidence.operation.GetType().FullName | Should -Be 'System.String'
+        ($evidence.sibling_operations -is [System.Array]) | Should -BeTrue
+        @($evidence.sibling_operations | ForEach-Object { $_.GetType().FullName }) | Should -Be @('System.String', 'System.String', 'System.String', 'System.String', 'System.String')
+        $evidence.child_started | Should -BeTrue
+        $evidence.child_exit_code | Should -Be 0
+        $evidence.default_dispatcher | Should -BeTrue
+        $evidence.operation | Should -Be 'npm_view'
+        $evidence.raw_output_excluded | Should -BeTrue
+        @($evidence.sibling_operations) | Should -Be @('npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help')
+    }
+
+    It 'T826-DESKTOP-CDP-01 preserves the finite CDP probe taxonomy through the real HTTP boundary' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $acceptedUrlMarker = 'T826_CDP_ACCEPTED_SUFFIX_MARKER'
+        $acceptedPageUrl = "tauri://localhost/$acceptedUrlMarker`?probe=$acceptedUrlMarker#$acceptedUrlMarker"
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match ([regex]::Escape($acceptedPageUrl))
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_cdp_probe_taxonomy'
+
+        $evidence = $selfTest.evidence.desktop_cdp_probe_taxonomy
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('real_http_boundary', 'records')
+        $evidence.real_http_boundary.GetType().FullName | Should -Be 'System.Boolean'
+        $evidence.real_http_boundary | Should -BeTrue
+        ($evidence.records -is [System.Object[]]) | Should -BeTrue
+        $expectedRecords = @(
+            @{ probe_state = 'transport_unavailable'; public_state = 'live_cdp_transport_unavailable' },
+            @{ probe_state = 'http_error'; public_state = 'live_cdp_http_error' },
+            @{ probe_state = 'payload_invalid'; public_state = 'live_cdp_payload_invalid' },
+            @{ probe_state = 'page_absent'; public_state = 'live_cdp_page_absent' },
+            @{ probe_state = 'url_rejected'; public_state = 'live_cdp_url_rejected' },
+            @{ probe_state = 'page_ready'; public_state = 'page_ready' }
+        )
+        @($evidence.records).Count | Should -Be $expectedRecords.Count
+        for ($index = 0; $index -lt $expectedRecords.Count; $index++) {
+            $record = $evidence.records[$index]
+            $expected = $expectedRecords[$index]
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('probe_state', 'public_state', 'raw_body_absent', 'raw_url_absent')
+            foreach ($property in @('probe_state', 'public_state')) {
+                $record.$property.GetType().FullName | Should -Be 'System.String'
+            }
+            foreach ($property in @('raw_body_absent', 'raw_url_absent')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Boolean'
+                $record.$property | Should -BeTrue
+            }
+            $record.probe_state | Should -Be $expected.probe_state
+            $record.public_state | Should -Be $expected.public_state
+        }
+        $pageReadyRecords = @($selfTest.evidence.desktop_observer.records | Where-Object { [string]$_.state -ceq 'page_ready' })
+        $pageReadyRecords.Count | Should -Be 1
+        $pageReadyRecords[0].page_url.GetType().FullName | Should -Be 'System.String'
+        $pageReadyRecords[0].page_url | Should -Be 'tauri://localhost/'
+        $selfTestJson | Should -Not -Match ([regex]::Escape($acceptedUrlMarker))
+    }
+
+    It 'T826-DESKTOP-EX-01 does not flatten an unexpected probe failure into CDP not-ready' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_unexpected_probe_failure'
+
+        $evidence = $selfTest.evidence.desktop_unexpected_probe_failure
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('cleanup_count', 'failed', 'flattened', 'public_marker_absent')
+        $evidence.cleanup_count.GetType().FullName | Should -Be 'System.Int64'
+        foreach ($property in @('failed', 'flattened', 'public_marker_absent')) {
+            $evidence.$property.GetType().FullName | Should -Be 'System.Boolean'
+        }
+        $evidence.cleanup_count | Should -Be 1
+        $evidence.failed | Should -BeTrue
+        $evidence.flattened | Should -BeFalse
+        $evidence.public_marker_absent | Should -BeTrue
     }
 
     It 'T825-NPM-01 resolves the complete npm toolchain before effects' {
@@ -437,6 +528,11 @@ Describe 'winsmux version surface' {
 
     It 'T825-DESKTOP-01 distinguishes exited live and page states' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $acceptedUrlMarker = 'T825_DESKTOP_ACCEPTED_SUFFIX_MARKER'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match ([regex]::Escape('$injectedAcceptedUrlMarker = ''T825_DESKTOP_ACCEPTED_SUFFIX_MARKER'''))
+        $helper | Should -Match ([regex]::Escape('$injectedAcceptedPageUrl = "tauri://localhost/$injectedAcceptedUrlMarker`?probe=$injectedAcceptedUrlMarker#$injectedAcceptedUrlMarker"'))
+
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0
         $selfTestJson = $selfTestOutput -join "`n"
@@ -477,6 +573,10 @@ Describe 'winsmux version surface' {
                 $record.$property | Should -Be $expected[$property]
             }
         }
+        $pageReadyRecords = @($records | Where-Object { [string]$_.state -ceq 'page_ready' })
+        $pageReadyRecords.Count | Should -Be 1
+        $pageReadyRecords[0].page_url | Should -Be 'tauri://localhost/'
+        $selfTestJson | Should -Not -Match ([regex]::Escape($acceptedUrlMarker))
         $selfTest.evidence.desktop_observer.post_probe_exit_wins.GetType().FullName | Should -Be 'System.Boolean'
         $selfTest.evidence.desktop_observer.post_probe_exit_wins | Should -BeTrue
         $selfTestJson | Should -Not -Match 'T825_'
