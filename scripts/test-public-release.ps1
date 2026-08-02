@@ -175,7 +175,20 @@ function Format-PublicChildProcessDiagnostic {
         [ValidateSet('core_version', 'npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help', 'desktop_installer', 'desktop_observer', 'desktop_uninstaller')]
         [string]$Operation,
         [Parameter(Mandatory)]
-        [ValidateSet('timed_out', 'exit_nonzero', 'stderr_nonempty', 'parse_failed', 'content_invalid', 'exited', 'live_no_cdp')]
+        [ValidateSet(
+            'timed_out',
+            'exit_nonzero',
+            'stderr_nonempty',
+            'parse_failed',
+            'content_invalid',
+            'exited',
+            'live_no_cdp',
+            'live_cdp_transport_unavailable',
+            'live_cdp_http_error',
+            'live_cdp_payload_invalid',
+            'live_cdp_page_absent',
+            'live_cdp_url_rejected'
+        )]
         [string]$State,
         [AllowNull()]$Result
     )
@@ -934,24 +947,92 @@ function Invoke-DesktopCleanup {
     }
 }
 
+function New-DesktopCdpProbeRecord {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('transport_unavailable', 'http_error', 'payload_invalid', 'page_absent', 'url_rejected', 'page_ready')]
+        [string]$State,
+        [AllowNull()][string]$PageUrl
+    )
+
+    $projectedPageUrl = $null
+    if ($State -ceq 'page_ready') {
+        Assert-ProductionPageUrl -Url ([string]$PageUrl)
+        $projectedPageUrl = 'tauri://localhost/'
+    }
+    return [pscustomobject][ordered]@{
+        state = $State
+        page_url = $projectedPageUrl
+    }
+}
+
 function Get-RemoteDebugPage {
     param([Parameter(Mandatory)][int]$Port)
 
-    $pages = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 5)
-    $page = @($pages | Where-Object {
-        [string](Get-ObjectPropertyValue -Object $_ -Name 'type') -ceq 'page' -and
-        -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue -Object $_ -Name 'url'))
-    } | Select-Object -First 1)
-    Assert-Condition ($page.Count -eq 1) 'WebView2 did not expose a page target.'
-    $url = [string](Get-ObjectPropertyValue -Object $page[0] -Name 'url')
-    Assert-ProductionPageUrl -Url $url
-    return $url
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.UseProxy = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $response = $null
+    $document = $null
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds(5)
+        try {
+            $response = $client.GetAsync("http://127.0.0.1:$Port/json/list").GetAwaiter().GetResult()
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null)
+        }
+        if (-not $response.IsSuccessStatusCode) {
+            return (New-DesktopCdpProbeRecord -State 'http_error' -PageUrl $null)
+        }
+
+        try {
+            $payload = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $document = [Text.Json.JsonDocument]::Parse($payload)
+            if ($document.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Array) {
+                return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null)
+            }
+            $pages = @($payload | ConvertFrom-Json -Depth 20)
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null)
+        }
+
+        $page = @($pages | Where-Object {
+            [string](Get-ObjectPropertyValue -Object $_ -Name 'type') -ceq 'page' -and
+            -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue -Object $_ -Name 'url'))
+        } | Select-Object -First 1)
+        if ($page.Count -ne 1) {
+            return (New-DesktopCdpProbeRecord -State 'page_absent' -PageUrl $null)
+        }
+        $url = [string](Get-ObjectPropertyValue -Object $page[0] -Name 'url')
+        try {
+            return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl $url)
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'url_rejected' -PageUrl $null)
+        }
+    } finally {
+        if ($null -ne $document) {
+            $document.Dispose()
+        }
+        if ($null -ne $response) {
+            $response.Dispose()
+        }
+        $client.Dispose()
+    }
 }
 
 function New-DesktopObservationRecord {
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('exited', 'live_no_cdp', 'page_ready')]
+        [ValidateSet(
+            'exited',
+            'live_no_cdp',
+            'live_cdp_transport_unavailable',
+            'live_cdp_http_error',
+            'live_cdp_payload_invalid',
+            'live_cdp_page_absent',
+            'live_cdp_url_rejected',
+            'page_ready'
+        )]
         [string]$State,
         [Parameter(Mandatory)][int]$Port,
         [Parameter(Mandatory)][int]$Attempts,
@@ -1012,29 +1093,52 @@ function Wait-DesktopProcessObservation {
             return (New-DesktopObservationRecord -State 'exited' -Port $Port -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
         }
 
-        $pageUrl = $null
+        $probe = $null
+        $legacyNullProbe = $false
         try {
-            $pageUrl = if ($null -eq $PageProbe) {
+            $probe = if ($null -eq $PageProbe) {
                 Get-RemoteDebugPage -Port $Port
             } else {
                 & $PageProbe $Port $attempt $OwnedProcess
             }
-            if (-not [string]::IsNullOrWhiteSpace([string]$pageUrl)) {
-                Assert-ProductionPageUrl -Url ([string]$pageUrl)
-            }
         } catch {
-            $pageUrl = $null
+            throw [InvalidOperationException]::new('Desktop CDP probe failed unexpectedly.', $_.Exception)
+        }
+
+        if ($null -ne $PageProbe -and [string]::IsNullOrWhiteSpace([string]$probe)) {
+            $legacyNullProbe = $true
+        } elseif ($probe -is [string]) {
+            $probe = New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl ([string]$probe)
+        } else {
+            $probeState = [string](Get-ObjectPropertyValue -Object $probe -Name 'state')
+            Assert-Condition ($probeState -cin @(
+                'transport_unavailable',
+                'http_error',
+                'payload_invalid',
+                'page_absent',
+                'url_rejected',
+                'page_ready'
+            )) 'Desktop CDP probe returned an unsupported state.'
+            if ($probeState -ceq 'page_ready') {
+                $probeUrl = [string](Get-ObjectPropertyValue -Object $probe -Name 'page_url')
+                $probe = New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl $probeUrl
+            }
         }
 
         $process.Refresh()
         if ($process.HasExited) {
             return (New-DesktopObservationRecord -State 'exited' -Port $Port -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
         }
-        if (-not [string]::IsNullOrWhiteSpace([string]$pageUrl)) {
-            return (New-DesktopObservationRecord -State 'page_ready' -Port $Port -Attempts $attempt -ExitCode $null -PageUrl ([string]$pageUrl))
+        if (-not $legacyNullProbe -and [string]$probe.state -ceq 'page_ready') {
+            return (New-DesktopObservationRecord -State 'page_ready' -Port $Port -Attempts $attempt -ExitCode $null -PageUrl ([string]$probe.page_url))
         }
         if ($attempt -eq $MaxAttempts) {
-            return (New-DesktopObservationRecord -State 'live_no_cdp' -Port $Port -Attempts $attempt -ExitCode $null -PageUrl $null)
+            $terminalState = if ($legacyNullProbe) {
+                'live_no_cdp'
+            } else {
+                "live_cdp_$([string]$probe.state)"
+            }
+            return (New-DesktopObservationRecord -State $terminalState -Port $Port -Attempts $attempt -ExitCode $null -PageUrl $null)
         }
         if ($null -eq $DelayInvoker) {
             Start-Sleep -Seconds $script:RetryDelaySeconds
@@ -1203,6 +1307,24 @@ function Resolve-NpmPathPrecedenceToolchain {
     }
 }
 
+function Invoke-NpmProcessOperation {
+    param(
+        [Parameter(Mandatory, Position = 0)]
+        [ValidateSet('npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help')]
+        [string]$Operation,
+        [Parameter(Mandatory, Position = 1)][string]$FilePath,
+        [Parameter(Position = 2, ValueFromRemainingArguments = $true)][object[]]$ProcessArguments = @(),
+        [hashtable]$Environment = @{},
+        [scriptblock]$ProcessInvoker
+    )
+
+    if ($null -ne $ProcessInvoker) {
+        return (& $ProcessInvoker $Operation $FilePath @($ProcessArguments))
+    }
+    $timeout = if ($Operation -ceq 'npm_pack') { 120 } else { 90 }
+    return Invoke-PublicChildProcess -Operation $Operation -FilePath $FilePath -ArgumentList @($ProcessArguments) -Environment $Environment -TimeoutSeconds $timeout
+}
+
 function Invoke-NpmSmoke {
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -1234,19 +1356,6 @@ function Invoke-NpmSmoke {
         USERPROFILE = Join-Path $Root 'npm-home'
         HOME = Join-Path $Root 'npm-home'
     }
-    $runNpmProcess = {
-        param(
-            [Parameter(Mandatory, Position = 0)][string]$Operation,
-            [Parameter(Mandatory, Position = 1)][string]$FilePath,
-            [Parameter(Position = 2, ValueFromRemainingArguments = $true)][object[]]$ProcessArguments
-        )
-
-        if ($null -ne $ProcessInvoker) {
-            return (& $ProcessInvoker $Operation $FilePath @($ProcessArguments))
-        }
-        $timeout = if ($Operation -ceq 'npm_pack') { 120 } else { 90 }
-        return Invoke-PublicChildProcess -Operation $Operation -FilePath $FilePath -ArgumentList @($ProcessArguments) -Environment $npmEnvironment -TimeoutSeconds $timeout
-    }.GetNewClosure()
     New-Item -ItemType Directory -Path @(
         $npmEnvironment.NPM_CONFIG_CACHE,
         $npmEnvironment.NPM_CONFIG_PREFIX,
@@ -1258,13 +1367,15 @@ function Invoke-NpmSmoke {
     Set-Content -LiteralPath $npmEnvironment.NPM_CONFIG_USERCONFIG -Value 'registry=https://registry.npmjs.org/' -Encoding ascii
 
     $metadataResult = Invoke-Retry -Description 'npm registry metadata' -Operation {
-        $result = & $runNpmProcess 'npm_view' $node $npmCli `
+        $result = Invoke-NpmProcessOperation -Operation 'npm_view' -FilePath $node -ProcessArguments @(
+            $npmCli,
             'view',
             "winsmux@$Version",
             'version',
             'dist.integrity',
             '--json',
             '--registry=https://registry.npmjs.org/'
+        ) -Environment $npmEnvironment -ProcessInvoker $ProcessInvoker
         if ($result.exit_code -ne 0) {
             throw (Format-PublicChildProcessDiagnostic -Operation 'npm_view' -State 'exit_nonzero' -Result $result)
         }
@@ -1283,13 +1394,15 @@ function Invoke-NpmSmoke {
     $integrity = Get-NpmIntegrity -Metadata $metadataResult
 
     $packRecord = Invoke-Retry -Description 'npm public tarball' -Operation {
-        $packResult = & $runNpmProcess 'npm_pack' $node $npmCli `
+        $packResult = Invoke-NpmProcessOperation -Operation 'npm_pack' -FilePath $node -ProcessArguments @(
+            $npmCli,
             'pack',
             "winsmux@$Version",
             '--pack-destination',
             $Root,
             '--json',
             '--registry=https://registry.npmjs.org/'
+        ) -Environment $npmEnvironment -ProcessInvoker $ProcessInvoker
         if ($packResult.exit_code -ne 0) {
             throw (Format-PublicChildProcessDiagnostic -Operation 'npm_pack' -State 'exit_nonzero' -Result $packResult)
         }
@@ -1315,7 +1428,7 @@ function Invoke-NpmSmoke {
 
     $extractRoot = Join-Path $Root 'unpacked'
     New-Item -ItemType Directory -Path $extractRoot | Out-Null
-    $listing = & $runNpmProcess 'tar_list' $npmToolchain.tar_path -tf $tarballPath
+    $listing = Invoke-NpmProcessOperation -Environment $npmEnvironment -ProcessInvoker $ProcessInvoker 'tar_list' $npmToolchain.tar_path -tf $tarballPath
     if ($listing.exit_code -ne 0) {
         throw (Format-PublicChildProcessDiagnostic -Operation 'tar_list' -State 'exit_nonzero' -Result $listing)
     }
@@ -1325,7 +1438,7 @@ function Invoke-NpmSmoke {
     } catch {
         throw (Format-PublicChildProcessDiagnostic -Operation 'tar_list' -State 'content_invalid' -Result $listing)
     }
-    $extract = & $runNpmProcess 'tar_extract' $npmToolchain.tar_path -xf $tarballPath -C $extractRoot
+    $extract = Invoke-NpmProcessOperation -Environment $npmEnvironment -ProcessInvoker $ProcessInvoker 'tar_extract' $npmToolchain.tar_path -xf $tarballPath -C $extractRoot
     if ($extract.exit_code -ne 0) {
         throw (Format-PublicChildProcessDiagnostic -Operation 'tar_extract' -State 'exit_nonzero' -Result $extract)
     }
@@ -1350,7 +1463,7 @@ function Invoke-NpmSmoke {
     Assert-Condition ([string]$packageJson.version -ceq $Version) "Public tarball version was '$($packageJson.version)'."
     Assert-Condition ([string]$packageJson.winsmuxReleaseTag -ceq $ReleaseTag) "Public tarball release tag was '$($packageJson.winsmuxReleaseTag)'."
 
-    $help = & $runNpmProcess 'npm_help' $node $entryPath 'help'
+    $help = Invoke-NpmProcessOperation -Operation 'npm_help' -FilePath $node -ProcessArguments @($entryPath, 'help') -Environment $npmEnvironment -ProcessInvoker $ProcessInvoker
     Assert-NpmHelpResult -Result $help
     return [ordered]@{
         package = "winsmux@$Version"
@@ -1924,7 +2037,10 @@ function Invoke-SelfTest {
             $observerRoot = { param($OwnedRoot) }.GetNewClosure()
             $noDelay = { param($Attempt) }.GetNewClosure()
             $noPage = { param($Port, $Attempt, $OwnedProcess) return $null }.GetNewClosure()
-            $pageReady = { param($Port, $Attempt, $OwnedProcess) return 'tauri://localhost/' }.GetNewClosure()
+            $injectedAcceptedUrlMarker = 'T825_DESKTOP_ACCEPTED_SUFFIX_MARKER'
+            $injectedAcceptedPageUrl = "tauri://localhost/$injectedAcceptedUrlMarker`?probe=$injectedAcceptedUrlMarker#$injectedAcceptedUrlMarker"
+            $httpAcceptedUrlMarker = 'T826_CDP_ACCEPTED_SUFFIX_MARKER'
+            $pageReady = { param($Port, $Attempt, $OwnedProcess) return $injectedAcceptedPageUrl }.GetNewClosure()
             $lifecycleCounts = [pscustomobject]@{ owner = 0; cleanup = 0 }
             $lifecycleRoot = { param($OwnedRoot) $lifecycleCounts.cleanup += 1 }.GetNewClosure()
 
@@ -1981,6 +2097,8 @@ function Invoke-SelfTest {
                 records = @($exitedObservation, $liveObservation, $pageObservation)
                 post_probe_exit_wins = [string]$raceObservation.state -ceq 'exited'
             }
+            Assert-Condition ([string]$pageObservation.page_url -ceq 'tauri://localhost/') 'Injected accepted Desktop page URL was not projected to the canonical public identity.'
+            Assert-Condition ((@($evidence.desktop_observer) | ConvertTo-Json -Depth 10 -Compress) -notmatch [regex]::Escape($injectedAcceptedUrlMarker)) 'Injected accepted Desktop page evidence exposed its hostile suffix.'
             $caseIds.Add('desktop_observer_states')
 
             $liveOutputStdout = 'T825_LIVE_OUT'
@@ -2111,6 +2229,172 @@ function Invoke-SelfTest {
 
             Assert-Condition (Test-Throws { Assert-ProductionPageUrl -Url 'http://localhost:1420/' }) 'Development WebView URL was accepted.'
             $caseIds.Add('nonproduction_url')
+
+            $cdpReadyPath = Join-Path $root 'task826-cdp.ready'
+            $cdpStopPath = Join-Path $root 'task826-cdp.stop'
+            $rawBodyMarker = 'T826_CDP_RAW_BODY_MARKER'
+            $rejectedUrlMarker = 'T826_CDP_REJECTED_URL_MARKER'
+            $responderCommand = @'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+try {
+    $listener.Start()
+    $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+    [IO.File]::WriteAllText($env:T826_CDP_READY_PATH, [string]$port, [Text.UTF8Encoding]::new($false))
+    $responses = @(
+        [pscustomobject]@{ status = '500 Internal Server Error'; body = 'T826_CDP_RAW_BODY_MARKER' },
+        [pscustomobject]@{ status = '200 OK'; body = 'not-json-T826_CDP_RAW_BODY_MARKER' },
+        [pscustomobject]@{ status = '200 OK'; body = '[]' },
+        [pscustomobject]@{ status = '200 OK'; body = '[{"type":"page","url":"http://127.0.0.1:1420/T826_CDP_REJECTED_URL_MARKER"}]' },
+        [pscustomobject]@{ status = '200 OK'; body = '[{"type":"page","url":"tauri://localhost/T826_CDP_ACCEPTED_SUFFIX_MARKER?probe=T826_CDP_ACCEPTED_SUFFIX_MARKER#T826_CDP_ACCEPTED_SUFFIX_MARKER"}]' }
+    )
+    foreach ($response in $responses) {
+        $client = $listener.AcceptTcpClient()
+        try {
+            $stream = $client.GetStream()
+            $requestBytes = [Collections.Generic.List[byte]]::new()
+            $buffer = [byte[]]::new(1024)
+            do {
+                $read = $stream.Read($buffer, 0, $buffer.Length)
+                if ($read -le 0) {
+                    throw 'Loopback HTTP client closed before completing its request headers.'
+                }
+                for ($index = 0; $index -lt $read; $index += 1) {
+                    $requestBytes.Add($buffer[$index])
+                }
+                $requestText = [Text.Encoding]::ASCII.GetString($requestBytes.ToArray())
+            } while (-not $requestText.Contains("`r`n`r`n", [StringComparison]::Ordinal))
+
+            $bodyBytes = [Text.Encoding]::UTF8.GetBytes([string]$response.body)
+            $headers = "HTTP/1.1 $($response.status)`r`nContent-Type: application/json`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`n`r`n"
+            $headerBytes = [Text.Encoding]::ASCII.GetBytes($headers)
+            $stream.Write($headerBytes, 0, $headerBytes.Length)
+            $stream.Write($bodyBytes, 0, $bodyBytes.Length)
+            $stream.Flush()
+        } finally {
+            $client.Dispose()
+        }
+    }
+    while (-not [IO.File]::Exists($env:T826_CDP_STOP_PATH)) {
+        [Threading.Thread]::Sleep(20)
+    }
+} finally {
+    $listener.Stop()
+}
+'@
+            $encodedResponder = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($responderCommand))
+            $cdpResponder = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-EncodedCommand', $encodedResponder) -Environment @{
+                T826_CDP_READY_PATH = $cdpReadyPath
+                T826_CDP_STOP_PATH = $cdpStopPath
+            }
+            $unavailableSocket = $null
+            try {
+                $readyDeadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+                while (-not (Test-Path -LiteralPath $cdpReadyPath -PathType Leaf) -and
+                    -not $cdpResponder.process.HasExited -and
+                    [DateTimeOffset]::UtcNow -lt $readyDeadline) {
+                    [Threading.Thread]::Sleep(20)
+                    $cdpResponder.process.Refresh()
+                }
+                Assert-Condition (Test-Path -LiteralPath $cdpReadyPath -PathType Leaf) 'Loopback CDP responder did not publish its ready record.'
+                $cdpPortText = (Get-Content -LiteralPath $cdpReadyPath -Raw -Encoding UTF8).Trim()
+                $cdpPort = 0
+                Assert-Condition ([int]::TryParse($cdpPortText, [ref]$cdpPort)) 'Loopback CDP responder published an invalid port.'
+                Assert-Condition ($cdpPort -ge 1 -and $cdpPort -le 65535) 'Loopback CDP responder published an out-of-range port.'
+
+                $unavailableSocket = [Net.Sockets.Socket]::new(
+                    [Net.Sockets.AddressFamily]::InterNetwork,
+                    [Net.Sockets.SocketType]::Stream,
+                    [Net.Sockets.ProtocolType]::Tcp
+                )
+                $unavailableSocket.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, 0))
+                $unavailablePort = ([Net.IPEndPoint]$unavailableSocket.LocalEndPoint).Port
+                $taxonomy = @(
+                    [pscustomobject]@{ probe_state = 'transport_unavailable'; port = $unavailablePort; public_state = 'live_cdp_transport_unavailable' },
+                    [pscustomobject]@{ probe_state = 'http_error'; port = $cdpPort; public_state = 'live_cdp_http_error' },
+                    [pscustomobject]@{ probe_state = 'payload_invalid'; port = $cdpPort; public_state = 'live_cdp_payload_invalid' },
+                    [pscustomobject]@{ probe_state = 'page_absent'; port = $cdpPort; public_state = 'live_cdp_page_absent' },
+                    [pscustomobject]@{ probe_state = 'url_rejected'; port = $cdpPort; public_state = 'live_cdp_url_rejected' },
+                    [pscustomobject]@{ probe_state = 'page_ready'; port = $cdpPort; public_state = 'page_ready' }
+                )
+                $taxonomyRecords = [Collections.Generic.List[object]]::new()
+                foreach ($definition in $taxonomy) {
+                    $observation = Wait-DesktopProcessObservation -OwnedProcess $cdpResponder -Port ([int]$definition.port) -MaxAttempts 1 -DelayInvoker $noDelay
+                    Assert-Condition ([string]$observation.state -ceq [string]$definition.public_state) "CDP probe state '$($definition.probe_state)' mapped to an unexpected public state."
+                    if ([string]$definition.probe_state -ceq 'page_ready') {
+                        Assert-Condition ([string]$observation.page_url -ceq 'tauri://localhost/') 'Accepted loopback CDP page URL was not projected to the canonical public identity.'
+                    }
+                    $publicText = if ([string]$observation.state -ceq 'page_ready') {
+                        'desktop_observer state=page_ready'
+                    } else {
+                        Format-PublicChildProcessDiagnostic -Operation 'desktop_observer' -State ([string]$observation.state) -Result $null
+                    }
+                    $taxonomyRecords.Add([ordered]@{
+                        probe_state = [string]$definition.probe_state
+                        public_state = [string]$observation.state
+                        raw_body_absent = -not $publicText.Contains($rawBodyMarker, [StringComparison]::Ordinal)
+                        raw_url_absent = -not $publicText.Contains($rejectedUrlMarker, [StringComparison]::Ordinal) -and
+                            -not $publicText.Contains($httpAcceptedUrlMarker, [StringComparison]::Ordinal)
+                    })
+                }
+                Set-Content -LiteralPath $cdpStopPath -Value 'stop' -Encoding ascii -NoNewline
+                Assert-Condition $cdpResponder.process.WaitForExit(10000) 'Loopback CDP responder did not exit after its stop record.'
+                $cdpCapture = Get-OwnedProcessCapture -OwnedProcess $cdpResponder
+                Assert-Condition ($cdpCapture.exit_code -eq 0) 'Loopback CDP responder exited unsuccessfully.'
+                Assert-Condition ([string]::IsNullOrEmpty([string]$cdpCapture.stdout)) 'Loopback CDP responder wrote unexpected stdout.'
+                Assert-Condition ([string]::IsNullOrEmpty([string]$cdpCapture.stderr)) 'Loopback CDP responder wrote unexpected stderr.'
+                $taxonomyEvidence = [ordered]@{
+                    real_http_boundary = $true
+                    records = @($taxonomyRecords)
+                }
+                $taxonomyJson = @($taxonomyEvidence) | ConvertTo-Json -Depth 10 -Compress
+                Assert-Condition ($taxonomyJson -notmatch [regex]::Escape($rawBodyMarker)) 'CDP taxonomy evidence exposed a raw response body.'
+                Assert-Condition ($taxonomyJson -notmatch [regex]::Escape($rejectedUrlMarker)) 'CDP taxonomy evidence exposed a rejected raw URL.'
+                Assert-Condition ($taxonomyJson -notmatch [regex]::Escape($httpAcceptedUrlMarker)) 'CDP taxonomy evidence exposed an accepted hostile URL suffix.'
+                $evidence.desktop_cdp_probe_taxonomy = $taxonomyEvidence
+                $caseIds.Add('desktop_cdp_probe_taxonomy')
+            } finally {
+                if ($null -ne $unavailableSocket) {
+                    $unavailableSocket.Dispose()
+                }
+                if (-not $cdpResponder.process.HasExited) {
+                    Stop-OwnedProcessTree -RootProcess $cdpResponder
+                }
+            }
+
+            $unexpectedMarker = 'T826_UNEXPECTED_PROBE_RAW_MARKER'
+            $unexpectedCounts = [pscustomobject]@{ cleanup = 0 }
+            $unexpectedContext = & $newObservationContext
+            $unexpectedContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30')
+            $unexpectedProbe = {
+                param($Port, $Attempt, $OwnedProcess)
+                throw [InvalidOperationException]::new($unexpectedMarker)
+            }.GetNewClosure()
+            $unexpectedRoot = { param($OwnedRoot) $unexpectedCounts.cleanup += 1 }.GetNewClosure()
+            $unexpectedFailure = $null
+            try {
+                Invoke-DesktopLifecycleOperation -Context $unexpectedContext -Environment @{} -Port 48255 -MaxAttempts 1 -PageProbe $unexpectedProbe -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $unexpectedRoot | Out-Null
+            } catch {
+                $unexpectedFailure = $_.Exception
+            }
+            Assert-Condition ($null -ne $unexpectedFailure) 'Unexpected Desktop probe failure was accepted.'
+            $unexpectedPublicText = [string]$unexpectedFailure.Message + "`n" + [string]$unexpectedContext.block_error
+            $unexpectedEvidence = [ordered]@{
+                cleanup_count = [int]$unexpectedCounts.cleanup
+                failed = $null -ne $unexpectedFailure
+                flattened = $null -ne $unexpectedFailure.Data['observation'] -or $unexpectedFailure.Message -match 'live_(?:no_cdp|cdp_)'
+                public_marker_absent = $unexpectedPublicText -notmatch [regex]::Escape($unexpectedMarker)
+            }
+            Assert-Condition ($unexpectedEvidence.cleanup_count -eq 1) 'Unexpected Desktop probe failure did not clean up exactly once.'
+            Assert-Condition (-not $unexpectedEvidence.flattened) 'Unexpected Desktop probe failure was flattened into a live observation state.'
+            Assert-Condition $unexpectedEvidence.public_marker_absent 'Unexpected Desktop probe failure exposed its raw marker.'
+            Assert-Condition ((@($unexpectedEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch [regex]::Escape($unexpectedMarker)) 'Unexpected Desktop probe evidence exposed its raw marker.'
+            $evidence.desktop_unexpected_probe_failure = $unexpectedEvidence
+            $caseIds.Add('desktop_unexpected_probe_failure')
         } else {
             $nodeFixtureRoot = Join-Path $root 'node-toolchains'
             $firstNodeRoot = Join-Path $nodeFixtureRoot 'first'
@@ -2302,6 +2586,30 @@ function Invoke-SelfTest {
     Assert-Condition (-not (Test-Path -LiteralPath $root)) 'Self-test temporary root remained.'
     if ($Surface -ne 'Desktop') {
         $caseIds.Add('temp_cleanup')
+    }
+    if ($Surface -eq 'Npm') {
+        $pwshPath = Join-Path $PSHOME 'pwsh.exe'
+        Assert-Condition (Test-Path -LiteralPath $pwshPath -PathType Leaf) 'PowerShell self-test child executable was not found.'
+        $rawChildMarker = 'T826_NPM_DEFAULT_CHILD_RAW'
+        $defaultResult = Invoke-NpmProcessOperation -Operation 'npm_view' -FilePath $pwshPath -ProcessArguments @(
+            '-NoProfile',
+            '-Command',
+            "[Console]::Out.Write('$rawChildMarker'); exit 0"
+        ) -Environment @{}
+        Assert-Condition ($defaultResult.exit_code -eq 0) 'Default npm dispatcher child did not exit successfully.'
+        Assert-Condition ([string]$defaultResult.stdout -ceq $rawChildMarker) 'Default npm dispatcher child output was not captured exactly.'
+        Assert-Condition ([string]::IsNullOrEmpty([string]$defaultResult.stderr)) 'Default npm dispatcher child wrote unexpected stderr.'
+        $defaultScopeEvidence = [ordered]@{
+            child_started = $true
+            child_exit_code = [int]$defaultResult.exit_code
+            default_dispatcher = $true
+            operation = 'npm_view'
+            raw_output_excluded = $true
+            sibling_operations = @('npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help')
+        }
+        Assert-Condition ((@($defaultScopeEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch [regex]::Escape($rawChildMarker)) 'Default npm dispatcher evidence exposed raw child output.'
+        $evidence.npm_default_real_scope = $defaultScopeEvidence
+        $caseIds.Add('npm_default_real_scope')
     }
     return [ordered]@{
         ok = $true
