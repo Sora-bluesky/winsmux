@@ -257,7 +257,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -283,7 +283,259 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Npm'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,node_path_precedence_zero,node_path_precedence_one,node_path_precedence_multiple,node_path_precedence_invalid_first,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,reserved_pkgfix_namespace,node_path_precedence_zero,node_path_precedence_one,node_path_precedence_multiple,node_path_precedence_invalid_first,npm_complete_toolchain_consumed,npm_incomplete_toolchain_no_effects,valid,missing_integrity,version_mismatch,help_failure,temp_cleanup'
+    }
+
+    It 'T825-NPM-01 resolves the complete npm toolchain before effects' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'npm_complete_toolchain_consumed'
+
+        $evidence = $selfTest.evidence.npm_complete_toolchain
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('npm_adjacent', 'operation_order', 'same_tar_for_list_extract', 'selected_node_index', 'selected_tar_index')
+        $evidence.selected_node_index.GetType().FullName | Should -Be 'System.Int64'
+        $evidence.selected_tar_index.GetType().FullName | Should -Be 'System.Int64'
+        $evidence.npm_adjacent.GetType().FullName | Should -Be 'System.Boolean'
+        $evidence.same_tar_for_list_extract.GetType().FullName | Should -Be 'System.Boolean'
+        $evidence.selected_node_index | Should -Be 0
+        $evidence.selected_tar_index | Should -Be 0
+        $evidence.npm_adjacent | Should -BeTrue
+        $evidence.same_tar_for_list_extract | Should -BeTrue
+        @($evidence.operation_order) | Should -Be @('npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help')
+        $selfTestJson | Should -Not -Match 'T825_'
+
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match 'function Resolve-NpmPathPrecedenceToolchain'
+        $helper | Should -Match '\$nodeCandidates\s*=\s*@\(Get-Command node\.exe -CommandType Application'
+        $helper | Should -Match '\$tarCandidates\s*=\s*@\(Get-Command tar\.exe -CommandType Application'
+        $helper | Should -Match 'Resolve-NpmPathPrecedenceToolchain\s+-NodeCandidates\s+\$nodeCandidates\s+-TarCandidates\s+\$tarCandidates'
+        $helper | Should -Match '(?s)Resolve-NpmPathPrecedenceToolchain.*?New-Item'
+        $helper | Should -Match '\.tar_path\s+-tf\s+'
+        $helper | Should -Match '\.tar_path\s+-xf\s+'
+    }
+
+    It 'T825-NPM-02 rejects an incomplete npm toolchain before effects' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'npm_incomplete_toolchain_no_effects'
+
+        $cases = @($selfTest.evidence.npm_incomplete_toolchain.cases)
+        $cases.Count | Should -Be 5
+        @($cases | ForEach-Object { $_.name }) | Should -Be @('missing_node', 'invalid_first_node', 'missing_adjacent_npm', 'missing_tar', 'invalid_first_tar')
+        foreach ($case in $cases) {
+            @($case.PSObject.Properties.Name | Sort-Object) | Should -Be @('name', 'process_operations', 'root_unchanged')
+            $case.name.GetType().FullName | Should -Be 'System.String'
+            $case.root_unchanged.GetType().FullName | Should -Be 'System.Boolean'
+            $case.process_operations.GetType().FullName | Should -Be 'System.Int64'
+            $case.root_unchanged | Should -BeTrue
+            $case.process_operations | Should -Be 0
+        }
+        $selfTestJson | Should -Not -Match 'T825_'
+
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match 'function Resolve-NpmPathPrecedenceToolchain'
+        $helper | Should -Match 'Resolve-NpmPathPrecedenceToolchain\s+-NodeCandidates\s+\$nodeCandidates\s+-TarCandidates\s+\$tarCandidates'
+        $helper | Should -Match '(?s)Invoke-NpmSmoke.*?Resolve-NpmPathPrecedenceToolchain.*?New-Item'
+        $helper | Should -Match '\$candidates\[0\]\.Source'
+        $helper | Should -Match '\$tarCandidates\[0\]\.Source'
+    }
+
+    It 'T825-DIAG-01 keeps child output content out of public diagnostics' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'process_diagnostics_metadata_only'
+
+        $diagnostics = @($selfTest.evidence.process_diagnostics.records)
+        $expectedDiagnostics = @(
+            @{ operation = 'core_version'; state = 'stderr_nonempty'; exit_code = 0; stdout_present = $true; stdout_bytes = 13; stdout_truncated = $false; stderr_present = $true; stderr_bytes = 13; stderr_truncated = $false },
+            @{ operation = 'npm_view'; state = 'parse_failed'; exit_code = 0; stdout_present = $true; stdout_bytes = 17; stdout_truncated = $false; stderr_present = $false; stderr_bytes = 0; stderr_truncated = $false },
+            @{ operation = 'npm_pack'; state = 'parse_failed'; exit_code = 0; stdout_present = $true; stdout_bytes = 17; stdout_truncated = $false; stderr_present = $false; stderr_bytes = 0; stderr_truncated = $false },
+            @{ operation = 'tar_list'; state = 'content_invalid'; exit_code = 0; stdout_present = $true; stdout_bytes = 17; stdout_truncated = $false; stderr_present = $false; stderr_bytes = 0; stderr_truncated = $false },
+            @{ operation = 'tar_extract'; state = 'exit_nonzero'; exit_code = 23; stdout_present = $false; stdout_bytes = 0; stdout_truncated = $false; stderr_present = $true; stderr_bytes = 20; stderr_truncated = $false },
+            @{ operation = 'npm_help'; state = 'content_invalid'; exit_code = 0; stdout_present = $true; stdout_bytes = 17; stdout_truncated = $false; stderr_present = $false; stderr_bytes = 0; stderr_truncated = $false },
+            @{ operation = 'desktop_installer'; state = 'exit_nonzero'; exit_code = 23; stdout_present = $false; stdout_bytes = 0; stdout_truncated = $false; stderr_present = $true; stderr_bytes = 26; stderr_truncated = $false },
+            @{ operation = 'desktop_observer'; state = 'exited'; exit_code = 23; stdout_present = $true; stdout_bytes = 25; stdout_truncated = $false; stderr_present = $true; stderr_bytes = 25; stderr_truncated = $false },
+            @{ operation = 'desktop_uninstaller'; state = 'exit_nonzero'; exit_code = 23; stdout_present = $false; stdout_bytes = 0; stdout_truncated = $false; stderr_present = $true; stderr_bytes = 16413; stderr_truncated = $true }
+        )
+        $diagnostics.Count | Should -Be $expectedDiagnostics.Count
+        for ($index = 0; $index -lt $expectedDiagnostics.Count; $index++) {
+            $record = $diagnostics[$index]
+            $expected = $expectedDiagnostics[$index]
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('digest_absent', 'exit_code', 'formatted_once', 'marker_absent', 'operation', 'state', 'stderr_bytes', 'stderr_present', 'stderr_truncated', 'stdout_bytes', 'stdout_present', 'stdout_truncated')
+            $record.operation.GetType().FullName | Should -Be 'System.String'
+            $record.state.GetType().FullName | Should -Be 'System.String'
+            $record.exit_code.GetType().FullName | Should -Be 'System.Int64'
+            foreach ($property in @('marker_absent', 'digest_absent', 'formatted_once', 'stdout_present', 'stdout_truncated', 'stderr_present', 'stderr_truncated')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Boolean'
+            }
+            foreach ($property in @('stdout_bytes', 'stderr_bytes')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Int64'
+            }
+            $record.marker_absent | Should -BeTrue
+            $record.digest_absent | Should -BeTrue
+            $record.formatted_once | Should -BeTrue
+            foreach ($property in @('operation', 'state', 'exit_code', 'stdout_present', 'stdout_bytes', 'stdout_truncated', 'stderr_present', 'stderr_bytes', 'stderr_truncated')) {
+                $record.$property | Should -Be $expected[$property]
+            }
+        }
+        foreach ($property in @('public_error_marker_absent', 'self_test_json_marker_absent', 'block_error_marker_absent')) {
+            $selfTest.evidence.process_diagnostics.$property.GetType().FullName | Should -Be 'System.Boolean'
+            $selfTest.evidence.process_diagnostics.$property | Should -BeTrue
+        }
+        $selfTestJson | Should -Not -Match 'T825_(CORE|NPM|TAR|DESKTOP)'
+
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        (@([regex]::Matches($helper, 'function Format-PublicChildProcessDiagnostic'))).Count | Should -Be 1
+        foreach ($operation in @('core_version', 'npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help', 'desktop_installer', 'desktop_observer', 'desktop_uninstaller')) {
+            $helper | Should -Match ([regex]::Escape("-Operation '$operation'"))
+        }
+        $helper | Should -Not -Match '(?im)^\s*throw\s+[^\r\n]*(\.stdout|\.stderr)'
+
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $functions = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst]
+        }, $true))
+        $publicProcessOwner = @($functions | Where-Object Name -CEQ 'Invoke-PublicChildProcess')
+        $desktopLifecycleOwner = @($functions | Where-Object Name -CEQ 'Invoke-DesktopLifecycleOperation')
+        $publicProcessOwner.Count | Should -Be 1
+        $desktopLifecycleOwner.Count | Should -Be 1
+        $nativeCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-NativeProcess'
+        }, $true))
+        $publicCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-PublicChildProcess'
+        }, $true))
+        $nativeCalls.Count | Should -Be 2
+        $publicCalls.Count | Should -Be 4
+        $publicProcessOwner[0].Extent.Text | Should -Match "Data\['process_result'\]"
+        $publicProcessOwner[0].Extent.Text | Should -Match "-State 'timed_out'"
+        $desktopOwnerText = $desktopLifecycleOwner[0].Extent.Text
+        $cleanupIndex = $desktopOwnerText.IndexOf('Invoke-DesktopCleanup', [StringComparison]::Ordinal)
+        $captureIndex = $desktopOwnerText.IndexOf('Set-DesktopObservationCaptureMetadata', [StringComparison]::Ordinal)
+        $formatIndex = $desktopOwnerText.IndexOf('Format-PublicChildProcessDiagnostic', [StringComparison]::Ordinal)
+        $cleanupIndex | Should -BeGreaterThan -1
+        $captureIndex | Should -BeGreaterThan $cleanupIndex
+        $formatIndex | Should -BeGreaterThan $captureIndex
+    }
+
+    It 'T825-DESKTOP-01 distinguishes exited live and page states' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_observer_states'
+
+        $records = @($selfTest.evidence.desktop_observer.records)
+        $expectedRecords = @(
+            @{ state = 'exited'; is_live = $false; has_exited = $true; exit_code = 23; port = 48251; page_present = $false; page_url = $null; attempts = 1; stdout_present = $true; stdout_bytes = 25; stdout_truncated = $false; stderr_present = $true; stderr_bytes = 25; stderr_truncated = $false },
+            @{ state = 'live_no_cdp'; is_live = $true; has_exited = $false; exit_code = $null; port = 48252; page_present = $false; page_url = $null; attempts = 2; stdout_present = $false; stdout_bytes = 0; stdout_truncated = $false; stderr_present = $false; stderr_bytes = 0; stderr_truncated = $false },
+            @{ state = 'page_ready'; is_live = $true; has_exited = $false; exit_code = $null; port = 48253; page_present = $true; page_url = 'tauri://localhost/'; attempts = 1; stdout_present = $false; stdout_bytes = 0; stdout_truncated = $false; stderr_present = $false; stderr_bytes = 0; stderr_truncated = $false }
+        )
+        $records.Count | Should -Be $expectedRecords.Count
+        for ($index = 0; $index -lt $expectedRecords.Count; $index++) {
+            $record = $records[$index]
+            $expected = $expectedRecords[$index]
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('attempts', 'exit_code', 'has_exited', 'is_live', 'page_present', 'page_url', 'port', 'state', 'stderr_bytes', 'stderr_present', 'stderr_truncated', 'stdout_bytes', 'stdout_present', 'stdout_truncated')
+            $record.state.GetType().FullName | Should -Be 'System.String'
+            foreach ($property in @('is_live', 'has_exited', 'page_present', 'stdout_present', 'stdout_truncated', 'stderr_present', 'stderr_truncated')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Boolean'
+            }
+            foreach ($property in @('port', 'attempts', 'stdout_bytes', 'stderr_bytes')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Int64'
+            }
+            if ($null -eq $expected.exit_code) {
+                $record.exit_code | Should -Be $null
+            } else {
+                $record.exit_code.GetType().FullName | Should -Be 'System.Int64'
+                $record.exit_code | Should -Be $expected.exit_code
+            }
+            if ($null -eq $expected.page_url) {
+                $record.page_url | Should -Be $null
+            } else {
+                $record.page_url.GetType().FullName | Should -Be 'System.String'
+                $record.page_url | Should -Be $expected.page_url
+            }
+            foreach ($property in @('state', 'is_live', 'has_exited', 'port', 'page_present', 'attempts', 'stdout_present', 'stdout_bytes', 'stdout_truncated', 'stderr_present', 'stderr_bytes', 'stderr_truncated')) {
+                $record.$property | Should -Be $expected[$property]
+            }
+        }
+        $selfTest.evidence.desktop_observer.post_probe_exit_wins.GetType().FullName | Should -Be 'System.Boolean'
+        $selfTest.evidence.desktop_observer.post_probe_exit_wins | Should -BeTrue
+        $selfTestJson | Should -Not -Match 'T825_'
+
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match 'function Start-OwnedProcess'
+        $helper | Should -Match 'function Wait-DesktopProcessObservation'
+        $helper | Should -Match 'function Invoke-DesktopLifecycleOperation'
+        $helper | Should -Match '(?s)function Invoke-DesktopLifecycleOperation.*?Wait-DesktopProcessObservation'
+        $helper | Should -Match '(?s)function Invoke-DesktopSmoke.*?Invoke-DesktopLifecycleOperation'
+    }
+
+    It 'T825-DESKTOP-02 preserves observation and cleanup failures through the lifecycle owner' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_observation_cleanup_aggregate'
+
+        $lifecycle = $selfTest.evidence.desktop_lifecycle
+        @($lifecycle.PSObject.Properties.Name | Sort-Object) | Should -Be @('cleanup_invocations', 'cleanup_only', 'dual', 'operation_only', 'owner_invocations', 'success')
+        $lifecycle.owner_invocations.GetType().FullName | Should -Be 'System.Int64'
+        $lifecycle.cleanup_invocations.GetType().FullName | Should -Be 'System.Int64'
+        $lifecycle.owner_invocations | Should -Be 4
+        $lifecycle.cleanup_invocations | Should -Be 4
+        @($lifecycle.success.PSObject.Properties.Name | Sort-Object) | Should -Be @('result_returned', 'terminal_phase')
+        $lifecycle.success.result_returned.GetType().FullName | Should -Be 'System.Boolean'
+        $lifecycle.success.terminal_phase.GetType().FullName | Should -Be 'System.String'
+        $lifecycle.success.result_returned | Should -BeTrue
+        $lifecycle.success.terminal_phase | Should -Be 'clean'
+        foreach ($name in @('operation_only', 'cleanup_only')) {
+            $record = $lifecycle.$name
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('exception_role', 'reference_identity', 'terminal_phase')
+            $record.exception_role.GetType().FullName | Should -Be 'System.String'
+            $record.reference_identity.GetType().FullName | Should -Be 'System.Boolean'
+            $record.terminal_phase.GetType().FullName | Should -Be 'System.String'
+            $record.reference_identity | Should -BeTrue
+        }
+        $lifecycle.operation_only.exception_role | Should -Be 'observer'
+        $lifecycle.operation_only.terminal_phase | Should -Be 'clean'
+        $lifecycle.cleanup_only.exception_role | Should -Be 'cleanup'
+        $lifecycle.cleanup_only.terminal_phase | Should -Be 'preserve'
+        @($lifecycle.dual.PSObject.Properties.Name | Sort-Object) | Should -Be @('aggregate_type', 'inner_count', 'inner_roles', 'reference_identity', 'terminal_phase')
+        $lifecycle.dual.aggregate_type.GetType().FullName | Should -Be 'System.String'
+        $lifecycle.dual.inner_count.GetType().FullName | Should -Be 'System.Int64'
+        $lifecycle.dual.terminal_phase.GetType().FullName | Should -Be 'System.String'
+        $lifecycle.dual.aggregate_type | Should -Be 'System.AggregateException'
+        $lifecycle.dual.inner_count | Should -Be 2
+        @($lifecycle.dual.inner_roles) | Should -Be @('observer', 'cleanup')
+        @($lifecycle.dual.reference_identity) | Should -Be @($true, $true)
+        $lifecycle.dual.terminal_phase | Should -Be 'preserve'
+        $selfTestJson | Should -Not -Match 'T825_'
+
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match 'function Invoke-DesktopLifecycleOperation'
+        $helper | Should -Match '(?s)function Invoke-DesktopLifecycleOperation.*?Invoke-DesktopCleanup'
+        $helper | Should -Match '(?s)function Invoke-DesktopLifecycleOperation.*?System\.AggregateException'
+        $helper | Should -Match '(?s)function Invoke-DesktopSmoke.*?Invoke-DesktopLifecycleOperation'
     }
 
     It 'IR668-NODE-01 selects one PATH-precedence Node and couples npm without lower fallback' {
