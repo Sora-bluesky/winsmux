@@ -109,6 +109,7 @@ $whitelistPatterns = @(
     'scripts/test-install-e2e.ps1',
     'scripts/test-native-bridge-resolution.ps1',
     'scripts/test-install-redirected.ps1',
+    'scripts/test-public-release.ps1',
     'scripts/test-v03617-reliability-gate.ps1',
     'scripts/test-v03618-release-hardening.ps1',
     'scripts/test-v03619-repo-audit.ps1',

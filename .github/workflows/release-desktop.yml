@@ -202,3 +202,18 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
           files: output/desktop-release/*
+
+  smoke-public-desktop:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Smoke public Desktop release
+        shell: pwsh
+        run: |
+          $version = "${{ github.ref_name }}".Substring(1)
+          ./scripts/test-public-release.ps1 -Surface Desktop -Version $version -ReleaseTag "${{ github.ref_name }}" -Repository "${{ github.repository }}" -Json
