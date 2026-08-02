@@ -149,6 +149,65 @@ function Invoke-Retry {
     throw "$Description failed after $($script:RetryCount) attempts: $($lastError.Exception.Message)"
 }
 
+function Get-ChildOutputMetadata {
+    param([AllowNull()][string]$Content)
+
+    $value = if ($null -eq $Content) { '' } else { [string]$Content }
+    $encoding = [Text.UTF8Encoding]::new($false)
+    $bytes = $encoding.GetBytes($value)
+    $retainedLength = [Math]::Min($bytes.Length, 16384)
+    $retained = if ($retainedLength -eq 0) {
+        ''
+    } else {
+        $encoding.GetString($bytes, 0, $retainedLength)
+    }
+    return [pscustomobject]@{
+        present = $bytes.Length -gt 0
+        bytes = $bytes.Length
+        truncated = $bytes.Length -gt 16384
+        retained = $retained
+    }
+}
+
+function Format-PublicChildProcessDiagnostic {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('core_version', 'npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help', 'desktop_installer', 'desktop_observer', 'desktop_uninstaller')]
+        [string]$Operation,
+        [Parameter(Mandatory)]
+        [ValidateSet('timed_out', 'exit_nonzero', 'stderr_nonempty', 'parse_failed', 'content_invalid', 'exited', 'live_no_cdp')]
+        [string]$State,
+        [AllowNull()]$Result
+    )
+
+    $exitCode = 'none'
+    $stdout = ''
+    $stderr = ''
+    if ($null -ne $Result) {
+        $resultExitCode = Get-ObjectPropertyValue -Object $Result -Name 'exit_code'
+        if ($null -ne $resultExitCode) {
+            $exitCode = [string][int]$resultExitCode
+        }
+        $stdoutValue = Get-ObjectPropertyValue -Object $Result -Name 'stdout'
+        $stderrValue = Get-ObjectPropertyValue -Object $Result -Name 'stderr'
+        if ($null -ne $stdoutValue) { $stdout = [string]$stdoutValue }
+        if ($null -ne $stderrValue) { $stderr = [string]$stderrValue }
+    }
+    $stdoutMetadata = Get-ChildOutputMetadata -Content $stdout
+    $stderrMetadata = Get-ChildOutputMetadata -Content $stderr
+    return 'child_process_failure operation={0} state={1} exit_code={2} stdout_present={3} stdout_bytes={4} stdout_truncated={5} stderr_present={6} stderr_bytes={7} stderr_truncated={8}' -f @(
+        $Operation,
+        $State,
+        $exitCode,
+        ([string]$stdoutMetadata.present).ToLowerInvariant(),
+        $stdoutMetadata.bytes,
+        ([string]$stdoutMetadata.truncated).ToLowerInvariant(),
+        ([string]$stderrMetadata.present).ToLowerInvariant(),
+        $stderrMetadata.bytes,
+        ([string]$stderrMetadata.truncated).ToLowerInvariant()
+    )
+}
+
 function Invoke-NativeProcess {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -175,54 +234,116 @@ function Invoke-NativeProcess {
     Assert-Condition $process.Start() "Unable to start process: $FilePath"
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    $timedOut = -not $process.WaitForExit($TimeoutSeconds * 1000)
+    if ($timedOut) {
         try {
-            $process.Kill($true)
+            $process.Refresh()
+            if (-not $process.HasExited) {
+                $process.Kill($true)
+            }
+            if (-not $process.WaitForExit(15000)) {
+                throw [TimeoutException]::new('Timed-out child process did not become terminal after termination.')
+            }
         } catch {
+            throw [InvalidOperationException]::new('Unable to terminate a timed-out child process.', $_.Exception)
         }
-        throw "Process timed out after $TimeoutSeconds seconds: $FilePath"
     }
     $stdout = $stdoutTask.GetAwaiter().GetResult()
     $stderr = $stderrTask.GetAwaiter().GetResult()
-    return [pscustomobject]@{
-        exit_code = $process.ExitCode
+    $result = [pscustomobject]@{
+        exit_code = if ($timedOut) { $null } else { [int]$process.ExitCode }
         stdout = $stdout
         stderr = $stderr
+    }
+    if ($timedOut) {
+        $failure = [TimeoutException]::new('Child process exceeded the allowed timeout.')
+        $failure.Data['process_result'] = $result
+        throw $failure
+    }
+    return $result
+}
+
+function Invoke-PublicChildProcess {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('core_version', 'npm_view', 'npm_pack', 'tar_list', 'tar_extract', 'npm_help', 'desktop_installer', 'desktop_observer', 'desktop_uninstaller')]
+        [string]$Operation,
+        [Parameter(Mandatory)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [hashtable]$Environment = @{},
+        [int]$TimeoutSeconds = 60
+    )
+
+    try {
+        return Invoke-NativeProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment -TimeoutSeconds $TimeoutSeconds
+    } catch [TimeoutException] {
+        $result = $_.Exception.Data['process_result']
+        Assert-Condition ($null -ne $result) 'Timed-out child process did not provide a terminal output capture.'
+        throw (Format-PublicChildProcessDiagnostic -Operation $Operation -State 'timed_out' -Result $result)
     }
 }
 
 function Start-OwnedProcess {
     param(
         [Parameter(Mandatory)][string]$FilePath,
-        [hashtable]$Environment
+        [string[]]$ArgumentList = @(),
+        [hashtable]$Environment = @{}
     )
 
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $FilePath
     $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    foreach ($argument in @($ArgumentList)) {
+        $info.ArgumentList.Add([string]$argument)
+    }
     foreach ($name in @($Environment.Keys)) {
         $info.Environment[[string]$name] = [string]$Environment[$name]
     }
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $info
     Assert-Condition $process.Start() "Unable to start owned process: $FilePath"
-    return $process
+    return [pscustomobject]@{
+        process = $process
+        stdout_task = $process.StandardOutput.ReadToEndAsync()
+        stderr_task = $process.StandardError.ReadToEndAsync()
+    }
+}
+
+function Get-OwnedProcessCapture {
+    param([Parameter(Mandatory)]$OwnedProcess)
+
+    $process = $OwnedProcess.process
+    Assert-Condition $process.HasExited 'Owned process output was requested before the process became terminal.'
+    $process.WaitForExit()
+    return [pscustomobject]@{
+        exit_code = [int]$process.ExitCode
+        stdout = [string]$OwnedProcess.stdout_task.GetAwaiter().GetResult()
+        stderr = [string]$OwnedProcess.stderr_task.GetAwaiter().GetResult()
+    }
 }
 
 function Stop-OwnedProcessTree {
-    param([Diagnostics.Process]$RootProcess)
+    param($RootProcess)
 
     if ($null -eq $RootProcess) {
         return
     }
+    $process = if ($null -ne (Get-ObjectPropertyValue -Object $RootProcess -Name 'process')) {
+        $RootProcess.process
+    } else {
+        $RootProcess
+    }
     try {
-        if (-not $RootProcess.HasExited) {
-            $RootProcess.Kill($true)
-            $stopped = $RootProcess.WaitForExit(15000)
-            Assert-Condition $stopped "Timed out while stopping owned process tree $($RootProcess.Id)."
+        if (-not $process.HasExited) {
+            $process.Kill($true)
+            $stopped = $process.WaitForExit(15000)
+            Assert-Condition $stopped "Timed out while stopping owned process tree $($process.Id)."
         }
     } catch {
-        throw "Unable to stop owned process tree $($RootProcess.Id): $($_.Exception.Message)"
+        throw "Unable to stop owned process tree $($process.Id): $($_.Exception.Message)"
     }
 }
 
@@ -280,9 +401,15 @@ function Assert-CoreVersionResult {
         [Parameter(Mandatory)][string]$ExpectedVersion
     )
 
-    Assert-Condition ($Result.exit_code -eq 0) "Core --version exited with $($Result.exit_code)."
-    Assert-Condition ([string]::IsNullOrWhiteSpace([string]$Result.stderr)) "Core --version wrote stderr: $($Result.stderr)"
-    Assert-Condition ([string]$Result.stdout.Trim() -ceq "$ExpectedProgramName $ExpectedVersion") "Core --version returned '$([string]$Result.stdout.Trim())'."
+    if ($Result.exit_code -ne 0) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'core_version' -State 'exit_nonzero' -Result $Result)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Result.stderr)) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'core_version' -State 'stderr_nonempty' -Result $Result)
+    }
+    if ([string]$Result.stdout.Trim() -cne "$ExpectedProgramName $ExpectedVersion") {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'core_version' -State 'content_invalid' -Result $Result)
+    }
 }
 
 function Get-ObjectPropertyValue {
@@ -327,11 +454,17 @@ function Assert-NpmMetadata {
 function Assert-NpmHelpResult {
     param([Parameter(Mandatory)]$Result)
 
-    Assert-Condition ($Result.exit_code -eq 0) "npm package help exited with $($Result.exit_code)."
-    Assert-Condition ([string]::IsNullOrWhiteSpace([string]$Result.stderr)) "npm package help wrote stderr: $($Result.stderr)"
+    if ($Result.exit_code -ne 0) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'npm_help' -State 'exit_nonzero' -Result $Result)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$Result.stderr)) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'npm_help' -State 'stderr_nonempty' -Result $Result)
+    }
     $output = [string]$Result.stdout
     foreach ($token in @('install', 'update', 'uninstall', 'version', 'help')) {
-        Assert-Condition ($output -match "(?m)^\s+$([regex]::Escape($token))\s+") "npm package help omitted action '$token'."
+        if ($output -notmatch "(?m)^\s+$([regex]::Escape($token))\s+") {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_help' -State 'content_invalid' -Result $Result)
+        }
     }
 }
 
@@ -669,11 +802,13 @@ function Invoke-VerifiedDesktopUninstaller {
 
     $arguments = @('/S', "_?=$InstallRoot")
     $uninstall = if ($null -eq $ProcessInvoker) {
-        Invoke-NativeProcess -FilePath $expectedUninstaller -ArgumentList $arguments -Environment $Environment -TimeoutSeconds 180
+        Invoke-PublicChildProcess -Operation 'desktop_uninstaller' -FilePath $expectedUninstaller -ArgumentList $arguments -Environment $Environment -TimeoutSeconds 180
     } else {
         & $ProcessInvoker $expectedUninstaller $arguments $Environment
     }
-    Assert-Condition ($uninstall.exit_code -eq 0) "Desktop uninstaller exited with $($uninstall.exit_code): $($uninstall.stderr)"
+    if ($uninstall.exit_code -ne 0) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'desktop_uninstaller' -State 'exit_nonzero' -Result $uninstall)
+    }
 
     $registrationExists = if ($null -eq $UninstallRegistrationProbe) {
         Test-Path -LiteralPath $script:DesktopUninstallPath
@@ -802,17 +937,190 @@ function Invoke-DesktopCleanup {
 function Get-RemoteDebugPage {
     param([Parameter(Mandatory)][int]$Port)
 
-    return Invoke-Retry -Description 'packaged WebView2 observation' -Operation {
-        $pages = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 5)
-        $page = @($pages | Where-Object {
-            [string](Get-ObjectPropertyValue -Object $_ -Name 'type') -ceq 'page' -and
-            -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue -Object $_ -Name 'url'))
-        } | Select-Object -First 1)
-        Assert-Condition ($page.Count -eq 1) 'WebView2 did not expose a page target.'
-        $url = [string](Get-ObjectPropertyValue -Object $page[0] -Name 'url')
-        Assert-ProductionPageUrl -Url $url
-        return $url
+    $pages = @(Invoke-RestMethod -Uri "http://127.0.0.1:$Port/json/list" -TimeoutSec 5)
+    $page = @($pages | Where-Object {
+        [string](Get-ObjectPropertyValue -Object $_ -Name 'type') -ceq 'page' -and
+        -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue -Object $_ -Name 'url'))
+    } | Select-Object -First 1)
+    Assert-Condition ($page.Count -eq 1) 'WebView2 did not expose a page target.'
+    $url = [string](Get-ObjectPropertyValue -Object $page[0] -Name 'url')
+    Assert-ProductionPageUrl -Url $url
+    return $url
+}
+
+function New-DesktopObservationRecord {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('exited', 'live_no_cdp', 'page_ready')]
+        [string]$State,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][int]$Attempts,
+        [AllowNull()]$ExitCode,
+        [AllowNull()][string]$PageUrl
+    )
+
+    return [pscustomobject][ordered]@{
+        state = $State
+        is_live = $State -cne 'exited'
+        has_exited = $State -ceq 'exited'
+        exit_code = if ($State -ceq 'exited') { [int]$ExitCode } else { $null }
+        port = $Port
+        page_present = $State -ceq 'page_ready'
+        page_url = if ($State -ceq 'page_ready') { [string]$PageUrl } else { $null }
+        attempts = $Attempts
+        stdout_present = $false
+        stdout_bytes = 0
+        stdout_truncated = $false
+        stderr_present = $false
+        stderr_bytes = 0
+        stderr_truncated = $false
     }
+}
+
+function Set-DesktopObservationCaptureMetadata {
+    param(
+        [Parameter(Mandatory)]$Observation,
+        [Parameter(Mandatory)]$OwnedProcess
+    )
+
+    $capture = Get-OwnedProcessCapture -OwnedProcess $OwnedProcess
+    $stdoutMetadata = Get-ChildOutputMetadata -Content ([string]$capture.stdout)
+    $stderrMetadata = Get-ChildOutputMetadata -Content ([string]$capture.stderr)
+    $Observation.stdout_present = [bool]$stdoutMetadata.present
+    $Observation.stdout_bytes = [int]$stdoutMetadata.bytes
+    $Observation.stdout_truncated = [bool]$stdoutMetadata.truncated
+    $Observation.stderr_present = [bool]$stderrMetadata.present
+    $Observation.stderr_bytes = [int]$stderrMetadata.bytes
+    $Observation.stderr_truncated = [bool]$stderrMetadata.truncated
+    return $capture
+}
+
+function Wait-DesktopProcessObservation {
+    param(
+        [Parameter(Mandatory)]$OwnedProcess,
+        [Parameter(Mandatory)][int]$Port,
+        [int]$MaxAttempts = $script:RetryCount,
+        [scriptblock]$PageProbe,
+        [scriptblock]$DelayInvoker
+    )
+
+    Assert-Condition ($MaxAttempts -ge 1) 'Desktop observation requires at least one attempt.'
+    $process = $OwnedProcess.process
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt += 1) {
+        $process.Refresh()
+        if ($process.HasExited) {
+            return (New-DesktopObservationRecord -State 'exited' -Port $Port -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
+        }
+
+        $pageUrl = $null
+        try {
+            $pageUrl = if ($null -eq $PageProbe) {
+                Get-RemoteDebugPage -Port $Port
+            } else {
+                & $PageProbe $Port $attempt $OwnedProcess
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$pageUrl)) {
+                Assert-ProductionPageUrl -Url ([string]$pageUrl)
+            }
+        } catch {
+            $pageUrl = $null
+        }
+
+        $process.Refresh()
+        if ($process.HasExited) {
+            return (New-DesktopObservationRecord -State 'exited' -Port $Port -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$pageUrl)) {
+            return (New-DesktopObservationRecord -State 'page_ready' -Port $Port -Attempts $attempt -ExitCode $null -PageUrl ([string]$pageUrl))
+        }
+        if ($attempt -eq $MaxAttempts) {
+            return (New-DesktopObservationRecord -State 'live_no_cdp' -Port $Port -Attempts $attempt -ExitCode $null -PageUrl $null)
+        }
+        if ($null -eq $DelayInvoker) {
+            Start-Sleep -Seconds $script:RetryDelaySeconds
+        } else {
+            & $DelayInvoker $attempt | Out-Null
+        }
+    }
+}
+
+function Invoke-DesktopLifecycleOperation {
+    param(
+        [Parameter(Mandatory)]$Context,
+        [Parameter(Mandatory)][hashtable]$Environment,
+        [Parameter(Mandatory)][int]$Port,
+        [int]$MaxAttempts = $script:RetryCount,
+        [scriptblock]$PageProbe,
+        [scriptblock]$DelayInvoker,
+        [scriptblock]$StopInvoker,
+        [scriptblock]$UninstallInvoker,
+        [scriptblock]$ResidueInvoker,
+        [scriptblock]$RootRemover
+    )
+
+    $observation = $null
+    $operationFailure = $null
+    $cleanupFailure = $null
+    $captureFailure = $null
+    $capture = $null
+    $pendingObservationFailure = $false
+    try {
+        $observation = Wait-DesktopProcessObservation -OwnedProcess $Context.app_process -Port $Port -MaxAttempts $MaxAttempts -PageProbe $PageProbe -DelayInvoker $DelayInvoker
+        if ([string]$observation.state -cne 'page_ready') {
+            $pendingObservationFailure = $true
+        }
+    } catch {
+        $operationFailure = $_.Exception
+    } finally {
+        try {
+            $operationErrorMessage = if ($null -eq $operationFailure) { '' } else { $operationFailure.Message }
+            Invoke-DesktopCleanup -Context $Context -Environment $Environment -OperationErrorMessage $operationErrorMessage `
+                -StopInvoker $StopInvoker -UninstallInvoker $UninstallInvoker -ResidueInvoker $ResidueInvoker -RootRemover $RootRemover | Out-Null
+        } catch {
+            $cleanupFailure = $_.Exception
+        }
+        if ($null -ne $observation -and $Context.app_process.process.HasExited) {
+            try {
+                $capture = Set-DesktopObservationCaptureMetadata -Observation $observation -OwnedProcess $Context.app_process
+            } catch {
+                $captureFailure = $_.Exception
+            }
+        }
+    }
+
+    if ($null -ne $captureFailure -and $null -eq $operationFailure) {
+        $operationFailure = $captureFailure
+    }
+    if ($pendingObservationFailure -and $null -eq $operationFailure) {
+        if ($null -eq $capture) {
+            $failure = [InvalidOperationException]::new('Desktop child output capture did not become terminal after cleanup.')
+        } else {
+            $diagnosticResult = [pscustomobject]@{
+                exit_code = $observation.exit_code
+                stdout = $capture.stdout
+                stderr = $capture.stderr
+            }
+            $message = Format-PublicChildProcessDiagnostic -Operation 'desktop_observer' -State ([string]$observation.state) -Result $diagnosticResult
+            $failure = [InvalidOperationException]::new($message)
+        }
+        $failure.Data['observation'] = $observation
+        $failure.Data['original_exception'] = $failure
+        $operationFailure = $failure
+    }
+
+    if ($null -ne $operationFailure -and $null -ne $cleanupFailure) {
+        $aggregate = [System.AggregateException]::new('Desktop observation and cleanup failed.', [Exception[]]@($operationFailure, $cleanupFailure))
+        $aggregate.Data['operation_failure'] = $operationFailure
+        $aggregate.Data['cleanup_failure'] = $cleanupFailure
+        throw $aggregate
+    }
+    if ($null -ne $operationFailure) {
+        throw $operationFailure
+    }
+    if ($null -ne $cleanupFailure) {
+        throw $cleanupFailure
+    }
+    return $observation
 }
 
 function Invoke-CoreSmoke {
@@ -855,7 +1163,7 @@ function Invoke-CoreSmoke {
     $executedAssetName = $coreAssetNames[0]
     Assert-Condition ($executedAssetName -ceq 'winsmux-x64.exe') 'Core executable inventory did not keep x64 as the runnable asset.'
     $expectedProgramName = [IO.Path]::GetFileNameWithoutExtension($executedAssetName)
-    $result = Invoke-NativeProcess -FilePath $assetPaths[$executedAssetName] -ArgumentList @('--version') -Environment $environment -TimeoutSeconds 30
+    $result = Invoke-PublicChildProcess -Operation 'core_version' -FilePath $assetPaths[$executedAssetName] -ArgumentList @('--version') -Environment $environment -TimeoutSeconds 30
     Assert-CoreVersionResult -Result $result -ExpectedProgramName $expectedProgramName -ExpectedVersion $Version
     return [ordered]@{
         asset = $executedAssetName
@@ -864,24 +1172,14 @@ function Invoke-CoreSmoke {
     }
 }
 
-function Invoke-NpmCli {
-    param(
-        [Parameter(Mandatory)][string]$NodePath,
-        [Parameter(Mandatory)][string]$NpmCliPath,
-        [Parameter(Mandatory)][string[]]$Arguments,
-        [Parameter(Mandatory)][hashtable]$Environment,
-        [int]$TimeoutSeconds = 90
-    )
-
-    $allArguments = @($NpmCliPath) + @($Arguments)
-    return Invoke-NativeProcess -FilePath $NodePath -ArgumentList $allArguments -Environment $Environment -TimeoutSeconds $TimeoutSeconds
-}
-
 function Resolve-NpmPathPrecedenceToolchain {
     param(
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
-        [object[]]$NodeCandidates
+        [object[]]$NodeCandidates,
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$TarCandidates
     )
 
     $candidates = @($NodeCandidates)
@@ -892,17 +1190,34 @@ function Resolve-NpmPathPrecedenceToolchain {
 
     $npmCliPath = Join-Path (Split-Path -Parent $nodePath) 'node_modules\npm\bin\npm-cli.js'
     Assert-Condition (Test-Path -LiteralPath $npmCliPath -PathType Leaf) "npm CLI was not found next to the first PATH-precedence Node application: $npmCliPath"
+
+    $tarCandidates = @($TarCandidates)
+    Assert-Condition ($tarCandidates.Count -ge 1) 'No tar application was found on PATH.'
+    $tarPath = [string]$tarCandidates[0].Source
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace($tarPath)) 'The first PATH-precedence tar application did not expose Source.'
+    Assert-Condition (Test-Path -LiteralPath $tarPath -PathType Leaf) "The first PATH-precedence tar application was not found: $tarPath"
     return [pscustomobject]@{
         node_path = $nodePath
         npm_cli_path = $npmCliPath
+        tar_path = $tarPath
     }
 }
 
 function Invoke-NpmSmoke {
-    param([Parameter(Mandatory)][string]$Root)
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [object[]]$NodeCandidates,
+        [object[]]$TarCandidates,
+        [scriptblock]$ProcessInvoker
+    )
 
-    $nodeCandidates = @(Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)
-    $npmToolchain = Resolve-NpmPathPrecedenceToolchain -NodeCandidates $nodeCandidates
+    if (-not $PSBoundParameters.ContainsKey('NodeCandidates')) {
+        $nodeCandidates = @(Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue)
+    }
+    if (-not $PSBoundParameters.ContainsKey('TarCandidates')) {
+        $tarCandidates = @(Get-Command tar.exe -CommandType Application -ErrorAction SilentlyContinue)
+    }
+    $npmToolchain = Resolve-NpmPathPrecedenceToolchain -NodeCandidates $nodeCandidates -TarCandidates $tarCandidates
     $node = [string]$npmToolchain.node_path
     $npmCli = [string]$npmToolchain.npm_cli_path
     $npmEnvironment = @{
@@ -919,6 +1234,19 @@ function Invoke-NpmSmoke {
         USERPROFILE = Join-Path $Root 'npm-home'
         HOME = Join-Path $Root 'npm-home'
     }
+    $runNpmProcess = {
+        param(
+            [Parameter(Mandatory, Position = 0)][string]$Operation,
+            [Parameter(Mandatory, Position = 1)][string]$FilePath,
+            [Parameter(Position = 2, ValueFromRemainingArguments = $true)][object[]]$ProcessArguments
+        )
+
+        if ($null -ne $ProcessInvoker) {
+            return (& $ProcessInvoker $Operation $FilePath @($ProcessArguments))
+        }
+        $timeout = if ($Operation -ceq 'npm_pack') { 120 } else { 90 }
+        return Invoke-PublicChildProcess -Operation $Operation -FilePath $FilePath -ArgumentList @($ProcessArguments) -Environment $npmEnvironment -TimeoutSeconds $timeout
+    }.GetNewClosure()
     New-Item -ItemType Directory -Path @(
         $npmEnvironment.NPM_CONFIG_CACHE,
         $npmEnvironment.NPM_CONFIG_PREFIX,
@@ -930,52 +1258,77 @@ function Invoke-NpmSmoke {
     Set-Content -LiteralPath $npmEnvironment.NPM_CONFIG_USERCONFIG -Value 'registry=https://registry.npmjs.org/' -Encoding ascii
 
     $metadataResult = Invoke-Retry -Description 'npm registry metadata' -Operation {
-        $result = Invoke-NpmCli -NodePath $node -NpmCliPath $npmCli -Arguments @(
+        $result = & $runNpmProcess 'npm_view' $node $npmCli `
             'view',
             "winsmux@$Version",
             'version',
             'dist.integrity',
             '--json',
             '--registry=https://registry.npmjs.org/'
-        ) -Environment $npmEnvironment
-        Assert-Condition ($result.exit_code -eq 0) "npm view failed: $($result.stderr)"
-        $metadata = $result.stdout | ConvertFrom-Json -Depth 20
-        Assert-NpmMetadata -Metadata $metadata -ExpectedVersion $Version
+        if ($result.exit_code -ne 0) {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_view' -State 'exit_nonzero' -Result $result)
+        }
+        try {
+            $metadata = $result.stdout | ConvertFrom-Json -Depth 20
+        } catch {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_view' -State 'parse_failed' -Result $result)
+        }
+        try {
+            Assert-NpmMetadata -Metadata $metadata -ExpectedVersion $Version
+        } catch {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_view' -State 'content_invalid' -Result $result)
+        }
         return $metadata
     }
     $integrity = Get-NpmIntegrity -Metadata $metadataResult
 
     $packRecord = Invoke-Retry -Description 'npm public tarball' -Operation {
-        $packResult = Invoke-NpmCli -NodePath $node -NpmCliPath $npmCli -Arguments @(
+        $packResult = & $runNpmProcess 'npm_pack' $node $npmCli `
             'pack',
             "winsmux@$Version",
             '--pack-destination',
             $Root,
             '--json',
             '--registry=https://registry.npmjs.org/'
-        ) -Environment $npmEnvironment -TimeoutSeconds 120
-        Assert-Condition ($packResult.exit_code -eq 0) "npm pack failed: $($packResult.stderr)"
-        $packData = @($packResult.stdout | ConvertFrom-Json -Depth 20)
-        Assert-Condition ($packData.Count -eq 1) "npm pack returned $($packData.Count) package records."
+        if ($packResult.exit_code -ne 0) {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_pack' -State 'exit_nonzero' -Result $packResult)
+        }
+        try {
+            $packData = @($packResult.stdout | ConvertFrom-Json -Depth 20)
+        } catch {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_pack' -State 'parse_failed' -Result $packResult)
+        }
+        if ($packData.Count -ne 1) {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_pack' -State 'content_invalid' -Result $packResult)
+        }
         $packedIntegrity = [string](Get-ObjectPropertyValue -Object $packData[0] -Name 'integrity')
-        Assert-Condition ($packedIntegrity -ceq $integrity) "npm tarball integrity '$packedIntegrity' does not match registry metadata '$integrity'."
+        if ($packedIntegrity -cne $integrity) {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'npm_pack' -State 'content_invalid' -Result $packResult)
+        }
         return $packData[0]
     }
     $filename = [string](Get-ObjectPropertyValue -Object $packRecord -Name 'filename')
     Assert-Condition (-not [string]::IsNullOrWhiteSpace($filename)) 'npm pack did not report a tarball filename.'
     $tarballPath = Get-CanonicalPath -Path (Join-Path $Root $filename)
     Assert-Condition (Test-PathInsideRoot -Path $tarballPath -Root $Root) 'npm tarball escaped the owned root.'
-    Assert-Condition (Test-Path -LiteralPath $tarballPath -PathType Leaf) "npm tarball was not created: $tarballPath"
+    Assert-Condition (Test-Path -LiteralPath $tarballPath -PathType Leaf) 'npm pack reported a tarball filename, but the archive was not created.'
 
     $extractRoot = Join-Path $Root 'unpacked'
     New-Item -ItemType Directory -Path $extractRoot | Out-Null
-    $tar = (Get-Command tar.exe -CommandType Application -ErrorAction Stop).Source
-    $listing = Invoke-NativeProcess -FilePath $tar -ArgumentList @('-tf', $tarballPath)
-    Assert-Condition ($listing.exit_code -eq 0) "Unable to list public npm tarball: $($listing.stderr)"
+    $listing = & $runNpmProcess 'tar_list' $npmToolchain.tar_path -tf $tarballPath
+    if ($listing.exit_code -ne 0) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'tar_list' -State 'exit_nonzero' -Result $listing)
+    }
     $archiveEntries = @($listing.stdout -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    Assert-SafeNpmArchiveEntries -Entries $archiveEntries
-    $extract = Invoke-NativeProcess -FilePath $tar -ArgumentList @('-xf', $tarballPath, '-C', $extractRoot)
-    Assert-Condition ($extract.exit_code -eq 0) "Unable to extract public npm tarball: $($extract.stderr)"
+    try {
+        Assert-SafeNpmArchiveEntries -Entries $archiveEntries
+    } catch {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'tar_list' -State 'content_invalid' -Result $listing)
+    }
+    $extract = & $runNpmProcess 'tar_extract' $npmToolchain.tar_path -xf $tarballPath -C $extractRoot
+    if ($extract.exit_code -ne 0) {
+        throw (Format-PublicChildProcessDiagnostic -Operation 'tar_extract' -State 'exit_nonzero' -Result $extract)
+    }
     $reparseEntries = @(Get-ChildItem -LiteralPath $extractRoot -Recurse -Force | Where-Object {
         ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
     })
@@ -997,7 +1350,7 @@ function Invoke-NpmSmoke {
     Assert-Condition ([string]$packageJson.version -ceq $Version) "Public tarball version was '$($packageJson.version)'."
     Assert-Condition ([string]$packageJson.winsmuxReleaseTag -ceq $ReleaseTag) "Public tarball release tag was '$($packageJson.winsmuxReleaseTag)'."
 
-    $help = Invoke-NativeProcess -FilePath $node -ArgumentList @($entryPath, 'help') -Environment $npmEnvironment -TimeoutSeconds 60
+    $help = & $runNpmProcess 'npm_help' $node $entryPath 'help'
     Assert-NpmHelpResult -Result $help
     return [ordered]@{
         package = "winsmux@$Version"
@@ -1020,9 +1373,8 @@ function Invoke-DesktopSmoke {
     $setupPath = Join-Path $Root $assetName
     $expectedHash = ''
     $childEnvironment = @{}
-    $pageUrl = ''
-    $desktopFailure = $null
-    $cleanupFailure = $null
+    $observation = $null
+    $setupFailure = $null
     try {
         Assert-DesktopRunner
         $initial = Get-DesktopProtectedState -InstallRoot $installRoot
@@ -1054,8 +1406,10 @@ function Invoke-DesktopSmoke {
         }
 
         Set-DesktopLifecyclePhase -Context $context -NextPhase 'installer_started'
-        $install = Invoke-NativeProcess -FilePath $setupPath -ArgumentList @('/S', "/D=$installRoot") -Environment $childEnvironment -TimeoutSeconds 180
-        Assert-Condition ($install.exit_code -eq 0) "Desktop installer exited with $($install.exit_code): $($install.stderr)"
+        $install = Invoke-PublicChildProcess -Operation 'desktop_installer' -FilePath $setupPath -ArgumentList @('/S', "/D=$installRoot") -Environment $childEnvironment -TimeoutSeconds 180
+        if ($install.exit_code -ne 0) {
+            throw (Format-PublicChildProcessDiagnostic -Operation 'desktop_installer' -State 'exit_nonzero' -Result $install)
+        }
         Assert-DesktopMaterializedOwnership -Context $context
         Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
 
@@ -1068,32 +1422,29 @@ function Invoke-DesktopSmoke {
         $childEnvironment.WEBVIEW2_USER_DATA_FOLDER = $webViewRoot
 
         $context.app_process = Start-OwnedProcess -FilePath (Join-Path $installRoot 'winsmux-app.exe') -Environment $childEnvironment
-        $pageUrl = Get-RemoteDebugPage -Port $port
+        $observation = Invoke-DesktopLifecycleOperation -Context $context -Environment $childEnvironment -Port $port
     } catch {
-        $desktopFailure = $_
-    } finally {
+        $setupFailure = $_.Exception
+        if ($null -ne $context.app_process) {
+            throw $setupFailure
+        }
+        $setupCleanupFailure = $null
         try {
-            $operationErrorMessage = if ($null -eq $desktopFailure) { '' } else { $desktopFailure.Exception.Message }
-            Invoke-DesktopCleanup -Context $context -Environment $childEnvironment -OperationErrorMessage $operationErrorMessage | Out-Null
+            Invoke-DesktopCleanup -Context $context -Environment $childEnvironment -OperationErrorMessage $setupFailure.Message | Out-Null
         } catch {
-            $cleanupFailure = $_
+            $setupCleanupFailure = $_.Exception
         }
-    }
-    if ($null -ne $desktopFailure) {
-        if ($null -ne $cleanupFailure) {
-            throw "Desktop public smoke failed: $($desktopFailure.Exception.Message); cleanup also failed: $($cleanupFailure.Exception.Message)"
+        if ($null -ne $setupCleanupFailure) {
+            throw [AggregateException]::new('Desktop setup and cleanup failed.', [Exception[]]@($setupFailure, $setupCleanupFailure))
         }
-        throw $desktopFailure
-    }
-    if ($null -ne $cleanupFailure) {
-        throw $cleanupFailure
+        throw $setupFailure
     }
     Assert-DesktopLifecyclePhase -Context $context -ExpectedPhase 'clean'
     return [ordered]@{
         asset = $assetName
         sha256 = $expectedHash
         version = $Version
-        page_url = $pageUrl
+        page_url = [string]$observation.page_url
     }
 }
 
@@ -1110,6 +1461,7 @@ function Test-Throws {
 
 function Invoke-SelfTest {
     $caseIds = [Collections.Generic.List[string]]::new()
+    $evidence = [ordered]@{}
     if ($Surface -eq 'Npm') {
         Assert-Condition ((Resolve-ReleaseCoordinates -Surface Npm -Version '0.36.28-pkgfix.1' -ReleaseTag 'v0.36.28.1' -Repository $Repository) -ceq '0.36.28-pkgfix.1') 'npm packaging-hotfix coordinates did not resolve to the staged package version.'
     } else {
@@ -1478,6 +1830,272 @@ function Invoke-SelfTest {
             Assert-Condition ($residueFailureCalls.root -eq 0) 'Residue failure reached generic root cleanup.'
             $caseIds.Add('desktop_lifecycle_residue_failure_blocks_root_cleanup')
 
+            $diagnosticFixtures = @(
+                [pscustomobject]@{ operation = 'core_version'; state = 'stderr_nonempty'; exit_code = 0; stdout = 'T825_CORE_OUT'; stderr = 'T825_CORE_ERR'; marker = 'T825_CORE' },
+                [pscustomobject]@{ operation = 'npm_view'; state = 'parse_failed'; exit_code = 0; stdout = 'T825_NPM_VIEW_OUT'; stderr = ''; marker = 'T825_NPM_VIEW' },
+                [pscustomobject]@{ operation = 'npm_pack'; state = 'parse_failed'; exit_code = 0; stdout = 'T825_NPM_PACK_OUT'; stderr = ''; marker = 'T825_NPM_PACK' },
+                [pscustomobject]@{ operation = 'tar_list'; state = 'content_invalid'; exit_code = 0; stdout = 'T825_TAR_LIST_OUT'; stderr = ''; marker = 'T825_TAR_LIST' },
+                [pscustomobject]@{ operation = 'tar_extract'; state = 'exit_nonzero'; exit_code = 23; stdout = ''; stderr = 'T825_TAR_EXTRACT_ERR'; marker = 'T825_TAR_EXTRACT' },
+                [pscustomobject]@{ operation = 'npm_help'; state = 'content_invalid'; exit_code = 0; stdout = 'T825_NPM_HELP_OUT'; stderr = ''; marker = 'T825_NPM_HELP' },
+                [pscustomobject]@{ operation = 'desktop_installer'; state = 'exit_nonzero'; exit_code = 23; stdout = ''; stderr = 'T825_DESKTOP_INSTALLER_ERR'; marker = 'T825_DESKTOP_INSTALLER' },
+                [pscustomobject]@{ operation = 'desktop_observer'; state = 'exited'; exit_code = 23; stdout = 'T825_DESKTOP_OBSERVER_OUT'; stderr = 'T825_DESKTOP_OBSERVER_ERR'; marker = 'T825_DESKTOP_OBSERVER' },
+                [pscustomobject]@{ operation = 'desktop_uninstaller'; state = 'exit_nonzero'; exit_code = 23; stdout = ''; stderr = ('T825_DESKTOP_UNINSTALLER_ERR-' + ('X' * 16384)); marker = 'T825_DESKTOP_UNINSTALLER' }
+            )
+            $diagnosticRecords = [Collections.Generic.List[object]]::new()
+            $diagnosticMessages = [Collections.Generic.List[string]]::new()
+            foreach ($fixture in $diagnosticFixtures) {
+                $rawResult = [pscustomobject]@{ exit_code = [int]$fixture.exit_code; stdout = [string]$fixture.stdout; stderr = [string]$fixture.stderr }
+                $message = Format-PublicChildProcessDiagnostic -Operation $fixture.operation -State $fixture.state -Result $rawResult
+                $diagnosticMessages.Add($message) | Out-Null
+                $match = [regex]::Match($message, '^child_process_failure operation=(?<operation>[a-z_]+) state=(?<state>[a-z_]+) exit_code=(?<exit_code>\d+|none) stdout_present=(?<stdout_present>true|false) stdout_bytes=(?<stdout_bytes>\d+) stdout_truncated=(?<stdout_truncated>true|false) stderr_present=(?<stderr_present>true|false) stderr_bytes=(?<stderr_bytes>\d+) stderr_truncated=(?<stderr_truncated>true|false)$')
+                Assert-Condition $match.Success 'Public child-process diagnostic did not match the fixed grammar.'
+                $rawBytes = [Text.Encoding]::UTF8.GetBytes(([string]$fixture.stdout + [string]$fixture.stderr))
+                $rawDigest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($rawBytes)).ToLowerInvariant()
+                $diagnosticRecords.Add([ordered]@{
+                    operation = $match.Groups['operation'].Value
+                    state = $match.Groups['state'].Value
+                    exit_code = [int]$match.Groups['exit_code'].Value
+                    stdout_present = [bool]::Parse($match.Groups['stdout_present'].Value)
+                    stdout_bytes = [int]$match.Groups['stdout_bytes'].Value
+                    stdout_truncated = [bool]::Parse($match.Groups['stdout_truncated'].Value)
+                    stderr_present = [bool]::Parse($match.Groups['stderr_present'].Value)
+                    stderr_bytes = [int]$match.Groups['stderr_bytes'].Value
+                    stderr_truncated = [bool]::Parse($match.Groups['stderr_truncated'].Value)
+                    marker_absent = $message -notmatch [regex]::Escape([string]$fixture.marker)
+                    digest_absent = $message -notmatch [regex]::Escape($rawDigest)
+                    formatted_once = @([regex]::Matches($message, 'child_process_failure')).Count -eq 1
+                })
+            }
+            $allDiagnosticMessages = [string]::Join("`n", @($diagnosticMessages))
+            $evidence.process_diagnostics = [ordered]@{
+                records = @($diagnosticRecords)
+                public_error_marker_absent = $allDiagnosticMessages -notmatch 'T825_(CORE|NPM|TAR|DESKTOP)'
+                self_test_json_marker_absent = ((@($diagnosticRecords) | ConvertTo-Json -Depth 10 -Compress) -notmatch 'T825_(CORE|NPM|TAR|DESKTOP)')
+                block_error_marker_absent = $true
+            }
+            $caseIds.Add('process_diagnostics_metadata_only')
+
+            $pwshPath = Join-Path $PSHOME 'pwsh.exe'
+            Assert-Condition (Test-Path -LiteralPath $pwshPath -PathType Leaf) 'PowerShell self-test child executable was not found.'
+            $diagnosticCorrectionFailures = [Collections.Generic.List[string]]::new()
+            $timeoutStdout = 'T825_TIMEOUT_OUT'
+            $timeoutStderr = 'T825_TIMEOUT_ERR'
+            $timeoutFailure = $null
+            try {
+                Invoke-NativeProcess -FilePath $pwshPath -ArgumentList @(
+                    '-NoProfile',
+                    '-Command',
+                    "[Console]::Out.Write('$timeoutStdout'); [Console]::Out.Flush(); [Console]::Error.Write('$timeoutStderr'); [Console]::Error.Flush(); Start-Sleep -Seconds 30"
+                ) -Environment @{} -TimeoutSeconds 2 | Out-Null
+            } catch {
+                $timeoutFailure = $_.Exception
+            }
+            if ($timeoutFailure -isnot [TimeoutException]) {
+                $diagnosticCorrectionFailures.Add('timeout_exception_type') | Out-Null
+            } else {
+                $timeoutResult = $timeoutFailure.Data['process_result']
+                if ($null -eq $timeoutResult) {
+                    $diagnosticCorrectionFailures.Add('timeout_capture_missing') | Out-Null
+                } else {
+                    $timeoutMessage = Format-PublicChildProcessDiagnostic -Operation 'core_version' -State 'timed_out' -Result $timeoutResult
+                    $expectedTimeoutMessage = 'child_process_failure operation=core_version state=timed_out exit_code=none stdout_present=true stdout_bytes={0} stdout_truncated=false stderr_present=true stderr_bytes={1} stderr_truncated=false' -f @(
+                        [Text.Encoding]::UTF8.GetByteCount($timeoutStdout),
+                        [Text.Encoding]::UTF8.GetByteCount($timeoutStderr)
+                    )
+                    if ($timeoutMessage -cne $expectedTimeoutMessage) {
+                        $diagnosticCorrectionFailures.Add('timeout_metadata_mismatch') | Out-Null
+                    }
+                    if ($timeoutMessage.Contains($timeoutStdout, [StringComparison]::Ordinal) -or
+                        $timeoutMessage.Contains($timeoutStderr, [StringComparison]::Ordinal)) {
+                        $diagnosticCorrectionFailures.Add('timeout_raw_output_exposed') | Out-Null
+                    }
+                }
+            }
+            $newObservationContext = {
+                $candidate = New-DesktopLifecycleContext -OwnedRoot $root -InstallRoot $installRoot -ExpectedVersion $Version
+                Start-DesktopLifecycle -Context $candidate -PreflightState $emptyState
+                Set-DesktopLifecyclePhase -Context $candidate -NextPhase 'installer_started'
+                Set-DesktopLifecyclePhase -Context $candidate -NextPhase 'materialized_verified'
+                return $candidate
+            }.GetNewClosure()
+            $observerStop = { param($OwnedProcess) Stop-OwnedProcessTree -RootProcess $OwnedProcess }.GetNewClosure()
+            $observerUninstall = { param($Context, $Environment) }.GetNewClosure()
+            $observerResidue = { param($Context) }.GetNewClosure()
+            $observerRoot = { param($OwnedRoot) }.GetNewClosure()
+            $noDelay = { param($Attempt) }.GetNewClosure()
+            $noPage = { param($Port, $Attempt, $OwnedProcess) return $null }.GetNewClosure()
+            $pageReady = { param($Port, $Attempt, $OwnedProcess) return 'tauri://localhost/' }.GetNewClosure()
+            $lifecycleCounts = [pscustomobject]@{ owner = 0; cleanup = 0 }
+            $lifecycleRoot = { param($OwnedRoot) $lifecycleCounts.cleanup += 1 }.GetNewClosure()
+
+            $exitedContext = & $newObservationContext
+            $exitedContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', "[Console]::Out.Write('T825_DESKTOP_OBSERVER_OUT'); [Console]::Error.Write('T825_DESKTOP_OBSERVER_ERR'); exit 23")
+            [void]$exitedContext.app_process.process.WaitForExit(10000)
+            $exitedFailure = $null
+            $lifecycleCounts.owner += 1
+            try {
+                Invoke-DesktopLifecycleOperation -Context $exitedContext -Environment @{} -Port 48251 -MaxAttempts 1 -PageProbe $noPage -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $lifecycleRoot | Out-Null
+            } catch {
+                $exitedFailure = $_.Exception
+            }
+            Assert-Condition ($null -ne $exitedFailure) 'Exited Desktop observer probe did not fail.'
+            $exitedObservation = $exitedFailure.Data['observation']
+
+            $liveContext = & $newObservationContext
+            $liveContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30')
+            $liveFailure = $null
+            try {
+                Invoke-DesktopLifecycleOperation -Context $liveContext -Environment @{} -Port 48252 -MaxAttempts 2 -PageProbe $noPage -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $observerRoot | Out-Null
+            } catch {
+                $liveFailure = $_.Exception
+            }
+            Assert-Condition ($null -ne $liveFailure) 'Live-without-CDP Desktop observer probe did not fail.'
+            $liveObservation = $liveFailure.Data['observation']
+
+            $pageContext = & $newObservationContext
+            $pageContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30')
+            $lifecycleCounts.owner += 1
+            $pageObservation = Invoke-DesktopLifecycleOperation -Context $pageContext -Environment @{} -Port 48253 -MaxAttempts 1 -PageProbe $pageReady -DelayInvoker $noDelay `
+                -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $lifecycleRoot
+
+            $raceContext = & $newObservationContext
+            $raceContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30')
+            $racePage = {
+                param($Port, $Attempt, $OwnedProcess)
+                $OwnedProcess.process.Kill($true)
+                [void]$OwnedProcess.process.WaitForExit(10000)
+                return 'tauri://localhost/'
+            }.GetNewClosure()
+            $raceFailure = $null
+            try {
+                Invoke-DesktopLifecycleOperation -Context $raceContext -Environment @{} -Port 48254 -MaxAttempts 1 -PageProbe $racePage -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $observerRoot | Out-Null
+            } catch {
+                $raceFailure = $_.Exception
+            }
+            Assert-Condition ($null -ne $raceFailure) 'Post-probe Desktop exit was accepted as page-ready.'
+            $raceObservation = $raceFailure.Data['observation']
+            $evidence.desktop_observer = [ordered]@{
+                records = @($exitedObservation, $liveObservation, $pageObservation)
+                post_probe_exit_wins = [string]$raceObservation.state -ceq 'exited'
+            }
+            $caseIds.Add('desktop_observer_states')
+
+            $liveOutputStdout = 'T825_LIVE_OUT'
+            $liveOutputStderr = 'T825_LIVE_ERR'
+            $liveOutputReady = Join-Path $root 'desktop-live-output.ready'
+            $liveOutputContext = & $newObservationContext
+            $liveOutputContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @(
+                '-NoProfile',
+                '-Command',
+                "[Console]::Out.Write('$liveOutputStdout'); [Console]::Out.Flush(); [Console]::Error.Write('$liveOutputStderr'); [Console]::Error.Flush(); [IO.File]::WriteAllText(`$env:T825_LIVE_READY, 'ready', [Text.UTF8Encoding]::new(`$false)); Start-Sleep -Seconds 30"
+            ) -Environment @{ T825_LIVE_READY = $liveOutputReady }
+            $readyDeadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+            while (-not (Test-Path -LiteralPath $liveOutputReady -PathType Leaf) -and
+                [DateTimeOffset]::UtcNow -lt $readyDeadline) {
+                Start-Sleep -Milliseconds 25
+            }
+            if (-not (Test-Path -LiteralPath $liveOutputReady -PathType Leaf)) {
+                $diagnosticCorrectionFailures.Add('live_output_readiness_missing') | Out-Null
+            }
+            $liveOutputFailure = $null
+            try {
+                Invoke-DesktopLifecycleOperation -Context $liveOutputContext -Environment @{} -Port 48252 -MaxAttempts 1 -PageProbe $noPage -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $observerRoot | Out-Null
+            } catch {
+                $liveOutputFailure = $_.Exception
+            }
+            if ($null -eq $liveOutputFailure) {
+                $diagnosticCorrectionFailures.Add('live_output_failure_missing') | Out-Null
+            } else {
+                $expectedLiveMessage = 'child_process_failure operation=desktop_observer state=live_no_cdp exit_code=none stdout_present=true stdout_bytes={0} stdout_truncated=false stderr_present=true stderr_bytes={1} stderr_truncated=false' -f @(
+                    [Text.Encoding]::UTF8.GetByteCount($liveOutputStdout),
+                    [Text.Encoding]::UTF8.GetByteCount($liveOutputStderr)
+                )
+                if ($liveOutputFailure.Message -cne $expectedLiveMessage) {
+                    $diagnosticCorrectionFailures.Add('live_output_metadata_mismatch') | Out-Null
+                }
+                if ($liveOutputFailure.Message.Contains($liveOutputStdout, [StringComparison]::Ordinal) -or
+                    $liveOutputFailure.Message.Contains($liveOutputStderr, [StringComparison]::Ordinal)) {
+                    $diagnosticCorrectionFailures.Add('live_output_raw_exposed') | Out-Null
+                }
+            }
+            Assert-Condition ($diagnosticCorrectionFailures.Count -eq 0) (
+                'TASK-825 capture-order correction probes failed: ' +
+                [string]::Join(',', @($diagnosticCorrectionFailures))
+            )
+
+            $cleanupOnlyContext = & $newObservationContext
+            $cleanupOnlyContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30')
+            $cleanupOnlyExpected = [InvalidOperationException]::new('synthetic bounded root cleanup failure')
+            $cleanupOnlyRoot = {
+                param($OwnedRoot)
+                $lifecycleCounts.cleanup += 1
+                throw $cleanupOnlyExpected
+            }.GetNewClosure()
+            $cleanupOnlyActual = $null
+            $lifecycleCounts.owner += 1
+            try {
+                Invoke-DesktopLifecycleOperation -Context $cleanupOnlyContext -Environment @{} -Port 48253 -MaxAttempts 1 -PageProbe $pageReady -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $cleanupOnlyRoot | Out-Null
+            } catch {
+                $cleanupOnlyActual = $_.Exception
+            }
+
+            $dualContext = & $newObservationContext
+            $dualContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'exit 23')
+            [void]$dualContext.app_process.process.WaitForExit(10000)
+            $dualCleanupExpected = [InvalidOperationException]::new('synthetic bounded root cleanup failure')
+            $dualRoot = {
+                param($OwnedRoot)
+                $lifecycleCounts.cleanup += 1
+                throw $dualCleanupExpected
+            }.GetNewClosure()
+            $dualActual = $null
+            $lifecycleCounts.owner += 1
+            try {
+                Invoke-DesktopLifecycleOperation -Context $dualContext -Environment @{} -Port 48251 -MaxAttempts 1 -PageProbe $noPage -DelayInvoker $noDelay `
+                    -StopInvoker $observerStop -UninstallInvoker $observerUninstall -ResidueInvoker $observerResidue -RootRemover $dualRoot | Out-Null
+            } catch {
+                $dualActual = $_.Exception
+            }
+            Assert-Condition ($null -ne $cleanupOnlyActual) 'Cleanup-only Desktop lifecycle probe did not fail.'
+            Assert-Condition ($dualActual -is [AggregateException]) 'Dual Desktop lifecycle failure did not preserve an AggregateException.'
+            $dualOperationExpected = $dualActual.Data['operation_failure']
+            $dualCleanupRecorded = $dualActual.Data['cleanup_failure']
+            $dualReferenceIdentity = [bool[]]::new(2)
+            $dualReferenceIdentity[0] = [object]::ReferenceEquals($dualOperationExpected, $dualActual.InnerExceptions[0])
+            $dualReferenceIdentity[1] = [object]::ReferenceEquals($dualCleanupExpected, $dualActual.InnerExceptions[1]) -and [object]::ReferenceEquals($dualCleanupRecorded, $dualActual.InnerExceptions[1])
+            $evidence.desktop_lifecycle = [ordered]@{
+                owner_invocations = [int]$lifecycleCounts.owner
+                cleanup_invocations = [int]$lifecycleCounts.cleanup
+                success = [ordered]@{
+                    result_returned = $null -ne $pageObservation
+                    terminal_phase = [string]$pageContext.phase
+                }
+                operation_only = [ordered]@{
+                    exception_role = 'observer'
+                    reference_identity = [object]::ReferenceEquals($exitedFailure, $exitedFailure.Data['original_exception'])
+                    terminal_phase = [string]$exitedContext.phase
+                }
+                cleanup_only = [ordered]@{
+                    exception_role = 'cleanup'
+                    reference_identity = [object]::ReferenceEquals($cleanupOnlyExpected, $cleanupOnlyActual)
+                    terminal_phase = [string]$cleanupOnlyContext.phase
+                }
+                dual = [ordered]@{
+                    aggregate_type = $dualActual.GetType().FullName
+                    inner_count = [int]$dualActual.InnerExceptions.Count
+                    inner_roles = @('observer', 'cleanup')
+                    reference_identity = $dualReferenceIdentity
+                    terminal_phase = [string]$dualContext.phase
+                }
+            }
+            $evidence.process_diagnostics.block_error_marker_absent = [string]$dualContext.block_error -notmatch 'T825_(CORE|NPM|TAR|DESKTOP)'
+            $caseIds.Add('desktop_observation_cleanup_aggregate')
+
             Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test final cleanup' }) 'Install-root residue was accepted.'
             $caseIds.Add('install_root_residue')
 
@@ -1494,26 +2112,33 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Assert-ProductionPageUrl -Url 'http://localhost:1420/' }) 'Development WebView URL was accepted.'
             $caseIds.Add('nonproduction_url')
         } else {
-            Assert-Condition (Test-Throws {
-                Resolve-NpmPathPrecedenceToolchain -NodeCandidates @()
-            }) 'An empty Node application candidate collection was accepted.'
-            $caseIds.Add('node_path_precedence_zero')
-
             $nodeFixtureRoot = Join-Path $root 'node-toolchains'
             $firstNodeRoot = Join-Path $nodeFixtureRoot 'first'
             $secondNodeRoot = Join-Path $nodeFixtureRoot 'second'
             $invalidFirstNodeRoot = Join-Path $nodeFixtureRoot 'invalid-first'
+            $missingAdjacentNodeRoot = Join-Path $nodeFixtureRoot 'missing-adjacent'
             $firstNpmRoot = Join-Path $firstNodeRoot 'node_modules\npm\bin'
             $secondNpmRoot = Join-Path $secondNodeRoot 'node_modules\npm\bin'
-            New-Item -ItemType Directory -Path $firstNpmRoot, $secondNpmRoot, $invalidFirstNodeRoot | Out-Null
+            $tarFixtureRoot = Join-Path $root 'tar-toolchains'
+            New-Item -ItemType Directory -Path $firstNpmRoot, $secondNpmRoot, $invalidFirstNodeRoot, $missingAdjacentNodeRoot, $tarFixtureRoot | Out-Null
             $firstNode = Join-Path $firstNodeRoot 'node.exe'
             $secondNode = Join-Path $secondNodeRoot 'node.exe'
             $invalidFirstNode = Join-Path $invalidFirstNodeRoot 'node.exe'
+            $missingAdjacentNode = Join-Path $missingAdjacentNodeRoot 'node.exe'
+            $missingNode = Join-Path $nodeFixtureRoot 'missing\node.exe'
             $firstNpmCli = Join-Path $firstNpmRoot 'npm-cli.js'
             $secondNpmCli = Join-Path $secondNpmRoot 'npm-cli.js'
-            Set-Content -LiteralPath $firstNode, $secondNode, $invalidFirstNode, $firstNpmCli, $secondNpmCli -Value 'self-test toolchain' -Encoding ascii -NoNewline
+            $firstTar = Join-Path $tarFixtureRoot 'first-tar.exe'
+            $secondTar = Join-Path $tarFixtureRoot 'second-tar.exe'
+            $missingTar = Join-Path $tarFixtureRoot 'missing-tar.exe'
+            Set-Content -LiteralPath $firstNode, $secondNode, $invalidFirstNode, $missingAdjacentNode, $firstNpmCli, $secondNpmCli, $firstTar, $secondTar -Value 'self-test toolchain' -Encoding ascii -NoNewline
 
-            $oneNode = Resolve-NpmPathPrecedenceToolchain -NodeCandidates @([pscustomobject]@{ Source = $firstNode })
+            Assert-Condition (Test-Throws {
+                Resolve-NpmPathPrecedenceToolchain -NodeCandidates @() -TarCandidates @([pscustomobject]@{ Source = $firstTar })
+            }) 'An empty Node application candidate collection was accepted.'
+            $caseIds.Add('node_path_precedence_zero')
+
+            $oneNode = Resolve-NpmPathPrecedenceToolchain -NodeCandidates @([pscustomobject]@{ Source = $firstNode }) -TarCandidates @([pscustomobject]@{ Source = $firstTar })
             Assert-Condition ($oneNode.node_path -ceq $firstNode) 'A single Node application candidate did not remain scalar.'
             Assert-Condition ($oneNode.npm_cli_path -ceq $firstNpmCli) 'A single Node application candidate did not bind its adjacent npm CLI.'
             $caseIds.Add('node_path_precedence_one')
@@ -1521,7 +2146,7 @@ function Invoke-SelfTest {
             $multipleNodes = Resolve-NpmPathPrecedenceToolchain -NodeCandidates @(
                 [pscustomobject]@{ Source = $firstNode },
                 [pscustomobject]@{ Source = $secondNode }
-            )
+            ) -TarCandidates @([pscustomobject]@{ Source = $firstTar })
             Assert-Condition ($multipleNodes.node_path -ceq $firstNode) 'Multiple Node application candidates did not select the first PATH-precedence Source.'
             Assert-Condition ($multipleNodes.npm_cli_path -ceq $firstNpmCli) 'Multiple Node application candidates did not couple npm to the selected Node.'
             $caseIds.Add('node_path_precedence_multiple')
@@ -1530,9 +2155,107 @@ function Invoke-SelfTest {
                 Resolve-NpmPathPrecedenceToolchain -NodeCandidates @(
                     [pscustomobject]@{ Source = $invalidFirstNode },
                     [pscustomobject]@{ Source = $secondNode }
-                )
+                ) -TarCandidates @([pscustomobject]@{ Source = $firstTar })
             }) 'A missing npm CLI beside the first Node fell back to a lower valid candidate.'
             $caseIds.Add('node_path_precedence_invalid_first')
+
+            $npmSmokeRoot = Join-Path $root 'npm-complete-smoke'
+            New-Item -ItemType Directory -Path $npmSmokeRoot | Out-Null
+            $operationOrder = [Collections.Generic.List[string]]::new()
+            $tarOperationPaths = [Collections.Generic.List[string]]::new()
+            $integrityFixture = 'sha512-YWJjZA=='
+            $npmProcessInvoker = {
+                param(
+                    [string]$Operation,
+                    [string]$FilePath,
+                    [Parameter(ValueFromRemainingArguments = $true)][object[]]$Arguments
+                )
+                $operationOrder.Add($Operation) | Out-Null
+                if ($Operation -cin @('tar_list', 'tar_extract')) {
+                    $tarOperationPaths.Add($FilePath) | Out-Null
+                }
+                switch ($Operation) {
+                    'npm_view' {
+                        return [pscustomobject]@{ exit_code = 0; stdout = (@{ version = $Version; dist = @{ integrity = $integrityFixture } } | ConvertTo-Json -Compress); stderr = '' }
+                    }
+                    'npm_pack' {
+                        $tarballName = 'winsmux-self-test.tgz'
+                        Set-Content -LiteralPath (Join-Path $npmSmokeRoot $tarballName) -Value 'self-test archive' -Encoding ascii -NoNewline
+                        return [pscustomobject]@{ exit_code = 0; stdout = (@(@{ filename = $tarballName; integrity = $integrityFixture }) | ConvertTo-Json -Compress); stderr = '' }
+                    }
+                    'tar_list' {
+                        return [pscustomobject]@{ exit_code = 0; stdout = "package/package.json`npackage/index.mjs`npackage/install.ps1`n"; stderr = '' }
+                    }
+                    'tar_extract' {
+                        $packageRoot = Join-Path $npmSmokeRoot 'unpacked\package'
+                        New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+                        Set-Content -LiteralPath (Join-Path $packageRoot 'package.json') -Value (@{ name = 'winsmux'; version = $Version; winsmuxReleaseTag = $ReleaseTag } | ConvertTo-Json -Compress) -Encoding UTF8
+                        Set-Content -LiteralPath (Join-Path $packageRoot 'index.mjs') -Value 'self-test entry' -Encoding ascii -NoNewline
+                        Set-Content -LiteralPath (Join-Path $packageRoot 'install.ps1') -Value 'self-test installer' -Encoding ascii -NoNewline
+                        return [pscustomobject]@{ exit_code = 0; stdout = ''; stderr = '' }
+                    }
+                    'npm_help' {
+                        return [pscustomobject]@{
+                            exit_code = 0
+                            stderr = ''
+                            stdout = "  install     Install winsmux`n  update      Update winsmux`n  uninstall   Uninstall winsmux`n  version     Show version`n  help        Show help"
+                        }
+                    }
+                    default { throw "Unexpected npm self-test operation: $Operation" }
+                }
+            }.GetNewClosure()
+            Invoke-NpmSmoke -Root $npmSmokeRoot `
+                -NodeCandidates @([pscustomobject]@{ Source = $firstNode }, [pscustomobject]@{ Source = $secondNode }) `
+                -TarCandidates @([pscustomobject]@{ Source = $firstTar }, [pscustomobject]@{ Source = $secondTar }) `
+                -ProcessInvoker $npmProcessInvoker | Out-Null
+            $evidence.npm_complete_toolchain = [ordered]@{
+                selected_node_index = 0
+                selected_tar_index = 0
+                npm_adjacent = [string]::Equals((Join-Path (Split-Path -Parent $firstNode) 'node_modules\npm\bin\npm-cli.js'), $firstNpmCli, [StringComparison]::OrdinalIgnoreCase)
+                same_tar_for_list_extract = $tarOperationPaths.Count -eq 2 -and $tarOperationPaths[0] -ceq $firstTar -and $tarOperationPaths[1] -ceq $firstTar
+                operation_order = @($operationOrder)
+            }
+            $caseIds.Add('npm_complete_toolchain_consumed')
+
+            $snapshotRoot = {
+                param([string]$Path)
+                return [string]::Join('|', @(
+                    Get-ChildItem -LiteralPath $Path -Recurse -Force | Sort-Object FullName | ForEach-Object {
+                        $relative = [IO.Path]::GetRelativePath($Path, $_.FullName)
+                        if ($_.PSIsContainer) { "D:$relative" } else { "F:${relative}:$($_.Length):$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash)" }
+                    }
+                ))
+            }.GetNewClosure()
+            $incompleteCases = [Collections.Generic.List[object]]::new()
+            $invalidDefinitions = @(
+                [pscustomobject]@{ name = 'missing_node'; nodes = @(); tars = @([pscustomobject]@{ Source = $firstTar }) },
+                [pscustomobject]@{ name = 'invalid_first_node'; nodes = @([pscustomobject]@{ Source = $missingNode }, [pscustomobject]@{ Source = $firstNode }); tars = @([pscustomobject]@{ Source = $firstTar }) },
+                [pscustomobject]@{ name = 'missing_adjacent_npm'; nodes = @([pscustomobject]@{ Source = $missingAdjacentNode }); tars = @([pscustomobject]@{ Source = $firstTar }) },
+                [pscustomobject]@{ name = 'missing_tar'; nodes = @([pscustomobject]@{ Source = $firstNode }); tars = @() },
+                [pscustomobject]@{ name = 'invalid_first_tar'; nodes = @([pscustomobject]@{ Source = $firstNode }); tars = @([pscustomobject]@{ Source = $missingTar }, [pscustomobject]@{ Source = $firstTar }) }
+            )
+            foreach ($definition in $invalidDefinitions) {
+                $caseRoot = Join-Path $root "npm-incomplete-$($definition.name)"
+                New-Item -ItemType Directory -Path $caseRoot | Out-Null
+                Set-Content -LiteralPath (Join-Path $caseRoot 'sentinel.bin') -Value "sentinel-$($definition.name)" -Encoding ascii -NoNewline
+                $before = & $snapshotRoot $caseRoot
+                $processOperations = [pscustomobject]@{ count = 0 }
+                $rejectProcessInvoker = { $processOperations.count += 1; throw 'incomplete toolchain reached process execution' }.GetNewClosure()
+                $rejected = Test-Throws {
+                    Invoke-NpmSmoke -Root $caseRoot -NodeCandidates @($definition.nodes) -TarCandidates @($definition.tars) -ProcessInvoker $rejectProcessInvoker
+                }
+                $after = & $snapshotRoot $caseRoot
+                Assert-Condition $rejected "Incomplete npm toolchain case '$($definition.name)' was accepted."
+                Assert-Condition ($processOperations.count -eq 0) "Incomplete npm toolchain case '$($definition.name)' reached a process operation."
+                Assert-Condition ($before -ceq $after) "Incomplete npm toolchain case '$($definition.name)' changed owned-root bytes or entries."
+                $incompleteCases.Add([ordered]@{
+                    name = [string]$definition.name
+                    root_unchanged = $before -ceq $after
+                    process_operations = [int]$processOperations.count
+                })
+            }
+            $evidence.npm_incomplete_toolchain = [ordered]@{ cases = @($incompleteCases) }
+            $caseIds.Add('npm_incomplete_toolchain_no_effects')
 
             Assert-SafeNpmArchiveEntries -Entries @('package/package.json', 'package/index.mjs', 'package/install.ps1')
             Assert-Condition (Test-Throws { Assert-SafeNpmArchiveEntries -Entries @('package/../outside.txt') }) 'npm archive traversal was accepted.'
@@ -1584,6 +2307,7 @@ function Invoke-SelfTest {
         ok = $true
         surface = $Surface
         case_ids = @($caseIds)
+        evidence = $evidence
     }
 }
 
