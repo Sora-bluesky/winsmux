@@ -40,10 +40,39 @@ function Assert-Condition {
     }
 }
 
-function Assert-ReleaseCoordinates {
-    Assert-Condition ($Version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') "Unsupported release version: $Version"
-    Assert-Condition ($ReleaseTag -ceq "v$Version") "Release tag '$ReleaseTag' does not exactly match version '$Version'."
+function Resolve-ReleaseCoordinates {
+    param(
+        [Parameter(Mandatory)][string]$Surface,
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$ReleaseTag,
+        [Parameter(Mandatory)][string]$Repository
+    )
+
+    $tagMatch = [regex]::Match($ReleaseTag, '^v(?<binary>\d+\.\d+\.\d+)(?:\.(?<revision>\d+))?(?<suffix>-[0-9A-Za-z.-]+)?$')
+    Assert-Condition $tagMatch.Success "Unsupported release tag: $ReleaseTag"
     Assert-Condition ($Repository -match '^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?$') "Unsupported repository coordinate: $Repository"
+
+    $binaryVersion = $tagMatch.Groups['binary'].Value
+    $revision = $tagMatch.Groups['revision'].Value
+    $suffix = $tagMatch.Groups['suffix'].Value
+    if ($Surface -in @('Core', 'Desktop')) {
+        $workflowVersion = $ReleaseTag.Substring(1)
+        Assert-Condition ($Version -ceq $workflowVersion) "Release tag '$ReleaseTag' does not exactly match workflow version '$Version'."
+        return "$binaryVersion$suffix"
+    }
+
+    if ([string]::IsNullOrEmpty($revision) -and $suffix -cmatch '^-pkgfix(?:\.|$)') {
+        throw "Reserved npm packaging-hotfix tag namespace: $ReleaseTag"
+    }
+    $packageVersion = if ([string]::IsNullOrEmpty($revision)) {
+        "$binaryVersion$suffix"
+    } elseif ([string]::IsNullOrEmpty($suffix)) {
+        "$binaryVersion-pkgfix.$revision"
+    } else {
+        "$binaryVersion-pkgfix.$revision.$($suffix.Substring(1))"
+    }
+    Assert-Condition ($Version -ceq $packageVersion) "Release tag '$ReleaseTag' does not exactly match staged npm version '$Version'."
+    return $packageVersion
 }
 
 function Get-CanonicalPath {
@@ -853,8 +882,31 @@ function Test-Throws {
 
 function Invoke-SelfTest {
     $caseIds = [Collections.Generic.List[string]]::new()
+    if ($Surface -eq 'Npm') {
+        Assert-Condition ((Resolve-ReleaseCoordinates -Surface Npm -Version '0.36.28-pkgfix.1' -ReleaseTag 'v0.36.28.1' -Repository $Repository) -ceq '0.36.28-pkgfix.1') 'npm packaging-hotfix coordinates did not resolve to the staged package version.'
+    } else {
+        Assert-Condition ((Resolve-ReleaseCoordinates -Surface $Surface -Version '0.36.28.1' -ReleaseTag 'v0.36.28.1' -Repository $Repository) -ceq '0.36.28') "$Surface packaging-hotfix coordinates did not resolve to the native version."
+    }
+    $caseIds.Add('packaging_hotfix_coordinates')
+
+    Assert-Condition (Test-Throws {
+        Resolve-ReleaseCoordinates -Surface $Surface -Version '0.36.28' -ReleaseTag 'v0.36.28.1' -Repository $Repository
+    }) "$Surface coordinate mismatch was accepted."
+    $caseIds.Add('coordinate_mismatch')
+
+    Assert-Condition ((Resolve-ReleaseCoordinates -Surface $Surface -Version '0.36.28-rc.1' -ReleaseTag 'v0.36.28-rc.1' -Repository $Repository) -ceq '0.36.28-rc.1') "$Surface ordinary prerelease coordinates did not resolve exactly."
+    $caseIds.Add('ordinary_prerelease_coordinates')
+
+    if ($Surface -eq 'Npm') {
+        Assert-Condition (Test-Throws {
+            Resolve-ReleaseCoordinates -Surface Npm -Version '0.36.28-pkgfix.1' -ReleaseTag 'v0.36.28-pkgfix.1' -Repository $Repository
+        }) 'Reserved npm packaging-hotfix tag namespace was accepted.'
+        $caseIds.Add('reserved_pkgfix_namespace')
+    }
+
     $root = New-OwnedRoot
     try {
+
         if ($Surface -eq 'Core') {
             $payload = Join-Path $root 'payload.bin'
             Set-Content -LiteralPath $payload -Value 'public-core' -Encoding ascii -NoNewline
@@ -1039,7 +1091,7 @@ function Invoke-SelfTest {
     }
 }
 
-Assert-ReleaseCoordinates
+$Version = Resolve-ReleaseCoordinates -Surface $Surface -Version $Version -ReleaseTag $ReleaseTag -Repository $Repository
 
 if ($SelfTest) {
     $result = Invoke-SelfTest
