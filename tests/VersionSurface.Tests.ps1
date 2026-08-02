@@ -197,7 +197,42 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Core'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,valid,missing_checksum_entry,duplicate_checksum_entry,checksum_mismatch,version_mismatch,temp_cleanup'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,core_asset_inventory,missing_arm64_checksum_entry,duplicate_arm64_checksum_entry,arm64_checksum_mismatch,valid,missing_checksum_entry,duplicate_checksum_entry,checksum_mismatch,version_mismatch,temp_cleanup'
+    }
+
+    It 'T668-SMOKE-CORE-ASSET-INVENTORY requires both public Core executables' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match 'function Get-CoreReleaseAssetNames'
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'core_asset_inventory'
+    }
+
+    It 'T668-SMOKE-CORE-ARM64-MISSING rejects a missing ARM64 checksum entry' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'missing_arm64_checksum_entry'
+    }
+
+    It 'T668-SMOKE-CORE-ARM64-DUPLICATE rejects duplicate ARM64 checksum entries' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'duplicate_arm64_checksum_entry'
+    }
+
+    It 'T668-SMOKE-CORE-ARM64-MISMATCH rejects mismatched ARM64 public bytes' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'arm64_checksum_mismatch'
     }
 
     It 'T668-SMOKE-DESKTOP binds the public Desktop smoke after Release upload' {

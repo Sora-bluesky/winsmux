@@ -40,6 +40,13 @@ function Assert-Condition {
     }
 }
 
+function Get-CoreReleaseAssetNames {
+    return @(
+        'winsmux-x64.exe'
+        'winsmux-arm64.exe'
+    )
+}
+
 function Resolve-ReleaseCoordinates {
     param(
         [Parameter(Mandatory)][string]$Surface,
@@ -268,12 +275,13 @@ function Assert-FileChecksum {
 function Assert-CoreVersionResult {
     param(
         [Parameter(Mandatory)]$Result,
+        [Parameter(Mandatory)][string]$ExpectedProgramName,
         [Parameter(Mandatory)][string]$ExpectedVersion
     )
 
     Assert-Condition ($Result.exit_code -eq 0) "Core --version exited with $($Result.exit_code)."
     Assert-Condition ([string]::IsNullOrWhiteSpace([string]$Result.stderr)) "Core --version wrote stderr: $($Result.stderr)"
-    Assert-Condition ([string]$Result.stdout.Trim() -ceq "winsmux $ExpectedVersion") "Core --version returned '$([string]$Result.stdout.Trim())'."
+    Assert-Condition ([string]$Result.stdout.Trim() -ceq "$ExpectedProgramName $ExpectedVersion") "Core --version returned '$([string]$Result.stdout.Trim())'."
 }
 
 function Get-ObjectPropertyValue {
@@ -616,15 +624,26 @@ function Get-RemoteDebugPage {
 function Invoke-CoreSmoke {
     param([Parameter(Mandatory)][string]$Root)
 
-    $assetName = 'winsmux-x64.exe'
+    $coreAssetNames = @(Get-CoreReleaseAssetNames)
     $baseUrl = "https://github.com/$Repository/releases/download/$ReleaseTag"
     $manifestPath = Join-Path $Root 'SHA256SUMS'
-    $binaryPath = Join-Path $Root 'winsmux.exe'
     Invoke-PublicDownload -Uri "$baseUrl/SHA256SUMS" -Destination $manifestPath -Root $Root
-    Invoke-PublicDownload -Uri "$baseUrl/$assetName" -Destination $binaryPath -Root $Root
+    $assetPaths = [ordered]@{}
+    foreach ($assetName in $coreAssetNames) {
+        $assetPath = Join-Path $Root $assetName
+        $assetPaths[$assetName] = $assetPath
+        Invoke-PublicDownload -Uri "$baseUrl/$assetName" -Destination $assetPath -Root $Root
+    }
+
     $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
-    $expectedHash = Get-ChecksumEntry -ManifestText $manifest -AssetName $assetName
-    Assert-FileChecksum -Path $binaryPath -ExpectedHash $expectedHash
+    $expectedHashes = [ordered]@{}
+    foreach ($assetName in $coreAssetNames) {
+        $expectedHashes[$assetName] = Get-ChecksumEntry -ManifestText $manifest -AssetName $assetName
+    }
+    foreach ($assetName in $coreAssetNames) {
+        Assert-FileChecksum -Path $assetPaths[$assetName] -ExpectedHash $expectedHashes[$assetName]
+    }
+
     $profileRoot = Join-Path $Root 'core-profile'
     $localAppData = Join-Path $profileRoot 'LocalAppData'
     $roamingAppData = Join-Path $profileRoot 'AppData'
@@ -639,11 +658,14 @@ function Invoke-CoreSmoke {
         USERPROFILE = $homeRoot
         HOME = $homeRoot
     }
-    $result = Invoke-NativeProcess -FilePath $binaryPath -ArgumentList @('--version') -Environment $environment -TimeoutSeconds 30
-    Assert-CoreVersionResult -Result $result -ExpectedVersion $Version
+    $executedAssetName = $coreAssetNames[0]
+    Assert-Condition ($executedAssetName -ceq 'winsmux-x64.exe') 'Core executable inventory did not keep x64 as the runnable asset.'
+    $expectedProgramName = [IO.Path]::GetFileNameWithoutExtension($executedAssetName)
+    $result = Invoke-NativeProcess -FilePath $assetPaths[$executedAssetName] -ArgumentList @('--version') -Environment $environment -TimeoutSeconds 30
+    Assert-CoreVersionResult -Result $result -ExpectedProgramName $expectedProgramName -ExpectedVersion $Version
     return [ordered]@{
-        asset = $assetName
-        sha256 = $expectedHash
+        asset = $executedAssetName
+        sha256 = $expectedHashes[$executedAssetName]
         version = $Version
     }
 }
@@ -908,13 +930,39 @@ function Invoke-SelfTest {
     try {
 
         if ($Surface -eq 'Core') {
-            $payload = Join-Path $root 'payload.bin'
-            Set-Content -LiteralPath $payload -Value 'public-core' -Encoding ascii -NoNewline
-            $hash = (Get-FileHash -LiteralPath $payload -Algorithm SHA256).Hash.ToLowerInvariant()
-            $manifest = "$hash  winsmux-x64.exe"
-            Assert-Condition ((Get-ChecksumEntry -ManifestText $manifest -AssetName 'winsmux-x64.exe') -ceq $hash) 'Valid checksum entry was rejected.'
-            Assert-FileChecksum -Path $payload -ExpectedHash $hash
-            Assert-CoreVersionResult -Result ([pscustomobject]@{ exit_code = 0; stdout = "winsmux $Version"; stderr = '' }) -ExpectedVersion $Version
+            $coreAssetNames = @(Get-CoreReleaseAssetNames)
+            $x64Payload = Join-Path $root 'winsmux-x64.exe'
+            $arm64Payload = Join-Path $root 'winsmux-arm64.exe'
+            Set-Content -LiteralPath $x64Payload -Value 'public-core-x64' -Encoding ascii -NoNewline
+            Set-Content -LiteralPath $arm64Payload -Value 'public-core-arm64' -Encoding ascii -NoNewline
+            $x64Hash = (Get-FileHash -LiteralPath $x64Payload -Algorithm SHA256).Hash.ToLowerInvariant()
+            $arm64Hash = (Get-FileHash -LiteralPath $arm64Payload -Algorithm SHA256).Hash.ToLowerInvariant()
+            $manifest = [string]::Join([Environment]::NewLine, @(
+                "$x64Hash  winsmux-x64.exe",
+                "$arm64Hash  winsmux-arm64.exe"
+            ))
+
+            Assert-Condition ($coreAssetNames.Count -eq 2) 'Core asset inventory did not contain exactly two assets.'
+            Assert-Condition ($coreAssetNames[0] -ceq 'winsmux-x64.exe') 'Core asset inventory did not keep x64 first.'
+            Assert-Condition ($coreAssetNames[1] -ceq 'winsmux-arm64.exe') 'Core asset inventory did not keep ARM64 second.'
+            $caseIds.Add('core_asset_inventory')
+
+            Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText "$x64Hash  winsmux-x64.exe" -AssetName 'winsmux-arm64.exe' }) 'Missing ARM64 checksum entry was accepted.'
+            $caseIds.Add('missing_arm64_checksum_entry')
+
+            $duplicateArm64Manifest = [string]::Join([Environment]::NewLine, @($manifest, "$arm64Hash  winsmux-arm64.exe"))
+            Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText $duplicateArm64Manifest -AssetName 'winsmux-arm64.exe' }) 'Duplicate ARM64 checksum entry was accepted.'
+            $caseIds.Add('duplicate_arm64_checksum_entry')
+
+            Assert-Condition (Test-Throws { Assert-FileChecksum -Path $arm64Payload -ExpectedHash ('0' * 64) }) 'ARM64 checksum mismatch was accepted.'
+            $caseIds.Add('arm64_checksum_mismatch')
+
+            Assert-Condition ((Get-ChecksumEntry -ManifestText $manifest -AssetName 'winsmux-x64.exe') -ceq $x64Hash) 'Valid x64 checksum entry was rejected.'
+            Assert-Condition ((Get-ChecksumEntry -ManifestText $manifest -AssetName 'winsmux-arm64.exe') -ceq $arm64Hash) 'Valid ARM64 checksum entry was rejected.'
+            Assert-FileChecksum -Path $x64Payload -ExpectedHash $x64Hash
+            Assert-FileChecksum -Path $arm64Payload -ExpectedHash $arm64Hash
+            $expectedCoreProgramName = [IO.Path]::GetFileNameWithoutExtension($coreAssetNames[0])
+            Assert-CoreVersionResult -Result ([pscustomobject]@{ exit_code = 0; stdout = "$expectedCoreProgramName $Version"; stderr = '' }) -ExpectedProgramName $expectedCoreProgramName -ExpectedVersion $Version
             $caseIds.Add('valid')
 
             Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText '' -AssetName 'winsmux-x64.exe' }) 'Missing checksum entry was accepted.'
@@ -923,10 +971,11 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText ([string]::Join([Environment]::NewLine, @($manifest, $manifest))) -AssetName 'winsmux-x64.exe' }) 'Duplicate checksum entry was accepted.'
             $caseIds.Add('duplicate_checksum_entry')
 
-            Assert-Condition (Test-Throws { Assert-FileChecksum -Path $payload -ExpectedHash ('0' * 64) }) 'Checksum mismatch was accepted.'
+            Assert-Condition (Test-Throws { Assert-FileChecksum -Path $x64Payload -ExpectedHash ('0' * 64) }) 'Checksum mismatch was accepted.'
             $caseIds.Add('checksum_mismatch')
 
-            Assert-Condition (Test-Throws { Assert-CoreVersionResult -Result ([pscustomobject]@{ exit_code = 0; stdout = 'winsmux 0.0.0'; stderr = '' }) -ExpectedVersion $Version }) 'Version mismatch was accepted.'
+            Assert-Condition (Test-Throws { Assert-CoreVersionResult -Result ([pscustomobject]@{ exit_code = 0; stdout = "$expectedCoreProgramName 0.0.0"; stderr = '' }) -ExpectedProgramName $expectedCoreProgramName -ExpectedVersion $Version }) 'Version mismatch was accepted.'
+            Assert-Condition (Test-Throws { Assert-CoreVersionResult -Result ([pscustomobject]@{ exit_code = 0; stdout = "winsmux $Version"; stderr = '' }) -ExpectedProgramName $expectedCoreProgramName -ExpectedVersion $Version }) 'Release-asset program-name mismatch was accepted.'
             $caseIds.Add('version_mismatch')
         } elseif ($Surface -eq 'Desktop') {
             $installRoot = Join-Path $root 'installed'
