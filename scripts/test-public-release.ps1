@@ -22,6 +22,9 @@ $ErrorActionPreference = 'Stop'
 
 $script:RetryCount = 6
 $script:RetryDelaySeconds = 10
+$script:DesktopObservationTimeoutMilliseconds = 180000
+$script:DesktopObservationPollMilliseconds = 500
+$script:DesktopOutputRetainLimitBytes = 16384
 $script:OwnedRootPrefix = 'winsmux-public-release-'
 $script:DesktopLifecycle = $null
 $script:DesktopFolderContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\winsmux'
@@ -183,6 +186,18 @@ function Format-PublicChildProcessDiagnostic {
             'content_invalid',
             'exited',
             'live_no_cdp',
+            'live_cdp_user_data_reparse',
+            'live_cdp_port_file_missing',
+            'live_cdp_port_file_reparse',
+            'live_cdp_port_file_invalid_encoding',
+            'live_cdp_port_file_invalid_shape',
+            'live_cdp_port_invalid',
+            'live_cdp_browser_path_invalid',
+            'live_cdp_listener_missing',
+            'live_cdp_listener_ambiguous',
+            'live_cdp_listener_foreign',
+            'live_cdp_browser_identity_invalid',
+            'live_cdp_version_identity_mismatch',
             'live_cdp_transport_unavailable',
             'live_cdp_http_error',
             'live_cdp_payload_invalid',
@@ -196,6 +211,8 @@ function Format-PublicChildProcessDiagnostic {
     $exitCode = 'none'
     $stdout = ''
     $stderr = ''
+    $stdoutMetadata = $null
+    $stderrMetadata = $null
     if ($null -ne $Result) {
         $resultExitCode = Get-ObjectPropertyValue -Object $Result -Name 'exit_code'
         if ($null -ne $resultExitCode) {
@@ -205,9 +222,11 @@ function Format-PublicChildProcessDiagnostic {
         $stderrValue = Get-ObjectPropertyValue -Object $Result -Name 'stderr'
         if ($null -ne $stdoutValue) { $stdout = [string]$stdoutValue }
         if ($null -ne $stderrValue) { $stderr = [string]$stderrValue }
+        $stdoutMetadata = Get-ObjectPropertyValue -Object $Result -Name 'stdout_metadata'
+        $stderrMetadata = Get-ObjectPropertyValue -Object $Result -Name 'stderr_metadata'
     }
-    $stdoutMetadata = Get-ChildOutputMetadata -Content $stdout
-    $stderrMetadata = Get-ChildOutputMetadata -Content $stderr
+    if ($null -eq $stdoutMetadata) { $stdoutMetadata = Get-ChildOutputMetadata -Content $stdout }
+    if ($null -eq $stderrMetadata) { $stderrMetadata = Get-ChildOutputMetadata -Content $stderr }
     return 'child_process_failure operation={0} state={1} exit_code={2} stdout_present={3} stdout_bytes={4} stdout_truncated={5} stderr_present={6} stderr_bytes={7} stderr_truncated={8}' -f @(
         $Operation,
         $State,
@@ -296,6 +315,97 @@ function Invoke-PublicChildProcess {
     }
 }
 
+function Initialize-DesktopNativeTypes {
+    if ($null -ne ([Management.Automation.PSTypeName]'Winsmux.PublicRelease.BoundedStreamCapture').Type) {
+        return
+    }
+
+    $source = @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+
+namespace Winsmux.PublicRelease
+{
+    public sealed class BoundedCaptureResult
+    {
+        public BoundedCaptureResult(long totalBytes, byte[] retainedBytes)
+        {
+            TotalBytes = totalBytes;
+            RetainedBytes = retainedBytes ?? Array.Empty<byte>();
+        }
+
+        public long TotalBytes { get; }
+        public byte[] RetainedBytes { get; }
+        public bool Truncated => TotalBytes > RetainedBytes.LongLength;
+    }
+
+    public static class BoundedStreamCapture
+    {
+        public static Task<BoundedCaptureResult> ReadAsync(Stream stream, int retainLimit)
+        {
+            if (stream == null) throw new ArgumentNullException(nameof(stream));
+            if (retainLimit < 0) throw new ArgumentOutOfRangeException(nameof(retainLimit));
+            return ReadCoreAsync(stream, retainLimit);
+        }
+
+        private static async Task<BoundedCaptureResult> ReadCoreAsync(Stream stream, int retainLimit)
+        {
+            byte[] buffer = new byte[4096];
+            using (var retained = new MemoryStream(retainLimit))
+            {
+                long total = 0;
+                while (true)
+                {
+                    int read = await stream.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                    if (read == 0) break;
+                    total = checked(total + read);
+                    int remaining = retainLimit - checked((int)retained.Length);
+                    int keep = Math.Min(read, Math.Max(remaining, 0));
+                    if (keep > 0) retained.Write(buffer, 0, keep);
+                }
+                return new BoundedCaptureResult(total, retained.ToArray());
+            }
+        }
+    }
+
+    public static class WindowsCommandLine
+    {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CommandLineToArgvW(string commandLine, out int argumentCount);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
+        public static string[] Parse(string commandLine)
+        {
+            if (string.IsNullOrWhiteSpace(commandLine)) return Array.Empty<string>();
+            int count;
+            IntPtr values = CommandLineToArgvW(commandLine, out count);
+            if (values == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            try
+            {
+                var result = new string[count];
+                for (int index = 0; index < count; index++)
+                {
+                    IntPtr value = Marshal.ReadIntPtr(values, index * IntPtr.Size);
+                    result[index] = Marshal.PtrToStringUni(value) ?? string.Empty;
+                }
+                return result;
+            }
+            finally
+            {
+                LocalFree(values);
+            }
+        }
+    }
+}
+'@
+    Add-Type -TypeDefinition $source -Language CSharp -ErrorAction Stop
+}
+
 function Start-OwnedProcess {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -315,13 +425,20 @@ function Start-OwnedProcess {
     foreach ($name in @($Environment.Keys)) {
         $info.Environment[[string]$name] = [string]$Environment[$name]
     }
+    Initialize-DesktopNativeTypes
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $info
     Assert-Condition $process.Start() "Unable to start owned process: $FilePath"
     return [pscustomobject]@{
         process = $process
-        stdout_task = $process.StandardOutput.ReadToEndAsync()
-        stderr_task = $process.StandardError.ReadToEndAsync()
+        stdout_task = [Winsmux.PublicRelease.BoundedStreamCapture]::ReadAsync(
+            $process.StandardOutput.BaseStream,
+            $script:DesktopOutputRetainLimitBytes
+        )
+        stderr_task = [Winsmux.PublicRelease.BoundedStreamCapture]::ReadAsync(
+            $process.StandardError.BaseStream,
+            $script:DesktopOutputRetainLimitBytes
+        )
     }
 }
 
@@ -331,10 +448,25 @@ function Get-OwnedProcessCapture {
     $process = $OwnedProcess.process
     Assert-Condition $process.HasExited 'Owned process output was requested before the process became terminal.'
     $process.WaitForExit()
+    $stdoutResult = $OwnedProcess.stdout_task.GetAwaiter().GetResult()
+    $stderrResult = $OwnedProcess.stderr_task.GetAwaiter().GetResult()
+    $encoding = [Text.UTF8Encoding]::new($false, $false)
     return [pscustomobject]@{
         exit_code = [int]$process.ExitCode
-        stdout = [string]$OwnedProcess.stdout_task.GetAwaiter().GetResult()
-        stderr = [string]$OwnedProcess.stderr_task.GetAwaiter().GetResult()
+        stdout = $encoding.GetString([byte[]]$stdoutResult.RetainedBytes)
+        stderr = $encoding.GetString([byte[]]$stderrResult.RetainedBytes)
+        stdout_metadata = [pscustomobject][ordered]@{
+            present = [long]$stdoutResult.TotalBytes -gt 0
+            bytes = [long]$stdoutResult.TotalBytes
+            retained_bytes = [long]$stdoutResult.RetainedBytes.LongLength
+            truncated = [bool]$stdoutResult.Truncated
+        }
+        stderr_metadata = [pscustomobject][ordered]@{
+            present = [long]$stderrResult.TotalBytes -gt 0
+            bytes = [long]$stderrResult.TotalBytes
+            retained_bytes = [long]$stderrResult.RetainedBytes.LongLength
+            truncated = [bool]$stderrResult.Truncated
+        }
     }
 }
 
@@ -947,12 +1079,288 @@ function Invoke-DesktopCleanup {
     }
 }
 
+function Get-DesktopDevToolsPortFileSnapshot {
+    param([Parameter(Mandatory)][string]$UserDataFolder)
+
+    if (-not (Test-Path -LiteralPath $UserDataFolder -PathType Container)) {
+        return [pscustomobject]@{
+            user_data_exists = $false
+            user_data_reparse = $false
+            file_exists = $false
+            file_reparse = $false
+            too_large = $false
+            bytes = [byte[]]::new(0)
+        }
+    }
+    $userDataItem = Get-Item -LiteralPath $UserDataFolder -Force
+    $userDataReparse = ($userDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    $path = Join-Path $UserDataFolder 'DevToolsActivePort'
+    if ($userDataReparse -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return [pscustomobject]@{
+            user_data_exists = $true
+            user_data_reparse = $userDataReparse
+            file_exists = $false
+            file_reparse = $false
+            too_large = $false
+            bytes = [byte[]]::new(0)
+        }
+    }
+    $item = Get-Item -LiteralPath $path -Force
+    $fileReparse = ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    $tooLarge = $item.Length -gt 4096
+    $bytes = if ($fileReparse -or $tooLarge) {
+        [byte[]]::new(0)
+    } else {
+        [IO.File]::ReadAllBytes($path)
+    }
+    return [pscustomobject]@{
+        user_data_exists = $true
+        user_data_reparse = $false
+        file_exists = $true
+        file_reparse = $fileReparse
+        too_large = $tooLarge
+        bytes = [byte[]]$bytes
+    }
+}
+
+function Read-DesktopDevToolsActivePort {
+    param(
+        [Parameter(Mandatory)][string]$UserDataFolder,
+        [scriptblock]$SnapshotProvider
+    )
+
+    $snapshot = if ($null -eq $SnapshotProvider) {
+        Get-DesktopDevToolsPortFileSnapshot -UserDataFolder $UserDataFolder
+    } else {
+        & $SnapshotProvider $UserDataFolder
+    }
+    Assert-Condition ($null -ne $snapshot) 'Desktop DevTools port-file snapshot was absent.'
+    if (-not [bool](Get-ObjectPropertyValue -Object $snapshot -Name 'user_data_exists')) {
+        return [pscustomobject]@{ state = 'port_file_missing'; port = 0; browser_path = $null }
+    }
+    if ([bool](Get-ObjectPropertyValue -Object $snapshot -Name 'user_data_reparse')) {
+        return [pscustomobject]@{ state = 'user_data_reparse'; port = 0; browser_path = $null }
+    }
+    if (-not [bool](Get-ObjectPropertyValue -Object $snapshot -Name 'file_exists')) {
+        return [pscustomobject]@{ state = 'port_file_missing'; port = 0; browser_path = $null }
+    }
+    if ([bool](Get-ObjectPropertyValue -Object $snapshot -Name 'file_reparse')) {
+        return [pscustomobject]@{ state = 'port_file_reparse'; port = 0; browser_path = $null }
+    }
+    if ([bool](Get-ObjectPropertyValue -Object $snapshot -Name 'too_large')) {
+        return [pscustomobject]@{ state = 'port_file_invalid_shape'; port = 0; browser_path = $null }
+    }
+
+    $bytes = [byte[]](Get-ObjectPropertyValue -Object $snapshot -Name 'bytes')
+    if ($bytes.Length -gt 4096) {
+        return [pscustomobject]@{ state = 'port_file_invalid_shape'; port = 0; browser_path = $null }
+    }
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) {
+        return [pscustomobject]@{ state = 'port_file_invalid_encoding'; port = 0; browser_path = $null }
+    }
+    try {
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    } catch {
+        return [pscustomobject]@{ state = 'port_file_invalid_encoding'; port = 0; browser_path = $null }
+    }
+    if ($text.Contains("`r", [StringComparison]::Ordinal)) {
+        return [pscustomobject]@{ state = 'port_file_invalid_shape'; port = 0; browser_path = $null }
+    }
+    $parts = $text.Split([char]"`n")
+    if ($parts.Count -ne 2 -or [string]::IsNullOrEmpty($parts[0]) -or [string]::IsNullOrEmpty($parts[1])) {
+        return [pscustomobject]@{ state = 'port_file_invalid_shape'; port = 0; browser_path = $null }
+    }
+
+    $port = 0
+    if ($parts[0] -cnotmatch '^[0-9]+$' -or -not [int]::TryParse($parts[0], [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+        return [pscustomobject]@{ state = 'port_invalid'; port = 0; browser_path = $null }
+    }
+    $browserPath = [string]$parts[1]
+    if ($browserPath -cnotmatch '^/devtools/browser/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+        return [pscustomobject]@{ state = 'browser_path_invalid'; port = 0; browser_path = $null }
+    }
+    return [pscustomobject]@{ state = 'authority_ready'; port = $port; browser_path = $browserPath }
+}
+
+function New-DesktopSnapshotEnvelope {
+    param(
+        [Parameter(Mandatory)][ValidateSet('processes', 'listeners')][string]$Kind,
+        [AllowEmptyCollection()][object[]]$Items = @()
+    )
+
+    $materialized = [Collections.Generic.List[object]]::new()
+    foreach ($item in @($Items)) {
+        Assert-Condition ($null -ne $item) "Desktop $Kind snapshot contained a null item."
+        $materialized.Add($item)
+    }
+    return [pscustomobject][ordered]@{
+        kind = $Kind
+        items = [object[]]$materialized.ToArray()
+    }
+}
+
+function Get-DesktopProcessSnapshot {
+    $items = [Collections.Generic.List[object]]::new()
+    foreach ($process in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+        $items.Add([pscustomobject]@{
+            process_id = [int64]$process.ProcessId
+            parent_process_id = [int64]$process.ParentProcessId
+            name = [string]$process.Name
+            command_line = [string]$process.CommandLine
+        })
+    }
+    return (New-DesktopSnapshotEnvelope -Kind 'processes' -Items $items.ToArray())
+}
+
+function Get-DesktopListenerSnapshot {
+    param([Parameter(Mandatory)][int]$Port)
+
+    $items = [Collections.Generic.List[object]]::new()
+    foreach ($listener in @(Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object {
+        [int]$_.LocalPort -eq $Port
+    })) {
+        $items.Add([pscustomobject]@{
+            local_address = [string]$listener.LocalAddress
+            local_port = [int]$listener.LocalPort
+            owning_process = [int64]$listener.OwningProcess
+        })
+    }
+    return (New-DesktopSnapshotEnvelope -Kind 'listeners' -Items $items.ToArray())
+}
+
+function Test-DesktopProcessDescendant {
+    param(
+        [Parameter(Mandatory)][int64]$RootProcessId,
+        [Parameter(Mandatory)][int64]$CandidateProcessId,
+        [Parameter(Mandatory)]$ProcessSnapshot
+    )
+
+    Assert-Condition ([string](Get-ObjectPropertyValue -Object $ProcessSnapshot -Name 'kind') -ceq 'processes') 'Desktop process snapshot envelope kind was invalid.'
+    $parentByProcess = @{}
+    foreach ($entry in @((Get-ObjectPropertyValue -Object $ProcessSnapshot -Name 'items'))) {
+        Assert-Condition ($null -ne $entry) 'Desktop process snapshot envelope contained a null item.'
+        $processId = [int64](Get-ObjectPropertyValue -Object $entry -Name 'process_id')
+        $parentProcessId = [int64](Get-ObjectPropertyValue -Object $entry -Name 'parent_process_id')
+        if (-not $parentByProcess.ContainsKey($processId)) {
+            $parentByProcess[$processId] = $parentProcessId
+        }
+    }
+    $seen = [Collections.Generic.HashSet[int64]]::new()
+    $current = $CandidateProcessId
+    while ($parentByProcess.ContainsKey($current) -and $seen.Add($current)) {
+        $parent = [int64]$parentByProcess[$current]
+        if ($parent -eq $RootProcessId) { return $true }
+        if ($parent -le 0 -or $parent -eq $current) { return $false }
+        $current = $parent
+    }
+    return $false
+}
+
+function Resolve-DesktopWebViewListenerAuthority {
+    param(
+        [Parameter(Mandatory)][int64]$RootProcessId,
+        [Parameter(Mandatory)][int]$Port,
+        [Parameter(Mandatory)][string]$BrowserPath,
+        [Parameter(Mandatory)]$ProcessSnapshot,
+        [Parameter(Mandatory)]$ListenerSnapshot
+    )
+
+    Assert-Condition ([string](Get-ObjectPropertyValue -Object $ProcessSnapshot -Name 'kind') -ceq 'processes') 'Desktop process snapshot envelope kind was invalid.'
+    Assert-Condition ([string](Get-ObjectPropertyValue -Object $ListenerSnapshot -Name 'kind') -ceq 'listeners') 'Desktop listener snapshot envelope kind was invalid.'
+    $processItems = [Collections.Generic.List[object]]::new()
+    foreach ($entry in @((Get-ObjectPropertyValue -Object $ProcessSnapshot -Name 'items'))) {
+        Assert-Condition ($null -ne $entry) 'Desktop process snapshot envelope contained a null item.'
+        $processItems.Add($entry)
+    }
+    $listeners = [Collections.Generic.List[object]]::new()
+    foreach ($entry in @((Get-ObjectPropertyValue -Object $ListenerSnapshot -Name 'items'))) {
+        Assert-Condition ($null -ne $entry) 'Desktop listener snapshot envelope contained a null item.'
+        if ([int](Get-ObjectPropertyValue -Object $entry -Name 'local_port') -eq $Port) {
+            $listeners.Add($entry)
+        }
+    }
+    if ($listeners.Count -eq 0) {
+        return [pscustomobject]@{ state = 'listener_missing'; host = $null; port = 0; browser_path = $null }
+    }
+    $addresses = [Collections.Generic.List[string]]::new()
+    $owners = [Collections.Generic.HashSet[int64]]::new()
+    foreach ($listener in $listeners) {
+        $address = [string](Get-ObjectPropertyValue -Object $listener -Name 'local_address')
+        if ($address -cnotin @('127.0.0.1', '::1')) {
+            return [pscustomobject]@{ state = 'listener_foreign'; host = $null; port = 0; browser_path = $null }
+        }
+        $addresses.Add($address)
+        [void]$owners.Add([int64](Get-ObjectPropertyValue -Object $listener -Name 'owning_process'))
+    }
+    if ($owners.Count -ne 1) {
+        return [pscustomobject]@{ state = 'listener_ambiguous'; host = $null; port = 0; browser_path = $null }
+    }
+    [int64]$ownerProcessId = 0
+    foreach ($owner in $owners) { $ownerProcessId = $owner }
+
+    $ownerProcesses = [Collections.Generic.List[object]]::new()
+    foreach ($processEntry in $processItems) {
+        if ([int64](Get-ObjectPropertyValue -Object $processEntry -Name 'process_id') -eq $ownerProcessId) {
+            $ownerProcesses.Add($processEntry)
+        }
+    }
+    if ($ownerProcesses.Count -ne 1 -or
+        -not (Test-DesktopProcessDescendant -RootProcessId $RootProcessId -CandidateProcessId $ownerProcessId -ProcessSnapshot $ProcessSnapshot) -or
+        -not [string]::Equals(
+            [string](Get-ObjectPropertyValue -Object $ownerProcesses[0] -Name 'name'),
+            'msedgewebview2.exe',
+            [StringComparison]::OrdinalIgnoreCase
+        )) {
+        return [pscustomobject]@{ state = 'listener_foreign'; host = $null; port = 0; browser_path = $null }
+    }
+    try {
+        Initialize-DesktopNativeTypes
+        $arguments = @([Winsmux.PublicRelease.WindowsCommandLine]::Parse(
+            [string](Get-ObjectPropertyValue -Object $ownerProcesses[0] -Name 'command_line')
+        ))
+    } catch {
+        return [pscustomobject]@{ state = 'browser_identity_invalid'; host = $null; port = 0; browser_path = $null }
+    }
+    if (@($arguments | Where-Object { [string]$_ -ceq '--remote-debugging-port=0' }).Count -ne 1 -or
+        @($arguments | Where-Object { ([string]$_).StartsWith('--type=', [StringComparison]::Ordinal) }).Count -ne 0) {
+        return [pscustomobject]@{ state = 'browser_identity_invalid'; host = $null; port = 0; browser_path = $null }
+    }
+
+    $hostName = if ($addresses -ccontains '127.0.0.1') { '127.0.0.1' } else { '[::1]' }
+    return [pscustomobject]@{
+        state = 'authority_ready'
+        host = $hostName
+        port = $Port
+        browser_path = $BrowserPath
+    }
+}
+
 function New-DesktopCdpProbeRecord {
     param(
         [Parameter(Mandatory)]
-        [ValidateSet('transport_unavailable', 'http_error', 'payload_invalid', 'page_absent', 'url_rejected', 'page_ready')]
+        [ValidateSet(
+            'user_data_reparse',
+            'port_file_missing',
+            'port_file_reparse',
+            'port_file_invalid_encoding',
+            'port_file_invalid_shape',
+            'port_invalid',
+            'browser_path_invalid',
+            'listener_missing',
+            'listener_ambiguous',
+            'listener_foreign',
+            'browser_identity_invalid',
+            'version_identity_mismatch',
+            'transport_unavailable',
+            'http_error',
+            'payload_invalid',
+            'page_absent',
+            'url_rejected',
+            'page_ready'
+        )]
         [string]$State,
-        [AllowNull()][string]$PageUrl
+        [AllowNull()][string]$PageUrl,
+        [int]$Port = 0
     )
 
     $projectedPageUrl = $null
@@ -963,6 +1371,19 @@ function New-DesktopCdpProbeRecord {
     return [pscustomobject][ordered]@{
         state = $State
         page_url = $projectedPageUrl
+        port = $Port
+        terminal_failure = $State -cin @(
+            'user_data_reparse',
+            'port_file_reparse',
+            'port_file_invalid_encoding',
+            'port_file_invalid_shape',
+            'port_invalid',
+            'browser_path_invalid',
+            'listener_ambiguous',
+            'listener_foreign',
+            'browser_identity_invalid',
+            'version_identity_mismatch'
+        )
     }
 }
 
@@ -1020,12 +1441,180 @@ function Get-RemoteDebugPage {
     }
 }
 
+function Get-VerifiedRemoteDebugPage {
+    param(
+        [Parameter(Mandatory)][ValidateSet('127.0.0.1', '[::1]')][string]$HostName,
+        [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
+        [Parameter(Mandatory)][string]$BrowserPath
+    )
+
+    $handler = [Net.Http.HttpClientHandler]::new()
+    $handler.UseProxy = $false
+    $client = [Net.Http.HttpClient]::new($handler)
+    $versionResponse = $null
+    $versionDocument = $null
+    $listResponse = $null
+    $listDocument = $null
+    try {
+        $client.Timeout = [TimeSpan]::FromSeconds(5)
+        $client.MaxResponseContentBufferSize = 65536
+        try {
+            $versionResponse = $client.GetAsync("http://${HostName}:$Port/json/version").GetAwaiter().GetResult()
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port)
+        }
+        if (-not $versionResponse.IsSuccessStatusCode) {
+            return (New-DesktopCdpProbeRecord -State 'http_error' -PageUrl $null -Port $Port)
+        }
+
+        try {
+            $versionPayload = $versionResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $versionDocument = [Text.Json.JsonDocument]::Parse($versionPayload)
+            if ($versionDocument.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object) {
+                return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
+            }
+            $versionRecord = $versionPayload | ConvertFrom-Json -Depth 20
+            $webSocketText = [string](Get-ObjectPropertyValue -Object $versionRecord -Name 'webSocketDebuggerUrl')
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
+        }
+
+        [Uri]$webSocketUri = $null
+        $expectedHost = $HostName.Trim('[', ']')
+        if ([string]::IsNullOrWhiteSpace($webSocketText) -or
+            -not [Uri]::TryCreate($webSocketText, [UriKind]::Absolute, [ref]$webSocketUri) -or
+            $webSocketUri.Scheme -cne 'ws' -or
+            -not [string]::Equals($webSocketUri.Host.Trim('[', ']'), $expectedHost, [StringComparison]::OrdinalIgnoreCase) -or
+            $webSocketUri.Port -ne $Port -or
+            $webSocketUri.AbsolutePath -cne $BrowserPath -or
+            -not [string]::IsNullOrEmpty($webSocketUri.Query) -or
+            -not [string]::IsNullOrEmpty($webSocketUri.Fragment) -or
+            -not [string]::IsNullOrEmpty($webSocketUri.UserInfo)) {
+            return (New-DesktopCdpProbeRecord -State 'version_identity_mismatch' -PageUrl $null -Port $Port)
+        }
+
+        try {
+            $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list").GetAwaiter().GetResult()
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port)
+        }
+        if (-not $listResponse.IsSuccessStatusCode) {
+            return (New-DesktopCdpProbeRecord -State 'http_error' -PageUrl $null -Port $Port)
+        }
+        try {
+            $listPayload = $listResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $listDocument = [Text.Json.JsonDocument]::Parse($listPayload)
+            if ($listDocument.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Array) {
+                return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
+            }
+            $pages = @($listPayload | ConvertFrom-Json -Depth 20)
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
+        }
+
+        $page = @($pages | Where-Object {
+            [string](Get-ObjectPropertyValue -Object $_ -Name 'type') -ceq 'page' -and
+            -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue -Object $_ -Name 'url'))
+        } | Select-Object -First 1)
+        if ($page.Count -ne 1) {
+            return (New-DesktopCdpProbeRecord -State 'page_absent' -PageUrl $null -Port $Port)
+        }
+        $url = [string](Get-ObjectPropertyValue -Object $page[0] -Name 'url')
+        try {
+            return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl $url -Port $Port)
+        } catch {
+            return (New-DesktopCdpProbeRecord -State 'url_rejected' -PageUrl $null -Port $Port)
+        }
+    } finally {
+        if ($null -ne $listDocument) { $listDocument.Dispose() }
+        if ($null -ne $listResponse) { $listResponse.Dispose() }
+        if ($null -ne $versionDocument) { $versionDocument.Dispose() }
+        if ($null -ne $versionResponse) { $versionResponse.Dispose() }
+        $client.Dispose()
+    }
+}
+
+function Get-DesktopWebViewAuthorityProbe {
+    param(
+        [Parameter(Mandatory)]$OwnedProcess,
+        [Parameter(Mandatory)][string]$UserDataFolder,
+        [scriptblock]$PortFileSnapshotProvider,
+        [scriptblock]$ProcessSnapshotProvider,
+        [scriptblock]$ListenerSnapshotProvider,
+        [scriptblock]$PageProbe
+    )
+
+    $portRecord = Read-DesktopDevToolsActivePort -UserDataFolder $UserDataFolder -SnapshotProvider $PortFileSnapshotProvider
+    $portState = [string](Get-ObjectPropertyValue -Object $portRecord -Name 'state')
+    if ($portState -cne 'authority_ready') {
+        return (New-DesktopCdpProbeRecord -State $portState -PageUrl $null)
+    }
+
+    $processSnapshot = if ($null -eq $ProcessSnapshotProvider) {
+        Get-DesktopProcessSnapshot
+    } else {
+        & $ProcessSnapshotProvider $OwnedProcess
+    }
+    $listenerSnapshot = if ($null -eq $ListenerSnapshotProvider) {
+        Get-DesktopListenerSnapshot -Port ([int]$portRecord.port)
+    } else {
+        & $ListenerSnapshotProvider ([int]$portRecord.port) $OwnedProcess
+    }
+    Assert-Condition ($null -ne $processSnapshot) 'Desktop process snapshot envelope was absent.'
+    Assert-Condition ($null -ne $listenerSnapshot) 'Desktop listener snapshot envelope was absent.'
+    $authority = Resolve-DesktopWebViewListenerAuthority `
+        -RootProcessId ([int64]$OwnedProcess.process.Id) `
+        -Port ([int]$portRecord.port) `
+        -BrowserPath ([string]$portRecord.browser_path) `
+        -ProcessSnapshot $processSnapshot `
+        -ListenerSnapshot $listenerSnapshot
+    $authorityState = [string](Get-ObjectPropertyValue -Object $authority -Name 'state')
+    if ($authorityState -cne 'authority_ready') {
+        return (New-DesktopCdpProbeRecord -State $authorityState -PageUrl $null)
+    }
+
+    $probe = if ($null -eq $PageProbe) {
+        Get-VerifiedRemoteDebugPage -HostName ([string]$authority.host) -Port ([int]$authority.port) -BrowserPath ([string]$authority.browser_path)
+    } else {
+        & $PageProbe $authority $OwnedProcess
+    }
+    Assert-Condition ($null -ne $probe) 'Desktop verified page probe returned no result.'
+    $probeState = [string](Get-ObjectPropertyValue -Object $probe -Name 'state')
+    Assert-Condition ($probeState -cin @(
+        'version_identity_mismatch',
+        'transport_unavailable',
+        'http_error',
+        'payload_invalid',
+        'page_absent',
+        'url_rejected',
+        'page_ready'
+    )) 'Desktop verified page probe returned an unsupported state.'
+    $pageUrl = if ($probeState -ceq 'page_ready') {
+        [string](Get-ObjectPropertyValue -Object $probe -Name 'page_url')
+    } else {
+        $null
+    }
+    return (New-DesktopCdpProbeRecord -State $probeState -PageUrl $pageUrl -Port ([int]$authority.port))
+}
+
 function New-DesktopObservationRecord {
     param(
         [Parameter(Mandatory)]
         [ValidateSet(
             'exited',
             'live_no_cdp',
+            'live_cdp_user_data_reparse',
+            'live_cdp_port_file_missing',
+            'live_cdp_port_file_reparse',
+            'live_cdp_port_file_invalid_encoding',
+            'live_cdp_port_file_invalid_shape',
+            'live_cdp_port_invalid',
+            'live_cdp_browser_path_invalid',
+            'live_cdp_listener_missing',
+            'live_cdp_listener_ambiguous',
+            'live_cdp_listener_foreign',
+            'live_cdp_browser_identity_invalid',
+            'live_cdp_version_identity_mismatch',
             'live_cdp_transport_unavailable',
             'live_cdp_http_error',
             'live_cdp_payload_invalid',
@@ -1050,10 +1639,10 @@ function New-DesktopObservationRecord {
         page_url = if ($State -ceq 'page_ready') { [string]$PageUrl } else { $null }
         attempts = $Attempts
         stdout_present = $false
-        stdout_bytes = 0
+        stdout_bytes = [long]0
         stdout_truncated = $false
         stderr_present = $false
-        stderr_bytes = 0
+        stderr_bytes = [long]0
         stderr_truncated = $false
     }
 }
@@ -1065,13 +1654,13 @@ function Set-DesktopObservationCaptureMetadata {
     )
 
     $capture = Get-OwnedProcessCapture -OwnedProcess $OwnedProcess
-    $stdoutMetadata = Get-ChildOutputMetadata -Content ([string]$capture.stdout)
-    $stderrMetadata = Get-ChildOutputMetadata -Content ([string]$capture.stderr)
+    $stdoutMetadata = $capture.stdout_metadata
+    $stderrMetadata = $capture.stderr_metadata
     $Observation.stdout_present = [bool]$stdoutMetadata.present
-    $Observation.stdout_bytes = [int]$stdoutMetadata.bytes
+    $Observation.stdout_bytes = [long]$stdoutMetadata.bytes
     $Observation.stdout_truncated = [bool]$stdoutMetadata.truncated
     $Observation.stderr_present = [bool]$stderrMetadata.present
-    $Observation.stderr_bytes = [int]$stderrMetadata.bytes
+    $Observation.stderr_bytes = [long]$stderrMetadata.bytes
     $Observation.stderr_truncated = [bool]$stderrMetadata.truncated
     return $capture
 }
@@ -1079,14 +1668,84 @@ function Set-DesktopObservationCaptureMetadata {
 function Wait-DesktopProcessObservation {
     param(
         [Parameter(Mandatory)]$OwnedProcess,
-        [Parameter(Mandatory)][int]$Port,
+        [int]$Port = 0,
+        [string]$UserDataFolder = '',
         [int]$MaxAttempts = $script:RetryCount,
         [scriptblock]$PageProbe,
+        [scriptblock]$AuthorityProbe,
         [scriptblock]$DelayInvoker
     )
 
-    Assert-Condition ($MaxAttempts -ge 1) 'Desktop observation requires at least one attempt.'
     $process = $OwnedProcess.process
+    if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
+        Assert-Condition ($Port -eq 0) 'Typed Desktop observation does not accept a caller-selected port.'
+        Assert-Condition ($null -eq $PageProbe) 'Typed Desktop observation requires the authority probe boundary.'
+        $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+        $attempt = 0
+        while ($true) {
+            $attempt += 1
+            $process.Refresh()
+            if ($process.HasExited) {
+                return (New-DesktopObservationRecord -State 'exited' -Port 0 -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
+            }
+
+            try {
+                $probe = if ($null -eq $AuthorityProbe) {
+                    Get-DesktopWebViewAuthorityProbe -OwnedProcess $OwnedProcess -UserDataFolder $UserDataFolder
+                } else {
+                    & $AuthorityProbe $OwnedProcess $UserDataFolder $attempt
+                }
+            } catch {
+                throw [InvalidOperationException]::new('Desktop typed authority probe failed unexpectedly.', $_.Exception)
+            }
+            Assert-Condition ($null -ne $probe) 'Desktop typed authority probe returned no result.'
+            $probeState = [string](Get-ObjectPropertyValue -Object $probe -Name 'state')
+            Assert-Condition ($probeState -cin @(
+                'user_data_reparse',
+                'port_file_missing',
+                'port_file_reparse',
+                'port_file_invalid_encoding',
+                'port_file_invalid_shape',
+                'port_invalid',
+                'browser_path_invalid',
+                'listener_missing',
+                'listener_ambiguous',
+                'listener_foreign',
+                'browser_identity_invalid',
+                'version_identity_mismatch',
+                'transport_unavailable',
+                'http_error',
+                'payload_invalid',
+                'page_absent',
+                'url_rejected',
+                'page_ready'
+            )) 'Desktop typed authority probe returned an unsupported state.'
+            $probePortValue = Get-ObjectPropertyValue -Object $probe -Name 'port'
+            $probePort = if ($null -eq $probePortValue) { 0 } else { [int]$probePortValue }
+
+            $process.Refresh()
+            if ($process.HasExited) {
+                return (New-DesktopObservationRecord -State 'exited' -Port $probePort -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
+            }
+            if ($probeState -ceq 'page_ready') {
+                return (New-DesktopObservationRecord -State 'page_ready' -Port $probePort -Attempts $attempt -ExitCode $null -PageUrl ([string]$probe.page_url))
+            }
+
+            $terminalValue = Get-ObjectPropertyValue -Object $probe -Name 'terminal_failure'
+            $deadlineReached = $stopwatch.ElapsedMilliseconds -ge $script:DesktopObservationTimeoutMilliseconds
+            if ([bool]$terminalValue -or $deadlineReached) {
+                return (New-DesktopObservationRecord -State "live_cdp_$probeState" -Port $probePort -Attempts $attempt -ExitCode $null -PageUrl $null)
+            }
+            if ($null -eq $DelayInvoker) {
+                Start-Sleep -Milliseconds $script:DesktopObservationPollMilliseconds
+            } else {
+                & $DelayInvoker $attempt | Out-Null
+            }
+        }
+    }
+
+    Assert-Condition ($MaxAttempts -ge 1) 'Desktop observation requires at least one attempt.'
+    Assert-Condition ($Port -ge 1 -and $Port -le 65535) 'Legacy Desktop observation requires a valid caller-selected port.'
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt += 1) {
         $process.Refresh()
         if ($process.HasExited) {
@@ -1152,9 +1811,11 @@ function Invoke-DesktopLifecycleOperation {
     param(
         [Parameter(Mandatory)]$Context,
         [Parameter(Mandatory)][hashtable]$Environment,
-        [Parameter(Mandatory)][int]$Port,
+        [int]$Port = 0,
+        [string]$UserDataFolder = '',
         [int]$MaxAttempts = $script:RetryCount,
         [scriptblock]$PageProbe,
+        [scriptblock]$AuthorityProbe,
         [scriptblock]$DelayInvoker,
         [scriptblock]$StopInvoker,
         [scriptblock]$UninstallInvoker,
@@ -1169,7 +1830,8 @@ function Invoke-DesktopLifecycleOperation {
     $capture = $null
     $pendingObservationFailure = $false
     try {
-        $observation = Wait-DesktopProcessObservation -OwnedProcess $Context.app_process -Port $Port -MaxAttempts $MaxAttempts -PageProbe $PageProbe -DelayInvoker $DelayInvoker
+        $observation = Wait-DesktopProcessObservation -OwnedProcess $Context.app_process -Port $Port -UserDataFolder $UserDataFolder `
+            -MaxAttempts $MaxAttempts -PageProbe $PageProbe -AuthorityProbe $AuthorityProbe -DelayInvoker $DelayInvoker
         if ([string]$observation.state -cne 'page_ready') {
             $pendingObservationFailure = $true
         }
@@ -1201,8 +1863,8 @@ function Invoke-DesktopLifecycleOperation {
         } else {
             $diagnosticResult = [pscustomobject]@{
                 exit_code = $observation.exit_code
-                stdout = $capture.stdout
-                stderr = $capture.stderr
+                stdout_metadata = $capture.stdout_metadata
+                stderr_metadata = $capture.stderr_metadata
             }
             $message = Format-PublicChildProcessDiagnostic -Operation 'desktop_observer' -State ([string]$observation.state) -Result $diagnosticResult
             $failure = [InvalidOperationException]::new($message)
@@ -1526,16 +2188,13 @@ function Invoke-DesktopSmoke {
         Assert-DesktopMaterializedOwnership -Context $context
         Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
 
-        $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
-        $listener.Start()
-        $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
-        $listener.Stop()
         $webViewRoot = Join-Path $childRoot 'WebView2'
-        $childEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$port --remote-allow-origins=*"
+        New-Item -ItemType Directory -Path $webViewRoot | Out-Null
+        $childEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0'
         $childEnvironment.WEBVIEW2_USER_DATA_FOLDER = $webViewRoot
 
         $context.app_process = Start-OwnedProcess -FilePath (Join-Path $installRoot 'winsmux-app.exe') -Environment $childEnvironment
-        $observation = Invoke-DesktopLifecycleOperation -Context $context -Environment $childEnvironment -Port $port
+        $observation = Invoke-DesktopLifecycleOperation -Context $context -Environment $childEnvironment -UserDataFolder $webViewRoot
     } catch {
         $setupFailure = $_.Exception
         if ($null -ne $context.app_process) {
@@ -2364,6 +3023,251 @@ try {
                     Stop-OwnedProcessTree -RootProcess $cdpResponder
                 }
             }
+
+            $typedRoot = Join-Path $root 'task831-typed-observer'
+            $typedUserData = Join-Path $typedRoot 'user-data'
+            New-Item -ItemType Directory -Path $typedUserData | Out-Null
+            $typedPort = 49161
+            $typedBrowserPath = '/devtools/browser/11111111-1111-1111-1111-111111111111'
+            [IO.File]::WriteAllText(
+                (Join-Path $typedUserData 'DevToolsActivePort'),
+                "$typedPort`n$typedBrowserPath",
+                [Text.UTF8Encoding]::new($false)
+            )
+            $typedRootProcess = [pscustomobject]@{ process = [Diagnostics.Process]::GetCurrentProcess() }
+            $typedRootPid = [int64]$typedRootProcess.process.Id
+            $typedBrowserPid = $typedRootPid + 100000
+            $typedBrowserCommand = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=0'
+            $typedProcessSnapshotItems = @(
+                [pscustomobject]@{
+                    process_id = $typedRootPid
+                    parent_process_id = 0L
+                    name = 'pwsh.exe'
+                    command_line = 'pwsh.exe'
+                },
+                [pscustomobject]@{
+                    process_id = $typedBrowserPid
+                    parent_process_id = $typedRootPid
+                    name = 'msedgewebview2.exe'
+                    command_line = $typedBrowserCommand
+                }
+            )
+            $typedListenerSnapshotItems = @([pscustomobject]@{
+                local_address = '127.0.0.1'
+                local_port = $typedPort
+                owning_process = $typedBrowserPid
+            })
+            $typedProcessSnapshot = New-DesktopSnapshotEnvelope -Kind 'processes' -Items $typedProcessSnapshotItems
+            $typedListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items $typedListenerSnapshotItems
+            $typedPortRecord = Read-DesktopDevToolsActivePort -UserDataFolder $typedUserData
+            $typedAuthority = Resolve-DesktopWebViewListenerAuthority `
+                -RootProcessId $typedRootPid `
+                -Port $typedPort `
+                -BrowserPath $typedBrowserPath `
+                -ProcessSnapshot $typedProcessSnapshot `
+                -ListenerSnapshot $typedListenerSnapshot
+            $typedPageProbe = {
+                param($Authority, $OwnedProcess)
+                Assert-Condition ([string]$Authority.state -ceq 'authority_ready') 'Typed page probe received an incomplete authority.'
+                Assert-Condition ([string]$Authority.host -ceq '127.0.0.1') 'Typed page probe received a non-loopback host.'
+                Assert-Condition ([int]$Authority.port -eq $typedPort) 'Typed page probe received a foreign port.'
+                Assert-Condition ([string]$Authority.browser_path -ceq $typedBrowserPath) 'Typed page probe received a foreign browser path.'
+                return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl 'tauri://localhost/' -Port $typedPort)
+            }.GetNewClosure()
+            $typedProcessProvider = { param($OwnedProcess) return $typedProcessSnapshot }.GetNewClosure()
+            $typedListenerProvider = { param($Port, $OwnedProcess) return $typedListenerSnapshot }.GetNewClosure()
+            $typedProbe = Get-DesktopWebViewAuthorityProbe `
+                -OwnedProcess $typedRootProcess `
+                -UserDataFolder $typedUserData `
+                -ProcessSnapshotProvider $typedProcessProvider `
+                -ListenerSnapshotProvider $typedListenerProvider `
+                -PageProbe $typedPageProbe
+            Assert-Condition ([string]$typedPortRecord.state -ceq 'authority_ready') 'Direct typed port-file identity was rejected.'
+            Assert-Condition ([string]$typedAuthority.state -ceq 'authority_ready') 'Typed process/listener authority was rejected.'
+            Assert-Condition ([string]$typedProbe.state -ceq 'page_ready') 'Typed observation authority did not reach the verified page.'
+            Assert-Condition ([string]$typedProbe.page_url -ceq 'tauri://localhost/') 'Typed observation authority did not project the canonical page URL.'
+            Initialize-DesktopNativeTypes
+            $typedArguments = @([Winsmux.PublicRelease.WindowsCommandLine]::Parse($typedBrowserCommand))
+            $typedUserDataItem = Get-Item -LiteralPath $typedUserData -Force
+            $typedPortFileItem = Get-Item -LiteralPath (Join-Path $typedUserData 'DevToolsActivePort') -Force
+            $typedAuthorityEvidence = [ordered]@{
+                browser_process_identity = [string]::Equals([string]$typedProcessSnapshotItems[1].name, 'msedgewebview2.exe', [StringComparison]::OrdinalIgnoreCase)
+                debug_port_zero = @($typedArguments | Where-Object { [string]$_ -ceq '--remote-debugging-port=0' }).Count -eq 1
+                listener_loopback = [string]$typedListenerSnapshotItems[0].local_address -ceq '127.0.0.1'
+                listener_owner_identity = [int64]$typedListenerSnapshotItems[0].owning_process -eq $typedBrowserPid
+                page_url = [string]$typedProbe.page_url
+                port_file_identity = [int]$typedPortRecord.port -eq $typedPort -and [string]$typedPortRecord.browser_path -ceq $typedBrowserPath -and (($typedPortFileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0)
+                raw_absent = $true
+                root_descendant = Test-DesktopProcessDescendant -RootProcessId $typedRootPid -CandidateProcessId $typedBrowserPid -ProcessSnapshot $typedProcessSnapshot
+                user_data_identity = ($typedUserDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0
+                version_browser_path_identity = [string]$typedAuthority.browser_path -ceq $typedBrowserPath
+            }
+            $typedAuthorityJson = @($typedAuthorityEvidence) | ConvertTo-Json -Depth 10 -Compress
+            $typedAuthorityEvidence.raw_absent = $typedAuthorityJson -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+            Assert-Condition $typedAuthorityEvidence.raw_absent 'Typed authority evidence exposed a raw authority identity.'
+            $evidence.desktop_typed_observation_authority = $typedAuthorityEvidence
+            $caseIds.Add('desktop_typed_observation_authority')
+
+            $validPortSnapshot = Get-DesktopDevToolsPortFileSnapshot -UserDataFolder $typedUserData
+            $utf8 = [Text.UTF8Encoding]::new($false)
+            $snapshotTemplate = {
+                param([bool]$UserDataExists, [bool]$UserDataReparse, [bool]$FileExists, [bool]$FileReparse, [byte[]]$Bytes)
+                return [pscustomobject]@{
+                    user_data_exists = $UserDataExists
+                    user_data_reparse = $UserDataReparse
+                    file_exists = $FileExists
+                    file_reparse = $FileReparse
+                    too_large = $false
+                    bytes = $Bytes
+                }
+            }
+            $invalidBrowserProcessSnapshotItems = @(
+                $typedProcessSnapshotItems[0],
+                [pscustomobject]@{
+                    process_id = $typedBrowserPid
+                    parent_process_id = $typedRootPid
+                    name = 'msedgewebview2.exe'
+                    command_line = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=49161'
+                }
+            )
+            $invalidBrowserProcessSnapshot = New-DesktopSnapshotEnvelope -Kind 'processes' -Items $invalidBrowserProcessSnapshotItems
+            $ambiguousListenerSnapshotItems = @(
+                $typedListenerSnapshotItems[0],
+                [pscustomobject]@{
+                    local_address = '::1'
+                    local_port = $typedPort
+                    owning_process = $typedBrowserPid + 1
+                }
+            )
+            $ambiguousListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items $ambiguousListenerSnapshotItems
+            $foreignListenerSnapshotItems = @([pscustomobject]@{
+                local_address = '0.0.0.0'
+                local_port = $typedPort
+                owning_process = $typedBrowserPid
+            })
+            $foreignListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items $foreignListenerSnapshotItems
+            $emptyListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @()
+            $unusedListener = [Net.Sockets.Socket]::new(
+                [Net.Sockets.AddressFamily]::InterNetwork,
+                [Net.Sockets.SocketType]::Stream,
+                [Net.Sockets.ProtocolType]::Tcp
+            )
+            try {
+                $unusedListener.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, 0))
+                $unusedListenerPort = ([Net.IPEndPoint]$unusedListener.LocalEndPoint).Port
+                $actualEmptyListenerSnapshot = Get-DesktopListenerSnapshot -Port $unusedListenerPort
+            } finally {
+                $unusedListener.Dispose()
+            }
+            Assert-Condition ([string]$actualEmptyListenerSnapshot.kind -ceq 'listeners') 'Actual listener no-match control returned the wrong envelope kind.'
+            Assert-Condition (@($actualEmptyListenerSnapshot.items).Count -eq 0) 'Actual listener no-match control did not return an empty typed envelope.'
+            $rejectDefinitions = @(
+                [pscustomobject]@{ state = 'user_data_reparse'; port_snapshot = (& $snapshotTemplate $true $true $false $false ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'port_file_missing'; port_snapshot = (& $snapshotTemplate $true $false $false $false ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'port_file_reparse'; port_snapshot = (& $snapshotTemplate $true $false $true $true ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'port_file_invalid_encoding'; port_snapshot = (& $snapshotTemplate $true $false $true $false ([byte[]](0xff, 0xfe))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'port_file_invalid_shape'; port_snapshot = (& $snapshotTemplate $true $false $true $false ($utf8.GetBytes("$typedPort`n$typedBrowserPath`n"))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'port_invalid'; port_snapshot = (& $snapshotTemplate $true $false $true $false ($utf8.GetBytes("0`n$typedBrowserPath"))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'browser_path_invalid'; port_snapshot = (& $snapshotTemplate $true $false $true $false ($utf8.GetBytes("$typedPort`n/devtools/browser/not-a-uuid"))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'listener_missing'; port_snapshot = $validPortSnapshot; processes = $typedProcessSnapshot; listeners = $emptyListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'listener_ambiguous'; port_snapshot = $validPortSnapshot; processes = $typedProcessSnapshot; listeners = $ambiguousListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'listener_foreign'; port_snapshot = $validPortSnapshot; processes = $typedProcessSnapshot; listeners = $foreignListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'browser_identity_invalid'; port_snapshot = $validPortSnapshot; processes = $invalidBrowserProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
+                [pscustomobject]@{ state = 'version_identity_mismatch'; port_snapshot = $validPortSnapshot; processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = 'version_identity_mismatch' }
+            )
+            $protectedSentinel = Join-Path $typedRoot 'protected.sentinel'
+            [IO.File]::WriteAllText($protectedSentinel, 'protected-state', [Text.UTF8Encoding]::new($false))
+            $rejectRecords = [Collections.Generic.List[object]]::new()
+            [long]$httpRequestsBeforeAuthority = 0
+            foreach ($definition in $rejectDefinitions) {
+                $beforeHash = (Get-FileHash -LiteralPath $protectedSentinel -Algorithm SHA256).Hash
+                $requestCounts = [pscustomobject]@{ calls = 0; premature = 0 }
+                $portSnapshotProvider = { param($UserDataFolder) return $definition.port_snapshot }.GetNewClosure()
+                $processSnapshotProvider = { param($OwnedProcess) return $definition.processes }.GetNewClosure()
+                $listenerSnapshotProvider = { param($Port, $OwnedProcess) return $definition.listeners }.GetNewClosure()
+                $rejectPageProbe = {
+                    param($Authority, $OwnedProcess)
+                    $requestCounts.calls += 1
+                    if ([string]$Authority.state -cne 'authority_ready' -or [int]$Authority.port -ne $typedPort -or [string]$Authority.browser_path -cne $typedBrowserPath) {
+                        $requestCounts.premature += 1
+                    }
+                    return (New-DesktopCdpProbeRecord -State ([string]$definition.page_state) -PageUrl $null -Port $typedPort)
+                }.GetNewClosure()
+                $rejectProbe = Get-DesktopWebViewAuthorityProbe `
+                    -OwnedProcess $typedRootProcess `
+                    -UserDataFolder $typedUserData `
+                    -PortFileSnapshotProvider $portSnapshotProvider `
+                    -ProcessSnapshotProvider $processSnapshotProvider `
+                    -ListenerSnapshotProvider $listenerSnapshotProvider `
+                    -PageProbe $rejectPageProbe
+                Assert-Condition ([string]$rejectProbe.state -ceq [string]$definition.state) "Typed fail-closed state '$($definition.state)' was not preserved."
+                if ([string]$definition.state -ceq 'version_identity_mismatch') {
+                    Assert-Condition ($requestCounts.calls -eq 1) 'Version identity mismatch did not cross the verified HTTP boundary exactly once.'
+                } else {
+                    Assert-Condition ($requestCounts.calls -eq 0) "Typed fail-closed state '$($definition.state)' reached HTTP before authority."
+                }
+                $httpRequestsBeforeAuthority += [long]$requestCounts.premature
+                $afterHash = (Get-FileHash -LiteralPath $protectedSentinel -Algorithm SHA256).Hash
+                $publicState = "live_cdp_$([string]$definition.state)"
+                $publicDiagnostic = Format-PublicChildProcessDiagnostic -Operation 'desktop_observer' -State $publicState -Result $null
+                $rawAbsent = $publicDiagnostic -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+                $rejectRecords.Add([ordered]@{
+                    protected_state_unchanged = [string]::Equals($beforeHash, $afterHash, [StringComparison]::Ordinal)
+                    raw_absent = $rawAbsent
+                    state = [string]$definition.state
+                })
+            }
+            Assert-Condition ($httpRequestsBeforeAuthority -eq 0) 'Typed authority probes issued an HTTP request before authority was complete.'
+            $rejectEvidence = [ordered]@{
+                http_requests_before_authority = [long]$httpRequestsBeforeAuthority
+                records = @($rejectRecords)
+            }
+            $rejectJson = @($rejectEvidence) | ConvertTo-Json -Depth 10 -Compress
+            Assert-Condition ($rejectJson -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid') 'Typed fail-closed evidence exposed a raw authority identity.'
+            $evidence.desktop_typed_observation_fail_closed = $rejectEvidence
+            $caseIds.Add('desktop_typed_observation_fail_closed')
+
+            $captureScenarios = @(
+                [pscustomobject]@{ name = 'zero'; command = 'exit 0' },
+                [pscustomobject]@{ name = 'limit'; command = "[Console]::Out.Write(('x' * 16384)); [Console]::Error.Write(('y' * 16384)); exit 0" },
+                [pscustomobject]@{ name = 'over_limit'; command = "[Console]::Out.Write(('x' * 16385)); [Console]::Error.Write(('y' * 16385)); exit 0" }
+            )
+            $captureByScenario = [ordered]@{}
+            foreach ($scenario in $captureScenarios) {
+                $ownedCaptureProcess = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-NonInteractive', '-Command', [string]$scenario.command)
+                Assert-Condition $ownedCaptureProcess.process.WaitForExit(10000) "Bounded capture scenario '$($scenario.name)' did not become terminal."
+                $captureByScenario[[string]$scenario.name] = Get-OwnedProcessCapture -OwnedProcess $ownedCaptureProcess
+            }
+            $captureRecords = [Collections.Generic.List[object]]::new()
+            foreach ($definition in @(
+                [pscustomobject]@{ stream = 'stdout'; scenario = 'zero' },
+                [pscustomobject]@{ stream = 'stderr'; scenario = 'zero' },
+                [pscustomobject]@{ stream = 'stdout'; scenario = 'limit' },
+                [pscustomobject]@{ stream = 'stdout'; scenario = 'over_limit' },
+                [pscustomobject]@{ stream = 'stderr'; scenario = 'limit' },
+                [pscustomobject]@{ stream = 'stderr'; scenario = 'over_limit' }
+            )) {
+                $capture = $captureByScenario[[string]$definition.scenario]
+                $metadata = Get-ObjectPropertyValue -Object $capture -Name "$([string]$definition.stream)_metadata"
+                $captureRecords.Add([ordered]@{
+                    retained_bytes = [long](Get-ObjectPropertyValue -Object $metadata -Name 'retained_bytes')
+                    scenario = [string]$definition.scenario
+                    stream = [string]$definition.stream
+                    terminal = $true
+                    total_bytes = [long](Get-ObjectPropertyValue -Object $metadata -Name 'bytes')
+                    truncated = [bool](Get-ObjectPropertyValue -Object $metadata -Name 'truncated')
+                })
+            }
+            $captureEvidence = [ordered]@{
+                limit_bytes = [long]$script:DesktopOutputRetainLimitBytes
+                raw_absent = $true
+                records = @($captureRecords)
+            }
+            $captureJson = @($captureEvidence) | ConvertTo-Json -Depth 10 -Compress
+            $captureEvidence.raw_absent = $captureJson -notmatch '[xy]{64}'
+            Assert-Condition $captureEvidence.raw_absent 'Bounded capture evidence exposed retained child output.'
+            $evidence.desktop_owned_capture_bounded = $captureEvidence
+            $caseIds.Add('desktop_owned_capture_bounded')
 
             $unexpectedMarker = 'T826_UNEXPECTED_PROBE_RAW_MARKER'
             $unexpectedCounts = [pscustomobject]@{ cleanup = 0 }
