@@ -1094,7 +1094,15 @@ function Get-DesktopDevToolsPortFileSnapshot {
     }
     $userDataItem = Get-Item -LiteralPath $UserDataFolder -Force
     $userDataReparse = ($userDataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
-    $path = Join-Path $UserDataFolder 'DevToolsActivePort'
+    # WebView2 stores the Chromium profile in the 'EBWebView' subfolder of the
+    # configured user data folder; DevToolsActivePort appears at that profile
+    # root, never at the configured folder itself.
+    $profileRoot = Join-Path $UserDataFolder 'EBWebView'
+    if (-not $userDataReparse -and (Test-Path -LiteralPath $profileRoot -PathType Container)) {
+        $profileItem = Get-Item -LiteralPath $profileRoot -Force
+        $userDataReparse = ($profileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    }
+    $path = Join-Path $profileRoot 'DevToolsActivePort'
     if ($userDataReparse -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
         return [pscustomobject]@{
             user_data_exists = $true
@@ -3026,11 +3034,12 @@ try {
 
             $typedRoot = Join-Path $root 'task831-typed-observer'
             $typedUserData = Join-Path $typedRoot 'user-data'
-            New-Item -ItemType Directory -Path $typedUserData | Out-Null
+            $typedProfileRoot = Join-Path $typedUserData 'EBWebView'
+            New-Item -ItemType Directory -Path $typedProfileRoot -Force | Out-Null
             $typedPort = 49161
             $typedBrowserPath = '/devtools/browser/11111111-1111-1111-1111-111111111111'
             [IO.File]::WriteAllText(
-                (Join-Path $typedUserData 'DevToolsActivePort'),
+                (Join-Path $typedProfileRoot 'DevToolsActivePort'),
                 "$typedPort`n$typedBrowserPath",
                 [Text.UTF8Encoding]::new($false)
             )
@@ -3089,7 +3098,7 @@ try {
             Initialize-DesktopNativeTypes
             $typedArguments = @([Winsmux.PublicRelease.WindowsCommandLine]::Parse($typedBrowserCommand))
             $typedUserDataItem = Get-Item -LiteralPath $typedUserData -Force
-            $typedPortFileItem = Get-Item -LiteralPath (Join-Path $typedUserData 'DevToolsActivePort') -Force
+            $typedPortFileItem = Get-Item -LiteralPath (Join-Path $typedProfileRoot 'DevToolsActivePort') -Force
             $typedAuthorityEvidence = [ordered]@{
                 browser_process_identity = [string]::Equals([string]$typedProcessSnapshotItems[1].name, 'msedgewebview2.exe', [StringComparison]::OrdinalIgnoreCase)
                 debug_port_zero = @($typedArguments | Where-Object { [string]$_ -ceq '--remote-debugging-port=0' }).Count -eq 1
