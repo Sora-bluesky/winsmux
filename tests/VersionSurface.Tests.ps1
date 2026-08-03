@@ -257,7 +257,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_cdp_probe_taxonomy,desktop_unexpected_probe_failure'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_typed_observation_fail_closed,desktop_owned_capture_bounded,desktop_unexpected_probe_failure'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -375,6 +375,131 @@ Describe 'winsmux version surface' {
         $evidence.failed | Should -BeTrue
         $evidence.flattened | Should -BeFalse
         $evidence.public_marker_absent | Should -BeTrue
+    }
+
+    It 'T831-DESKTOP-AUTH-01 binds the run-owned WebView endpoint through one typed authority' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_typed_observation_authority'
+
+        $evidence = $selfTest.evidence.desktop_typed_observation_authority
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @(
+            'browser_process_identity',
+            'debug_port_zero',
+            'listener_loopback',
+            'listener_owner_identity',
+            'page_url',
+            'port_file_identity',
+            'raw_absent',
+            'root_descendant',
+            'user_data_identity',
+            'version_browser_path_identity'
+        )
+        foreach ($property in @(
+            'browser_process_identity',
+            'debug_port_zero',
+            'listener_loopback',
+            'listener_owner_identity',
+            'port_file_identity',
+            'raw_absent',
+            'root_descendant',
+            'user_data_identity',
+            'version_browser_path_identity'
+        )) {
+            $evidence.$property.GetType().FullName | Should -Be 'System.Boolean'
+            $evidence.$property | Should -BeTrue
+        }
+        $evidence.page_url.GetType().FullName | Should -Be 'System.String'
+        $evidence.page_url | Should -Be 'tauri://localhost/'
+        $selfTestJson | Should -Not -Match 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+    }
+
+    It 'T831-DESKTOP-REJECT-01 rejects every unowned or malformed WebView authority without raw disclosure' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_typed_observation_fail_closed'
+
+        $evidence = $selfTest.evidence.desktop_typed_observation_fail_closed
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('http_requests_before_authority', 'records')
+        $evidence.http_requests_before_authority.GetType().FullName | Should -Be 'System.Int64'
+        $evidence.http_requests_before_authority | Should -Be 0
+        ($evidence.records -is [System.Object[]]) | Should -BeTrue
+        $expectedStates = @(
+            'user_data_reparse',
+            'port_file_missing',
+            'port_file_reparse',
+            'port_file_invalid_encoding',
+            'port_file_invalid_shape',
+            'port_invalid',
+            'browser_path_invalid',
+            'listener_missing',
+            'listener_ambiguous',
+            'listener_foreign',
+            'browser_identity_invalid',
+            'version_identity_mismatch'
+        )
+        @($evidence.records).Count | Should -Be $expectedStates.Count
+        @($evidence.records | ForEach-Object { [string]$_.state }) | Should -Be $expectedStates
+        foreach ($record in @($evidence.records)) {
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('protected_state_unchanged', 'raw_absent', 'state')
+            $record.state.GetType().FullName | Should -Be 'System.String'
+            foreach ($property in @('protected_state_unchanged', 'raw_absent')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Boolean'
+                $record.$property | Should -BeTrue
+            }
+        }
+        $selfTestJson | Should -Not -Match 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+    }
+
+    It 'T831-DESKTOP-CAPTURE-01 bounds owned Desktop output before diagnostic projection' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_owned_capture_bounded'
+
+        $evidence = $selfTest.evidence.desktop_owned_capture_bounded
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('limit_bytes', 'raw_absent', 'records')
+        $evidence.limit_bytes.GetType().FullName | Should -Be 'System.Int64'
+        $evidence.raw_absent.GetType().FullName | Should -Be 'System.Boolean'
+        $evidence.limit_bytes | Should -Be 16384
+        $evidence.raw_absent | Should -BeTrue
+        ($evidence.records -is [System.Object[]]) | Should -BeTrue
+        $expected = @(
+            @{ stream = 'stdout'; scenario = 'zero'; total_bytes = 0; retained_bytes = 0; truncated = $false },
+            @{ stream = 'stderr'; scenario = 'zero'; total_bytes = 0; retained_bytes = 0; truncated = $false },
+            @{ stream = 'stdout'; scenario = 'limit'; total_bytes = 16384; retained_bytes = 16384; truncated = $false },
+            @{ stream = 'stdout'; scenario = 'over_limit'; total_bytes = 16385; retained_bytes = 16384; truncated = $true },
+            @{ stream = 'stderr'; scenario = 'limit'; total_bytes = 16384; retained_bytes = 16384; truncated = $false },
+            @{ stream = 'stderr'; scenario = 'over_limit'; total_bytes = 16385; retained_bytes = 16384; truncated = $true }
+        )
+        @($evidence.records).Count | Should -Be $expected.Count
+        for ($index = 0; $index -lt $expected.Count; $index++) {
+            $record = $evidence.records[$index]
+            $expectedRecord = $expected[$index]
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('retained_bytes', 'scenario', 'stream', 'terminal', 'total_bytes', 'truncated')
+            foreach ($property in @('scenario', 'stream')) {
+                $record.$property.GetType().FullName | Should -Be 'System.String'
+                $record.$property | Should -Be $expectedRecord[$property]
+            }
+            foreach ($property in @('retained_bytes', 'total_bytes')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Int64'
+                $record.$property | Should -Be $expectedRecord[$property]
+            }
+            foreach ($property in @('terminal', 'truncated')) {
+                $record.$property.GetType().FullName | Should -Be 'System.Boolean'
+            }
+            $record.terminal | Should -BeTrue
+            $record.truncated | Should -Be $expectedRecord.truncated
+        }
+        $selfTestJson | Should -Not -Match '[xy]{64}'
     }
 
     It 'T825-NPM-01 resolves the complete npm toolchain before effects' {
