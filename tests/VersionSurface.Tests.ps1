@@ -1293,10 +1293,10 @@ switch (`$args[0]) {
     It 'T832-DIAG-KEYS-01 emits eight teardown diagnosis keys in the four-value domain' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
-
-        $helper | Should -Match 'function Get-DesktopTeardownDiagnosis'
-        $helper | Should -Match 'function New-DesktopTeardownProbeTable'
-        foreach ($key in @(
+        $realProbeLines = @($helper -split '\r?\n' | Where-Object { $_ -match '^\s*\$realProbeTable\s*=\s*New-DesktopTeardownProbeTable\b' })
+        $realProbeLines.Count | Should -Be 1
+        $realProbeLines[0] | Should -Not -Match ([regex]::Escape('-ProcessSnapshotItems'))
+        $expectedKeys = @(
             'desktop_probe_runtime_registry',
             'desktop_probe_runtime_binary',
             'desktop_probe_profile_dir',
@@ -1305,13 +1305,17 @@ switch (`$args[0]) {
             'desktop_probe_port_file_fallback',
             'desktop_probe_webview_process_present',
             'desktop_probe_debug_arg'
-        )) {
-            $helper | Should -Match ([regex]::Escape($key))
-        }
+        )
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         @($selfTest.case_ids) | Should -Contain 'desktop_teardown_diagnosis_keys'
+        $diagnosis = $selfTest.evidence.desktop_teardown_diagnosis_keys
+        @($diagnosis.PSObject.Properties.Name) | Should -Be $expectedKeys
+        foreach ($property in @($diagnosis.PSObject.Properties)) {
+            $property.Value.GetType().FullName | Should -Be 'System.String'
+            [string]$property.Value | Should -Match '^(?:true|false|unknown|error:[a-z]+)$'
+        }
     }
 
     It 'T832-DIAG-BUDGET-01 bounds teardown probes and keeps cleanup unconditional' {
@@ -1342,6 +1346,8 @@ switch (`$args[0]) {
 
     It 'T832-FOLLOWUP-FIXED-PORT-01 injects one bounded fixed-port browser argument' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match ([regex]::Escape('$fixedDebugEndpoint = New-DesktopFixedDebugEndpoint'))
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0
         $selfTestJson = $selfTestOutput -join "`n"
@@ -1361,6 +1367,8 @@ switch (`$args[0]) {
 
     It 'T832-FOLLOWUP-LISTENER-01 waits for the fixed listener before accepting its run-owned browser' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match ([regex]::Escape('$actualEmptyListenerSnapshot = Get-DesktopListenerSnapshot -Port $unusedListenerPort'))
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0
         $selfTestJson = $selfTestOutput -join "`n"
@@ -1368,8 +1376,8 @@ switch (`$args[0]) {
         @($selfTest.case_ids) | Should -Contain 'desktop_fixed_port_listener_authority'
 
         $evidence = $selfTest.evidence.desktop_fixed_port_listener_authority
-        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('exact_argument', 'no_type_argument', 'owner_verified', 'raw_absent', 'states')
-        foreach ($property in @('exact_argument', 'no_type_argument', 'owner_verified', 'raw_absent')) {
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('exact_argument', 'no_type_argument', 'owner_verified', 'raw_absent', 'real_empty_snapshot', 'states')
+        foreach ($property in @('exact_argument', 'no_type_argument', 'owner_verified', 'raw_absent', 'real_empty_snapshot')) {
             $evidence.$property.GetType().FullName | Should -Be 'System.Boolean'
             $evidence.$property | Should -BeTrue
         }

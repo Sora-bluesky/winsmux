@@ -3231,7 +3231,7 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Assert-ProductionPageUrl -Url 'http://localhost:1420/' }) 'Development WebView URL was accepted.'
             $caseIds.Add('nonproduction_url')
 
-            $fixedDebugEndpoint = New-DesktopDebugEndpointRecord -Port 49161
+            $fixedDebugEndpoint = New-DesktopFixedDebugEndpoint
             $fixedDebugArguments = @([string]$fixedDebugEndpoint.argument)
             Assert-Condition ([int]$fixedDebugEndpoint.port -ge 1 -and [int]$fixedDebugEndpoint.port -le 65535) 'Fixed Desktop debug endpoint returned an out-of-range port.'
             Assert-Condition (@($fixedDebugArguments | Where-Object { [string]$_ -ceq "--remote-debugging-port=$([int]$fixedDebugEndpoint.port)" }).Count -eq 1) 'Fixed Desktop debug endpoint did not produce exactly one matching argument.'
@@ -3478,11 +3478,27 @@ try {
                 -ListenerSnapshot (New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @())
             Assert-Condition ([string]$missingListenerAuthority.state -ceq 'listener_missing') 'Fixed Desktop authority did not preserve the listener-missing wait state.'
             Assert-Condition ([string]$typedAuthority.state -ceq 'authority_ready') 'Fixed Desktop authority did not accept the run-owned listener after it appeared.'
+            $unusedListener = [Net.Sockets.Socket]::new(
+                [Net.Sockets.AddressFamily]::InterNetwork,
+                [Net.Sockets.SocketType]::Stream,
+                [Net.Sockets.ProtocolType]::Tcp
+            )
+            try {
+                $unusedListener.ExclusiveAddressUse = $true
+                $unusedListener.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, 0))
+                $unusedListenerPort = ([Net.IPEndPoint]$unusedListener.LocalEndPoint).Port
+                $actualEmptyListenerSnapshot = Get-DesktopListenerSnapshot -Port $unusedListenerPort
+            } finally {
+                $unusedListener.Dispose()
+            }
+            Assert-Condition ([string]$actualEmptyListenerSnapshot.kind -ceq 'listeners') 'Actual listener no-match control returned the wrong envelope kind.'
+            Assert-Condition (@($actualEmptyListenerSnapshot.items).Count -eq 0) 'Actual listener no-match control did not return an empty typed envelope.'
             $listenerAuthorityEvidence = [ordered]@{
                 exact_argument = @($typedArguments | Where-Object { [string]$_ -ceq "--remote-debugging-port=$typedPort" }).Count -eq 1
                 no_type_argument = @($typedArguments | Where-Object { ([string]$_).StartsWith('--type=', [StringComparison]::Ordinal) }).Count -eq 0
                 owner_verified = [string]$typedAuthority.state -ceq 'authority_ready'
                 raw_absent = $true
+                real_empty_snapshot = [string]$actualEmptyListenerSnapshot.kind -ceq 'listeners' -and @($actualEmptyListenerSnapshot.items).Count -eq 0
                 states = @([string]$missingListenerAuthority.state, [string]$typedAuthority.state)
             }
             $listenerAuthorityEvidence.raw_absent = ((@($listenerAuthorityEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid')
@@ -3529,9 +3545,6 @@ try {
             })
             $foreignListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items $foreignListenerSnapshotItems
             $emptyListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @()
-            $actualEmptyListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @()
-            Assert-Condition ([string]$actualEmptyListenerSnapshot.kind -ceq 'listeners') 'Fixture listener no-match control returned the wrong envelope kind.'
-            Assert-Condition (@($actualEmptyListenerSnapshot.items).Count -eq 0) 'Fixture listener no-match control did not return an empty typed envelope.'
             $rejectDefinitions = @(
                 [pscustomobject]@{ state = 'user_data_reparse'; port_snapshot = (& $snapshotTemplate $true $true $false $false ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
                 [pscustomobject]@{ state = 'port_file_reparse'; port_snapshot = (& $snapshotTemplate $true $false $true $true ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
@@ -3734,7 +3747,7 @@ try {
             Assert-Condition ([string]$syntheticDiagnosis.probe_timeout -ceq 'error:timeout') 'The sleeping teardown probe did not return error:timeout.'
 
             $missingDiagnosisUserData = Join-Path $diagnosisRoot 'missing-user-data'
-            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID -DebugPort 49161 -ProcessSnapshotItems @()
+            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID -DebugPort 49161
             $expectedProbeKeys = @(
                 'desktop_probe_runtime_registry',
                 'desktop_probe_runtime_binary',
@@ -3746,14 +3759,11 @@ try {
                 'desktop_probe_debug_arg'
             )
             Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the eight-key contract.'
-            $fixtureDomainProbeTable = [ordered]@{}
-            foreach ($probeKey in $expectedProbeKeys) {
-                $fixtureDomainProbeTable[$probeKey] = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
-            }
-            $fixtureDomainDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $fixtureDomainProbeTable -ProbeTimeoutMilliseconds 1000 -TotalBudgetMilliseconds 10000
-            foreach ($value in @($fixtureDomainDiagnosis.Values)) {
+            $realDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $realProbeTable -ProbeTimeoutMilliseconds 1000 -TotalBudgetMilliseconds 10000
+            foreach ($value in @($realDiagnosis.Values)) {
                 Assert-Condition ([string]$value -cmatch '^(?:true|false|unknown|error:[a-z]+)$') 'A teardown probe returned a value outside the four-value domain.'
             }
+            $evidence.desktop_teardown_diagnosis_keys = $realDiagnosis
             $caseIds.Add('desktop_teardown_diagnosis_keys')
 
             $budgetProbeTable = [ordered]@{
