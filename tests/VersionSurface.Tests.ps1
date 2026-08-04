@@ -193,7 +193,8 @@ Describe 'winsmux version surface' {
         @($errors).Count | Should -Be 0
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
-        $LASTEXITCODE | Should -Be 0
+        $selfTestFailureText = $selfTestOutput -join "`n"
+        $LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Core'
@@ -253,7 +254,8 @@ Describe 'winsmux version surface' {
         $smokeJob | Should -Not -Match 'download-artifact|output/|target/'
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
-        $LASTEXITCODE | Should -Be 0
+        $selfTestFailureText = $selfTestOutput -join "`n"
+        $LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
@@ -279,7 +281,8 @@ Describe 'winsmux version surface' {
         $smokeJob | Should -Not -Match 'download-artifact|output/npm-release'
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
-        $LASTEXITCODE | Should -Be 0
+        $selfTestFailureText = $selfTestOutput -join "`n"
+        $LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Npm'
@@ -1419,5 +1422,18 @@ switch (`$args[0]) {
         $evidence.raw_absent.GetType().FullName | Should -Be 'System.Boolean'
         $evidence.raw_absent | Should -BeTrue
         $selfTestJson | Should -Not -Match 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+    }
+
+    It 'T832-CI-DIAGNOSTIC-01 binds aggregate SelfTest output into every T668 failure' {
+        $testsText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'tests\VersionSurface.Tests.ps1') -Raw -Encoding UTF8
+        foreach ($surface in @('CORE', 'DESKTOP', 'NPM')) {
+            $blockStart = $testsText.IndexOf("    It 'T668-SMOKE-$surface ", [StringComparison]::Ordinal)
+            $blockStart | Should -BeGreaterThan -1
+            $blockEnd = $testsText.IndexOf("`n    It '", $blockStart + 1, [StringComparison]::Ordinal)
+            $blockEnd | Should -BeGreaterThan $blockStart
+            $block = $testsText.Substring($blockStart, $blockEnd - $blockStart)
+            $block | Should -Match ([regex]::Escape('$selfTestFailureText = $selfTestOutput -join "`n"'))
+            $block | Should -Match ([regex]::Escape('$LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"'))
+        }
     }
 }

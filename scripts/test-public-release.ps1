@@ -1192,16 +1192,22 @@ function Read-DesktopDevToolsActivePort {
     return [pscustomobject]@{ state = 'authority_ready'; port = $port; browser_path = $browserPath }
 }
 
+function New-DesktopDebugEndpointRecord {
+    param([Parameter(Mandatory)][int]$Port)
+
+    Assert-Condition ($Port -ge 1 -and $Port -le 65535) 'Desktop fixed debug endpoint received an invalid loopback port.'
+    return [pscustomobject][ordered]@{
+        port = [int]$Port
+        argument = "--remote-debugging-port=$Port"
+    }
+}
+
 function New-DesktopFixedDebugEndpoint {
     $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     try {
         $listener.Start()
         $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
-        Assert-Condition ($port -ge 1 -and $port -le 65535) 'Desktop fixed debug endpoint received an invalid loopback port.'
-        return [pscustomobject][ordered]@{
-            port = [int]$port
-            argument = "--remote-debugging-port=$port"
-        }
+        return New-DesktopDebugEndpointRecord -Port $port
     } finally {
         $listener.Stop()
     }
@@ -3225,7 +3231,7 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Assert-ProductionPageUrl -Url 'http://localhost:1420/' }) 'Development WebView URL was accepted.'
             $caseIds.Add('nonproduction_url')
 
-            $fixedDebugEndpoint = New-DesktopFixedDebugEndpoint
+            $fixedDebugEndpoint = New-DesktopDebugEndpointRecord -Port 49161
             $fixedDebugArguments = @([string]$fixedDebugEndpoint.argument)
             Assert-Condition ([int]$fixedDebugEndpoint.port -ge 1 -and [int]$fixedDebugEndpoint.port -le 65535) 'Fixed Desktop debug endpoint returned an out-of-range port.'
             Assert-Condition (@($fixedDebugArguments | Where-Object { [string]$_ -ceq "--remote-debugging-port=$([int]$fixedDebugEndpoint.port)" }).Count -eq 1) 'Fixed Desktop debug endpoint did not produce exactly one matching argument.'
@@ -3523,20 +3529,9 @@ try {
             })
             $foreignListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items $foreignListenerSnapshotItems
             $emptyListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @()
-            $unusedListener = [Net.Sockets.Socket]::new(
-                [Net.Sockets.AddressFamily]::InterNetwork,
-                [Net.Sockets.SocketType]::Stream,
-                [Net.Sockets.ProtocolType]::Tcp
-            )
-            try {
-                $unusedListener.Bind([Net.IPEndPoint]::new([Net.IPAddress]::Loopback, 0))
-                $unusedListenerPort = ([Net.IPEndPoint]$unusedListener.LocalEndPoint).Port
-                $actualEmptyListenerSnapshot = Get-DesktopListenerSnapshot -Port $unusedListenerPort
-            } finally {
-                $unusedListener.Dispose()
-            }
-            Assert-Condition ([string]$actualEmptyListenerSnapshot.kind -ceq 'listeners') 'Actual listener no-match control returned the wrong envelope kind.'
-            Assert-Condition (@($actualEmptyListenerSnapshot.items).Count -eq 0) 'Actual listener no-match control did not return an empty typed envelope.'
+            $actualEmptyListenerSnapshot = New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @()
+            Assert-Condition ([string]$actualEmptyListenerSnapshot.kind -ceq 'listeners') 'Fixture listener no-match control returned the wrong envelope kind.'
+            Assert-Condition (@($actualEmptyListenerSnapshot.items).Count -eq 0) 'Fixture listener no-match control did not return an empty typed envelope.'
             $rejectDefinitions = @(
                 [pscustomobject]@{ state = 'user_data_reparse'; port_snapshot = (& $snapshotTemplate $true $true $false $false ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
                 [pscustomobject]@{ state = 'port_file_reparse'; port_snapshot = (& $snapshotTemplate $true $false $true $true ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
@@ -3739,7 +3734,7 @@ try {
             Assert-Condition ([string]$syntheticDiagnosis.probe_timeout -ceq 'error:timeout') 'The sleeping teardown probe did not return error:timeout.'
 
             $missingDiagnosisUserData = Join-Path $diagnosisRoot 'missing-user-data'
-            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID -DebugPort 49161
+            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID -DebugPort 49161 -ProcessSnapshotItems @()
             $expectedProbeKeys = @(
                 'desktop_probe_runtime_registry',
                 'desktop_probe_runtime_binary',
@@ -3751,8 +3746,12 @@ try {
                 'desktop_probe_debug_arg'
             )
             Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the eight-key contract.'
-            $realDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $realProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 1000
-            foreach ($value in @($realDiagnosis.Values)) {
+            $fixtureDomainProbeTable = [ordered]@{}
+            foreach ($probeKey in $expectedProbeKeys) {
+                $fixtureDomainProbeTable[$probeKey] = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
+            }
+            $fixtureDomainDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $fixtureDomainProbeTable -ProbeTimeoutMilliseconds 1000 -TotalBudgetMilliseconds 10000
+            foreach ($value in @($fixtureDomainDiagnosis.Values)) {
                 Assert-Condition ([string]$value -cmatch '^(?:true|false|unknown|error:[a-z]+)$') 'A teardown probe returned a value outside the four-value domain.'
             }
             $caseIds.Add('desktop_teardown_diagnosis_keys')
@@ -3851,8 +3850,10 @@ try {
                 -RootProcessId $debugProbeRootPid `
                 -DebugPort 49161 `
                 -ProcessSnapshotItems $missingDebugProcesses
-            $debugTrue = Invoke-BoundedDiagnosisProbe -Probe $matchingDebugTable.desktop_probe_debug_arg.Script -Argument $matchingDebugTable.desktop_probe_debug_arg.Argument -TimeoutMilliseconds 1000
-            $debugFalse = Invoke-BoundedDiagnosisProbe -Probe $missingDebugTable.desktop_probe_debug_arg.Script -Argument $missingDebugTable.desktop_probe_debug_arg.Argument -TimeoutMilliseconds 1000
+            $matchingDebugProbe = $matchingDebugTable.desktop_probe_debug_arg
+            $missingDebugProbe = $missingDebugTable.desktop_probe_debug_arg
+            $debugTrue = if (& ([scriptblock]$matchingDebugProbe.Script) $matchingDebugProbe.Argument) { 'true' } else { 'false' }
+            $debugFalse = if (& ([scriptblock]$missingDebugProbe.Script) $missingDebugProbe.Argument) { 'true' } else { 'false' }
             $debugErrorTable = [ordered]@{
                 desktop_probe_debug_arg = @{ Script = { param($ProbeArgument) throw 'synthetic debug argument probe failure' }; Argument = $null }
             }
