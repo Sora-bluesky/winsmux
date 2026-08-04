@@ -1677,7 +1677,7 @@ function New-DesktopCdpProbeRecord {
 
 function Resolve-DesktopWebSocketPathAuthority {
     param(
-        [Parameter(Mandatory)][string]$WebSocketDebuggerUrl,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$WebSocketDebuggerUrl,
         [Parameter(Mandatory)][ValidateSet('127.0.0.1', '[::1]')][string]$HostName,
         [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
         [AllowNull()][string]$BrowserPath
@@ -1872,18 +1872,18 @@ function Get-DesktopWebViewAuthorityProbe {
         return (New-DesktopCdpProbeRecord -State $portState -PageUrl $null)
     }
 
-    $processSnapshot = if ($null -eq $ProcessSnapshotProvider) {
-        Get-DesktopProcessSnapshot
-    } else {
-        & $ProcessSnapshotProvider $OwnedProcess
-    }
     $listenerSnapshot = if ($null -eq $ListenerSnapshotProvider) {
         Get-DesktopListenerSnapshot -Port $Port
     } else {
         & $ListenerSnapshotProvider $Port $OwnedProcess
     }
-    Assert-Condition ($null -ne $processSnapshot) 'Desktop process snapshot envelope was absent.'
     Assert-Condition ($null -ne $listenerSnapshot) 'Desktop listener snapshot envelope was absent.'
+    $processSnapshot = if ($null -eq $ProcessSnapshotProvider) {
+        Get-DesktopProcessSnapshot
+    } else {
+        & $ProcessSnapshotProvider $OwnedProcess
+    }
+    Assert-Condition ($null -ne $processSnapshot) 'Desktop process snapshot envelope was absent.'
     $authority = Resolve-DesktopWebViewListenerAuthority `
         -RootProcessId ([int64]$OwnedProcess.process.Id) `
         -Port $Port `

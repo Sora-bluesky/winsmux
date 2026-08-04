@@ -1436,4 +1436,96 @@ switch (`$args[0]) {
             $block | Should -Match ([regex]::Escape('$LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"'))
         }
     }
+
+    It 'T832-ROUND2-OWNER-01 resolves an owner that appears with the listener from a post-listener process snapshot' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $probeFunction = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-DesktopWebViewAuthorityProbe'
+        }, $true))
+        $probeFunction.Count | Should -Be 1
+
+        $harness = $probeFunction[0].Extent.Text + @'
+
+function Assert-Condition { param([bool]$Condition, [string]$Message) if (-not $Condition) { throw $Message } }
+function Get-ObjectPropertyValue {
+    param($Object, [string]$Name)
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+function Read-DesktopDevToolsActivePort {
+    param([string]$UserDataFolder, [scriptblock]$SnapshotProvider)
+    return [pscustomobject]@{ state = 'authority_ready'; port = 49161; browser_path = '/devtools/browser/11111111-1111-4111-8111-111111111111' }
+}
+function Resolve-DesktopWebViewListenerAuthority {
+    param([int64]$RootProcessId, [int]$Port, [string]$BrowserPath, $ProcessSnapshot, $ListenerSnapshot)
+    if ([string]$ProcessSnapshot.phase -cne 'after_listener') {
+        return [pscustomobject]@{ state = 'listener_foreign'; host = $null; port = 0; browser_path = $null }
+    }
+    return [pscustomobject]@{ state = 'authority_ready'; host = '127.0.0.1'; port = $Port; browser_path = $BrowserPath }
+}
+function New-DesktopCdpProbeRecord {
+    param([string]$State, [AllowNull()][string]$PageUrl, [int]$Port = 0, [AllowNull()][string]$PathAuthority = $null)
+    return [pscustomobject]@{ state = $State; page_url = $PageUrl; port = $Port; path_authority = $PathAuthority }
+}
+$sequence = [pscustomobject]@{ listener_seen = $false; calls = [Collections.Generic.List[string]]::new() }
+$processProvider = {
+    param($OwnedProcess)
+    [void]$sequence.calls.Add('process')
+    return [pscustomobject]@{ phase = if ($sequence.listener_seen) { 'after_listener' } else { 'before_listener' } }
+}.GetNewClosure()
+$listenerProvider = {
+    param($Port, $OwnedProcess)
+    [void]$sequence.calls.Add('listener')
+    $sequence.listener_seen = $true
+    return [pscustomobject]@{ kind = 'listeners' }
+}.GetNewClosure()
+$pageProbe = {
+    param($Authority, $OwnedProcess)
+    return [pscustomobject]@{ state = 'page_ready'; page_url = 'tauri://localhost/'; path_authority = 'cross_checked' }
+}
+$result = Get-DesktopWebViewAuthorityProbe `
+    -OwnedProcess ([pscustomobject]@{ process = [pscustomobject]@{ Id = 1000 } }) `
+    -UserDataFolder 'fixture' `
+    -Port 49161 `
+    -ProcessSnapshotProvider $processProvider `
+    -ListenerSnapshotProvider $listenerProvider `
+    -PageProbe $pageProbe
+[pscustomobject]@{ state = [string]$result.state; calls = [string]::Join(',', $sequence.calls) }
+'@
+        $raceResult = & ([scriptblock]::Create($harness))
+        $raceResult.calls | Should -Be 'listener,process'
+        $raceResult.state | Should -Be 'page_ready'
+    }
+
+    It 'T832-ROUND2-WS-EMPTY-01 maps an empty version WebSocket value to the typed mismatch state' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $resolverFunction = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Resolve-DesktopWebSocketPathAuthority'
+        }, $true))
+        $resolverFunction.Count | Should -Be 1
+
+        $harness = $resolverFunction[0].Extent.Text + @'
+
+Resolve-DesktopWebSocketPathAuthority `
+    -WebSocketDebuggerUrl '' `
+    -HostName '127.0.0.1' `
+    -Port 49161 `
+    -BrowserPath $null
+'@
+        $result = & ([scriptblock]::Create($harness))
+        $result.state | Should -Be 'version_identity_mismatch'
+    }
 }
