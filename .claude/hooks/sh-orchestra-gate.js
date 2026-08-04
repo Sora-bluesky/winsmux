@@ -167,6 +167,10 @@ try {
     const subagentType = normalizeAgentValue(toolInput.subagent_type);
     const isAllowedAgentUse =
       agentMode === "plan" ||
+      // review-broker / github-review-intake are isolation boundaries mandated
+      // by the global operator rules, not execution bypasses (sora, 2026-08-03).
+      subagentType === "review-broker" ||
+      subagentType === "github-review-intake" ||
       (subagentType === "explore" && isStartupDiagnosisSubagent(toolInput));
     if (!isAllowedAgentUse) {
       deny("Operator delegated execution bypass blocked. Delegate task execution and review to managed worker panes via winsmux dispatch-task or dispatch-review. Allowed: plan mode, startup-diagnosis Explore subagents.");
