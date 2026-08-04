@@ -193,7 +193,8 @@ Describe 'winsmux version surface' {
         @($errors).Count | Should -Be 0
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
-        $LASTEXITCODE | Should -Be 0
+        $selfTestFailureText = $selfTestOutput -join "`n"
+        $LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Core'
@@ -253,11 +254,12 @@ Describe 'winsmux version surface' {
         $smokeJob | Should -Not -Match 'download-artifact|output/|target/'
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
-        $LASTEXITCODE | Should -Be 0
+        $selfTestFailureText = $selfTestOutput -join "`n"
+        $LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_typed_observation_fail_closed,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -279,7 +281,8 @@ Describe 'winsmux version surface' {
         $smokeJob | Should -Not -Match 'download-artifact|output/npm-release'
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
-        $LASTEXITCODE | Should -Be 0
+        $selfTestFailureText = $selfTestOutput -join "`n"
+        $LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Npm'
@@ -388,7 +391,7 @@ Describe 'winsmux version surface' {
         $evidence = $selfTest.evidence.desktop_typed_observation_authority
         @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @(
             'browser_process_identity',
-            'debug_port_zero',
+            'debug_port_exact',
             'listener_loopback',
             'listener_owner_identity',
             'page_url',
@@ -400,7 +403,7 @@ Describe 'winsmux version surface' {
         )
         foreach ($property in @(
             'browser_process_identity',
-            'debug_port_zero',
+            'debug_port_exact',
             'listener_loopback',
             'listener_owner_identity',
             'port_file_identity',
@@ -432,7 +435,6 @@ Describe 'winsmux version surface' {
         ($evidence.records -is [System.Object[]]) | Should -BeTrue
         $expectedStates = @(
             'user_data_reparse',
-            'port_file_missing',
             'port_file_reparse',
             'port_file_invalid_encoding',
             'port_file_invalid_shape',
@@ -1288,27 +1290,32 @@ switch (`$args[0]) {
         @($selfTest.case_ids) | Should -Contain 'desktop_lifecycle_success_orders_cleanup'
     }
 
-    It 'T832-DIAG-KEYS-01 emits six teardown diagnosis keys in the four-value domain' {
+    It 'T832-DIAG-KEYS-01 emits eight teardown diagnosis keys in the four-value domain' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
-
-        $helper | Should -Match 'function Get-DesktopTeardownDiagnosis'
-        $helper | Should -Match 'function New-DesktopTeardownProbeTable'
-        foreach ($key in @(
+        $realProbeLines = @($helper -split '\r?\n' | Where-Object { $_ -match '^\s*\$realProbeTable\s*=\s*New-DesktopTeardownProbeTable\b' })
+        $realProbeLines.Count | Should -Be 1
+        $realProbeLines[0] | Should -Not -Match ([regex]::Escape('-ProcessSnapshotItems'))
+        $expectedKeys = @(
             'desktop_probe_runtime_registry',
             'desktop_probe_runtime_binary',
             'desktop_probe_profile_dir',
             'desktop_probe_init_trace',
             'desktop_probe_port_file_redirected',
             'desktop_probe_port_file_fallback',
-            'desktop_probe_webview_process_present'
-        )) {
-            $helper | Should -Match ([regex]::Escape($key))
-        }
+            'desktop_probe_webview_process_present',
+            'desktop_probe_debug_arg'
+        )
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         @($selfTest.case_ids) | Should -Contain 'desktop_teardown_diagnosis_keys'
+        $diagnosis = $selfTest.evidence.desktop_teardown_diagnosis_keys
+        @($diagnosis.PSObject.Properties.Name) | Should -Be $expectedKeys
+        foreach ($property in @($diagnosis.PSObject.Properties)) {
+            $property.Value.GetType().FullName | Should -Be 'System.String'
+            [string]$property.Value | Should -Match '^(?:true|false|unknown|error:[a-z]+)$'
+        }
     }
 
     It 'T832-DIAG-BUDGET-01 bounds teardown probes and keeps cleanup unconditional' {
@@ -1335,5 +1342,198 @@ switch (`$args[0]) {
         $LASTEXITCODE | Should -Be 0
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         @($selfTest.case_ids) | Should -Contain 'desktop_teardown_diagnosis_privacy'
+    }
+
+    It 'T832-FOLLOWUP-FIXED-PORT-01 injects one bounded fixed-port browser argument' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match ([regex]::Escape('$fixedDebugEndpoint = New-DesktopFixedDebugEndpoint'))
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_fixed_port_injection'
+
+        $evidence = $selfTest.evidence.desktop_fixed_port_injection
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('exact_argument_count', 'no_type_argument', 'port_in_range', 'raw_absent', 'wildcard_origin_absent')
+        $evidence.exact_argument_count.GetType().FullName | Should -Be 'System.Int64'
+        $evidence.exact_argument_count | Should -Be 1
+        foreach ($property in @('no_type_argument', 'port_in_range', 'raw_absent', 'wildcard_origin_absent')) {
+            $evidence.$property.GetType().FullName | Should -Be 'System.Boolean'
+            $evidence.$property | Should -BeTrue
+        }
+        $selfTestJson | Should -Not -Match '--remote-allow-origins|--remote-debugging-port|--type='
+    }
+
+    It 'T832-FOLLOWUP-LISTENER-01 waits for the fixed listener before accepting its run-owned browser' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helper | Should -Match ([regex]::Escape('$actualEmptyListenerSnapshot = Get-DesktopListenerSnapshot -Port $unusedListenerPort'))
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_fixed_port_listener_authority'
+
+        $evidence = $selfTest.evidence.desktop_fixed_port_listener_authority
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('exact_argument', 'no_type_argument', 'owner_verified', 'raw_absent', 'real_empty_snapshot', 'states')
+        foreach ($property in @('exact_argument', 'no_type_argument', 'owner_verified', 'raw_absent', 'real_empty_snapshot')) {
+            $evidence.$property.GetType().FullName | Should -Be 'System.Boolean'
+            $evidence.$property | Should -BeTrue
+        }
+        @($evidence.states) | Should -Be @('listener_missing', 'authority_ready')
+        $selfTestJson | Should -Not -Match 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+    }
+
+    It 'T832-FOLLOWUP-WS-PATH-01 preserves cross-check authority and fails closed on malformed fallback paths' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_ws_path_authority'
+
+        $evidence = $selfTest.evidence.desktop_ws_path_authority
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('raw_absent', 'records')
+        $expected = @(
+            @{ scenario = 'present_mismatch'; state = 'version_identity_mismatch' },
+            @{ scenario = 'absent_malformed'; state = 'version_identity_mismatch' },
+            @{ scenario = 'absent_valid'; state = 'shape_verified' },
+            @{ scenario = 'present_match'; state = 'cross_checked' }
+        )
+        @($evidence.records).Count | Should -Be $expected.Count
+        for ($index = 0; $index -lt $expected.Count; $index++) {
+            @($evidence.records[$index].PSObject.Properties.Name | Sort-Object) | Should -Be @('scenario', 'state')
+            $evidence.records[$index].scenario | Should -Be $expected[$index].scenario
+            $evidence.records[$index].state | Should -Be $expected[$index].state
+        }
+        $evidence.raw_absent.GetType().FullName | Should -Be 'System.Boolean'
+        $evidence.raw_absent | Should -BeTrue
+        $selfTestJson | Should -Not -Match 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+    }
+
+    It 'T832-FOLLOWUP-DEBUG-ARG-01 emits the debug-argument diagnosis only in the closed four-value domain' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTestJson = $selfTestOutput -join "`n"
+        $selfTest = $selfTestJson | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_debug_arg_diagnosis'
+
+        $evidence = $selfTest.evidence.desktop_debug_arg_diagnosis
+        @($evidence.PSObject.Properties.Name | Sort-Object) | Should -Be @('raw_absent', 'records')
+        @($evidence.records | ForEach-Object { [string]$_.value }) | Should -Be @('true', 'false', 'error:io', 'unknown')
+        foreach ($record in @($evidence.records)) {
+            @($record.PSObject.Properties.Name | Sort-Object) | Should -Be @('scenario', 'value')
+            $record.value | Should -Match '^(?:true|false|unknown|error:[a-z]+)$'
+        }
+        $evidence.raw_absent.GetType().FullName | Should -Be 'System.Boolean'
+        $evidence.raw_absent | Should -BeTrue
+        $selfTestJson | Should -Not -Match 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid'
+    }
+
+    It 'T832-CI-DIAGNOSTIC-01 binds aggregate SelfTest output into every T668 failure' {
+        $testsText = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'tests\VersionSurface.Tests.ps1') -Raw -Encoding UTF8
+        foreach ($surface in @('CORE', 'DESKTOP', 'NPM')) {
+            $blockStart = $testsText.IndexOf("    It 'T668-SMOKE-$surface ", [StringComparison]::Ordinal)
+            $blockStart | Should -BeGreaterThan -1
+            $blockEnd = $testsText.IndexOf("`n    It '", $blockStart + 1, [StringComparison]::Ordinal)
+            $blockEnd | Should -BeGreaterThan $blockStart
+            $block = $testsText.Substring($blockStart, $blockEnd - $blockStart)
+            $block | Should -Match ([regex]::Escape('$selfTestFailureText = $selfTestOutput -join "`n"'))
+            $block | Should -Match ([regex]::Escape('$LASTEXITCODE | Should -Be 0 -Because "SelfTest output:`n$selfTestFailureText"'))
+        }
+    }
+
+    It 'T832-ROUND2-OWNER-01 resolves an owner that appears with the listener from a post-listener process snapshot' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $probeFunction = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Get-DesktopWebViewAuthorityProbe'
+        }, $true))
+        $probeFunction.Count | Should -Be 1
+
+        $harness = $probeFunction[0].Extent.Text + @'
+
+function Assert-Condition { param([bool]$Condition, [string]$Message) if (-not $Condition) { throw $Message } }
+function Get-ObjectPropertyValue {
+    param($Object, [string]$Name)
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+function Read-DesktopDevToolsActivePort {
+    param([string]$UserDataFolder, [scriptblock]$SnapshotProvider)
+    return [pscustomobject]@{ state = 'authority_ready'; port = 49161; browser_path = '/devtools/browser/11111111-1111-4111-8111-111111111111' }
+}
+function Resolve-DesktopWebViewListenerAuthority {
+    param([int64]$RootProcessId, [int]$Port, [string]$BrowserPath, $ProcessSnapshot, $ListenerSnapshot)
+    if ([string]$ProcessSnapshot.phase -cne 'after_listener') {
+        return [pscustomobject]@{ state = 'listener_foreign'; host = $null; port = 0; browser_path = $null }
+    }
+    return [pscustomobject]@{ state = 'authority_ready'; host = '127.0.0.1'; port = $Port; browser_path = $BrowserPath }
+}
+function New-DesktopCdpProbeRecord {
+    param([string]$State, [AllowNull()][string]$PageUrl, [int]$Port = 0, [AllowNull()][string]$PathAuthority = $null)
+    return [pscustomobject]@{ state = $State; page_url = $PageUrl; port = $Port; path_authority = $PathAuthority }
+}
+$sequence = [pscustomobject]@{ listener_seen = $false; calls = [Collections.Generic.List[string]]::new() }
+$processProvider = {
+    param($OwnedProcess)
+    [void]$sequence.calls.Add('process')
+    return [pscustomobject]@{ phase = if ($sequence.listener_seen) { 'after_listener' } else { 'before_listener' } }
+}.GetNewClosure()
+$listenerProvider = {
+    param($Port, $OwnedProcess)
+    [void]$sequence.calls.Add('listener')
+    $sequence.listener_seen = $true
+    return [pscustomobject]@{ kind = 'listeners' }
+}.GetNewClosure()
+$pageProbe = {
+    param($Authority, $OwnedProcess)
+    return [pscustomobject]@{ state = 'page_ready'; page_url = 'tauri://localhost/'; path_authority = 'cross_checked' }
+}
+$result = Get-DesktopWebViewAuthorityProbe `
+    -OwnedProcess ([pscustomobject]@{ process = [pscustomobject]@{ Id = 1000 } }) `
+    -UserDataFolder 'fixture' `
+    -Port 49161 `
+    -ProcessSnapshotProvider $processProvider `
+    -ListenerSnapshotProvider $listenerProvider `
+    -PageProbe $pageProbe
+[pscustomobject]@{ state = [string]$result.state; calls = [string]::Join(',', $sequence.calls) }
+'@
+        $raceResult = & ([scriptblock]::Create($harness))
+        $raceResult.calls | Should -Be 'listener,process'
+        $raceResult.state | Should -Be 'page_ready'
+    }
+
+    It 'T832-ROUND2-WS-EMPTY-01 maps an empty version WebSocket value to the typed mismatch state' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+        $resolverFunction = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Resolve-DesktopWebSocketPathAuthority'
+        }, $true))
+        $resolverFunction.Count | Should -Be 1
+
+        $harness = $resolverFunction[0].Extent.Text + @'
+
+Resolve-DesktopWebSocketPathAuthority `
+    -WebSocketDebuggerUrl '' `
+    -HostName '127.0.0.1' `
+    -Port 49161 `
+    -BrowserPath $null
+'@
+        $result = & ([scriptblock]::Create($harness))
+        $result.state | Should -Be 'version_identity_mismatch'
     }
 }
