@@ -257,7 +257,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_typed_observation_fail_closed,desktop_owned_capture_bounded,desktop_unexpected_probe_failure'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_typed_observation_fail_closed,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -1278,5 +1278,62 @@ switch (`$args[0]) {
         $doctorScript | Should -Match 'PowerShell startup health'
         $doctorScript | Should -Match '-NoProfile'
         $doctorScript | Should -Match '\$PSVersionTable\.PSVersion\.ToString\(\)'
+    }
+
+    It 'T832-CONTROL-01 observes desktop self-test case projection through the shared transport' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_lifecycle_success_orders_cleanup'
+    }
+
+    It 'T832-DIAG-KEYS-01 emits six teardown diagnosis keys in the four-value domain' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+
+        $helper | Should -Match 'function Get-DesktopTeardownDiagnosis'
+        $helper | Should -Match 'function New-DesktopTeardownProbeTable'
+        foreach ($key in @(
+            'desktop_probe_runtime_registry',
+            'desktop_probe_runtime_binary',
+            'desktop_probe_profile_dir',
+            'desktop_probe_init_trace',
+            'desktop_probe_port_file_redirected',
+            'desktop_probe_port_file_fallback',
+            'desktop_probe_webview_process_present'
+        )) {
+            $helper | Should -Match ([regex]::Escape($key))
+        }
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_teardown_diagnosis_keys'
+    }
+
+    It 'T832-DIAG-BUDGET-01 bounds teardown probes and keeps cleanup unconditional' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+
+        $helper | Should -Match 'function Invoke-BoundedDiagnosisProbe'
+        $helper | Should -Match ([regex]::Escape('BeginStop'))
+        $helper | Should -Match ([regex]::Escape('$script:DesktopTeardownProbeTimeoutMilliseconds = 5000'))
+        $helper | Should -Match ([regex]::Escape('$script:DesktopTeardownProbeTotalBudgetMilliseconds = 20000'))
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_teardown_diagnosis_budget'
+    }
+
+    It 'T832-DIAG-PRIVACY-01 asserts the raw-absent pattern on the diagnosis segment before emit' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+
+        $helper | Should -Match 'function Get-DesktopTeardownDiagnosisSegment'
+        $helper | Should -Match ([regex]::Escape('desktop_probe_[a-z_]+=(?:true|false|unknown|error:[a-z]+)'))
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        @($selfTest.case_ids) | Should -Contain 'desktop_teardown_diagnosis_privacy'
     }
 }

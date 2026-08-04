@@ -24,6 +24,8 @@ $script:RetryCount = 6
 $script:RetryDelaySeconds = 10
 $script:DesktopObservationTimeoutMilliseconds = 180000
 $script:DesktopObservationPollMilliseconds = 500
+$script:DesktopTeardownProbeTimeoutMilliseconds = 5000
+$script:DesktopTeardownProbeTotalBudgetMilliseconds = 20000
 $script:DesktopOutputRetainLimitBytes = 16384
 $script:OwnedRootPrefix = 'winsmux-public-release-'
 $script:DesktopLifecycle = $null
@@ -1190,6 +1192,212 @@ function Read-DesktopDevToolsActivePort {
     return [pscustomobject]@{ state = 'authority_ready'; port = $port; browser_path = $browserPath }
 }
 
+function Invoke-BoundedDiagnosisProbe {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Probe,
+        [AllowNull()]$Argument,
+        [int]$TimeoutMilliseconds = $script:DesktopTeardownProbeTimeoutMilliseconds
+    )
+
+    if ($TimeoutMilliseconds -le 0) {
+        return 'unknown'
+    }
+    $runner = [powershell]::Create()
+    $abandonRunner = $false
+    try {
+        $null = $runner.AddScript($Probe.ToString()).AddArgument($Argument)
+        $handle = $runner.BeginInvoke()
+        if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMilliseconds)) {
+            $abandonRunner = $true
+            try { [void]$runner.BeginStop($null, $null) } catch { }
+            # Abandonment is bounded per run: the probe table is finite and the helper process is short-lived.
+            return 'error:timeout'
+        }
+        $output = $runner.EndInvoke($handle)
+        if ($runner.HadErrors) {
+            return 'error:io'
+        }
+        $value = $false
+        if ($output.Count -ge 1) {
+            $lastOutput = $output[$output.Count - 1]
+            if ($lastOutput -is [string] -and $lastOutput -cmatch '^(?:true|false|unknown|error:[a-z]+)$') {
+                return [string]$lastOutput
+            }
+            $value = [bool]$lastOutput
+        }
+        if ($value) { return 'true' }
+        return 'false'
+    } catch {
+        return 'error:io'
+    } finally {
+        if (-not $abandonRunner) {
+            try { $runner.Dispose() } catch { }
+        }
+    }
+}
+
+function New-DesktopTeardownProbeTable {
+    param(
+        [Parameter(Mandatory)][string]$UserDataFolder,
+        [Parameter(Mandatory)][long]$RootProcessId
+    )
+
+    $profileRoot = Join-Path $UserDataFolder 'EBWebView'
+    return [ordered]@{
+        desktop_probe_runtime_registry = @{
+            Script = {
+                param($ProbeArgument)
+
+                $registrationPaths = @(
+                    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+                    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+                    'Registry::HKEY_CURRENT_USER\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+                )
+                foreach ($registrationPath in $registrationPaths) {
+                    if (-not (Test-Path -LiteralPath $registrationPath)) {
+                        continue
+                    }
+                    $candidateVersion = [string](Get-ItemProperty -LiteralPath $registrationPath -Name 'pv' -ErrorAction Stop).pv
+                    if (-not [string]::IsNullOrWhiteSpace($candidateVersion)) {
+                        return $true
+                    }
+                }
+                return $false
+            }
+            Argument = $null
+        }
+        desktop_probe_runtime_binary = @{
+            Script = {
+                param($ProbeArgument)
+
+                $registrationPaths = @(
+                    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+                    'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+                    'Registry::HKEY_CURRENT_USER\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+                )
+                $runtimeVersions = [Collections.Generic.List[string]]::new()
+                foreach ($registrationPath in $registrationPaths) {
+                    if (-not (Test-Path -LiteralPath $registrationPath)) {
+                        continue
+                    }
+                    $candidateVersion = [string](Get-ItemProperty -LiteralPath $registrationPath -Name 'pv' -ErrorAction Stop).pv
+                    if (-not [string]::IsNullOrWhiteSpace($candidateVersion)) {
+                        $runtimeVersions.Add($candidateVersion)
+                    }
+                }
+                if ($runtimeVersions.Count -eq 0) {
+                    return 'unknown'
+                }
+                $binaryCandidates = [Collections.Generic.List[string]]::new()
+                foreach ($runtimeVersion in $runtimeVersions) {
+                    if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+                        $binaryCandidates.Add((Join-Path ${env:ProgramFiles(x86)} "Microsoft\EdgeWebView\Application\$runtimeVersion\msedgewebview2.exe"))
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                        $binaryCandidates.Add((Join-Path $env:LOCALAPPDATA "Microsoft\EdgeWebView\Application\$runtimeVersion\msedgewebview2.exe"))
+                    }
+                }
+                foreach ($binaryPath in $binaryCandidates) {
+                    if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
+                        return $true
+                    }
+                }
+                return $false
+            }
+            Argument = $null
+        }
+        desktop_probe_profile_dir = @{
+            Script = { param($ProbeArgument) Test-Path -LiteralPath $ProbeArgument -PathType Container }
+            Argument = $profileRoot
+        }
+        desktop_probe_init_trace = @{
+            Script = {
+                param($ProbeArgument)
+                (Test-Path -LiteralPath (Join-Path $ProbeArgument 'Local State') -PathType Leaf) -or
+                    (Test-Path -LiteralPath (Join-Path $ProbeArgument 'Crashpad') -PathType Container)
+            }
+            Argument = $profileRoot
+        }
+        desktop_probe_port_file_redirected = @{
+            Script = { param($ProbeArgument) Test-Path -LiteralPath $ProbeArgument -PathType Leaf }
+            Argument = Join-Path $profileRoot 'DevToolsActivePort'
+        }
+        desktop_probe_port_file_fallback = @{
+            Script = { param($ProbeArgument) Test-Path -LiteralPath $ProbeArgument -PathType Leaf }
+            Argument = Join-Path (Split-Path -Parent $UserDataFolder) 'LocalAppData\io.github.sora-bluesky.winsmux\EBWebView\DevToolsActivePort'
+        }
+        desktop_probe_webview_process_present = @{
+            Script = {
+                param($ProbeArgument)
+
+                $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, Name -ErrorAction Stop)
+                $descendantProcessIds = [Collections.Generic.HashSet[long]]::new()
+                [void]$descendantProcessIds.Add([long]$ProbeArgument)
+                do {
+                    $addedDescendant = $false
+                    foreach ($process in $processes) {
+                        if ($descendantProcessIds.Contains([long]$process.ParentProcessId) -and
+                            $descendantProcessIds.Add([long]$process.ProcessId)) {
+                            $addedDescendant = $true
+                        }
+                    }
+                } while ($addedDescendant)
+                foreach ($process in $processes) {
+                    if ($descendantProcessIds.Contains([long]$process.ProcessId) -and
+                        [string]::Equals([string]$process.Name, 'msedgewebview2.exe', [StringComparison]::OrdinalIgnoreCase)) {
+                        return $true
+                    }
+                }
+                return $false
+            }
+            Argument = $RootProcessId
+        }
+    }
+}
+
+function Get-DesktopTeardownDiagnosis {
+    param(
+        [Parameter(Mandatory)][string]$UserDataFolder,
+        [long]$RootProcessId = 0,
+        $ProbeTable,
+        [int]$ProbeTimeoutMilliseconds = $script:DesktopTeardownProbeTimeoutMilliseconds,
+        [int]$TotalBudgetMilliseconds = $script:DesktopTeardownProbeTotalBudgetMilliseconds
+    )
+
+    if ($null -eq $ProbeTable) {
+        Assert-Condition ($RootProcessId -gt 0) 'Desktop teardown diagnosis requires a positive root process ID when building the real probe table.'
+        $ProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $UserDataFolder -RootProcessId $RootProcessId
+    }
+    $stopwatch = [Diagnostics.Stopwatch]::StartNew()
+    $diagnosis = [ordered]@{}
+    foreach ($name in @($ProbeTable.Keys)) {
+        $remaining = $TotalBudgetMilliseconds - $stopwatch.ElapsedMilliseconds
+        if ($remaining -le 0) {
+            $diagnosis[[string]$name] = 'unknown'
+            continue
+        }
+        $entry = $ProbeTable[$name]
+        $timeout = [int][Math]::Min([long]$ProbeTimeoutMilliseconds, $remaining)
+        $diagnosis[[string]$name] = Invoke-BoundedDiagnosisProbe -Probe $entry.Script -Argument $entry.Argument -TimeoutMilliseconds $timeout
+    }
+    return $diagnosis
+}
+
+function Get-DesktopTeardownDiagnosisSegment {
+    param([Parameter(Mandatory)]$Diagnosis)
+
+    $pairs = [Collections.Generic.List[string]]::new()
+    foreach ($name in @($Diagnosis.Keys)) {
+        $pairs.Add(('{0}={1}' -f [string]$name, [string]$Diagnosis[$name]))
+    }
+    $segment = [string]::Join(' ', $pairs)
+    foreach ($pair in $pairs) {
+        Assert-Condition ($pair -cmatch '^desktop_probe_[a-z_]+=(?:true|false|unknown|error:[a-z]+)$') 'Teardown diagnosis pair violated the fixed key/value allowlist.'
+    }
+    Assert-Condition ($segment -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid') 'Teardown diagnosis segment violated the raw-absent pattern.'
+    return $segment
+}
+
 function New-DesktopSnapshotEnvelope {
     param(
         [Parameter(Mandatory)][ValidateSet('processes', 'listeners')][string]$Kind,
@@ -1837,11 +2045,19 @@ function Invoke-DesktopLifecycleOperation {
     $captureFailure = $null
     $capture = $null
     $pendingObservationFailure = $false
+    $teardownDiagnosis = $null
     try {
         $observation = Wait-DesktopProcessObservation -OwnedProcess $Context.app_process -Port $Port -UserDataFolder $UserDataFolder `
             -MaxAttempts $MaxAttempts -PageProbe $PageProbe -AuthorityProbe $AuthorityProbe -DelayInvoker $DelayInvoker
         if ([string]$observation.state -cne 'page_ready') {
             $pendingObservationFailure = $true
+            if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
+                try {
+                    $teardownDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $UserDataFolder -RootProcessId ([long]$Context.app_process.process.Id)
+                } catch {
+                    $teardownDiagnosis = $null
+                }
+            }
         }
     } catch {
         $operationFailure = $_.Exception
@@ -1875,6 +2091,13 @@ function Invoke-DesktopLifecycleOperation {
                 stderr_metadata = $capture.stderr_metadata
             }
             $message = Format-PublicChildProcessDiagnostic -Operation 'desktop_observer' -State ([string]$observation.state) -Result $diagnosticResult
+            if ($null -ne $teardownDiagnosis) {
+                try {
+                    $message = '{0} {1}' -f $message, (Get-DesktopTeardownDiagnosisSegment -Diagnosis $teardownDiagnosis)
+                } catch {
+                    # privacy/allowlist assert failure must not mask the original failure
+                }
+            }
             $failure = [InvalidOperationException]::new($message)
         }
         $failure.Data['observation'] = $observation
@@ -3308,6 +3531,95 @@ try {
             Assert-Condition ((@($unexpectedEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch [regex]::Escape($unexpectedMarker)) 'Unexpected Desktop probe evidence exposed its raw marker.'
             $evidence.desktop_unexpected_probe_failure = $unexpectedEvidence
             $caseIds.Add('desktop_unexpected_probe_failure')
+
+            $diagnosisRoot = Join-Path $root 'task832-teardown-diagnosis'
+            $syntheticProbeTable = [ordered]@{
+                probe_true = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
+                probe_false = @{ Script = { param($ProbeArgument) $false }; Argument = $null }
+                probe_error = @{ Script = { param($ProbeArgument) throw 'synthetic diagnosis failure' }; Argument = $null }
+                probe_timeout = @{ Script = { param($ProbeArgument) Start-Sleep -Milliseconds 400; $true }; Argument = $null }
+            }
+            $syntheticDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $syntheticProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 5000
+            Assert-Condition ([string]$syntheticDiagnosis.probe_true -ceq 'true') 'The immediate true teardown probe did not return true.'
+            Assert-Condition ([string]$syntheticDiagnosis.probe_false -ceq 'false') 'The immediate false teardown probe did not return false.'
+            Assert-Condition ([string]$syntheticDiagnosis.probe_error -ceq 'error:io') 'The throwing teardown probe did not return error:io.'
+            Assert-Condition ([string]$syntheticDiagnosis.probe_timeout -ceq 'error:timeout') 'The sleeping teardown probe did not return error:timeout.'
+
+            $missingDiagnosisUserData = Join-Path $diagnosisRoot 'missing-user-data'
+            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID
+            $expectedProbeKeys = @(
+                'desktop_probe_runtime_registry',
+                'desktop_probe_runtime_binary',
+                'desktop_probe_profile_dir',
+                'desktop_probe_init_trace',
+                'desktop_probe_port_file_redirected',
+                'desktop_probe_port_file_fallback',
+                'desktop_probe_webview_process_present'
+            )
+            Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the seven-key contract.'
+            $realDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $realProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 1000
+            foreach ($value in @($realDiagnosis.Values)) {
+                Assert-Condition ([string]$value -cmatch '^(?:true|false|unknown|error:[a-z]+)$') 'A teardown probe returned a value outside the four-value domain.'
+            }
+            $caseIds.Add('desktop_teardown_diagnosis_keys')
+
+            $budgetProbeTable = [ordered]@{
+                sleep_one = @{ Script = { param($ProbeArgument) Start-Sleep -Milliseconds 400; $true }; Argument = $null }
+                sleep_two = @{ Script = { param($ProbeArgument) Start-Sleep -Milliseconds 400; $true }; Argument = $null }
+                sleep_three = @{ Script = { param($ProbeArgument) Start-Sleep -Milliseconds 400; $true }; Argument = $null }
+            }
+            $budgetStopwatch = [Diagnostics.Stopwatch]::StartNew()
+            $budgetDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $budgetProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 150
+            $budgetStopwatch.Stop()
+            Assert-Condition ([string]$budgetDiagnosis.sleep_one -ceq 'error:timeout') 'The first bounded teardown probe did not time out.'
+            Assert-Condition ([string]$budgetDiagnosis.sleep_three -ceq 'unknown') 'A teardown probe after total-budget exhaustion was not marked unknown.'
+            Assert-Condition ($budgetStopwatch.ElapsedMilliseconds -lt 2000) 'The teardown diagnosis exceeded its bounded self-test duration.'
+
+            $nonCooperativeProbeTable = [ordered]@{
+                non_cooperative = @{ Script = { param($ProbeArgument) [System.Threading.Thread]::Sleep(2000); $true }; Argument = $null }
+            }
+            $nonCooperativeStopwatch = [Diagnostics.Stopwatch]::StartNew()
+            $nonCooperativeDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $nonCooperativeProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
+            $nonCooperativeStopwatch.Stop()
+            Assert-Condition ([string]$nonCooperativeDiagnosis.non_cooperative -ceq 'error:timeout') 'The non-cooperative teardown probe did not return error:timeout.'
+            Assert-Condition ($nonCooperativeStopwatch.ElapsedMilliseconds -lt 1500) 'The non-cooperative teardown probe blocked after its timeout.'
+
+            $immediateProbeTable = [ordered]@{
+                immediate_true = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
+                immediate_false = @{ Script = { param($ProbeArgument) $false }; Argument = $null }
+            }
+            $independentStopwatch = [Diagnostics.Stopwatch]::StartNew()
+            $immediateDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $immediateProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
+            $independentStopwatch.Stop()
+            Assert-Condition ([string]$immediateDiagnosis.immediate_true -ceq 'true' -and [string]$immediateDiagnosis.immediate_false -ceq 'false') 'Immediate teardown probes did not complete independently.'
+            Assert-Condition ($independentStopwatch.ElapsedMilliseconds -lt 2000) 'Immediate teardown diagnosis unexpectedly waited for cleanup.'
+
+            $diagnosisGuard = [pscustomobject]@{ value = [ordered]@{ stale = 'true' } }
+            $diagnosisEscaped = Test-Throws ({
+                try {
+                    $invalidProbeTable = [ordered]@{ invalid_probe = @{ Script = $null; Argument = $null } }
+                    $diagnosisGuard.value = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $invalidProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
+                } catch {
+                    $diagnosisGuard.value = $null
+                }
+            }.GetNewClosure())
+            Assert-Condition (-not $diagnosisEscaped) 'A teardown diagnosis failure escaped the lifecycle guard.'
+            Assert-Condition ($null -eq $diagnosisGuard.value) 'A teardown diagnosis failure did not clear the guarded diagnosis.'
+            $caseIds.Add('desktop_teardown_diagnosis_budget')
+
+            $validDiagnosis = [ordered]@{
+                desktop_probe_runtime_binary = 'true'
+                desktop_probe_profile_dir = 'false'
+            }
+            $validDiagnosisSegment = Get-DesktopTeardownDiagnosisSegment -Diagnosis $validDiagnosis
+            Assert-Condition ($validDiagnosisSegment -ceq 'desktop_probe_runtime_binary=true desktop_probe_profile_dir=false') 'The teardown diagnosis segment did not preserve ordered typed pairs.'
+            Assert-Condition (Test-Throws {
+                Get-DesktopTeardownDiagnosisSegment -Diagnosis ([ordered]@{ desktop_probe_runtime_binary = '/devtools/browser/x' })
+            }) 'A teardown diagnosis segment accepted a raw browser path.'
+            Assert-Condition (Test-Throws {
+                Get-DesktopTeardownDiagnosisSegment -Diagnosis ([ordered]@{ desktop_probe_Runtime_binary = 'true' })
+            }) 'A teardown diagnosis segment accepted a key outside the lowercase allowlist.'
+            $caseIds.Add('desktop_teardown_diagnosis_privacy')
         } else {
             $nodeFixtureRoot = Join-Path $root 'node-toolchains'
             $firstNodeRoot = Join-Path $nodeFixtureRoot 'first'
