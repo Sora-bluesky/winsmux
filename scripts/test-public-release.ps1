@@ -1192,6 +1192,21 @@ function Read-DesktopDevToolsActivePort {
     return [pscustomobject]@{ state = 'authority_ready'; port = $port; browser_path = $browserPath }
 }
 
+function New-DesktopFixedDebugEndpoint {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $port = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+        Assert-Condition ($port -ge 1 -and $port -le 65535) 'Desktop fixed debug endpoint received an invalid loopback port.'
+        return [pscustomobject][ordered]@{
+            port = [int]$port
+            argument = "--remote-debugging-port=$port"
+        }
+    } finally {
+        $listener.Stop()
+    }
+}
+
 function Invoke-BoundedDiagnosisProbe {
     param(
         [Parameter(Mandatory)][scriptblock]$Probe,
@@ -1239,10 +1254,18 @@ function Invoke-BoundedDiagnosisProbe {
 function New-DesktopTeardownProbeTable {
     param(
         [Parameter(Mandatory)][string]$UserDataFolder,
-        [Parameter(Mandatory)][long]$RootProcessId
+        [Parameter(Mandatory)][long]$RootProcessId,
+        [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$DebugPort,
+        [AllowNull()][object[]]$ProcessSnapshotItems = $null
     )
 
+    Initialize-DesktopNativeTypes
     $profileRoot = Join-Path $UserDataFolder 'EBWebView'
+    $processProbeArgument = [pscustomobject]@{
+        root_process_id = [long]$RootProcessId
+        debug_argument = "--remote-debugging-port=$DebugPort"
+        processes = $ProcessSnapshotItems
+    }
     return [ordered]@{
         desktop_probe_runtime_registry = @{
             Script = {
@@ -1330,9 +1353,13 @@ function New-DesktopTeardownProbeTable {
             Script = {
                 param($ProbeArgument)
 
-                $processes = @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, Name -ErrorAction Stop)
+                $processes = if ($null -eq $ProbeArgument.processes) {
+                    @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, Name, CommandLine -ErrorAction Stop)
+                } else {
+                    @($ProbeArgument.processes)
+                }
                 $descendantProcessIds = [Collections.Generic.HashSet[long]]::new()
-                [void]$descendantProcessIds.Add([long]$ProbeArgument)
+                [void]$descendantProcessIds.Add([long]$ProbeArgument.root_process_id)
                 do {
                     $addedDescendant = $false
                     foreach ($process in $processes) {
@@ -1350,7 +1377,41 @@ function New-DesktopTeardownProbeTable {
                 }
                 return $false
             }
-            Argument = $RootProcessId
+            Argument = $processProbeArgument
+        }
+        desktop_probe_debug_arg = @{
+            Script = {
+                param($ProbeArgument)
+
+                $processes = if ($null -eq $ProbeArgument.processes) {
+                    @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, Name, CommandLine -ErrorAction Stop)
+                } else {
+                    @($ProbeArgument.processes)
+                }
+                $descendantProcessIds = [Collections.Generic.HashSet[long]]::new()
+                [void]$descendantProcessIds.Add([long]$ProbeArgument.root_process_id)
+                do {
+                    $addedDescendant = $false
+                    foreach ($process in $processes) {
+                        if ($descendantProcessIds.Contains([long]$process.ParentProcessId) -and
+                            $descendantProcessIds.Add([long]$process.ProcessId)) {
+                            $addedDescendant = $true
+                        }
+                    }
+                } while ($addedDescendant)
+                foreach ($process in $processes) {
+                    if (-not $descendantProcessIds.Contains([long]$process.ProcessId) -or
+                        -not [string]::Equals([string]$process.Name, 'msedgewebview2.exe', [StringComparison]::OrdinalIgnoreCase)) {
+                        continue
+                    }
+                    $arguments = @([Winsmux.PublicRelease.WindowsCommandLine]::Parse([string]$process.CommandLine))
+                    if (@($arguments | Where-Object { [string]$_ -ceq [string]$ProbeArgument.debug_argument }).Count -gt 0) {
+                        return $true
+                    }
+                }
+                return $false
+            }
+            Argument = $processProbeArgument
         }
     }
 }
@@ -1359,6 +1420,7 @@ function Get-DesktopTeardownDiagnosis {
     param(
         [Parameter(Mandatory)][string]$UserDataFolder,
         [long]$RootProcessId = 0,
+        [int]$DebugPort = 0,
         $ProbeTable,
         [int]$ProbeTimeoutMilliseconds = $script:DesktopTeardownProbeTimeoutMilliseconds,
         [int]$TotalBudgetMilliseconds = $script:DesktopTeardownProbeTotalBudgetMilliseconds
@@ -1366,7 +1428,8 @@ function Get-DesktopTeardownDiagnosis {
 
     if ($null -eq $ProbeTable) {
         Assert-Condition ($RootProcessId -gt 0) 'Desktop teardown diagnosis requires a positive root process ID when building the real probe table.'
-        $ProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $UserDataFolder -RootProcessId $RootProcessId
+        Assert-Condition ($DebugPort -ge 1 -and $DebugPort -le 65535) 'Desktop teardown diagnosis requires the injected fixed debug port when building the real probe table.'
+        $ProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $UserDataFolder -RootProcessId $RootProcessId -DebugPort $DebugPort
     }
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     $diagnosis = [ordered]@{}
@@ -1476,7 +1539,7 @@ function Resolve-DesktopWebViewListenerAuthority {
     param(
         [Parameter(Mandatory)][int64]$RootProcessId,
         [Parameter(Mandatory)][int]$Port,
-        [Parameter(Mandatory)][string]$BrowserPath,
+        [AllowNull()][string]$BrowserPath,
         [Parameter(Mandatory)]$ProcessSnapshot,
         [Parameter(Mandatory)]$ListenerSnapshot
     )
@@ -1537,7 +1600,8 @@ function Resolve-DesktopWebViewListenerAuthority {
     } catch {
         return [pscustomobject]@{ state = 'browser_identity_invalid'; host = $null; port = 0; browser_path = $null }
     }
-    if (@($arguments | Where-Object { [string]$_ -ceq '--remote-debugging-port=0' }).Count -ne 1 -or
+    $expectedDebugArgument = "--remote-debugging-port=$Port"
+    if (@($arguments | Where-Object { [string]$_ -ceq $expectedDebugArgument }).Count -ne 1 -or
         @($arguments | Where-Object { ([string]$_).StartsWith('--type=', [StringComparison]::Ordinal) }).Count -ne 0) {
         return [pscustomobject]@{ state = 'browser_identity_invalid'; host = $null; port = 0; browser_path = $null }
     }
@@ -1576,7 +1640,8 @@ function New-DesktopCdpProbeRecord {
         )]
         [string]$State,
         [AllowNull()][string]$PageUrl,
-        [int]$Port = 0
+        [int]$Port = 0,
+        [AllowNull()][ValidateSet('cross_checked', 'shape_verified')][string]$PathAuthority = $null
     )
 
     $projectedPageUrl = $null
@@ -1588,6 +1653,7 @@ function New-DesktopCdpProbeRecord {
         state = $State
         page_url = $projectedPageUrl
         port = $Port
+        path_authority = if ([string]::IsNullOrWhiteSpace($PathAuthority)) { $null } else { [string]$PathAuthority }
         terminal_failure = $State -cin @(
             'user_data_reparse',
             'port_file_reparse',
@@ -1601,6 +1667,38 @@ function New-DesktopCdpProbeRecord {
             'version_identity_mismatch'
         )
     }
+}
+
+function Resolve-DesktopWebSocketPathAuthority {
+    param(
+        [Parameter(Mandatory)][string]$WebSocketDebuggerUrl,
+        [Parameter(Mandatory)][ValidateSet('127.0.0.1', '[::1]')][string]$HostName,
+        [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
+        [AllowNull()][string]$BrowserPath
+    )
+
+    [Uri]$webSocketUri = $null
+    $expectedHost = $HostName.Trim('[', ']')
+    if ([string]::IsNullOrWhiteSpace($WebSocketDebuggerUrl) -or
+        -not [Uri]::TryCreate($WebSocketDebuggerUrl, [UriKind]::Absolute, [ref]$webSocketUri) -or
+        $webSocketUri.Scheme -cne 'ws' -or
+        -not [string]::Equals($webSocketUri.Host.Trim('[', ']'), $expectedHost, [StringComparison]::OrdinalIgnoreCase) -or
+        $webSocketUri.Port -ne $Port -or
+        -not [string]::IsNullOrEmpty($webSocketUri.Query) -or
+        -not [string]::IsNullOrEmpty($webSocketUri.Fragment) -or
+        -not [string]::IsNullOrEmpty($webSocketUri.UserInfo)) {
+        return [pscustomobject]@{ state = 'version_identity_mismatch' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BrowserPath)) {
+        if ($webSocketUri.AbsolutePath -cne $BrowserPath) {
+            return [pscustomobject]@{ state = 'version_identity_mismatch' }
+        }
+        return [pscustomobject]@{ state = 'cross_checked' }
+    }
+    if ($webSocketUri.AbsolutePath -cnotmatch '^/devtools/browser/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$') {
+        return [pscustomobject]@{ state = 'version_identity_mismatch' }
+    }
+    return [pscustomobject]@{ state = 'shape_verified' }
 }
 
 function Get-RemoteDebugPage {
@@ -1661,7 +1759,7 @@ function Get-VerifiedRemoteDebugPage {
     param(
         [Parameter(Mandatory)][ValidateSet('127.0.0.1', '[::1]')][string]$HostName,
         [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
-        [Parameter(Mandatory)][string]$BrowserPath
+        [AllowNull()][string]$BrowserPath
     )
 
     $handler = [Net.Http.HttpClientHandler]::new()
@@ -1695,37 +1793,32 @@ function Get-VerifiedRemoteDebugPage {
             return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
         }
 
-        [Uri]$webSocketUri = $null
-        $expectedHost = $HostName.Trim('[', ']')
-        if ([string]::IsNullOrWhiteSpace($webSocketText) -or
-            -not [Uri]::TryCreate($webSocketText, [UriKind]::Absolute, [ref]$webSocketUri) -or
-            $webSocketUri.Scheme -cne 'ws' -or
-            -not [string]::Equals($webSocketUri.Host.Trim('[', ']'), $expectedHost, [StringComparison]::OrdinalIgnoreCase) -or
-            $webSocketUri.Port -ne $Port -or
-            $webSocketUri.AbsolutePath -cne $BrowserPath -or
-            -not [string]::IsNullOrEmpty($webSocketUri.Query) -or
-            -not [string]::IsNullOrEmpty($webSocketUri.Fragment) -or
-            -not [string]::IsNullOrEmpty($webSocketUri.UserInfo)) {
+        $pathAuthority = Resolve-DesktopWebSocketPathAuthority `
+            -WebSocketDebuggerUrl $webSocketText `
+            -HostName $HostName `
+            -Port $Port `
+            -BrowserPath $BrowserPath
+        if ([string]$pathAuthority.state -ceq 'version_identity_mismatch') {
             return (New-DesktopCdpProbeRecord -State 'version_identity_mismatch' -PageUrl $null -Port $Port)
         }
 
         try {
             $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list").GetAwaiter().GetResult()
         } catch {
-            return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port)
+            return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
         if (-not $listResponse.IsSuccessStatusCode) {
-            return (New-DesktopCdpProbeRecord -State 'http_error' -PageUrl $null -Port $Port)
+            return (New-DesktopCdpProbeRecord -State 'http_error' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
         try {
             $listPayload = $listResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
             $listDocument = [Text.Json.JsonDocument]::Parse($listPayload)
             if ($listDocument.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Array) {
-                return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
+                return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
             }
             $pages = @($listPayload | ConvertFrom-Json -Depth 20)
         } catch {
-            return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
+            return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
 
         $page = @($pages | Where-Object {
@@ -1733,13 +1826,13 @@ function Get-VerifiedRemoteDebugPage {
             -not [string]::IsNullOrWhiteSpace([string](Get-ObjectPropertyValue -Object $_ -Name 'url'))
         } | Select-Object -First 1)
         if ($page.Count -ne 1) {
-            return (New-DesktopCdpProbeRecord -State 'page_absent' -PageUrl $null -Port $Port)
+            return (New-DesktopCdpProbeRecord -State 'page_absent' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
         $url = [string](Get-ObjectPropertyValue -Object $page[0] -Name 'url')
         try {
-            return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl $url -Port $Port)
+            return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl $url -Port $Port -PathAuthority ([string]$pathAuthority.state))
         } catch {
-            return (New-DesktopCdpProbeRecord -State 'url_rejected' -PageUrl $null -Port $Port)
+            return (New-DesktopCdpProbeRecord -State 'url_rejected' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
     } finally {
         if ($null -ne $listDocument) { $listDocument.Dispose() }
@@ -1754,6 +1847,7 @@ function Get-DesktopWebViewAuthorityProbe {
     param(
         [Parameter(Mandatory)]$OwnedProcess,
         [Parameter(Mandatory)][string]$UserDataFolder,
+        [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
         [scriptblock]$PortFileSnapshotProvider,
         [scriptblock]$ProcessSnapshotProvider,
         [scriptblock]$ListenerSnapshotProvider,
@@ -1762,7 +1856,13 @@ function Get-DesktopWebViewAuthorityProbe {
 
     $portRecord = Read-DesktopDevToolsActivePort -UserDataFolder $UserDataFolder -SnapshotProvider $PortFileSnapshotProvider
     $portState = [string](Get-ObjectPropertyValue -Object $portRecord -Name 'state')
-    if ($portState -cne 'authority_ready') {
+    $browserPath = $null
+    if ($portState -ceq 'authority_ready') {
+        if ([int]$portRecord.port -ne $Port) {
+            return (New-DesktopCdpProbeRecord -State 'version_identity_mismatch' -PageUrl $null -Port $Port)
+        }
+        $browserPath = [string]$portRecord.browser_path
+    } elseif ($portState -cne 'port_file_missing') {
         return (New-DesktopCdpProbeRecord -State $portState -PageUrl $null)
     }
 
@@ -1772,16 +1872,16 @@ function Get-DesktopWebViewAuthorityProbe {
         & $ProcessSnapshotProvider $OwnedProcess
     }
     $listenerSnapshot = if ($null -eq $ListenerSnapshotProvider) {
-        Get-DesktopListenerSnapshot -Port ([int]$portRecord.port)
+        Get-DesktopListenerSnapshot -Port $Port
     } else {
-        & $ListenerSnapshotProvider ([int]$portRecord.port) $OwnedProcess
+        & $ListenerSnapshotProvider $Port $OwnedProcess
     }
     Assert-Condition ($null -ne $processSnapshot) 'Desktop process snapshot envelope was absent.'
     Assert-Condition ($null -ne $listenerSnapshot) 'Desktop listener snapshot envelope was absent.'
     $authority = Resolve-DesktopWebViewListenerAuthority `
         -RootProcessId ([int64]$OwnedProcess.process.Id) `
-        -Port ([int]$portRecord.port) `
-        -BrowserPath ([string]$portRecord.browser_path) `
+        -Port $Port `
+        -BrowserPath $browserPath `
         -ProcessSnapshot $processSnapshot `
         -ListenerSnapshot $listenerSnapshot
     $authorityState = [string](Get-ObjectPropertyValue -Object $authority -Name 'state')
@@ -1810,7 +1910,11 @@ function Get-DesktopWebViewAuthorityProbe {
     } else {
         $null
     }
-    return (New-DesktopCdpProbeRecord -State $probeState -PageUrl $pageUrl -Port ([int]$authority.port))
+    $pathAuthorityValue = Get-ObjectPropertyValue -Object $probe -Name 'path_authority'
+    if ($null -eq $pathAuthorityValue -or [string]::IsNullOrWhiteSpace([string]$pathAuthorityValue)) {
+        return (New-DesktopCdpProbeRecord -State $probeState -PageUrl $pageUrl -Port ([int]$authority.port))
+    }
+    return (New-DesktopCdpProbeRecord -State $probeState -PageUrl $pageUrl -Port ([int]$authority.port) -PathAuthority ([string]$pathAuthorityValue))
 }
 
 function New-DesktopObservationRecord {
@@ -1894,7 +1998,7 @@ function Wait-DesktopProcessObservation {
 
     $process = $OwnedProcess.process
     if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
-        Assert-Condition ($Port -eq 0) 'Typed Desktop observation does not accept a caller-selected port.'
+        Assert-Condition ($Port -ge 1 -and $Port -le 65535) 'Typed Desktop observation requires the injected fixed debug port.'
         Assert-Condition ($null -eq $PageProbe) 'Typed Desktop observation requires the authority probe boundary.'
         $stopwatch = [Diagnostics.Stopwatch]::StartNew()
         $attempt = 0
@@ -1902,14 +2006,14 @@ function Wait-DesktopProcessObservation {
             $attempt += 1
             $process.Refresh()
             if ($process.HasExited) {
-                return (New-DesktopObservationRecord -State 'exited' -Port 0 -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
+                return (New-DesktopObservationRecord -State 'exited' -Port $Port -Attempts $attempt -ExitCode $process.ExitCode -PageUrl $null)
             }
 
             try {
                 $probe = if ($null -eq $AuthorityProbe) {
-                    Get-DesktopWebViewAuthorityProbe -OwnedProcess $OwnedProcess -UserDataFolder $UserDataFolder
+                    Get-DesktopWebViewAuthorityProbe -OwnedProcess $OwnedProcess -UserDataFolder $UserDataFolder -Port $Port
                 } else {
-                    & $AuthorityProbe $OwnedProcess $UserDataFolder $attempt
+                    & $AuthorityProbe $OwnedProcess $UserDataFolder $Port $attempt
                 }
             } catch {
                 throw [InvalidOperationException]::new('Desktop typed authority probe failed unexpectedly.', $_.Exception)
@@ -2053,7 +2157,7 @@ function Invoke-DesktopLifecycleOperation {
             $pendingObservationFailure = $true
             if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
                 try {
-                    $teardownDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $UserDataFolder -RootProcessId ([long]$Context.app_process.process.Id)
+                    $teardownDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $UserDataFolder -RootProcessId ([long]$Context.app_process.process.Id) -DebugPort $Port
                 } catch {
                     $teardownDiagnosis = $null
                 }
@@ -2421,11 +2525,12 @@ function Invoke-DesktopSmoke {
 
         $webViewRoot = Join-Path $childRoot 'WebView2'
         New-Item -ItemType Directory -Path $webViewRoot | Out-Null
-        $childEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=0'
+        $debugEndpoint = New-DesktopFixedDebugEndpoint
+        $childEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = [string]$debugEndpoint.argument
         $childEnvironment.WEBVIEW2_USER_DATA_FOLDER = $webViewRoot
 
         $context.app_process = Start-OwnedProcess -FilePath (Join-Path $installRoot 'winsmux-app.exe') -Environment $childEnvironment
-        $observation = Invoke-DesktopLifecycleOperation -Context $context -Environment $childEnvironment -UserDataFolder $webViewRoot
+        $observation = Invoke-DesktopLifecycleOperation -Context $context -Environment $childEnvironment -Port ([int]$debugEndpoint.port) -UserDataFolder $webViewRoot
     } catch {
         $setupFailure = $_.Exception
         if ($null -ne $context.app_process) {
@@ -3120,6 +3225,24 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Assert-ProductionPageUrl -Url 'http://localhost:1420/' }) 'Development WebView URL was accepted.'
             $caseIds.Add('nonproduction_url')
 
+            $fixedDebugEndpoint = New-DesktopFixedDebugEndpoint
+            $fixedDebugArguments = @([string]$fixedDebugEndpoint.argument)
+            Assert-Condition ([int]$fixedDebugEndpoint.port -ge 1 -and [int]$fixedDebugEndpoint.port -le 65535) 'Fixed Desktop debug endpoint returned an out-of-range port.'
+            Assert-Condition (@($fixedDebugArguments | Where-Object { [string]$_ -ceq "--remote-debugging-port=$([int]$fixedDebugEndpoint.port)" }).Count -eq 1) 'Fixed Desktop debug endpoint did not produce exactly one matching argument.'
+            Assert-Condition (@($fixedDebugArguments | Where-Object { ([string]$_).StartsWith('--type=', [StringComparison]::Ordinal) }).Count -eq 0) 'Fixed Desktop debug injection included a process-type argument.'
+            Assert-Condition (@($fixedDebugArguments | Where-Object { ([string]$_).StartsWith('--remote-allow-origins', [StringComparison]::Ordinal) }).Count -eq 0) 'Fixed Desktop debug injection widened the remote origin policy.'
+            $fixedPortEvidence = [ordered]@{
+                exact_argument_count = [long]1
+                no_type_argument = $true
+                port_in_range = $true
+                raw_absent = $true
+                wildcard_origin_absent = $true
+            }
+            $fixedPortEvidence.raw_absent = ((@($fixedPortEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch '--remote-debugging-port|--type=|--remote-allow-origins')
+            Assert-Condition $fixedPortEvidence.raw_absent 'Fixed Desktop debug injection evidence exposed a raw argument.'
+            $evidence.desktop_fixed_port_injection = $fixedPortEvidence
+            $caseIds.Add('desktop_fixed_port_injection')
+
             $cdpReadyPath = Join-Path $root 'task826-cdp.ready'
             $cdpStopPath = Join-Path $root 'task826-cdp.stop'
             $rawBodyMarker = 'T826_CDP_RAW_BODY_MARKER'
@@ -3260,7 +3383,7 @@ try {
             $typedProfileRoot = Join-Path $typedUserData 'EBWebView'
             New-Item -ItemType Directory -Path $typedProfileRoot -Force | Out-Null
             $typedPort = 49161
-            $typedBrowserPath = '/devtools/browser/11111111-1111-1111-1111-111111111111'
+            $typedBrowserPath = '/devtools/browser/11111111-1111-4111-8111-111111111111'
             [IO.File]::WriteAllText(
                 (Join-Path $typedProfileRoot 'DevToolsActivePort'),
                 "$typedPort`n$typedBrowserPath",
@@ -3269,7 +3392,7 @@ try {
             $typedRootProcess = [pscustomobject]@{ process = [Diagnostics.Process]::GetCurrentProcess() }
             $typedRootPid = [int64]$typedRootProcess.process.Id
             $typedBrowserPid = $typedRootPid + 100000
-            $typedBrowserCommand = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=0'
+            $typedBrowserCommand = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=49161'
             $typedProcessSnapshotItems = @(
                 [pscustomobject]@{
                     process_id = $typedRootPid
@@ -3304,13 +3427,14 @@ try {
                 Assert-Condition ([string]$Authority.host -ceq '127.0.0.1') 'Typed page probe received a non-loopback host.'
                 Assert-Condition ([int]$Authority.port -eq $typedPort) 'Typed page probe received a foreign port.'
                 Assert-Condition ([string]$Authority.browser_path -ceq $typedBrowserPath) 'Typed page probe received a foreign browser path.'
-                return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl 'tauri://localhost/' -Port $typedPort)
+                return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl 'tauri://localhost/' -Port $typedPort -PathAuthority 'cross_checked')
             }.GetNewClosure()
             $typedProcessProvider = { param($OwnedProcess) return $typedProcessSnapshot }.GetNewClosure()
             $typedListenerProvider = { param($Port, $OwnedProcess) return $typedListenerSnapshot }.GetNewClosure()
             $typedProbe = Get-DesktopWebViewAuthorityProbe `
                 -OwnedProcess $typedRootProcess `
                 -UserDataFolder $typedUserData `
+                -Port $typedPort `
                 -ProcessSnapshotProvider $typedProcessProvider `
                 -ListenerSnapshotProvider $typedListenerProvider `
                 -PageProbe $typedPageProbe
@@ -3324,7 +3448,7 @@ try {
             $typedPortFileItem = Get-Item -LiteralPath (Join-Path $typedProfileRoot 'DevToolsActivePort') -Force
             $typedAuthorityEvidence = [ordered]@{
                 browser_process_identity = [string]::Equals([string]$typedProcessSnapshotItems[1].name, 'msedgewebview2.exe', [StringComparison]::OrdinalIgnoreCase)
-                debug_port_zero = @($typedArguments | Where-Object { [string]$_ -ceq '--remote-debugging-port=0' }).Count -eq 1
+                debug_port_exact = @($typedArguments | Where-Object { [string]$_ -ceq "--remote-debugging-port=$typedPort" }).Count -eq 1
                 listener_loopback = [string]$typedListenerSnapshotItems[0].local_address -ceq '127.0.0.1'
                 listener_owner_identity = [int64]$typedListenerSnapshotItems[0].owning_process -eq $typedBrowserPid
                 page_url = [string]$typedProbe.page_url
@@ -3339,6 +3463,26 @@ try {
             Assert-Condition $typedAuthorityEvidence.raw_absent 'Typed authority evidence exposed a raw authority identity.'
             $evidence.desktop_typed_observation_authority = $typedAuthorityEvidence
             $caseIds.Add('desktop_typed_observation_authority')
+
+            $missingListenerAuthority = Resolve-DesktopWebViewListenerAuthority `
+                -RootProcessId $typedRootPid `
+                -Port $typedPort `
+                -BrowserPath $typedBrowserPath `
+                -ProcessSnapshot $typedProcessSnapshot `
+                -ListenerSnapshot (New-DesktopSnapshotEnvelope -Kind 'listeners' -Items @())
+            Assert-Condition ([string]$missingListenerAuthority.state -ceq 'listener_missing') 'Fixed Desktop authority did not preserve the listener-missing wait state.'
+            Assert-Condition ([string]$typedAuthority.state -ceq 'authority_ready') 'Fixed Desktop authority did not accept the run-owned listener after it appeared.'
+            $listenerAuthorityEvidence = [ordered]@{
+                exact_argument = @($typedArguments | Where-Object { [string]$_ -ceq "--remote-debugging-port=$typedPort" }).Count -eq 1
+                no_type_argument = @($typedArguments | Where-Object { ([string]$_).StartsWith('--type=', [StringComparison]::Ordinal) }).Count -eq 0
+                owner_verified = [string]$typedAuthority.state -ceq 'authority_ready'
+                raw_absent = $true
+                states = @([string]$missingListenerAuthority.state, [string]$typedAuthority.state)
+            }
+            $listenerAuthorityEvidence.raw_absent = ((@($listenerAuthorityEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid')
+            Assert-Condition $listenerAuthorityEvidence.raw_absent 'Fixed Desktop listener evidence exposed a raw authority identity.'
+            $evidence.desktop_fixed_port_listener_authority = $listenerAuthorityEvidence
+            $caseIds.Add('desktop_fixed_port_listener_authority')
 
             $validPortSnapshot = Get-DesktopDevToolsPortFileSnapshot -UserDataFolder $typedUserData
             $utf8 = [Text.UTF8Encoding]::new($false)
@@ -3359,7 +3503,7 @@ try {
                     process_id = $typedBrowserPid
                     parent_process_id = $typedRootPid
                     name = 'msedgewebview2.exe'
-                    command_line = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=49161'
+                    command_line = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=49162'
                 }
             )
             $invalidBrowserProcessSnapshot = New-DesktopSnapshotEnvelope -Kind 'processes' -Items $invalidBrowserProcessSnapshotItems
@@ -3395,7 +3539,6 @@ try {
             Assert-Condition (@($actualEmptyListenerSnapshot.items).Count -eq 0) 'Actual listener no-match control did not return an empty typed envelope.'
             $rejectDefinitions = @(
                 [pscustomobject]@{ state = 'user_data_reparse'; port_snapshot = (& $snapshotTemplate $true $true $false $false ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
-                [pscustomobject]@{ state = 'port_file_missing'; port_snapshot = (& $snapshotTemplate $true $false $false $false ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
                 [pscustomobject]@{ state = 'port_file_reparse'; port_snapshot = (& $snapshotTemplate $true $false $true $true ([byte[]]::new(0))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
                 [pscustomobject]@{ state = 'port_file_invalid_encoding'; port_snapshot = (& $snapshotTemplate $true $false $true $false ([byte[]](0xff, 0xfe))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
                 [pscustomobject]@{ state = 'port_file_invalid_shape'; port_snapshot = (& $snapshotTemplate $true $false $true $false ($utf8.GetBytes("$typedPort`n$typedBrowserPath`n"))); processes = $typedProcessSnapshot; listeners = $typedListenerSnapshot; page_state = $null },
@@ -3428,6 +3571,7 @@ try {
                 $rejectProbe = Get-DesktopWebViewAuthorityProbe `
                     -OwnedProcess $typedRootProcess `
                     -UserDataFolder $typedUserData `
+                    -Port $typedPort `
                     -PortFileSnapshotProvider $portSnapshotProvider `
                     -ProcessSnapshotProvider $processSnapshotProvider `
                     -ListenerSnapshotProvider $listenerSnapshotProvider `
@@ -3458,6 +3602,55 @@ try {
             Assert-Condition ($rejectJson -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid') 'Typed fail-closed evidence exposed a raw authority identity.'
             $evidence.desktop_typed_observation_fail_closed = $rejectEvidence
             $caseIds.Add('desktop_typed_observation_fail_closed')
+
+            $alternateBrowserPath = '/devtools/browser/22222222-2222-4222-8222-222222222222'
+            $wsAuthorityDefinitions = @(
+                [pscustomobject]@{
+                    scenario = 'present_mismatch'
+                    expected = 'version_identity_mismatch'
+                    browser_path = $typedBrowserPath
+                    url = "ws://127.0.0.1:$typedPort$alternateBrowserPath"
+                },
+                [pscustomobject]@{
+                    scenario = 'absent_malformed'
+                    expected = 'version_identity_mismatch'
+                    browser_path = $null
+                    url = "ws://127.0.0.1:$typedPort/devtools/browser/not-a-v4-uuid"
+                },
+                [pscustomobject]@{
+                    scenario = 'absent_valid'
+                    expected = 'shape_verified'
+                    browser_path = $null
+                    url = "ws://127.0.0.1:$typedPort$typedBrowserPath"
+                },
+                [pscustomobject]@{
+                    scenario = 'present_match'
+                    expected = 'cross_checked'
+                    browser_path = $typedBrowserPath
+                    url = "ws://127.0.0.1:$typedPort$typedBrowserPath"
+                }
+            )
+            $wsAuthorityRecords = [Collections.Generic.List[object]]::new()
+            foreach ($definition in $wsAuthorityDefinitions) {
+                $resolvedPathAuthority = Resolve-DesktopWebSocketPathAuthority `
+                    -WebSocketDebuggerUrl ([string]$definition.url) `
+                    -HostName '127.0.0.1' `
+                    -Port $typedPort `
+                    -BrowserPath $definition.browser_path
+                Assert-Condition ([string]$resolvedPathAuthority.state -ceq [string]$definition.expected) "WebSocket path authority scenario '$([string]$definition.scenario)' returned the wrong typed state."
+                $wsAuthorityRecords.Add([ordered]@{
+                    scenario = [string]$definition.scenario
+                    state = [string]$resolvedPathAuthority.state
+                })
+            }
+            $wsPathAuthorityEvidence = [ordered]@{
+                raw_absent = $true
+                records = @($wsAuthorityRecords)
+            }
+            $wsPathAuthorityEvidence.raw_absent = ((@($wsPathAuthorityEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid')
+            Assert-Condition $wsPathAuthorityEvidence.raw_absent 'WebSocket path authority evidence exposed a raw identity.'
+            $evidence.desktop_ws_path_authority = $wsPathAuthorityEvidence
+            $caseIds.Add('desktop_ws_path_authority')
 
             $captureScenarios = @(
                 [pscustomobject]@{ name = 'zero'; command = 'exit 0' },
@@ -3546,7 +3739,7 @@ try {
             Assert-Condition ([string]$syntheticDiagnosis.probe_timeout -ceq 'error:timeout') 'The sleeping teardown probe did not return error:timeout.'
 
             $missingDiagnosisUserData = Join-Path $diagnosisRoot 'missing-user-data'
-            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID
+            $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID -DebugPort 49161
             $expectedProbeKeys = @(
                 'desktop_probe_runtime_registry',
                 'desktop_probe_runtime_binary',
@@ -3554,9 +3747,10 @@ try {
                 'desktop_probe_init_trace',
                 'desktop_probe_port_file_redirected',
                 'desktop_probe_port_file_fallback',
-                'desktop_probe_webview_process_present'
+                'desktop_probe_webview_process_present',
+                'desktop_probe_debug_arg'
             )
-            Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the seven-key contract.'
+            Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the eight-key contract.'
             $realDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $realProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 1000
             foreach ($value in @($realDiagnosis.Values)) {
                 Assert-Condition ([string]$value -cmatch '^(?:true|false|unknown|error:[a-z]+)$') 'A teardown probe returned a value outside the four-value domain.'
@@ -3620,6 +3814,75 @@ try {
                 Get-DesktopTeardownDiagnosisSegment -Diagnosis ([ordered]@{ desktop_probe_Runtime_binary = 'true' })
             }) 'A teardown diagnosis segment accepted a key outside the lowercase allowlist.'
             $caseIds.Add('desktop_teardown_diagnosis_privacy')
+
+            $debugProbeRootPid = [long]$PID
+            $debugProbeBrowserPid = $debugProbeRootPid + 200000L
+            $debugProbeRootItem = [pscustomobject]@{
+                ProcessId = $debugProbeRootPid
+                ParentProcessId = 0L
+                Name = 'pwsh.exe'
+                CommandLine = 'pwsh.exe'
+            }
+            $matchingDebugProcesses = @(
+                $debugProbeRootItem,
+                [pscustomobject]@{
+                    ProcessId = $debugProbeBrowserPid
+                    ParentProcessId = $debugProbeRootPid
+                    Name = 'msedgewebview2.exe'
+                    CommandLine = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=49161'
+                }
+            )
+            $missingDebugProcesses = @(
+                $debugProbeRootItem,
+                [pscustomobject]@{
+                    ProcessId = $debugProbeBrowserPid
+                    ParentProcessId = $debugProbeRootPid
+                    Name = 'msedgewebview2.exe'
+                    CommandLine = '"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\msedgewebview2.exe" --remote-debugging-port=49162'
+                }
+            )
+            $matchingDebugTable = New-DesktopTeardownProbeTable `
+                -UserDataFolder $missingDiagnosisUserData `
+                -RootProcessId $debugProbeRootPid `
+                -DebugPort 49161 `
+                -ProcessSnapshotItems $matchingDebugProcesses
+            $missingDebugTable = New-DesktopTeardownProbeTable `
+                -UserDataFolder $missingDiagnosisUserData `
+                -RootProcessId $debugProbeRootPid `
+                -DebugPort 49161 `
+                -ProcessSnapshotItems $missingDebugProcesses
+            $debugTrue = Invoke-BoundedDiagnosisProbe -Probe $matchingDebugTable.desktop_probe_debug_arg.Script -Argument $matchingDebugTable.desktop_probe_debug_arg.Argument -TimeoutMilliseconds 1000
+            $debugFalse = Invoke-BoundedDiagnosisProbe -Probe $missingDebugTable.desktop_probe_debug_arg.Script -Argument $missingDebugTable.desktop_probe_debug_arg.Argument -TimeoutMilliseconds 1000
+            $debugErrorTable = [ordered]@{
+                desktop_probe_debug_arg = @{ Script = { param($ProbeArgument) throw 'synthetic debug argument probe failure' }; Argument = $null }
+            }
+            $debugUnknownTable = [ordered]@{
+                desktop_probe_debug_arg = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
+            }
+            $debugError = (Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $debugErrorTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500).desktop_probe_debug_arg
+            $debugUnknown = (Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $debugUnknownTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 0).desktop_probe_debug_arg
+            Assert-Condition ([string]$debugTrue -ceq 'true') 'The debug argument probe did not detect the exact injected argument.'
+            Assert-Condition ([string]$debugFalse -ceq 'false') 'The debug argument probe accepted a nonmatching argument.'
+            Assert-Condition ([string]$debugError -ceq 'error:io') 'The debug argument probe did not preserve its bounded error value.'
+            Assert-Condition ([string]$debugUnknown -ceq 'unknown') 'The debug argument probe did not preserve its exhausted-budget value.'
+            $debugArgumentRecords = @(
+                [ordered]@{ scenario = 'match'; value = [string]$debugTrue },
+                [ordered]@{ scenario = 'missing'; value = [string]$debugFalse },
+                [ordered]@{ scenario = 'error'; value = [string]$debugError },
+                [ordered]@{ scenario = 'budget'; value = [string]$debugUnknown }
+            )
+            foreach ($record in $debugArgumentRecords) {
+                Assert-Condition ([string]$record.value -cmatch '^(?:true|false|unknown|error:[a-z]+)$') 'The debug argument diagnosis escaped its four-value domain.'
+            }
+            $debugArgumentEvidence = [ordered]@{
+                raw_absent = $true
+                records = $debugArgumentRecords
+            }
+            $debugArgumentEvidence.raw_absent = ((@($debugArgumentEvidence) | ConvertTo-Json -Depth 10 -Compress) -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid')
+            Assert-Condition $debugArgumentEvidence.raw_absent 'Debug argument diagnosis evidence exposed a raw identity.'
+            $null = Get-DesktopTeardownDiagnosisSegment -Diagnosis ([ordered]@{ desktop_probe_debug_arg = [string]$debugTrue })
+            $evidence.desktop_debug_arg_diagnosis = $debugArgumentEvidence
+            $caseIds.Add('desktop_debug_arg_diagnosis')
         } else {
             $nodeFixtureRoot = Join-Path $root 'node-toolchains'
             $firstNodeRoot = Join-Path $nodeFixtureRoot 'first'
