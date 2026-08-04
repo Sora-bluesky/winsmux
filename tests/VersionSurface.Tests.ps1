@@ -1316,6 +1316,7 @@ switch (`$args[0]) {
         $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
 
         $helper | Should -Match 'function Invoke-BoundedDiagnosisProbe'
+        $helper | Should -Match ([regex]::Escape('BeginStop'))
         $helper | Should -Match ([regex]::Escape('$script:DesktopTeardownProbeTimeoutMilliseconds = 5000'))
         $helper | Should -Match ([regex]::Escape('$script:DesktopTeardownProbeTotalBudgetMilliseconds = 20000'))
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)

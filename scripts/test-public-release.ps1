@@ -1203,10 +1203,14 @@ function Invoke-BoundedDiagnosisProbe {
         return 'unknown'
     }
     $runner = [powershell]::Create()
+    $abandonRunner = $false
     try {
         $null = $runner.AddScript($Probe.ToString()).AddArgument($Argument)
         $handle = $runner.BeginInvoke()
         if (-not $handle.AsyncWaitHandle.WaitOne($TimeoutMilliseconds)) {
+            $abandonRunner = $true
+            try { [void]$runner.BeginStop($null, $null) } catch { }
+            # Abandonment is bounded per run: the probe table is finite and the helper process is short-lived.
             return 'error:timeout'
         }
         $output = $runner.EndInvoke($handle)
@@ -1226,7 +1230,9 @@ function Invoke-BoundedDiagnosisProbe {
     } catch {
         return 'error:io'
     } finally {
-        try { $runner.Dispose() } catch { }
+        if (-not $abandonRunner) {
+            try { $runner.Dispose() } catch { }
+        }
     }
 }
 
@@ -1269,26 +1275,27 @@ function New-DesktopTeardownProbeTable {
                     'Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
                     'Registry::HKEY_CURRENT_USER\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
                 )
-                $runtimeVersion = $null
+                $runtimeVersions = [Collections.Generic.List[string]]::new()
                 foreach ($registrationPath in $registrationPaths) {
                     if (-not (Test-Path -LiteralPath $registrationPath)) {
                         continue
                     }
                     $candidateVersion = [string](Get-ItemProperty -LiteralPath $registrationPath -Name 'pv' -ErrorAction Stop).pv
                     if (-not [string]::IsNullOrWhiteSpace($candidateVersion)) {
-                        $runtimeVersion = $candidateVersion
-                        break
+                        $runtimeVersions.Add($candidateVersion)
                     }
                 }
-                if ([string]::IsNullOrWhiteSpace($runtimeVersion)) {
+                if ($runtimeVersions.Count -eq 0) {
                     return 'unknown'
                 }
                 $binaryCandidates = [Collections.Generic.List[string]]::new()
-                if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
-                    $binaryCandidates.Add((Join-Path ${env:ProgramFiles(x86)} "Microsoft\EdgeWebView\Application\$runtimeVersion\msedgewebview2.exe"))
-                }
-                if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
-                    $binaryCandidates.Add((Join-Path $env:LOCALAPPDATA "Microsoft\EdgeWebView\Application\$runtimeVersion\msedgewebview2.exe"))
+                foreach ($runtimeVersion in $runtimeVersions) {
+                    if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
+                        $binaryCandidates.Add((Join-Path ${env:ProgramFiles(x86)} "Microsoft\EdgeWebView\Application\$runtimeVersion\msedgewebview2.exe"))
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                        $binaryCandidates.Add((Join-Path $env:LOCALAPPDATA "Microsoft\EdgeWebView\Application\$runtimeVersion\msedgewebview2.exe"))
+                    }
                 }
                 foreach ($binaryPath in $binaryCandidates) {
                     if (Test-Path -LiteralPath $binaryPath -PathType Leaf) {
@@ -3567,6 +3574,15 @@ try {
             Assert-Condition ([string]$budgetDiagnosis.sleep_one -ceq 'error:timeout') 'The first bounded teardown probe did not time out.'
             Assert-Condition ([string]$budgetDiagnosis.sleep_three -ceq 'unknown') 'A teardown probe after total-budget exhaustion was not marked unknown.'
             Assert-Condition ($budgetStopwatch.ElapsedMilliseconds -lt 2000) 'The teardown diagnosis exceeded its bounded self-test duration.'
+
+            $nonCooperativeProbeTable = [ordered]@{
+                non_cooperative = @{ Script = { param($ProbeArgument) [System.Threading.Thread]::Sleep(2000); $true }; Argument = $null }
+            }
+            $nonCooperativeStopwatch = [Diagnostics.Stopwatch]::StartNew()
+            $nonCooperativeDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $nonCooperativeProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
+            $nonCooperativeStopwatch.Stop()
+            Assert-Condition ([string]$nonCooperativeDiagnosis.non_cooperative -ceq 'error:timeout') 'The non-cooperative teardown probe did not return error:timeout.'
+            Assert-Condition ($nonCooperativeStopwatch.ElapsedMilliseconds -lt 1500) 'The non-cooperative teardown probe blocked after its timeout.'
 
             $immediateProbeTable = [ordered]@{
                 immediate_true = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
