@@ -112,6 +112,16 @@ pub(crate) fn resolve_from_env() -> RemoteDebugGate {
     gate
 }
 
+/// Remove both gate variables from a std child-process command so a spawned
+/// child cannot re-arm the gate with inherited test-harness state.
+pub(crate) fn scrub_gate_env_from_command(command: &mut std::process::Command) {
+    command.env_remove(WINSMUX_DESKTOP_TEST_PROFILE_ENV);
+    command.env_remove(WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV);
+}
+
+#[cfg(test)]
+pub(crate) static GATE_ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +303,76 @@ mod tests {
         let args = compose_browser_args(1024);
         assert!(!args.contains("--remote-debugging-address"));
         assert!(!args.contains("--remote-allow-origins"));
+    }
+
+    #[test]
+    fn scrub_records_explicit_removal_entries() {
+        let mut command = std::process::Command::new("cmd.exe");
+        scrub_gate_env_from_command(&mut command);
+        let removed_keys: Vec<std::ffi::OsString> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                if value.is_none() {
+                    Some(key.to_os_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            removed_keys.contains(&std::ffi::OsString::from(WINSMUX_DESKTOP_TEST_PROFILE_ENV)),
+            "expected env_remove entry for {WINSMUX_DESKTOP_TEST_PROFILE_ENV}, got {removed_keys:?}"
+        );
+        assert!(
+            removed_keys.contains(&std::ffi::OsString::from(WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV)),
+            "expected env_remove entry for {WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV}, got {removed_keys:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn scrubbed_child_process_does_not_inherit_gate_env() {
+        let _guard = GATE_ENV_TEST_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        std::env::set_var(WINSMUX_DESKTOP_TEST_PROFILE_ENV, "sentinel-profile");
+        std::env::set_var(WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV, "49871");
+
+        let positive = std::process::Command::new("cmd.exe")
+            .args([
+                "/C",
+                "echo [%WINSMUX_DESKTOP_TEST_PROFILE%] [%WINSMUX_DESKTOP_REMOTE_DEBUG_PORT%]",
+            ])
+            .output()
+            .expect("positive-control child process should spawn");
+        let positive_stdout = String::from_utf8_lossy(&positive.stdout);
+        assert!(
+            positive_stdout.contains("sentinel-profile"),
+            "positive control should inherit test profile; stdout={positive_stdout}"
+        );
+        assert!(
+            positive_stdout.contains("49871"),
+            "positive control should inherit remote debug port; stdout={positive_stdout}"
+        );
+
+        let mut scrubbed = std::process::Command::new("cmd.exe");
+        scrubbed.args([
+            "/C",
+            "echo [%WINSMUX_DESKTOP_TEST_PROFILE%] [%WINSMUX_DESKTOP_REMOTE_DEBUG_PORT%]",
+        ]);
+        scrub_gate_env_from_command(&mut scrubbed);
+        let scrubbed_output = scrubbed
+            .output()
+            .expect("scrubbed child process should spawn");
+        std::env::remove_var(WINSMUX_DESKTOP_TEST_PROFILE_ENV);
+        std::env::remove_var(WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV);
+        let stdout = String::from_utf8_lossy(&scrubbed_output.stdout);
+        assert!(
+            stdout.contains("[%WINSMUX_DESKTOP_TEST_PROFILE%]"),
+            "scrubbed child should leave profile token unexpanded; stdout={stdout}"
+        );
+        assert!(
+            stdout.contains("[%WINSMUX_DESKTOP_REMOTE_DEBUG_PORT%]"),
+            "scrubbed child should leave remote debug port token unexpanded; stdout={stdout}"
+        );
     }
 
     #[test]
