@@ -2,6 +2,7 @@ mod control_pipe;
 mod desktop_backend;
 mod desktop_session_restore;
 mod pty_backend;
+mod remote_debug_gate;
 
 use control_pipe::{start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV};
 use desktop_backend::{
