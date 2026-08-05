@@ -1536,4 +1536,159 @@ Resolve-DesktopWebSocketPathAuthority `
         $result = & ([scriptblock]::Create($harness))
         $result.state | Should -Be 'version_identity_mismatch'
     }
+
+    It 'T838-PARAM-01 declares desktop-only candidate parameters with mode validation' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+
+        $byName = @{}
+        foreach ($p in @($ast.ParamBlock.Parameters)) {
+            $byName[$p.Name.VariablePath.UserPath] = $p
+        }
+        $byName.ContainsKey('CandidateInstallerPath') | Should -BeTrue
+        @($byName['CandidateInstallerPath'].Attributes | Where-Object {
+            $_ -is [Management.Automation.Language.TypeConstraintAst] -and $_.TypeName.Name -ceq 'string'
+        }).Count | Should -Be 1
+
+        $byName.ContainsKey('DesktopLegacyEnvMode') | Should -BeTrue
+        $modeParam = $byName['DesktopLegacyEnvMode']
+        @($modeParam.Attributes | Where-Object {
+            $_ -is [Management.Automation.Language.TypeConstraintAst] -and $_.TypeName.Name -ceq 'string'
+        }).Count | Should -Be 1
+        $validateSet = @($modeParam.Attributes | Where-Object {
+            $_ -is [Management.Automation.Language.AttributeAst] -and $_.TypeName.Name -ceq 'ValidateSet'
+        })
+        $validateSet.Count | Should -Be 1
+        $setValues = @($validateSet[0].PositionalArguments | ForEach-Object { $_.SafeGetValue() })
+        $setValues | Should -Be @('PortAndMarker', 'MarkerOnly')
+        $modeParam.DefaultValue.SafeGetValue() | Should -Be 'PortAndMarker'
+    }
+
+    It 'T838-PARAM-REJECT-01 rejects candidate parameters outside the Desktop surface and a missing installer path' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tempInstaller = Join-Path $TestDrive 't838-candidate-installer.exe'
+        try {
+            Set-Content -LiteralPath $tempInstaller -Value 't838-candidate' -Encoding ascii -NoNewline
+            $version = $script:ProductVersion
+            $tag = "v$version"
+            $repo = 'Sora-bluesky/winsmux'
+
+            $coreOut = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $version -ReleaseTag $tag -Repository $repo -CandidateInstallerPath $tempInstaller -Json 2>&1)
+            $LASTEXITCODE | Should -Not -Be 0
+            $coreText = ($coreOut | Out-String)
+            ($coreText -match 'CandidateInstallerPath' -and $coreText -match 'Desktop' -and $coreText -match '(?i)(requires|only)') | Should -BeTrue
+
+            $npmOut = @(& pwsh -NoProfile -File $helperPath -Surface Npm -Version $version -ReleaseTag $tag -Repository $repo -DesktopLegacyEnvMode MarkerOnly -Json 2>&1)
+            $LASTEXITCODE | Should -Not -Be 0
+            $npmText = ($npmOut | Out-String)
+            ($npmText -match 'DesktopLegacyEnvMode' -and $npmText -match 'Desktop' -and $npmText -match '(?i)(requires|only)') | Should -BeTrue
+
+            $missingPath = Join-Path $TestDrive 'missing-candidate-installer.exe'
+            $missingOut = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $version -ReleaseTag $tag -Repository $repo -CandidateInstallerPath $missingPath -Json 2>&1)
+            $LASTEXITCODE | Should -Not -Be 0
+            ($missingOut | Out-String) | Should -Match ([regex]::Escape($missingPath))
+        } finally {
+            if (Test-Path -LiteralPath $tempInstaller) {
+                Remove-Item -LiteralPath $tempInstaller -Force
+            }
+        }
+    }
+
+    It 'T838-RECEIPT-A8-01 keeps the candidate branch inside Invoke-DesktopSmoke with an unchanged four-field evidence shape' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+
+        $desktopSmoke = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-DesktopSmoke'
+        }, $true))
+        $desktopSmoke.Count | Should -Be 1
+        $fn = $desktopSmoke[0]
+        $fn.Body.Extent.Text | Should -Match 'CandidateInstallerPath'
+
+        $returnHashtables = @($fn.Body.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.ReturnStatementAst]
+        }, $true) | ForEach-Object {
+            $_.FindAll({
+                param($inner)
+                $inner -is [Management.Automation.Language.HashtableAst]
+            }, $true)
+        })
+        $returnHashtables.Count | Should -Be 1
+        $evidenceKeys = @($returnHashtables[0].KeyValuePairs | ForEach-Object {
+            if ($_.Item1 -is [Management.Automation.Language.StringConstantExpressionAst]) {
+                $_.Item1.Value
+            } else {
+                $_.Item1.Extent.Text.Trim()
+            }
+        })
+        $evidenceKeys | Should -Be @('asset', 'sha256', 'version', 'page_url')
+
+        $candidateIfs = @($fn.Body.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.IfStatementAst] -and
+                @($node.Clauses | Where-Object { $_.Item1.Extent.Text -match 'CandidateInstallerPath' }).Count -gt 0
+        }, $true))
+        $candidateIfs.Count | Should -BeGreaterThan 0
+        $branchText = @($candidateIfs | ForEach-Object { $_.Extent.Text }) -join "`n"
+        $branchText | Should -Match 'Invoke-PublicDownload'
+        $branchText | Should -Match 'Assert-FileChecksum'
+    }
+
+    It 'T838-ENVMODE-01 constructs the desktop child environment for both legacy env modes' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        $caseIds = @($selfTest.case_ids)
+        $caseIds | Should -Contain 'legacy_env_port_and_marker'
+        $caseIds | Should -Contain 'legacy_env_marker_only'
+    }
+
+    It 'T838-PROBE-DIAG-01 emits desktop probe diagnostics on every run and keeps env_channel out of pass-fail' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $parseErrors = $null
+        $tokens = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+
+        $envChannelKeys = @($ast.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                        $node.Value -ceq 'desktop_probe_env_channel'
+                }, $true))
+        $debugArgKeys = @($ast.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.StringConstantExpressionAst] -and
+                        $node.Value -ceq 'desktop_probe_debug_arg'
+                }, $true))
+        $envChannelKeys.Count | Should -BeGreaterThan 0
+        $debugArgKeys.Count | Should -BeGreaterThan 0
+
+        $passFailDecisionText = @($ast.FindAll({
+                    param($node)
+                    ($node -is [Management.Automation.Language.IfStatementAst] -or
+                        $node -is [Management.Automation.Language.BinaryExpressionAst] -or
+                        $node -is [Management.Automation.Language.CommandAst]) -and
+                        $node.Extent.Text -cmatch 'desktop_probe_debug_arg' -and
+                        $node.Extent.Text -cmatch '(?:Assert-Condition|-eq|-ne|-ceq|-cne)'
+                }, $true) | ForEach-Object { $_.Extent.Text }) -join "`n"
+        $passFailDecisionText | Should -Match 'desktop_probe_debug_arg'
+        $passFailDecisionText | Should -Not -Match 'desktop_probe_env_channel'
+
+        $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
+        $LASTEXITCODE | Should -Be 0
+        $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
+        $caseIds = @($selfTest.case_ids)
+        $caseIds | Should -Contain 'desktop_probe_diag_success_emission'
+        $caseIds | Should -Contain 'desktop_probe_diag_failure_emission'
+    }
 }

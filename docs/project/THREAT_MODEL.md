@@ -79,6 +79,7 @@ that the repository exports OCSF events today.
 | TM-020 | Subagent or worktree context over-sharing | subagent and worktree events | subagent and worktree hooks | Detection Finding | `sh-subagent.js` and `sh-worktree.js` record startup and worktree boundaries. |
 | TM-021 | False task completion or issue closure | task and issue flow | task and issue gates | Detection Finding | `sh-task-gate.js`, `sh-pipeline.js`, and `sh-issue-gate.js` attach completion claims to evidence. |
 | TM-022 | Release or public documentation leakage | release notes and public docs | public surface audit | Security Finding | `scripts/audit-public-surface.ps1` and `PublicSurfacePolicy.Tests.ps1` block forbidden public references. |
+| TM-023 | Accidental desktop remote-debugging (CDP) endpoint activation | desktop app remote-debugging endpoint | dual environment gate (`WINSMUX_DESKTOP_TEST_PROFILE` and `WINSMUX_DESKTOP_REMOTE_DEBUG_PORT`) | Security Finding | Dual env gate keeps CDP default-off (port variable unread without test profile), binds loopback-only, and scrubs both variables from every child process environment. |
 
 ## Residual Risk Handling
 

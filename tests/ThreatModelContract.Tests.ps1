@@ -19,16 +19,16 @@ Describe 'Threat model audit contract' {
         $script:Patterns = Get-Content -LiteralPath $script:PatternsPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
     }
 
-    It 'records exactly 22 unique threat IDs in the threat model' {
+    It 'records exactly 23 unique threat IDs in the threat model' {
         $ids = @(
             [regex]::Matches($script:ThreatModel, '(?m)^\|\s*(TM-\d{3})\s*\|') |
                 ForEach-Object { $_.Groups[1].Value } |
                 Sort-Object -Unique
         )
 
-        $ids.Count | Should -Be 22
+        $ids.Count | Should -Be 23
         $ids[0] | Should -Be 'TM-001'
-        $ids[-1] | Should -Be 'TM-022'
+        $ids[-1] | Should -Be 'TM-023'
     }
 
     It 'audits every threat ID from the threat model' {
@@ -43,7 +43,7 @@ Describe 'Threat model audit contract' {
                 Sort-Object -Unique
         )
 
-        $auditIds.Count | Should -Be 22
+        $auditIds.Count | Should -Be 23
         $auditIds | Should -Be $threatIds
     }
 

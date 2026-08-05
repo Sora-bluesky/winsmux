@@ -138,6 +138,8 @@ $whitelistPatterns = @(
     'tests/VersionSurface.Tests.ps1',
     'tests/CliBakeoff.Tests.ps1',
     'tests/ThreatModelContract.Tests.ps1',
+    'tests/V03630DesktopDebugGate.Tests.ps1',
+    'tests/V03630DesktopDebugGateProcess.Tests.ps1',
     'tests/Integration.PluginHookLoader.Tests.ps1',
     'tests/UpstreamReevaluation.Tests.ps1',
     'tests/EnterpriseStrategyAlignment.Tests.ps1',
