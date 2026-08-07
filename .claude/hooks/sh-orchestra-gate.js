@@ -245,16 +245,24 @@ try {
         if (hasForeignGitHubLifecycleTarget(reviewDetectionCommand, reviewBaseCwd)) {
           deny(denyMessage);
         }
-        const reviewRepoRoots = resolveReviewGateRepoRoots(toolInput, reviewDetectionCommand);
-        if (reviewRepoRoots === null) {
+        const reviewContexts = resolveReviewGateContexts(toolInput, reviewDetectionCommand);
+        if (reviewContexts === null) {
           deny(denyMessage);
         }
-        for (const reviewRepoRoot of reviewRepoRoots) {
-          const reviewStatePath = path.join(reviewRepoRoot, ".winsmux", "review-state.json");
-          const currentBranch = getCurrentBranch(reviewRepoRoot);
-          const currentHeadSha = getCurrentHeadSha(reviewRepoRoot);
+        // Null means a target existed but could not be verified; it was denied above.
+        // An empty list means no managed target was resolved, so unrelated repositories keep
+        // normal Git lifecycle behavior (design 6.4 item 7; TASK-783 C03). Do not deny here.
+        for (const reviewContext of reviewContexts) {
+          const reviewStatePath = path.join(reviewContext.stateRoot, ".winsmux", "review-state.json");
+          const currentBranch = getCurrentBranch(reviewContext.workRoot);
+          const currentHeadSha = getCurrentHeadSha(reviewContext.workRoot);
           const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, "utf8"));
-          if (!currentBranch || !hasValidReviewerPass(reviewState[currentBranch], currentHeadSha)) {
+          if (!currentBranch || !hasValidReviewerPass(
+            reviewState[currentBranch],
+            currentHeadSha,
+            reviewContext.workRoot,
+            reviewContext.stateRoot,
+          )) {
             deny(denyMessage);
           }
         }
@@ -10808,8 +10816,12 @@ function isWriteCapableAgentMode(mode) {
   return mode === "acceptedits" || mode === "auto" || mode === "bypasspermissions" || mode === "dontask";
 }
 
-function hasValidReviewerPass(reviewStateEntry, currentHeadSha) {
+function hasValidReviewerPass(reviewStateEntry, currentHeadSha, workRoot, stateRoot) {
   if (!reviewStateEntry || reviewStateEntry.status !== "PASS") {
+    return false;
+  }
+  if (typeof workRoot !== "string" || workRoot.trim() === "" ||
+      typeof stateRoot !== "string" || stateRoot.trim() === "") {
     return false;
   }
 
@@ -10821,6 +10833,16 @@ function hasValidReviewerPass(reviewStateEntry, currentHeadSha) {
   const reviewer = reviewStateEntry.reviewer;
   const reviewerRole = normalizeAgentValue(reviewer?.role);
   if (!reviewer || (reviewerRole !== "reviewer" && reviewerRole !== "worker")) {
+    return false;
+  }
+
+  const targetWorkRoot = reviewStateEntry?.request?.target_work_root;
+  if (typeof targetWorkRoot === "string" && targetWorkRoot.trim() !== "") {
+    if (!path.isAbsolute(targetWorkRoot) || normalizeComparablePath(targetWorkRoot) !== normalizeComparablePath(workRoot)) {
+      return false;
+    }
+  } else if (normalizeComparablePath(workRoot) !== normalizeComparablePath(stateRoot)) {
+    // Legacy PASS entries are unambiguous only for the main checkout.
     return false;
   }
 
@@ -10839,7 +10861,7 @@ function getReviewStateHeadSha(reviewStateEntry) {
   return "";
 }
 
-function resolveReviewGateRepoRoots(toolInput, command) {
+function resolveReviewGateContexts(toolInput, command) {
   const toolInputCwd = typeof toolInput?.cwd === "string" ? toolInput.cwd : "";
   const baseCwd = toolInputCwd || process.cwd();
   const baseRepoRoot = resolveGitTopLevel(baseCwd);
@@ -10850,24 +10872,29 @@ function resolveReviewGateRepoRoots(toolInput, command) {
         ...(commandTargets.requiresBaseCwd ? [baseCwd] : []),
       ]
     : [baseCwd];
-  const repoRoots = [];
+  const contexts = [];
   const seen = new Set();
 
   for (const candidate of candidates) {
-    const repoRoot = resolveGitTopLevel(candidate);
-    if (!repoRoot) {
+    const workRoot = resolveGitTopLevel(candidate);
+    if (!workRoot) {
       return null;
     }
-    if (repoRoot && isManagedReviewGateRepo(repoRoot, baseRepoRoot) && !seen.has(repoRoot)) {
-      repoRoots.push(repoRoot);
-      seen.add(repoRoot);
+    const comparableWorkRoot = normalizeComparablePath(workRoot);
+    const stateRoot = resolveReviewStateRoot(workRoot);
+    if (!stateRoot) {
+      return null;
+    }
+    if (isManagedReviewGateRepo(workRoot, baseRepoRoot, stateRoot) && !seen.has(comparableWorkRoot)) {
+      contexts.push({ workRoot, stateRoot });
+      seen.add(comparableWorkRoot);
     }
   }
 
-  return repoRoots;
+  return contexts;
 }
 
-function isManagedReviewGateRepo(repoRoot, baseRepoRoot) {
+function isManagedReviewGateRepo(repoRoot, baseRepoRoot, stateRoot = "") {
   if (!repoRoot) {
     return false;
   }
@@ -10882,7 +10909,8 @@ function isManagedReviewGateRepo(repoRoot, baseRepoRoot) {
     return true;
   }
 
-  return fs.existsSync(path.join(repoRoot, ".winsmux"));
+  return (stateRoot && fs.existsSync(path.join(stateRoot, ".winsmux")))
+    || fs.existsSync(path.join(repoRoot, ".winsmux"));
 }
 
 function getGitCommonDir(repoRoot) {
@@ -10900,6 +10928,16 @@ function getGitCommonDir(repoRoot) {
   } catch {
     return "";
   }
+}
+
+function resolveReviewStateRoot(workRoot) {
+  const commonDir = getGitCommonDir(workRoot);
+  if (!commonDir) {
+    return "";
+  }
+
+  const stateRoot = path.dirname(commonDir);
+  return stateRoot && stateRoot !== commonDir ? stateRoot : "";
 }
 
 function resolveGitTopLevel(candidate) {
@@ -13574,6 +13612,8 @@ module.exports = {
   isWriteCapableAgentMode,
   normalizeAgentValue,
   normalizePathValue,
+  resolveReviewGateContexts,
+  resolveReviewStateRoot,
   resolveGitDir,
   splitCommandSegments,
   stripHeredocBodies,

@@ -296,18 +296,16 @@ worktrees: {}
                 [string]$Branch = 'feature/review-gate-linked'
             )
 
-            $null = $SourceRepoRoot
-            $target = New-GateTargetRepo -Root $Root -Branch $Branch
-            $dotGitPath = Join-Path $target.RepoRoot '.git'
-            $actualGitDir = Join-Path $Root ([guid]::NewGuid().ToString('N'))
-            Move-Item -LiteralPath $dotGitPath -Destination $actualGitDir
-            Write-GateTestFile -Path $dotGitPath -Content ('gitdir: {0}' -f $actualGitDir)
-            & git --git-dir $actualGitDir config core.worktree $target.RepoRoot
+            $repoRoot = Join-Path $Root ('linked-' + [guid]::NewGuid().ToString('N'))
+            & git -C $SourceRepoRoot worktree add -b $Branch $repoRoot | Out-Null
             if ($LASTEXITCODE -ne 0) {
-                throw "unable to configure pointer gitdir $actualGitDir"
+                throw "unable to create linked worktree $repoRoot"
             }
 
-            return $target
+            return [PSCustomObject]@{
+                RepoRoot = $repoRoot
+                Branch   = $Branch
+            }
         }
 
         function Get-GateFixtureHeadSha {
@@ -1632,6 +1630,22 @@ EOF
 
         & $script:AssertDenyResult -Result $result
         $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'denies linked-worktree commit from an outside-git cwd when carried state is missing' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-outside-cwd'
+        $outsideCwd = Join-Path $fixture.Root 'outside-git-cwd'
+        New-Item -ItemType Directory -Path $outsideCwd -Force | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            cwd     = $outsideCwd
+            command = ('git -C "{0}" commit --allow-empty -m "outside-git-cwd"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
         $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
@@ -3901,12 +3915,13 @@ EOF
         $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
         $targetGitDir = Join-Path $target.RepoRoot '.git'
 
-        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
             status    = 'PASS'
             head_sha  = $targetHeadSha
             request   = [ordered]@{
                 branch                  = $target.Branch
                 head_sha                = $targetHeadSha
+                target_work_root        = $target.RepoRoot
                 target_reviewer_pane_id = '%4'
             }
             reviewer  = [ordered]@{
@@ -3916,7 +3931,7 @@ EOF
             updatedAt = '2026-04-07T09:00:00.0000000+09:00'
         }) | Out-Null
 
-        (Get-Item -LiteralPath $targetGitDir).PSIsContainer | Should -Be $false
+        Test-Path -LiteralPath $targetGitDir -PathType Leaf | Should -BeTrue
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
             command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: approved-linked-git-dir"' -f $targetGitDir, $target.RepoRoot)
@@ -3924,6 +3939,85 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+    }
+
+    It 'ignores stray linked-worktree review state when the common StateRoot has no PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+        $targetGitDir = Join-Path $target.RepoRoot '.git'
+
+        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status   = 'PASS'
+            head_sha = $targetHeadSha
+            request  = [ordered]@{
+                branch           = $target.Branch
+                head_sha         = $targetHeadSha
+                target_work_root = $target.RepoRoot
+            }
+            reviewer = [ordered]@{ role = 'Reviewer'; pane_id = '%4' }
+            updatedAt = '2026-08-06T12:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: deny-stray-state"' -f $targetGitDir, $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+    }
+
+    It 'rejects a legacy common-root PASS without a linked target binding' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $target = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked'
+        $targetHeadSha = Get-GateFixtureHeadSha -RepoRoot $target.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+            status   = 'PASS'
+            head_sha = $targetHeadSha
+            request  = [ordered]@{ branch = $target.Branch; head_sha = $targetHeadSha }
+            reviewer = [ordered]@{ role = 'Reviewer'; pane_id = '%4' }
+            updatedAt = '2026-08-06T12:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "feat: deny-legacy-linked-pass"' -f $target.RepoRoot)
+        })
+
+        & $script:AssertDenyResult -Result $result
+    }
+
+    It 'evaluates both linked targets that share one common StateRoot' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $targetA = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked-a'
+        $targetB = New-GateLinkedWorktree -SourceRepoRoot $fixture.RepoRoot -Root $fixture.Root -Branch 'feature/review-gate-linked-b'
+        $headA = Get-GateFixtureHeadSha -RepoRoot $targetA.RepoRoot
+        $headB = Get-GateFixtureHeadSha -RepoRoot $targetB.RepoRoot
+        $state = [ordered]@{}
+        $state[$targetA.Branch] = [ordered]@{
+            status = 'PASS'; head_sha = $headA
+            request = [ordered]@{ branch = $targetA.Branch; head_sha = $headA; target_work_root = $targetA.RepoRoot }
+            reviewer = [ordered]@{ role = 'Reviewer'; pane_id = '%4' }
+            updatedAt = '2026-08-06T12:00:00.0000000+09:00'
+        }
+        $state[$targetB.Branch] = [ordered]@{
+            status = 'PASS'; head_sha = ('0' * 40)
+            request = [ordered]@{ branch = $targetB.Branch; head_sha = ('0' * 40); target_work_root = $targetB.RepoRoot }
+            reviewer = [ordered]@{ role = 'Reviewer'; pane_id = '%4' }
+            updatedAt = '2026-08-06T12:00:00.0000000+09:00'
+        }
+        Write-GateTestFile -Path (Join-Path $fixture.RepoRoot '.winsmux\review-state.json') `
+            -Content ($state | ConvertTo-Json -Depth 10)
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = ('git -C "{0}" commit -m "first" && git -C "{1}" commit -m "second"' -f $targetA.RepoRoot, $targetB.RepoRoot)
+        })
+
+        $headB | Should -Not -Be ('0' * 40)
+        & $script:AssertDenyResult -Result $result
     }
 
     It 'does not allow root PASS to satisfy a linked worktree .git pointer target' {
@@ -3948,7 +4042,7 @@ EOF
             updatedAt = '2026-04-07T09:00:00.0000000+09:00'
         }) | Out-Null
 
-        (Get-Item -LiteralPath $targetGitDir).PSIsContainer | Should -Be $false
+        Test-Path -LiteralPath $targetGitDir -PathType Leaf | Should -BeTrue
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
             command = ('git --git-dir "{0}" --work-tree "{1}" commit -m "feat: denied-linked-git-dir"' -f $targetGitDir, $target.RepoRoot)
@@ -3967,12 +4061,13 @@ EOF
         $targetGitPointer = Join-Path $target.RepoRoot '.git'
         $actualGitDir = ((Get-Content -LiteralPath $targetGitPointer -Raw -Encoding UTF8) -replace '^gitdir:\s*', '').Trim()
 
-        Set-GateReviewState -RepoRoot $target.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $target.Branch -Entry ([ordered]@{
             status    = 'PASS'
             head_sha  = $targetHeadSha
             request   = [ordered]@{
                 branch                  = $target.Branch
                 head_sha                = $targetHeadSha
+                target_work_root        = $target.RepoRoot
                 target_reviewer_pane_id = '%4'
             }
             reviewer  = [ordered]@{

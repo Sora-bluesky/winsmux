@@ -145,6 +145,7 @@ $whitelistPatterns = @(
     'tests/EnterpriseStrategyAlignment.Tests.ps1',
     'tests/ReviewLatencyHardening.Tests.ps1',
     'tests/Task781RuntimeCompatibility.Tests.ps1',
+    'tests/Task839WorktreeReviewState.Tests.ps1',
     'tests/V03618ReleaseHardening.Tests.ps1',
     'tests/V03619RepoAudit.Tests.ps1',
     'tests/V03620CoordinatorFoundation.Tests.ps1',

@@ -802,6 +802,22 @@ It 'runs antigravity exec through agy print mode with explicit model selection' 
         (Get-Content -LiteralPath $responsePath -Raw -Encoding UTF8) | Should -Match 'fake-antigravity response'
     }
 
+It 'consumes the internal review command before invoking the agy CLI' {
+        Write-WorkersAntigravityProjectConfig
+        New-WorkersFakeAntigravityCli | Out-Null
+        'Review the bounded change.' | Set-Content -Path (Join-Path $script:workersTempRoot 'review.md') -Encoding UTF8
+        $reviewCommand = "winsmux review-request --state-root '$($script:workersTempRoot.Replace("'", "''"))' --submission-id submission-agy-review"
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers exec w1 --script review.md --run-id submission-agy-review --json --project-dir $script:workersTempRoot -- --review-request-command $reviewCommand
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+
+        $payload.status | Should -Be 'succeeded'
+        $actualArguments = Get-Content -LiteralPath (Join-Path $script:workersTempRoot 'agy-args.txt') -Raw -Encoding UTF8
+        $actualArguments | Should -Not -Match '--review-request-command'
+        $actualArguments | Should -Match 'winsmux review-request --state-root'
+        $actualArguments | Should -Match 'submission-agy-review'
+    }
+
 It 'marks antigravity exec with empty stdout as failed evidence' {
         Write-WorkersAntigravityProjectConfig
         New-WorkersFakeAntigravityCli -EmptyStdout | Out-Null

@@ -222,6 +222,59 @@ function Resolve-WinsmuxSubmissionPacketPath {
     }
 }
 
+function ConvertTo-WinsmuxPowerShellSingleQuotedLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function ConvertTo-WinsmuxCanonicalDirectoryPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    if (-not [string]::Equals($fullPath, $pathRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $fullPath = $fullPath.TrimEnd([char[]]@('\', '/'))
+    }
+    return $fullPath
+}
+
+function Resolve-WinsmuxReviewDeliveryLocator {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$StateRoot,
+        [Parameter(Mandatory = $true)][string]$SubmissionId
+    )
+
+    if ([string]::IsNullOrWhiteSpace($StateRoot) -or -not [System.IO.Path]::IsPathRooted($StateRoot)) {
+        throw 'review delivery requires an absolute StateRoot locator'
+    }
+    $canonicalProjectDir = ConvertTo-WinsmuxCanonicalDirectoryPath -Path $ProjectDir
+    $canonicalStateRoot = ConvertTo-WinsmuxCanonicalDirectoryPath -Path $StateRoot
+    if (-not [string]::Equals($canonicalProjectDir, $canonicalStateRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'review delivery StateRoot does not match the submission project root'
+    }
+    if (-not (Test-Path -LiteralPath $canonicalStateRoot -PathType Container)) {
+        throw 'review delivery StateRoot directory was not found'
+    }
+
+    $packetPath = Resolve-WinsmuxSubmissionPacketPath -ProjectDir $canonicalStateRoot -SubmissionId $SubmissionId
+    $canonicalPacketPath = [System.IO.Path]::GetFullPath([string]$packetPath.FullPath)
+    $submissionDir = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $canonicalStateRoot '.winsmux') 'submissions'))
+    $submissionPrefix = $submissionDir.TrimEnd([char[]]@('\', '/')) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $canonicalPacketPath.StartsWith($submissionPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'review delivery packet escaped the StateRoot submissions directory'
+    }
+
+    return [PSCustomObject][ordered]@{
+        StateRoot       = $canonicalStateRoot
+        SubmissionId    = $SubmissionId
+        PacketPath      = $canonicalPacketPath
+        PacketLiteral   = ConvertTo-WinsmuxPowerShellSingleQuotedLiteral -Value $canonicalPacketPath
+        StateRootLiteral = ConvertTo-WinsmuxPowerShellSingleQuotedLiteral -Value $canonicalStateRoot
+    }
+}
+
 function New-WinsmuxSubmissionPacket {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1170,11 +1223,15 @@ function Invoke-WinsmuxSubmissionCliRun {
         [Parameter(Mandatory = $true)][string]$SubmissionId,
         [Parameter(Mandatory = $true)][string]$TaskId,
         [Parameter(Mandatory = $true)][string]$Backend,
-        [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind
+        [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind,
+        [AllowEmptyString()][string]$ReviewRequestCommand = ''
     )
 
     $workerArguments = @('workers', 'exec', $SlotId, '--task-json', $PacketPath)
     $workerArguments += @('--task-id', $TaskId, '--run-id', $SubmissionId, '--json', '--project-dir', $ProjectDir)
+    if ($Kind -ceq 'review' -and -not [string]::IsNullOrWhiteSpace($ReviewRequestCommand)) {
+        $workerArguments += @('--', '--review-request-command', $ReviewRequestCommand)
+    }
     $output = & pwsh -NoProfile -File $script:WinsmuxSubmissionBridgeScript @workerArguments 2>&1
     $exitCode = $LASTEXITCODE
     $jsonLine = @($output | ForEach-Object { [string]$_ } | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
@@ -1232,6 +1289,7 @@ function Invoke-WinsmuxSubmissionAdapter {
         [Parameter(Mandatory = $true)]$Content,
         [string]$SubmissionId = ('submission-' + [guid]::NewGuid().ToString('N')),
         [AllowEmptyString()][string]$TaskId = '',
+        [AllowEmptyString()][string]$ReviewStateRoot = '',
         [scriptblock]$SendAction,
         [scriptblock]$CaptureAction,
         [scriptblock]$RunResultAction,
@@ -1253,6 +1311,22 @@ function Invoke-WinsmuxSubmissionAdapter {
     }
     if (-not (Test-WinsmuxSubmissionIdentifier -Value $label)) {
         return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend noop -SubmissionId $SubmissionId -ReasonCode 'target_identifier_invalid' -Target $target
+    }
+
+    $reviewLocator = $null
+    if ($Kind -ceq 'review') {
+        try {
+            $reviewLocator = Resolve-WinsmuxReviewDeliveryLocator -ProjectDir $ProjectDir `
+                -StateRoot $ReviewStateRoot -SubmissionId $SubmissionId
+        } catch {
+            return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend `
+                -SubmissionId $SubmissionId -ReasonCode 'review_delivery_locator_invalid' `
+                -Diagnostic $_.Exception.Message -Target $target
+        }
+    } elseif (-not [string]::IsNullOrWhiteSpace($ReviewStateRoot)) {
+        return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend `
+            -SubmissionId $SubmissionId -ReasonCode 'review_delivery_locator_invalid' `
+            -Diagnostic 'ReviewStateRoot is valid only for review submissions.' -Target $target
     }
 
     if (-not (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
@@ -1295,6 +1369,13 @@ function Invoke-WinsmuxSubmissionAdapter {
         }
         throw
     }
+    if ($Kind -ceq 'review' -and
+        -not [string]::Equals([System.IO.Path]::GetFullPath([string]$packet.FullPath), [string]$reviewLocator.PacketPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Remove-Item -LiteralPath ([string]$packet.FullPath) -Force -ErrorAction SilentlyContinue
+        return New-WinsmuxSubmissionReceipt -Kind $Kind -Status rejected -Backend $backend `
+            -SubmissionId $SubmissionId -ReasonCode 'review_delivery_locator_invalid' `
+            -Diagnostic 'Published review packet path does not match the delivery locator.' -Target $target
+    }
     $runtimeResult = Test-WinsmuxSubmissionRuntimeFreshness `
         -ProjectDir $ProjectDir -ManifestEntry $ManifestEntry -ExpectedGenerationId $initialGenerationId
     if (-not $runtimeResult.valid) {
@@ -1330,7 +1411,12 @@ function Invoke-WinsmuxSubmissionAdapter {
                     -ReasonCode 'backend_acknowledgement_missing' -Target $target
             }
             $ackCommand = "winsmux submission-ack --submission-id $SubmissionId --run-id $SubmissionId --kind $Kind --backend $backend --slot $label --ack-pipe $($ackServer.pipe_name) --challenge $($ackServer.challenge)"
-            $packetInstruction = "Read and execute the typed submission packet at '$($packet.RelativePath)'. After accepting that exact packet from this pane, run: $ackCommand"
+            if ($Kind -ceq 'review') {
+                $reviewRequestCommand = "winsmux review-request --state-root $($reviewLocator.StateRootLiteral) --submission-id $SubmissionId"
+                $packetInstruction = "Read and execute the typed submission packet at $($reviewLocator.PacketLiteral). After accepting that exact packet from this pane, run: $ackCommand. Then run: $reviewRequestCommand"
+            } else {
+                $packetInstruction = "Read and execute the typed submission packet at '$($packet.RelativePath)'. After accepting that exact packet from this pane, run: $ackCommand"
+            }
             try {
                 if ($null -ne $SendAction) {
                     & $SendAction $paneId $packetInstruction | Out-Null
@@ -1472,7 +1558,18 @@ function Invoke-WinsmuxSubmissionAdapter {
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'pane_unavailable' -Target $target
         }
-        $execCommand = "exec $($packet.RelativePath)"
+        $deliveryPacketPath = if ($Kind -ceq 'review') { [string]$reviewLocator.PacketPath } else { [string]$packet.RelativePath }
+        if ($Kind -ceq 'review' -and $deliveryPacketPath -match '\s') {
+            Remove-Item -LiteralPath ([string]$packet.FullPath) -Force -ErrorAction SilentlyContinue
+            return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unsupported -Backend $backend `
+                -SubmissionId $SubmissionId -ReasonCode 'backend_unsupported' `
+                -Diagnostic 'The api_llm pane runner cannot safely accept a review locator containing whitespace.' -Target $target
+        }
+        $execCommand = "exec $deliveryPacketPath"
+        if ($Kind -ceq 'review') {
+            $reviewRequestCommand = "winsmux review-request --state-root $($reviewLocator.StateRoot) --submission-id $SubmissionId"
+            $execCommand += "`n$reviewRequestCommand"
+        }
         try {
             if ($null -ne $SendAction) { & $SendAction $paneId $execCommand | Out-Null }
             else {
@@ -1483,9 +1580,15 @@ function Invoke-WinsmuxSubmissionAdapter {
         } catch {
             return New-WinsmuxSubmissionReceipt -Kind $Kind -Status unavailable -Backend $backend -SubmissionId $SubmissionId -ReasonCode 'packet_repl_unavailable' -Diagnostic $_.Exception.Message -Target $target
         }
-        $runner = if ($null -ne $RunResultAction) { & $RunResultAction $ProjectDir $label $SubmissionId } else { Get-WinsmuxSubmissionRunResult -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId }
+        $runner = if ($null -ne $RunResultAction) { & $RunResultAction $ProjectDir $label $SubmissionId $ReviewStateRoot } else { Get-WinsmuxSubmissionRunResult -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId }
     } else {
-        $runner = if ($null -ne $CliRunAction) { & $CliRunAction $ProjectDir $label $packet.RelativePath $SubmissionId $backend $Kind } else { Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $packet.RelativePath -SubmissionId $SubmissionId -TaskId $TaskId -Backend $backend -Kind $Kind }
+        $deliveryPacketPath = if ($Kind -ceq 'review') { [string]$reviewLocator.PacketPath } else { [string]$packet.RelativePath }
+        $reviewRequestCommand = if ($Kind -ceq 'review') { "winsmux review-request --state-root $($reviewLocator.StateRootLiteral) --submission-id $SubmissionId" } else { '' }
+        $runner = if ($null -ne $CliRunAction) {
+            & $CliRunAction $ProjectDir $label $deliveryPacketPath $SubmissionId $backend $Kind $ReviewStateRoot $reviewRequestCommand
+        } else {
+            Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $deliveryPacketPath -SubmissionId $SubmissionId -TaskId $TaskId -Backend $backend -Kind $Kind -ReviewRequestCommand $reviewRequestCommand
+        }
     }
 
     if (Test-WinsmuxSubmissionRunRecord -Record $runner -SubmissionId $SubmissionId -Kind $Kind -Backend $backend -ExpectedSlotId $label -ExpectedRequestDigest ([string]$packet.Packet.request_digest) -ExpectedTaskId ([string]$packet.Packet.task_id)) {

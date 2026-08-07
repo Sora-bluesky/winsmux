@@ -1607,6 +1607,9 @@ panes:
     It 'TASK781 C19 clears authoritative review state when manifest context is unavailable' {
         $script:reviewResetState = [ordered]@{ 'codex/test-review-reset' = [ordered]@{ status = 'PASS' } }
         Save-ReviewState -State $script:reviewResetState -ProjectDir $script:consultTempRoot
+        Mock Resolve-ReviewRootPair {
+            [pscustomobject]@{ WorkRoot = $script:consultTempRoot; StateRoot = $script:consultTempRoot; CommonGitDir = (Join-Path $script:consultTempRoot '.git') }
+        }
         Mock Get-CurrentGitBranch { 'codex/test-review-reset' }
         Mock Get-CurrentReviewPaneManifestContext { throw 'manifest unavailable' }
         Mock Set-PaneControlManifestPaneProperties { throw 'must not sync without a snapshot' }
@@ -1615,6 +1618,25 @@ panes:
 
         $output | Should -Match 'review PASS cleared'
         (Get-ReviewState -ProjectDir $script:consultTempRoot).Contains('codex/test-review-reset') | Should -BeFalse
+        Should -Invoke Set-PaneControlManifestPaneProperties -Times 0 -Exactly
+    }
+
+    It 'TASK839 reports an absent reset truthfully without changing the manifest' {
+        $manifestBefore = [IO.File]::ReadAllBytes($script:consultManifestPath)
+        Mock Resolve-ReviewRootPair {
+            [pscustomobject]@{ WorkRoot = $script:consultTempRoot; StateRoot = $script:consultTempRoot; CommonGitDir = (Join-Path $script:consultTempRoot '.git') }
+        }
+        Mock Get-CurrentGitBranch { 'codex/test-review-reset-absent' }
+        Mock Get-CurrentReviewPaneManifestContext { throw 'manifest unavailable' }
+        Mock Save-ReviewState { throw 'absent reset must not write review state' } -RemoveParameterType State
+        Mock Set-PaneControlManifestPaneProperties { throw 'absent reset must not project manifest state' }
+
+        $output = & { $Target = $null; $Rest = @(); Invoke-ReviewReset }
+
+        $output | Should -BeExactly 'no review state recorded for codex/test-review-reset-absent'
+        [Convert]::ToBase64String([IO.File]::ReadAllBytes($script:consultManifestPath)) |
+            Should -BeExactly ([Convert]::ToBase64String($manifestBefore))
+        Should -Invoke Save-ReviewState -Times 0 -Exactly
         Should -Invoke Set-PaneControlManifestPaneProperties -Times 0 -Exactly
     }
 

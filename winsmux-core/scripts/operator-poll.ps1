@@ -316,6 +316,46 @@ function Invoke-OperatorPollWinsmux {
     return $output
 }
 
+function Invoke-OperatorPollReviewDispatch {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$ExpectedReviewPane
+    )
+
+    $output = @()
+    Push-Location -LiteralPath $ProjectDir
+    try {
+        $output = @(Invoke-OperatorPollWinsmux -Arguments @('dispatch-review'))
+    } finally {
+        Pop-Location
+    }
+
+    $jsonLine = @($output | ForEach-Object { [string]$_ } |
+        Where-Object { $_.TrimStart().StartsWith('{', [System.StringComparison]::Ordinal) } |
+        Select-Object -Last 1)
+    if ($jsonLine.Count -ne 1) {
+        throw 'winsmux dispatch-review returned no typed receipt'
+    }
+    try {
+        $receipt = $jsonLine[0] | ConvertFrom-WinsmuxJson -AsHashtable -ErrorAction Stop
+    } catch {
+        throw 'winsmux dispatch-review returned a malformed typed receipt'
+    }
+    if ([int]$receipt['protocol_version'] -ne 1 -or [string]$receipt['kind'] -cne 'review' -or
+        [string]$receipt['status'] -cne 'accepted') {
+        $reason = [string]$receipt['reason_code']
+        if ([string]::IsNullOrWhiteSpace($reason)) { $reason = [string]$receipt['status'] }
+        throw "winsmux dispatch-review was not accepted: $reason"
+    }
+
+    $target = ConvertTo-ManifestPropertyMap -Value $receipt['target']
+    if ([string]$target['label'] -cne [string]$ExpectedReviewPane.Label -or
+        [string]$target['pane_id'] -cne [string]$ExpectedReviewPane.PaneId) {
+        throw 'winsmux dispatch-review selected a different review pane than the current manifest preference'
+    }
+    return $receipt
+}
+
 function Approve-OperatorPollPane {
     param([Parameter(Mandatory = $true)][string]$PaneId)
 
@@ -1065,8 +1105,7 @@ function Invoke-OperatorStateMachine {
                         -Event 'operator.blocked' -Message "Review 可能なペインが見つかりません。" -Branch $branch -HeadSha $headSha
                     $nextState = 'blocked_no_review_target'
                 } else {
-                    Send-OperatorPollLiteral -PaneId $reviewPane.PaneId -Text 'winsmux review-request'
-                    Approve-OperatorPollPane -PaneId $reviewPane.PaneId
+                    Invoke-OperatorPollReviewDispatch -ProjectDir $ProjectDir -ExpectedReviewPane $reviewPane | Out-Null
                     Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                         -Event 'operator.review_requested' -Message "$($reviewPane.Label) ($($reviewPane.PaneId)) にレビュー依頼送信。PASS/FAIL 待機中。" `
                         -PaneId $reviewPane.PaneId -Label $reviewPane.Label -Role $reviewPane.Role -Branch $branch -HeadSha $headSha
