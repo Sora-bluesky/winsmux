@@ -210,7 +210,7 @@ jobs:
           - name: integration
             result: integration
             timeout_minutes: 25
-            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1
+            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1
             full_name: ""
           - name: worker-benchmark
             result: worker-benchmark

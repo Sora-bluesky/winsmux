@@ -816,13 +816,13 @@ Describe 'TASK782 review-state compare-and-swap' {
             . ([scriptblock]::Create($functionAst.Extent.Text))
         }
         function Stop-WithError { param([string]$Message) throw $Message }
-        function Invoke-WithReviewStateLock { param([string]$ProjectDir, [scriptblock]$Action) & $Action }
-        function Get-ReviewState { param([string]$ProjectDir) [ordered]@{} }
+        function Invoke-WithReviewStateLock { param([string]$StateRoot, [scriptblock]$Action) & $Action }
+        function Get-ReviewState { param([string]$StateRoot) [ordered]@{} }
         function Confirm-ReviewWriteContext {
-            param($Context, [string]$ProjectDir, [string]$Branch, [string]$HeadSha)
+            param($Context, [string]$WorkRoot, [string]$StateRoot, [string]$Branch, [string]$HeadSha, $Request)
             $Context
         }
-        function Save-ReviewState { param($State, [string]$ProjectDir) }
+        function Save-ReviewState { param($State, [string]$StateRoot) }
     }
 
     BeforeEach {
@@ -837,7 +837,8 @@ Describe 'TASK782 review-state compare-and-swap' {
         $script:lockedState['feature/review-gate'] = [ordered]@{ status = 'PENDING'; updatedAt = 'rival' }
         $newRecord = [ordered]@{ status = 'PASS'; updatedAt = 'candidate' }
 
-        { Save-VerifiedReviewStateTransition -ProjectDir 'C:\repo' -Branch 'feature/review-gate' -HeadSha ('a' * 40) `
+        { Save-VerifiedReviewStateTransition -WorkRoot 'C:\repo\.worktrees\builder-1' -StateRoot 'C:\repo' `
+                -Branch 'feature/review-gate' -HeadSha ('a' * 40) `
                 -Context ([pscustomobject]@{}) -ExpectedEntryFingerprint '<absent>' -NewRecord $newRecord } |
             Should -Throw '*changed concurrently*'
         Should -Invoke Confirm-ReviewWriteContext -Times 0 -Exactly
@@ -849,12 +850,16 @@ Describe 'TASK782 review-state compare-and-swap' {
         $script:lockedState['feature/other'] = [ordered]@{ status = 'PASS'; updatedAt = 'other' }
         $newRecord = [ordered]@{ status = 'PENDING'; updatedAt = 'candidate' }
 
-        Save-VerifiedReviewStateTransition -ProjectDir 'C:\repo' -Branch 'feature/review-gate' -HeadSha ('a' * 40) `
+        Save-VerifiedReviewStateTransition -WorkRoot 'C:\repo\.worktrees\builder-1' -StateRoot 'C:\repo' `
+            -Branch 'feature/review-gate' -HeadSha ('a' * 40) `
             -Context ([pscustomobject]@{}) -ExpectedEntryFingerprint '<absent>' -NewRecord $newRecord | Out-Null
 
-        Should -Invoke Confirm-ReviewWriteContext -Times 1 -Exactly
+        Should -Invoke Invoke-WithReviewStateLock -Times 1 -Exactly -ParameterFilter { $StateRoot -ceq 'C:\repo' }
+        Should -Invoke Confirm-ReviewWriteContext -Times 1 -Exactly -ParameterFilter {
+            $WorkRoot -ceq 'C:\repo\.worktrees\builder-1' -and $StateRoot -ceq 'C:\repo'
+        }
         Should -Invoke Save-ReviewState -Times 1 -Exactly -ParameterFilter {
-            $State.Contains('feature/other') -and $State.Contains('feature/review-gate')
+            $StateRoot -ceq 'C:\repo' -and $State.Contains('feature/other') -and $State.Contains('feature/review-gate')
         }
         $script:lockedState['feature/other'].updatedAt | Should -Be 'other'
         $script:lockedState['feature/review-gate'].status | Should -Be 'PENDING'
