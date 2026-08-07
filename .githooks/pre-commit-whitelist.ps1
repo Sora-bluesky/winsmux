@@ -194,6 +194,7 @@ $whitelistPatterns = @(
     '.claude/settings.json',
     '.github/workflows/build-core.yml',
     '.github/workflows/build-desktop.yml',
+    '.github/workflows/desktop-candidate-cdp-gate.yml',
     '.github/workflows/release-core.yml',
     '.github/workflows/release-desktop.yml',
     '.github/workflows/release-npm.yml',

@@ -1,0 +1,266 @@
+# Pre-release gate for an unpublished Tauri desktop candidate.
+# Leg A (default off): proves no CDP debugging port opens when gate vars are unset.
+# Leg B (gated on): proves public-release smoke observes a working CDP endpoint via
+# the app-side injection path (legacy env port channel stripped with MarkerOnly).
+#
+# Note: Leg A's History / Code Cache checks under EBWebView/Default are an observed
+# invariant from a dev-machine run and are used only as a launch-integrity signal,
+# not as independent proof that navigation occurred. Leg B's evidence.page_url
+# assertion is what proves a page actually loaded.
+
+name: desktop-candidate-cdp-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Candidate commit SHA
+        required: true
+        type: string
+      release_tag:
+        description: Release tag for smoke helper
+        required: false
+        default: v0.36.30.1
+        type: string
+      version:
+        description: Version for smoke helper
+        required: false
+        default: 0.36.30.1
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  desktop-candidate-cdp-gate:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout candidate ref
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          persist-credentials: false
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: winsmux-app
+        run: npm run build
+
+      - name: Run gate decision-table unit tests
+        run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
+
+      - name: Build Tauri desktop app
+        working-directory: winsmux-app
+        run: npm run tauri -- build
+
+      - name: "Leg A - default off (no CDP port)"
+        id: leg_a
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $userData = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-cdp-gate-a-" + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $userData -Force | Out-Null
+
+          $appPath = Join-Path $PWD 'target/release/winsmux-app.exe'
+          if (-not (Test-Path -LiteralPath $appPath)) {
+            throw "Leg A failed: app binary missing at $appPath"
+          }
+
+          $appProc = $null
+          $ownedWebViewPids = @()
+
+          try {
+            Remove-Item Env:WINSMUX_DESKTOP_TEST_PROFILE -ErrorAction SilentlyContinue
+            Remove-Item Env:WINSMUX_DESKTOP_REMOTE_DEBUG_PORT -ErrorAction SilentlyContinue
+
+            $env:WEBVIEW2_USER_DATA_FOLDER = $userData
+
+            $appProc = Start-Process -FilePath $appPath -PassThru
+            Start-Sleep -Seconds 35
+            $appProc.Refresh()
+
+            # P1: app process has not exited
+            if ($appProc.HasExited) {
+              throw "Leg A failed P1: app process exited (exit code $($appProc.ExitCode))"
+            }
+            Write-Host "P1 PASS: app process still running (PID $($appProc.Id))"
+
+            # P2: owned msedgewebview2.exe bound to temp user-data folder
+            $userDataNeedle = $userData
+            $ownedWebViews = Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" |
+              Where-Object { $_.CommandLine -and $_.CommandLine.Contains($userDataNeedle) }
+            if (-not $ownedWebViews -or @($ownedWebViews).Count -lt 1) {
+              throw "Leg A failed P2: no msedgewebview2.exe with command line containing user-data folder $userData"
+            }
+            $ownedWebViewPids = @($ownedWebViews | ForEach-Object { $_.ProcessId })
+            Write-Host "P2 PASS: owned msedgewebview2 count=$(@($ownedWebViews).Count) pids=$($ownedWebViewPids -join ',')"
+
+            # P3: EBWebView directory exists
+            $ebWebView = Join-Path $userData 'EBWebView'
+            if (-not (Test-Path -LiteralPath $ebWebView)) {
+              throw "Leg A failed P3: EBWebView directory missing under $userData"
+            }
+            Write-Host "P3 PASS: EBWebView exists at $ebWebView"
+
+            # P4: MainWindowHandle non-zero; History and Code Cache under EBWebView/Default
+            if ($appProc.MainWindowHandle -eq [IntPtr]::Zero) {
+              throw "Leg A failed P4: MainWindowHandle is zero"
+            }
+            $defaultDir = Join-Path $ebWebView 'Default'
+            $historyPath = Join-Path $defaultDir 'History'
+            $codeCachePath = Join-Path $defaultDir 'Code Cache'
+            if (-not (Test-Path -LiteralPath $historyPath)) {
+              throw "Leg A failed P4: History missing under EBWebView/Default"
+            }
+            if (-not (Test-Path -LiteralPath $codeCachePath)) {
+              throw "Leg A failed P4: Code Cache missing under EBWebView/Default"
+            }
+            Write-Host "P4 PASS: MainWindowHandle=$($appProc.MainWindowHandle); History and Code Cache present"
+
+            # Absence: no --remote-debugging-port among owned webview processes
+            $rdpHits = @($ownedWebViews | Where-Object { $_.CommandLine -match '--remote-debugging-port' })
+            if ($rdpHits.Count -gt 0) {
+              throw "Leg A failed absence: owned msedgewebview2 command line contains --remote-debugging-port"
+            }
+            Write-Host "ABSENCE PASS: no --remote-debugging-port in owned webview command lines"
+
+            # Absence: DevToolsActivePort must not exist
+            $devToolsPort = Join-Path $ebWebView 'DevToolsActivePort'
+            if (Test-Path -LiteralPath $devToolsPort) {
+              throw "Leg A failed absence: DevToolsActivePort exists at $devToolsPort"
+            }
+            Write-Host "ABSENCE PASS: DevToolsActivePort does not exist"
+
+            Write-Host "LEG_A_OUTCOME=PASS"
+          }
+          finally {
+            foreach ($webViewPid in $ownedWebViewPids) {
+              try {
+                Stop-Process -Id $webViewPid -Force -ErrorAction SilentlyContinue
+              } catch {}
+            }
+            if ($null -ne $appProc -and -not $appProc.HasExited) {
+              try {
+                Stop-Process -Id $appProc.Id -Force -ErrorAction SilentlyContinue
+              } catch {}
+            }
+            if (Test-Path -LiteralPath $userData) {
+              try {
+                Remove-Item -LiteralPath $userData -Recurse -Force -ErrorAction SilentlyContinue
+              } catch {}
+            }
+            Remove-Item Env:WEBVIEW2_USER_DATA_FOLDER -ErrorAction SilentlyContinue
+          }
+
+      - name: "Leg B - gated on (API path only)"
+        id: leg_b
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $version = '${{ inputs.version }}'
+          $releaseTag = '${{ inputs.release_tag }}'
+          $installer = 'target/release/bundle/nsis/winsmux_0.36.30_x64-setup.exe'
+          if (-not (Test-Path -LiteralPath $installer)) {
+            throw "Leg B failed: installer missing at $installer"
+          }
+
+          $stdoutPath = Join-Path $env:RUNNER_TEMP 'leg-b-stdout.txt'
+          $stderrPath = Join-Path $env:RUNNER_TEMP 'leg-b-stderr.txt'
+          if (Test-Path -LiteralPath $stdoutPath) { Remove-Item -LiteralPath $stdoutPath -Force }
+          if (Test-Path -LiteralPath $stderrPath) { Remove-Item -LiteralPath $stderrPath -Force }
+
+          $proc = Start-Process -FilePath 'pwsh' -ArgumentList @(
+            '-NoProfile',
+            '-File', 'scripts/test-public-release.ps1',
+            '-Surface', 'Desktop',
+            '-Version', $version,
+            '-ReleaseTag', $releaseTag,
+            '-Repository', '${{ github.repository }}',
+            '-CandidateInstallerPath', $installer,
+            '-DesktopLegacyEnvMode', 'MarkerOnly',
+            '-Json'
+          ) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+          $raw = ''
+          if (Test-Path -LiteralPath $stdoutPath) {
+            $raw = [System.IO.File]::ReadAllText($stdoutPath)
+          }
+          $raw = $raw -replace "`r`n", "`n" -replace "`r", "`n"
+          $rawTrim = $raw.TrimEnd("`n")
+
+          if ($proc.ExitCode -ne 0) {
+            $errText = ''
+            if (Test-Path -LiteralPath $stderrPath) {
+              $errText = [System.IO.File]::ReadAllText($stderrPath)
+            }
+            throw "Leg B failed: helper exit code $($proc.ExitCode). stderr=$errText stdout=$raw"
+          }
+          Write-Host "LEG_B_EXIT PASS: exit code 0"
+
+          $lines = @($rawTrim -split "`n" | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -ne '' })
+          if ($lines.Count -ne 1) {
+            throw "Leg B failed: expected exactly one non-empty stdout line, got $($lines.Count). stdout=$raw"
+          }
+          Write-Host "LEG_B_STDOUT_LINES PASS: exactly one non-empty line"
+
+          try {
+            $json = $lines[0] | ConvertFrom-Json
+          } catch {
+            throw "Leg B failed: stdout line is not valid JSON. line=$($lines[0])"
+          }
+          Write-Host "LEG_B_JSON PASS: stdout parses as JSON"
+
+          if ($json.ok -ne $true) {
+            throw "Leg B failed: ok is not true (value=$($json.ok))"
+          }
+          Write-Host "LEG_B_OK PASS: ok=true"
+
+          if ("$($json.cleanup)" -ne 'clean') {
+            throw "Leg B failed: cleanup is not 'clean' (value=$($json.cleanup))"
+          }
+          Write-Host "LEG_B_CLEANUP PASS: cleanup=clean"
+
+          $pageUrl = $null
+          if ($null -ne $json.evidence -and $null -ne $json.evidence.page_url) {
+            $pageUrl = [string]$json.evidence.page_url
+          }
+          if ([string]::IsNullOrEmpty($pageUrl)) {
+            throw "Leg B failed: evidence.page_url missing or empty"
+          }
+          if ($pageUrl -notmatch '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)') {
+            throw "Leg B failed: evidence.page_url does not match expected pattern (value=$pageUrl)"
+          }
+          Write-Host "LEG_B_PAGE_URL PASS: evidence.page_url=$pageUrl"
+          Write-Host "LEG_B_OUTCOME=PASS"
+
+          "page_url=$pageUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Write gate receipt to step summary
+        if: always()
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = '${{ inputs.candidate_ref }}'
+          $pageUrl = '${{ steps.leg_b.outputs.page_url }}'
+          if ([string]::IsNullOrEmpty($pageUrl)) { $pageUrl = 'n/a' }
+          $legAOutcome = '${{ steps.leg_a.outcome }}'
+          $legBOutcome = '${{ steps.leg_b.outcome }}'
+          $line = "desktop-candidate-cdp-gate candidate_ref=$candidate leg_a=$legAOutcome leg_b=$legBOutcome evidence.page_url=$pageUrl"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
+          Write-Host $line

@@ -259,7 +259,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis,legacy_env_port_and_marker,legacy_env_marker_only,desktop_probe_diag_success_emission,desktop_probe_diag_failure_emission'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -1304,7 +1304,8 @@ switch (`$args[0]) {
             'desktop_probe_port_file_redirected',
             'desktop_probe_port_file_fallback',
             'desktop_probe_webview_process_present',
-            'desktop_probe_debug_arg'
+            'desktop_probe_debug_arg',
+            'desktop_probe_env_channel'
         )
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0
@@ -1673,14 +1674,26 @@ Resolve-DesktopWebSocketPathAuthority `
         $envChannelKeys.Count | Should -BeGreaterThan 0
         $debugArgKeys.Count | Should -BeGreaterThan 0
 
-        $passFailDecisionText = @($ast.FindAll({
-                    param($node)
-                    ($node -is [Management.Automation.Language.IfStatementAst] -or
-                        $node -is [Management.Automation.Language.BinaryExpressionAst] -or
-                        $node -is [Management.Automation.Language.CommandAst]) -and
-                        $node.Extent.Text -cmatch 'desktop_probe_debug_arg' -and
-                        $node.Extent.Text -cmatch '(?:Assert-Condition|-eq|-ne|-ceq|-cne)'
-                }, $true) | ForEach-Object { $_.Extent.Text }) -join "`n"
+        $passFailDecisionTexts = [Collections.Generic.List[string]]::new()
+        foreach ($node in $ast.FindAll({
+                    param($n)
+                    $n -is [Management.Automation.Language.IfStatementAst] -or
+                        $n -is [Management.Automation.Language.BinaryExpressionAst] -or
+                        $n -is [Management.Automation.Language.CommandAst]
+                }, $true)) {
+            if ($node -is [Management.Automation.Language.IfStatementAst]) {
+                foreach ($clause in $node.Clauses) {
+                    $passFailDecisionTexts.Add($clause.Item1.Extent.Text)
+                }
+            }
+            else {
+                $passFailDecisionTexts.Add($node.Extent.Text)
+            }
+        }
+        $passFailDecisionText = @($passFailDecisionTexts | Where-Object {
+                    $_ -cmatch 'desktop_probe_debug_arg' -and
+                        $_ -cmatch '(?:Assert-Condition|-eq|-ne|-ceq|-cne)'
+                }) -join "`n"
         $passFailDecisionText | Should -Match 'desktop_probe_debug_arg'
         $passFailDecisionText | Should -Not -Match 'desktop_probe_env_channel'
 

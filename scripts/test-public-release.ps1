@@ -13,6 +13,11 @@ param(
     [Parameter(Mandatory)]
     [string]$Repository,
 
+    [string]$CandidateInstallerPath,
+
+    [ValidateSet('PortAndMarker', 'MarkerOnly')]
+    [string]$DesktopLegacyEnvMode = 'PortAndMarker',
+
     [switch]$SelfTest,
     [switch]$Json
 )
@@ -33,6 +38,7 @@ $script:DesktopFolderContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes
 $script:DesktopBackgroundContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\winsmux'
 $script:DesktopProductPath = 'Registry::HKEY_CURRENT_USER\Software\github\winsmux'
 $script:DesktopUninstallPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux'
+$script:DesktopSmokeEnvMarkerArgument = '--winsmux-smoke-env-marker'
 
 function Assert-Condition {
     param(
@@ -43,6 +49,26 @@ function Assert-Condition {
     if (-not $Condition) {
         throw $Message
     }
+}
+
+if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
+    Assert-Condition ($Surface -eq 'Desktop') 'CandidateInstallerPath requires -Surface Desktop; it is only valid for the Desktop surface.'
+    Assert-Condition (Test-Path -LiteralPath $CandidateInstallerPath -PathType Leaf) "Candidate installer path does not exist: $CandidateInstallerPath"
+}
+if ($PSBoundParameters.ContainsKey('DesktopLegacyEnvMode')) {
+    Assert-Condition ($Surface -eq 'Desktop') 'DesktopLegacyEnvMode requires -Surface Desktop; it is only valid for the Desktop surface.'
+}
+
+function Get-DesktopLegacyBrowserArgumentsValue {
+    param(
+        [Parameter(Mandatory)][ValidateSet('PortAndMarker', 'MarkerOnly')][string]$Mode,
+        [Parameter(Mandatory)][string]$DebugArgument
+    )
+
+    if ($Mode -ceq 'MarkerOnly') {
+        return $script:DesktopSmokeEnvMarkerArgument
+    }
+    return ('{0} {1}' -f $DebugArgument, $script:DesktopSmokeEnvMarkerArgument)
 }
 
 function Get-CoreReleaseAssetNames {
@@ -1270,6 +1296,7 @@ function New-DesktopTeardownProbeTable {
     $processProbeArgument = [pscustomobject]@{
         root_process_id = [long]$RootProcessId
         debug_argument = "--remote-debugging-port=$DebugPort"
+        env_marker_argument = $script:DesktopSmokeEnvMarkerArgument
         processes = $ProcessSnapshotItems
     }
     return [ordered]@{
@@ -1419,6 +1446,40 @@ function New-DesktopTeardownProbeTable {
             }
             Argument = $processProbeArgument
         }
+        desktop_probe_env_channel = @{
+            Script = {
+                param($ProbeArgument)
+
+                $processes = if ($null -eq $ProbeArgument.processes) {
+                    @(Get-CimInstance -ClassName Win32_Process -Property ProcessId, ParentProcessId, Name, CommandLine -ErrorAction Stop)
+                } else {
+                    @($ProbeArgument.processes)
+                }
+                $descendantProcessIds = [Collections.Generic.HashSet[long]]::new()
+                [void]$descendantProcessIds.Add([long]$ProbeArgument.root_process_id)
+                do {
+                    $addedDescendant = $false
+                    foreach ($process in $processes) {
+                        if ($descendantProcessIds.Contains([long]$process.ParentProcessId) -and
+                            $descendantProcessIds.Add([long]$process.ProcessId)) {
+                            $addedDescendant = $true
+                        }
+                    }
+                } while ($addedDescendant)
+                foreach ($process in $processes) {
+                    if (-not $descendantProcessIds.Contains([long]$process.ProcessId) -or
+                        -not [string]::Equals([string]$process.Name, 'msedgewebview2.exe', [StringComparison]::OrdinalIgnoreCase)) {
+                        continue
+                    }
+                    $arguments = @([Winsmux.PublicRelease.WindowsCommandLine]::Parse([string]$process.CommandLine))
+                    if (@($arguments | Where-Object { [string]$_ -ceq [string]$ProbeArgument.env_marker_argument }).Count -gt 0) {
+                        return $true
+                    }
+                }
+                return $false
+            }
+            Argument = $processProbeArgument
+        }
     }
 }
 
@@ -1465,6 +1526,21 @@ function Get-DesktopTeardownDiagnosisSegment {
     }
     Assert-Condition ($segment -notmatch 'DevToolsActivePort|msedgewebview2|--remote-debugging-port|/devtools/browser/|listener_owner_pid|root_pid|browser_pid') 'Teardown diagnosis segment violated the raw-absent pattern.'
     return $segment
+}
+
+function Write-DesktopProbeDiagnosticsLine {
+    param(
+        [Parameter(Mandatory)]$Diagnosis,
+        [scriptblock]$Emitter
+    )
+
+    $line = 'desktop_probe_diagnosis {0}' -f (Get-DesktopTeardownDiagnosisSegment -Diagnosis $Diagnosis)
+    if ($null -eq $Emitter) {
+        [Console]::Error.WriteLine($line)
+    } else {
+        & $Emitter $line | Out-Null
+    }
+    return $line
 }
 
 function New-DesktopSnapshotEnvelope {
@@ -2161,11 +2237,18 @@ function Invoke-DesktopLifecycleOperation {
             -MaxAttempts $MaxAttempts -PageProbe $PageProbe -AuthorityProbe $AuthorityProbe -DelayInvoker $DelayInvoker
         if ([string]$observation.state -cne 'page_ready') {
             $pendingObservationFailure = $true
-            if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
+        }
+        if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
+            try {
+                $teardownDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $UserDataFolder -RootProcessId ([long]$Context.app_process.process.Id) -DebugPort $Port
+            } catch {
+                $teardownDiagnosis = $null
+            }
+            if ($null -ne $teardownDiagnosis) {
                 try {
-                    $teardownDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $UserDataFolder -RootProcessId ([long]$Context.app_process.process.Id) -DebugPort $Port
+                    Write-DesktopProbeDiagnosticsLine -Diagnosis $teardownDiagnosis | Out-Null
                 } catch {
-                    $teardownDiagnosis = $null
+                    # diagnostics emission must never mask the run outcome
                 }
             }
         }
@@ -2496,11 +2579,16 @@ function Invoke-DesktopSmoke {
         $initial = Get-DesktopProtectedState -InstallRoot $installRoot
         Start-DesktopLifecycle -Context $context -PreflightState $initial
 
-        Invoke-PublicDownload -Uri "$baseUrl/SHA256SUMS-desktop" -Destination $manifestPath -Root $Root
-        Invoke-PublicDownload -Uri "$baseUrl/$assetName" -Destination $setupPath -Root $Root
-        $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
-        $expectedHash = Get-ChecksumEntry -ManifestText $manifest -AssetName $assetName
-        Assert-FileChecksum -Path $setupPath -ExpectedHash $expectedHash
+        if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
+            Copy-Item -LiteralPath $CandidateInstallerPath -Destination $setupPath
+            $expectedHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        } else {
+            Invoke-PublicDownload -Uri "$baseUrl/SHA256SUMS-desktop" -Destination $manifestPath -Root $Root
+            Invoke-PublicDownload -Uri "$baseUrl/$assetName" -Destination $setupPath -Root $Root
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
+            $expectedHash = Get-ChecksumEntry -ManifestText $manifest -AssetName $assetName
+            Assert-FileChecksum -Path $setupPath -ExpectedHash $expectedHash
+        }
 
         $childRoot = Join-Path $Root 'profile'
         $localAppData = Join-Path $childRoot 'LocalAppData'
@@ -2532,7 +2620,9 @@ function Invoke-DesktopSmoke {
         $webViewRoot = Join-Path $childRoot 'WebView2'
         New-Item -ItemType Directory -Path $webViewRoot | Out-Null
         $debugEndpoint = New-DesktopFixedDebugEndpoint
-        $childEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = [string]$debugEndpoint.argument
+        $childEnvironment.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = Get-DesktopLegacyBrowserArgumentsValue -Mode $DesktopLegacyEnvMode -DebugArgument ([string]$debugEndpoint.argument)
+        $childEnvironment.WINSMUX_DESKTOP_TEST_PROFILE = 'public-smoke'
+        $childEnvironment.WINSMUX_DESKTOP_REMOTE_DEBUG_PORT = [string]$debugEndpoint.port
         $childEnvironment.WEBVIEW2_USER_DATA_FOLDER = $webViewRoot
 
         $context.app_process = Start-OwnedProcess -FilePath (Join-Path $installRoot 'winsmux-app.exe') -Environment $childEnvironment
@@ -3756,9 +3846,10 @@ try {
                 'desktop_probe_port_file_redirected',
                 'desktop_probe_port_file_fallback',
                 'desktop_probe_webview_process_present',
-                'desktop_probe_debug_arg'
+                'desktop_probe_debug_arg',
+                'desktop_probe_env_channel'
             )
-            Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the eight-key contract.'
+            Assert-Condition ([string]::Join(',', @($realProbeTable.Keys)) -ceq [string]::Join(',', $expectedProbeKeys)) 'The teardown probe table did not preserve the nine-key contract.'
             $realDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $missingDiagnosisUserData -ProbeTable $realProbeTable -ProbeTimeoutMilliseconds 1000 -TotalBudgetMilliseconds 10000
             foreach ($value in @($realDiagnosis.Values)) {
                 Assert-Condition ([string]$value -cmatch '^(?:true|false|unknown|error:[a-z]+)$') 'A teardown probe returned a value outside the four-value domain.'
@@ -3894,6 +3985,62 @@ try {
             $null = Get-DesktopTeardownDiagnosisSegment -Diagnosis ([ordered]@{ desktop_probe_debug_arg = [string]$debugTrue })
             $evidence.desktop_debug_arg_diagnosis = $debugArgumentEvidence
             $caseIds.Add('desktop_debug_arg_diagnosis')
+            $debugArgument = '--remote-debugging-port=49161'
+            $legacyPortAndMarker = Get-DesktopLegacyBrowserArgumentsValue -Mode PortAndMarker -DebugArgument $debugArgument
+            $expectedPortAndMarker = '{0} {1}' -f $debugArgument, $script:DesktopSmokeEnvMarkerArgument
+            Assert-Condition ($legacyPortAndMarker -ceq $expectedPortAndMarker) 'PortAndMarker legacy browser arguments value mismatch.'
+            $evidence.desktop_legacy_env_port_and_marker = [ordered]@{
+                mode = 'PortAndMarker'
+                contains_port = $legacyPortAndMarker.Contains('--remote-debugging-port')
+                contains_marker = $legacyPortAndMarker.Contains($script:DesktopSmokeEnvMarkerArgument)
+            }
+            $caseIds.Add('legacy_env_port_and_marker')
+            $legacyMarkerOnly = Get-DesktopLegacyBrowserArgumentsValue -Mode MarkerOnly -DebugArgument $debugArgument
+            Assert-Condition ($legacyMarkerOnly -ceq $script:DesktopSmokeEnvMarkerArgument) 'MarkerOnly legacy browser arguments value mismatch.'
+            Assert-Condition (-not $legacyMarkerOnly.Contains('--remote-debugging-port')) 'MarkerOnly must not contain remote-debugging-port.'
+            $evidence.desktop_legacy_env_marker_only = [ordered]@{
+                mode = 'MarkerOnly'
+                contains_port = $legacyMarkerOnly.Contains('--remote-debugging-port')
+                contains_marker = $legacyMarkerOnly.Contains($script:DesktopSmokeEnvMarkerArgument)
+            }
+            Assert-Condition (Test-Throws { Get-DesktopLegacyBrowserArgumentsValue -Mode Legacy -DebugArgument $debugArgument }) 'Unsupported Mode must be rejected by ValidateSet.'
+            $caseIds.Add('legacy_env_marker_only')
+            $successDiagnosis = [ordered]@{
+                desktop_probe_webview_process_present = 'true'
+                desktop_probe_debug_arg = 'true'
+                desktop_probe_env_channel = 'false'
+                desktop_probe_profile_dir = 'true'
+            }
+            $successLines = [Collections.Generic.List[string]]::new()
+            $successEmitter = { param($Line) $successLines.Add($Line) }.GetNewClosure()
+            $successLine = Write-DesktopProbeDiagnosticsLine -Diagnosis $successDiagnosis -Emitter $successEmitter
+            Assert-Condition ($successLines.Count -eq 1) 'Success diagnosis emission count mismatch.'
+            Assert-Condition ($successLines[0] -ceq $successLine) 'Success diagnosis captured line mismatch.'
+            Assert-Condition ($successLine.StartsWith('desktop_probe_diagnosis ', [StringComparison]::Ordinal)) 'Success diagnosis line prefix mismatch.'
+            Assert-Condition ([string]$successDiagnosis['desktop_probe_debug_arg'] -ceq 'true') 'The success diagnosis did not carry the pass-fail debug argument probe value.'
+            $evidence.desktop_probe_diag_success_emission = [ordered]@{
+                emitted_count = $successLines.Count
+                has_prefix = $successLine.StartsWith('desktop_probe_diagnosis ', [StringComparison]::Ordinal)
+            }
+            $caseIds.Add('desktop_probe_diag_success_emission')
+            $failureDiagnosis = [ordered]@{
+                desktop_probe_webview_process_present = 'true'
+                desktop_probe_debug_arg = 'false'
+                desktop_probe_env_channel = 'true'
+                desktop_probe_profile_dir = 'unknown'
+            }
+            $failureLines = [Collections.Generic.List[string]]::new()
+            $failureEmitter = { param($Line) $failureLines.Add($Line) }.GetNewClosure()
+            $failureLine = Write-DesktopProbeDiagnosticsLine -Diagnosis $failureDiagnosis -Emitter $failureEmitter
+            Assert-Condition ($failureLines.Count -eq 1) 'Failure diagnosis emission count mismatch.'
+            Assert-Condition ($failureLines[0] -ceq $failureLine) 'Failure diagnosis captured line mismatch.'
+            $rejectsRawIdentity = Test-Throws { Write-DesktopProbeDiagnosticsLine -Diagnosis ([ordered]@{ desktop_probe_debug_arg = '/devtools/browser/x' }) -Emitter { param($Line) } }
+            Assert-Condition ($rejectsRawIdentity) 'Diagnosis value outside the four-value domain must be rejected.'
+            $evidence.desktop_probe_diag_failure_emission = [ordered]@{
+                emitted_count = $failureLines.Count
+                rejects_raw_identity = $rejectsRawIdentity
+            }
+            $caseIds.Add('desktop_probe_diag_failure_emission')
         } else {
             $nodeFixtureRoot = Join-Path $root 'node-toolchains'
             $firstNodeRoot = Join-Path $nodeFixtureRoot 'first'
