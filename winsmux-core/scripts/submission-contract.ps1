@@ -1223,11 +1223,15 @@ function Invoke-WinsmuxSubmissionCliRun {
         [Parameter(Mandatory = $true)][string]$SubmissionId,
         [Parameter(Mandatory = $true)][string]$TaskId,
         [Parameter(Mandatory = $true)][string]$Backend,
-        [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind
+        [Parameter(Mandatory = $true)][ValidateSet('task', 'review')][string]$Kind,
+        [AllowEmptyString()][string]$ReviewRequestCommand = ''
     )
 
     $workerArguments = @('workers', 'exec', $SlotId, '--task-json', $PacketPath)
     $workerArguments += @('--task-id', $TaskId, '--run-id', $SubmissionId, '--json', '--project-dir', $ProjectDir)
+    if ($Kind -ceq 'review' -and -not [string]::IsNullOrWhiteSpace($ReviewRequestCommand)) {
+        $workerArguments += @('--', '--review-request-command', $ReviewRequestCommand)
+    }
     $output = & pwsh -NoProfile -File $script:WinsmuxSubmissionBridgeScript @workerArguments 2>&1
     $exitCode = $LASTEXITCODE
     $jsonLine = @($output | ForEach-Object { [string]$_ } | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
@@ -1579,7 +1583,12 @@ function Invoke-WinsmuxSubmissionAdapter {
         $runner = if ($null -ne $RunResultAction) { & $RunResultAction $ProjectDir $label $SubmissionId $ReviewStateRoot } else { Get-WinsmuxSubmissionRunResult -ProjectDir $ProjectDir -SlotId $label -RunId $SubmissionId }
     } else {
         $deliveryPacketPath = if ($Kind -ceq 'review') { [string]$reviewLocator.PacketPath } else { [string]$packet.RelativePath }
-        $runner = if ($null -ne $CliRunAction) { & $CliRunAction $ProjectDir $label $deliveryPacketPath $SubmissionId $backend $Kind $ReviewStateRoot } else { Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $deliveryPacketPath -SubmissionId $SubmissionId -TaskId $TaskId -Backend $backend -Kind $Kind }
+        $reviewRequestCommand = if ($Kind -ceq 'review') { "winsmux review-request --state-root $($reviewLocator.StateRootLiteral) --submission-id $SubmissionId" } else { '' }
+        $runner = if ($null -ne $CliRunAction) {
+            & $CliRunAction $ProjectDir $label $deliveryPacketPath $SubmissionId $backend $Kind $ReviewStateRoot $reviewRequestCommand
+        } else {
+            Invoke-WinsmuxSubmissionCliRun -ProjectDir $ProjectDir -SlotId $label -PacketPath $deliveryPacketPath -SubmissionId $SubmissionId -TaskId $TaskId -Backend $backend -Kind $Kind -ReviewRequestCommand $reviewRequestCommand
+        }
     }
 
     if (Test-WinsmuxSubmissionRunRecord -Record $runner -SubmissionId $SubmissionId -Kind $Kind -Backend $backend -ExpectedSlotId $label -ExpectedRequestDigest ([string]$packet.Packet.request_digest) -ExpectedTaskId ([string]$packet.Packet.task_id)) {

@@ -195,7 +195,7 @@ jobs:
           - name: bridge-command-review-dispatch
             result: bridge-command-review-dispatch
             timeout_minutes: 12
-            paths: tests/bridge/CommandReviewDispatch.Tests.ps1
+            paths: tests/bridge/CommandReviewDispatch.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1
             full_name: ""
           - name: bridge-provider-commands
             result: bridge-provider-commands

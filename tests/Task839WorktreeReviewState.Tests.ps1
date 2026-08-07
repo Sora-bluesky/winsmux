@@ -250,3 +250,38 @@ Describe 'TASK839 dual-root review binding' {
         $script:Task839ApiInstruction | Should -BeExactly "exec .winsmux\submissions\submission-task839-api.json"
     }
 }
+
+Describe 'TASK839 review root refusal contract' {
+    It 'soft-fails when the Git common directory cannot be resolved' {
+        $script:Task839GitCall = 0
+        Mock git {
+            $script:Task839GitCall++
+            if ($script:Task839GitCall -eq 1) { 'C:\task839-workroot' }
+            $global:LASTEXITCODE = if ($script:Task839GitCall -eq 1) { 0 } else { 1 }
+        }
+        Mock Get-SafeLastExitCode { [int]$global:LASTEXITCODE }
+
+        $result = Resolve-ReviewRootPair -TargetRoot 'C:\task839-target' -SoftFail
+
+        $result | Should -BeNullOrEmpty
+    }
+
+    It 'soft-fails when the StateRoot cannot be derived from the common directory' {
+        $script:Task839GitCall = 0
+        Mock git {
+            $script:Task839GitCall++
+            if ($script:Task839GitCall -eq 1) { 'C:\task839-workroot' } else { 'C:\' }
+            $global:LASTEXITCODE = 0
+        }
+        Mock Get-SafeLastExitCode { 0 }
+        $script:Task839CanonicalCall = 0
+        Mock ConvertTo-CanonicalReviewPath {
+            $script:Task839CanonicalCall++
+            if ($script:Task839CanonicalCall -lt 3) { 'C:\task839-workroot' } else { 'C:\' }
+        }
+
+        $result = Resolve-ReviewRootPair -TargetRoot 'C:\task839-target' -SoftFail
+
+        $result | Should -BeNullOrEmpty
+    }
+}

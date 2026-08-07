@@ -418,12 +418,15 @@ Describe 'winsmux dispatch-task routing' {
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = '%3'; Role = 'Worker'; WorkerBackend = 'antigravity' }
+            $script:antigravityReviewCommand = ''
             $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic input' -SubmissionId 'submission-test-7' -ReviewStateRoot $tempRoot `
-                -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId) New-WinsmuxSubmissionRunRecord -SubmissionId $submissionId -RunId $submissionId -Kind review -TaskTitle 'Review test' -SlotId $slotId -Backend antigravity -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'review synthetic input') }
+                -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId, $backend, $kind, $reviewStateRoot, $reviewRequestCommand) $script:antigravityReviewCommand = $reviewRequestCommand; New-WinsmuxSubmissionRunRecord -SubmissionId $submissionId -RunId $submissionId -Kind review -TaskTitle 'Review test' -SlotId $slotId -Backend antigravity -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'review synthetic input') }
 
             $receipt.status | Should -Be 'accepted'
             $receipt.acknowledgement.type | Should -Be 'backend_run_record'
             $receipt.acknowledgement.run_id | Should -Be 'submission-test-7'
+            $quotedRoot = "'" + $tempRoot.Replace("'", "''") + "'"
+            $script:antigravityReviewCommand | Should -BeExactly "winsmux review-request --state-root $quotedRoot --submission-id submission-test-7"
         } finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
