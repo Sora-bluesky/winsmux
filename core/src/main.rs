@@ -219,6 +219,10 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
             | "auto-rebalance"
             | "kill"
             | "assign"
+            | "review-request"
+            | "review-approve"
+            | "review-fail"
+            | "review-reset"
     )
 }
 
@@ -538,6 +542,14 @@ mod tests {
     fn typed_submission_commands_are_forwarded_to_the_shared_core_bridge() {
         assert!(is_winsmux_core_bridge_command("dispatch-task"));
         assert!(is_winsmux_core_bridge_command("dispatch-review"));
+        for command in [
+            "review-request",
+            "review-approve",
+            "review-fail",
+            "review-reset",
+        ] {
+            assert!(is_winsmux_core_bridge_command(command));
+        }
     }
 
     #[test]
@@ -907,6 +919,10 @@ fn run_main() -> io::Result<()> {
                 session_namespace.as_deref(),
             );
         }
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("winsmux-core bridge script not found for command '{cmd}'"),
+        ));
     }
 
     if cmd == "status" && operator_cli::is_operator_status_invocation(&cmd_args[1..]) {

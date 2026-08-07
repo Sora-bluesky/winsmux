@@ -52,13 +52,27 @@ function Invoke-ApiLlmPaneExec {
     & $coreScript @args
 }
 
+function Invoke-ApiLlmPaneReviewRequest {
+    param([Parameter(Mandatory = $true)][string[]]$Tokens)
+
+    if ($Tokens.Count -ne 4 -or $Tokens[0] -ne '--state-root' -or $Tokens[2] -ne '--submission-id') {
+        Write-Host 'usage: winsmux review-request --state-root <absolute-path> --submission-id <id>'
+        return
+    }
+    if (-not [IO.Path]::IsPathRooted($Tokens[1]) -or $Tokens[1] -match '\s' -or $Tokens[3] -notmatch '^[A-Za-z0-9._-]+$') {
+        Write-Host 'usage: winsmux review-request --state-root <absolute-path> --submission-id <id>'
+        return
+    }
+    & $coreScript 'review-request' '--state-root' $Tokens[1] '--submission-id' $Tokens[3]
+}
+
 Write-Host 'winsmux api_llm pane worker'
 Write-Host ("slot: {0}" -f $slotId)
 Write-Host ("provider: {0}" -f $(if ([string]::IsNullOrWhiteSpace($Provider)) { 'unknown' } else { $Provider }))
 Write-Host ("model: {0}" -f $(if ([string]::IsNullOrWhiteSpace($Model)) { 'provider-default' } else { $Model }))
 Write-Host ("project: {0}" -f $projectRoot)
 Write-Host 'status: ready'
-Write-Host 'commands: exec <task-packet-path>, status, help, quit'
+Write-Host 'commands: exec <task-packet-path>, winsmux review-request --state-root <absolute-path> --submission-id <id>, status, help, quit'
 
 while ($true) {
     Write-ApiLlmPanePrompt
@@ -96,6 +110,13 @@ while ($true) {
             Write-Host ("status: failed")
             Write-Host ("reason: {0}" -f ($_.Exception.Message -replace '[A-Za-z]:\\Users\\[^,"\r\n]+', '<local-path>'))
         }
+        continue
+    }
+
+    if ($trimmed -like 'winsmux review-request *') {
+        $rest = $trimmed.Substring('winsmux review-request '.Length).Trim()
+        $tokens = @($rest -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        try { Invoke-ApiLlmPaneReviewRequest -Tokens $tokens } catch { Write-Host 'status: failed' }
         continue
     }
 

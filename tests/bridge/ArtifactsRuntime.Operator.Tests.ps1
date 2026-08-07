@@ -396,7 +396,7 @@ panes:
         }
     }
 
-    It 'dispatches review requests through operator poll wrappers' {
+    It 'dispatches review requests through the typed review adapter and consumes its receipt' {
 @"
 version: 1
 saved_at: 2026-04-12T10:00:00+09:00
@@ -410,6 +410,15 @@ panes:
     launch_dir: $script:operatorPollTempRoot
 "@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
+        Mock Invoke-OperatorPollReviewDispatch {
+            [ordered]@{
+                protocol_version = 1
+                kind = 'review'
+                status = 'accepted'
+                submission_id = 'submission-task839-operator'
+                target = [ordered]@{ label = 'reviewer-1'; pane_id = '%4'; role = 'Reviewer' }
+            }
+        }
         Mock Send-OperatorPollLiteral { }
         Mock Approve-OperatorPollPane { }
         Mock Send-OperatorTelegramNotification { }
@@ -422,12 +431,31 @@ panes:
             -ManifestPath $script:operatorPollManifestPath
 
         $result.State | Should -Be 'review_requested'
-        Should -Invoke Send-OperatorPollLiteral -Times 1 -Exactly -ParameterFilter {
-            $PaneId -eq '%4' -and $Text -eq 'winsmux review-request'
+        Should -Invoke Invoke-OperatorPollReviewDispatch -Times 1 -Exactly -ParameterFilter {
+            $ProjectDir -eq $script:operatorPollTempRoot -and $ExpectedReviewPane.PaneId -eq '%4'
         }
-        Should -Invoke Approve-OperatorPollPane -Times 1 -Exactly -ParameterFilter {
-            $PaneId -eq '%4'
+        Should -Invoke Send-OperatorPollLiteral -Times 0 -Exactly
+        Should -Invoke Approve-OperatorPollPane -Times 0 -Exactly
+    }
+
+    It 'blocks when typed review dispatch is refused' {
+        Mock Get-OperatorPollPreferredReviewPane {
+            [pscustomobject]@{ Label = 'reviewer-1'; PaneId = '%4'; Role = 'Reviewer' }
         }
+        Mock Invoke-OperatorPollReviewDispatch { throw 'review_target_unavailable' }
+        Mock Send-OperatorPollLiteral { }
+        Mock Send-OperatorTelegramNotification { }
+
+        $result = Invoke-OperatorStateMachine `
+            -CurrentState 'waiting_for_review' `
+            -CycleSummary @{ completions = 1 } `
+            -ProjectDir $script:operatorPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:operatorPollManifestPath
+
+        $result.State | Should -Be 'blocked_review_failed'
+        Should -Invoke Invoke-OperatorPollReviewDispatch -Times 1 -Exactly
+        Should -Invoke Send-OperatorPollLiteral -Times 0 -Exactly
     }
 
     It 'stops at the draft PR gate after review passed' {

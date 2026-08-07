@@ -382,13 +382,16 @@ Describe 'winsmux dispatch-task routing' {
         try {
             $script:apiLlmCommand = ''
             $entry = [PSCustomObject]@{ Label = 'worker-5'; PaneId = '%5'; Role = 'Worker'; WorkerBackend = 'api_llm' }
-            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic change' -SubmissionId 'submission-test-4' `
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic change' -SubmissionId 'submission-test-4' -ReviewStateRoot $tempRoot `
                 -SendAction { param($paneId, $commandText) $script:apiLlmCommand = $commandText } `
                 -RunResultAction { param($projectDir, $slotId, $runId) [ordered]@{ status = 'failed'; reason = 'runner_rejected_packet'; exit_code = 1; run_id = $runId } }
 
             $receipt.status | Should -Be 'rejected'
             $receipt.reason_code | Should -Be 'runner_rejected_packet'
-        $script:apiLlmCommand | Should -Match '^exec \.winsmux[\\/]submissions[\\/]submission-test-4\.json$'
+            $expectedPacketPath = [IO.Path]::GetFullPath((Join-Path $tempRoot '.winsmux\submissions\submission-test-4.json'))
+            $expectedReviewCommand = "winsmux review-request --state-root $tempRoot --submission-id submission-test-4"
+            $script:apiLlmCommand | Should -BeExactly "exec $expectedPacketPath`n$expectedReviewCommand"
+            @($script:apiLlmCommand -split "`n") | Should -HaveCount 2
             $script:apiLlmCommand | Should -Not -Match 'review synthetic change'
         } finally {
             Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -415,7 +418,7 @@ Describe 'winsmux dispatch-task routing' {
         New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
         try {
             $entry = [PSCustomObject]@{ Label = 'worker-3'; PaneId = '%3'; Role = 'Worker'; WorkerBackend = 'antigravity' }
-            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic input' -SubmissionId 'submission-test-7' `
+            $receipt = Invoke-WinsmuxSubmissionAdapter -ProjectDir $tempRoot -ManifestEntry $entry -Kind review -Content 'review synthetic input' -SubmissionId 'submission-test-7' -ReviewStateRoot $tempRoot `
                 -CliRunAction { param($projectDir, $slotId, $packetPath, $submissionId) New-WinsmuxSubmissionRunRecord -SubmissionId $submissionId -RunId $submissionId -Kind review -TaskTitle 'Review test' -SlotId $slotId -Backend antigravity -Status started -RequestConsumed -RequestDigest (Get-WinsmuxSubmissionRequestDigest -Request 'review synthetic input') }
 
             $receipt.status | Should -Be 'accepted'

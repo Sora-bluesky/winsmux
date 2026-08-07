@@ -1096,3 +1096,332 @@ fn meta_plan_role_uses_custom_adapter_read_only_launch_args() {
 
     let _ = std::fs::remove_dir_all(project_dir);
 }
+
+static REVIEW_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct ReviewTestEnv {
+    previous: Vec<(&'static str, Option<String>)>,
+}
+
+impl ReviewTestEnv {
+    fn set(pane_id: &str, role: &str, role_map: &str, agent_name: Option<&str>) -> Self {
+        let values = [
+            ("WINSMUX_PANE_ID", Some(pane_id)),
+            ("WINSMUX_ROLE", Some(role)),
+            ("WINSMUX_ROLE_MAP", Some(role_map)),
+            ("WINSMUX_AGENT_NAME", agent_name),
+        ];
+        let previous = values
+            .iter()
+            .map(|(name, _)| (*name, std::env::var(name).ok()))
+            .collect();
+        for (name, value) in values {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for ReviewTestEnv {
+    fn drop(&mut self) {
+        for (name, value) in self.previous.drain(..) {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+    }
+}
+
+fn write_native_review_manifest(project_dir: &Path) {
+    std::fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        r#"version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: running
+    review_state: pending
+    branch: codex/task266-rust-operator-readmodels-20260424
+    head_sha: abc123
+  reviewer-1:
+    pane_id: "%3"
+    role: Reviewer
+    state: idle
+    review_state: PASS
+    branch: codex/task266-rust-operator-readmodels-20260424
+    head_sha: def456
+"#,
+    )
+    .expect("write native review manifest");
+}
+
+fn init_native_review_git(project_dir: &Path) {
+    let branch = "codex/task266-rust-operator-readmodels-20260424";
+    let output = Command::new("git")
+        .args(["init", "-b", branch])
+        .current_dir(project_dir)
+        .output()
+        .expect("git init should run");
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let ref_path = project_dir
+        .join(".git")
+        .join("refs")
+        .join("heads")
+        .join(branch.replace('/', std::path::MAIN_SEPARATOR_STR));
+    std::fs::create_dir_all(ref_path.parent().expect("branch ref parent"))
+        .expect("create branch ref parent");
+    std::fs::write(ref_path, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+        .expect("write branch head");
+}
+
+fn native_review_project(name: &str) -> PathBuf {
+    let project_dir = test_project_dir(name);
+    write_native_review_manifest(&project_dir);
+    init_native_review_git(&project_dir);
+    project_dir
+}
+
+fn write_native_review_state(project_dir: &Path, content: &str) {
+    std::fs::write(
+        project_dir.join(".winsmux").join("review-state.json"),
+        content,
+    )
+    .expect("write native review state");
+}
+
+fn read_native_review_state(project_dir: &Path) -> Value {
+    serde_json::from_slice(
+        &std::fs::read(project_dir.join(".winsmux").join("review-state.json"))
+            .expect("review state should exist"),
+    )
+    .expect("review state should be JSON")
+}
+
+fn read_native_review_pane(project_dir: &Path, label: &str) -> serde_yaml::Value {
+    let manifest: serde_yaml::Value = serde_yaml::from_slice(
+        &std::fs::read(project_dir.join(".winsmux").join("manifest.yaml"))
+            .expect("manifest should exist"),
+    )
+    .expect("manifest should be YAML");
+    manifest["panes"]
+        .as_mapping()
+        .expect("panes should be a map")
+        .get(&serde_yaml::Value::String(label.to_string()))
+        .expect("pane should exist")
+        .clone()
+}
+
+fn run_native_review_handler(
+    project_dir: &Path,
+    handler: fn(&[&String]) -> io::Result<()>,
+) -> io::Result<()> {
+    let arguments = [
+        "--project-dir".to_string(),
+        project_dir.to_string_lossy().into_owned(),
+    ];
+    handler(&arguments.iter().collect::<Vec<_>>())
+}
+
+fn request_native_review(project_dir: &Path) -> String {
+    run_native_review_handler(project_dir, run_review_request_command)
+        .expect("native review request should succeed");
+    read_native_review_state(project_dir)
+        ["codex/task266-rust-operator-readmodels-20260424"]["request"]["id"]
+        .as_str()
+        .expect("request id should be a string")
+        .to_string()
+}
+
+#[test]
+fn operator_cli_review_request_records_pending_state_and_manifest_pane() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, Some("codex"));
+    let project_dir = native_review_project("native-review-request");
+    write_native_review_state(&project_dir, r#"{"other-branch":{"status":"PASS"}}"#);
+
+    request_native_review(&project_dir);
+
+    let state = read_native_review_state(&project_dir);
+    assert!(state.get("other-branch").is_some());
+    let record = &state["codex/task266-rust-operator-readmodels-20260424"];
+    assert_eq!(record["status"], "PENDING");
+    assert_eq!(record["head_sha"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(record["request"]["target_review_pane_id"], "%3");
+    assert_eq!(record["request"]["target_review_role"], "Reviewer");
+    assert_eq!(record["request"]["review_contract"]["version"], 1);
+    assert_eq!(record["reviewer"]["agent_name"], "codex");
+    let reviewer = read_native_review_pane(&project_dir, "reviewer-1");
+    assert_eq!(reviewer["review_state"].as_str(), Some("pending"));
+    assert_eq!(reviewer["last_event"].as_str(), Some("review.requested"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_request_rejects_non_review_capable_pane() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%2", "Reviewer", r#"{"%2":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-request-builder");
+    let error = run_native_review_handler(&project_dir, run_review_request_command)
+        .expect_err("builder pane must be rejected");
+    assert!(error.to_string().contains("is not registered as a review-capable pane"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_request_rejects_role_gate_mismatch() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Worker", r#"{"%3":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-role-mismatch");
+    let error = run_native_review_handler(&project_dir, run_review_request_command)
+        .expect_err("role mismatch must be rejected");
+    assert!(error.to_string().contains("WINSMUX_ROLE mismatch for pane %3"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_request_accepts_label_derived_reviewer_role() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-label-role");
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = std::fs::read_to_string(&manifest_path)
+        .expect("read manifest")
+        .replace("    role: Reviewer\n", "");
+    std::fs::write(&manifest_path, manifest).expect("write manifest without reviewer role");
+    request_native_review(&project_dir);
+    let state = read_native_review_state(&project_dir);
+    assert_eq!(state["codex/task266-rust-operator-readmodels-20260424"]["request"]["target_review_role"], "Reviewer");
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_request_generates_distinct_request_ids() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-distinct-id");
+    let first = request_native_review(&project_dir);
+    let second = request_native_review(&project_dir);
+    assert_ne!(first, second);
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_approve_records_pass_state_and_manifest_pane() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, Some("codex"));
+    let project_dir = native_review_project("native-review-approve");
+    request_native_review(&project_dir);
+    run_native_review_handler(&project_dir, run_review_approve_command)
+        .expect("native review approval should succeed");
+    let state = read_native_review_state(&project_dir);
+    let record = &state["codex/task266-rust-operator-readmodels-20260424"];
+    assert_eq!(record["status"], "PASS");
+    assert_eq!(record["reviewer"]["pane_id"], "%3");
+    assert_eq!(record["evidence"]["approved_via"], "winsmux review-approve");
+    let reviewer = read_native_review_pane(&project_dir, "reviewer-1");
+    assert_eq!(reviewer["review_state"].as_str(), Some("pass"));
+    assert_eq!(reviewer["last_event"].as_str(), Some("review.pass"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_fail_records_fail_state_and_manifest_pane() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, Some("codex"));
+    let project_dir = native_review_project("native-review-fail");
+    request_native_review(&project_dir);
+    run_native_review_handler(&project_dir, run_review_fail_command)
+        .expect("native review failure result should succeed");
+    let state = read_native_review_state(&project_dir);
+    let record = &state["codex/task266-rust-operator-readmodels-20260424"];
+    assert_eq!(record["status"], "FAIL");
+    assert_eq!(record["evidence"]["failed_via"], "winsmux review-fail");
+    let reviewer = read_native_review_pane(&project_dir, "reviewer-1");
+    assert_eq!(reviewer["review_state"].as_str(), Some("fail"));
+    assert_eq!(reviewer["last_event"].as_str(), Some("review.fail"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_result_requires_pending_request() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    for (name, handler) in [
+        ("native-review-approve-missing", run_review_approve_command as fn(&[&String]) -> io::Result<()>),
+        ("native-review-fail-missing", run_review_fail_command as fn(&[&String]) -> io::Result<()>),
+    ] {
+        let project_dir = native_review_project(name);
+        let error = run_native_review_handler(&project_dir, handler)
+            .expect_err("missing pending request must be rejected");
+        assert!(error.to_string().contains("review request pending"));
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+}
+
+#[test]
+fn operator_cli_review_result_requires_review_contract() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-contract");
+    write_native_review_state(&project_dir, r#"{"codex/task266-rust-operator-readmodels-20260424":{"status":"PENDING","head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","request":{"head_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_review_pane_id":"%3"}}}"#);
+    let error = run_native_review_handler(&project_dir, run_review_approve_command)
+        .expect_err("missing review contract must be rejected");
+    assert!(error.to_string().contains("is missing review_contract"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_result_rejects_pane_and_head_mismatch() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    let cases = [
+        ("native-review-pane-mismatch", "%9", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "is assigned to %9, not %3"),
+        ("native-review-head-mismatch", "%3", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "pending review request head mismatch"),
+    ];
+    for (name, pane_id, head_sha, expected) in cases {
+        let project_dir = native_review_project(name);
+        write_native_review_state(&project_dir, &format!(r#"{{"codex/task266-rust-operator-readmodels-20260424":{{"status":"PENDING","branch":"codex/task266-rust-operator-readmodels-20260424","head_sha":"{head_sha}","request":{{"branch":"codex/task266-rust-operator-readmodels-20260424","head_sha":"{head_sha}","target_review_pane_id":"{pane_id}","review_contract":{{"required_scope":["design_impact"]}}}}}}}}"#));
+        let error = run_native_review_handler(&project_dir, run_review_approve_command)
+            .expect_err("mismatched pending request must be rejected");
+        assert!(error.to_string().contains(expected), "{}", error);
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+}
+
+#[test]
+fn operator_cli_review_reset_clears_current_branch_and_manifest_pane() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-reset");
+    write_native_review_state(&project_dir, r#"{"codex/task266-rust-operator-readmodels-20260424":{"status":"PASS","head_sha":"abc123"},"other-branch":{"status":"PENDING","head_sha":"def456"}}"#);
+    run_native_review_handler(&project_dir, run_review_reset_command)
+        .expect("native review reset should succeed");
+    let state = read_native_review_state(&project_dir);
+    assert!(state.get("codex/task266-rust-operator-readmodels-20260424").is_none());
+    assert!(state.get("other-branch").is_some());
+    let reviewer = read_native_review_pane(&project_dir, "reviewer-1");
+    assert_eq!(reviewer["review_state"].as_str(), Some(""));
+    assert_eq!(reviewer["last_event"].as_str(), Some("review.reset"));
+    let _ = std::fs::remove_dir_all(project_dir);
+}
+
+#[test]
+fn operator_cli_review_reset_removes_empty_review_state_file() {
+    let _lock = REVIEW_TEST_ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let _env = ReviewTestEnv::set("%3", "Reviewer", r#"{"%3":"Reviewer"}"#, None);
+    let project_dir = native_review_project("native-review-reset-empty");
+    write_native_review_state(&project_dir, r#"{"codex/task266-rust-operator-readmodels-20260424":{"status":"PASS","head_sha":"abc123"}}"#);
+    run_native_review_handler(&project_dir, run_review_reset_command)
+        .expect("native review reset should succeed");
+    assert!(!project_dir.join(".winsmux").join("review-state.json").exists());
+    let _ = std::fs::remove_dir_all(project_dir);
+}
