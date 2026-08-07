@@ -39,6 +39,16 @@ jobs:
       run:
         shell: pwsh
     steps:
+      - name: Validate candidate commit SHA
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+        run: |
+          $candidate = $env:CANDIDATE_REF
+          if ($candidate -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Invalid candidate_ref '$candidate': expected a full 40-character hexadecimal commit SHA."
+          }
+          Write-Host 'candidate_ref accepted as a full commit SHA'
+
       - name: Checkout candidate ref
         uses: actions/checkout@v6
         with:
@@ -254,13 +264,22 @@ jobs:
 
       - name: Write gate receipt to step summary
         if: always()
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          PAGE_URL: ${{ steps.leg_b.outputs.page_url }}
+          LEG_A_OUTCOME: ${{ steps.leg_a.outcome }}
+          LEG_B_OUTCOME: ${{ steps.leg_b.outcome }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $candidate = '${{ inputs.candidate_ref }}'
-          $pageUrl = '${{ steps.leg_b.outputs.page_url }}'
+          $candidate = $env:CANDIDATE_REF
+          $resolvedCommit = (& git rev-parse HEAD 2>$null | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $resolvedCommit -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Unable to resolve checked-out HEAD as a full 40-character commit SHA (value='$resolvedCommit')."
+          }
+          $pageUrl = $env:PAGE_URL
           if ([string]::IsNullOrEmpty($pageUrl)) { $pageUrl = 'n/a' }
-          $legAOutcome = '${{ steps.leg_a.outcome }}'
-          $legBOutcome = '${{ steps.leg_b.outcome }}'
-          $line = "desktop-candidate-cdp-gate candidate_ref=$candidate leg_a=$legAOutcome leg_b=$legBOutcome evidence.page_url=$pageUrl"
+          $legAOutcome = $env:LEG_A_OUTCOME
+          $legBOutcome = $env:LEG_B_OUTCOME
+          $line = "desktop-candidate-cdp-gate candidate_ref=$candidate resolved_commit=$resolvedCommit leg_a=$legAOutcome leg_b=$legBOutcome evidence.page_url=$pageUrl"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
           Write-Host $line
