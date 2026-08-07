@@ -58,6 +58,7 @@ They are recorded to show coverage and to support future test expansion.
 | TM-020 | Context over-sharing | subagent or worktree created without boundary record | `sh-subagent.js` and `sh-worktree.js` are registered. | Covered by registration review; context minimization remains operator responsibility. |
 | TM-021 | False completion | task marked complete without evidence | `sh-task-gate.js`, `sh-pipeline.js`, and `sh-issue-gate.js` are registered. | Covered by registration review; issue closure still requires human-visible evidence. |
 | TM-022 | Public leakage | release note mentions forbidden product reference | `scripts/audit-public-surface.ps1` rejects forbidden public references. | Covered; Pester test and audit script verify this gate. |
+| TM-023 | Accidental CDP activation | app started with stray port variable but no test profile | Profile absent means the port variable is never read; Rust unit decision-table tests and the default-off CI gate leg enforce the dual env gate. | Covered by unit decision table and candidate gate; local same-user attacker remains an explicit non-goal. |
 
 ## Automated Checks Added
 

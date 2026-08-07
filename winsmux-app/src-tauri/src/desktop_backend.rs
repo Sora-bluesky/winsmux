@@ -49,8 +49,8 @@ const WINSMUX_BIN_ENV: &str = "WINSMUX_BIN";
 const WINSMUX_RAW_EXE_ENV: &str = "WINSMUX_RAW_EXE";
 
 fn hide_subprocess_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
+    crate::remote_debug_gate::scrub_gate_env_from_command(command);
+    #[cfg(windows)] {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 }

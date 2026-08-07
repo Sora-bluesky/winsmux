@@ -2,6 +2,7 @@ mod control_pipe;
 mod desktop_backend;
 mod desktop_session_restore;
 mod pty_backend;
+mod remote_debug_gate;
 
 use control_pipe::{start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV};
 use desktop_backend::{
@@ -422,8 +423,6 @@ fn desktop_update_launch_installer(
 
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
         let updates_dir = std::env::temp_dir()
             .join("winsmux-updates")
             .canonicalize()
@@ -468,25 +467,7 @@ Start-Process -FilePath $AppPath | Out-Null
 "#;
         std::fs::write(&restart_script_path, restart_script)
             .map_err(|err| format!("failed to write update restart helper: {err}"))?;
-        Command::new("powershell.exe")
-            .args([
-                "-NoLogo",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-WindowStyle",
-                "Hidden",
-                "-File",
-            ])
-            .arg(&restart_script_path)
-            .arg("-InstallerPath")
-            .creation_flags(CREATE_NO_WINDOW)
-            .arg(&canonical_path)
-            .arg("-AppPath")
-            .arg(&app_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+        build_update_restart_command(&restart_script_path, &canonical_path, &app_path)
             .spawn()
             .map_err(|err| format!("failed to launch update restart helper: {err}"))?;
         app.exit(0);
@@ -1164,6 +1145,38 @@ fn spawn_pty(
 type PtyReader = Box<dyn Read + Send>;
 type SinglePtyParts = (SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>);
 
+#[cfg(windows)]
+fn build_update_restart_command(
+    restart_script_path: &Path,
+    installer_path: &Path,
+    app_path: &Path,
+) -> Command {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let mut command = Command::new("powershell.exe");
+    command
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-File",
+        ])
+        .arg(restart_script_path)
+        .arg("-InstallerPath")
+        .creation_flags(CREATE_NO_WINDOW)
+        .arg(installer_path)
+        .arg("-AppPath")
+        .arg(app_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    remote_debug_gate::scrub_gate_env_from_command(&mut command);
+    command
+}
+
 fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("pwsh");
     cmd.arg("-NoLogo");
@@ -1171,6 +1184,8 @@ fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     cmd.env_remove(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+    cmd.env_remove(remote_debug_gate::WINSMUX_DESKTOP_TEST_PROFILE_ENV);
+    cmd.env_remove(remote_debug_gate::WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV);
     cmd
 }
 
@@ -1805,6 +1820,19 @@ impl PtyCommandTransport for TauriPtyTransport {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let remote_debug_browser_args: Option<String> = match remote_debug_gate::resolve_from_env() {
+        remote_debug_gate::RemoteDebugGate::Rejected(reason) => {
+            eprintln!(
+                "winsmux-desktop: remote debug gate rejected: {}",
+                reason.diagnostic_token()
+            );
+            std::process::exit(2);
+        }
+        remote_debug_gate::RemoteDebugGate::Disabled => None,
+        remote_debug_gate::RemoteDebugGate::Enabled { port } => {
+            Some(remote_debug_gate::compose_browser_args(port))
+        }
+    };
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -1824,7 +1852,21 @@ pub fn run() {
             session: Mutex::new(None),
             next_generation: AtomicU64::new(1),
         })
-        .setup(|app| {
+        .setup(move |app| {
+            let main_window_config = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .cloned()
+                .ok_or("main window configuration is missing")?;
+            let mut window_builder =
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &main_window_config)?;
+            if let Some(args) = remote_debug_browser_args.as_deref() {
+                window_builder = window_builder.additional_browser_args(args);
+            }
+            window_builder.build()?;
             let app_handle = app.handle().clone();
             start_control_pipe_server(Arc::new(TauriPtyTransport {
                 app: app_handle.clone(),
@@ -2047,6 +2089,58 @@ mod tests {
             Some("truecolor")
         );
         assert!(command.get_env(WINSMUX_CONTROL_PIPE_TOKEN_ENV).is_none());
+    }
+
+    #[test]
+    fn build_pty_command_scrubs_gate_env_with_sentinel() {
+        let _guard = remote_debug_gate::GATE_ENV_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        std::env::set_var(
+            remote_debug_gate::WINSMUX_DESKTOP_TEST_PROFILE_ENV,
+            "sentinel-profile",
+        );
+        std::env::set_var(
+            remote_debug_gate::WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV,
+            "49871",
+        );
+        std::env::set_var("WINSMUX_DBGGATE_SENTINEL_CONTROL", "control-value");
+        let command = build_pty_command(Path::new("C:\\repo\\winsmux"));
+        std::env::remove_var(remote_debug_gate::WINSMUX_DESKTOP_TEST_PROFILE_ENV);
+        std::env::remove_var(remote_debug_gate::WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV);
+        std::env::remove_var("WINSMUX_DBGGATE_SENTINEL_CONTROL");
+        assert_eq!(
+            command
+                .get_env("WINSMUX_DBGGATE_SENTINEL_CONTROL")
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some("control-value".to_string())
+        );
+        assert!(command
+            .get_env(remote_debug_gate::WINSMUX_DESKTOP_TEST_PROFILE_ENV)
+            .is_none());
+        assert!(command
+            .get_env(remote_debug_gate::WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV)
+            .is_none());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn update_restart_command_records_gate_env_removal() {
+        let command = build_update_restart_command(
+            Path::new("C:\\tmp\\restart.ps1"),
+            Path::new("C:\\tmp\\installer.exe"),
+            Path::new("C:\\tmp\\winsmux-app.exe"),
+        );
+        let removed: Vec<std::ffi::OsString> = command
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then(|| key.to_os_string()))
+            .collect();
+        assert!(removed
+            .iter()
+            .any(|key| key == remote_debug_gate::WINSMUX_DESKTOP_TEST_PROFILE_ENV));
+        assert!(removed
+            .iter()
+            .any(|key| key == remote_debug_gate::WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV));
     }
 
     #[test]
