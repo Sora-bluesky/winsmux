@@ -49,8 +49,8 @@ const WINSMUX_BIN_ENV: &str = "WINSMUX_BIN";
 const WINSMUX_RAW_EXE_ENV: &str = "WINSMUX_RAW_EXE";
 
 fn hide_subprocess_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
+    crate::remote_debug_gate::scrub_gate_env_from_command(command);
+    #[cfg(windows)] {
         command.creation_flags(CREATE_NO_WINDOW);
     }
 }
@@ -2124,7 +2124,6 @@ where
                 .stderr(Stdio::piped());
             apply_desktop_winsmux_child_env(&mut process, companion_cli.as_deref(), app_pid);
             hide_subprocess_window(&mut process);
-            crate::remote_debug_gate::scrub_gate_env_from_command(&mut process);
 
             let mut child = match process.spawn() {
                 Ok(child) => child,
@@ -2328,7 +2327,6 @@ fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> Hash
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     hide_subprocess_window(&mut command);
-    crate::remote_debug_gate::scrub_gate_env_from_command(&mut command);
 
     let Ok(mut child) = command.spawn() else {
         return HashSet::new();
@@ -2569,7 +2567,6 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
         .current_dir(&effective_project_dir);
     apply_desktop_winsmux_child_env(&mut command, companion_cli.as_deref(), std::process::id());
     hide_subprocess_window(&mut command);
-    crate::remote_debug_gate::scrub_gate_env_from_command(&mut command);
 
     let output = command
         .output()
