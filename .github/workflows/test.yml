@@ -210,7 +210,7 @@ jobs:
           - name: integration
             result: integration
             timeout_minutes: 25
-            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1
+            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1
             full_name: ""
           - name: worker-benchmark
             result: worker-benchmark
@@ -387,6 +387,77 @@ jobs:
       - name: Build desktop binary without bundling
         working-directory: winsmux-app
         run: npm run tauri -- build --no-bundle
+
+      - name: Install Pester for desktop debug process gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $existing = Get-Module -ListAvailable Pester |
+            Where-Object { $_.Version -ge [version]'5.0.0' } |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+          if (-not $existing) {
+            $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+            if (-not $repo) {
+              Register-PSRepository -Default -ErrorAction Stop
+            }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+            for ($attempt = 1; $attempt -le 3; $attempt++) {
+              try {
+                Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -Repository PSGallery -ErrorAction Stop
+                break
+              } catch {
+                if ($attempt -eq 3) { throw }
+                Start-Sleep -Seconds (5 * $attempt)
+              }
+            }
+          }
+          Import-Module Pester -MinimumVersion 5.0 -Force
+          Get-Module Pester | Format-Table Name,Version,Path -AutoSize
+
+      - name: Run V03630 desktop debug process gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Pester -MinimumVersion 5.0 -Force
+          $appPath = (Resolve-Path -LiteralPath 'target/release/winsmux-app.exe' -ErrorAction Stop).ProviderPath
+
+          $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+          try {
+            $listener.Start()
+            $debugPort = ([Net.IPEndPoint]$listener.LocalEndpoint).Port
+          } finally {
+            $listener.Stop()
+          }
+          if ($debugPort -lt 1024 -or $debugPort -gt 65535) {
+            throw "Allocated debug port is outside 1024..65535: $debugPort"
+          }
+
+          $env:WINSMUX_DBGGATE_APP_EXE = $appPath
+          $env:WINSMUX_DBGGATE_PORT = [string]$debugPort
+          try {
+            $config = New-PesterConfiguration
+            $config.Run.Path = @((Resolve-Path -LiteralPath 'tests/V03630DesktopDebugGateProcess.Tests.ps1' -ErrorAction Stop).ProviderPath)
+            $config.Run.PassThru = $true
+            $config.Output.Verbosity = 'Detailed'
+            $config.TestResult.Enabled = $true
+            $config.TestResult.OutputPath = 'test-results-desktop-debug-v03630.xml'
+            $config.TestResult.OutputFormat = 'NUnitXml'
+            $result = Invoke-Pester -Configuration $config
+            if ($result.Result -ne 'Passed') {
+              throw "V03630 desktop debug process gate failed: result=$($result.Result) failed=$($result.FailedCount)"
+            }
+          } finally {
+            Remove-Item Env:WINSMUX_DBGGATE_APP_EXE -ErrorAction SilentlyContinue
+            Remove-Item Env:WINSMUX_DBGGATE_PORT -ErrorAction SilentlyContinue
+          }
+
+      - name: Upload V03630 desktop debug process results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-results-desktop-debug-v03630
+          path: test-results-desktop-debug-v03630.xml
 
   merge-gate:
     name: Merge Gate
