@@ -845,8 +845,8 @@ Describe 'winsmux version surface' {
         }
         foreach ($coordinate in @(
             'refs/heads/main',
-            'feaab01701ddd1f0930da2e8b72cab1e7b25edb0',
-            '75dcae87538e96a4cf49dc844d8343842d3c3178',
+            '9f5585151703d8d1dd3fca373d687194f0b94933',
+            '8b9b6eb5a26aa490422e91286b647bca29adb8f5',
             'refs/tags/$Tag^{}',
             'helperSourceCommit -cne $workflowSha',
             'tagBefore = Get-RemoteTagIdentity',
