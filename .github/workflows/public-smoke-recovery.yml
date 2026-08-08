@@ -6,12 +6,12 @@ on:
       release_tag:
         description: Immutable annotated release tag to verify.
         required: true
-        default: v0.36.30
+        default: v0.36.30.1
         type: string
       release_commit:
         description: Peeled commit of the immutable annotated release tag.
         required: true
-        default: 75dcae87538e96a4cf49dc844d8343842d3c3178
+        default: 8b9b6eb5a26aa490422e91286b647bca29adb8f5
         type: string
       native_version:
         description: Exact Core and Desktop product version.
@@ -21,7 +21,7 @@ on:
       npm_version:
         description: Exact public npm package version.
         required: true
-        default: 0.36.30
+        default: 0.36.30-pkgfix.1
         type: string
 
 permissions:
@@ -114,19 +114,22 @@ jobs:
           $workflowRef = [string]$env:RECOVERY_WORKFLOW_REF
           $workflowSha = [string]$env:RECOVERY_WORKFLOW_SHA
           $surface = [string]$env:RECOVERY_SURFACE
-          $version = if ($surface -ceq 'Npm') { $npmVersion } else { $nativeVersion }
 
           if (
-            $releaseTag -cne 'v0.36.30' -or
-            $releaseCommit -cne '75dcae87538e96a4cf49dc844d8343842d3c3178' -or
+            $releaseTag -cne 'v0.36.30.1' -or
+            $releaseCommit -cne '8b9b6eb5a26aa490422e91286b647bca29adb8f5' -or
             $nativeVersion -cne '0.36.30' -or
-            $npmVersion -cne '0.36.30' -or
+            $npmVersion -cne '0.36.30-pkgfix.1' -or
             $repository -cne 'Sora-bluesky/winsmux' -or
             $workflowRef -cne 'refs/heads/main' -or
             $surface -notin @('Core', 'Desktop', 'Npm')
           ) {
-            throw 'Recovery workflow accepts only the immutable v0.36.30 public coordinates from main.'
+            throw 'Recovery workflow accepts only the immutable v0.36.30.1 public coordinates from main.'
           }
+
+          $workflowVersion = $releaseTag.Substring(1)
+          $helperVersion = if ($surface -ceq 'Npm') { $npmVersion } else { $workflowVersion }
+          $expectedReceiptVersion = if ($surface -ceq 'Npm') { $npmVersion } else { $nativeVersion }
 
           $helperSourceCommit = (& git rev-parse HEAD).Trim()
           if ($LASTEXITCODE -ne 0 -or $helperSourceCommit -cne $workflowSha) {
@@ -136,15 +139,15 @@ jobs:
 
           $tagBefore = Get-RemoteTagIdentity -Tag $releaseTag
           if (
-            $tagBefore.tag_object_sha -cne 'feaab01701ddd1f0930da2e8b72cab1e7b25edb0' -or
+            $tagBefore.tag_object_sha -cne '9f5585151703d8d1dd3fca373d687194f0b94933' -or
             $tagBefore.target_commit -cne $releaseCommit -or
             $tagBefore.tag_object_sha -ceq $tagBefore.target_commit
           ) {
-            throw 'Annotated tag identity did not bind the immutable v0.36.30 object and peeled target.'
+            throw 'Annotated tag identity did not bind the immutable v0.36.30.1 object and peeled target.'
           }
 
           $helperOutput = @(
-            & ./scripts/test-public-release.ps1 -Surface $surface -Version $version -ReleaseTag $releaseTag -Repository $repository -Json
+            & ./scripts/test-public-release.ps1 -Surface $surface -Version $helperVersion -ReleaseTag $releaseTag -Repository $repository -Json
           )
           if ($helperOutput.Count -ne 1) {
             throw "$surface helper did not produce exactly one terminal JSON receipt."
@@ -164,7 +167,7 @@ jobs:
           if (
             $helperReceipt.ok -ne $true -or
             [string]$helperReceipt.surface -cne $surface -or
-            [string]$helperReceipt.version -cne $version -or
+            [string]$helperReceipt.version -cne $expectedReceiptVersion -or
             [string]$helperReceipt.release_tag -cne $releaseTag -or
             [string]$helperReceipt.repository -cne $repository -or
             [string]$helperReceipt.cleanup -cne 'clean'
