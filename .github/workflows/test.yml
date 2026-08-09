@@ -270,74 +270,113 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Pester
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $existing = Get-Module -ListAvailable Pester |
-            Where-Object { $_.Version -ge [version]'5.0.0' } |
-            Sort-Object Version -Descending |
-            Select-Object -First 1
-          if (-not $existing) {
-            $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if (-not $repo) {
-              Register-PSRepository -Default -ErrorAction Stop
-            }
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              try {
-                Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -Repository PSGallery -ErrorAction Stop
-                break
-              } catch {
-                if ($attempt -eq 3) { throw }
-                Start-Sleep -Seconds (5 * $attempt)
-              }
-            }
-          }
-          Import-Module Pester -MinimumVersion 5.0 -Force
-          Get-Module Pester | Format-Table Name,Version,Path -AutoSize
-
       - name: Run Pester (${{ matrix.name }})
         shell: pwsh
         run: |
-          $categoryName = '${{ matrix.name }}'
-          if ($categoryName -like 'bridge-*') {
-            pwsh -NoProfile -File scripts/assert-pester-shard-coverage.ps1 | Write-Host
-            if ($LASTEXITCODE -ne 0) {
-              throw "Bridge shard coverage gate failed."
+          if ('${{ matrix.name }}' -like 'bridge-*') {
+            & ./scripts/assert-pester-shard-coverage.ps1
+          }
+          # TASK-810 consumer begin: matrix
+          $ErrorActionPreference = 'Stop'
+          $callerId = '${{ matrix.name }}'
+          $expectedResultFile = 'test-results-${{ matrix.result }}.xml'
+          $exitCode = 2
+          function Get-Task810RunnerJson {
+            param([string]$ShardId)
+            $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $ShardId)
+            if ($capture.Count -ne 1 -or $capture[0] -isnot [string]) { return $null }
+            if ([string]$capture[0] -match "[`r`n]") { return $null }
+            return [string]$capture[0]
+          }
+          function Get-Task810ConsumerRow {
+            param([AllowNull()][string]$Json, [string]$ExpectedShardId, [string]$ExpectedResultFile)
+            if ([string]::IsNullOrEmpty($Json)) { return $null }
+            try { $envelope = $Json | ConvertFrom-Json -AsHashtable -Depth 8 -ErrorAction Stop } catch { return $null }
+            if ($envelope -isnot [Collections.IDictionary]) { return $null }
+            $rootKeys = @('schema_version','shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','pester_invoked','result_file','error_code','selected_module')
+            if (@(Compare-Object -ReferenceObject $rootKeys -DifferenceObject @($envelope.Keys) -SyncWindow 0).Count -ne 0) { return $null }
+            $stringKeys = @('schema_version','shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','result_file','error_code')
+            if (@($stringKeys.Where({ $envelope[$_] -isnot [string] })).Count -ne 0 -or $envelope.pester_invoked -isnot [bool]) { return $null }
+            if ($envelope.schema_version -cne '1' -or $envelope.shard_id -cne $ExpectedShardId) { return $null }
+            $resolutionStatuses = @('resolved','missing','ambiguous','empty','unknown','duplicate','artifact_conflict','runtime_failure')
+            $executionStatuses = @('not_started','completed')
+            $testOutcomes = @('not_run','passed','failed')
+            $failureOrigins = @('none','assertion','test_runtime','block_or_container','mixed')
+            $workflowActions = @('install_once_then_rerun','succeed','fail')
+            $errorCodes = @('none','shard_id_empty','shard_id_unknown','shard_registry_duplicate','preexisting_result_file','pester_5_7_1_missing','pester_5_7_1_ambiguous','resolver_runtime_failure','pester_import_failure','pester_configuration_failure','pester_runtime_failure','pester_result_invalid','pester_result_file_missing','pester_tests_failed')
+            if ($envelope.resolution_status -cnotin $resolutionStatuses -or $envelope.execution_status -cnotin $executionStatuses -or $envelope.test_outcome -cnotin $testOutcomes -or $envelope.failure_origin -cnotin $failureOrigins -or $envelope.workflow_action -cnotin $workflowActions -or $envelope.error_code -cnotin $errorCodes) { return $null }
+            if ($envelope.result_file -cne '' -and $envelope.result_file -cne $ExpectedResultFile) { return $null }
+            if ($envelope.selected_module -isnot [Collections.IDictionary]) { return $null }
+            $moduleKeys = @('present','name','semantic_version','manifest_path')
+            if (@(Compare-Object -ReferenceObject $moduleKeys -DifferenceObject @($envelope.selected_module.Keys) -SyncWindow 0).Count -ne 0) { return $null }
+            if ($envelope.selected_module.present -isnot [bool] -or @($moduleKeys.Where({ $_ -ne 'present' -and $envelope.selected_module[$_] -isnot [string] })).Count -ne 0) { return $null }
+            $moduleState = if ($envelope.selected_module.present) {
+              $manifestPath = $envelope.selected_module.manifest_path
+              if ($envelope.selected_module.name -cne 'Pester' -or $envelope.selected_module.semantic_version -cne '5.7.1' -or -not [IO.Path]::IsPathFullyQualified($manifestPath) -or [IO.Path]::GetFileName($manifestPath) -cne 'Pester.psd1' -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $null }
+              try { $normalizedManifestPath = (Resolve-Path -LiteralPath $manifestPath -ErrorAction Stop).ProviderPath } catch { return $null }
+              if ($manifestPath -cne $normalizedManifestPath) { return $null }
+              'present'
+            } else {
+              if ($envelope.selected_module.name -cne '' -or $envelope.selected_module.semantic_version -cne '' -or $envelope.selected_module.manifest_path -cne '') { return $null }
+              'absent'
             }
-          }
-          $requestedPaths = @('${{ matrix.paths }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-          $resolvedPaths = @()
-          foreach ($requested in $requestedPaths) {
-            $matches = @(Resolve-Path -Path $requested -ErrorAction Stop)
-            foreach ($match in $matches) {
-              $resolvedPaths += $match.ProviderPath
+            $state = '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f $envelope.resolution_status,$envelope.execution_status,$envelope.test_outcome,$envelope.failure_origin,$envelope.workflow_action,$envelope.pester_invoked,$envelope.error_code,$moduleState
+            $emptyResultStates = @(
+              'unknown|not_started|not_run|none|fail|False|shard_id_unknown|absent',
+              'empty|not_started|not_run|none|fail|False|shard_id_empty|absent',
+              'duplicate|not_started|not_run|none|fail|False|shard_registry_duplicate|absent'
+            )
+            if ($envelope.result_file -ceq '' -and $state -cnotin $emptyResultStates) { return $null }
+            switch -Exact ($state) {
+              'unknown|not_started|not_run|none|fail|False|shard_id_unknown|absent' { if ($envelope.result_file -ceq '') { return 'P00' } }
+              'empty|not_started|not_run|none|fail|False|shard_id_empty|absent' { if ($envelope.result_file -ceq '') { return 'P01' } }
+              'duplicate|not_started|not_run|none|fail|False|shard_registry_duplicate|absent' { if ($envelope.result_file -ceq '') { return 'P02' } }
+              'artifact_conflict|not_started|not_run|none|fail|False|preexisting_result_file|absent' { return 'P03' }
+              'missing|not_started|not_run|none|install_once_then_rerun|False|pester_5_7_1_missing|absent' { return 'P04' }
+              'ambiguous|not_started|not_run|none|fail|False|pester_5_7_1_ambiguous|absent' { return 'P05' }
+              'runtime_failure|not_started|not_run|none|fail|False|resolver_runtime_failure|absent' { return 'P06' }
+              'resolved|not_started|not_run|none|fail|False|pester_import_failure|present' { return 'P07' }
+              'resolved|not_started|not_run|none|fail|False|pester_configuration_failure|present' { return 'P08' }
+              'resolved|not_started|not_run|none|fail|True|pester_runtime_failure|present' { return 'P09' }
+              'resolved|completed|not_run|none|fail|True|pester_result_invalid|present' { return 'P10' }
+              'resolved|completed|passed|none|fail|True|pester_result_file_missing|present' { return 'P11' }
+              'resolved|completed|failed|assertion|fail|True|pester_result_file_missing|present' { return 'P12' }
+              'resolved|completed|failed|test_runtime|fail|True|pester_result_file_missing|present' { return 'P13' }
+              'resolved|completed|failed|block_or_container|fail|True|pester_result_file_missing|present' { return 'P14' }
+              'resolved|completed|failed|mixed|fail|True|pester_result_file_missing|present' { return 'P15' }
+              'resolved|completed|passed|none|succeed|True|none|present' { return 'P16' }
+              'resolved|completed|failed|assertion|fail|True|pester_tests_failed|present' { return 'P17' }
+              'resolved|completed|failed|test_runtime|fail|True|pester_tests_failed|present' { return 'P18' }
+              'resolved|completed|failed|block_or_container|fail|True|pester_tests_failed|present' { return 'P19' }
+              'resolved|completed|failed|mixed|fail|True|pester_tests_failed|present' { return 'P20' }
             }
+            return $null
           }
-          $resolvedPaths = @($resolvedPaths | Sort-Object -Unique)
-          if ($resolvedPaths.Count -eq 0) {
-            throw "No Pester test files matched for category '${{ matrix.name }}'."
-          }
-          Write-Host "::group::Pester category ${{ matrix.name }} targets"
-          foreach ($path in $resolvedPaths) {
-            $item = Get-Item -LiteralPath $path
-            $relative = Resolve-Path -LiteralPath $path -Relative
-            Write-Host ("{0} ({1:n0} bytes)" -f $relative, $item.Length)
-          }
-          Write-Host "::endgroup::"
-
-          $config = New-PesterConfiguration
-          $config.Run.Path = $resolvedPaths
-          $config.Run.Exit = $true
-          $config.Output.Verbosity = 'Detailed'
-          $config.TestResult.Enabled = $true
-          $config.TestResult.OutputPath = 'test-results-${{ matrix.result }}.xml'
-          $config.TestResult.OutputFormat = 'NUnitXml'
-          Invoke-Pester -Configuration $config
+          try {
+            $row = Get-Task810ConsumerRow -Json (Get-Task810RunnerJson -ShardId $callerId) -ExpectedShardId $callerId -ExpectedResultFile $expectedResultFile
+            if ($row -eq 'P04') {
+              try {
+                $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+                if (-not $repo) {
+                  Register-PSRepository -Default -ErrorAction Stop
+                }
+                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+                Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -Repository PSGallery -ErrorAction Stop
+              } catch { $row = $null }
+              if ($null -ne $row) {
+                $row = Get-Task810ConsumerRow -Json (Get-Task810RunnerJson -ShardId $callerId) -ExpectedShardId $callerId -ExpectedResultFile $expectedResultFile
+                if ($row -eq 'P04') { $row = $null }
+              }
+            }
+            if ($row -in @('P16','P17','P18','P19','P20') -and -not (Test-Path -LiteralPath $expectedResultFile -PathType Leaf)) { $row = $null }
+            if ($row -eq 'P16') { $exitCode = 0 }
+            if ($row -in @('P17','P18','P19','P20')) { $exitCode = 1 }
+          } catch { $exitCode = 2 }
+          exit $exitCode
+          # TASK-810 consumer end: matrix
 
       - name: Upload test results
-        if: always()
+        if: ${{ always() && hashFiles(format('test-results-{0}.xml', matrix.result)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ matrix.result }}
@@ -388,38 +427,10 @@ jobs:
         working-directory: winsmux-app
         run: npm run tauri -- build --no-bundle
 
-      - name: Install Pester for desktop debug process gate
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $existing = Get-Module -ListAvailable Pester |
-            Where-Object { $_.Version -ge [version]'5.0.0' } |
-            Sort-Object Version -Descending |
-            Select-Object -First 1
-          if (-not $existing) {
-            $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if (-not $repo) {
-              Register-PSRepository -Default -ErrorAction Stop
-            }
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              try {
-                Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -Repository PSGallery -ErrorAction Stop
-                break
-              } catch {
-                if ($attempt -eq 3) { throw }
-                Start-Sleep -Seconds (5 * $attempt)
-              }
-            }
-          }
-          Import-Module Pester -MinimumVersion 5.0 -Force
-          Get-Module Pester | Format-Table Name,Version,Path -AutoSize
-
       - name: Run V03630 desktop debug process gate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Import-Module Pester -MinimumVersion 5.0 -Force
           $appPath = (Resolve-Path -LiteralPath 'target/release/winsmux-app.exe' -ErrorAction Stop).ProviderPath
 
           $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
@@ -435,25 +446,110 @@ jobs:
 
           $env:WINSMUX_DBGGATE_APP_EXE = $appPath
           $env:WINSMUX_DBGGATE_PORT = [string]$debugPort
-          try {
-            $config = New-PesterConfiguration
-            $config.Run.Path = @((Resolve-Path -LiteralPath 'tests/V03630DesktopDebugGateProcess.Tests.ps1' -ErrorAction Stop).ProviderPath)
-            $config.Run.PassThru = $true
-            $config.Output.Verbosity = 'Detailed'
-            $config.TestResult.Enabled = $true
-            $config.TestResult.OutputPath = 'test-results-desktop-debug-v03630.xml'
-            $config.TestResult.OutputFormat = 'NUnitXml'
-            $result = Invoke-Pester -Configuration $config
-            if ($result.Result -ne 'Passed') {
-              throw "V03630 desktop debug process gate failed: result=$($result.Result) failed=$($result.FailedCount)"
+          # TASK-810 consumer begin: desktop
+          $callerId = 'desktop-debug-process'
+          $expectedResultFile = 'test-results-desktop-debug-v03630.xml'
+          $exitCode = 2
+          function Get-Task810RunnerJson {
+            param([string]$ShardId)
+            $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $ShardId)
+            if ($capture.Count -ne 1 -or $capture[0] -isnot [string]) { return $null }
+            if ([string]$capture[0] -match "[`r`n]") { return $null }
+            return [string]$capture[0]
+          }
+          function Get-Task810ConsumerRow {
+            param([AllowNull()][string]$Json, [string]$ExpectedShardId, [string]$ExpectedResultFile)
+            if ([string]::IsNullOrEmpty($Json)) { return $null }
+            try { $envelope = $Json | ConvertFrom-Json -AsHashtable -Depth 8 -ErrorAction Stop } catch { return $null }
+            if ($envelope -isnot [Collections.IDictionary]) { return $null }
+            $rootKeys = @('schema_version','shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','pester_invoked','result_file','error_code','selected_module')
+            if (@(Compare-Object -ReferenceObject $rootKeys -DifferenceObject @($envelope.Keys) -SyncWindow 0).Count -ne 0) { return $null }
+            $stringKeys = @('schema_version','shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','result_file','error_code')
+            if (@($stringKeys.Where({ $envelope[$_] -isnot [string] })).Count -ne 0 -or $envelope.pester_invoked -isnot [bool]) { return $null }
+            if ($envelope.schema_version -cne '1' -or $envelope.shard_id -cne $ExpectedShardId) { return $null }
+            $resolutionStatuses = @('resolved','missing','ambiguous','empty','unknown','duplicate','artifact_conflict','runtime_failure')
+            $executionStatuses = @('not_started','completed')
+            $testOutcomes = @('not_run','passed','failed')
+            $failureOrigins = @('none','assertion','test_runtime','block_or_container','mixed')
+            $workflowActions = @('install_once_then_rerun','succeed','fail')
+            $errorCodes = @('none','shard_id_empty','shard_id_unknown','shard_registry_duplicate','preexisting_result_file','pester_5_7_1_missing','pester_5_7_1_ambiguous','resolver_runtime_failure','pester_import_failure','pester_configuration_failure','pester_runtime_failure','pester_result_invalid','pester_result_file_missing','pester_tests_failed')
+            if ($envelope.resolution_status -cnotin $resolutionStatuses -or $envelope.execution_status -cnotin $executionStatuses -or $envelope.test_outcome -cnotin $testOutcomes -or $envelope.failure_origin -cnotin $failureOrigins -or $envelope.workflow_action -cnotin $workflowActions -or $envelope.error_code -cnotin $errorCodes) { return $null }
+            if ($envelope.result_file -cne '' -and $envelope.result_file -cne $ExpectedResultFile) { return $null }
+            if ($envelope.selected_module -isnot [Collections.IDictionary]) { return $null }
+            $moduleKeys = @('present','name','semantic_version','manifest_path')
+            if (@(Compare-Object -ReferenceObject $moduleKeys -DifferenceObject @($envelope.selected_module.Keys) -SyncWindow 0).Count -ne 0) { return $null }
+            if ($envelope.selected_module.present -isnot [bool] -or @($moduleKeys.Where({ $_ -ne 'present' -and $envelope.selected_module[$_] -isnot [string] })).Count -ne 0) { return $null }
+            $moduleState = if ($envelope.selected_module.present) {
+              $manifestPath = $envelope.selected_module.manifest_path
+              if ($envelope.selected_module.name -cne 'Pester' -or $envelope.selected_module.semantic_version -cne '5.7.1' -or -not [IO.Path]::IsPathFullyQualified($manifestPath) -or [IO.Path]::GetFileName($manifestPath) -cne 'Pester.psd1' -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $null }
+              try { $normalizedManifestPath = (Resolve-Path -LiteralPath $manifestPath -ErrorAction Stop).ProviderPath } catch { return $null }
+              if ($manifestPath -cne $normalizedManifestPath) { return $null }
+              'present'
+            } else {
+              if ($envelope.selected_module.name -cne '' -or $envelope.selected_module.semantic_version -cne '' -or $envelope.selected_module.manifest_path -cne '') { return $null }
+              'absent'
             }
+            $state = '{0}|{1}|{2}|{3}|{4}|{5}|{6}|{7}' -f $envelope.resolution_status,$envelope.execution_status,$envelope.test_outcome,$envelope.failure_origin,$envelope.workflow_action,$envelope.pester_invoked,$envelope.error_code,$moduleState
+            $emptyResultStates = @(
+              'unknown|not_started|not_run|none|fail|False|shard_id_unknown|absent',
+              'empty|not_started|not_run|none|fail|False|shard_id_empty|absent',
+              'duplicate|not_started|not_run|none|fail|False|shard_registry_duplicate|absent'
+            )
+            if ($envelope.result_file -ceq '' -and $state -cnotin $emptyResultStates) { return $null }
+            switch -Exact ($state) {
+              'unknown|not_started|not_run|none|fail|False|shard_id_unknown|absent' { if ($envelope.result_file -ceq '') { return 'P00' } }
+              'empty|not_started|not_run|none|fail|False|shard_id_empty|absent' { if ($envelope.result_file -ceq '') { return 'P01' } }
+              'duplicate|not_started|not_run|none|fail|False|shard_registry_duplicate|absent' { if ($envelope.result_file -ceq '') { return 'P02' } }
+              'artifact_conflict|not_started|not_run|none|fail|False|preexisting_result_file|absent' { return 'P03' }
+              'missing|not_started|not_run|none|install_once_then_rerun|False|pester_5_7_1_missing|absent' { return 'P04' }
+              'ambiguous|not_started|not_run|none|fail|False|pester_5_7_1_ambiguous|absent' { return 'P05' }
+              'runtime_failure|not_started|not_run|none|fail|False|resolver_runtime_failure|absent' { return 'P06' }
+              'resolved|not_started|not_run|none|fail|False|pester_import_failure|present' { return 'P07' }
+              'resolved|not_started|not_run|none|fail|False|pester_configuration_failure|present' { return 'P08' }
+              'resolved|not_started|not_run|none|fail|True|pester_runtime_failure|present' { return 'P09' }
+              'resolved|completed|not_run|none|fail|True|pester_result_invalid|present' { return 'P10' }
+              'resolved|completed|passed|none|fail|True|pester_result_file_missing|present' { return 'P11' }
+              'resolved|completed|failed|assertion|fail|True|pester_result_file_missing|present' { return 'P12' }
+              'resolved|completed|failed|test_runtime|fail|True|pester_result_file_missing|present' { return 'P13' }
+              'resolved|completed|failed|block_or_container|fail|True|pester_result_file_missing|present' { return 'P14' }
+              'resolved|completed|failed|mixed|fail|True|pester_result_file_missing|present' { return 'P15' }
+              'resolved|completed|passed|none|succeed|True|none|present' { return 'P16' }
+              'resolved|completed|failed|assertion|fail|True|pester_tests_failed|present' { return 'P17' }
+              'resolved|completed|failed|test_runtime|fail|True|pester_tests_failed|present' { return 'P18' }
+              'resolved|completed|failed|block_or_container|fail|True|pester_tests_failed|present' { return 'P19' }
+              'resolved|completed|failed|mixed|fail|True|pester_tests_failed|present' { return 'P20' }
+            }
+            return $null
+          }
+          try {
+            $row = Get-Task810ConsumerRow -Json (Get-Task810RunnerJson -ShardId $callerId) -ExpectedShardId $callerId -ExpectedResultFile $expectedResultFile
+            if ($row -eq 'P04') {
+              try {
+                $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+                if (-not $repo) {
+                  Register-PSRepository -Default -ErrorAction Stop
+                }
+                Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+                Install-Module Pester -RequiredVersion 5.7.1 -Force -Scope CurrentUser -Repository PSGallery -ErrorAction Stop
+              } catch { $row = $null }
+              if ($null -ne $row) {
+                $row = Get-Task810ConsumerRow -Json (Get-Task810RunnerJson -ShardId $callerId) -ExpectedShardId $callerId -ExpectedResultFile $expectedResultFile
+                if ($row -eq 'P04') { $row = $null }
+              }
+            }
+            if ($row -in @('P16','P17','P18','P19','P20') -and -not (Test-Path -LiteralPath $expectedResultFile -PathType Leaf)) { $row = $null }
+            if ($row -eq 'P16') { $exitCode = 0 }
+            if ($row -in @('P17','P18','P19','P20')) { $exitCode = 1 }
+          } catch { $exitCode = 2
           } finally {
             Remove-Item Env:WINSMUX_DBGGATE_APP_EXE -ErrorAction SilentlyContinue
             Remove-Item Env:WINSMUX_DBGGATE_PORT -ErrorAction SilentlyContinue
           }
+          exit $exitCode
+          # TASK-810 consumer end: desktop
 
       - name: Upload V03630 desktop debug process results
-        if: always()
+        if: ${{ always() && hashFiles('test-results-desktop-debug-v03630.xml') != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-results-desktop-debug-v03630

@@ -22,10 +22,14 @@ Describe 'v0.36.19 repository-wide audit gate' {
 
     It 'keeps CI Pester categories file-owned and runnable without FullName filters' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:repoRoot '.github/workflows/test.yml') -Raw
+        $matrixConsumerMatch = [regex]::Match($workflow, '(?ms)# TASK-810 consumer begin: matrix(?<consumer>.*?)# TASK-810 consumer end: matrix')
 
-        $workflow | Should -Match 'assert-pester-shard-coverage\.ps1'
-        $workflow | Should -Match 'Bridge shard coverage gate failed'
-        $workflow | Should -Match '\$config\.Run\.Path = \$resolvedPaths'
+        [regex]::Matches($workflow, "(?ms)if \('\$\{\{ matrix\.name \}\}' -like 'bridge-\*'\)\s*\{\s*& \./scripts/assert-pester-shard-coverage\.ps1\s*\}").Count | Should -Be 1
+        [regex]::Matches($workflow, '# TASK-810 consumer begin: matrix').Count | Should -Be 1
+        $matrixConsumerMatch.Success | Should -BeTrue
+        [regex]::Matches($matrixConsumerMatch.Groups['consumer'].Value, [regex]::Escape('& ./scripts/run-pester-shard.ps1 -ShardId $ShardId')).Count | Should -Be 1
+        $workflow | Should -Not -Match '\$config\.Run\.Path'
         $workflow | Should -Not -Match '\$config\.Filter\.FullName'
+        $workflow | Should -Not -Match 'Invoke-Pester'
     }
 }

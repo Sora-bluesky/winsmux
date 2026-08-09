@@ -99,8 +99,15 @@ Add-Check 'CI runs v0.36.18 release hardening tests' ($workflow -match 'V03618Re
 Add-Check 'CI runs subagent worktree guard tests' ($workflow -match 'codex-subagent-worktree-guard\.Tests\.ps1') '.github/workflows/test.yml'
 Add-Check 'test workflow uses least privilege read permission' ($workflow -match "(?ms)^permissions:\s*\r?\n\s*contents:\s*read") '.github/workflows/test.yml'
 Add-Check 'test workflow cancels duplicate branch runs' ($workflow -match "(?ms)^concurrency:\s*\r?\n\s*group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.ref\s*\}\}\s*\r?\n\s*cancel-in-progress:\s*true") '.github/workflows/test.yml'
-foreach ($token in @('Get-PSRepository -Name PSGallery', 'Register-PSRepository -Default', 'Install-Module Pester', '-Repository PSGallery', 'Start-Sleep -Seconds (5 * $attempt)', 'Import-Module Pester')) {
-    Add-Check "test workflow hardens Pester install: $token" ($workflow -match [regex]::Escape($token)) '.github/workflows/test.yml'
+$matrixConsumerMatch = [regex]::Match($workflow, '(?ms)# TASK-810 consumer begin: matrix(?<consumer>.*?)# TASK-810 consumer end: matrix')
+$matrixConsumer = if ($matrixConsumerMatch.Success) { $matrixConsumerMatch.Groups['consumer'].Value } else { '' }
+$matrixP04Install = '(?ms)if \(\$row -eq ''P04''\)\s*\{\s*try\s*\{\s*\$repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue\s*if \(-not \$repo\)\s*\{\s*Register-PSRepository -Default -ErrorAction Stop\s*\}\s*Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop\s*Install-Module Pester -RequiredVersion 5\.7\.1 -Force -Scope CurrentUser -Repository PSGallery -ErrorAction Stop'
+Add-Check 'test workflow has exactly one matrix TASK-810 consumer' ([regex]::Matches($workflow, '# TASK-810 consumer begin: matrix').Count -eq 1) '.github/workflows/test.yml'
+Add-Check 'test workflow matrix consumer calls the registry-backed Pester runner once' ([regex]::Matches($matrixConsumer, [regex]::Escape('& ./scripts/run-pester-shard.ps1 -ShardId $ShardId')).Count -eq 1) '.github/workflows/test.yml'
+Add-Check 'test workflow matrix consumer uses first-P04 PSGallery prerequisite and exact Pester 5.7.1 install once' ([regex]::Matches($matrixConsumer, $matrixP04Install).Count -eq 1) '.github/workflows/test.yml'
+Add-Check 'test workflow has exactly one bridge coverage validator caller' ([regex]::Matches($workflow, "(?ms)if \('\$\{\{ matrix\.name \}\}' -like 'bridge-\*'\)\s*\{\s*& \./scripts/assert-pester-shard-coverage\.ps1\s*\}").Count -eq 1) '.github/workflows/test.yml'
+foreach ($pattern in @('Start-Sleep', '\b(?:attempt|retry)\b', '-MinimumVersion', 'Import-Module\s+Pester', 'Invoke-Pester')) {
+    Add-Check "test workflow excludes obsolete Pester path: $pattern" ($workflow -notmatch $pattern) '.github/workflows/test.yml'
 }
 Add-Check 'desktop build workflow uses least privilege read permission' ($desktopBuildWorkflow -match "(?ms)^permissions:\s*\r?\n\s*contents:\s*read") '.github/workflows/build-desktop.yml'
 Add-Check 'desktop build workflow cancels duplicate branch runs' ($desktopBuildWorkflow -match "(?ms)^concurrency:\s*\r?\n\s*group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.ref\s*\}\}\s*\r?\n\s*cancel-in-progress:\s*true") '.github/workflows/build-desktop.yml'

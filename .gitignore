@@ -81,6 +81,7 @@ tasks/cli-bakeoff/*
 tests/
 !tests/
 tests/*
+!tests/Task810PesterRunner.Tests.ps1
 !tests/test_support/
 !tests/test_support/rust_parity.rs
 !tests/Integration.GateEnforcement.Tests.ps1

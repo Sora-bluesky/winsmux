@@ -15,45 +15,61 @@ $workflowFullPath = if ([IO.Path]::IsPathRooted($WorkflowPath)) {
     Join-Path $repositoryRoot $WorkflowPath
 }
 $workflow = Get-Content -LiteralPath $workflowFullPath -Raw -Encoding UTF8
-$matches = [regex]::Matches(
+$modulePath = Join-Path -Path $repositoryRoot -ChildPath 'scripts\winsmux-pester.psm1'
+Import-Module -Name $modulePath -Force -ErrorAction Stop | Out-Null
+$bridgeRegistry = @(
+    Get-WinsmuxPesterShardRegistry |
+        Where-Object {
+            $_.job_kind -eq 'matrix' -and
+            $_.shard_id.StartsWith('bridge-', [StringComparison]::Ordinal)
+        }
+)
+if ($bridgeRegistry.Count -ne 13) {
+    throw "Expected 13 bridge registry shards, found $($bridgeRegistry.Count)."
+}
+$workflowMatches = [regex]::Matches(
     $workflow,
     '(?ms)^\s{10}- name:\s+(?<name>bridge-[^\r\n]+)\r?\n(?<body>.*?)(?=^\s{10}- name:|^\s{6}[a-zA-Z_-]+:|\z)'
 )
-if ($matches.Count -ne 13) {
-    throw "Expected 13 bridge CI shards, found $($matches.Count)."
+if ($workflowMatches.Count -ne $bridgeRegistry.Count) {
+    throw "Expected $($bridgeRegistry.Count) bridge CI shards, found $($workflowMatches.Count)."
 }
 
 $owners = @{}
 $shards = [Collections.Generic.List[object]]::new()
-foreach ($match in $matches) {
-    $name = [string]$match.Groups['name'].Value
-    $pathsMatch = [regex]::Match($match.Groups['body'].Value, '(?m)^\s+paths:\s*(?<value>[^\r\n]+)$')
+foreach ($registryShard in $bridgeRegistry) {
+    $name = [string]$registryShard.shard_id
+    $workflowShard = @($workflowMatches | Where-Object { [StringComparer]::Ordinal.Equals([string]$_.Groups['name'].Value, $name) })
+    if ($workflowShard.Count -ne 1) {
+        throw "Bridge registry shard '$name' has no unique workflow matrix entry."
+    }
+    $pathsMatch = [regex]::Match($workflowShard[0].Groups['body'].Value, '(?m)^\s+paths:\s*(?<value>[^\r\n]+)$')
     if (-not $pathsMatch.Success) {
         throw "Bridge shard '$name' has no paths entry."
     }
-    $patterns = @($pathsMatch.Groups['value'].Value.Trim().Trim('''', '"') -split ';' |
+    $workflowPaths = @($pathsMatch.Groups['value'].Value.Trim().Trim('''', '"') -split ';' |
         ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $registryPaths = @($registryShard.paths | ForEach-Object { [string]$_ })
+    if (@(Compare-Object -ReferenceObject $registryPaths -DifferenceObject $workflowPaths -SyncWindow 0).Count -ne 0) {
+        throw "Bridge shard '$name' workflow paths diverge from the registry."
+    }
     $resolved = [Collections.Generic.List[string]]::new()
-    foreach ($pattern in $patterns) {
-        $matchesForPattern = @(Resolve-Path -Path (Join-Path $repositoryRoot $pattern) -ErrorAction Stop |
-            ForEach-Object { [IO.Path]::GetFullPath($_.ProviderPath) })
-        if ($matchesForPattern.Count -eq 0) {
-            throw "Bridge shard '$name' pattern matched no files: $pattern"
+    foreach ($relative in $registryPaths) {
+        $path = Join-Path $repositoryRoot $relative
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Bridge shard '$name' registry path is missing: $relative"
         }
-        foreach ($path in $matchesForPattern) {
-            if ([IO.Path]::GetExtension($path) -ne '.ps1' -or $path -notmatch '\.Tests\.ps1$') {
-                throw "Bridge shard '$name' resolved a non-test path: $path"
-            }
-            $relative = [IO.Path]::GetRelativePath($repositoryRoot, $path).Replace('\', '/')
-            if (-not $relative.StartsWith('tests/bridge/', [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Bridge shard '$name' resolved outside tests/bridge: $relative"
-            }
-            if ($owners.ContainsKey($relative)) {
-                throw "Bridge test file '$relative' belongs to both '$($owners[$relative])' and '$name'."
-            }
-            $owners[$relative] = $name
-            $resolved.Add($path)
+        if ([IO.Path]::GetExtension($path) -ne '.ps1' -or $path -notmatch '\.Tests\.ps1$') {
+            throw "Bridge shard '$name' registry path is not a test: $relative"
         }
+        if (-not $relative.StartsWith('tests/bridge/', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Bridge shard '$name' registry path is outside tests/bridge: $relative"
+        }
+        if ($owners.ContainsKey($relative)) {
+            throw "Bridge test file '$relative' belongs to both '$($owners[$relative])' and '$name'."
+        }
+        $owners[$relative] = $name
+        $resolved.Add([IO.Path]::GetFullPath($path))
     }
     $shards.Add([pscustomobject]@{ Name = $name; Paths = @($resolved | Sort-Object -Unique) })
 }

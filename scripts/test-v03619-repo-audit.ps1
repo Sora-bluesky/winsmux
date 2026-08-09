@@ -58,8 +58,16 @@ foreach ($deferredId in @('A-003', 'CI-03', 'CI-04', 'CI-06', 'TST-07', 'WIN-08'
     Add-Check "audit document defers $deferredId" ($auditDoc -match [regex]::Escape($deferredId)) 'docs/project/v03619-repo-audit.md'
 }
 
-Add-Check 'Pester matrix guards bridge file union coverage' ($testWorkflow -match 'assert-pester-shard-coverage\.ps1' -and $testWorkflow -match 'Bridge shard coverage gate failed') '.github/workflows/test.yml'
-Add-Check 'Pester matrix executes resolved files without FullName filters' ($testWorkflow -match '\$config\.Run\.Path = \$resolvedPaths' -and $testWorkflow -notmatch '\$config\.Filter\.FullName') '.github/workflows/test.yml'
+$matrixConsumerMatch = [regex]::Match($testWorkflow, '(?ms)# TASK-810 consumer begin: matrix(?<consumer>.*?)# TASK-810 consumer end: matrix')
+$matrixConsumer = if ($matrixConsumerMatch.Success) { $matrixConsumerMatch.Groups['consumer'].Value } else { '' }
+Add-Check 'Pester matrix has exactly one bridge coverage validator caller' ([regex]::Matches($testWorkflow, "(?ms)if \('\$\{\{ matrix\.name \}\}' -like 'bridge-\*'\)\s*\{\s*& \./scripts/assert-pester-shard-coverage\.ps1\s*\}").Count -eq 1) '.github/workflows/test.yml'
+Add-Check 'Pester matrix uses the TASK-810 registry runner consumer without direct Pester configuration' (
+    [regex]::Matches($testWorkflow, '# TASK-810 consumer begin: matrix').Count -eq 1 -and
+    [regex]::Matches($matrixConsumer, [regex]::Escape('& ./scripts/run-pester-shard.ps1 -ShardId $ShardId')).Count -eq 1 -and
+    $testWorkflow -notmatch '\$config\.Run\.Path' -and
+    $testWorkflow -notmatch '\$config\.Filter\.FullName' -and
+    $testWorkflow -notmatch 'Invoke-Pester'
+) '.github/workflows/test.yml'
 Add-Check 'Pester matrix includes v0.36.19 audit tests' ($testWorkflow -match 'V03619RepoAudit\.Tests\.ps1') '.github/workflows/test.yml'
 foreach ($workflow in @(
     @{ name = 'test'; content = $testWorkflow },
