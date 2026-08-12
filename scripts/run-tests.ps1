@@ -331,7 +331,18 @@ function Invoke-PesterIsolated {
 }
 
 function Get-PesterModule {
-    return Get-Module -ListAvailable Pester | Sort-Object Version -Descending | Select-Object -First 1
+    $modulePath = Join-Path $PSScriptRoot 'winsmux-pester.psm1'
+    Import-Module -Name $modulePath -Force -ErrorAction Stop | Out-Null
+    $resolve = Resolve-WinsmuxPester571
+    if ([string]$resolve.resolution_status -ne 'resolved') {
+        return $null
+    }
+    return [pscustomobject]@{
+        Name    = [string]'Pester'
+        Version = [version]'5.7.1'
+        Path    = [string]$resolve.manifest_path
+        ModuleBase = [string]$resolve.module_base
+    }
 }
 
 function Invoke-SerialSuite {

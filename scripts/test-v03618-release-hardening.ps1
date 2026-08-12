@@ -99,9 +99,11 @@ Add-Check 'CI runs v0.36.18 release hardening tests' ($workflow -match 'V03618Re
 Add-Check 'CI runs subagent worktree guard tests' ($workflow -match 'codex-subagent-worktree-guard\.Tests\.ps1') '.github/workflows/test.yml'
 Add-Check 'test workflow uses least privilege read permission' ($workflow -match "(?ms)^permissions:\s*\r?\n\s*contents:\s*read") '.github/workflows/test.yml'
 Add-Check 'test workflow cancels duplicate branch runs' ($workflow -match "(?ms)^concurrency:\s*\r?\n\s*group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.ref\s*\}\}\s*\r?\n\s*cancel-in-progress:\s*true") '.github/workflows/test.yml'
-foreach ($token in @('Get-PSRepository -Name PSGallery', 'Register-PSRepository -Default', 'Install-Module Pester', '-Repository PSGallery', 'Start-Sleep -Seconds (5 * $attempt)', 'Import-Module Pester')) {
-    Add-Check "test workflow hardens Pester install: $token" ($workflow -match [regex]::Escape($token)) '.github/workflows/test.yml'
+foreach ($token in @('run-pester-shard.ps1', 'RequiredVersion 5.7.1', 'install_once_then_rerun', 'TASK810_CONSUMER_KERNEL_BEGIN', 'TASK810_CONSUMER_KERNEL_END', 'Get-PSRepository -Name PSGallery', 'Register-PSRepository -Default', 'Install-Module Pester', '-Repository PSGallery')) {
+    Add-Check "test workflow uses exact TASK-810 Pester protocol: $token" ($workflow -match [regex]::Escape($token)) '.github/workflows/test.yml'
 }
+Add-Check 'test workflow does not use MinimumVersion Pester selection' ($workflow -notmatch 'Import-Module Pester -MinimumVersion') '.github/workflows/test.yml'
+Add-Check 'test workflow does not use Start-Sleep retry loop for Pester install' ($workflow -notmatch 'Start-Sleep -Seconds \(5 \* \$attempt\)') '.github/workflows/test.yml'
 Add-Check 'desktop build workflow uses least privilege read permission' ($desktopBuildWorkflow -match "(?ms)^permissions:\s*\r?\n\s*contents:\s*read") '.github/workflows/build-desktop.yml'
 Add-Check 'desktop build workflow cancels duplicate branch runs' ($desktopBuildWorkflow -match "(?ms)^concurrency:\s*\r?\n\s*group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.ref\s*\}\}\s*\r?\n\s*cancel-in-progress:\s*true") '.github/workflows/build-desktop.yml'
 $coreBuildWorkflow = Get-RepoContent '.github/workflows/build-core.yml'
