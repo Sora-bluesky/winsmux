@@ -853,6 +853,15 @@ function New-PesterConfiguration {
 }
 function Invoke-Pester {
     param(`$Configuration)
+    `$strictLeak = `$true
+    try {
+        [void]`$______task810StrictModeProbeUnset______
+        `$strictLeak = `$false
+    } catch {
+        `$strictLeak = `$true
+    }
+    `$marker = Join-Path `$PSScriptRoot '..\task810-strictmode-at-invoke.txt'
+    Set-Content -LiteralPath `$marker -Value (`$(if (`$strictLeak) { 'STRICT' } else { 'OFF' })) -Encoding utf8
 $invokeBody
 }
 Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
@@ -892,7 +901,12 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             } $manifest $pesterDir $ShardId $ResultFile
 
             try {
+                $script:task810StrictModeAtInvoke = 'missing'
                 $e = Invoke-Task810RunnerEnvelope -ShardId $ShardId -WorkingDirectory $fx
+                $markerPath = Join-Path $fx 'task810-strictmode-at-invoke.txt'
+                if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+                    $script:task810StrictModeAtInvoke = ([string](Get-Content -LiteralPath $markerPath -Raw -Encoding utf8)).Trim()
+                }
                 return $e
             }
             finally {
@@ -921,6 +935,29 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             ($ledger | Select-Object -Unique).Count | Should -Be 80
             (Test-Path -LiteralPath $script:ModulePath) | Should -BeTrue
             (Test-Path -LiteralPath $script:RunnerPath) | Should -BeTrue
+
+            # StrictMode isolation (Sol CI-blocking class): match run-tests Invoke-PesterIsolated shape.
+            $runnerText = Get-Content -LiteralPath $script:RunnerPath -Raw -Encoding utf8
+            $runTestsText = Get-Content -LiteralPath $script:RunTestsPath -Raw -Encoding utf8
+            $runnerText | Should -Match '(?s)function\s+Invoke-PesterIsolated\s*\{.*?Set-StrictMode\s+-Off.*?Invoke-Pester\s+-Configuration\s+\$Configuration'
+            $runnerText | Should -Match '\$pesterResult\s*=\s*Invoke-PesterIsolated\s+-Configuration\s+\$config'
+            $runnerText | Should -Not -Match '(?m)^\s*\$pesterResult\s*=\s*Invoke-Pester\s+-Configuration\s+\$config\s*$'
+            $runTestsText | Should -Match '(?s)function\s+Invoke-PesterIsolated\s*\{.*?Set-StrictMode\s+-Off.*?Invoke-Pester\s+-Configuration\s+\$Configuration'
+
+            # Nested Off must not weaken caller's Latest (producer hygiene).
+            Set-StrictMode -Version Latest
+            $innerOff = & {
+                Set-StrictMode -Off
+                $null -eq $______task810OuterStrictProbeUnset______
+            }
+            $innerOff | Should -BeTrue
+            $outerStillStrict = $false
+            try {
+                [void]$______task810OuterStrictProbeUnset2______
+            } catch {
+                $outerStillStrict = $true
+            }
+            $outerStillStrict | Should -BeTrue
         }
 
         It 'registry export' {
@@ -1242,6 +1279,8 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $e.error_code | Should -Be 'pester_runtime_failure'
             $e.selected_module.present | Should -BeTrue
             $e.result_file | Should -Be 'test-results-repo-audit-v03619.xml'
+            # Behavioral: product runner must invoke Pester under Set-StrictMode -Off.
+            $script:task810StrictModeAtInvoke | Should -BeExactly 'OFF'
         }
         It 'P10' {
             $e = Invoke-Task810FakePesterEnvelope -Mode invalid
@@ -1267,6 +1306,7 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $e.error_code | Should -Be 'pester_result_file_missing'
             $e.selected_module.present | Should -BeTrue
             $e.result_file | Should -Be 'test-results-repo-audit-v03619.xml'
+            $script:task810StrictModeAtInvoke | Should -BeExactly 'OFF'
         }
         It 'P12' {
             $e = Invoke-Task810FakePesterEnvelope -Mode failed_no_file -FailureOrigin assertion

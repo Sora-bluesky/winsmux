@@ -100,6 +100,17 @@ function Get-Task810FailureOrigin {
     return [string]'mixed'
 }
 
+
+function Invoke-PesterIsolated {
+    param([Parameter(Mandatory = $true)]$Configuration)
+
+    return & {
+        # The runner's StrictMode must not leak into third-party test scopes.
+        Set-StrictMode -Off
+        Invoke-Pester -Configuration $Configuration
+    }
+}
+
 $modulePath = Join-Path $PSScriptRoot 'winsmux-pester.psm1'
 $resolvedModulePath = [System.IO.Path]::GetFullPath($modulePath)
 $loadedModule = Get-Module -Name 'winsmux-pester' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -221,7 +232,7 @@ $pesterResult = $null
 $invoked = $false
 try {
     $invoked = $true
-    $pesterResult = Invoke-Pester -Configuration $config
+    $pesterResult = Invoke-PesterIsolated -Configuration $config
     if ($null -eq $pesterResult) { throw 'Invoke-Pester returned no result' }
 } catch {
     $existsAfter = Test-Path -LiteralPath $resultPath
