@@ -15,7 +15,9 @@ Describe 'TASK-810 Pester runner contract' {
         $script:RunnerPath = Join-Path $script:RepoRoot 'scripts/run-pester-shard.ps1'
         $script:WorkflowPath = Join-Path $script:RepoRoot '.github/workflows/test.yml'
         $script:RunTestsPath = Join-Path $script:RepoRoot 'scripts/run-tests.ps1'
-        $script:ExactPesterManifest = 'C:\Users\sorab\Documents\PowerShell\Modules\Pester\5.7.1\Pester.psd1'
+        # Derived after winsmux-pester import via Resolve-WinsmuxPester571 (exact 5.7.1);
+        # never hard-code an author-local Modules path (breaks FakePester restore on CI).
+        $script:ExactPesterManifest = $null
 
         $script:WorkflowText = Get-Content -LiteralPath $script:WorkflowPath -Raw -Encoding utf8
         $script:RunTestsText = Get-Content -LiteralPath $script:RunTestsPath -Raw -Encoding utf8
@@ -926,6 +928,22 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
         }
 
         $script:Module = Import-Module -Name $script:ModulePath -Force -PassThru -ErrorAction Stop
+
+        $resolvedPester = Resolve-WinsmuxPester571
+        if ([string]$resolvedPester.resolution_status -cne 'resolved') {
+            throw ("TASK-810 BeforeAll: Resolve-WinsmuxPester571 status='$([string]$resolvedPester.resolution_status)' (need exact 5.7.1).")
+        }
+        if ([string]$resolvedPester.semantic_version -cne '5.7.1') {
+            throw ("TASK-810 BeforeAll: expected semantic_version 5.7.1, got '$([string]$resolvedPester.semantic_version)'.")
+        }
+        $manifestPath = [string]$resolvedPester.manifest_path
+        if ([string]::IsNullOrWhiteSpace($manifestPath) -or -not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+            throw ("TASK-810 BeforeAll: resolved Pester 5.7.1 manifest missing: $manifestPath")
+        }
+        if (-not ([string]$manifestPath).EndsWith('Pester.psd1', [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw ("TASK-810 BeforeAll: resolved path is not Pester.psd1: $manifestPath")
+        }
+        $script:ExactPesterManifest = [System.IO.Path]::GetFullPath($manifestPath)
     }
 
     Context 'allowlist publication and retained singletons' {

@@ -101,8 +101,9 @@ if ($workflow -notmatch 'run-pester-shard\.ps1') {
     throw 'Workflow does not invoke scripts/run-pester-shard.ps1.'
 }
 
+# Root-level tests/*.Tests.ps1 plus nested descendants (git pathspec ** skips zero-depth).
 $tracked = @(
-    & git -C $repositoryRoot ls-files -- 'tests/**/*.Tests.ps1' |
+    & git -C $repositoryRoot ls-files -- 'tests/*.Tests.ps1' 'tests/**/*.Tests.ps1' |
         ForEach-Object { $_.Replace('\', '/') } |
         Sort-Object -Unique
 )
