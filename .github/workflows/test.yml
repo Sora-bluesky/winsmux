@@ -436,15 +436,17 @@ jobs:
                   $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
                   $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              $runnerCallThrew = $false
-              $capture = $null
-              try {
-                  $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
-              } catch {
-                  $runnerCallThrew = $true
-                  $capture = @()
+              if ($installUsed) {
+                  $runnerCallThrew = $false
+                  $capture = $null
+                  try {
+                      $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
+                  } catch {
+                      $runnerCallThrew = $true
+                      $capture = @()
+                  }
+                  $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
               }
-              $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           }
           $task810ExitCode = [int]$decision.exit
           if ($null -ne $decision.diagnostic) { $task810Diagnostic = [string]$decision.diagnostic } else { $task810Diagnostic = $null }
@@ -680,15 +682,17 @@ jobs:
                   $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
                   $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              $runnerCallThrew = $false
-              $capture = $null
-              try {
-                  $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
-              } catch {
-                  $runnerCallThrew = $true
-                  $capture = @()
+              if ($installUsed) {
+                  $runnerCallThrew = $false
+                  $capture = $null
+                  try {
+                      $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
+                  } catch {
+                      $runnerCallThrew = $true
+                      $capture = @()
+                  }
+                  $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
               }
-              $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           }
           $task810ExitCode = [int]$decision.exit
           if ($null -ne $decision.diagnostic) { $task810Diagnostic = [string]$decision.diagnostic } else { $task810Diagnostic = $null }

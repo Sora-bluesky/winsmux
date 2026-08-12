@@ -107,6 +107,7 @@ public sealed class Task810FixtureHost : PSHost {
     private readonly Guid _id = Guid.NewGuid();
     private readonly Task810FixtureHostUserInterface _ui = new Task810FixtureHostUserInterface();
     public readonly List<int> ExitCodes = new List<int>();
+    public List<string> HostWrites { get { return _ui.Writes; } }
     public override CultureInfo CurrentCulture { get { return CultureInfo.InvariantCulture; } }
     public override CultureInfo CurrentUICulture { get { return CultureInfo.InvariantCulture; } }
     public override Guid InstanceId { get { return _id; } }
@@ -121,6 +122,7 @@ public sealed class Task810FixtureHost : PSHost {
 }
 
 public sealed class Task810FixtureHostUserInterface : PSHostUserInterface {
+    public readonly List<string> Writes = new List<string>();
     public override PSHostRawUserInterface RawUI { get { return null; } }
     public override Dictionary<string, PSObject> Prompt(string caption, string message, System.Collections.ObjectModel.Collection<FieldDescription> descriptions) { return null; }
     public override int PromptForChoice(string caption, string message, System.Collections.ObjectModel.Collection<ChoiceDescription> choices, int defaultChoice) { return defaultChoice; }
@@ -128,11 +130,11 @@ public sealed class Task810FixtureHostUserInterface : PSHostUserInterface {
     public override PSCredential PromptForCredential(string caption, string message, string userName, string targetName, PSCredentialTypes allowedCredentialTypes, PSCredentialUIOptions options) { return null; }
     public override string ReadLine() { return string.Empty; }
     public override System.Security.SecureString ReadLineAsSecureString() { return new System.Security.SecureString(); }
-    public override void Write(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value) { }
-    public override void Write(string value) { }
+    public override void Write(ConsoleColor foregroundColor, ConsoleColor backgroundColor, string value) { if (value != null) { Writes.Add(value); } }
+    public override void Write(string value) { if (value != null) { Writes.Add(value); } }
     public override void WriteDebugLine(string message) { }
     public override void WriteErrorLine(string value) { }
-    public override void WriteLine(string value) { }
+    public override void WriteLine(string value) { Writes.Add((value ?? string.Empty) + "\n"); }
     public override void WriteProgress(long sourceId, ProgressRecord record) { }
     public override void WriteVerboseLine(string message) { }
     public override void WriteWarningLine(string message) { }
@@ -485,6 +487,7 @@ $shardId = '__TASK810_SHARD_ID__'
 $staticResultPath = '__TASK810_STATIC_RESULT__'
 $installUsed = __TASK810_INSTALL_USED__
 __TASK810_KERNEL__
+Write-Host ('TASK810_DECISION|' + [string]$decision.code + '|' + [string]$decision.exit + '|' + $(if ($null -ne $decision.diagnostic) { [string]$decision.diagnostic } else { '' }) + '|' + ($(if ([bool]$decision.install) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$decision.rerun) { 'True' } else { 'False' })))
 if ($null -ne $task810Diagnostic) { Write-Host $task810Diagnostic }
 exit $task810ExitCode
 '@
@@ -502,6 +505,7 @@ __TASK810_KERNEL__
   Remove-Item Env:WINSMUX_DBGGATE_PORT -ErrorAction SilentlyContinue
   $script:task810DesktopCleanup = $true
 }
+Write-Host ('TASK810_DECISION|' + [string]$decision.code + '|' + [string]$decision.exit + '|' + $(if ($null -ne $decision.diagnostic) { [string]$decision.diagnostic } else { '' }) + '|' + ($(if ([bool]$decision.install) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$decision.rerun) { 'True' } else { 'False' })))
 if ($null -ne $task810Diagnostic) { Write-Host $task810Diagnostic }
 exit $task810ExitCode
 '@
@@ -615,16 +619,46 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 if (Test-Path -LiteralPath $callLogPath) {
                     $runnerCalls = @(Get-Content -LiteralPath $callLogPath -ErrorAction SilentlyContinue).Count
                 }
+                $hostText = [string]::Concat(@($fixtureHost.HostWrites))
+                $decisionCode = $null
+                $decisionExit = $null
+                $decisionDiagnostic = $null
+                $decisionInstall = $null
+                $decisionRerun = $null
+                foreach ($line in @($hostText -split '\r?\n')) {
+                    if ($line.StartsWith('TASK810_DECISION|')) {
+                        $parts = $line.Split('|')
+                        if ($parts.Count -ge 6) {
+                            $decisionCode = [string]$parts[1]
+                            $decisionExit = [int]$parts[2]
+                            $decisionDiagnostic = [string]$parts[3]
+                            if ([string]::IsNullOrEmpty($decisionDiagnostic)) { $decisionDiagnostic = $null }
+                            $decisionInstall = [bool]::Parse([string]$parts[4])
+                            $decisionRerun = [bool]::Parse([string]$parts[5])
+                        }
+                    }
+                }
+                $printedDiagnostic = $null
+                if ($hostText -match 'TASK810_RUNNER_PROTOCOL_FAILURE') {
+                    $printedDiagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
+                }
 
                 return [pscustomobject]@{
-                    adapter          = [string]$Adapter
-                    exit_codes       = [int[]]$exitCodes
-                    exit_code        = $(if ($exitCodes.Count -gt 0) { [int]$exitCodes[-1] } else { -1 })
-                    install_count    = [int]$installCount
-                    runner_calls     = [int]$runnerCalls
-                    desktop_cleanup  = [bool]$desktopCleanup
-                    error_text       = [string]$errText
-                    fixture_root     = [string]$fixtureRoot
+                    adapter             = [string]$Adapter
+                    exit_codes          = [int[]]$exitCodes
+                    exit_code           = $(if ($exitCodes.Count -gt 0) { [int]$exitCodes[-1] } else { -1 })
+                    install_count       = [int]$installCount
+                    runner_calls        = [int]$runnerCalls
+                    desktop_cleanup     = [bool]$desktopCleanup
+                    error_text          = [string]$errText
+                    fixture_root        = [string]$fixtureRoot
+                    decision_code       = $decisionCode
+                    decision_exit       = $decisionExit
+                    decision_diagnostic = $decisionDiagnostic
+                    decision_install    = $decisionInstall
+                    decision_rerun      = $decisionRerun
+                    diagnostic          = $(if ($null -ne $decisionDiagnostic) { $decisionDiagnostic } else { $printedDiagnostic })
+                    host_text           = [string]$hostText
                 }
             } finally {
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RUNNER_THROW', $null)
@@ -1390,6 +1424,13 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrow:$true
             $r.exit_code | Should -Be 2
             $r.install_count | Should -Be 1
+            $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
+            $r.decision_code | Should -Be 'C05'
+            $r.decision_exit | Should -Be 2
+            $r.decision_rerun | Should -BeFalse
+            $r.decision_install | Should -BeFalse
+            $r.decision_diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
         }
         It 'decision:C06' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
@@ -1467,6 +1508,11 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
             $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrow:$true
             $r.exit_code | Should -Be 2
+            $r.install_count | Should -Be 1
+            $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
+            $r.decision_code | Should -Be 'C05'
+            $r.decision_diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
         }
         It 'kernel:C06' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
@@ -1529,6 +1575,11 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrow:$true
             $r.exit_code | Should -Be 2
             $r.install_count | Should -Be 1
+            $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
+            $r.decision_code | Should -Be 'C05'
+            $r.decision_rerun | Should -BeFalse
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.desktop_cleanup | Should -BeFalse
         }
         It 'Desktop:C07' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'desktop-debug-process' -ResultFile 'test-results-desktop-debug-v03630.xml'
@@ -1548,6 +1599,10 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $r.exit_code | Should -Be 2
             $r.desktop_cleanup | Should -BeTrue
             $r.install_count | Should -Be 1
+            $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
+            $r.decision_code | Should -Be 'C05'
+            $r.decision_rerun | Should -BeFalse
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
         }
     }
 }
