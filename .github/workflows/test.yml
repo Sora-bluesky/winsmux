@@ -146,127 +146,102 @@ jobs:
             result: bridge-foundation
             timeout_minutes: 15
             paths: tests/bridge/Foundation.Tests.ps1;tests/bridge/Foundation.Settings.Tests.ps1
-            full_name: ""
           - name: bridge-agent-orchestra
             result: bridge-agent-orchestra
             timeout_minutes: 20
             paths: tests/bridge/AgentOrchestra.Tests.ps1;tests/bridge/AgentOrchestra.Bootstrap.Tests.ps1
-            full_name: ""
           - name: bridge-command-status
             result: bridge-command-status
             timeout_minutes: 12
             paths: tests/bridge/CommandStatus.Tests.ps1;tests/bridge/CommandStatus.RuntimeIdentity.Tests.ps1
-            full_name: ""
           - name: bridge-worker-workspace-sandbox
             result: bridge-worker-workspace-sandbox
             timeout_minutes: 12
             paths: tests/bridge/WorkerWorkspaceSandbox.Tests.ps1
-            full_name: ""
           - name: bridge-worker-broker-token
             result: bridge-worker-broker-token
             timeout_minutes: 12
             paths: tests/bridge/WorkerBrokerToken.Tests.ps1
-            full_name: ""
           - name: bridge-worker-policy
             result: bridge-worker-policy
             timeout_minutes: 12
             paths: tests/bridge/WorkerPolicy.Tests.ps1
-            full_name: ""
           - name: bridge-worker-secrets-status
             result: bridge-worker-secrets-status
             timeout_minutes: 12
             paths: tests/bridge/WorkerSecretsStatus.Tests.ps1
-            full_name: ""
           - name: bridge-worker-heartbeat-start
             result: bridge-worker-heartbeat-start
             timeout_minutes: 12
             paths: tests/bridge/WorkerHeartbeatStart.Tests.ps1
-            full_name: ""
           - name: bridge-worker-api-agy-exec
             result: bridge-worker-api-agy-exec
             timeout_minutes: 12
             paths: tests/bridge/WorkerApiAgyExec.Tests.ps1
-            full_name: ""
           - name: bridge-command-queue-reporting
             result: bridge-command-queue-reporting
             timeout_minutes: 12
             paths: tests/bridge/CommandQueueReporting.Tests.ps1
-            full_name: ""
           - name: bridge-command-review-dispatch
             result: bridge-command-review-dispatch
             timeout_minutes: 12
             paths: tests/bridge/CommandReviewDispatch.Tests.ps1
-            full_name: ""
           - name: bridge-provider-commands
             result: bridge-provider-commands
             timeout_minutes: 15
             paths: tests/bridge/ProviderCommands.Tests.ps1;tests/bridge/ProviderCommands.Dispatch.Tests.ps1
-            full_name: ""
           - name: bridge-artifacts-runtime
             result: bridge-artifacts-runtime
             timeout_minutes: 15
             paths: tests/bridge/ArtifactsRuntime.Tests.ps1;tests/bridge/ArtifactsRuntime.Operator.Tests.ps1
-            full_name: ""
           - name: integration
             result: integration
             timeout_minutes: 25
             paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1;tests/DeclarativeWorkflow.Tests.ps1;tests/Task810PesterRunner.Tests.ps1
-            full_name: ""
           - name: worker-benchmark
             result: worker-benchmark
             timeout_minutes: 20
             paths: tests/CliBakeoff.Tests.ps1;tests/HarnessContract.Tests.ps1;tests/Runtime.VaultInject.Tests.ps1
-            full_name: ""
           - name: release-public
             result: release-public
             timeout_minutes: 20
             paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1
-            full_name: ""
           - name: shell-support
             result: shell-support
             timeout_minutes: 15
             paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1;tests/AgentReadiness.Tests.ps1;tests/GitGuard.Tests.ps1
-            full_name: ""
           - name: repo-audit-v03619
             result: repo-audit-v03619
             timeout_minutes: 12
             paths: tests/V03619RepoAudit.Tests.ps1
-            full_name: ""
           - name: coordinator-v03620
             result: coordinator-v03620
             timeout_minutes: 12
             paths: tests/V03620CoordinatorFoundation.Tests.ps1
-            full_name: ""
           - name: local-router-v03621
             result: local-router-v03621
             timeout_minutes: 12
             paths: tests/V03621LocalRouterShadow.Tests.ps1
-            full_name: ""
           - name: desktop-split-v03626
             result: desktop-split-v03626
             timeout_minutes: 12
             paths: tests/V03626DesktopSplitGate.Tests.ps1
-            full_name: ""
           - name: compat-performance-v03627
             result: compat-performance-v03627
             timeout_minutes: 12
             paths: tests/V03627CompatPerformanceGate.Tests.ps1;tests/Task781RuntimeCompatibility.Tests.ps1
-            full_name: ""
           - name: race-abnormal-soak-v03628
             result: race-abnormal-soak-v03628
             timeout_minutes: 12
             paths: tests/V03628RaceAbnormalSoak.Tests.ps1
-            full_name: ""
           - name: runtime-reliability-v03628
             result: runtime-reliability-v03628
             timeout_minutes: 12
             paths: tests/V03628RuntimeReliabilityGate.Tests.ps1
-            full_name: ""
           - name: packaged-restore-v03628
             result: packaged-restore-v03628
             timeout_minutes: 12
             paths: tests/V03628PackagedRestoreGate.Tests.ps1
-            full_name: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -293,6 +268,16 @@ jobs:
           } catch {
               $runnerCallThrew = $true
               $capture = @()
+          }
+          function Test-Task810OrdinalMembership {
+              param([string]$Value, $Set)
+              if ($null -eq $Set) { return $false }
+              try { $items = @($Set) } catch { return $false }
+              foreach ($item in $items) {
+                  if ($null -eq $item -or $item -isnot [string]) { continue }
+                  if ([System.StringComparer]::Ordinal.Equals($Value, [string]$item)) { return $true }
+              }
+              return $false
           }
           function Test-Task810OrdinalStringSequence {
               param($Actual, $Expected)
@@ -402,27 +387,37 @@ jobs:
                   return [pscustomobject]@{ code = 'C08'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
               $failedOrigins = @('assertion','test_runtime','block_or_container','mixed')
-              $isSuiteFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_tests_failed' -and $mPresent -and ($failedOrigins -contains $fo) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isSuiteFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_tests_failed' -and $mPresent -and (Test-Task810OrdinalMembership -Value $fo -Set $failedOrigins) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
               if ($isSuiteFail) {
                   if (Test-Path -LiteralPath $ExpectedResultFile) {
                       return [pscustomobject]@{ code = 'C09'; exit = 1; diagnostic = 'TASK810_TEST_FAILURE'; install = $false; rerun = $false }
                   }
                   return [pscustomobject]@{ code = 'C10'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              $missingFileFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent)
-              if ($missingFileFail) {
+              $isP11 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'passed' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP12to15 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent -and (Test-Task810OrdinalMembership -Value $fo -Set $failedOrigins) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP11 -or $isP12to15) {
                   return [pscustomobject]@{ code = 'C11'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              $earlyFail = @('empty','unknown','duplicate','artifact_conflict','ambiguous','runtime_failure') -contains $rs
-              $importConfigFail = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and -not $pi -and @('pester_import_failure','pester_configuration_failure') -contains $ec)
-              if ($earlyFail -or $importConfigFail) {
+              $isP00 = ($rs -ceq 'unknown' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'shard_id_unknown' -and -not $mPresent -and $rf -ceq '')
+              $isP01 = ($rs -ceq 'empty' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'shard_id_empty' -and -not $mPresent -and $rf -ceq '')
+              $isP02 = ($rs -ceq 'duplicate' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'shard_registry_duplicate' -and -not $mPresent -and $rf -ceq '')
+              $isP03 = ($rs -ceq 'artifact_conflict' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'preexisting_result_file' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP05 = ($rs -ceq 'ambiguous' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'pester_5_7_1_ambiguous' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP06 = ($rs -ceq 'runtime_failure' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'resolver_runtime_failure' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP07 = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'pester_import_failure' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP08 = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'pester_configuration_failure' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP00 -or $isP01 -or $isP02 -or $isP03 -or $isP05 -or $isP06 -or $isP07 -or $isP08) {
                   return [pscustomobject]@{ code = 'C12'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              if ($rs -ceq 'resolved' -and $pi -and @('pester_runtime_failure','pester_result_invalid') -contains $ec) {
+              $isP09 = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_runtime_failure' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP10 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_invalid' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP09 -or $isP10) {
                   return [pscustomobject]@{ code = 'C13'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              return [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
           }
+
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
@@ -540,6 +535,16 @@ jobs:
               $runnerCallThrew = $true
               $capture = @()
           }
+          function Test-Task810OrdinalMembership {
+              param([string]$Value, $Set)
+              if ($null -eq $Set) { return $false }
+              try { $items = @($Set) } catch { return $false }
+              foreach ($item in $items) {
+                  if ($null -eq $item -or $item -isnot [string]) { continue }
+                  if ([System.StringComparer]::Ordinal.Equals($Value, [string]$item)) { return $true }
+              }
+              return $false
+          }
           function Test-Task810OrdinalStringSequence {
               param($Actual, $Expected)
               if ($null -eq $Actual -or $null -eq $Expected) { return $false }
@@ -648,27 +653,37 @@ jobs:
                   return [pscustomobject]@{ code = 'C08'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
               $failedOrigins = @('assertion','test_runtime','block_or_container','mixed')
-              $isSuiteFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_tests_failed' -and $mPresent -and ($failedOrigins -contains $fo) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isSuiteFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_tests_failed' -and $mPresent -and (Test-Task810OrdinalMembership -Value $fo -Set $failedOrigins) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
               if ($isSuiteFail) {
                   if (Test-Path -LiteralPath $ExpectedResultFile) {
                       return [pscustomobject]@{ code = 'C09'; exit = 1; diagnostic = 'TASK810_TEST_FAILURE'; install = $false; rerun = $false }
                   }
                   return [pscustomobject]@{ code = 'C10'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              $missingFileFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent)
-              if ($missingFileFail) {
+              $isP11 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'passed' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP12to15 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent -and (Test-Task810OrdinalMembership -Value $fo -Set $failedOrigins) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP11 -or $isP12to15) {
                   return [pscustomobject]@{ code = 'C11'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              $earlyFail = @('empty','unknown','duplicate','artifact_conflict','ambiguous','runtime_failure') -contains $rs
-              $importConfigFail = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and -not $pi -and @('pester_import_failure','pester_configuration_failure') -contains $ec)
-              if ($earlyFail -or $importConfigFail) {
+              $isP00 = ($rs -ceq 'unknown' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'shard_id_unknown' -and -not $mPresent -and $rf -ceq '')
+              $isP01 = ($rs -ceq 'empty' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'shard_id_empty' -and -not $mPresent -and $rf -ceq '')
+              $isP02 = ($rs -ceq 'duplicate' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'shard_registry_duplicate' -and -not $mPresent -and $rf -ceq '')
+              $isP03 = ($rs -ceq 'artifact_conflict' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'preexisting_result_file' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP05 = ($rs -ceq 'ambiguous' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'pester_5_7_1_ambiguous' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP06 = ($rs -ceq 'runtime_failure' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'resolver_runtime_failure' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP07 = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'pester_import_failure' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP08 = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and -not $pi -and $ec -ceq 'pester_configuration_failure' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP00 -or $isP01 -or $isP02 -or $isP03 -or $isP05 -or $isP06 -or $isP07 -or $isP08) {
                   return [pscustomobject]@{ code = 'C12'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              if ($rs -ceq 'resolved' -and $pi -and @('pester_runtime_failure','pester_result_invalid') -contains $ec) {
+              $isP09 = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_runtime_failure' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              $isP10 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_invalid' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP09 -or $isP10) {
                   return [pscustomobject]@{ code = 'C13'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
               }
-              return [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
           }
+
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {

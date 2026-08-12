@@ -1016,7 +1016,10 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $ex.Kernel.Length | Should -BeGreaterThan 1000
             $ex.Kernel | Should -Match 'Get-Task810ConsumerDecision'
             $ex.Kernel | Should -Match 'Test-Task810OrdinalStringSequence'
+            $ex.Kernel | Should -Match 'Test-Task810OrdinalMembership'
+            $ex.Kernel | Should -Not -Match '(?m)-contains'
             $ex.MatrixFull | Should -Match '__TASK810_KERNEL__'
+            $script:WorkflowText | Should -Not -Match '(?m)^\s+full_name\s*:'
             $ex.DesktopFull | Should -Match 'WINSMUX_DBGGATE'
         }
 

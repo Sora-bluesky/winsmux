@@ -52,6 +52,48 @@ foreach ($row in $registry) {
     $shards.Add([pscustomobject]@{ Name = $name; Paths = @($resolved.ToArray()) }) | Out-Null
 }
 
+# TASK-810: forbid unused matrix full_name; gate matrix paths against registry (Ordinal).
+if ($workflow -match '(?m)^\s+full_name\s*:') {
+    throw 'Workflow matrix still declares unused full_name; remove it (Pester-native / registry identity owns this surface).'
+}
+foreach ($row in $matrix) {
+    $name = [string]$row.shard_id
+    $expectedPaths = (@([string[]]$row.test_paths) -join ';')
+    $blockPat = '(?ms)^\s{10}- name:\s+' + [regex]::Escape($name) + '\r?\n(?<body>.*?)(?=^\s{10}- name:|^\s{4}steps:)'
+    $bm = [regex]::Match($workflow, $blockPat)
+    if (-not $bm.Success) {
+        throw "Matrix include block missing for shard '$name'."
+    }
+    $body = [string]$bm.Groups['body'].Value
+    if ($body -match '(?m)^\s+full_name\s*:') {
+        throw "Matrix full_name still present for shard '$name'."
+    }
+    $pm = [regex]::Match($body, '(?m)^\s+paths:\s*(?<value>[^\r\n]+)$')
+    if (-not $pm.Success) {
+        throw "Matrix paths missing for shard '$name' (local bridge discovery still reads paths; keep aligned with registry)."
+    }
+    $actualPaths = $pm.Groups['value'].Value.Trim()
+    if (-not [System.StringComparer]::Ordinal.Equals($actualPaths, $expectedPaths)) {
+        throw "Matrix paths drift for '$name'. matrix='$actualPaths' registry='$expectedPaths'"
+    }
+    $tm = [regex]::Match($body, '(?m)^\s+timeout_minutes:\s*(?<value>\d+)\s*$')
+    if (-not $tm.Success) {
+        throw "Matrix timeout_minutes missing for shard '$name'."
+    }
+    if ([int]$tm.Groups['value'].Value -ne [int]$row.timeout_minutes) {
+        throw "Matrix timeout_minutes drift for '$name'. matrix=$($tm.Groups['value'].Value) registry=$($row.timeout_minutes)"
+    }
+    $rm = [regex]::Match($body, '(?m)^\s+result:\s*(?<value>[^\r\n]+)$')
+    if (-not $rm.Success) {
+        throw "Matrix result missing for shard '$name'."
+    }
+    $resultToken = $rm.Groups['value'].Value.Trim().Trim("'", '"')
+    $expectedFile = 'test-results-' + $resultToken + '.xml'
+    if (-not [System.StringComparer]::Ordinal.Equals($expectedFile, [string]$row.result_file)) {
+        throw "Matrix result/file drift for '$name'. matrixResult='$resultToken' registryFile='$([string]$row.result_file)'"
+    }
+}
+
 if ($workflow -notmatch 'desktop-debug-process') {
     throw 'Workflow does not reference desktop-debug-process.'
 }
