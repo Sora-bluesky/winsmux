@@ -210,7 +210,7 @@ jobs:
           - name: integration
             result: integration
             timeout_minutes: 25
-            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1
+            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1;tests/DeclarativeWorkflow.Tests.ps1;tests/Task810PesterRunner.Tests.ps1
             full_name: ""
           - name: worker-benchmark
             result: worker-benchmark
@@ -225,7 +225,7 @@ jobs:
           - name: shell-support
             result: shell-support
             timeout_minutes: 15
-            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1;tests/AgentReadiness.Tests.ps1
+            paths: tests/BuilderWorktree.Tests.ps1;tests/codex-subagent-worktree-guard.Tests.ps1;tests/OrchestraPreflight.Tests.ps1;tests/PaneBorder.Tests.ps1;tests/V03618ReleaseHardening.Tests.ps1;tests/AgentReadiness.Tests.ps1;tests/GitGuard.Tests.ps1
             full_name: ""
           - name: repo-audit-v03619
             result: repo-audit-v03619
@@ -250,7 +250,7 @@ jobs:
           - name: compat-performance-v03627
             result: compat-performance-v03627
             timeout_minutes: 12
-            paths: tests/V03627CompatPerformanceGate.Tests.ps1
+            paths: tests/V03627CompatPerformanceGate.Tests.ps1;tests/Task781RuntimeCompatibility.Tests.ps1
             full_name: ""
           - name: race-abnormal-soak-v03628
             result: race-abnormal-soak-v03628
@@ -270,74 +270,192 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Pester
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $existing = Get-Module -ListAvailable Pester |
-            Where-Object { $_.Version -ge [version]'5.0.0' } |
-            Sort-Object Version -Descending |
-            Select-Object -First 1
-          if (-not $existing) {
-            $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if (-not $repo) {
-              Register-PSRepository -Default -ErrorAction Stop
-            }
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              try {
-                Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -Repository PSGallery -ErrorAction Stop
-                break
-              } catch {
-                if ($attempt -eq 3) { throw }
-                Start-Sleep -Seconds (5 * $attempt)
-              }
-            }
-          }
-          Import-Module Pester -MinimumVersion 5.0 -Force
-          Get-Module Pester | Format-Table Name,Version,Path -AutoSize
-
       - name: Run Pester (${{ matrix.name }})
         shell: pwsh
         run: |
-          $categoryName = '${{ matrix.name }}'
-          if ($categoryName -like 'bridge-*') {
+          $ErrorActionPreference = 'Stop'
+          $shardId = '${{ matrix.name }}'
+          $staticResultPath = 'test-results-${{ matrix.result }}.xml'
+          $installUsed = $false
+          if ($shardId -like 'bridge-*') {
             pwsh -NoProfile -File scripts/assert-pester-shard-coverage.ps1 | Write-Host
             if ($LASTEXITCODE -ne 0) {
               throw "Bridge shard coverage gate failed."
             }
           }
-          $requestedPaths = @('${{ matrix.paths }}' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-          $resolvedPaths = @()
-          foreach ($requested in $requestedPaths) {
-            $matches = @(Resolve-Path -Path $requested -ErrorAction Stop)
-            foreach ($match in $matches) {
-              $resolvedPaths += $match.ProviderPath
-            }
+          # TASK810_CONSUMER_KERNEL_BEGIN
+          $task810ExitCode = 2
+          $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
+          $runnerCallThrew = $false
+          $capture = $null
+          try {
+              $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
+          } catch {
+              $runnerCallThrew = $true
+              $capture = @()
           }
-          $resolvedPaths = @($resolvedPaths | Sort-Object -Unique)
-          if ($resolvedPaths.Count -eq 0) {
-            throw "No Pester test files matched for category '${{ matrix.name }}'."
+          function Test-Task810OrdinalStringSequence {
+              param($Actual, $Expected)
+              if ($null -eq $Actual -or $null -eq $Expected) { return $false }
+              if ($Actual -is [string] -or $Expected -is [string]) { return $false }
+              try {
+                  $a = @($Actual)
+                  $e = @($Expected)
+              } catch { return $false }
+              if ($a.Count -ne $e.Count) { return $false }
+              for ($i = 0; $i -lt $e.Count; $i++) {
+                  if ($null -eq $a[$i] -or $a[$i] -isnot [string]) { return $false }
+                  if ($null -eq $e[$i] -or $e[$i] -isnot [string]) { return $false }
+                  if (-not [System.StringComparer]::Ordinal.Equals([string]$a[$i], [string]$e[$i])) { return $false }
+              }
+              return $true
           }
-          Write-Host "::group::Pester category ${{ matrix.name }} targets"
-          foreach ($path in $resolvedPaths) {
-            $item = Get-Item -LiteralPath $path
-            $relative = Resolve-Path -LiteralPath $path -Relative
-            Write-Host ("{0} ({1:n0} bytes)" -f $relative, $item.Length)
+          function Get-Task810ConsumerDecision {
+              param(
+                  [bool]$Threw,
+                  $Capture,
+                  [string]$ExpectedShardId,
+                  [string]$ExpectedResultFile,
+                  [bool]$InstallUsed
+              )
+              if ($Threw) {
+                  return [pscustomobject]@{ code = 'C00'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($null -eq $Capture -or @($Capture).Count -ne 1 -or $Capture[0] -isnot [string] -or [string]::IsNullOrEmpty([string]$Capture[0])) {
+                  return [pscustomobject]@{ code = 'C01'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $line = [string]$Capture[0]
+              if ($line.Contains([char]10) -or $line.Contains([char]13)) {
+                  return [pscustomobject]@{ code = 'C01'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              try { $envelope = $line | ConvertFrom-Json -ErrorAction Stop } catch {
+                  return [pscustomobject]@{ code = 'C01'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $rootExpected = @('schema_version','shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','pester_invoked','result_file','error_code','selected_module')
+              $rootActual = @($envelope.PSObject.Properties.Name)
+              if (-not (Test-Task810OrdinalStringSequence -Actual $rootActual -Expected $rootExpected)) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($envelope.schema_version -isnot [string] -or $envelope.schema_version -cne '1') {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              foreach ($key in @('shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','result_file','error_code')) {
+                  if ($envelope.$key -isnot [string]) {
+                      return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              }
+              if ($envelope.pester_invoked -isnot [bool]) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($null -eq $envelope.selected_module) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $modExpected = @('present','name','semantic_version','manifest_path')
+              $modActual = @($envelope.selected_module.PSObject.Properties.Name)
+              if (-not (Test-Task810OrdinalStringSequence -Actual $modActual -Expected $modExpected)) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($envelope.selected_module.present -isnot [bool]) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              foreach ($key in @('name','semantic_version','manifest_path')) {
+                  if ($envelope.selected_module.$key -isnot [string]) {
+                      return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              }
+              if (-not [System.StringComparer]::Ordinal.Equals([string]$envelope.shard_id, $ExpectedShardId)) {
+                  return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $rf = [string]$envelope.result_file
+              if ($rf.Length -gt 0 -and -not [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile)) {
+                  return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $mPresent = [bool]$envelope.selected_module.present
+              if ($mPresent) {
+                  if ($envelope.selected_module.name -cne 'Pester' -or $envelope.selected_module.semantic_version -cne '5.7.1' -or [string]::IsNullOrEmpty([string]$envelope.selected_module.manifest_path) -or [string]$envelope.resolution_status -cne 'resolved') {
+                      return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              } else {
+                  if ($envelope.selected_module.name -cne '' -or $envelope.selected_module.semantic_version -cne '' -or $envelope.selected_module.manifest_path -cne '') {
+                      return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              }
+              $rs = [string]$envelope.resolution_status
+              $es = [string]$envelope.execution_status
+              $to = [string]$envelope.test_outcome
+              $fo = [string]$envelope.failure_origin
+              $wa = [string]$envelope.workflow_action
+              $pi = [bool]$envelope.pester_invoked
+              $ec = [string]$envelope.error_code
+              $isP04 = ($rs -ceq 'missing' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'install_once_then_rerun' -and -not $pi -and $ec -ceq 'pester_5_7_1_missing' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP04) {
+                  if (-not $InstallUsed) {
+                      return [pscustomobject]@{ code = 'C04'; exit = 2; diagnostic = $null; install = $true; rerun = $true }
+                  }
+                  return [pscustomobject]@{ code = 'C06'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $isP16 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'passed' -and $fo -ceq 'none' -and $wa -ceq 'succeed' -and $pi -and $ec -ceq 'none' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP16) {
+                  if (Test-Path -LiteralPath $ExpectedResultFile) {
+                      return [pscustomobject]@{ code = 'C07'; exit = 0; diagnostic = $null; install = $false; rerun = $false }
+                  }
+                  return [pscustomobject]@{ code = 'C08'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $failedOrigins = @('assertion','test_runtime','block_or_container','mixed')
+              $isSuiteFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_tests_failed' -and $mPresent -and ($failedOrigins -contains $fo) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isSuiteFail) {
+                  if (Test-Path -LiteralPath $ExpectedResultFile) {
+                      return [pscustomobject]@{ code = 'C09'; exit = 1; diagnostic = 'TASK810_TEST_FAILURE'; install = $false; rerun = $false }
+                  }
+                  return [pscustomobject]@{ code = 'C10'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $missingFileFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent)
+              if ($missingFileFail) {
+                  return [pscustomobject]@{ code = 'C11'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $earlyFail = @('empty','unknown','duplicate','artifact_conflict','ambiguous','runtime_failure') -contains $rs
+              $importConfigFail = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and -not $pi -and @('pester_import_failure','pester_configuration_failure') -contains $ec)
+              if ($earlyFail -or $importConfigFail) {
+                  return [pscustomobject]@{ code = 'C12'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($rs -ceq 'resolved' -and $pi -and @('pester_runtime_failure','pester_result_invalid') -contains $ec) {
+                  return [pscustomobject]@{ code = 'C13'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              return [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
           }
-          Write-Host "::endgroup::"
-
-          $config = New-PesterConfiguration
-          $config.Run.Path = $resolvedPaths
-          $config.Run.Exit = $true
-          $config.Output.Verbosity = 'Detailed'
-          $config.TestResult.Enabled = $true
-          $config.TestResult.OutputPath = 'test-results-${{ matrix.result }}.xml'
-          $config.TestResult.OutputFormat = 'NUnitXml'
-          Invoke-Pester -Configuration $config
+          $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
+          if ([bool]$decision.install) {
+              try {
+                  $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+                  if (-not $repo) { Register-PSRepository -Default -ErrorAction Stop }
+                  Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository PSGallery -ErrorAction Stop
+                  $installUsed = $true
+              } catch {
+                  $task810ExitCode = 2
+                  $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
+                  $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $runnerCallThrew = $false
+              $capture = $null
+              try {
+                  $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
+              } catch {
+                  $runnerCallThrew = $true
+                  $capture = @()
+              }
+              $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
+          }
+          $task810ExitCode = [int]$decision.exit
+          if ($null -ne $decision.diagnostic) { $task810Diagnostic = [string]$decision.diagnostic } else { $task810Diagnostic = $null }
+          # TASK810_CONSUMER_KERNEL_END
+          if ($null -ne $task810Diagnostic) {
+            Write-Host $task810Diagnostic
+          }
+          exit $task810ExitCode
 
       - name: Upload test results
-        if: always()
+        if: ${{ always() && hashFiles(format('test-results-{0}.xml', matrix.result)) != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-results-${{ matrix.result }}
@@ -388,40 +506,14 @@ jobs:
         working-directory: winsmux-app
         run: npm run tauri -- build --no-bundle
 
-      - name: Install Pester for desktop debug process gate
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $existing = Get-Module -ListAvailable Pester |
-            Where-Object { $_.Version -ge [version]'5.0.0' } |
-            Sort-Object Version -Descending |
-            Select-Object -First 1
-          if (-not $existing) {
-            $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if (-not $repo) {
-              Register-PSRepository -Default -ErrorAction Stop
-            }
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              try {
-                Install-Module Pester -Force -Scope CurrentUser -MinimumVersion 5.0 -Repository PSGallery -ErrorAction Stop
-                break
-              } catch {
-                if ($attempt -eq 3) { throw }
-                Start-Sleep -Seconds (5 * $attempt)
-              }
-            }
-          }
-          Import-Module Pester -MinimumVersion 5.0 -Force
-          Get-Module Pester | Format-Table Name,Version,Path -AutoSize
-
       - name: Run V03630 desktop debug process gate
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Import-Module Pester -MinimumVersion 5.0 -Force
+          $shardId = 'desktop-debug-process'
+          $staticResultPath = 'test-results-desktop-debug-v03630.xml'
+          $installUsed = $false
           $appPath = (Resolve-Path -LiteralPath 'target/release/winsmux-app.exe' -ErrorAction Stop).ProviderPath
-
           $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
           try {
             $listener.Start()
@@ -432,28 +524,186 @@ jobs:
           if ($debugPort -lt 1024 -or $debugPort -gt 65535) {
             throw "Allocated debug port is outside 1024..65535: $debugPort"
           }
-
           $env:WINSMUX_DBGGATE_APP_EXE = $appPath
           $env:WINSMUX_DBGGATE_PORT = [string]$debugPort
           try {
-            $config = New-PesterConfiguration
-            $config.Run.Path = @((Resolve-Path -LiteralPath 'tests/V03630DesktopDebugGateProcess.Tests.ps1' -ErrorAction Stop).ProviderPath)
-            $config.Run.PassThru = $true
-            $config.Output.Verbosity = 'Detailed'
-            $config.TestResult.Enabled = $true
-            $config.TestResult.OutputPath = 'test-results-desktop-debug-v03630.xml'
-            $config.TestResult.OutputFormat = 'NUnitXml'
-            $result = Invoke-Pester -Configuration $config
-            if ($result.Result -ne 'Passed') {
-              throw "V03630 desktop debug process gate failed: result=$($result.Result) failed=$($result.FailedCount)"
-            }
+          # TASK810_CONSUMER_KERNEL_BEGIN
+          $task810ExitCode = 2
+          $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
+          $runnerCallThrew = $false
+          $capture = $null
+          try {
+              $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
+          } catch {
+              $runnerCallThrew = $true
+              $capture = @()
+          }
+          function Test-Task810OrdinalStringSequence {
+              param($Actual, $Expected)
+              if ($null -eq $Actual -or $null -eq $Expected) { return $false }
+              if ($Actual -is [string] -or $Expected -is [string]) { return $false }
+              try {
+                  $a = @($Actual)
+                  $e = @($Expected)
+              } catch { return $false }
+              if ($a.Count -ne $e.Count) { return $false }
+              for ($i = 0; $i -lt $e.Count; $i++) {
+                  if ($null -eq $a[$i] -or $a[$i] -isnot [string]) { return $false }
+                  if ($null -eq $e[$i] -or $e[$i] -isnot [string]) { return $false }
+                  if (-not [System.StringComparer]::Ordinal.Equals([string]$a[$i], [string]$e[$i])) { return $false }
+              }
+              return $true
+          }
+          function Get-Task810ConsumerDecision {
+              param(
+                  [bool]$Threw,
+                  $Capture,
+                  [string]$ExpectedShardId,
+                  [string]$ExpectedResultFile,
+                  [bool]$InstallUsed
+              )
+              if ($Threw) {
+                  return [pscustomobject]@{ code = 'C00'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($null -eq $Capture -or @($Capture).Count -ne 1 -or $Capture[0] -isnot [string] -or [string]::IsNullOrEmpty([string]$Capture[0])) {
+                  return [pscustomobject]@{ code = 'C01'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $line = [string]$Capture[0]
+              if ($line.Contains([char]10) -or $line.Contains([char]13)) {
+                  return [pscustomobject]@{ code = 'C01'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              try { $envelope = $line | ConvertFrom-Json -ErrorAction Stop } catch {
+                  return [pscustomobject]@{ code = 'C01'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $rootExpected = @('schema_version','shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','pester_invoked','result_file','error_code','selected_module')
+              $rootActual = @($envelope.PSObject.Properties.Name)
+              if (-not (Test-Task810OrdinalStringSequence -Actual $rootActual -Expected $rootExpected)) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($envelope.schema_version -isnot [string] -or $envelope.schema_version -cne '1') {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              foreach ($key in @('shard_id','resolution_status','execution_status','test_outcome','failure_origin','workflow_action','result_file','error_code')) {
+                  if ($envelope.$key -isnot [string]) {
+                      return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              }
+              if ($envelope.pester_invoked -isnot [bool]) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($null -eq $envelope.selected_module) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $modExpected = @('present','name','semantic_version','manifest_path')
+              $modActual = @($envelope.selected_module.PSObject.Properties.Name)
+              if (-not (Test-Task810OrdinalStringSequence -Actual $modActual -Expected $modExpected)) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($envelope.selected_module.present -isnot [bool]) {
+                  return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              foreach ($key in @('name','semantic_version','manifest_path')) {
+                  if ($envelope.selected_module.$key -isnot [string]) {
+                      return [pscustomobject]@{ code = 'C02'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              }
+              if (-not [System.StringComparer]::Ordinal.Equals([string]$envelope.shard_id, $ExpectedShardId)) {
+                  return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $rf = [string]$envelope.result_file
+              if ($rf.Length -gt 0 -and -not [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile)) {
+                  return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $mPresent = [bool]$envelope.selected_module.present
+              if ($mPresent) {
+                  if ($envelope.selected_module.name -cne 'Pester' -or $envelope.selected_module.semantic_version -cne '5.7.1' -or [string]::IsNullOrEmpty([string]$envelope.selected_module.manifest_path) -or [string]$envelope.resolution_status -cne 'resolved') {
+                      return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              } else {
+                  if ($envelope.selected_module.name -cne '' -or $envelope.selected_module.semantic_version -cne '' -or $envelope.selected_module.manifest_path -cne '') {
+                      return [pscustomobject]@{ code = 'C03'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  }
+              }
+              $rs = [string]$envelope.resolution_status
+              $es = [string]$envelope.execution_status
+              $to = [string]$envelope.test_outcome
+              $fo = [string]$envelope.failure_origin
+              $wa = [string]$envelope.workflow_action
+              $pi = [bool]$envelope.pester_invoked
+              $ec = [string]$envelope.error_code
+              $isP04 = ($rs -ceq 'missing' -and $es -ceq 'not_started' -and $to -ceq 'not_run' -and $fo -ceq 'none' -and $wa -ceq 'install_once_then_rerun' -and -not $pi -and $ec -ceq 'pester_5_7_1_missing' -and -not $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP04) {
+                  if (-not $InstallUsed) {
+                      return [pscustomobject]@{ code = 'C04'; exit = 2; diagnostic = $null; install = $true; rerun = $true }
+                  }
+                  return [pscustomobject]@{ code = 'C06'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $isP16 = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'passed' -and $fo -ceq 'none' -and $wa -ceq 'succeed' -and $pi -and $ec -ceq 'none' -and $mPresent -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isP16) {
+                  if (Test-Path -LiteralPath $ExpectedResultFile) {
+                      return [pscustomobject]@{ code = 'C07'; exit = 0; diagnostic = $null; install = $false; rerun = $false }
+                  }
+                  return [pscustomobject]@{ code = 'C08'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $failedOrigins = @('assertion','test_runtime','block_or_container','mixed')
+              $isSuiteFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $to -ceq 'failed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_tests_failed' -and $mPresent -and ($failedOrigins -contains $fo) -and [System.StringComparer]::Ordinal.Equals($rf, $ExpectedResultFile))
+              if ($isSuiteFail) {
+                  if (Test-Path -LiteralPath $ExpectedResultFile) {
+                      return [pscustomobject]@{ code = 'C09'; exit = 1; diagnostic = 'TASK810_TEST_FAILURE'; install = $false; rerun = $false }
+                  }
+                  return [pscustomobject]@{ code = 'C10'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $missingFileFail = ($rs -ceq 'resolved' -and $es -ceq 'completed' -and $wa -ceq 'fail' -and $pi -and $ec -ceq 'pester_result_file_missing' -and $mPresent)
+              if ($missingFileFail) {
+                  return [pscustomobject]@{ code = 'C11'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $earlyFail = @('empty','unknown','duplicate','artifact_conflict','ambiguous','runtime_failure') -contains $rs
+              $importConfigFail = ($rs -ceq 'resolved' -and $es -ceq 'not_started' -and -not $pi -and @('pester_import_failure','pester_configuration_failure') -contains $ec)
+              if ($earlyFail -or $importConfigFail) {
+                  return [pscustomobject]@{ code = 'C12'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              if ($rs -ceq 'resolved' -and $pi -and @('pester_runtime_failure','pester_result_invalid') -contains $ec) {
+                  return [pscustomobject]@{ code = 'C13'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              return [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+          }
+          $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
+          if ([bool]$decision.install) {
+              try {
+                  $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+                  if (-not $repo) { Register-PSRepository -Default -ErrorAction Stop }
+                  Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository PSGallery -ErrorAction Stop
+                  $installUsed = $true
+              } catch {
+                  $task810ExitCode = 2
+                  $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
+                  $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+              }
+              $runnerCallThrew = $false
+              $capture = $null
+              try {
+                  $capture = @(& ./scripts/run-pester-shard.ps1 -ShardId $shardId)
+              } catch {
+                  $runnerCallThrew = $true
+                  $capture = @()
+              }
+              $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
+          }
+          $task810ExitCode = [int]$decision.exit
+          if ($null -ne $decision.diagnostic) { $task810Diagnostic = [string]$decision.diagnostic } else { $task810Diagnostic = $null }
+          # TASK810_CONSUMER_KERNEL_END
           } finally {
             Remove-Item Env:WINSMUX_DBGGATE_APP_EXE -ErrorAction SilentlyContinue
             Remove-Item Env:WINSMUX_DBGGATE_PORT -ErrorAction SilentlyContinue
           }
+          if ($null -ne $task810Diagnostic) {
+            Write-Host $task810Diagnostic
+          }
+          exit $task810ExitCode
 
       - name: Upload V03630 desktop debug process results
-        if: always()
+        if: ${{ always() && hashFiles('test-results-desktop-debug-v03630.xml') != '' }}
         uses: actions/upload-artifact@v7
         with:
           name: test-results-desktop-debug-v03630
