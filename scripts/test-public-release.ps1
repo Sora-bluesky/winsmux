@@ -3832,15 +3832,19 @@ try {
                 probe_true = @{ Script = { param($ProbeArgument) $true }; Argument = $null }
                 probe_false = @{ Script = { param($ProbeArgument) $false }; Argument = $null }
                 probe_error = @{ Script = { param($ProbeArgument) throw 'synthetic diagnosis failure' }; Argument = $null }
-                probe_timeout = @{ Script = { param($ProbeArgument) Start-Sleep -Milliseconds 400; $true }; Argument = $null }
                 probe_invalid_output = @{ Script = { param($ProbeArgument) 'unexpected' }; Argument = $null }
             }
-            $syntheticDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $syntheticProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 5000
+            $syntheticDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $syntheticProbeTable
             Assert-Condition ([string]$syntheticDiagnosis.probe_true -ceq 'true') 'The immediate true teardown probe did not return true.'
             Assert-Condition ([string]$syntheticDiagnosis.probe_false -ceq 'false') 'The immediate false teardown probe did not return false.'
             Assert-Condition ([string]$syntheticDiagnosis.probe_error -ceq 'error:io') 'The throwing teardown probe did not return error:io.'
-            Assert-Condition ([string]$syntheticDiagnosis.probe_timeout -ceq 'error:timeout') 'The sleeping teardown probe did not return error:timeout.'
             Assert-Condition ([string]$syntheticDiagnosis.probe_invalid_output -ceq 'error:io') 'The teardown probe accepted output outside the closed value domain.'
+
+            $syntheticTimeoutProbeTable = [ordered]@{
+                probe_timeout = @{ Script = { param($ProbeArgument) Start-Sleep -Milliseconds 400; $true }; Argument = $null }
+            }
+            $syntheticTimeoutDiagnosis = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $syntheticTimeoutProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
+            Assert-Condition ([string]$syntheticTimeoutDiagnosis.probe_timeout -ceq 'error:timeout') 'The sleeping teardown probe did not return error:timeout.'
 
             $missingDiagnosisUserData = Join-Path $diagnosisRoot 'missing-user-data'
             $realProbeTable = New-DesktopTeardownProbeTable -UserDataFolder $missingDiagnosisUserData -RootProcessId $PID -DebugPort 49161
