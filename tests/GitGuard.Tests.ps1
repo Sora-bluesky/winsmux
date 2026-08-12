@@ -37,11 +37,16 @@ Describe 'git-guard stale main protection' {
             Invoke-TestGit -Cwd $operator -Arguments @('commit', '-m', 'test: seed repo') | Out-Null
             Invoke-TestGit -Cwd $operator -Arguments @('branch', '-M', 'main') | Out-Null
             Invoke-TestGit -Cwd $operator -Arguments @('push', '-u', 'origin', 'main') | Out-Null
+            # Bare remotes keep default HEAD (often refs/heads/master). Point HEAD at
+            # main so peer clone checks out a real branch before advancing origin/main.
+            Invoke-TestGit -Cwd $remote -Arguments @('symbolic-ref', 'HEAD', 'refs/heads/main') | Out-Null
 
             & git clone $remote $peer | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'failed to clone peer repo' }
             Invoke-TestGit -Cwd $peer -Arguments @('config', 'user.email', 'winsmux-tests@example.invalid') | Out-Null
             Invoke-TestGit -Cwd $peer -Arguments @('config', 'user.name', 'winsmux tests') | Out-Null
+            # Ensure peer is on main even if clone left an unborn/default branch.
+            Invoke-TestGit -Cwd $peer -Arguments @('checkout', '-B', 'main') | Out-Null
             Set-Content -LiteralPath (Join-Path $peer 'tracked.txt') -Value 'two' -Encoding UTF8
             Invoke-TestGit -Cwd $peer -Arguments @('add', 'tracked.txt') | Out-Null
             Invoke-TestGit -Cwd $peer -Arguments @('commit', '-m', 'test: advance remote') | Out-Null
