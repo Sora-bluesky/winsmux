@@ -114,6 +114,7 @@ tests/bridge/_helpers/*
 !tests/V03630DesktopDebugGate.Tests.ps1
 !tests/V03630DesktopDebugGateProcess.Tests.ps1
 !tests/Task810PesterRunner.Tests.ps1
+!tests/Task800OperatorShellBoundary.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1

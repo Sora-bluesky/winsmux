@@ -116,6 +116,7 @@ function Get-WinsmuxPesterShardRegistry {
             'tests/V03630DesktopDebugGate.Tests.ps1'
             'tests/DeclarativeWorkflow.Tests.ps1'
             'tests/Task810PesterRunner.Tests.ps1'
+            'tests/Task800OperatorShellBoundary.Tests.ps1'
         ) -ResultFile 'test-results-integration.xml')
         (New-WinsmuxPesterMatrixRow -Ordinal 15 -ShardId 'worker-benchmark' -TimeoutMinutes 20 -TestPaths @(
             'tests/CliBakeoff.Tests.ps1'
