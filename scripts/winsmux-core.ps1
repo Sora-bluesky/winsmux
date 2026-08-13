@@ -5711,11 +5711,9 @@ function Invoke-Verify {
 
     $prNumber = $Target
     $repoRoot = Split-Path -Parent $PSScriptRoot
-    $testsDir = Join-Path $repoRoot 'tests'
-
-    if (-not (Get-Command Invoke-Pester -ErrorAction SilentlyContinue)) {
-        Stop-WithError "Invoke-Pester not found. Install/import Pester before running verify."
-    }
+    # TASK-800: public verify uses canonical runner only (no encoded-command / direct pester invocation).
+    # WINSMUX_TASK800_RUNNER_PATH is intentionally NOT interpreted here (leaf-only override).
+    $runTestsPath = Join-Path $PSScriptRoot 'run-tests.ps1'
 
     if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
         Stop-WithError "pwsh not found. Install PowerShell 7 before running verify."
@@ -5723,6 +5721,10 @@ function Invoke-Verify {
 
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         Stop-WithError "gh CLI not found. Install GitHub CLI before running verify."
+    }
+
+    if (-not (Test-Path -LiteralPath $runTestsPath -PathType Leaf)) {
+        Stop-WithError "canonical runner not found: $runTestsPath"
     }
 
     $githubPreflightScript = Join-Path $repoRoot 'winsmux-core\scripts\github-write-preflight.ps1'
@@ -5734,35 +5736,20 @@ function Invoke-Verify {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $testsDir -PathType Container)) {
-        Stop-WithError "tests directory not found: $testsDir"
-    }
-
-    $testFiles = Get-ChildItem -Path $testsDir -Recurse -File -Include '*.Tests.ps1','*.ps1' |
-        Sort-Object FullName
-
-    if (-not $testFiles -or $testFiles.Count -eq 0) {
-        Stop-WithError "no test files found under $testsDir"
-    }
-
-    Write-Output "Running Pester tests from $testsDir"
-    $pesterCommand = @'
-$config = New-PesterConfiguration
-$config.Run.Path = @("tests/")
-$config.Run.Exit = $true
-$config.Output.Verbosity = "Detailed"
-Invoke-Pester -Configuration $config
-'@
-    $encodedPesterCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pesterCommand))
-    Push-Location $repoRoot
+    $resultsDirectory = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-verify-' + [guid]::NewGuid().ToString('N'))
+    Write-Output "Running canonical tests via scripts/run-tests.ps1 (ResultsDirectory=$resultsDirectory)"
+    $pesterExitCode = 1
     try {
-        & pwsh -NoProfile -EncodedCommand $encodedPesterCommand
+        & pwsh -NoProfile -NoLogo -NonInteractive -File $runTestsPath -ResultsDirectory $resultsDirectory
         $pesterExitCode = Get-SafeLastExitCode
     } finally {
-        Pop-Location
+        if (Test-Path -LiteralPath $resultsDirectory) {
+            Remove-Item -LiteralPath $resultsDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
-    if ($null -ne $pesterExitCode -and $pesterExitCode -ne 0) {
+    if ($null -eq $pesterExitCode) { $pesterExitCode = 1 }
+    if ($pesterExitCode -ne 0) {
         Stop-WithError "Pester verify failed with exit code $pesterExitCode."
     }
 
