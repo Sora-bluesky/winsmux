@@ -55,8 +55,12 @@ Describe 'TASK-796 Pester Git isolation' -Tag 'integration' {
                 if ($null -ne $value) { $environment[$name] = $value }
             }
             $nullDevice = if ($IsWindows) { 'NUL' } else { '/dev/null' }
-            $emptyHooks = Join-Path $TestDrive 'bootstrap-hooks'
-            $emptyTemplate = Join-Path $TestDrive 'bootstrap-template'
+            $bootstrapRoot = $TestDrive
+            if ([string]::IsNullOrWhiteSpace([string]$bootstrapRoot)) {
+                $bootstrapRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('t796-bootstrap-' + [guid]::NewGuid().ToString('N'))
+            }
+            $emptyHooks = Join-Path $bootstrapRoot 'bootstrap-hooks'
+            $emptyTemplate = Join-Path $bootstrapRoot 'bootstrap-template'
             New-Item -ItemType Directory -Path $emptyHooks, $emptyTemplate -Force | Out-Null
             $environment['GIT_CONFIG_GLOBAL'] = $nullDevice
             $environment['GIT_CONFIG_SYSTEM'] = $nullDevice
@@ -214,6 +218,87 @@ Describe 'TASK-796 Pester Git isolation' -Tag 'integration' {
             $content = "#!/bin/sh`n" + ('printf ''%s\n'' hook >> "$' + $MarkerVariable + '"') + "`n"
             [System.IO.File]::WriteAllText($Path, $content, $script:Utf8NoBom)
         }
+
+        function New-T796SerialCwdFixture {
+            param([Parameter(Mandatory)][string]$Name)
+
+            $root = Join-Path ([System.IO.Path]::GetTempPath()) ('t796-' + $Name + '-' + [guid]::NewGuid().ToString('N'))
+            $source = Join-Path $root 'source'
+            New-Item -ItemType Directory -Path (Join-Path $source 'tests'), (Join-Path $source 'scripts') -Force | Out-Null
+            [void](Invoke-TestGit -RepositoryRoot $source -Arguments @('init'))
+            $probeLines = @(
+                "Describe 'T796 serial CWD probe' {"
+                "    It 'records unqualified git toplevel' {"
+                '        $toplevel = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()'
+                '        $cwd = (Get-Location).Path'
+                '        [ordered]@{ toplevel = $toplevel; cwd = $cwd } | ConvertTo-Json | Set-Content -LiteralPath $env:T796_SERIAL_CWD_EVIDENCE -Encoding utf8'
+                '        $realSource = [string]$env:T796_REAL_SOURCE_ROOT'
+                '        if (-not [string]::IsNullOrWhiteSpace($toplevel) -and -not [string]::IsNullOrWhiteSpace($realSource)) {'
+                '            $realFull = [System.IO.Path]::GetFullPath($realSource)'
+                '            $topFull = [System.IO.Path]::GetFullPath($toplevel)'
+                '            if (-not [StringComparer]::OrdinalIgnoreCase.Equals($topFull, $realFull)) {'
+                '                & git config core.hooksPath .githooks'
+                '            }'
+                '        }'
+                '        $true | Should -BeTrue'
+                '    }'
+                '}'
+            )
+            $harnessLines = @(
+                "Describe 'T796 harness stub' {"
+                "    It 'stays quiet' { `$true | Should -BeTrue }"
+                '}'
+            )
+            $immutableLines = @(
+                "Describe 'T796 serial immutable CWD probe' {"
+                "    It 'records unqualified git toplevel from source CWD' {"
+                '        $toplevel = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()'
+                '        $cwd = (Get-Location).Path'
+                '        [ordered]@{ toplevel = $toplevel; cwd = $cwd } | ConvertTo-Json | Set-Content -LiteralPath $env:T796_SERIAL_IMMUTABLE_CWD_EVIDENCE -Encoding utf8'
+                '        $true | Should -BeTrue'
+                '    }'
+                '}'
+            )
+            [System.IO.File]::WriteAllText((Join-Path $source 'tests\PublicSurfacePolicy.Tests.ps1'), ($probeLines -join "`n") + "`n", $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText((Join-Path $source 'tests\HarnessContract.Tests.ps1'), ($harnessLines -join "`n") + "`n", $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText((Join-Path $source 'tests\VersionSurface.Tests.ps1'), ($immutableLines -join "`n") + "`n", $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText((Join-Path $source 'scripts\dummy.ps1'), "function Get-T796Dummy { 'ok' }`n", $script:Utf8NoBom)
+            [System.IO.File]::WriteAllText((Join-Path $source 'tracked.txt'), "base`n", $script:Utf8NoBom)
+            [void](Invoke-TestGit -RepositoryRoot $source -Arguments @('add', '--', 'tests/PublicSurfacePolicy.Tests.ps1', 'tests/HarnessContract.Tests.ps1', 'tests/VersionSurface.Tests.ps1', 'scripts/dummy.ps1', 'tracked.txt'))
+            [void](Invoke-TestGit -RepositoryRoot $source -Arguments @(
+                '-c', 'user.name=TASK-796 Fixture', '-c', 'user.email=task796@example.invalid',
+                'commit', '-m', 'serial cwd fixture'
+            ))
+            return [PSCustomObject]@{ Root = $root; Source = $source }
+        }
+
+        function Invoke-T796SerialCwdSuite {
+            param(
+                [Parameter(Mandatory)][string]$Source,
+                [Parameter(Mandatory)][string]$PrivateRoot,
+                [Parameter(Mandatory)]$GitEnvironment,
+                [Parameter(Mandatory)]$PesterModule,
+                [Parameter(Mandatory)][string]$ResultsRoot,
+                [switch]$EnableCoverage
+            )
+
+            $candidatePaths = @(
+                (Join-Path $Source 'tests\HarnessContract.Tests.ps1')
+                (Join-Path $Source 'tests\PublicSurfacePolicy.Tests.ps1')
+                (Join-Path $Source 'tests\VersionSurface.Tests.ps1')
+            )
+            Invoke-WithRunnerGitEnvironment -Environment $GitEnvironment -ScriptBlock {
+                Invoke-SerialSuite `
+                    -RepositoryRoot $Source `
+                    -PrivateRepositoryRoot $PrivateRoot `
+                    -TestResultPath (Join-Path $ResultsRoot 'pester-results.xml') `
+                    -CoverageReportPath (Join-Path $ResultsRoot 'coverage.xml') `
+                    -PesterModule $PesterModule `
+                    -CandidateTestPaths $candidatePaths `
+                    -EnableCoverage:$EnableCoverage
+            }
+        }
+
     }
 
     BeforeEach {
@@ -645,4 +730,152 @@ exit $LASTEXITCODE
             Should -Be @('Integration.WorktreeHook.Tests.ps1', 'PesterGitIsolation.Tests.ps1')
         @($bounded.Units | ForEach-Object { @($_.LineFilters).Count }) | Should -Be @(1, 1)
     }
+
+    It 'T796-F03 runs serial mutable suites from the private Git fixture' {
+        Assert-Task796RunnerFunction -Name 'Invoke-SerialSuite'
+        Assert-Task796RunnerFunction -Name 'Get-PesterExecutionPaths'
+        Assert-Task796RunnerFunction -Name 'New-RunnerCandidateContext'
+        Assert-Task796RunnerFunction -Name 'New-RunnerPrivateRepository'
+        Assert-Task796RunnerFunction -Name 'Invoke-WithRunnerGitEnvironment'
+        $fixture = New-T796SerialCwdFixture -Name 'serial-cwd'
+        $source = [string]$fixture.Source
+        $sourceConfig = Join-Path $source '.git\config'
+        $realConfig = Join-Path $script:RepoRoot '.git\config'
+        $sourceConfigBefore = Get-FileSha256 -Path $sourceConfig
+        $realConfigBefore = Get-FileSha256 -Path $realConfig
+        $realHooksBefore = (Invoke-TestGit -RepositoryRoot $script:RepoRoot -Arguments @('config', '--local', '--get', 'core.hooksPath') -AllowFailure).StdOut
+        $context = New-RunnerCandidateContext -RepositoryRoot $source -ExecutionRoot (Join-Path $fixture.Root 'controller')
+        $privateRoot = New-RunnerPrivateRepository -Context $context -DestinationPath (Join-Path $fixture.Root 'private')
+        $evidencePath = Join-Path $fixture.Root 'serial-cwd-evidence.json'
+        $immutableEvidencePath = Join-Path $fixture.Root 'serial-immutable-cwd-evidence.json'
+        $resultsRoot = Join-Path $fixture.Root 'results'
+        New-Item -ItemType Directory -Path $resultsRoot -Force | Out-Null
+        $resolverModule = Join-Path $script:RepoRoot 'scripts\winsmux-pester.psm1'
+        Import-Module $resolverModule -Force -ErrorAction Stop | Out-Null
+        $pesterResolution = Resolve-WinsmuxPester571
+        $pesterResolution.resolution_status | Should -BeExactly 'resolved'
+        $pesterModule = [pscustomobject]@{
+            Name = 'Pester'
+            Version = [version]'5.7.1'
+            Path = [string]$pesterResolution.manifest_path
+            ModuleBase = [string]$pesterResolution.module_base
+        }
+        $locationBefore = (Get-Location).Path
+        $env:T796_SERIAL_CWD_EVIDENCE = $evidencePath
+        $env:T796_SERIAL_IMMUTABLE_CWD_EVIDENCE = $immutableEvidencePath
+        $env:T796_REAL_SOURCE_ROOT = $script:RepoRoot
+        try {
+            Set-Location -LiteralPath $source
+            try {
+                $null = Invoke-T796SerialCwdSuite `
+                    -Source $source `
+                    -PrivateRoot $privateRoot `
+                    -GitEnvironment $context.GitEnvironment `
+                    -PesterModule $pesterModule `
+                    -ResultsRoot $resultsRoot
+                [System.IO.Path]::GetFullPath((Get-Location).Path) | Should -BeExactly ([System.IO.Path]::GetFullPath($source))
+            } finally {
+                Set-Location -LiteralPath $locationBefore
+            }
+        } finally {
+            Remove-Item -LiteralPath 'Env:T796_SERIAL_CWD_EVIDENCE' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath 'Env:T796_SERIAL_IMMUTABLE_CWD_EVIDENCE' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath 'Env:T796_REAL_SOURCE_ROOT' -ErrorAction SilentlyContinue
+        }
+        try {
+        Test-Path -LiteralPath $evidencePath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $immutableEvidencePath -PathType Leaf | Should -BeTrue
+        $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $immutableEvidence = Get-Content -LiteralPath $immutableEvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $privateFull = [System.IO.Path]::GetFullPath($privateRoot)
+        $sourceFull = [System.IO.Path]::GetFullPath($source)
+        [System.IO.Path]::GetFullPath([string]$evidence.toplevel) | Should -BeExactly $privateFull
+        [System.IO.Path]::GetFullPath([string]$evidence.cwd) | Should -BeExactly $privateFull
+        [System.IO.Path]::GetFullPath([string]$immutableEvidence.toplevel) | Should -BeExactly $sourceFull
+        [System.IO.Path]::GetFullPath([string]$immutableEvidence.cwd) | Should -BeExactly $sourceFull
+        [System.IO.Path]::GetFullPath((Get-Location).Path) | Should -BeExactly ([System.IO.Path]::GetFullPath($locationBefore))
+        (Get-FileSha256 -Path $sourceConfig) | Should -BeExactly $sourceConfigBefore
+        (Get-FileSha256 -Path $realConfig) | Should -BeExactly $realConfigBefore
+        $realHooksAfter = (Invoke-TestGit -RepositoryRoot $script:RepoRoot -Arguments @('config', '--local', '--get', 'core.hooksPath') -AllowFailure).StdOut
+        $realHooksAfter | Should -BeExactly $realHooksBefore
+        $privateHooks = (Invoke-TestGit -RepositoryRoot $privateRoot -Environment $context.GitEnvironment -Arguments @('config', '--local', '--get', 'core.hooksPath') -AllowFailure).StdOut
+        $privateHooks | Should -BeExactly '.githooks'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    It 'T796-F04 runs coverage-serial mutable suites from the private Git fixture' {
+        Assert-Task796RunnerFunction -Name 'Invoke-SerialSuite'
+        $fixture = New-T796SerialCwdFixture -Name 'coverage-cwd'
+        $source = [string]$fixture.Source
+        $sourceConfig = Join-Path $source '.git\config'
+        $realConfig = Join-Path $script:RepoRoot '.git\config'
+        $sourceConfigBefore = Get-FileSha256 -Path $sourceConfig
+        $realConfigBefore = Get-FileSha256 -Path $realConfig
+        $context = New-RunnerCandidateContext -RepositoryRoot $source -ExecutionRoot (Join-Path $fixture.Root 'controller')
+        $privateRoot = New-RunnerPrivateRepository -Context $context -DestinationPath (Join-Path $fixture.Root 'private')
+        $evidencePath = Join-Path $fixture.Root 'coverage-cwd-evidence.json'
+        $immutableEvidencePath = Join-Path $fixture.Root 'coverage-immutable-cwd-evidence.json'
+        $resultsRoot = Join-Path $fixture.Root 'results'
+        New-Item -ItemType Directory -Path $resultsRoot -Force | Out-Null
+        $resolverModule = Join-Path $script:RepoRoot 'scripts\winsmux-pester.psm1'
+        Import-Module $resolverModule -Force -ErrorAction Stop | Out-Null
+        $pesterResolution = Resolve-WinsmuxPester571
+        $pesterResolution.resolution_status | Should -BeExactly 'resolved'
+        $pesterModule = [pscustomobject]@{
+            Name = 'Pester'
+            Version = [version]'5.7.1'
+            Path = [string]$pesterResolution.manifest_path
+            ModuleBase = [string]$pesterResolution.module_base
+        }
+        $locationBefore = (Get-Location).Path
+        $env:T796_SERIAL_CWD_EVIDENCE = $evidencePath
+        $env:T796_SERIAL_IMMUTABLE_CWD_EVIDENCE = $immutableEvidencePath
+        $env:T796_REAL_SOURCE_ROOT = $script:RepoRoot
+        try {
+            Set-Location -LiteralPath $source
+            try {
+                $serial = Invoke-T796SerialCwdSuite `
+                    -Source $source `
+                    -PrivateRoot $privateRoot `
+                    -GitEnvironment $context.GitEnvironment `
+                    -PesterModule $pesterModule `
+                    -ResultsRoot $resultsRoot `
+                    -EnableCoverage
+                [System.IO.Path]::GetFullPath((Get-Location).Path) | Should -BeExactly ([System.IO.Path]::GetFullPath($source))
+            } finally {
+                Set-Location -LiteralPath $locationBefore
+            }
+        } finally {
+            Remove-Item -LiteralPath 'Env:T796_SERIAL_CWD_EVIDENCE' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath 'Env:T796_SERIAL_IMMUTABLE_CWD_EVIDENCE' -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath 'Env:T796_REAL_SOURCE_ROOT' -ErrorAction SilentlyContinue
+        }
+        try {
+        $serial | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath $evidencePath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $immutableEvidencePath -PathType Leaf | Should -BeTrue
+        $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $immutableEvidence = Get-Content -LiteralPath $immutableEvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $privateFull = [System.IO.Path]::GetFullPath($privateRoot)
+        $sourceFull = [System.IO.Path]::GetFullPath($source)
+        [System.IO.Path]::GetFullPath([string]$evidence.toplevel) | Should -BeExactly $privateFull
+        [System.IO.Path]::GetFullPath([string]$evidence.cwd) | Should -BeExactly $privateFull
+        [System.IO.Path]::GetFullPath([string]$immutableEvidence.toplevel) | Should -BeExactly $sourceFull
+        [System.IO.Path]::GetFullPath([string]$immutableEvidence.cwd) | Should -BeExactly $sourceFull
+        [System.IO.Path]::GetFullPath((Get-Location).Path) | Should -BeExactly ([System.IO.Path]::GetFullPath($locationBefore))
+        (Get-FileSha256 -Path $sourceConfig) | Should -BeExactly $sourceConfigBefore
+        (Get-FileSha256 -Path $realConfig) | Should -BeExactly $realConfigBefore
+        $privateHooks = (Invoke-TestGit -RepositoryRoot $privateRoot -Environment $context.GitEnvironment -Arguments @('config', '--local', '--get', 'core.hooksPath') -AllowFailure).StdOut
+        $privateHooks | Should -BeExactly '.githooks'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
 }
+

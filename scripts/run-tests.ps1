@@ -978,6 +978,180 @@ function Assert-PesterWorkerSpecCandidatePaths {
     }
 }
 
+function Test-PesterPathUnderRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Root
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $rootPrefix = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    return $fullPath.StartsWith($rootPrefix, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Invoke-SerialPesterSlice {
+    param(
+        [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+        [Parameter(Mandatory = $true)][string[]]$Paths,
+        [Parameter(Mandatory = $true)]$PesterModule,
+        [Parameter(Mandatory = $true)][string]$TestResultPath,
+        [string[]]$LineFilters = @(),
+        [string[]]$CoverageTargets = @(),
+        [string]$CoverageReportPath = '',
+        [switch]$EnableCoverage
+    )
+
+    if ($Paths.Count -eq 0) {
+        throw 'Serial Pester slice received no test paths.'
+    }
+
+    $previousLocationPath = (Get-Location).Path
+    $result = $null
+    try {
+        Push-Location -LiteralPath $WorkingDirectory
+        if ($PesterModule.Version.Major -ge 5) {
+            Import-Module $PesterModule.Path -Force -ErrorAction Stop | Out-Null
+            $configuration = [PesterConfiguration]::Default
+            $configuration.Run.Path = @($Paths)
+            $configuration.Run.PassThru = $true
+            $configuration.Run.Exit = $false
+            $configuration.Output.Verbosity = 'None'
+            $configuration.TestResult.Enabled = $true
+            $configuration.TestResult.OutputFormat = 'NUnitXml'
+            $configuration.TestResult.OutputPath = $TestResultPath
+            if ($LineFilters.Count -gt 0) {
+                $configuration.Filter.Line = @($LineFilters)
+            }
+            $configuration.CodeCoverage.Enabled = [bool]$EnableCoverage
+            if ($EnableCoverage) {
+                $configuration.CodeCoverage.Path = @($CoverageTargets)
+                $configuration.CodeCoverage.OutputPath = $CoverageReportPath
+            }
+            $result = Invoke-PesterIsolated -Configuration $configuration
+        } else {
+            if ($LineFilters.Count -gt 0) {
+                throw 'Pester line filters require Pester 5 or newer.'
+            }
+            if ($EnableCoverage) {
+                $result = Invoke-Pester @($Paths) -PassThru -Quiet -CodeCoverage @($CoverageTargets) -OutputFormat NUnitXml -OutputFile $TestResultPath
+            } else {
+                $result = Invoke-Pester @($Paths) -PassThru -Quiet -OutputFormat NUnitXml -OutputFile $TestResultPath
+            }
+        }
+    } finally {
+        Set-Location -LiteralPath $previousLocationPath
+    }
+    return $result
+}
+
+function Merge-SerialPesterCodeCoverage {
+    param($First, $Second)
+
+    if ($null -eq $First) { return $Second }
+    if ($null -eq $Second) { return $First }
+
+    $firstCommands = @()
+    $secondCommands = @()
+    if ($First.PSObject.Properties.Name -contains 'Commands') {
+        $firstCommands = @($First.Commands)
+    }
+    if ($Second.PSObject.Properties.Name -contains 'Commands') {
+        $secondCommands = @($Second.Commands)
+    }
+    if ($firstCommands.Count -eq 0 -and $secondCommands.Count -eq 0) {
+        $analyzed = [int](Get-ObjectProperty -InputObject $First -Name 'NumberOfCommandsAnalyzed' -DefaultValue 0)
+        $executed = [int](Get-ObjectProperty -InputObject $First -Name 'NumberOfCommandsExecuted' -DefaultValue 0)
+        $analyzed2 = [int](Get-ObjectProperty -InputObject $Second -Name 'NumberOfCommandsAnalyzed' -DefaultValue 0)
+        $executed2 = [int](Get-ObjectProperty -InputObject $Second -Name 'NumberOfCommandsExecuted' -DefaultValue 0)
+        $mergedAnalyzed = [math]::Max($analyzed, $analyzed2)
+        $mergedExecuted = [math]::Max($executed, $executed2)
+        $percent = if ($mergedAnalyzed -le 0) { 0 } else { [math]::Round(($mergedExecuted / [double]$mergedAnalyzed) * 100, 2) }
+        return [PSCustomObject]@{
+            CoveragePercent = $percent
+            NumberOfCommandsAnalyzed = $mergedAnalyzed
+            NumberOfCommandsExecuted = $mergedExecuted
+        }
+    }
+
+    $hits = @{}
+    foreach ($command in @($firstCommands + $secondCommands)) {
+        $file = [string](Get-ObjectProperty -InputObject $command -Name 'File' -DefaultValue '')
+        $line = [int](Get-ObjectProperty -InputObject $command -Name 'Line' -DefaultValue 0)
+        $commandText = [string](Get-ObjectProperty -InputObject $command -Name 'Command' -DefaultValue '')
+        $key = '{0}|{1}|{2}' -f $file, $line, $commandText
+        $executed = [bool](Get-ObjectProperty -InputObject $command -Name 'Executed' -DefaultValue $false)
+        if (-not $hits.ContainsKey($key)) {
+            $hits[$key] = $executed
+        } elseif ($executed) {
+            $hits[$key] = $true
+        }
+    }
+    $analyzed = $hits.Count
+    $executedCount = @($hits.Values | Where-Object { $_ }).Count
+    $percent = if ($analyzed -le 0) { 0 } else { [math]::Round(($executedCount / [double]$analyzed) * 100, 2) }
+    return [PSCustomObject]@{
+        CoveragePercent = $percent
+        NumberOfCommandsAnalyzed = $analyzed
+        NumberOfCommandsExecuted = $executedCount
+    }
+}
+
+function Merge-SerialPesterSliceResults {
+    param([Parameter(Mandatory = $true)][object[]]$Results)
+
+    $results = @($Results | Where-Object { $null -ne $_ })
+    if ($results.Count -eq 0) {
+        throw 'Serial Pester produced no slice results.'
+    }
+    if ($results.Count -eq 1) {
+        return $results[0]
+    }
+
+    $passed = 0
+    $failed = 0
+    $total = 0
+    $skipped = 0
+    $notRun = 0
+    $failedBlocks = 0
+    $failedContainers = 0
+    $tests = [System.Collections.Generic.List[object]]::new()
+    $coverage = $null
+    foreach ($result in $results) {
+        $passed += [int](Get-ObjectProperty -InputObject $result -Name 'PassedCount' -DefaultValue 0)
+        $failed += [int](Get-ObjectProperty -InputObject $result -Name 'FailedCount' -DefaultValue 0)
+        $total += [int](Get-ObjectProperty -InputObject $result -Name 'TotalCount' -DefaultValue 0)
+        $skipped += [int](Get-ObjectProperty -InputObject $result -Name 'SkippedCount' -DefaultValue 0)
+        $notRun += [int](Get-ObjectProperty -InputObject $result -Name 'NotRunCount' -DefaultValue 0)
+        $failedBlocks += [int](Get-ObjectProperty -InputObject $result -Name 'FailedBlocksCount' -DefaultValue 0)
+        $failedContainers += [int](Get-ObjectProperty -InputObject $result -Name 'FailedContainersCount' -DefaultValue 0)
+        foreach ($test in @($result.Tests)) {
+            $tests.Add($test)
+        }
+        $sliceCoverage = $null
+        if ($result.PSObject.Properties.Name -contains 'CodeCoverage') {
+            $sliceCoverage = $result.CodeCoverage
+        }
+        $coverage = Merge-SerialPesterCodeCoverage -First $coverage -Second $sliceCoverage
+    }
+    $outcome = if (($failed -gt 0) -or ($failedBlocks -gt 0) -or ($failedContainers -gt 0)) {
+        'Failed'
+    } else {
+        'Passed'
+    }
+    return [PSCustomObject]@{
+        PassedCount = $passed
+        FailedCount = $failed
+        TotalCount = $total
+        SkippedCount = $skipped
+        NotRunCount = $notRun
+        FailedBlocksCount = $failedBlocks
+        FailedContainersCount = $failedContainers
+        Result = $outcome
+        Tests = $tests.ToArray()
+        CodeCoverage = $coverage
+    }
+}
+
 function Invoke-SerialSuite {
     param(
         [Parameter(Mandatory = $true)][string]$RepositoryRoot,
@@ -1004,38 +1178,95 @@ function Invoke-SerialSuite {
         -PrivateRepositoryRoot $PrivateRepositoryRoot `
         -CandidateTestPaths $CandidateTestPaths)
     $executionLineFilters = @()
-    if ($PesterModule.Version.Major -ge 5) {
-        Import-Module $PesterModule.Path -Force -ErrorAction Stop | Out-Null
-        $configuration = [PesterConfiguration]::Default
-        $configuration.Run.Path = $executionPaths
-        $configuration.Run.PassThru = $true
-        $configuration.Run.Exit = $false
-        $configuration.Output.Verbosity = 'None'
-        $configuration.TestResult.Enabled = $true
-        $configuration.TestResult.OutputFormat = 'NUnitXml'
-        $configuration.TestResult.OutputPath = $TestResultPath
-        if ($LineFilters.Count -gt 0) {
-            $executionLineFilters = @(Convert-PesterExecutionLineFilters `
-                -RepositoryRoot $RepositoryRoot `
-                -PrivateRepositoryRoot $PrivateRepositoryRoot `
-                -LineFilters $LineFilters)
-            $configuration.Filter.Line = $executionLineFilters
-        }
-        $configuration.CodeCoverage.Enabled = [bool]$EnableCoverage
-        if ($EnableCoverage) {
-            $configuration.CodeCoverage.Path = $coverageTargets
-            $configuration.CodeCoverage.OutputPath = $CoverageReportPath
-        }
-        $result = Invoke-PesterIsolated -Configuration $configuration
-    } else {
-        if ($LineFilters.Count -gt 0) {
-            throw 'Pester line filters require Pester 5 or newer.'
-        }
-        if ($EnableCoverage) {
-            $result = Invoke-Pester $executionPaths -PassThru -Quiet -CodeCoverage $coverageTargets -OutputFormat NUnitXml -OutputFile $TestResultPath
+    if ($LineFilters.Count -gt 0) {
+        $executionLineFilters = @(Convert-PesterExecutionLineFilters `
+            -RepositoryRoot $RepositoryRoot `
+            -PrivateRepositoryRoot $PrivateRepositoryRoot `
+            -LineFilters $LineFilters)
+    }
+
+    $mutablePaths = [System.Collections.Generic.List[string]]::new()
+    $immutablePaths = [System.Collections.Generic.List[string]]::new()
+    foreach ($path in $executionPaths) {
+        if (Test-PesterPathUnderRoot -Path $path -Root $PrivateRepositoryRoot) {
+            $mutablePaths.Add($path)
         } else {
-            $result = Invoke-Pester $executionPaths -PassThru -Quiet -OutputFormat NUnitXml -OutputFile $TestResultPath
+            $immutablePaths.Add($path)
         }
+    }
+    $mutableFilters = [System.Collections.Generic.List[string]]::new()
+    $immutableFilters = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in $executionLineFilters) {
+        $separator = ([string]$line).LastIndexOf(':')
+        $filterPath = if ($separator -gt 0) { ([string]$line).Substring(0, $separator) } else { [string]$line }
+        if (Test-PesterPathUnderRoot -Path $filterPath -Root $PrivateRepositoryRoot) {
+            $mutableFilters.Add([string]$line)
+        } else {
+            $immutableFilters.Add([string]$line)
+        }
+    }
+    if ($executionLineFilters.Count -gt 0) {
+        if ($mutableFilters.Count -eq 0) { $mutablePaths.Clear() }
+        if ($immutableFilters.Count -eq 0) { $immutablePaths.Clear() }
+    }
+    if (($mutablePaths.Count -eq 0) -and ($immutablePaths.Count -eq 0)) {
+        throw 'Serial Pester inventory has no executable slices.'
+    }
+
+    $previousLocationPath = (Get-Location).Path
+    $sliceResults = [System.Collections.Generic.List[object]]::new()
+    $nunitPaths = [System.Collections.Generic.List[string]]::new()
+    $result = $null
+    try {
+        if ($mutablePaths.Count -gt 0) {
+            $mutableResultPath = if ($immutablePaths.Count -gt 0) { "$TestResultPath.mutable.xml" } else { $TestResultPath }
+            $mutableCoveragePath = if ($immutablePaths.Count -gt 0) { "$CoverageReportPath.mutable.xml" } else { $CoverageReportPath }
+            $sliceResults.Add((Invoke-SerialPesterSlice `
+                -WorkingDirectory $PrivateRepositoryRoot `
+                -Paths @($mutablePaths) `
+                -PesterModule $PesterModule `
+                -TestResultPath $mutableResultPath `
+                -LineFilters @($mutableFilters) `
+                -CoverageTargets $coverageTargets `
+                -CoverageReportPath $mutableCoveragePath `
+                -EnableCoverage:$EnableCoverage))
+            $nunitPaths.Add($mutableResultPath)
+        }
+        if ($immutablePaths.Count -gt 0) {
+            $immutableResultPath = if ($mutablePaths.Count -gt 0) { "$TestResultPath.immutable.xml" } else { $TestResultPath }
+            $immutableCoveragePath = if ($mutablePaths.Count -gt 0) { "$CoverageReportPath.immutable.xml" } else { $CoverageReportPath }
+            $sliceResults.Add((Invoke-SerialPesterSlice `
+                -WorkingDirectory $RepositoryRoot `
+                -Paths @($immutablePaths) `
+                -PesterModule $PesterModule `
+                -TestResultPath $immutableResultPath `
+                -LineFilters @($immutableFilters) `
+                -CoverageTargets $coverageTargets `
+                -CoverageReportPath $immutableCoveragePath `
+                -EnableCoverage:$EnableCoverage))
+            $nunitPaths.Add($immutableResultPath)
+        }
+        $result = Merge-SerialPesterSliceResults -Results @($sliceResults)
+        if ($nunitPaths.Count -gt 1) {
+            $mergedFailed = [int](Get-ObjectProperty -InputObject $result -Name 'FailedCount' -DefaultValue 0)
+            $mergedSkipped = [int](Get-ObjectProperty -InputObject $result -Name 'SkippedCount' -DefaultValue 0)
+            $mergedNotRun = [int](Get-ObjectProperty -InputObject $result -Name 'NotRunCount' -DefaultValue 0)
+            $mergedTotal = [int](Get-ObjectProperty -InputObject $result -Name 'TotalCount' -DefaultValue 0)
+            $mergedBlocks = [int](Get-ObjectProperty -InputObject $result -Name 'FailedBlocksCount' -DefaultValue 0)
+            $mergedContainers = [int](Get-ObjectProperty -InputObject $result -Name 'FailedContainersCount' -DefaultValue 0)
+            Merge-NUnitResults `
+                -Paths @($nunitPaths) `
+                -OutputPath $TestResultPath `
+                -TotalCount $mergedTotal `
+                -FailedCount $mergedFailed `
+                -ErrorsCount ($mergedBlocks + $mergedContainers) `
+                -SkippedCount $mergedSkipped `
+                -NotRunCount $mergedNotRun `
+                -InconclusiveCount 0 `
+                -DurationSeconds $stopwatch.Elapsed.TotalSeconds
+        }
+    } finally {
+        Set-Location -LiteralPath $previousLocationPath
     }
     $stopwatch.Stop()
     $selectedTests = if ($executionLineFilters.Count -gt 0) {
