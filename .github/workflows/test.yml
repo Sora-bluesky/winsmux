@@ -197,7 +197,7 @@ jobs:
           - name: integration
             result: integration
             timeout_minutes: 25
-            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1;tests/DeclarativeWorkflow.Tests.ps1;tests/Task810PesterRunner.Tests.ps1;tests/Task800OperatorShellBoundary.Tests.ps1
+            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1;tests/DeclarativeWorkflow.Tests.ps1;tests/Task810PesterRunner.Tests.ps1;tests/Task800OperatorShellBoundary.Tests.ps1;tests/PesterGitIsolation.Tests.ps1
           - name: worker-benchmark
             result: worker-benchmark
             timeout_minutes: 20
