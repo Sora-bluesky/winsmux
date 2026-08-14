@@ -197,7 +197,7 @@ jobs:
           - name: integration
             result: integration
             timeout_minutes: 25
-            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1;tests/DeclarativeWorkflow.Tests.ps1;tests/Task810PesterRunner.Tests.ps1;tests/Task800OperatorShellBoundary.Tests.ps1;tests/PesterGitIsolation.Tests.ps1
+            paths: tests/Integration.GateEnforcement.Tests.ps1;tests/Integration.MultiAgent.Tests.ps1;tests/Integration.PaneMonitorHook.Tests.ps1;tests/Integration.PluginHookLoader.Tests.ps1;tests/Integration.WorktreeHook.Tests.ps1;tests/Task839WorktreeReviewState.Tests.ps1;tests/V03630DesktopDebugGate.Tests.ps1;tests/DeclarativeWorkflow.Tests.ps1;tests/Task810PesterRunner.Tests.ps1;tests/Task800OperatorShellBoundary.Tests.ps1;tests/PesterGitIsolation.Tests.ps1;tests/Task811OperatorInfraGate.Tests.ps1
           - name: worker-benchmark
             result: worker-benchmark
             timeout_minutes: 20
@@ -728,6 +728,76 @@ jobs:
           name: test-results-desktop-debug-v03630
           path: test-results-desktop-debug-v03630.xml
 
+  task811-operator-infra:
+    name: TASK-811 Operator Infrastructure Receipt
+    runs-on: windows-latest
+    needs: pester
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Resolve the TASK-810 Pester selection
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module ./scripts/winsmux-pester.psm1 -Force
+          $selection = Resolve-WinsmuxPester571
+          if ($selection.resolution_status -ceq 'missing') {
+            $gallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
+            if (-not $gallery) { Register-PSRepository -Default -ErrorAction Stop }
+            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
+            Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository PSGallery -ErrorAction Stop
+            $selection = Resolve-WinsmuxPester571
+          }
+          if ($selection.resolution_status -cne 'resolved') {
+            throw "TASK811_FAIL_CLOSED pester_resolution_$($selection.resolution_status)"
+          }
+
+      - name: Write and locally assert the durable receipt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./scripts/winsmux-task811-authority.ps1
+          $result = Invoke-WinsmuxTask811Transaction
+          if ($result.status -cne 'ok') {
+            throw 'TASK811_FAIL_CLOSED transaction_not_ok'
+          }
+
+      - name: Upload the bound TASK-811 receipt
+        uses: actions/upload-artifact@v7
+        with:
+          name: task811-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: artifacts/operator-infra/task811-receipt.json
+          if-no-files-found: error
+
+  task811-receipt-bind:
+    name: TASK-811 Receipt Artifact Bind
+    runs-on: windows-latest
+    needs: task811-operator-infra
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Download the exact TASK-811 receipt artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: task811-receipt-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: artifacts/operator-infra
+
+      - name: Assert one receipt tree and binding before merge
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $receiptPath = 'artifacts/operator-infra/task811-receipt.json'
+          $downloadedFiles = @(Get-ChildItem -LiteralPath 'artifacts/operator-infra' -File -Recurse -Force)
+          if ($downloadedFiles.Count -ne 1 -or -not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+            throw 'TASK811_FAIL_CLOSED downloaded_receipt_shape_invalid'
+          }
+          . ./scripts/winsmux-task811-authority.ps1
+          Assert-WinsmuxTask811Receipt -ArtifactBindingOnly | Out-Null
+
   merge-gate:
     name: Merge Gate
     runs-on: ubuntu-latest
@@ -741,6 +811,7 @@ jobs:
       - pester
       - core-build-test
       - desktop-build-test
+      - task811-receipt-bind
     if: always()
     steps:
       - name: Require all checks
@@ -755,7 +826,8 @@ jobs:
             "${{ needs.common-contract-drift.result }}" \
             "${{ needs.pester.result }}" \
             "${{ needs.core-build-test.result }}" \
-            "${{ needs.desktop-build-test.result }}"; do
+            "${{ needs.desktop-build-test.result }}" \
+            "${{ needs.task811-receipt-bind.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
               exit 1
