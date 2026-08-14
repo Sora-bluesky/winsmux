@@ -482,6 +482,43 @@ Describe 'TASK-796 Pester Git isolation' -Tag 'integration' {
         (Get-FileSha256 -Path $prospectiveIndex) | Should -BeExactly $prospectiveBefore
     }
 
+    It 'T796-C04 rejects a candidate when a staged delete leaves a working-tree file' {
+        Assert-Task796RunnerFunction -Name 'New-RunnerCandidateContext'
+        $source = New-TestRepository -Name 'staged-delete-leftover-source'
+        [System.IO.File]::WriteAllText((Join-Path $source 'doomed.txt'), "doomed-bytes`n", $script:Utf8NoBom)
+        [void](Invoke-TestGit -RepositoryRoot $source -Arguments @('add', '--', 'doomed.txt'))
+        [void](Invoke-TestGit -RepositoryRoot $source -Arguments @(
+            '-c', 'user.name=TASK-796 Fixture', '-c', 'user.email=task796@example.invalid',
+            'commit', '-m', 'add doomed'
+        ))
+        $actualIndex = (Invoke-TestGit -RepositoryRoot $source -Arguments @('rev-parse', '--git-path', 'index')).StdOut
+        if (-not [System.IO.Path]::IsPathRooted($actualIndex)) { $actualIndex = Join-Path $source $actualIndex }
+        $prospectiveIndex = Join-Path $TestDrive 'staged-delete-leftover.index'
+        Copy-Item -LiteralPath $actualIndex -Destination $prospectiveIndex
+        $prospectiveEnvironment = Get-TestPlatformEnvironment
+        $prospectiveEnvironment['GIT_INDEX_FILE'] = $prospectiveIndex
+        [void](Invoke-TestGit -RepositoryRoot $source -Environment $prospectiveEnvironment -Arguments @(
+            'update-index', '--force-remove', '--', 'doomed.txt'
+        ))
+        $indexBefore = Get-FileSha256 -Path $actualIndex
+        $prospectiveBefore = Get-FileSha256 -Path $prospectiveIndex
+        $refsBefore = (Invoke-TestGit -RepositoryRoot $source -Arguments @('show-ref', '--head')).StdOut
+        $configBefore = Get-FileSha256 -Path (Join-Path $source '.git\config')
+        $leftoverPath = Join-Path $source 'doomed.txt'
+        Test-Path -LiteralPath $leftoverPath -PathType Leaf | Should -BeTrue
+        [System.IO.File]::ReadAllText($leftoverPath) | Should -BeExactly "doomed-bytes`n"
+
+        { New-RunnerCandidateContext -RepositoryRoot $source -ExecutionRoot (Join-Path $TestDrive 'staged-delete-leftover-controller') -ProspectiveIndexPath $prospectiveIndex } |
+            Should -Throw '*staged deletion*'
+
+        Test-Path -LiteralPath $leftoverPath -PathType Leaf | Should -BeTrue
+        [System.IO.File]::ReadAllText($leftoverPath) | Should -BeExactly "doomed-bytes`n"
+        (Get-FileSha256 -Path $actualIndex) | Should -BeExactly $indexBefore
+        (Get-FileSha256 -Path $prospectiveIndex) | Should -BeExactly $prospectiveBefore
+        (Invoke-TestGit -RepositoryRoot $source -Arguments @('show-ref', '--head')).StdOut | Should -BeExactly $refsBefore
+        (Get-FileSha256 -Path (Join-Path $source '.git\config')) | Should -BeExactly $configBefore
+    }
+
     It 'T796-L01 rejects unmatched line filters in serial and direct worker entry points' {
         Assert-Task796RunnerFunction -Name 'Get-RunnerCandidateTestPaths'
         Assert-Task796RunnerFunction -Name 'Assert-PesterWorkerSpecCandidatePaths'

@@ -506,6 +506,36 @@ function New-RunnerCandidateContext {
     if ($sourceDiff.ExitCode -ne 0) {
         throw "Candidate/source comparison failed ($($sourceDiff.ExitCode)): $($sourceDiff.StdErr)"
     }
+    $headInventory = Invoke-RunnerGit -RepositoryRoot $repositoryRoot -Arguments @('ls-tree', '-r', '--name-only', '-z', 'HEAD') -Environment $gitEnvironment -AllowFailure
+    if ($headInventory.ExitCode -eq 128) {
+        # Unborn HEAD has no committed paths that a staged deletion could leave behind.
+    } elseif ($headInventory.ExitCode -ne 0) {
+        throw "Candidate/HEAD path inventory failed ($($headInventory.ExitCode)): $($headInventory.StdErr)"
+    } else {
+        $candidateInventory = Invoke-RunnerGit -RepositoryRoot $repositoryRoot -Arguments @('ls-tree', '-r', '--name-only', '-z', $candidateTreeId) -Environment $gitEnvironment
+        $candidatePaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($relativePath in @($candidateInventory.StdOut -split "`0" | Where-Object { $_ })) {
+            [void]$candidatePaths.Add(([string]$relativePath).Replace('\', '/'))
+        }
+        $repositoryPrefix = $repositoryRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        $leftovers = [System.Collections.Generic.List[string]]::new()
+        foreach ($relativePath in @($headInventory.StdOut -split "`0" | Where-Object { $_ })) {
+            $normalized = ([string]$relativePath).Replace('\', '/')
+            if ($candidatePaths.Contains($normalized)) {
+                continue
+            }
+            $fullPath = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot $normalized))
+            if (-not $fullPath.StartsWith($repositoryPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Staged-deletion path escapes repository root: $normalized"
+            }
+            if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
+                $leftovers.Add($normalized)
+            }
+        }
+        if ($leftovers.Count -gt 0) {
+            throw "Candidate index omits working-tree files that remain after staged deletion: $($leftovers -join ', ')"
+        }
+    }
     $objectPathText = (Invoke-RunnerGit -RepositoryRoot $repositoryRoot -Arguments @('rev-parse', '--git-path', 'objects') -Environment $gitEnvironment).StdOut
     $candidateEnvironment = [ordered]@{}
     foreach ($entry in $gitEnvironment.GetEnumerator()) {
