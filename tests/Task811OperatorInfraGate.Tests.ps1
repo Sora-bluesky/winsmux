@@ -135,6 +135,27 @@ Describe 'TASK-811 byte provenance, process graph, receipt, and release binding'
         { Assert-WinsmuxTask811Receipt | Out-Null } | Should -Not -Throw
     }
 
+    It 'accepts a published terminal result after its child exits' {
+        $terminalResultPath = Join-Path $TestDrive 'terminal-result.json'
+        $escapedResultPath = $terminalResultPath.Replace("'", "''")
+        $writerScript = @"
+[IO.File]::WriteAllBytes('$escapedResultPath', [Text.UTF8Encoding]::new(`$false).GetBytes('{"status":"ok"}'))
+"@
+        $encodedWriter = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($writerScript))
+        $terminalProcess = Start-Task811PwshProcess `
+            -PwshPath ([string]$script:GoodReceipt.pwsh.path) `
+            -WorkingDirectory $script:RepoRoot `
+            -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedWriter)
+        try {
+            $terminalProcess.WaitForExit()
+            $terminalProcess.ExitCode | Should -Be 0
+            $terminalResult = Wait-Task811ResultFile -Path $terminalResultPath -Process $terminalProcess
+            [string]$terminalResult.status | Should -BeExactly 'ok'
+        } finally {
+            $terminalProcess.Dispose()
+        }
+    }
+
     It 'F1 binds the resolved pwsh executable bytes and rejects version-text-only evidence' {
         $resolvedPwsh = [IO.Path]::GetFullPath((Get-Command pwsh -ErrorAction Stop | Select-Object -First 1).Source)
         [IO.Path]::GetFullPath([string]$script:GoodReceipt.pwsh.path) | Should -BeExactly $resolvedPwsh

@@ -354,8 +354,6 @@ function Wait-Task811ResultFile {
         Assert-Task811Condition (-not $Process.HasExited) 'required_child_exited_before_result'
         [Threading.Thread]::Sleep(25)
     }
-    $Process.Refresh()
-    Assert-Task811Condition (-not $Process.HasExited) 'required_child_not_live_at_result'
     return Read-Task811JsonFile -Path $Path
 }
 
