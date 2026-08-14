@@ -92,14 +92,18 @@ function Get-CoveragePercent {
         return [double]$CodeCoverage.CoveragePercent
     }
 
-    if (($CodeCoverage.PSObject.Properties.Name -contains 'NumberOfCommandsAnalyzed') -and
-        ($CodeCoverage.PSObject.Properties.Name -contains 'NumberOfCommandsExecuted')) {
-        $analyzed = [double]$CodeCoverage.NumberOfCommandsAnalyzed
-        if ($analyzed -le 0) {
+    $analyzed = Get-PesterCoverageNumericCount -InputObject $CodeCoverage -Names @(
+        'NumberOfCommandsAnalyzed', 'CommandsAnalyzedCount', 'CommandsAnalyzed'
+    )
+    $executed = Get-PesterCoverageNumericCount -InputObject $CodeCoverage -Names @(
+        'NumberOfCommandsExecuted', 'CommandsExecutedCount'
+    )
+    if ($null -ne $analyzed -and $null -ne $executed) {
+        if ([double]$analyzed -le 0) {
             return 0
         }
 
-        return [math]::Round(([double]$CodeCoverage.NumberOfCommandsExecuted / $analyzed) * 100, 2)
+        return [math]::Round(([double]$executed / [double]$analyzed) * 100, 2)
     }
 
     return $null
@@ -1044,32 +1048,159 @@ function Invoke-SerialPesterSlice {
     return $result
 }
 
+function Get-PesterCoverageNumericCount {
+    param(
+        [Parameter(Mandatory = $true)]$InputObject,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    foreach ($name in $Names) {
+        $value = Get-ObjectProperty -InputObject $InputObject -Name $name
+        if ($null -eq $value) {
+            continue
+        }
+        if ($value -is [byte] -or $value -is [int16] -or $value -is [uint16] -or
+            $value -is [int] -or $value -is [uint32] -or $value -is [long] -or
+            $value -is [uint64] -or $value -is [decimal] -or $value -is [double] -or
+            $value -is [single] -or $value -is [int64]) {
+            return [int]$value
+        }
+    }
+    return $null
+}
+
+function Get-PesterCoverageCommandRecords {
+    param($CodeCoverage)
+
+    if ($null -eq $CodeCoverage) {
+        return @()
+    }
+
+    $names = @($CodeCoverage.PSObject.Properties.Name)
+    if ($names -contains 'Commands') {
+        $commands = @($CodeCoverage.Commands)
+        if ($commands.Count -gt 0) {
+            return $commands
+        }
+    }
+
+    $hits = @()
+    $misses = @()
+    if ($names -contains 'CommandsExecuted') {
+        $hits = @($CodeCoverage.CommandsExecuted)
+    } elseif ($names -contains 'HitCommands') {
+        $hits = @($CodeCoverage.HitCommands)
+    }
+    if ($names -contains 'CommandsMissed') {
+        $misses = @($CodeCoverage.CommandsMissed)
+    } elseif ($names -contains 'MissedCommands') {
+        $misses = @($CodeCoverage.MissedCommands)
+    }
+
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($command in $hits) {
+        $records.Add([PSCustomObject]@{
+            File = [string](Get-ObjectProperty -InputObject $command -Name 'File' -DefaultValue '')
+            Line = [int](Get-ObjectProperty -InputObject $command -Name 'Line' -DefaultValue 0)
+            Command = [string](Get-ObjectProperty -InputObject $command -Name 'Command' -DefaultValue '')
+            Executed = $true
+            HitCount = [int](Get-ObjectProperty -InputObject $command -Name 'HitCount' -DefaultValue 1)
+        })
+    }
+    foreach ($command in $misses) {
+        $records.Add([PSCustomObject]@{
+            File = [string](Get-ObjectProperty -InputObject $command -Name 'File' -DefaultValue '')
+            Line = [int](Get-ObjectProperty -InputObject $command -Name 'Line' -DefaultValue 0)
+            Command = [string](Get-ObjectProperty -InputObject $command -Name 'Command' -DefaultValue '')
+            Executed = $false
+            HitCount = [int](Get-ObjectProperty -InputObject $command -Name 'HitCount' -DefaultValue 0)
+        })
+    }
+    return $records.ToArray()
+}
+
+function Get-JaCoCoCoveredInstructionCount {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return -1
+    }
+    try {
+        [xml]$document = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+        if ($document.DocumentElement.LocalName -ne 'report') {
+            return -1
+        }
+        $counter = $document.DocumentElement.SelectSingleNode('counter[@type="INSTRUCTION"]')
+        if ($null -eq $counter) {
+            return 0
+        }
+        return [int]$counter.GetAttribute('covered')
+    } catch {
+        return -1
+    }
+}
+
+function Publish-SerialPesterCoverageXml {
+    param(
+        [string[]]$Paths,
+        [Parameter(Mandatory = $true)][string]$OutputPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        return
+    }
+    $existing = @(
+        $Paths |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_) }
+    )
+    if ($existing.Count -eq 0) {
+        return
+    }
+    $source = $existing[0]
+    if ($existing.Count -gt 1) {
+        $bestCovered = -1
+        foreach ($path in $existing) {
+            $covered = Get-JaCoCoCoveredInstructionCount -Path $path
+            if ($covered -gt $bestCovered) {
+                $bestCovered = $covered
+                $source = $path
+            }
+        }
+    }
+    $sourceFull = [System.IO.Path]::GetFullPath($source)
+    $outputFull = [System.IO.Path]::GetFullPath($OutputPath)
+    if ($sourceFull -eq $outputFull) {
+        return
+    }
+    Copy-Item -LiteralPath $source -Destination $OutputPath -Force
+}
+
 function Merge-SerialPesterCodeCoverage {
     param($First, $Second)
 
     if ($null -eq $First) { return $Second }
     if ($null -eq $Second) { return $First }
 
-    $firstCommands = @()
-    $secondCommands = @()
-    if ($First.PSObject.Properties.Name -contains 'Commands') {
-        $firstCommands = @($First.Commands)
-    }
-    if ($Second.PSObject.Properties.Name -contains 'Commands') {
-        $secondCommands = @($Second.Commands)
-    }
+    $firstCommands = @(Get-PesterCoverageCommandRecords -CodeCoverage $First)
+    $secondCommands = @(Get-PesterCoverageCommandRecords -CodeCoverage $Second)
     if ($firstCommands.Count -eq 0 -and $secondCommands.Count -eq 0) {
-        $analyzed = [int](Get-ObjectProperty -InputObject $First -Name 'NumberOfCommandsAnalyzed' -DefaultValue 0)
-        $executed = [int](Get-ObjectProperty -InputObject $First -Name 'NumberOfCommandsExecuted' -DefaultValue 0)
-        $analyzed2 = [int](Get-ObjectProperty -InputObject $Second -Name 'NumberOfCommandsAnalyzed' -DefaultValue 0)
-        $executed2 = [int](Get-ObjectProperty -InputObject $Second -Name 'NumberOfCommandsExecuted' -DefaultValue 0)
-        $mergedAnalyzed = [math]::Max($analyzed, $analyzed2)
-        $mergedExecuted = [math]::Max($executed, $executed2)
+        $analyzed = Get-PesterCoverageNumericCount -InputObject $First -Names @('CommandsAnalyzedCount', 'NumberOfCommandsAnalyzed', 'CommandsAnalyzed')
+        $executed = Get-PesterCoverageNumericCount -InputObject $First -Names @('CommandsExecutedCount', 'NumberOfCommandsExecuted')
+        $analyzed2 = Get-PesterCoverageNumericCount -InputObject $Second -Names @('CommandsAnalyzedCount', 'NumberOfCommandsAnalyzed', 'CommandsAnalyzed')
+        $executed2 = Get-PesterCoverageNumericCount -InputObject $Second -Names @('CommandsExecutedCount', 'NumberOfCommandsExecuted')
+        if ($null -eq $analyzed) { $analyzed = 0 }
+        if ($null -eq $executed) { $executed = 0 }
+        if ($null -eq $analyzed2) { $analyzed2 = 0 }
+        if ($null -eq $executed2) { $executed2 = 0 }
+        $mergedAnalyzed = [math]::Max([int]$analyzed, [int]$analyzed2)
+        $mergedExecuted = [math]::Max([int]$executed, [int]$executed2)
         $percent = if ($mergedAnalyzed -le 0) { 0 } else { [math]::Round(($mergedExecuted / [double]$mergedAnalyzed) * 100, 2) }
         return [PSCustomObject]@{
             CoveragePercent = $percent
             NumberOfCommandsAnalyzed = $mergedAnalyzed
             NumberOfCommandsExecuted = $mergedExecuted
+            CommandsAnalyzedCount = $mergedAnalyzed
+            CommandsExecutedCount = $mergedExecuted
         }
     }
 
@@ -1080,6 +1211,12 @@ function Merge-SerialPesterCodeCoverage {
         $commandText = [string](Get-ObjectProperty -InputObject $command -Name 'Command' -DefaultValue '')
         $key = '{0}|{1}|{2}' -f $file, $line, $commandText
         $executed = [bool](Get-ObjectProperty -InputObject $command -Name 'Executed' -DefaultValue $false)
+        if (-not $executed) {
+            $hitCount = Get-PesterCoverageNumericCount -InputObject $command -Names @('HitCount')
+            if ($null -ne $hitCount -and [int]$hitCount -gt 0) {
+                $executed = $true
+            }
+        }
         if (-not $hits.ContainsKey($key)) {
             $hits[$key] = $executed
         } elseif ($executed) {
@@ -1093,6 +1230,8 @@ function Merge-SerialPesterCodeCoverage {
         CoveragePercent = $percent
         NumberOfCommandsAnalyzed = $analyzed
         NumberOfCommandsExecuted = $executedCount
+        CommandsAnalyzedCount = $analyzed
+        CommandsExecutedCount = $executedCount
     }
 }
 
@@ -1216,6 +1355,7 @@ function Invoke-SerialSuite {
     $previousLocationPath = (Get-Location).Path
     $sliceResults = [System.Collections.Generic.List[object]]::new()
     $nunitPaths = [System.Collections.Generic.List[string]]::new()
+    $coverageXmlPaths = [System.Collections.Generic.List[string]]::new()
     $result = $null
     try {
         if ($mutablePaths.Count -gt 0) {
@@ -1231,6 +1371,9 @@ function Invoke-SerialSuite {
                 -CoverageReportPath $mutableCoveragePath `
                 -EnableCoverage:$EnableCoverage))
             $nunitPaths.Add($mutableResultPath)
+            if ($EnableCoverage) {
+                $coverageXmlPaths.Add($mutableCoveragePath)
+            }
         }
         if ($immutablePaths.Count -gt 0) {
             $immutableResultPath = if ($mutablePaths.Count -gt 0) { "$TestResultPath.immutable.xml" } else { $TestResultPath }
@@ -1245,6 +1388,9 @@ function Invoke-SerialSuite {
                 -CoverageReportPath $immutableCoveragePath `
                 -EnableCoverage:$EnableCoverage))
             $nunitPaths.Add($immutableResultPath)
+            if ($EnableCoverage) {
+                $coverageXmlPaths.Add($immutableCoveragePath)
+            }
         }
         $result = Merge-SerialPesterSliceResults -Results @($sliceResults)
         if ($nunitPaths.Count -gt 1) {
@@ -1264,6 +1410,9 @@ function Invoke-SerialSuite {
                 -NotRunCount $mergedNotRun `
                 -InconclusiveCount 0 `
                 -DurationSeconds $stopwatch.Elapsed.TotalSeconds
+        }
+        if ($EnableCoverage) {
+            Publish-SerialPesterCoverageXml -Paths @($coverageXmlPaths) -OutputPath $CoverageReportPath
         }
     } finally {
         Set-Location -LiteralPath $previousLocationPath
