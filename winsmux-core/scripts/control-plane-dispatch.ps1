@@ -7,6 +7,57 @@ function Get-WinsmuxControlPlaneArguments {
     return ,@(@($CommandTarget) + @($CommandRest) | Where-Object { $_ })
 }
 
+function Split-WinsmuxDispatchTaskArguments {
+    param([AllowNull()][string[]]$Parts)
+
+    $slotId = ''
+    $taskClass = ''
+    $delegation = ''
+    $projectDir = ''
+    $textParts = New-Object System.Collections.Generic.List[string]
+    $index = 0
+    $items = @($Parts)
+    while ($index -lt $items.Count) {
+        $current = [string]$items[$index]
+        if ($current -ceq '--') {
+            $index++
+            while ($index -lt $items.Count) {
+                $textParts.Add([string]$items[$index])
+                $index++
+            }
+            break
+        }
+        if ($current -in @('--slot-id', '--task-class', '--delegation', '--project-dir')) {
+            if ($index + 1 -ge $items.Count) {
+                Stop-WithError 'usage: winsmux dispatch-task [--slot-id <id>] [--task-class <id>] [--delegation <id>] [--project-dir <path>] [--] <text>'
+            }
+            $value = [string]$items[$index + 1]
+            switch ($current) {
+                '--slot-id' { $slotId = $value }
+                '--task-class' { $taskClass = $value }
+                '--delegation' { $delegation = $value }
+                '--project-dir' { $projectDir = $value }
+            }
+            $index += 2
+            continue
+        }
+        if ($current -ceq '--json') {
+            $index++
+            continue
+        }
+        $textParts.Add($current)
+        $index++
+    }
+
+    return [pscustomobject]@{
+        SlotId     = $slotId
+        TaskClass  = $taskClass
+        Delegation = $delegation
+        ProjectDir = $projectDir
+        TaskText   = ((@($textParts) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ }) -join ' ')
+    }
+}
+
 function Join-WinsmuxControlPlaneText {
     param([AllowNull()][object[]]$Arguments)
 
@@ -139,7 +190,7 @@ function Get-DispatchTaskManifestEntry {
 
     if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
         try {
-            $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label } | Select-Object -First 1)[0]
+            $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label -or [string]$_.SlotId -eq $Label } | Select-Object -First 1)[0]
             if ($null -ne $entry) {
                 return $entry
             }
@@ -218,13 +269,17 @@ function Invoke-WinsmuxDispatchTaskCommand {
             ForEach-Object { ([string]$_).Trim() } |
             Where-Object { $_ }
     )
-    if ($parts.Count -lt 1) {
+    $parsed = Split-WinsmuxDispatchTaskArguments -Parts $parts
+    $taskText = [string]$parsed.TaskText
+    if ([string]::IsNullOrWhiteSpace($taskText)) {
         Stop-WithError "usage: winsmux dispatch-task <text>"
     }
 
-    $taskText = $parts -join ' '
     $submissionId = 'submission-' + [guid]::NewGuid().ToString('N')
     $projectDir = (Get-Location).Path
+    if (-not [string]::IsNullOrWhiteSpace([string]$parsed.ProjectDir)) {
+        $projectDir = [string]$parsed.ProjectDir
+    }
     $routerScript = Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'dispatch-router.ps1'
     if (-not (Test-Path -LiteralPath $routerScript -PathType Leaf)) {
         Stop-WithError "dispatch router not found: $routerScript"
@@ -234,16 +289,24 @@ function Invoke-WinsmuxDispatchTaskCommand {
 
     $availableTargets = @(Get-DispatchTaskAvailableTargets -ProjectDir $projectDir)
 
-    $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
-    if ($route.HandleLocally) {
-        $receipt = New-WinsmuxRouterRefusalReceipt -Kind task -Route $route -SubmissionId $submissionId
-        ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
-        exit 1
-    }
-
-    $selectedLabel = [string]$route.SelectedTarget
+    $selectedLabel = ''
     $paneId = ''
-    $resolvedRole = [string]$route.SelectedRole
+    $resolvedRole = 'Worker'
+    $classifiedSlotId = [string]$parsed.SlotId
+    if (-not [string]::IsNullOrWhiteSpace($classifiedSlotId)) {
+        $selectedLabel = $classifiedSlotId
+        $resolvedRole = 'Worker'
+    } else {
+        $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
+        if ($route.HandleLocally) {
+            $receipt = New-WinsmuxRouterRefusalReceipt -Kind task -Route $route -SubmissionId $submissionId
+            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+            exit 1
+        }
+
+        $selectedLabel = [string]$route.SelectedTarget
+        $resolvedRole = [string]$route.SelectedRole
+    }
 
     $manifestEntry = $null
     if ($resolvedRole -eq 'Reviewer') {
