@@ -448,3 +448,70 @@ fn apply_creates_yaml_and_rollback_restores_absence() {
     assert!(!sidecar_path(project.path()).exists());
     assert_eq!(fs::read(runtime_dir.join("keep-me.txt")).unwrap(), before_marker);
 }
+
+#[test]
+fn apply_recipe_is_consumable_by_workspace_plan() {
+    let project = tempfile::tempdir().expect("create plan fixture");
+    write_preview_fixture(project.path());
+    let runtime_dir = project.path().join(".winsmux");
+    fs::write(
+        runtime_dir.join("provider-capabilities.json"),
+        include_str!("../../tests/fixtures/workspace-recipes/valid-v1.provider-capabilities.json"),
+    )
+    .expect("write capability fixture");
+    let before_capabilities = fs::read(runtime_dir.join("provider-capabilities.json")).unwrap();
+    let before_marker = fs::read(runtime_dir.join("keep-me.txt")).unwrap();
+
+    let apply = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-migrate",
+            "--action",
+            "apply",
+            "--preset",
+            "bugfix",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project.path())
+        .output()
+        .expect("run apply before workspace-plan");
+    assert_eq!(String::from_utf8_lossy(&apply.stderr), "");
+    assert!(
+        apply.status.success(),
+        "apply must exit 0 before workspace-plan; stdout={} stderr={}",
+        String::from_utf8_lossy(&apply.stdout),
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    let plan = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-plan",
+            "--recipe-id",
+            "bugfix",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project.path())
+        .output()
+        .expect("run workspace-plan against applied recipe");
+    assert_eq!(
+        String::from_utf8_lossy(&plan.stderr),
+        "",
+        "workspace-plan must not write stderr against the applied recipe"
+    );
+    assert!(
+        plan.status.success(),
+        "applied recipe must be readable by workspace-plan; stdout={} stderr={}",
+        String::from_utf8_lossy(&plan.stdout),
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let plan_json: serde_json::Value =
+        serde_json::from_slice(&plan.stdout).expect("workspace-plan stdout must be JSON");
+    assert_eq!(plan_json["recipe_id"], "bugfix");
+    assert_eq!(plan_json["resolved_bindings"]["implement"], "worker-1");
+    assert_eq!(
+        fs::read(runtime_dir.join("provider-capabilities.json")).unwrap(),
+        before_capabilities
+    );
+    assert_eq!(fs::read(runtime_dir.join("keep-me.txt")).unwrap(), before_marker);
+}
