@@ -197,7 +197,8 @@ $moduleBudgets = @(
     [ordered]@{ name = 'bridge entrypoint'; path = 'scripts/winsmux-core.ps1'; baseline = 19989; allowed_growth = 200; require_not_above_baseline = $true },
     [ordered]@{ name = 'desktop frontend entrypoint'; path = 'winsmux-app/src/main.ts'; baseline = 19172; allowed_growth = 200; require_not_above_baseline = $true },
     [ordered]@{ name = 'rust operator cli'; path = 'core/src/operator_cli.rs'; baseline = 11657; allowed_growth = 200; require_not_above_baseline = $true },
-    [ordered]@{ name = 'desktop backend shell'; path = 'winsmux-app/src-tauri/src/desktop_backend.rs'; baseline = 6108; allowed_growth = 100; require_not_above_baseline = $true }
+    [ordered]@{ name = 'desktop backend shell'; path = 'winsmux-app/src-tauri/src/desktop_backend.rs'; baseline = 6152; allowed_growth = 56; require_not_above_baseline = $true },
+    [ordered]@{ name = 'desktop team profile bridge'; path = 'winsmux-app/src-tauri/src/desktop_team_profile.rs'; baseline = 210; allowed_growth = 40; require_not_above_baseline = $true }
 )
 
 $moduleBudgetResults = @()

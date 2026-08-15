@@ -1151,7 +1151,7 @@ function Invoke-TeamProfileLaunchProjection {
     if (-not [string]::IsNullOrWhiteSpace($Worktree)) {
         $args += @('--worktree', $Worktree)
     }
-    $output = & $winsmuxBin @args 2>&1
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments $args 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw ("Team Profile launch projection failed for slot '{0}': {1}" -f $SlotId, ($output | Out-String))
     }
@@ -1247,7 +1247,9 @@ function Assert-TeamProfileStartGate {
         throw "Team Profile start gate failed: winsmux binary was not found."
     }
 
-    $output = & $winsmuxBin @('team-profile', '--action', 'start-gate', '--json', '--project-dir', $ProjectDir) 2>&1
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @(
+        'team-profile', '--action', 'start-gate', '--json', '--project-dir', $ProjectDir
+    ) 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw ("Team Profile start gate refused before worker panes were created: {0}" -f ($output | Out-String))
     }

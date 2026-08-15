@@ -1,6 +1,7 @@
 mod control_pipe;
 mod desktop_backend;
 mod desktop_session_restore;
+mod desktop_team_profile;
 mod pty_backend;
 mod remote_debug_gate;
 
