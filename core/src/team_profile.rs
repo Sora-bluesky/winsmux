@@ -1496,14 +1496,39 @@ fn classify_team(
         matches.retain(|slot| slot.slot_id == requested);
     }
     if let Some(slot) = matches.first() {
-        return Ok(classify_payload(
-            "worker",
-            Some(delegation),
-            Some(task_class),
-            Some(&slot.slot_id),
-            "slot_matched",
-            "dispatchable",
-        ));
+        match crate::instruction_pack::compose_json(
+            &slot.provider,
+            &slot.model,
+            &slot.role_profile,
+            &slot.lifecycle,
+            &slot.task_classes,
+        ) {
+            Ok(pack) => {
+                let mut payload = classify_payload(
+                    "worker",
+                    Some(delegation),
+                    Some(task_class),
+                    Some(&slot.slot_id),
+                    "slot_matched",
+                    "dispatchable",
+                );
+                payload["instruction_pack"] = pack;
+                return Ok(payload);
+            }
+            Err(issues) => {
+                return Ok(serde_json::json!({
+                    "schema_version": 1,
+                    "action": "dispatch-classify",
+                    "delegation": "unclassifiable",
+                    "delegation_class": delegation,
+                    "task_class": task_class,
+                    "slot_id": slot.slot_id,
+                    "reason_code": "missing_instruction_pack",
+                    "status": "refused",
+                    "issues": issues
+                }));
+            }
+        }
     }
     Ok(classify_payload(
         "operator",
@@ -1773,6 +1798,24 @@ mod tests {
 
     fn catalog_fixture() -> Catalog {
         catalog()
+    }
+
+    #[test]
+    fn every_selectable_catalog_model_has_an_instruction_pack() {
+        let catalog = catalog_fixture();
+        for (id, model) in &catalog.models {
+            if id == "provider-default" {
+                continue;
+            }
+            crate::instruction_pack::compose_pack(
+                &model.provider_id,
+                id,
+                "builder",
+                "task",
+                &["implementation".to_string()],
+            )
+            .unwrap_or_else(|issues| panic!("{id}: {issues:?}"));
+        }
     }
 
     #[test]
@@ -2061,5 +2104,11 @@ agent-slots:
         .unwrap();
         assert_eq!(worker["status"], "dispatchable");
         assert_eq!(worker["slot_id"], "worker-2");
+        assert_eq!(worker["instruction_pack"]["a1"]["worker"][0], "frozen-spec-implementation");
+        assert!(worker["instruction_pack"]["template_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "base"));
     }
 }
