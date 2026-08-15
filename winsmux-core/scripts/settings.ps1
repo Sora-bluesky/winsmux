@@ -601,9 +601,6 @@ function ConvertTo-BridgeSlotEntry {
     $canonicalAgent = Get-BridgeSlotAgentName -Slot $slot
     if (-not [string]::IsNullOrWhiteSpace($canonicalAgent)) {
         $slot.agent = $canonicalAgent
-        if (-not $slot.Contains('provider')) {
-            $slot.provider = $canonicalAgent
-        }
     }
 
     return $slot
