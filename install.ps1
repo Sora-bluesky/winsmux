@@ -246,6 +246,73 @@ function Install-CoreSupportScripts {
     Download-OptionalFile "winsmux-core/scripts/control-plane-ledger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-ledger.ps1")
 }
 
+function Install-InstructionPacks {
+    $profileRoot = Join-Path $BRIDGE_DIR 'agents\profiles'
+    $files = @(
+        'base.md',
+        'lifecycles/one-shot.md',
+        'lifecycles/session.md',
+        'lifecycles/task.md',
+        'models/antigravity/antigravity-claude-opus-4-6-thinking.md',
+        'models/antigravity/antigravity-claude-sonnet-4-6-thinking.md',
+        'models/antigravity/antigravity-gemini-3-1-pro-high.md',
+        'models/antigravity/antigravity-gemini-3-1-pro-low.md',
+        'models/antigravity/antigravity-gemini-3-5-flash-high.md',
+        'models/antigravity/antigravity-gemini-3-5-flash-low.md',
+        'models/antigravity/antigravity-gemini-3-5-flash-medium.md',
+        'models/antigravity/antigravity-gpt-oss-120b-medium.md',
+        'models/claude/claude-fable-5.md',
+        'models/claude/claude-haiku-4-5.md',
+        'models/claude/claude-opus-4-6.md',
+        'models/claude/claude-opus-4-7.md',
+        'models/claude/claude-opus-4-8.md',
+        'models/claude/claude-opus-5.md',
+        'models/claude/claude-sonnet-4-6.md',
+        'models/claude/claude-sonnet-5.md',
+        'models/codex/codex-gpt-5-4-mini.md',
+        'models/codex/codex-gpt-5-4.md',
+        'models/codex/codex-gpt-5-5.md',
+        'models/codex/codex-gpt-5-6-luna.md',
+        'models/codex/codex-gpt-5-6-sol.md',
+        'models/codex/codex-gpt-5-6-terra.md',
+        'models/codex/codex-spark.md',
+        'models/grok-build/grok-build-composer-2-5-fast.md',
+        'models/grok-build/grok-build-grok-4-3.md',
+        'models/openrouter/_dynamic.md',
+        'models/openrouter/openrouter-glm-5-2.md',
+        'models/openrouter/openrouter-kimi-k2-7-code.md',
+        'models/openrouter/openrouter-sakana-fugu-ultra.md',
+        'providers/antigravity.md',
+        'providers/claude.md',
+        'providers/codex.md',
+        'providers/grok-build.md',
+        'providers/openrouter.md',
+        'registry.yaml',
+        'roles/architect.md',
+        'roles/builder.md',
+        'roles/maintainer.md',
+        'roles/researcher.md',
+        'roles/reviewer.md',
+        'task-classes/architecture.md',
+        'task-classes/documentation.md',
+        'task-classes/implementation.md',
+        'task-classes/protocol.md',
+        'task-classes/repository-operations.md',
+        'task-classes/research.md',
+        'task-classes/review.md',
+        'task-classes/security.md',
+        'task-classes/test.md',
+    )
+    foreach ($rel in $files) {
+        $dest = Join-Path $profileRoot ($rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
+        $parent = Split-Path -Parent $dest
+        if (-not (Test-Path -LiteralPath $parent)) {
+            New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        }
+        Download-File ("winsmux-core/agents/profiles/" + $rel) $dest
+    }
+}
+
 function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/api-llm-pane-worker.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "api-llm-pane-worker.ps1")
     Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
@@ -831,6 +898,7 @@ function Invoke-Install {
     Download-File "scripts/winsmux-core.ps1" (Join-Path $SCRIPT_DIR "winsmux-core.ps1")
 
     Install-CoreSupportScripts
+    Install-InstructionPacks
 
     if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
         Install-OrchestraSupportScripts

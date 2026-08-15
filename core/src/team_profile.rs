@@ -162,6 +162,13 @@ struct DispatchOptions {
     text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DispatchGate {
+    Passthrough,
+    Refused(String),
+    Classified { slot_id: String },
+}
+
 pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     if args.iter().any(|arg| *arg == "-h" || *arg == "--help") {
         println!("{USAGE}");
@@ -243,7 +250,10 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     })?;
     let project_dir = project_dir.unwrap_or(env::current_dir()?);
     match action.as_str() {
-        "validate" => print_json(validate_project(&project_dir)?),
+        "validate" => match resolve_project(&project_dir) {
+            Ok(team) => print_json(json!({"schema_version":1,"ok":true,"team":team})),
+            Err(issues) => print_issues(issues),
+        },
         "resolve" => match resolve_project(&project_dir) {
             Ok(team) => print_json(json!({"schema_version":1,"ok":true,"team":team})),
             Err(issues) => print_issues(issues),
@@ -308,7 +318,7 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     }
 }
 
-pub(crate) fn refuse_unclassifiable_dispatch(args: &[&String]) -> io::Result<Option<String>> {
+pub(crate) fn gate_dispatch(args: &[&String]) -> io::Result<DispatchGate> {
     let options = parse_dispatch_options(args);
     let project_dir = options
         .project_dir
@@ -316,11 +326,11 @@ pub(crate) fn refuse_unclassifiable_dispatch(args: &[&String]) -> io::Result<Opt
         .unwrap_or(env::current_dir()?);
     let yaml_path = project_dir.join(".winsmux.yaml");
     if !yaml_path.exists() {
-        return Ok(None);
+        return Ok(DispatchGate::Passthrough);
     }
     let yaml = fs::read_to_string(&yaml_path)?;
     if !document_has_team_profile(&yaml) {
-        return Ok(None);
+        return Ok(DispatchGate::Passthrough);
     }
     let payload = classify_project(
         &project_dir,
@@ -333,11 +343,43 @@ pub(crate) fn refuse_unclassifiable_dispatch(args: &[&String]) -> io::Result<Opt
         .get("status")
         .and_then(JsonValue::as_str)
         .unwrap_or("refused");
-    if status == "dispatchable" {
-        Ok(None)
-    } else {
-        Ok(Some(payload.to_string()))
+    if status != "dispatchable" {
+        return Ok(DispatchGate::Refused(payload.to_string()));
     }
+    let slot_id = payload
+        .get("slot_id")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(slot_id) = slot_id {
+        Ok(DispatchGate::Classified {
+            slot_id: slot_id.to_string(),
+        })
+    } else {
+        Ok(DispatchGate::Passthrough)
+    }
+}
+
+pub(crate) fn with_classified_slot(cmd_args: &[&String], slot_id: &str) -> Vec<String> {
+    let mut forwarded: Vec<String> = cmd_args.iter().map(|arg| (*arg).clone()).collect();
+    if dispatch_args_have_slot_id(&forwarded) {
+        return forwarded;
+    }
+    forwarded.push("--slot-id".to_string());
+    forwarded.push(slot_id.to_string());
+    forwarded
+}
+
+fn dispatch_args_have_slot_id(args: &[String]) -> bool {
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--slot-id" => return true,
+            "--" => return false,
+            _ => index += 1,
+        }
+    }
+    false
 }
 
 fn print_json(value: JsonValue) -> io::Result<()> {
@@ -380,10 +422,16 @@ fn issue(
 }
 
 fn document_has_team_profile(yaml: &str) -> bool {
-    yaml.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
-    })
+    match parse_workspace_yaml(yaml) {
+        Ok(root) => root.as_mapping().is_some_and(|mapping| {
+            mapping.contains_key(&Value::String("team-profile".into()))
+                || mapping.contains_key(&Value::String("team_profile".into()))
+        }),
+        Err(_) => yaml.lines().any(|line| {
+            let trimmed = line.trim().trim_start_matches(|c: char| matches!(c, '\'' | '"'));
+            trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
+        }),
+    }
 }
 
 fn parse_dispatch_options(args: &[&String]) -> DispatchOptions {
@@ -651,13 +699,6 @@ pub(crate) fn catalog_readiness_states() -> Vec<String> {
         }
     }
     states.into_iter().collect()
-}
-
-fn validate_project(project_dir: &Path) -> io::Result<JsonValue> {
-    match resolve_project(project_dir) {
-        Ok(team) => Ok(json!({"schema_version":1,"ok":true,"team":team})),
-        Err(issues) => Ok(json!({"schema_version":1,"ok":false,"issues":issues})),
-    }
 }
 
 pub(crate) fn resolve_project(project_dir: &Path) -> Result<ResolvedTeam, Vec<ValidationIssue>> {
@@ -1685,6 +1726,9 @@ fn save_slot_field(
     let json_value = field_to_json(&field, value)?;
     if let Some(entry) = entry {
         entry.insert(field.clone(), json_value);
+        if field == "provider" {
+            entry.remove("agent");
+        }
     } else {
         let mut map = Map::new();
         map.insert("slot-id".into(), json!(slot_id));
@@ -1871,11 +1915,46 @@ fn replace_file(path: &Path, contents: &str) -> io::Result<()> {
         std::process::id()
     ));
     fs::write(&tmp, contents)?;
-    let result = fs::rename(&tmp, path);
+    let result = replace_existing_file(&tmp, path);
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(windows)]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(value: &Path) -> Vec<u16> {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let tmp = wide(tmp_path);
+    let target = wide(path);
+    let moved = unsafe {
+        MoveFileExW(
+            tmp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(tmp_path, path)
 }
 
 #[cfg(test)]
@@ -2034,10 +2113,25 @@ agent-slots:
 
     #[test]
     fn missing_preset_slot_is_rejected() {
-        let tampered = OFFICIAL_PRESET_YAML.replace(
-            "  - slot-id: worker-6\n",
-            "  - slot-id: worker-x\n",
+        let normalized = OFFICIAL_PRESET_YAML.replace("\r\n", "\n");
+        let needle = "  - slot-id: worker-6\n";
+        assert!(
+            normalized.contains(needle),
+            "official preset must contain worker-6 after CRLF normalization"
         );
+        let tampered = normalized.replace(needle, "  - slot-id: worker-x\n");
+        assert_ne!(tampered, normalized, "tamper must change the preset bytes");
+        let error = resolve_yaml(opted_in_empty(), &tampered, &catalog_fixture()).unwrap_err();
+        assert!(error
+            .iter()
+            .any(|issue| issue.code == "missing_preset_slot" || issue.code == "preset_digest_mismatch"));
+    }
+
+    #[test]
+    fn missing_preset_slot_is_rejected_when_include_str_embeds_crlf() {
+        let crlf = OFFICIAL_PRESET_YAML.replace("\r\n", "\n").replace('\n', "\r\n");
+        let normalized = crlf.replace("\r\n", "\n");
+        let tampered = normalized.replace("  - slot-id: worker-6\n", "  - slot-id: worker-x\n");
         let error = resolve_yaml(opted_in_empty(), &tampered, &catalog_fixture()).unwrap_err();
         assert!(error
             .iter()
@@ -2201,5 +2295,103 @@ agent-slots:
             .unwrap()
             .iter()
             .any(|id| id == "base"));
+    }
+
+    #[test]
+    fn save_provider_replaces_legacy_agent_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".winsmux.yaml");
+        fs::write(
+            &path,
+            opted_in_empty().replace(
+                "agent-slots: []\n",
+                "agent-slots:\n  - slot-id: worker-2\n    agent: codex\n",
+            ),
+        )
+        .unwrap();
+        save_slot_field(dir.path(), "worker-2", "provider", "codex").unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        let has_provider = saved.contains("provider:");
+        let has_agent = saved.contains("agent:");
+        assert!(
+            has_provider || has_agent,
+            "provider save must persist the slot assignment, saved={saved}"
+        );
+        assert!(
+            !(has_provider && has_agent),
+            "provider save must not leave both provider and agent keys, saved={saved}"
+        );
+        let team = resolve_yaml(&saved, OFFICIAL_PRESET_YAML, &catalog_fixture()).unwrap();
+        assert_eq!(team.slots[1].provider, "codex");
+        assert!(team.slots[1].overrides.contains(&"provider".to_string()));
+    }
+
+    #[test]
+    fn quoted_team_profile_key_is_detected_as_opt_in() {
+        let yaml = "\"team-profile\":\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots: []\n";
+        assert!(document_has_team_profile(yaml));
+        let flow = "{ \"team-profile\": { schema-version: 1, preset: official-balanced-v1, preset-revision: 1, update-policy: retain-overrides }, agent-slots: [] }\n";
+        assert!(document_has_team_profile(flow));
+        assert!(!document_has_team_profile("agent-slots:\n  - slot-id: worker-1\n"));
+    }
+
+    #[test]
+    fn gate_dispatch_returns_classified_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".winsmux.yaml"), opted_in_empty()).unwrap();
+        let task_class = "--task-class".to_string();
+        let implementation = "implementation".to_string();
+        let delegation = "--delegation".to_string();
+        let frozen = "frozen-spec-implementation".to_string();
+        let project = "--project-dir".to_string();
+        let path = dir.path().to_string_lossy().into_owned();
+        let text = "implement the frozen spec".to_string();
+        let args = [
+            &task_class,
+            &implementation,
+            &delegation,
+            &frozen,
+            &project,
+            &path,
+            &text,
+        ];
+        match gate_dispatch(&args).unwrap() {
+            DispatchGate::Classified { slot_id } => assert_eq!(slot_id, "worker-2"),
+            other => panic!("expected classified worker-2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_classified_slot_appends_missing_slot_flag() {
+        let command = "dispatch-task".to_string();
+        let text = "implement the frozen spec".to_string();
+        let forwarded = with_classified_slot(&[&command, &text], "worker-2");
+        assert_eq!(
+            forwarded,
+            vec![
+                "dispatch-task".to_string(),
+                "implement the frozen spec".to_string(),
+                "--slot-id".to_string(),
+                "worker-2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn with_classified_slot_keeps_existing_slot_flag() {
+        let command = "dispatch-task".to_string();
+        let flag = "--slot-id".to_string();
+        let slot = "worker-3".to_string();
+        let text = "implement the frozen spec".to_string();
+        let forwarded = with_classified_slot(&[&command, &flag, &slot, &text], "worker-3");
+        assert_eq!(
+            forwarded,
+            vec![
+                "dispatch-task".to_string(),
+                "--slot-id".to_string(),
+                "worker-3".to_string(),
+                "implement the frozen spec".to_string()
+            ]
+        );
     }
 }
