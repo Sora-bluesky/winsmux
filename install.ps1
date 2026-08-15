@@ -280,6 +280,7 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
     Download-File "winsmux-core/scripts/orchestra-ui-attach.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-ui-attach.ps1")
     Download-File "winsmux-core/scripts/pane-control.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-control.ps1")
+    Download-File "winsmux-core/scripts/pane-dispatch-detect.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-dispatch-detect.ps1")
     Download-File "winsmux-core/scripts/pane-env.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-env.ps1")
     Download-File "winsmux-core/scripts/pane-border.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-border.ps1")
     Download-File "winsmux-core/scripts/pane-status.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-status.ps1")
@@ -341,6 +342,7 @@ function Remove-ProfileExcludedSupportScripts {
                 "orchestra-layout.ps1",
                 "orchestra-ui-attach.ps1",
                 "pane-control.ps1",
+                "pane-dispatch-detect.ps1",
                 "pane-env.ps1",
                 "pane-border.ps1",
                 "pane-status.ps1",

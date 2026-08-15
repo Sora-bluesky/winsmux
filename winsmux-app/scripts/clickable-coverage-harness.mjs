@@ -811,6 +811,11 @@ async function testSettings(page) {
   recordClick("settings voice draft checkbox on");
   await page.locator("#voice-draft-storage-input").uncheck();
   recordClick("settings voice draft checkbox off");
+  await page.locator("#direct-worker-pane-input").scrollIntoViewIfNeeded();
+  await page.locator("#direct-worker-pane-input").check();
+  recordClick("settings direct worker pane input checkbox on");
+  await page.locator("#direct-worker-pane-input").uncheck();
+  recordClick("settings direct worker pane input checkbox off");
   await clickSelector(page, "#apply-settings-btn", "settings apply");
   await clickSelector(page, "#close-settings-btn", "settings close");
 }

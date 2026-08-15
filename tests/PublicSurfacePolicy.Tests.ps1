@@ -219,6 +219,7 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux-core/scripts/orchestra-pane-bootstrap\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/operator-poll\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/pane-control\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/pane-dispatch-detect\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/agent-monitor\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/agent-watchdog\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-state\.ps1'

@@ -8417,11 +8417,41 @@ fn readiness_agent_name(value: &str) -> String {
     String::new()
 }
 
+fn shell_prompt_ready(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return false;
+    }
+    if lines[lines.len() - 1].starts_with("PS ") {
+        return true;
+    }
+
+    let start = lines.len().saturating_sub(6);
+    let collapsed: String = lines[start..]
+        .join("")
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    if collapsed.is_empty() || !collapsed.ends_with('>') {
+        return false;
+    }
+
+    let lower = collapsed.to_ascii_lowercase();
+    match lower.find("ps") {
+        Some(idx) => collapsed[idx + 2..].chars().count() >= 2,
+        None => false,
+    }
+}
+
 fn wait_for_shell_prompt(pane_id: &str) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         let text = capture_pane_tail(pane_id)?;
-        if text.lines().any(|line| line.trim().starts_with("PS ")) {
+        if shell_prompt_ready(&text) {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(500));
