@@ -341,7 +341,8 @@ pub(crate) fn tracked_instruction_hashes() -> Result<Vec<(String, String, String
                 format!("Tracked instruction file '{rel}' is missing."),
             )]
         })?;
-        let actual = format!("{:x}", Sha256::digest(&bytes));
+        let normalized = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
+        let actual = format!("{:x}", Sha256::digest(normalized.as_bytes()));
         rows.push((rel.to_string(), expected.to_string(), actual));
     }
     Ok(rows)

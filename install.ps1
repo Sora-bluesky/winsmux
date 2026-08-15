@@ -301,7 +301,7 @@ function Install-InstructionPacks {
         'task-classes/research.md',
         'task-classes/review.md',
         'task-classes/security.md',
-        'task-classes/test.md',
+        'task-classes/test.md'
     )
     foreach ($rel in $files) {
         $dest = Join-Path $profileRoot ($rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
