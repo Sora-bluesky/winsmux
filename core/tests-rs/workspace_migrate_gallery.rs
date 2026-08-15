@@ -249,10 +249,19 @@ fn apply_writes_recipe_and_sidecar_then_rollback_restores_prior_bytes() {
     );
 
     let root = yaml_mapping(project.path());
-    assert!(
-        root.contains_key(serde_yaml::Value::String("team-profile".into())),
-        "apply must preserve unowned Lane B keys"
-    );
+    let before_yaml = serde_yaml::from_slice::<serde_yaml::Value>(&before_settings)
+        .expect("fixture yaml should parse")
+        .as_mapping()
+        .expect("fixture yaml should be a mapping")
+        .clone();
+    for key in ["config-version", "team-profile", "agent-slots"] {
+        let key = serde_yaml::Value::String(key.into());
+        assert_eq!(
+            root.get(&key),
+            before_yaml.get(&key),
+            "apply must not rewrite unowned key {key:?}"
+        );
+    }
     let recipe = recipe_mapping(&root, "bugfix");
     assert_eq!(
         recipe.get(serde_yaml::Value::String("schema-version".into())),
