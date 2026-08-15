@@ -160,6 +160,13 @@ struct DispatchOptions {
     text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DispatchGate {
+    Passthrough,
+    Refused(String),
+    Classified { slot_id: String },
+}
+
 pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     if args.iter().any(|arg| *arg == "-h" || *arg == "--help") {
         println!("{USAGE}");
@@ -226,7 +233,10 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     })?;
     let project_dir = project_dir.unwrap_or(env::current_dir()?);
     match action.as_str() {
-        "validate" => print_json(validate_project(&project_dir)?),
+        "validate" => match resolve_project(&project_dir) {
+            Ok(team) => print_json(json!({"schema_version":1,"ok":true,"team":team})),
+            Err(issues) => print_issues(issues),
+        },
         "resolve" => match resolve_project(&project_dir) {
             Ok(team) => print_json(json!({"schema_version":1,"ok":true,"team":team})),
             Err(issues) => print_issues(issues),
@@ -260,7 +270,7 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     }
 }
 
-pub(crate) fn refuse_unclassifiable_dispatch(args: &[&String]) -> io::Result<Option<String>> {
+pub(crate) fn gate_dispatch(args: &[&String]) -> io::Result<DispatchGate> {
     let options = parse_dispatch_options(args);
     let project_dir = options
         .project_dir
@@ -268,11 +278,11 @@ pub(crate) fn refuse_unclassifiable_dispatch(args: &[&String]) -> io::Result<Opt
         .unwrap_or(env::current_dir()?);
     let yaml_path = project_dir.join(".winsmux.yaml");
     if !yaml_path.exists() {
-        return Ok(None);
+        return Ok(DispatchGate::Passthrough);
     }
     let yaml = fs::read_to_string(&yaml_path)?;
     if !document_has_team_profile(&yaml) {
-        return Ok(None);
+        return Ok(DispatchGate::Passthrough);
     }
     let payload = classify_project(
         &project_dir,
@@ -285,11 +295,43 @@ pub(crate) fn refuse_unclassifiable_dispatch(args: &[&String]) -> io::Result<Opt
         .get("status")
         .and_then(JsonValue::as_str)
         .unwrap_or("refused");
-    if status == "dispatchable" {
-        Ok(None)
-    } else {
-        Ok(Some(payload.to_string()))
+    if status != "dispatchable" {
+        return Ok(DispatchGate::Refused(payload.to_string()));
     }
+    let slot_id = payload
+        .get("slot_id")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(slot_id) = slot_id {
+        Ok(DispatchGate::Classified {
+            slot_id: slot_id.to_string(),
+        })
+    } else {
+        Ok(DispatchGate::Passthrough)
+    }
+}
+
+pub(crate) fn with_classified_slot(cmd_args: &[&String], slot_id: &str) -> Vec<String> {
+    let mut forwarded: Vec<String> = cmd_args.iter().map(|arg| (*arg).clone()).collect();
+    if dispatch_args_have_slot_id(&forwarded) {
+        return forwarded;
+    }
+    forwarded.push("--slot-id".to_string());
+    forwarded.push(slot_id.to_string());
+    forwarded
+}
+
+fn dispatch_args_have_slot_id(args: &[String]) -> bool {
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--slot-id" => return true,
+            "--" => return false,
+            _ => index += 1,
+        }
+    }
+    false
 }
 
 fn print_json(value: JsonValue) -> io::Result<()> {
@@ -565,13 +607,6 @@ fn ts_string_array_field(object: &str, field: &str) -> Vec<String> {
 fn ts_readiness_state(object: &str) -> Option<String> {
     let idx = object.find("readiness:")?;
     ts_string_field(&object[idx..], "state")
-}
-
-fn validate_project(project_dir: &Path) -> io::Result<JsonValue> {
-    match resolve_project(project_dir) {
-        Ok(team) => Ok(json!({"schema_version":1,"ok":true,"team":team})),
-        Err(issues) => Ok(json!({"schema_version":1,"ok":false,"issues":issues})),
-    }
 }
 
 fn resolve_project(project_dir: &Path) -> Result<ResolvedTeam, Vec<ValidationIssue>> {
@@ -1569,6 +1604,9 @@ fn save_slot_field(
     let json_value = field_to_json(&field, value)?;
     if let Some(entry) = entry {
         entry.insert(field.clone(), json_value);
+        if field == "provider" {
+            entry.remove("agent");
+        }
     } else {
         let mut map = Map::new();
         map.insert("slot-id".into(), json!(slot_id));
@@ -1900,10 +1938,25 @@ agent-slots:
 
     #[test]
     fn missing_preset_slot_is_rejected() {
-        let tampered = OFFICIAL_PRESET_YAML.replace(
-            "  - slot-id: worker-6\n",
-            "  - slot-id: worker-x\n",
+        let normalized = OFFICIAL_PRESET_YAML.replace("\r\n", "\n");
+        let needle = "  - slot-id: worker-6\n";
+        assert!(
+            normalized.contains(needle),
+            "official preset must contain worker-6 after CRLF normalization"
         );
+        let tampered = normalized.replace(needle, "  - slot-id: worker-x\n");
+        assert_ne!(tampered, normalized, "tamper must change the preset bytes");
+        let error = resolve_yaml(opted_in_empty(), &tampered, &catalog_fixture()).unwrap_err();
+        assert!(error
+            .iter()
+            .any(|issue| issue.code == "missing_preset_slot" || issue.code == "preset_digest_mismatch"));
+    }
+
+    #[test]
+    fn missing_preset_slot_is_rejected_when_include_str_embeds_crlf() {
+        let crlf = OFFICIAL_PRESET_YAML.replace("\r\n", "\n").replace('\n', "\r\n");
+        let normalized = crlf.replace("\r\n", "\n");
+        let tampered = normalized.replace("  - slot-id: worker-6\n", "  - slot-id: worker-x\n");
         let error = resolve_yaml(opted_in_empty(), &tampered, &catalog_fixture()).unwrap_err();
         assert!(error
             .iter()
@@ -2061,5 +2114,89 @@ agent-slots:
         .unwrap();
         assert_eq!(worker["status"], "dispatchable");
         assert_eq!(worker["slot_id"], "worker-2");
+    }
+
+    #[test]
+    fn save_provider_replaces_legacy_agent_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".winsmux.yaml");
+        fs::write(
+            &path,
+            opted_in_empty().replace(
+                "agent-slots: []\n",
+                "agent-slots:\n  - slot-id: worker-2\n    agent: codex\n",
+            ),
+        )
+        .unwrap();
+        save_slot_field(dir.path(), "worker-2", "provider", "codex").unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("provider: codex") || saved.contains("provider: \"codex\""),
+            "canonical provider must be written, saved={saved}"
+        );
+        assert!(
+            !saved.contains("agent:"),
+            "legacy agent alias must be removed when saving provider, saved={saved}"
+        );
+    }
+
+    #[test]
+    fn gate_dispatch_returns_classified_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".winsmux.yaml"), opted_in_empty()).unwrap();
+        let task_class = "--task-class".to_string();
+        let implementation = "implementation".to_string();
+        let delegation = "--delegation".to_string();
+        let frozen = "frozen-spec-implementation".to_string();
+        let project = "--project-dir".to_string();
+        let path = dir.path().to_string_lossy().into_owned();
+        let text = "implement the frozen spec".to_string();
+        let args = [
+            &task_class,
+            &implementation,
+            &delegation,
+            &frozen,
+            &project,
+            &path,
+            &text,
+        ];
+        match gate_dispatch(&args).unwrap() {
+            DispatchGate::Classified { slot_id } => assert_eq!(slot_id, "worker-2"),
+            other => panic!("expected classified worker-2, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn with_classified_slot_appends_missing_slot_flag() {
+        let command = "dispatch-task".to_string();
+        let text = "implement the frozen spec".to_string();
+        let forwarded = with_classified_slot(&[&command, &text], "worker-2");
+        assert_eq!(
+            forwarded,
+            vec![
+                "dispatch-task".to_string(),
+                "implement the frozen spec".to_string(),
+                "--slot-id".to_string(),
+                "worker-2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn with_classified_slot_keeps_existing_slot_flag() {
+        let command = "dispatch-task".to_string();
+        let flag = "--slot-id".to_string();
+        let slot = "worker-3".to_string();
+        let text = "implement the frozen spec".to_string();
+        let forwarded = with_classified_slot(&[&command, &flag, &slot, &text], "worker-3");
+        assert_eq!(
+            forwarded,
+            vec![
+                "dispatch-task".to_string(),
+                "--slot-id".to_string(),
+                "worker-3".to_string(),
+                "implement the frozen spec".to_string()
+            ]
+        );
     }
 }
