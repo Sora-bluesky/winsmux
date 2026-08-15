@@ -1103,6 +1103,51 @@ function New-OrchestraWorkerLaunchApproval {
     }
 }
 
+
+function Invoke-TeamProfileLaunchProjection {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [AllowEmptyString()][string]$Worktree = '',
+        [string]$ReadWriteScope = 'session'
+    )
+
+    $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        return
+    }
+    $raw = Get-Content -LiteralPath $settingsPath -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw) -or ($raw -notmatch '(?m)^[ \t]*team-profile[ \t]*:')) {
+        return
+    }
+
+    $winsmuxBin = [string]$script:winsmuxBin
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        $winsmuxBin = [string](Get-WinsmuxBin)
+    }
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        throw "Team Profile launch projection failed: winsmux binary was not found."
+    }
+
+    $args = @(
+        'team-profile',
+        '--action', 'project-launch',
+        '--json',
+        '--project-dir', $ProjectDir,
+        '--session-id', $SessionId,
+        '--slot-id', $SlotId,
+        '--read-write-scope', $ReadWriteScope
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Worktree)) {
+        $args += @('--worktree', $Worktree)
+    }
+    $output = & $winsmuxBin @args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Team Profile launch projection failed for slot '{0}': {1}" -f $SlotId, ($output | Out-String))
+    }
+}
+
 function New-OrchestraPaneBootstrapPlan {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -3060,6 +3105,9 @@ if ($MyInvocation.InvocationName -ne '.') {
                     Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
                 }
             } else {
+                if ($canonicalRole -eq 'Worker') {
+                    Invoke-TeamProfileLaunchProjection -ProjectDir $projectDir -SessionId $sessionName -SlotId $label -Worktree $launchDir -ReadWriteScope 'session'
+                }
                 $bootstrapPlanPath = New-OrchestraPaneBootstrapPlan `
                     -ProjectDir $projectDir `
                     -PaneId $paneId `

@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::project_settings_render;
 use crate::workspace_recipe::parse_workspace_yaml;
 
-pub(crate) const USAGE: &str = "usage: winsmux team-profile --action <validate|resolve|save|reset-field|classify> --json [--project-dir <path>] [--slot-id <id>] [--field <name>] [--value <value>] [--task-class <id>] [--delegation <id>] [--text <text>]";
+pub(crate) const USAGE: &str = "usage: winsmux team-profile --action <validate|resolve|save|reset-field|classify|project-launch> --json [--project-dir <path>] [--slot-id <id>] [--field <name>] [--value <value>] [--task-class <id>] [--delegation <id>] [--text <text>] [--session-id <id>] [--worktree <path>] [--read-write-scope <scope>]";
 
 const OFFICIAL_PRESET_ID: &str = "official-balanced-v1";
 const OFFICIAL_PRESET_YAML: &str =
@@ -174,6 +174,9 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     let mut task_class = None;
     let mut delegation = None;
     let mut text = None;
+    let mut session_id = None;
+    let mut worktree = None;
+    let mut read_write_scope = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -209,6 +212,18 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
                 text = Some(required_option(args, index, "--text")?);
                 index += 2;
             }
+            "--session-id" => {
+                session_id = Some(required_option(args, index, "--session-id")?);
+                index += 2;
+            }
+            "--worktree" => {
+                worktree = Some(required_option(args, index, "--worktree")?);
+                index += 2;
+            }
+            "--read-write-scope" => {
+                read_write_scope = Some(required_option(args, index, "--read-write-scope")?);
+                index += 2;
+            }
             "--json" => {
                 json = true;
                 index += 1;
@@ -222,7 +237,7 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
         return Err(invalid_input("team-profile requires --json."));
     }
     let action = action.ok_or_else(|| {
-        invalid_input("team-profile requires --action validate, resolve, save, reset-field, or classify.")
+        invalid_input("team-profile requires --action validate, resolve, save, reset-field, classify, or project-launch.")
     })?;
     let project_dir = project_dir.unwrap_or(env::current_dir()?);
     match action.as_str() {
@@ -254,8 +269,20 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
             )?;
             print_json(payload)
         }
+        "project-launch" => {
+            let slot_id = slot_id.ok_or_else(|| invalid_input("project-launch requires --slot-id."))?;
+            let session_id = session_id.ok_or_else(|| invalid_input("project-launch requires --session-id."))?;
+            let payload = crate::prompt_bundle::project_launch(
+                &project_dir,
+                &session_id,
+                &slot_id,
+                worktree.as_deref(),
+                read_write_scope.as_deref(),
+            )?;
+            print_json(payload)
+        }
         _ => Err(invalid_input(
-            "team-profile --action must be validate, resolve, save, reset-field, or classify.",
+            "team-profile --action must be validate, resolve, save, reset-field, classify, or project-launch.",
         )),
     }
 }
@@ -574,7 +601,7 @@ fn validate_project(project_dir: &Path) -> io::Result<JsonValue> {
     }
 }
 
-fn resolve_project(project_dir: &Path) -> Result<ResolvedTeam, Vec<ValidationIssue>> {
+pub(crate) fn resolve_project(project_dir: &Path) -> Result<ResolvedTeam, Vec<ValidationIssue>> {
     let path = project_dir.join(".winsmux.yaml");
     let yaml = fs::read_to_string(&path).map_err(|_| {
         vec![issue(

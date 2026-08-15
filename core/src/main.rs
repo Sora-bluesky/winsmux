@@ -36,6 +36,7 @@ mod operator_cli;
 mod workspace_migrate;
 mod team_profile;
 mod instruction_pack;
+mod prompt_bundle;
 mod project_settings_render;
 mod client;
 mod app;
