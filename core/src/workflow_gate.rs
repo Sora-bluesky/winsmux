@@ -299,7 +299,8 @@ fn cli_desktop_parity_gate(project_dir: &Path) -> JsonValue {
             "workspace_plan": plan
         },
         "desktop": {
-            "consumes": ["winsmux team-profile --action settings-view --json", "winsmux workflow-gate --json"],
+            "consumes": ["winsmux team-profile --action settings-view --json"],
+            "workflow_gate": "in_repo_cli_only",
             "must_not_rederive": true
         }
     })
