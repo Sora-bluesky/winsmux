@@ -1,4 +1,5 @@
 use crate::desktop_session_restore::json_rpc as session_restore_rpc;
+use crate::desktop_team_profile;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1487,26 +1488,6 @@ pub fn start_desktop_worker(
     })
 }
 
-pub fn load_desktop_team_profile_settings_view(
-    transport: &dyn DesktopCommandTransport,
-    project_dir: Option<String>,
-) -> Result<Value, String> {
-    transport.request_json(&DesktopCommand::TeamProfileSettingsView { project_dir })
-}
-
-pub fn reset_desktop_team_profile_field(
-    transport: &dyn DesktopCommandTransport,
-    slot_id: String,
-    field: String,
-    project_dir: Option<String>,
-) -> Result<Value, String> {
-    transport.request_json(&DesktopCommand::TeamProfileResetField {
-        slot_id,
-        field,
-        project_dir,
-    })
-}
-
 pub fn switch_desktop_provider(
     transport: &dyn DesktopCommandTransport,
     slot: String,
@@ -1785,28 +1766,19 @@ pub fn handle_desktop_json_rpc(
             }
         }
         "desktop.team_profile.settings_view" => {
-            match load_desktop_team_profile_settings_view(transport, resolved_project_dir) {
-                Ok(result) => json_rpc_result(request_id, result),
-                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
-            }
+            return desktop_team_profile::json_rpc_settings_view(
+                transport,
+                request_id,
+                resolved_project_dir,
+            );
         }
         "desktop.team_profile.reset_field" => {
-            let slot_id = match get_required_string_param(params.as_ref(), &["slotId", "slot_id", "slot"]) {
-                Ok(value) => value,
-                Err(err) => {
-                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                }
-            };
-            let field = match get_required_string_param(params.as_ref(), &["field"]) {
-                Ok(value) => value,
-                Err(err) => {
-                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                }
-            };
-            match reset_desktop_team_profile_field(transport, slot_id, field, resolved_project_dir) {
-                Ok(result) => json_rpc_result(request_id, result),
-                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
-            }
+            return desktop_team_profile::json_rpc_reset_field(
+                transport,
+                request_id,
+                resolved_project_dir,
+                params,
+            );
         }
         "desktop.provider.switch" => {
             let slot = match get_required_string_param(params.as_ref(), &["slot", "target"]) {
@@ -5666,76 +5638,6 @@ mod tests {
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["workers start worker-2 --json"]
-        );
-    }
-
-    #[test]
-    fn handle_desktop_json_rpc_routes_team_profile_settings_view() {
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "schema_version": 1,
-                "action": "settings-view",
-                "ok": true,
-                "opted_in": true,
-                "rows": []
-            }),
-        };
-        let response = handle_desktop_json_rpc(
-            &transport,
-            DesktopJsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: serde_json::json!("req-team-profile-view"),
-                method: "desktop.team_profile.settings_view".to_string(),
-                params: Some(serde_json::json!({})),
-            },
-            None,
-        );
-        match response {
-            DesktopJsonRpcResponse::Success { id, result, .. } => {
-                assert_eq!(id, serde_json::json!("req-team-profile-view"));
-                assert_eq!(result["action"], "settings-view");
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
-            }
-        }
-        assert_eq!(
-            transport.requests.borrow().as_slice(),
-            ["team-profile --action settings-view --json"]
-        );
-    }
-
-    #[test]
-    fn handle_desktop_json_rpc_routes_team_profile_reset_field() {
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({"schema_version":1,"ok":true,"action":"reset-field"}),
-        };
-        let response = handle_desktop_json_rpc(
-            &transport,
-            DesktopJsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: serde_json::json!("req-team-profile-reset"),
-                method: "desktop.team_profile.reset_field".to_string(),
-                params: Some(serde_json::json!({
-                    "slotId": "worker-1",
-                    "field": "provider"
-                })),
-            },
-            None,
-        );
-        match response {
-            DesktopJsonRpcResponse::Success { result, .. } => {
-                assert_eq!(result["action"], "reset-field");
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
-            }
-        }
-        assert_eq!(
-            transport.requests.borrow().as_slice(),
-            ["team-profile --action reset-field --slot-id worker-1 --field provider --json"]
         );
     }
 
