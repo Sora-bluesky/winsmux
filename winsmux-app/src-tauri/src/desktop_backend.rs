@@ -23,7 +23,7 @@ use windows_sys::Win32::Media::MMSYSERR_NOERROR;
 pub(crate) const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
-const JSON_RPC_INVALID_PARAMS: i32 = -32602;
+pub(crate) const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 pub(crate) const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 pub(crate) const JSON_RPC_SERVER_ERROR: i32 = -32000;
 const PROVIDER_SWITCH_SELECTOR_PARAM_KEYS: &[&str] = &[
@@ -951,7 +951,7 @@ impl DesktopCommand {
         }
     }
 
-    fn winsmux_args(&self) -> Vec<String> {
+    pub(crate) fn winsmux_args(&self) -> Vec<String> {
         match self {
             DesktopCommand::SummarySnapshot { .. } => {
                 vec!["desktop-summary".to_string(), "--json".to_string()]
