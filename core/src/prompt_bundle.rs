@@ -68,37 +68,36 @@ pub(crate) fn project_launch(
         &pack.template_ids,
     )?;
     let merged_manifest = match original_manifest.as_deref() {
-        Some(original) => Some(merge_manifest(original, &projection, &slot.slot_id)?),
-        None => None,
+        Some(original) => merge_manifest(original, &projection, &slot.slot_id)?,
+        None => merge_manifest(
+            "version: 2\nsession: {}\npanes: {}\n",
+            &projection,
+            &slot.slot_id,
+        )?,
     };
 
     fs::create_dir_all(bundle_path.parent().ok_or_else(|| {
         invalid_input("prompt-bundle path has no parent directory.")
     })?)?;
+    fs::create_dir_all(manifest_path.parent().ok_or_else(|| {
+        invalid_input("manifest path has no parent directory.")
+    })?)?;
     let tmp_bundle = bundle_path.with_extension("md.tmp-prompt-bundle");
     fs::write(&tmp_bundle, &body)?;
-    let mut tmp_manifest = None;
-    if let Some(merged) = merged_manifest.as_ref() {
-        let tmp = manifest_path.with_extension("yaml.tmp-prompt-bundle");
-        fs::write(&tmp, merged)?;
-        tmp_manifest = Some(tmp);
-    }
-    if let Err(error) = fs::rename(&tmp_bundle, &bundle_path) {
+    let tmp_manifest = manifest_path.with_extension("yaml.tmp-prompt-bundle");
+    fs::write(&tmp_manifest, &merged_manifest)?;
+    if let Err(error) = replace_existing_file(&tmp_bundle, &bundle_path) {
         let _ = fs::remove_file(&tmp_bundle);
-        if let Some(tmp) = &tmp_manifest {
-            let _ = fs::remove_file(tmp);
-        }
+        let _ = fs::remove_file(&tmp_manifest);
         return Err(error);
     }
-    if let Some(tmp) = tmp_manifest {
-        if let Err(error) = fs::rename(&tmp, &manifest_path) {
-            let _ = fs::remove_file(&tmp);
-            let _ = fs::remove_file(&bundle_path);
-            if let Some(original) = original_manifest {
-                let _ = fs::write(&manifest_path, original);
-            }
-            return Err(error);
+    if let Err(error) = replace_existing_file(&tmp_manifest, &manifest_path) {
+        let _ = fs::remove_file(&tmp_manifest);
+        let _ = fs::remove_file(&bundle_path);
+        if let Some(original) = original_manifest {
+            let _ = fs::write(&manifest_path, original);
         }
+        return Err(error);
     }
     Ok(json!({
         "schema_version": 1,
@@ -136,9 +135,7 @@ fn projection_value(
 ) -> io::Result<JsonValue> {
     let source = fs::read(project_dir.join(".winsmux.yaml"))?;
     let source_config_sha256 = format!("{:x}", Sha256::digest(&source));
-    let registry = instruction_pack::profiles_root()?.join("registry.yaml");
-    let registry_bytes = fs::read(registry)?;
-    let instruction_registry_sha256 = format!("{:x}", Sha256::digest(&registry_bytes));
+    let instruction_registry_sha256 = instruction_pack::registry_sha256()?;
     let meta = team.team_profile.as_ref();
     Ok(json!({
         "session": {
@@ -268,6 +265,41 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message.into())
 }
 
+#[cfg(windows)]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(value: &Path) -> Vec<u16> {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let tmp = wide(tmp_path);
+    let target = wide(path);
+    let moved = unsafe {
+        MoveFileExW(
+            tmp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(tmp_path, path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +330,20 @@ mod tests {
         assert_eq!(payload["projection"]["pane"]["status"], "ready");
         assert!(payload["projection"]["pane"]["prompt_bundle"]["sha256"].as_str().unwrap().len() == 64);
         assert!(payload["projection"]["pane"].get("task_id").is_none());
+        let saved = fs::read_to_string(dir.path().join(".winsmux/manifest.yaml")).unwrap();
+        assert!(saved.contains("team_profile:"));
+        assert!(saved.contains("prompt_bundle:"));
+    }
+
+    #[test]
+    fn project_launch_writes_manifest_when_missing() {
+        let dir = seed_project();
+        assert!(!dir.path().join(".winsmux/manifest.yaml").exists());
+        project_launch(dir.path(), "sess-1", "worker-1", None, None).unwrap();
+        let saved = fs::read_to_string(dir.path().join(".winsmux/manifest.yaml")).unwrap();
+        assert!(saved.contains("team_profile:"));
+        assert!(saved.contains("prompt_bundle:"));
+        assert!(saved.contains("worker-1"));
     }
 
     #[test]

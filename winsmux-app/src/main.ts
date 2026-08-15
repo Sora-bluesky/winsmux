@@ -17,7 +17,9 @@ import {
   getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
   getDesktopWorkersStatus,
+  getDesktopTeamProfileSettingsView,
   getDesktopVoiceCaptureStatus,
+  resetDesktopTeamProfileField,
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
@@ -12229,17 +12231,50 @@ function renderRuntimeRoleControls() {
 
 let teamProfileSettingsView: TeamProfileSettingsView | null = null;
 
+function injectedTeamProfileSettingsView() {
+  return (window as Window & { __WINSMUX_TEAM_PROFILE_VIEW__?: unknown }).__WINSMUX_TEAM_PROFILE_VIEW__;
+}
+
 function renderTeamProfileSettings() {
-  const pending = (window as Window & { __WINSMUX_TEAM_PROFILE_VIEW__?: unknown }).__WINSMUX_TEAM_PROFILE_VIEW__;
+  void loadAndRenderTeamProfileSettings();
+}
+
+async function loadAndRenderTeamProfileSettings() {
+  const pending = injectedTeamProfileSettingsView();
   if (pending) {
     teamProfileSettingsView = parseTeamProfileSettingsView(pending);
+  } else {
+    try {
+      const payload = await getDesktopTeamProfileSettingsView(getActiveProjectDirPayload());
+      teamProfileSettingsView = parseTeamProfileSettingsView(payload);
+    } catch {
+      teamProfileSettingsView = null;
+    }
   }
   const root = document.getElementById("team-profile-settings-root");
   if (!root || !teamProfileSettingsView) {
     return;
   }
   const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
-  renderTeamProfileSettingsPanel(root, teamProfileSettingsView, { japanese });
+  renderTeamProfileSettingsPanel(root, teamProfileSettingsView, {
+    japanese,
+    onResetField: (slotId, field) => {
+      void resetAndReloadTeamProfileField(slotId, field);
+    },
+  });
+}
+
+async function resetAndReloadTeamProfileField(slotId: string, field: string) {
+  if (!injectedTeamProfileSettingsView()) {
+    try {
+      await resetDesktopTeamProfileField(slotId, field, getActiveProjectDirPayload());
+    } catch (error) {
+      console.error(error);
+      return;
+    }
+    teamProfileSettingsView = null;
+  }
+  await loadAndRenderTeamProfileSettings();
 }
 
 function renderSettingsControls() {

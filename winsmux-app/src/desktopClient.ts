@@ -20,7 +20,9 @@ type DesktopCommandName =
   | "desktop_dogfood_event"
   | "desktop_editor_read"
   | "desktop_file_read_full"
-  | "desktop_explorer_list";
+  | "desktop_explorer_list"
+  | "desktop_team_profile_settings_view"
+  | "desktop_team_profile_reset_field";
 type DesktopJsonRpcMethod =
   | "desktop.summary.snapshot"
   | "desktop.run.explain"
@@ -35,7 +37,9 @@ type DesktopJsonRpcMethod =
   | "desktop.dogfood.event"
   | "desktop.editor.read"
   | "desktop.file.read_full"
-  | "desktop.explorer.list";
+  | "desktop.explorer.list"
+  | "desktop.team_profile.settings_view"
+  | "desktop.team_profile.reset_field";
 
 interface DesktopJsonRpcRequest {
   jsonrpc: "2.0";
@@ -854,6 +858,10 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.file.read_full";
     case "desktop_explorer_list":
       return "desktop.explorer.list";
+    case "desktop_team_profile_settings_view":
+      return "desktop.team_profile.settings_view";
+    case "desktop_team_profile_reset_field":
+      return "desktop.team_profile.reset_field";
   }
 }
 
@@ -1073,6 +1081,34 @@ export async function startDesktopWorker(
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_workers_start(${target})`, error);
+  }
+}
+
+export async function getDesktopTeamProfileSettingsView(
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<Record<string, unknown>>(
+      "desktop_team_profile_settings_view",
+      buildProjectDirPayload(projectDir),
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_team_profile_settings_view", error);
+  }
+}
+
+export async function resetDesktopTeamProfileField(
+  slotId: string,
+  field: string,
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<Record<string, unknown>>(
+      "desktop_team_profile_reset_field",
+      { slotId, field, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(`desktop_team_profile_reset_field(${slotId}.${field})`, error);
   }
 }
 
