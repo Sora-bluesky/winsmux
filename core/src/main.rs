@@ -24,6 +24,7 @@ mod terminal_engine;
 mod manifest_contract;
 mod workspace_recipe;
 mod workflow;
+mod workflow_gate;
 mod workspace_project_settings;
 mod event_contract;
 mod ledger;
@@ -954,6 +955,7 @@ fn run_main() -> io::Result<()> {
         "workspace-migrate" => {
             return workspace_migrate::run_workspace_migrate_command(&cmd_args[1..])
         }
+        "workflow-gate" => return workflow_gate::run_workflow_gate_command(&cmd_args[1..]),
         "team-profile" => return team_profile::run_team_profile_command(&cmd_args[1..]),
         "worker-artifact" => return worker_artifact::run_worker_artifact_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),

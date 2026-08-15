@@ -437,3 +437,23 @@ agent-slots:
   - slot-id: worker-6
     reasoning-effort: low
 ```
+
+## 14. Workflow and Team Profile integration gate
+
+`winsmux workflow-gate --json` is the TASK-662 aggregate. It reports `pass`,
+`fail`, `blocked`, or `not_applicable` per sub-gate. `blocked` is never
+converted to `pass`. The in-repo merge-ready result can pass while the combined
+release stays blocked until Windows desktop E2E and `scripts/git-guard.ps1
+-Mode full` are actually green.
+
+The gate consumes the existing contracts rather than inventing a second schema:
+
+- Lane B: `winsmux team-profile --action settings-view|start-gate`
+- Worker artifact: `.winsmux/runs/<slot-id>/result.md` plus exit code
+- Lane A: `workspace-plan` dry-run purity, shipped `workspace-migrate` presets,
+  and the documented workflow/context-pack examples
+- Privacy: settings-view and the read-only context-pack preview must not expose
+  prompt bodies, secrets, or private paths. The gate does not persist
+  context-pack results.
+
+It does not create a GitHub Release, npm publish, post-smoke, or VERSION bump.
