@@ -18,6 +18,7 @@ use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::ledger::{attach_evidence_chain_to_event, public_changed_files};
 use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
+use crate::shell_lifecycle::shell_prompt_ready;
 use crate::types::VERSION;
 use crate::workflow::normalize_workspace_plan_payload;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
@@ -8415,36 +8416,6 @@ fn readiness_agent_name(value: &str) -> String {
         }
     }
     String::new()
-}
-
-fn shell_prompt_ready(text: &str) -> bool {
-    let lines: Vec<&str> = text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if lines.is_empty() {
-        return false;
-    }
-    if lines[lines.len() - 1].starts_with("PS ") {
-        return true;
-    }
-
-    let start = lines.len().saturating_sub(6);
-    let collapsed: String = lines[start..]
-        .join("")
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
-    if collapsed.is_empty() || !collapsed.ends_with('>') {
-        return false;
-    }
-
-    let lower = collapsed.to_ascii_lowercase();
-    match lower.find("ps") {
-        Some(idx) => collapsed[idx + 2..].chars().count() >= 2,
-        None => false,
-    }
 }
 
 fn wait_for_shell_prompt(pane_id: &str) -> io::Result<()> {

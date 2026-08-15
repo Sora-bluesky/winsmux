@@ -213,6 +213,7 @@ Describe 'Public surface policy' {
         $coreSupportFiles.Groups['files'].Value | Should -Match 'Download-OptionalFile'
         $coreSupportFiles.Groups['files'].Value | Should -Not -Match 'Download-File "winsmux-core/scripts/control-plane-workers\.ps1"'
         $coreSupportFiles.Groups['files'].Value | Should -Not -Match 'Download-File "winsmux-core/scripts/control-plane-ledger\.ps1"'
+        $coreSupportFiles.Groups['files'].Value | Should -Match 'Download-File "winsmux-core/scripts/pane-dispatch-detect\.ps1"'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-smoke\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/doctor\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/orchestra-attach-confirm\.ps1'
@@ -232,6 +233,7 @@ Describe 'Public surface policy' {
         $orchestrationRemovalFiles.Success | Should -BeTrue
         $orchestrationRemovalFiles.Groups['files'].Value | Should -Not -Match '"control-plane-workers\.ps1"'
         $orchestrationRemovalFiles.Groups['files'].Value | Should -Not -Match '"control-plane-ledger\.ps1"'
+        $orchestrationRemovalFiles.Groups['files'].Value | Should -Not -Match '"pane-dispatch-detect\.ps1"'
     }
 
     It 'keeps public install and OAuth wording aligned with the current policy' {
