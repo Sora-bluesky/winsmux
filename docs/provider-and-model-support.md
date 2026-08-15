@@ -221,6 +221,13 @@ The desktop runtime settings surface separates model entries into six classes:
 | `reference-only` | Shown for comparison context but not selectable from the desktop picker. | Can show Agent Arena or Code Arena reference data, but must not imply that winsmux can run the model locally. |
 | `unavailable` | Disabled until the upstream provider restores official access. | Kept only to explain external benchmark rows. |
 
+Team Profile settings and `winsmux team-profile --action start-gate` consume
+those same catalog states. They do not keep a second support matrix. A yellow
+warning in Settings is not launch authorization. `blocked`, `reference-only`,
+and `unavailable` rows cannot start. `candidate` and `setup-required` rows warn
+while editing and are rechecked at launch. User overrides on `agent-slots`
+survive default preset apply until an explicit field reset.
+
 Reference benchmarks are advisory. They do not directly change `winsmux
 compare-runs` winner selection, which is based on the local run evidence,
 review outcome, changed files, reproducibility, and operator decision trail.

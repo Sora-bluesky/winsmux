@@ -98,6 +98,13 @@ import {
   type SettingsPreferenceOption,
 } from "./settingsPreferenceOptions";
 import {
+  formatTeamProfileRuntimeChips,
+  parseTeamProfileSettingsView,
+  renderTeamProfileSettingsPanel,
+  shouldRefuseTeamProfileStart,
+  type TeamProfileSettingsView,
+} from "./teamProfileSettings";
+import {
   filterSettingsSections,
   getSettingsSectionScope,
   getSettingsTabScope,
@@ -2708,6 +2715,18 @@ function renderWorkerStatusSurface() {
     detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
     detailStrip.appendChild(createWorkerStatusChip("provider", "provider", getWorkerProvider(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("model", "model", getWorkerModel(focusedRow)));
+    if (teamProfileSettingsView) {
+      const display = teamProfileSettingsView.runtime_display?.find((row) => row.slot_id === target)
+        ?? teamProfileSettingsView.rows.find((row) => row.slot_id === target)?.runtime_display;
+      if (display) {
+        for (const chip of formatTeamProfileRuntimeChips(display)) {
+          detailStrip.appendChild(createWorkerStatusChip(`team-profile-${chip.field}`, chip.field, chip.value));
+        }
+      }
+      if (shouldRefuseTeamProfileStart(teamProfileSettingsView)) {
+        detailStrip.appendChild(createWorkerStatusChip("team-profile-start", "start", "refused"));
+      }
+    }
     detailStrip.appendChild(createWorkerStatusChip("profile", "prof", getWorkerExecutionProfile(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("workspace", "ws", getWorkerWorkspaceState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
@@ -10265,6 +10284,14 @@ function applyLanguageChrome() {
   setElementText("settings-nav-common", japanese ? "よく使用するもの" : "Commonly Used");
   setElementText("settings-nav-editor", japanese ? "テキスト エディター" : "Text Editor");
   setElementText("settings-nav-workbench", japanese ? "ワークベンチ" : "Workbench");
+  setElementText("settings-nav-team-profile", japanese ? "チームプロファイル" : "Team Profile");
+  setElementText("settings-team-profile-label", japanese ? "チームプロファイル" : "Team Profile");
+  setElementText(
+    "settings-team-profile-value",
+    japanese
+      ? "6つのワーカースロットは公式プリセットを継承します。上書きはリセットするまで残ります。実行できないスロットがあると起動しません。"
+      : "Six worker slots inherit the official preset. Overrides stay until you reset a field. Start is refused when a slot cannot run.",
+  );
   setElementText("settings-nav-window", japanese ? "ウィンドウ" : "Window");
   setElementText("settings-nav-chat", japanese ? "チャット" : "Chat");
   setElementText("settings-nav-features", japanese ? "機能" : "Features");
@@ -12200,6 +12227,21 @@ function renderRuntimeRoleControls() {
   root.appendChild(renderWorkerModelAssignmentPanel(japanese));
 }
 
+let teamProfileSettingsView: TeamProfileSettingsView | null = null;
+
+function renderTeamProfileSettings() {
+  const pending = (window as Window & { __WINSMUX_TEAM_PROFILE_VIEW__?: unknown }).__WINSMUX_TEAM_PROFILE_VIEW__;
+  if (pending) {
+    teamProfileSettingsView = parseTeamProfileSettingsView(pending);
+  }
+  const root = document.getElementById("team-profile-settings-root");
+  if (!root || !teamProfileSettingsView) {
+    return;
+  }
+  const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
+  renderTeamProfileSettingsPanel(root, teamProfileSettingsView, { japanese });
+}
+
 function renderSettingsControls() {
   const activeState = settingsDraftState ?? themeState;
 
@@ -12240,6 +12282,7 @@ function renderSettingsControls() {
   });
 
   renderRuntimeRoleControls();
+  renderTeamProfileSettings();
   updateSettingsApplyButton();
 
   renderFooterLane();

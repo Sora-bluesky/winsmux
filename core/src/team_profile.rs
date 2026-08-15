@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::project_settings_render;
 use crate::workspace_recipe::parse_workspace_yaml;
 
-pub(crate) const USAGE: &str = "usage: winsmux team-profile --action <validate|resolve|save|reset-field|classify|project-launch> --json [--project-dir <path>] [--slot-id <id>] [--field <name>] [--value <value>] [--task-class <id>] [--delegation <id>] [--text <text>] [--session-id <id>] [--worktree <path>] [--read-write-scope <scope>]";
+pub(crate) const USAGE: &str = "usage: winsmux team-profile --action <validate|resolve|save|reset-field|classify|project-launch|settings-view|start-gate|pre-release-gate> --json [--project-dir <path>] [--slot-id <id>] [--field <name>] [--value <value>] [--task-class <id>] [--delegation <id>] [--text <text>] [--session-id <id>] [--worktree <path>] [--read-write-scope <scope>]";
 
 const OFFICIAL_PRESET_ID: &str = "official-balanced-v1";
 const OFFICIAL_PRESET_YAML: &str =
@@ -140,6 +140,7 @@ struct ModelEntry {
 #[derive(Clone, Debug)]
 struct Catalog {
     providers: BTreeSet<String>,
+    provider_readiness: BTreeMap<String, String>,
     models: BTreeMap<String, ModelEntry>,
     backends: BTreeMap<String, Vec<String>>,
 }
@@ -238,7 +239,7 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
         return Err(invalid_input("team-profile requires --json."));
     }
     let action = action.ok_or_else(|| {
-        invalid_input("team-profile requires --action validate, resolve, save, reset-field, classify, or project-launch.")
+        invalid_input("team-profile requires --action validate, resolve, save, reset-field, classify, project-launch, settings-view, start-gate, or pre-release-gate.")
     })?;
     let project_dir = project_dir.unwrap_or(env::current_dir()?);
     match action.as_str() {
@@ -282,8 +283,27 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
             )?;
             print_json(payload)
         }
+        "settings-view" => print_json(crate::team_profile_settings::settings_view(&project_dir)),
+        "start-gate" => {
+            let (payload, allowed) = crate::team_profile_settings::start_gate(&project_dir);
+            print_json(payload.clone())?;
+            if allowed {
+                Ok(())
+            } else {
+                Err(invalid_data("team-profile start gate refused."))
+            }
+        }
+        "pre-release-gate" => {
+            let payload = crate::team_profile_settings::pre_release_gate();
+            print_json(payload.clone())?;
+            if payload["ok"] == true {
+                Ok(())
+            } else {
+                Err(invalid_data("team-profile pre-release gate failed."))
+            }
+        }
         _ => Err(invalid_input(
-            "team-profile --action must be validate, resolve, save, reset-field, classify, or project-launch.",
+            "team-profile --action must be validate, resolve, save, reset-field, classify, project-launch, settings-view, start-gate, or pre-release-gate.",
         )),
     }
 }
@@ -441,8 +461,17 @@ fn parse_model_capabilities(source: &str) -> Catalog {
             },
         );
     }
+    let mut provider_readiness = BTreeMap::new();
+    for object in extract_objects(array_body(source, "providerCapabilities")) {
+        if let Some(id) = ts_string_field(object, "id") {
+            if let Some(state) = ts_readiness_state(object) {
+                provider_readiness.insert(id, state);
+            }
+        }
+    }
     Catalog {
         providers,
+        provider_readiness,
         models,
         backends,
     }
@@ -597,6 +626,31 @@ fn ts_string_array_field(object: &str, field: &str) -> Vec<String> {
 fn ts_readiness_state(object: &str) -> Option<String> {
     let idx = object.find("readiness:")?;
     ts_string_field(&object[idx..], "state")
+}
+
+
+pub(crate) fn model_readiness(model_id: &str) -> Option<String> {
+    catalog().models.get(model_id).map(|model| model.readiness_state.clone())
+}
+
+pub(crate) fn provider_readiness(provider_id: &str) -> Option<String> {
+    catalog().provider_readiness.get(provider_id).cloned()
+}
+
+pub(crate) fn catalog_readiness_states() -> Vec<String> {
+    let catalog = catalog();
+    let mut states = BTreeSet::new();
+    for state in catalog.provider_readiness.values() {
+        if !state.is_empty() {
+            states.insert(state.clone());
+        }
+    }
+    for model in catalog.models.values() {
+        if !model.readiness_state.is_empty() {
+            states.insert(model.readiness_state.clone());
+        }
+    }
+    states.into_iter().collect()
 }
 
 fn validate_project(project_dir: &Path) -> io::Result<JsonValue> {

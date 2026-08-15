@@ -136,7 +136,7 @@ OPERATOR COMMANDS:
     meta-plan               Draft a read-only multi-role planning packet
     workspace-plan          Validate and print a declarative workspace plan
     workspace-migrate       List, preview, apply, or roll back shipped workspace presets as JSON
-    team-profile            Validate, resolve, save, or classify Team Profile slot assignments as JSON
+    team-profile            Validate, resolve, save, classify, or gate Team Profile slot assignments as JSON
     worker-artifact          Judge worker completion from a dispatch output file and exit code as JSON
     provider-capabilities   Inspect the provider capability registry contract
     skills                  Print agent-readable command skill contracts
@@ -459,7 +459,7 @@ fn commands_text() -> &'static str {
   meta-plan                 - Draft a read-only multi-role planning packet
   workspace-plan            - Validate and print a declarative workspace plan
   workspace-migrate         - List, preview, apply, or roll back shipped workspace presets as JSON
-  team-profile              - Validate, resolve, save, or classify Team Profile slot assignments as JSON
+  team-profile              - Validate, resolve, save, classify, or gate Team Profile slot assignments as JSON
   worker-artifact            - Judge worker completion from a dispatch output file and exit code as JSON
   rust-canary               - Print the Rust default-on canary gate JSON
   manual-checklist          - Print the versioned manual validation checklist gate

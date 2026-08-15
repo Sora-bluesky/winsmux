@@ -1148,6 +1148,34 @@ function Invoke-TeamProfileLaunchProjection {
     }
 }
 
+function Assert-TeamProfileStartGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        return
+    }
+    $raw = Get-Content -LiteralPath $settingsPath -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($raw) -or ($raw -notmatch '(?m)^[ 	]*team-profile[ 	]*:')) {
+        return
+    }
+
+    $winsmuxBin = [string]$script:winsmuxBin
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        $winsmuxBin = [string](Get-WinsmuxBin)
+    }
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        throw "Team Profile start gate failed: winsmux binary was not found."
+    }
+
+    $output = & $winsmuxBin @('team-profile', '--action', 'start-gate', '--json', '--project-dir', $ProjectDir) 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Team Profile start gate refused before worker panes were created: {0}" -f ($output | Out-String))
+    }
+}
+
 function New-OrchestraPaneBootstrapPlan {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -2956,6 +2984,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
+                Assert-TeamProfileStartGate -ProjectDir $projectDir
                 $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {

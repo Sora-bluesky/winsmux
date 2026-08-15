@@ -12,7 +12,9 @@ export interface SettingsSectionVisibility {
 }
 
 export function getSettingsSectionScope(sectionId: string): SettingsScope {
-  return sectionId === "settings-section-workspace" ? "workspace" : "user";
+  return sectionId === "settings-section-workspace" || sectionId === "settings-section-team-profile"
+    ? "workspace"
+    : "user";
 }
 
 export function getSettingsTabScope(tabId: string): SettingsScope {

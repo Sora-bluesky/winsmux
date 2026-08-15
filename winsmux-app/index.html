@@ -454,6 +454,7 @@
                 <button id="settings-nav-common" class="settings-nav-item is-active" type="button" data-settings-target="settings-section-common">Commonly Used</button>
                 <button id="settings-nav-editor" class="settings-nav-item" type="button" data-settings-target="settings-section-common">Text Editor</button>
                 <button id="settings-nav-workbench" class="settings-nav-item" type="button" data-settings-target="settings-section-workspace">Workbench</button>
+                <button id="settings-nav-team-profile" class="settings-nav-item" type="button" data-settings-target="settings-section-team-profile">Team Profile</button>
                 <button id="settings-nav-window" class="settings-nav-item" type="button" data-settings-target="settings-section-theme">Window</button>
                 <button id="settings-nav-chat" class="settings-nav-item" type="button" data-settings-target="settings-section-runtime">Chat</button>
                 <button id="settings-nav-features" class="settings-nav-item" type="button" data-settings-target="settings-section-display">Features</button>
@@ -526,6 +527,11 @@
                 <section id="settings-section-workspace" class="settings-section">
                   <div class="context-label" id="settings-workspace-label">Workspace</div>
                   <div class="context-value" id="settings-workspace-value">Sidebar width, context collapse, terminal drawer behavior</div>
+                </section>
+                <section id="settings-section-team-profile" class="settings-section">
+                  <div class="context-label" id="settings-team-profile-label">Team Profile</div>
+                  <div class="context-value" id="settings-team-profile-value">Six worker slots inherit the official preset. Overrides stay until you reset a field. Start is refused when a slot cannot run.</div>
+                  <div id="team-profile-settings-root" class="team-profile-settings-root" aria-label="Team Profile slot assignments"></div>
                 </section>
                 <section id="settings-section-input" class="settings-section">
                   <div class="context-label" id="settings-input-label">Input</div>

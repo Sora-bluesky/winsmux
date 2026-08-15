@@ -109,6 +109,7 @@ assert.equal(
 );
 
 assert.equal(getSettingsSectionScope("settings-section-workspace"), "workspace");
+assert.equal(getSettingsSectionScope("settings-section-team-profile"), "workspace");
 assert.equal(getSettingsSectionScope("settings-section-common"), "user");
 assert.equal(getSettingsTabScope("settings-tab-workspace"), "workspace");
 assert.equal(getSettingsTabScope("settings-tab-user"), "user");

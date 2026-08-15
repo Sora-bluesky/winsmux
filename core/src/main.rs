@@ -35,6 +35,7 @@ mod context_pack;
 mod operator_cli;
 mod workspace_migrate;
 mod team_profile;
+mod team_profile_settings;
 mod instruction_pack;
 mod prompt_bundle;
 mod worker_artifact;
