@@ -286,6 +286,159 @@ pub fn run_workspace_plan_command(args: &[&String]) -> io::Result<()> {
     )?)
 }
 
+const WORKSPACE_MIGRATE_LIST_JSON: &str = "{\"schema_version\":1,\"action\":\"list\",\"presets\":[{\"preset_id\":\"bugfix\"},{\"preset_id\":\"review\"},{\"preset_id\":\"research\"},{\"preset_id\":\"benchmark\"}]}\n";
+const WORKSPACE_MIGRATE_SHIPPED_PRESETS: [&str; 4] = ["bugfix", "review", "research", "benchmark"];
+
+enum WorkspaceMigrateCommand {
+    List,
+    Preview { preset: String },
+}
+
+pub fn run_workspace_migrate_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("workspace-migrate"));
+        return Ok(());
+    }
+
+    let command = parse_workspace_migrate_options(args)?;
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    match command {
+        WorkspaceMigrateCommand::List => {
+            stdout.write_all(WORKSPACE_MIGRATE_LIST_JSON.as_bytes())?;
+        }
+        WorkspaceMigrateCommand::Preview { preset } => {
+            stdout.write_all(workspace_migrate_preview_json(&preset).as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+fn workspace_migrate_preview_json(preset: &str) -> String {
+    format!(
+        "{{\"schema_version\":1,\"action\":\"preview\",\"preset_id\":\"{preset}\",\"recipe_id\":\"{preset}\",\"sinks\":[{{\"path\":\".winsmux.yaml\",\"kind\":\"workspace-recipes\"}},{{\"path\":\".winsmux/workspace-preset.json\",\"kind\":\"adoption-sidecar\"}}]}}\n"
+    )
+}
+
+fn parse_workspace_migrate_options(args: &[&String]) -> io::Result<WorkspaceMigrateCommand> {
+    let mut action: Option<String> = None;
+    let mut preset: Option<String> = None;
+    let mut project_dir: Option<PathBuf> = None;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--action" => {
+                if action.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--action may be specified only once.",
+                    ));
+                }
+                action = Some(required_option_value(args, index, "--action")?);
+                index += 2;
+            }
+            "--preset" => {
+                if preset.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--preset may be specified only once.",
+                    ));
+                }
+                preset = Some(required_option_value(args, index, "--preset")?);
+                index += 2;
+            }
+            "--project-dir" => {
+                if project_dir.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--project-dir may be specified only once.",
+                    ));
+                }
+                project_dir = Some(PathBuf::from(required_option_value(
+                    args,
+                    index,
+                    "--project-dir",
+                )?));
+                index += 2;
+            }
+            "--json" => {
+                if json {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--json may be specified only once.",
+                    ));
+                }
+                json = true;
+                index += 1;
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown workspace-migrate argument.",
+                ));
+            }
+        }
+    }
+
+    let action = action.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-migrate requires --action list or preview.",
+        )
+    })?;
+    if !json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-migrate requires --json.",
+        ));
+    }
+
+    match action.as_str() {
+        "list" => {
+            if preset.is_some() || project_dir.is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace-migrate list does not accept --preset or --project-dir.",
+                ));
+            }
+            Ok(WorkspaceMigrateCommand::List)
+        }
+        "preview" => {
+            let preset = preset.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace-migrate preview requires --preset.",
+                )
+            })?;
+            if !WORKSPACE_MIGRATE_SHIPPED_PRESETS.contains(&preset.as_str()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "unknown workspace-migrate preset.",
+                ));
+            }
+            let project_dir = project_dir.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace-migrate preview requires --project-dir.",
+                )
+            })?;
+            if !project_dir.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "workspace-migrate preview requires an existing --project-dir.",
+                ));
+            }
+            Ok(WorkspaceMigrateCommand::Preview { preset })
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "workspace-migrate --action must be list or preview.",
+        )),
+    }
+}
+
 pub fn run_operator_jobs_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("operator-jobs"));
@@ -6985,6 +7138,9 @@ fn usage_for(command: &str) -> &'static str {
         }
         "workspace-plan" => {
             "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] [--run-id <id>] [--context-pack-id <id> --context-pack-input -] --json [--project-dir <path>]"
+        }
+        "workspace-migrate" => {
+            "usage: winsmux workspace-migrate --action <list|preview> --json [--preset <id>] [--project-dir <path>]"
         }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"

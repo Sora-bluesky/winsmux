@@ -936,6 +936,7 @@ fn run_main() -> io::Result<()> {
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "meta-plan" => return operator_cli::run_meta_plan_command(&cmd_args[1..]),
         "workspace-plan" => return operator_cli::run_workspace_plan_command(&cmd_args[1..]),
+        "workspace-migrate" => return operator_cli::run_workspace_migrate_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),
