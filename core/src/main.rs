@@ -37,6 +37,7 @@ mod workspace_migrate;
 mod team_profile;
 mod instruction_pack;
 mod prompt_bundle;
+mod worker_artifact;
 mod project_settings_render;
 mod client;
 mod app;
@@ -953,6 +954,7 @@ fn run_main() -> io::Result<()> {
             return workspace_migrate::run_workspace_migrate_command(&cmd_args[1..])
         }
         "team-profile" => return team_profile::run_team_profile_command(&cmd_args[1..]),
+        "worker-artifact" => return worker_artifact::run_worker_artifact_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),

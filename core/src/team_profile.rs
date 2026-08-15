@@ -157,6 +157,7 @@ struct DispatchOptions {
     delegation: Option<String>,
     slot_id: Option<String>,
     project_dir: Option<PathBuf>,
+    output: Option<PathBuf>,
     text: String,
 }
 
@@ -385,6 +386,10 @@ fn parse_dispatch_options(args: &[&String]) -> DispatchOptions {
             }
             "--project-dir" if index + 1 < args.len() => {
                 options.project_dir = Some(PathBuf::from(args[index + 1].as_str()));
+                index += 2;
+            }
+            "--output" | "-o" if index + 1 < args.len() => {
+                options.output = Some(PathBuf::from(args[index + 1].as_str()));
                 index += 2;
             }
             "--json" => index += 1,
@@ -1540,6 +1545,11 @@ fn classify_team(
                     "dispatchable",
                 );
                 payload["instruction_pack"] = pack;
+                payload["artifact"] = serde_json::json!({
+                    "output": format!(".winsmux/runs/{}/result.md", slot.slot_id),
+                    "completion_authority": "output-file-and-exit-code",
+                    "pty_capture_is_auxiliary": true
+                });
                 return Ok(payload);
             }
             Err(issues) => {

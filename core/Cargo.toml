@@ -86,6 +86,10 @@ path = "tests-rs/instruction_pack_contract.rs"
 name = "prompt_bundle_contract"
 path = "tests-rs/prompt_bundle_contract.rs"
 
+[[test]]
+name = "worker_artifact_contract"
+path = "tests-rs/worker_artifact_contract.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]

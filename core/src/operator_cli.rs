@@ -6988,6 +6988,7 @@ fn usage_for(command: &str) -> &'static str {
         }
         "workspace-migrate" => crate::workspace_migrate::USAGE,
         "team-profile" => crate::team_profile::USAGE,
+        "worker-artifact" => crate::worker_artifact::USAGE,
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
