@@ -292,9 +292,17 @@ const WORKSPACE_MIGRATE_SIDECAR_NAME: &str = "workspace-preset.json";
 
 enum WorkspaceMigrateCommand {
     List,
-    Preview { preset: String },
-    Apply { preset: String, project_dir: PathBuf },
-    Rollback { project_dir: PathBuf },
+    Preview {
+        preset: String,
+        project_dir: PathBuf,
+    },
+    Apply {
+        preset: String,
+        project_dir: PathBuf,
+    },
+    Rollback {
+        project_dir: PathBuf,
+    },
 }
 
 #[derive(Deserialize, Serialize)]
@@ -318,8 +326,12 @@ pub fn run_workspace_migrate_command(args: &[&String]) -> io::Result<()> {
         WorkspaceMigrateCommand::List => {
             stdout.write_all(WORKSPACE_MIGRATE_LIST_JSON.as_bytes())?;
         }
-        WorkspaceMigrateCommand::Preview { preset } => {
-            stdout.write_all(workspace_migrate_action_json("preview", &preset).as_bytes())?;
+        WorkspaceMigrateCommand::Preview {
+            preset,
+            project_dir,
+        } => {
+            let payload = preview_workspace_migrate_preset(&preset, &project_dir)?;
+            stdout.write_all(payload.as_bytes())?;
         }
         WorkspaceMigrateCommand::Apply {
             preset,
@@ -425,6 +437,33 @@ fn replace_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
     })
 }
 
+fn workspace_migrate_read_yaml(yaml_path: &Path) -> io::Result<(bool, String)> {
+    let yaml_existed = yaml_path.exists();
+    let previous_yaml = if yaml_existed {
+        fs::read_to_string(yaml_path).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to read project .winsmux.yaml.",
+            )
+        })?
+    } else {
+        String::new()
+    };
+    Ok((yaml_existed, previous_yaml))
+}
+
+fn workspace_migrate_render_preset(previous_yaml: &str, preset: &str) -> io::Result<String> {
+    let recipes = merged_workspace_recipes(previous_yaml, preset)?;
+    crate::project_settings_render::render_owned_workspace_recipes(previous_yaml, recipes)
+}
+
+fn preview_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Result<String> {
+    let yaml_path = workspace_migrate_yaml_path(project_dir);
+    let (_yaml_existed, original_yaml) = workspace_migrate_read_yaml(&yaml_path)?;
+    workspace_migrate_render_preset(&original_yaml, preset)?;
+    Ok(workspace_migrate_action_json("preview", preset))
+}
+
 fn apply_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Result<String> {
     let yaml_path = workspace_migrate_yaml_path(project_dir);
     let sidecar_path = workspace_migrate_sidecar_path(project_dir);
@@ -435,20 +474,8 @@ fn apply_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Resul
         ));
     }
 
-    let yaml_existed = yaml_path.exists();
-    let previous_yaml = if yaml_existed {
-        fs::read_to_string(&yaml_path).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "failed to read project .winsmux.yaml.",
-            )
-        })?
-    } else {
-        String::new()
-    };
-    let recipes = merged_workspace_recipes(&previous_yaml, preset)?;
-    let rendered =
-        crate::project_settings_render::render_owned_workspace_recipes(&previous_yaml, recipes)?;
+    let (yaml_existed, previous_yaml) = workspace_migrate_read_yaml(&yaml_path)?;
+    let rendered = workspace_migrate_render_preset(&previous_yaml, preset)?;
 
     fs::create_dir_all(sidecar_path.parent().ok_or_else(|| {
         io::Error::new(
@@ -497,6 +524,24 @@ fn rollback_workspace_migrate(project_dir: &Path) -> io::Result<String> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid workspace-migrate adoption sidecar.",
+        ));
+    }
+
+    let expected = workspace_migrate_render_preset(&sidecar.previous_yaml, &sidecar.preset_id)?;
+    let current = if yaml_path.exists() {
+        fs::read(&yaml_path).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "failed to read project .winsmux.yaml.",
+            )
+        })?
+    } else {
+        Vec::new()
+    };
+    if current.as_slice() != expected.as_bytes() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "workspace-migrate rollback requires the applied yaml to be unchanged.",
         ));
     }
 
@@ -620,7 +665,10 @@ fn parse_workspace_migrate_options(args: &[&String]) -> io::Result<WorkspaceMigr
                 ));
             }
             if action == "preview" {
-                Ok(WorkspaceMigrateCommand::Preview { preset })
+                Ok(WorkspaceMigrateCommand::Preview {
+                    preset,
+                    project_dir,
+                })
             } else {
                 Ok(WorkspaceMigrateCommand::Apply {
                     preset,

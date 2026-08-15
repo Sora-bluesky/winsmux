@@ -524,3 +524,187 @@ fn apply_recipe_is_consumable_by_workspace_plan() {
     );
     assert_eq!(fs::read(runtime_dir.join("keep-me.txt")).unwrap(), before_marker);
 }
+
+#[test]
+fn preview_rejects_malformed_yaml_without_mutation() {
+    let project = tempfile::tempdir().expect("create malformed preview fixture");
+    write_preview_fixture(project.path());
+    let runtime_dir = project.path().join(".winsmux");
+    let malformed = b"config-version: [\n";
+    fs::write(project.path().join(".winsmux.yaml"), malformed).expect("write malformed yaml");
+    let before_root = sorted_entry_names(project.path());
+    let before_runtime = sorted_entry_names(&runtime_dir);
+    let before_settings = fs::read(project.path().join(".winsmux.yaml")).unwrap();
+    let before_marker = fs::read(runtime_dir.join("keep-me.txt")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-migrate",
+            "--action",
+            "preview",
+            "--preset",
+            "bugfix",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project.path())
+        .output()
+        .expect("run preview against malformed yaml");
+
+    assert!(
+        !output.status.success(),
+        "malformed yaml must be non-zero"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "reject must not write a stdout payload"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid .winsmux.yaml syntax."),
+        "preview must use the stable yaml syntax error; stderr={stderr}"
+    );
+    assert_eq!(sorted_entry_names(project.path()), before_root);
+    assert_eq!(sorted_entry_names(&runtime_dir), before_runtime);
+    assert_eq!(
+        fs::read(project.path().join(".winsmux.yaml")).unwrap(),
+        before_settings
+    );
+    assert_eq!(fs::read(runtime_dir.join("keep-me.txt")).unwrap(), before_marker);
+    assert!(
+        !sidecar_path(project.path()).exists(),
+        "preview must not create the adoption sidecar"
+    );
+}
+
+#[test]
+fn preview_rejects_non_mapping_workspace_recipes_without_mutation() {
+    let project = tempfile::tempdir().expect("create non-mapping preview fixture");
+    write_preview_fixture(project.path());
+    let runtime_dir = project.path().join(".winsmux");
+    fs::write(
+        project.path().join(".winsmux.yaml"),
+        "config-version: 1\nworkspace-recipes: []\n",
+    )
+    .expect("write non-mapping workspace-recipes");
+    let before_root = sorted_entry_names(project.path());
+    let before_runtime = sorted_entry_names(&runtime_dir);
+    let before_settings = fs::read(project.path().join(".winsmux.yaml")).unwrap();
+    let before_marker = fs::read(runtime_dir.join("keep-me.txt")).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-migrate",
+            "--action",
+            "preview",
+            "--preset",
+            "review",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project.path())
+        .output()
+        .expect("run preview against non-mapping workspace-recipes");
+
+    assert!(
+        !output.status.success(),
+        "non-mapping workspace-recipes must be non-zero"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "",
+        "reject must not write a stdout payload"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("workspace-recipes must be a mapping."),
+        "preview must use the stable mapping error; stderr={stderr}"
+    );
+    assert_eq!(sorted_entry_names(project.path()), before_root);
+    assert_eq!(sorted_entry_names(&runtime_dir), before_runtime);
+    assert_eq!(
+        fs::read(project.path().join(".winsmux.yaml")).unwrap(),
+        before_settings
+    );
+    assert_eq!(fs::read(runtime_dir.join("keep-me.txt")).unwrap(), before_marker);
+    assert!(
+        !sidecar_path(project.path()).exists(),
+        "preview must not create the adoption sidecar"
+    );
+}
+
+#[test]
+fn rollback_rejects_yaml_that_diverged_after_apply() {
+    let project = tempfile::tempdir().expect("create diverged rollback fixture");
+    write_preview_fixture(project.path());
+    let runtime_dir = project.path().join(".winsmux");
+    let before_marker = fs::read(runtime_dir.join("keep-me.txt")).unwrap();
+
+    let apply = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-migrate",
+            "--action",
+            "apply",
+            "--preset",
+            "bugfix",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project.path())
+        .output()
+        .expect("run apply before diverged rollback");
+    assert_eq!(String::from_utf8_lossy(&apply.stderr), "");
+    assert!(
+        apply.status.success(),
+        "apply must exit 0 before diverged rollback; stdout={} stderr={}",
+        String::from_utf8_lossy(&apply.stdout),
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    let mut diverged = fs::read(project.path().join(".winsmux.yaml")).expect("read applied yaml");
+    diverged.extend_from_slice(b"lane-b-extra: 1\n");
+    fs::write(project.path().join(".winsmux.yaml"), &diverged).expect("write diverged yaml");
+    let before_settings = fs::read(project.path().join(".winsmux.yaml")).unwrap();
+    let before_sidecar = fs::read(sidecar_path(project.path())).unwrap();
+    let before_root = sorted_entry_names(project.path());
+    let before_runtime = sorted_entry_names(&runtime_dir);
+
+    let rollback = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "workspace-migrate",
+            "--action",
+            "rollback",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(project.path())
+        .output()
+        .expect("run rollback against diverged yaml");
+
+    assert!(
+        !rollback.status.success(),
+        "diverged yaml must be non-zero"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&rollback.stdout),
+        "",
+        "reject must not write a stdout payload"
+    );
+    let stderr = String::from_utf8_lossy(&rollback.stderr);
+    assert!(
+        stderr.contains("workspace-migrate rollback requires the applied yaml to be unchanged."),
+        "rollback must use the stable divergence error; stderr={stderr}"
+    );
+    assert_eq!(sorted_entry_names(project.path()), before_root);
+    assert_eq!(sorted_entry_names(&runtime_dir), before_runtime);
+    assert_eq!(
+        fs::read(project.path().join(".winsmux.yaml")).unwrap(),
+        before_settings
+    );
+    assert_eq!(
+        fs::read(sidecar_path(project.path())).unwrap(),
+        before_sidecar
+    );
+    assert_eq!(fs::read(runtime_dir.join("keep-me.txt")).unwrap(), before_marker);
+}
