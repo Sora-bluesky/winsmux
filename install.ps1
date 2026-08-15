@@ -807,6 +807,10 @@ function Test-RetryableDownloadFailure {
 function Invoke-DownloadFileWithRetry($relativeUrl, $destPath) {
     $url = "$BASE_URL/$relativeUrl"
     Write-Status "Downloading $relativeUrl ..."
+    $destParent = Split-Path -Parent $destPath
+    if (-not [string]::IsNullOrWhiteSpace($destParent) -and -not (Test-Path -LiteralPath $destParent)) {
+        New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+    }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
         $tempPath = "$destPath.download-$([guid]::NewGuid().ToString('N')).tmp"
         try {
