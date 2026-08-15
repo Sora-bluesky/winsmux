@@ -108,6 +108,30 @@ pub(crate) fn run(args: &[String]) -> io::Result<()> {
         .map_err(|_| generic_error())
 }
 
+pub(crate) fn render_owned_workspace_recipes(
+    original_yaml: &str,
+    recipes: serde_json::Value,
+) -> io::Result<String> {
+    let mut desired_settings = serde_json::Map::new();
+    desired_settings.insert("workspace-recipes".to_string(), recipes);
+    render(RenderRequest {
+        original_yaml: original_yaml.to_string(),
+        desired_settings,
+        owned_keys: vec!["workspace-recipes".to_string()],
+        nested_contract: NestedContractRequest {
+            agent_slots: KeyedSequenceContractRequest {
+                identity_key: "slot_id".to_string(),
+                owned_keys: vec!["slot_id".to_string()],
+                aliases: BTreeMap::new(),
+            },
+            roles: MappingValuesContractRequest {
+                owned_keys: Vec::new(),
+            },
+        },
+    })
+    .map_err(|_| generic_error())
+}
+
 fn render_from_stdin(args: &[String]) -> Result<String, ()> {
     if !args.is_empty() {
         return Err(());

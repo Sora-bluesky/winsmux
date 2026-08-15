@@ -70,6 +70,10 @@ path = "tests-rs/search_ledger_contract.rs"
 name = "session_contract_test"
 path = "tests-rs/session_contract_test.rs"
 
+[[test]]
+name = "workspace_migrate_gallery"
+path = "tests-rs/workspace_migrate_gallery.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
