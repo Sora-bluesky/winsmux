@@ -12,6 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::workspace_recipe::parse_workspace_yaml;
 
+include!(concat!(::core::env!("OUT_DIR"), "/embedded_profiles.rs"));
+
 const REGISTRY_REL: &str = "winsmux-core/agents/profiles";
 const REGISTRY_FILE: &str = "registry.yaml";
 const INSTRUCTION_FILES: [&str; 3] = [
@@ -76,35 +78,34 @@ struct ModelTemplate {
     template: String,
 }
 
+#[derive(Clone, Debug)]
+enum ProfileSource {
+    Filesystem(PathBuf),
+    Embedded,
+}
+
 pub(crate) fn profiles_root() -> io::Result<PathBuf> {
-    if let Ok(configured) = env::var("WINSMUX_PROFILES_DIR") {
-        let path = PathBuf::from(configured);
-        if path.join(REGISTRY_FILE).is_file() {
-            return Ok(path);
-        }
+    match profile_source()? {
+        ProfileSource::Filesystem(path) => Ok(path),
+        ProfileSource::Embedded => Err(io::Error::new(
+            ErrorKind::NotFound,
+            "instruction-pack registry is embedded; no on-disk profiles root is required.",
+        )),
     }
-    if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
-        let path = Path::new(&manifest).join("..").join(REGISTRY_REL);
-        if path.join(REGISTRY_FILE).is_file() {
-            return Ok(path);
-        }
+}
+
+pub(crate) fn registry_sha256() -> io::Result<String> {
+    let source = profile_source()?;
+    let bytes = read_profile_bytes(&source, REGISTRY_FILE)?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
+fn profile_source() -> io::Result<ProfileSource> {
+    if let Some(path) = filesystem_profiles_root() {
+        return Ok(ProfileSource::Filesystem(path));
     }
-    if let Ok(exe) = env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            for ancestor in dir.ancestors() {
-                let path = ancestor.join(REGISTRY_REL);
-                if path.join(REGISTRY_FILE).is_file() {
-                    return Ok(path);
-                }
-            }
-        }
-    }
-    let cwd = env::current_dir()?;
-    for ancestor in cwd.ancestors() {
-        let path = ancestor.join(REGISTRY_REL);
-        if path.join(REGISTRY_FILE).is_file() {
-            return Ok(path);
-        }
+    if embedded_profile(REGISTRY_FILE).is_some() {
+        return Ok(ProfileSource::Embedded);
     }
     Err(io::Error::new(
         ErrorKind::NotFound,
@@ -112,28 +113,62 @@ pub(crate) fn profiles_root() -> io::Result<PathBuf> {
     ))
 }
 
+fn filesystem_profiles_root() -> Option<PathBuf> {
+    if let Ok(configured) = env::var("WINSMUX_PROFILES_DIR") {
+        let path = PathBuf::from(configured);
+        if path.join(REGISTRY_FILE).is_file() {
+            return Some(path);
+        }
+    }
+    if let Ok(manifest) = env::var("CARGO_MANIFEST_DIR") {
+        let path = Path::new(&manifest).join("..").join(REGISTRY_REL);
+        if path.join(REGISTRY_FILE).is_file() {
+            return Some(path);
+        }
+    }
+    if let Ok(exe) = env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for ancestor in dir.ancestors() {
+                let path = ancestor.join(REGISTRY_REL);
+                if path.join(REGISTRY_FILE).is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        for ancestor in cwd.ancestors() {
+            let path = ancestor.join(REGISTRY_REL);
+            if path.join(REGISTRY_FILE).is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn lint_registry() -> Result<JsonValue, Vec<InstructionIssue>> {
-    let root = profiles_root().map_err(|error| {
+    let source = profile_source().map_err(|error| {
         vec![issue(
             "registry",
             "missing_registry",
             error.to_string(),
         )]
     })?;
-    let registry = load_registry(&root)?;
+    let registry = load_registry(&source)?;
     let mut issues = Vec::new();
-    lint_path(&root, &registry.base, "base", &mut issues);
+    lint_path(&source, &registry.base, "base", &mut issues);
     for (id, template) in &registry.providers {
-        lint_path(&root, template, &format!("provider/{id}"), &mut issues);
+        lint_path(&source, template, &format!("provider/{id}"), &mut issues);
     }
     for (id, template) in &registry.roles {
-        lint_path(&root, template, &format!("role/{id}"), &mut issues);
+        lint_path(&source, template, &format!("role/{id}"), &mut issues);
     }
     for (id, template) in &registry.lifecycles {
-        lint_path(&root, template, &format!("lifecycle/{id}"), &mut issues);
+        lint_path(&source, template, &format!("lifecycle/{id}"), &mut issues);
     }
     for (id, template) in &registry.task_classes {
-        lint_path(&root, template, &format!("task-class/{id}"), &mut issues);
+        lint_path(&source, template, &format!("task-class/{id}"), &mut issues);
     }
     let mut templates = BTreeSet::new();
     for (id, model) in &registry.models {
@@ -149,7 +184,7 @@ pub(crate) fn lint_registry() -> Result<JsonValue, Vec<InstructionIssue>> {
             // Duplicate exact paths are allowed only when intentional; unique IDs are the hard rule.
         }
         let _ = id;
-        lint_path(&root, &model.template, &format!("model/{}", id), &mut issues);
+        lint_path(&source, &model.template, &format!("model/{}", id), &mut issues);
         if model.provider.is_empty() || !registry.providers.contains_key(&model.provider) {
             issues.push(issue(
                 &format!("model/{id}"),
@@ -160,7 +195,7 @@ pub(crate) fn lint_registry() -> Result<JsonValue, Vec<InstructionIssue>> {
     }
     for (provider, template) in &registry.dynamic_providers {
         lint_path(
-            &root,
+            &source,
             template,
             &format!("dynamic/{provider}"),
             &mut issues,
@@ -192,13 +227,13 @@ pub(crate) fn compose_pack(
     lifecycle: &str,
     task_classes: &[String],
 ) -> Result<ComposedPack, Vec<InstructionIssue>> {
-    let root = profiles_root().map_err(|error| {
+    let source = profile_source().map_err(|error| {
         vec![issue("registry", "missing_registry", error.to_string())]
     })?;
-    let registry = load_registry(&root)?;
+    let registry = load_registry(&source)?;
     let mut template_ids = Vec::new();
     let mut parts = Vec::new();
-    push_layer(&root, &registry.base, "base", &mut template_ids, &mut parts)?;
+    push_layer(&source, &registry.base, "base", &mut template_ids, &mut parts)?;
     let provider_template = registry.providers.get(provider).ok_or_else(|| {
         vec![issue(
             "provider",
@@ -207,7 +242,7 @@ pub(crate) fn compose_pack(
         )]
     })?;
     push_layer(
-        &root,
+        &source,
         provider_template,
         &format!("provider/{provider}"),
         &mut template_ids,
@@ -215,7 +250,7 @@ pub(crate) fn compose_pack(
     )?;
     let (model_template, model_template_id) = resolve_model_template(&registry, provider, model)?;
     push_layer(
-        &root,
+        &source,
         &model_template,
         &model_template_id,
         &mut template_ids,
@@ -229,7 +264,7 @@ pub(crate) fn compose_pack(
         )]
     })?;
     push_layer(
-        &root,
+        &source,
         role_template,
         &format!("role/{role}"),
         &mut template_ids,
@@ -243,7 +278,7 @@ pub(crate) fn compose_pack(
         )]
     })?;
     push_layer(
-        &root,
+        &source,
         lifecycle_template,
         &format!("lifecycle/{lifecycle}"),
         &mut template_ids,
@@ -265,7 +300,7 @@ pub(crate) fn compose_pack(
             )]
         })?;
         push_layer(
-            &root,
+            &source,
             template,
             &format!("task/{class}"),
             &mut template_ids,
@@ -319,16 +354,22 @@ pub(crate) fn tracked_instruction_hashes() -> Result<Vec<(String, String, String
 }
 
 fn repo_root() -> io::Result<PathBuf> {
-    let profiles = profiles_root()?;
-    profiles
-        .ancestors()
-        .nth(3)
-        .map(Path::to_path_buf)
-        .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "repository root was not found."))
+    if let Some(profiles) = filesystem_profiles_root() {
+        if let Some(root) = profiles.ancestors().nth(3) {
+            return Ok(root.to_path_buf());
+        }
+    }
+    let cwd = env::current_dir()?;
+    for ancestor in cwd.ancestors() {
+        if ancestor.join("winsmux-core/agents/AGENTS.md").is_file() {
+            return Ok(ancestor.to_path_buf());
+        }
+    }
+    Err(io::Error::new(ErrorKind::NotFound, "repository root was not found."))
 }
 
-fn load_registry(root: &Path) -> Result<Registry, Vec<InstructionIssue>> {
-    let yaml = fs::read_to_string(root.join(REGISTRY_FILE)).map_err(|_| {
+fn load_registry(source: &ProfileSource) -> Result<Registry, Vec<InstructionIssue>> {
+    let yaml = read_profile_text(source, REGISTRY_FILE).map_err(|_| {
         vec![issue(
             "registry",
             "missing_registry",
@@ -538,25 +579,43 @@ fn resolve_model_template(
 }
 
 fn push_layer(
-    root: &Path,
+    source: &ProfileSource,
     rel: &str,
     id: &str,
     ids: &mut Vec<String>,
     parts: &mut Vec<String>,
 ) -> Result<(), Vec<InstructionIssue>> {
-    let text = read_template(root, rel, id)?;
+    let text = read_template(source, rel, id)?;
     ids.push(id.to_string());
     parts.push(text);
     Ok(())
 }
 
-fn lint_path(root: &Path, rel: &str, field: &str, issues: &mut Vec<InstructionIssue>) {
-    if let Err(mut found) = read_template(root, rel, field) {
+fn lint_path(source: &ProfileSource, rel: &str, field: &str, issues: &mut Vec<InstructionIssue>) {
+    if let Err(mut found) = read_template(source, rel, field) {
         issues.append(&mut found);
     }
 }
 
-fn read_template(root: &Path, rel: &str, field: &str) -> Result<String, Vec<InstructionIssue>> {
+fn read_profile_text(source: &ProfileSource, rel: &str) -> io::Result<String> {
+    match source {
+        ProfileSource::Filesystem(root) => fs::read_to_string(root.join(rel)),
+        ProfileSource::Embedded => embedded_profile(rel)
+            .map(str::to_string)
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, format!("{rel} is not embedded."))),
+    }
+}
+
+fn read_profile_bytes(source: &ProfileSource, rel: &str) -> io::Result<Vec<u8>> {
+    match source {
+        ProfileSource::Filesystem(root) => fs::read(root.join(rel)),
+        ProfileSource::Embedded => embedded_profile(rel)
+            .map(|text| text.as_bytes().to_vec())
+            .ok_or_else(|| io::Error::new(ErrorKind::NotFound, format!("{rel} is not embedded."))),
+    }
+}
+
+fn read_template(source: &ProfileSource, rel: &str, field: &str) -> Result<String, Vec<InstructionIssue>> {
     if rel.is_empty()
         || Path::new(rel).is_absolute()
         || rel.contains('\0')
@@ -568,8 +627,7 @@ fn read_template(root: &Path, rel: &str, field: &str) -> Result<String, Vec<Inst
             format!("Template path '{rel}' must be a relative path without '..'."),
         )]);
     }
-    let path = root.join(rel);
-    let bytes = fs::read(&path).map_err(|_| {
+    let bytes = read_profile_bytes(source, rel).map_err(|_| {
         vec![issue(
             field,
             "missing_instruction_pack",
@@ -692,5 +750,21 @@ mod tests {
             assert_eq!(actual, expected, "{rel} hash changed");
         }
         assert_eq!(INSTRUCTION_FILES.len(), 3);
+    }
+
+    #[test]
+    fn embedded_registry_covers_official_tree() {
+        assert!(super::embedded_profile("registry.yaml").is_some());
+        assert!(super::embedded_profile("base.md").is_some());
+        assert!(super::embedded_profile("providers/codex.md").is_some());
+        let pack = compose_pack(
+            "codex",
+            "codex-gpt-5-6-sol",
+            "architect",
+            "session",
+            &["architecture".into(), "protocol".into(), "security".into()],
+        )
+        .expect("compose from available source");
+        assert_eq!(pack.digest_sha256.len(), 64);
     }
 }

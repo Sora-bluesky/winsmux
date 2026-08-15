@@ -98,6 +98,63 @@ fn team_profile_classify_worker_owned_is_dispatchable() {
 }
 
 #[test]
+fn team_profile_validate_json_fails_closed_for_invalid_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join(".winsmux.yaml"),
+        "team-profile:\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots:\n  - slot-id: worker-1\n    model: not-a-catalog-id\n",
+    )
+    .unwrap();
+    let output = bin()
+        .args([
+            "team-profile",
+            "--action",
+            "validate",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(dir.path())
+        .output()
+        .expect("run team-profile validate");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !output.status.success(),
+        "invalid validate must fail closed stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        stdout
+    );
+    assert!(stdout.contains("\"ok\":false") || stdout.contains("\"ok\": false"));
+}
+
+#[test]
+fn dispatch_task_forwards_classified_slot_instead_of_refusing() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join(".winsmux.yaml"), opted_in_empty()).unwrap();
+    let output = bin()
+        .current_dir(dir.path())
+        .args([
+            "dispatch-task",
+            "--task-class",
+            "implementation",
+            "--delegation",
+            "frozen-spec-implementation",
+            "implement the frozen spec",
+        ])
+        .output()
+        .expect("run dispatch-task");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("missing_delegation"),
+        "classified dispatch must not refuse stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("unclassifiable"),
+        "classified dispatch must not refuse as unclassifiable stdout={stdout} stderr={stderr}"
+    );
+}
+
+#[test]
 fn dispatch_task_without_team_profile_does_not_emit_team_profile_refusal() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
