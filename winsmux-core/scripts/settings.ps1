@@ -43,6 +43,9 @@ $script:BridgeSlotScalarKeys = @(
     'model',
     'model_source',
     'reasoning_effort',
+    'provider',
+    'role_profile',
+    'lifecycle',
     'prompt_transport',
     'mcp_mode',
     'auth_mode',
@@ -53,7 +56,7 @@ $script:BridgeSlotScalarKeys = @(
     'pane_title',
     'fallback_model'
 )
-$script:BridgeSlotListKeys = @()
+$script:BridgeSlotListKeys = @('task_classes', 'delegation')
 $script:BridgeRoleScalarKeys = @(
     'agent',
     'model',

@@ -2207,7 +2207,10 @@ pub fn run_remote(terminal: &mut Terminal<CrosstermBackend<crate::platform::Psmu
                                     selection_changed = true;
                                     // Suppress text key events that VS Code's ConPTY
                                     // injects after a right-click copy action.
-                                    paste_suppress_until = Some(Instant::now() + Duration::from_secs(2));
+                                    #[cfg(windows)]
+                                    {
+                                        paste_suppress_until = Some(Instant::now() + Duration::from_secs(2));
+                                    }
                                 } else {
                                     // No selection, no TUI — paste from clipboard (pwsh-style)
                                     rsel_start = None;
