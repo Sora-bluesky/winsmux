@@ -374,10 +374,16 @@ fn issue(
 }
 
 fn document_has_team_profile(yaml: &str) -> bool {
-    yaml.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
-    })
+    match parse_workspace_yaml(yaml) {
+        Ok(root) => root.as_mapping().is_some_and(|mapping| {
+            mapping.contains_key(&Value::String("team-profile".into()))
+                || mapping.contains_key(&Value::String("team_profile".into()))
+        }),
+        Err(_) => yaml.lines().any(|line| {
+            let trimmed = line.trim().trim_start_matches(|c: char| matches!(c, '\'' | '"'));
+            trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
+        }),
+    }
 }
 
 fn parse_dispatch_options(args: &[&String]) -> DispatchOptions {
@@ -1818,11 +1824,46 @@ fn replace_file(path: &Path, contents: &str) -> io::Result<()> {
         std::process::id()
     ));
     fs::write(&tmp, contents)?;
-    let result = fs::rename(&tmp, path);
+    let result = replace_existing_file(&tmp, path);
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(windows)]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(value: &Path) -> Vec<u16> {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let tmp = wide(tmp_path);
+    let target = wide(path);
+    let moved = unsafe {
+        MoveFileExW(
+            tmp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(tmp_path, path)
 }
 
 #[cfg(test)]
@@ -2192,6 +2233,15 @@ agent-slots:
         let team = resolve_yaml(&saved, OFFICIAL_PRESET_YAML, &catalog_fixture()).unwrap();
         assert_eq!(team.slots[1].provider, "codex");
         assert!(team.slots[1].overrides.contains(&"provider".to_string()));
+    }
+
+    #[test]
+    fn quoted_team_profile_key_is_detected_as_opt_in() {
+        let yaml = "\"team-profile\":\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots: []\n";
+        assert!(document_has_team_profile(yaml));
+        let flow = "{ \"team-profile\": { schema-version: 1, preset: official-balanced-v1, preset-revision: 1, update-policy: retain-overrides }, agent-slots: [] }\n";
+        assert!(document_has_team_profile(flow));
+        assert!(!document_has_team_profile("agent-slots:\n  - slot-id: worker-1\n"));
     }
 
     #[test]
