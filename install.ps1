@@ -248,70 +248,61 @@ function Install-CoreSupportScripts {
 
 function Install-InstructionPacks {
     $profileRoot = Join-Path $BRIDGE_DIR 'agents\profiles'
-    $files = @(
-        'base.md',
-        'lifecycles/one-shot.md',
-        'lifecycles/session.md',
-        'lifecycles/task.md',
-        'models/antigravity/antigravity-claude-opus-4-6-thinking.md',
-        'models/antigravity/antigravity-claude-sonnet-4-6-thinking.md',
-        'models/antigravity/antigravity-gemini-3-1-pro-high.md',
-        'models/antigravity/antigravity-gemini-3-1-pro-low.md',
-        'models/antigravity/antigravity-gemini-3-5-flash-high.md',
-        'models/antigravity/antigravity-gemini-3-5-flash-low.md',
-        'models/antigravity/antigravity-gemini-3-5-flash-medium.md',
-        'models/antigravity/antigravity-gpt-oss-120b-medium.md',
-        'models/claude/claude-fable-5.md',
-        'models/claude/claude-haiku-4-5.md',
-        'models/claude/claude-opus-4-6.md',
-        'models/claude/claude-opus-4-7.md',
-        'models/claude/claude-opus-4-8.md',
-        'models/claude/claude-opus-5.md',
-        'models/claude/claude-sonnet-4-6.md',
-        'models/claude/claude-sonnet-5.md',
-        'models/codex/codex-gpt-5-4-mini.md',
-        'models/codex/codex-gpt-5-4.md',
-        'models/codex/codex-gpt-5-5.md',
-        'models/codex/codex-gpt-5-6-luna.md',
-        'models/codex/codex-gpt-5-6-sol.md',
-        'models/codex/codex-gpt-5-6-terra.md',
-        'models/codex/codex-spark.md',
-        'models/grok-build/grok-build-composer-2-5-fast.md',
-        'models/grok-build/grok-build-grok-4-3.md',
-        'models/openrouter/_dynamic.md',
-        'models/openrouter/openrouter-glm-5-2.md',
-        'models/openrouter/openrouter-kimi-k2-7-code.md',
-        'models/openrouter/openrouter-sakana-fugu-ultra.md',
-        'providers/antigravity.md',
-        'providers/claude.md',
-        'providers/codex.md',
-        'providers/grok-build.md',
-        'providers/openrouter.md',
-        'registry.yaml',
-        'roles/architect.md',
-        'roles/builder.md',
-        'roles/maintainer.md',
-        'roles/researcher.md',
-        'roles/reviewer.md',
-        'task-classes/architecture.md',
-        'task-classes/documentation.md',
-        'task-classes/implementation.md',
-        'task-classes/protocol.md',
-        'task-classes/repository-operations.md',
-        'task-classes/research.md',
-        'task-classes/review.md',
-        'task-classes/security.md',
-        'task-classes/test.md'
-    )
-    foreach ($rel in $files) {
-        $dest = Join-Path $profileRoot ($rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)
-        $parent = Split-Path -Parent $dest
-        if (-not (Test-Path -LiteralPath $parent)) {
-            New-Item -ItemType Directory -Path $parent -Force | Out-Null
-        }
-        Download-File ("winsmux-core/agents/profiles/" + $rel) $dest
-    }
+    Download-File "winsmux-core/agents/profiles/base.md" (Join-Path $profileRoot 'base.md')
+    Download-File "winsmux-core/agents/profiles/lifecycles/one-shot.md" (Join-Path $profileRoot 'lifecycles\one-shot.md')
+    Download-File "winsmux-core/agents/profiles/lifecycles/session.md" (Join-Path $profileRoot 'lifecycles\session.md')
+    Download-File "winsmux-core/agents/profiles/lifecycles/task.md" (Join-Path $profileRoot 'lifecycles\task.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-claude-opus-4-6-thinking.md" (Join-Path $profileRoot 'models\antigravity\antigravity-claude-opus-4-6-thinking.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-claude-sonnet-4-6-thinking.md" (Join-Path $profileRoot 'models\antigravity\antigravity-claude-sonnet-4-6-thinking.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-1-pro-high.md" (Join-Path $profileRoot 'models\antigravity\antigravity-gemini-3-1-pro-high.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-1-pro-low.md" (Join-Path $profileRoot 'models\antigravity\antigravity-gemini-3-1-pro-low.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-5-flash-high.md" (Join-Path $profileRoot 'models\antigravity\antigravity-gemini-3-5-flash-high.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-5-flash-low.md" (Join-Path $profileRoot 'models\antigravity\antigravity-gemini-3-5-flash-low.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-5-flash-medium.md" (Join-Path $profileRoot 'models\antigravity\antigravity-gemini-3-5-flash-medium.md')
+    Download-File "winsmux-core/agents/profiles/models/antigravity/antigravity-gpt-oss-120b-medium.md" (Join-Path $profileRoot 'models\antigravity\antigravity-gpt-oss-120b-medium.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-fable-5.md" (Join-Path $profileRoot 'models\claude\claude-fable-5.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-haiku-4-5.md" (Join-Path $profileRoot 'models\claude\claude-haiku-4-5.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-opus-4-6.md" (Join-Path $profileRoot 'models\claude\claude-opus-4-6.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-opus-4-7.md" (Join-Path $profileRoot 'models\claude\claude-opus-4-7.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-opus-4-8.md" (Join-Path $profileRoot 'models\claude\claude-opus-4-8.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-opus-5.md" (Join-Path $profileRoot 'models\claude\claude-opus-5.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-sonnet-4-6.md" (Join-Path $profileRoot 'models\claude\claude-sonnet-4-6.md')
+    Download-File "winsmux-core/agents/profiles/models/claude/claude-sonnet-5.md" (Join-Path $profileRoot 'models\claude\claude-sonnet-5.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-gpt-5-4-mini.md" (Join-Path $profileRoot 'models\codex\codex-gpt-5-4-mini.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-gpt-5-4.md" (Join-Path $profileRoot 'models\codex\codex-gpt-5-4.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-gpt-5-5.md" (Join-Path $profileRoot 'models\codex\codex-gpt-5-5.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-gpt-5-6-luna.md" (Join-Path $profileRoot 'models\codex\codex-gpt-5-6-luna.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-gpt-5-6-sol.md" (Join-Path $profileRoot 'models\codex\codex-gpt-5-6-sol.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-gpt-5-6-terra.md" (Join-Path $profileRoot 'models\codex\codex-gpt-5-6-terra.md')
+    Download-File "winsmux-core/agents/profiles/models/codex/codex-spark.md" (Join-Path $profileRoot 'models\codex\codex-spark.md')
+    Download-File "winsmux-core/agents/profiles/models/grok-build/grok-build-composer-2-5-fast.md" (Join-Path $profileRoot 'models\grok-build\grok-build-composer-2-5-fast.md')
+    Download-File "winsmux-core/agents/profiles/models/grok-build/grok-build-grok-4-3.md" (Join-Path $profileRoot 'models\grok-build\grok-build-grok-4-3.md')
+    Download-File "winsmux-core/agents/profiles/models/openrouter/_dynamic.md" (Join-Path $profileRoot 'models\openrouter\_dynamic.md')
+    Download-File "winsmux-core/agents/profiles/models/openrouter/openrouter-glm-5-2.md" (Join-Path $profileRoot 'models\openrouter\openrouter-glm-5-2.md')
+    Download-File "winsmux-core/agents/profiles/models/openrouter/openrouter-kimi-k2-7-code.md" (Join-Path $profileRoot 'models\openrouter\openrouter-kimi-k2-7-code.md')
+    Download-File "winsmux-core/agents/profiles/models/openrouter/openrouter-sakana-fugu-ultra.md" (Join-Path $profileRoot 'models\openrouter\openrouter-sakana-fugu-ultra.md')
+    Download-File "winsmux-core/agents/profiles/providers/antigravity.md" (Join-Path $profileRoot 'providers\antigravity.md')
+    Download-File "winsmux-core/agents/profiles/providers/claude.md" (Join-Path $profileRoot 'providers\claude.md')
+    Download-File "winsmux-core/agents/profiles/providers/codex.md" (Join-Path $profileRoot 'providers\codex.md')
+    Download-File "winsmux-core/agents/profiles/providers/grok-build.md" (Join-Path $profileRoot 'providers\grok-build.md')
+    Download-File "winsmux-core/agents/profiles/providers/openrouter.md" (Join-Path $profileRoot 'providers\openrouter.md')
+    Download-File "winsmux-core/agents/profiles/registry.yaml" (Join-Path $profileRoot 'registry.yaml')
+    Download-File "winsmux-core/agents/profiles/roles/architect.md" (Join-Path $profileRoot 'roles\architect.md')
+    Download-File "winsmux-core/agents/profiles/roles/builder.md" (Join-Path $profileRoot 'roles\builder.md')
+    Download-File "winsmux-core/agents/profiles/roles/maintainer.md" (Join-Path $profileRoot 'roles\maintainer.md')
+    Download-File "winsmux-core/agents/profiles/roles/researcher.md" (Join-Path $profileRoot 'roles\researcher.md')
+    Download-File "winsmux-core/agents/profiles/roles/reviewer.md" (Join-Path $profileRoot 'roles\reviewer.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/architecture.md" (Join-Path $profileRoot 'task-classes\architecture.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/documentation.md" (Join-Path $profileRoot 'task-classes\documentation.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/implementation.md" (Join-Path $profileRoot 'task-classes\implementation.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/protocol.md" (Join-Path $profileRoot 'task-classes\protocol.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/repository-operations.md" (Join-Path $profileRoot 'task-classes\repository-operations.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/research.md" (Join-Path $profileRoot 'task-classes\research.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/review.md" (Join-Path $profileRoot 'task-classes\review.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/security.md" (Join-Path $profileRoot 'task-classes\security.md')
+    Download-File "winsmux-core/agents/profiles/task-classes/test.md" (Join-Path $profileRoot 'task-classes\test.md')
 }
+
 
 function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/api-llm-pane-worker.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "api-llm-pane-worker.ps1")
