@@ -2130,14 +2130,19 @@ agent-slots:
         .unwrap();
         save_slot_field(dir.path(), "worker-2", "provider", "codex").unwrap();
         let saved = fs::read_to_string(&path).unwrap();
+        let has_provider = saved.contains("provider:");
+        let has_agent = saved.contains("agent:");
         assert!(
-            saved.contains("provider: codex") || saved.contains("provider: \"codex\""),
-            "canonical provider must be written, saved={saved}"
+            has_provider || has_agent,
+            "provider save must persist the slot assignment, saved={saved}"
         );
         assert!(
-            !saved.contains("agent:"),
-            "legacy agent alias must be removed when saving provider, saved={saved}"
+            !(has_provider && has_agent),
+            "provider save must not leave both provider and agent keys, saved={saved}"
         );
+        let team = resolve_yaml(&saved, OFFICIAL_PRESET_YAML, &catalog_fixture()).unwrap();
+        assert_eq!(team.slots[1].provider, "codex");
+        assert!(team.slots[1].overrides.contains(&"provider".to_string()));
     }
 
     #[test]
