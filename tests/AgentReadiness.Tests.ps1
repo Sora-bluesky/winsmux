@@ -222,12 +222,14 @@ Describe 'dispatch pane echo and shell prompt detection' {
 
     It 'matches long task text when wrap decorations split the suffix' {
         $task = 'Implement TASK-833 operator dispatch path reliability for wrap-tolerant echo matching and shell prompt detection across startup commands and task text.'
-        $suffix = $task.Substring($task.Length - 70)
-        $pane = @(
-            '> Implement TASK-833 operator dispatch path reliability'
-            "> $($suffix.Substring(0, 20))"
-            "> $($suffix.Substring(20))"
-        ) -join "`n"
+        $raw = '> ' + $task
+        $lines = [System.Collections.Generic.List[string]]::new()
+        while ($raw.Length -gt 42) {
+            $lines.Add($raw.Substring(0, 42)) | Out-Null
+            $raw = '> ' + $raw.Substring(42)
+        }
+        $lines.Add($raw) | Out-Null
+        $pane = $lines -join "`n"
         Test-PaneContainsCommandFragment -PaneText $pane -CommandText $task | Should -BeTrue
     }
 }
