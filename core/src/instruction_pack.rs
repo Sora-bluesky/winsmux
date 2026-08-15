@@ -94,6 +94,12 @@ pub(crate) fn profiles_root() -> io::Result<PathBuf> {
     }
 }
 
+pub(crate) fn registry_sha256() -> io::Result<String> {
+    let source = profile_source()?;
+    let bytes = read_profile_bytes(&source, REGISTRY_FILE)?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
+}
+
 fn profile_source() -> io::Result<ProfileSource> {
     if let Some(path) = filesystem_profiles_root() {
         return Ok(ProfileSource::Filesystem(path));
