@@ -1040,6 +1040,25 @@ async function startPaneFromUiAndWaitForPrompt(page, paneId, selector) {
   await waitForPtyPrompt(page, paneId);
 }
 
+async function enableDirectWorkerPaneInputFromSettings(page) {
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible", timeout: 60_000 });
+  const userTab = page.locator("#settings-tab-user");
+  if (await userTab.isVisible().catch(() => false)) {
+    await userTab.click();
+  }
+  const inputNav = page.locator("#settings-nav-security");
+  if (await inputNav.isVisible().catch(() => false)) {
+    await inputNav.click();
+  }
+  const checkbox = page.locator("#direct-worker-pane-input");
+  await checkbox.scrollIntoViewIfNeeded();
+  await checkbox.check();
+  await page.click("#apply-settings-btn");
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden", timeout: 60_000 });
+}
+
 function escapePwshSingleQuoted(value) {
   return value.replace(/'/g, "''");
 }
@@ -3027,6 +3046,7 @@ async function main() {
 
     await runStep("worker pane starts from real UI typing", async () => {
       await setWorkbenchLayout(page, "3x2");
+      await enableDirectWorkerPaneInputFromSettings(page);
       await startPaneFromUiAndWaitForPrompt(page, "worker-1", "#pane-worker-1 .pane-terminal");
       await typeIntoTerminal(page, "#pane-worker-1 .pane-terminal", `Write-Output '${WORKER_UI_MARKER}'`);
       const output = await waitForPtyOutputLine(page, "worker-1", WORKER_UI_MARKER);
@@ -3190,6 +3210,7 @@ async function main() {
     });
 
     await runStep("worker terminal keeps shortcuts, arrows, and paste in the PTY", async () => {
+      await enableDirectWorkerPaneInputFromSettings(page);
       const terminalSelector = "#pane-worker-1 .pane-terminal";
       await page.click(terminalSelector, { timeout: 10_000 });
       await page.keyboard.press("Control+K");

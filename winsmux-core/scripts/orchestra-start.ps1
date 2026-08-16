@@ -12,6 +12,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/builder-worktree.ps1"
 . "$scriptDir/logger.ps1"
 . "$scriptDir/agent-readiness.ps1"
+. "$scriptDir/pane-dispatch-detect.ps1"
 . "$scriptDir/orchestra-preflight.ps1"
 . "$scriptDir/manifest.ps1"
 . "$scriptDir/pane-env.ps1"
@@ -1062,10 +1063,32 @@ function Send-OrchestraBridgeCommand {
     )
 
     if ($DeliveryClass -eq 'launch') {
+        $preSendText = $null
+        try {
+            $preSendSnapshot = Invoke-Winsmux `
+                -Arguments @('capture-pane', '-t', $Target, '-p', '-J', '-S', '-80') `
+                -CaptureOutput `
+                -TargetSessionName $SessionName
+            $preSendText = ($preSendSnapshot | Out-String)
+        } catch {
+            throw "pre-send capture failed for pane $Target"
+        }
+        if ($null -eq $preSendText) {
+            throw "pre-send capture failed for pane $Target"
+        }
         foreach ($chunk in @(Split-OrchestraBridgeLiteralChunks -Text $Text)) {
             Invoke-Winsmux `
                 -Arguments @('send-keys', '-t', $Target, '-l', '--', $chunk) `
                 -TargetSessionName $SessionName
+        }
+        Start-Sleep -Milliseconds 300
+        $typedSnapshot = Invoke-Winsmux `
+            -Arguments @('capture-pane', '-t', $Target, '-p', '-J', '-S', '-80') `
+            -CaptureOutput `
+            -TargetSessionName $SessionName
+        $typedText = ($typedSnapshot | Out-String)
+        if ($typedText -eq $preSendText -or -not (Test-PaneContainsCommandFragment -PaneText $typedText -CommandText $Text)) {
+            throw "launch command fragment was not observed in pane $Target"
         }
         Invoke-Winsmux `
             -Arguments @('send-keys', '-t', $Target, 'Enter') `
@@ -1701,7 +1724,7 @@ function Wait-PaneShellReady {
         try {
             $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput -TargetSessionName $SessionName
             $text = ($snapshot | Out-String).TrimEnd()
-            if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
+            if (Test-ShellPromptText -Text $text) {
                 return
             }
         } catch {

@@ -79,6 +79,7 @@ $SubmissionContractScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRo
 $ControlPlaneCommandsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-commands.ps1'))
 $ControlPlaneWorkersScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-workers.ps1'))
 $ControlPlaneLedgerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\control-plane-ledger.ps1'))
+$PaneDispatchDetectScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-dispatch-detect.ps1'))
 
 # Adapter module owns external script calls: github-write-preflight.ps1, dispatch-router.ps1,
 # task-splitter.ps1, team-pipeline.ps1, builder-queue.ps1, orchestra-smoke.ps1,
@@ -147,6 +148,10 @@ if (Test-Path $ControlPlaneWorkersScript -PathType Leaf) {
 
 if (Test-Path $ControlPlaneLedgerScript -PathType Leaf) {
     . $ControlPlaneLedgerScript
+}
+
+if (Test-Path $PaneDispatchDetectScript -PathType Leaf) {
+    . $PaneDispatchDetectScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -3392,28 +3397,6 @@ function Split-SendKeysLiteralChunks {
     return @($chunks)
 }
 
-function Test-PaneContainsCommandFragment {
-    param(
-        [AllowEmptyString()][string]$PaneText,
-        [AllowEmptyString()][string]$CommandText,
-        [ValidateRange(8, 256)][int]$FragmentLength = 64
-    )
-
-    if ([string]::IsNullOrWhiteSpace($PaneText) -or [string]::IsNullOrWhiteSpace($CommandText)) {
-        return $false
-    }
-
-    $normalizedPaneText = (($PaneText -replace '\s+', '')).ToLowerInvariant()
-    $normalizedCommandText = (($CommandText -replace '\s+', '')).ToLowerInvariant()
-    if ([string]::IsNullOrWhiteSpace($normalizedPaneText) -or [string]::IsNullOrWhiteSpace($normalizedCommandText)) {
-        return $false
-    }
-
-    $effectiveLength = [Math]::Min($FragmentLength, $normalizedCommandText.Length)
-    $fragment = $normalizedCommandText.Substring([Math]::Max(0, $normalizedCommandText.Length - $effectiveLength))
-    return $normalizedPaneText.Contains($fragment)
-}
-
 function Assert-SendPaneRuntimeLease {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
@@ -3458,6 +3441,13 @@ function Send-TextToPane {
 
     foreach ($sendTarget in $targetCandidates) {
         $preSendText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+        if ($null -eq $preSendText) {
+            $attemptFailures.Add("target ${sendTarget}: pre-send capture failed") | Out-Null
+            continue
+        }
+        # Capture is the read. Inject the read-before-interact mark before any mutation
+        # so send cannot type into an unread pane and drop as a silent no-op.
+        Set-ReadMark $PaneId
         if ($resolvedPromptTransport -eq 'stdin') {
             Assert-SendPaneRuntimeLease -PaneId $PaneId -RuntimeProjectDir $RuntimeProjectDir `
                 -RuntimeOperation $RuntimeOperation -ExpectedGenerationId $ExpectedGenerationId
@@ -3910,8 +3900,7 @@ function Wait-PaneShellReady {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         $snapshot = (Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-50') 2>$null | Out-String).TrimEnd()
-        $lastLine = Get-LastNonEmptyLine $snapshot
-        if ($lastLine -and $lastLine.Trim() -match '^PS ') {
+        if (Test-ShellPromptText -Text $snapshot) {
             return
         }
 
@@ -5680,16 +5669,14 @@ function Invoke-Role {
         # Respawn pane (kills current process + restarts shell in one step, #174)
         Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
 
-        # Wait for shell ready (poll for PS prompt)
-        $deadline = (Get-Date).AddSeconds(15)
-        while ((Get-Date) -lt $deadline) {
-            $snapshot = (Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $paneId, '-p') 2>$null | Out-String).TrimEnd()
-            $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
-            if ($lastLine -and $lastLine.Trim() -match '^PS ') { break }
-            Start-Sleep -Milliseconds 500
-        }
+        Wait-PaneShellReady -PaneId $paneId
 
         Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', $launchCmd)
+        Start-Sleep -Milliseconds 300
+        $typedText = Get-PaneSnapshotText -PaneId $paneId -Lines 200
+        if (-not (Test-PaneContainsCommandFragment -PaneText $typedText -CommandText $launchCmd)) {
+            Stop-WithError "failed to send launch command to ${paneId}: typed command fragment was not observed"
+        }
         Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, 'Enter')
     } finally {
         if (-not [string]::IsNullOrWhiteSpace($sessionName)) {

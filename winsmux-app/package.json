@@ -33,6 +33,7 @@
     "test:settings-preference-options": "node --experimental-strip-types ./scripts/settings-preference-options-check.mjs",
     "test:team-profile-settings": "node --experimental-strip-types ./scripts/team-profile-settings-check.mjs",
     "test:worker-pane-routing": "node ./scripts/worker-pane-routing-check.mjs",
+    "test:worker-pane-input": "node ./scripts/worker-pane-input-check.mjs",
     "test:worker-readiness-prompt": "node ./scripts/worker-readiness-prompt-check.mjs",
     "generate:common-contract-bindings": "node ./scripts/generate-common-contract-bindings.mjs",
     "test:common-contract-package": "node ./scripts/generate-common-contract-bindings.mjs --check && node ./scripts/common-contract-package-check.mjs",

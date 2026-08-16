@@ -187,6 +187,7 @@ $whitelistPatterns = @(
     'winsmux-app/src/modelCapabilities.ts',
     'winsmux-app/src/sourceGraph.ts',
     'winsmux-app/src/workerPaneRouting.ts',
+    'winsmux-app/src/workerPaneInput.ts',
     'winsmux-app/src/teamProfileSettings.ts',
     'winsmux-app/src/styles.css',
     'winsmux-app/src-tauri/Cargo.toml',
