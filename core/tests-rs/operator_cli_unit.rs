@@ -1,3 +1,4 @@
+use crate::shell_lifecycle::shell_prompt_ready;
 use super::*;
 use std::time::{SystemTime, UNIX_EPOCH};
 

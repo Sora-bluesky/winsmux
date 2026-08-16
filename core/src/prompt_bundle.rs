@@ -157,6 +157,7 @@ fn projection_value(
                 "role_profile": slot.role_profile,
                 "lifecycle": slot.lifecycle,
                 "task_classes": slot.task_classes,
+                "worker_backend": slot.worker_backend,
                 "source": if slot.overrides.is_empty() { "preset" } else { "override" },
             },
             "prompt_bundle": {
@@ -328,6 +329,10 @@ mod tests {
         assert!(!body.to_ascii_lowercase().contains("task-id"));
         assert!(!body.contains("TASK-"));
         assert_eq!(payload["projection"]["pane"]["status"], "ready");
+        assert!(payload["projection"]["pane"]["assignment"]
+            .as_object()
+            .expect("assignment")
+            .contains_key("worker_backend"));
         assert!(payload["projection"]["pane"]["prompt_bundle"]["sha256"].as_str().unwrap().len() == 64);
         assert!(payload["projection"]["pane"].get("task_id").is_none());
         let saved = fs::read_to_string(dir.path().join(".winsmux/manifest.yaml")).unwrap();

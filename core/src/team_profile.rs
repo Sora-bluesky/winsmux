@@ -365,8 +365,13 @@ pub(crate) fn with_classified_slot(cmd_args: &[&String], slot_id: &str) -> Vec<S
     if dispatch_args_have_slot_id(&forwarded) {
         return forwarded;
     }
-    forwarded.push("--slot-id".to_string());
-    forwarded.push(slot_id.to_string());
+    if let Some(separator) = forwarded.iter().position(|arg| arg == "--") {
+        forwarded.insert(separator, "--slot-id".to_string());
+        forwarded.insert(separator + 1, slot_id.to_string());
+    } else {
+        forwarded.push("--slot-id".to_string());
+        forwarded.push(slot_id.to_string());
+    }
     forwarded
 }
 
@@ -2390,6 +2395,24 @@ agent-slots:
                 "dispatch-task".to_string(),
                 "--slot-id".to_string(),
                 "worker-3".to_string(),
+                "implement the frozen spec".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn with_classified_slot_inserts_flag_before_end_of_options() {
+        let command = "dispatch-task".to_string();
+        let separator = "--".to_string();
+        let text = "implement the frozen spec".to_string();
+        let forwarded = with_classified_slot(&[&command, &separator, &text], "worker-2");
+        assert_eq!(
+            forwarded,
+            vec![
+                "dispatch-task".to_string(),
+                "--slot-id".to_string(),
+                "worker-2".to_string(),
+                "--".to_string(),
                 "implement the frozen spec".to_string()
             ]
         );

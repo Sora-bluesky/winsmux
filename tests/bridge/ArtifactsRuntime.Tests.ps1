@@ -182,6 +182,17 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
     }
 
+    It 'uses the YAML-aware Team Profile opt-in detector for the start gate' {
+        $script:orchestraStartContent | Should -Match 'function Test-TeamProfileOptInDocument'
+        $script:orchestraStartContent | Should -Match 'function Assert-TeamProfileStartGate'
+        $script:orchestraStartContent | Should -Match 'if \(-not \(Test-TeamProfileOptInDocument -Yaml \$raw\)\) \{'
+        $script:orchestraStartContent | Should -Not -Match '\(\?m\)\^\[ 	\]\*team-profile\[ 	\]\*:'
+    }
+
+    It 'applies projected worker backend before pane launch' {
+        $script:orchestraStartContent | Should -Match '\$SlotAgentConfig\.WorkerBackend = \$backend'
+    }
+
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
         $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -McpMode \$slotAgentConfig\.McpMode -SlotId \$label -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'

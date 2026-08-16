@@ -5107,6 +5107,8 @@ function resetDesktopProjectState() {
   workerStatusError = "";
   workerStatusRefreshInFlight = null;
   workerStatusRefreshSequence += 1;
+  teamProfileSettingsView = null;
+  teamProfileSettingsRefreshSequence += 1;
   selectedRunId = null;
   selectedEditorKey = "";
   selectedPreviewUrl = "";
@@ -12290,6 +12292,7 @@ function renderRuntimeRoleControls() {
 }
 
 let teamProfileSettingsView: TeamProfileSettingsView | null = null;
+let teamProfileSettingsRefreshSequence = 0;
 
 function injectedTeamProfileSettingsView() {
   return (window as Window & { __WINSMUX_TEAM_PROFILE_VIEW__?: unknown }).__WINSMUX_TEAM_PROFILE_VIEW__;
@@ -12304,10 +12307,24 @@ async function loadAndRenderTeamProfileSettings() {
   if (pending) {
     teamProfileSettingsView = parseTeamProfileSettingsView(pending);
   } else {
+    const requestProjectKey = captureProjectRequestKey();
+    const requestSequence = ++teamProfileSettingsRefreshSequence;
     try {
       const payload = await getDesktopTeamProfileSettingsView(getActiveProjectDirPayload());
+      if (
+        requestSequence !== teamProfileSettingsRefreshSequence
+        || !isProjectRequestCurrent(requestProjectKey)
+      ) {
+        return;
+      }
       teamProfileSettingsView = parseTeamProfileSettingsView(payload);
     } catch {
+      if (
+        requestSequence !== teamProfileSettingsRefreshSequence
+        || !isProjectRequestCurrent(requestProjectKey)
+      ) {
+        return;
+      }
       teamProfileSettingsView = null;
     }
   }

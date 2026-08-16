@@ -1224,6 +1224,13 @@ function Apply-TeamProfileLaunchProjection {
     if (-not [string]::IsNullOrWhiteSpace($effort)) {
         $SlotAgentConfig.ReasoningEffort = $effort
     }
+    $backend = [string]$assignment.worker_backend
+    if ([string]::IsNullOrWhiteSpace($backend)) {
+        $backend = [string]$assignment.'worker-backend'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($backend)) {
+        $SlotAgentConfig.WorkerBackend = $backend
+    }
 }
 
 function Add-TeamProfileBundleToLaunchCommand {
@@ -1258,7 +1265,7 @@ function Assert-TeamProfileStartGate {
         return
     }
     $raw = Get-Content -LiteralPath $settingsPath -Raw -ErrorAction SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($raw) -or ($raw -notmatch '(?m)^[ 	]*team-profile[ 	]*:')) {
+    if (-not (Test-TeamProfileOptInDocument -Yaml $raw)) {
         return
     }
 

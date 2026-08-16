@@ -113,8 +113,8 @@ pub(crate) fn pre_release_gate() -> JsonValue {
         "combined_release": "blocked_pending_task_662",
         "gates": {
             "focused_tests": {
-                "status": "pass",
-                "evidence": "cargo test --manifest-path core/Cargo.toml --locked --lib team_profile_settings --test team_profile_settings_contract"
+                "status": "not_run",
+                "evidence": "this action does not execute cargo test; required command remains cargo test --manifest-path core/Cargo.toml --locked --lib team_profile_settings --test team_profile_settings_contract"
             },
             "common_contract_parity": contract_ok,
             "public_surface_audit": public_ok,
@@ -599,6 +599,13 @@ mod tests {
         assert!(rows.iter().all(|row| row["cannot_run"] == false));
         assert_eq!(view["checkpoints"]["task_785_artifact"]["pty_capture_is_auxiliary"], true);
         assert_eq!(view["checkpoints"]["task_662"]["status"], "pending");
+    }
+
+    #[test]
+    fn pre_release_gate_does_not_mark_unrun_focused_tests_as_pass() {
+        let payload = pre_release_gate();
+        assert_eq!(payload["gates"]["focused_tests"]["status"], "not_run");
+        assert_ne!(payload["gates"]["focused_tests"]["status"], "pass");
     }
 
     #[test]

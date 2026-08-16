@@ -124,4 +124,6 @@ fn pre_release_gate_records_skipped_windows_gates() {
     assert!(stdout.contains("skipped_windows_gates"));
     assert!(stdout.contains("task_785_artifact"));
     assert!(stdout.contains("common_contract_parity"));
+    assert!(stdout.contains("\"status\":\"not_run\"") || stdout.contains("\"status\": \"not_run\""));
+    assert!(!stdout.contains("\"focused_tests\":{\"status\":\"pass\""));
 }
