@@ -122,6 +122,7 @@ import {
 } from "./firstRunWizard";
 import * as vaultOrganize from "./agentVaultOrganize";
 import * as attentionCenter from "./attentionCenter";
+import { hudChipsFromSources, type MetadataHudSources } from "./metadataHud";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -2688,6 +2689,7 @@ function renderWorkerStatusSurface() {
   bar.setAttribute("aria-hidden", workerStatusStripVisible ? "false" : "true");
   if (!workerStatusStripVisible) {
     bar.replaceChildren();
+    renderMetadataHud();
     return;
   }
 
@@ -2788,6 +2790,7 @@ function renderWorkerStatusSurface() {
   if (shadowProposal) {
     bar.appendChild(shadowProposal);
   }
+  renderMetadataHud();
 }
 
 function setWorkerStatusStripVisible(visible: boolean, options?: { persist?: boolean }) {
@@ -3545,6 +3548,115 @@ function appendAgentVaultSessionGroup(
   list.appendChild(group);
 }
 
+
+function collectMetadataHudSources(): MetadataHudSources {
+  const sources: MetadataHudSources = {};
+  const rows = getWorkerStatusRowsForSurface();
+  const focusedPaneId = getFocusedWorkbenchPaneId();
+  const focusedRow = rows.find((row) => getWorkerStatusTarget(row) === focusedPaneId) ?? rows[0] ?? null;
+  if (focusedRow) {
+    const cost = getWorkerApiPosture(focusedRow).cost.trim();
+    if (cost) {
+      sources.cost = cost;
+    }
+    const heartbeat = (getWorkerHeartbeatHealth(focusedRow) || getWorkerHeartbeatState(focusedRow)).trim();
+    if (heartbeat) {
+      sources.heartbeat = heartbeat;
+    }
+  }
+
+  const projection = getPrimaryRunProjection();
+  const explain = projection ? desktopExplainCache.get(projection.run_id) ?? null : null;
+  const tokensRemaining = (explain?.run.tokens_remaining || "").trim();
+  if (tokensRemaining) {
+    sources.tokensRemaining = tokensRemaining;
+  }
+  const branch = (projection?.branch || explain?.run.branch || "").trim();
+  if (branch) {
+    sources.branch = branch;
+  }
+  const headSha = (explain?.run.head_sha || projection?.head_sha || "").trim();
+  if (headSha) {
+    sources.headSha = headSha;
+  }
+  const worktree = (explain?.run.worktree || projection?.worktree || "").trim();
+  if (worktree) {
+    sources.worktree = worktree;
+  }
+  const previewUrl = selectedPreviewUrl.trim();
+  if (previewUrl) {
+    sources.previewUrl = previewUrl;
+  }
+  return sources;
+}
+
+function metadataHudChipLabel(id: string) {
+  switch (id) {
+    case "cost":
+      return getLanguageText("cost", "コスト");
+    case "heartbeat":
+      return getLanguageText("heartbeat", "生存確認");
+    case "context":
+      return getLanguageText("context", "コンテキスト");
+    case "branch":
+      return getLanguageText("branch", "ブランチ");
+    case "head":
+      return getLanguageText("head", "HEAD");
+    case "worktree":
+      return getLanguageText("worktree", "ワークツリー");
+    case "preview":
+      return getLanguageText("preview", "プレビュー");
+    case "cpu":
+      return getLanguageText("cpu", "CPU");
+    case "memory":
+      return getLanguageText("memory", "メモリ");
+    default:
+      return id;
+  }
+}
+
+function renderMetadataHud() {
+  const root = document.getElementById("metadata-hud");
+  if (!root) {
+    return;
+  }
+
+  const chips = hudChipsFromSources(collectMetadataHudSources());
+  root.replaceChildren();
+  root.hidden = chips.length === 0;
+  root.setAttribute("aria-label", getLanguageText("Metadata", "メタデータ"));
+  if (chips.length === 0) {
+    return;
+  }
+
+  const title = document.createElement("span");
+  title.className = "metadata-hud-title";
+  title.textContent = getLanguageText("Metadata", "メタデータ");
+  root.appendChild(title);
+
+  for (const chip of chips) {
+    const label = metadataHudChipLabel(chip.id);
+    const text = `${label}:${chip.value}`;
+    if (chip.id === "preview") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "metadata-hud-chip";
+      button.dataset.hudChip = chip.id;
+      button.textContent = text;
+      button.title = chip.value;
+      button.addEventListener("click", () => openPreviewTarget(chip.value));
+      root.appendChild(button);
+      continue;
+    }
+    const span = document.createElement("span");
+    span.className = "metadata-hud-chip";
+    span.dataset.hudChip = chip.id;
+    span.textContent = text;
+    span.title = chip.value;
+    root.appendChild(span);
+  }
+}
+
 function renderAgentVaultPanel() {
   const panel = document.getElementById("agent-vault-panel");
   if (!panel) {
@@ -3552,6 +3664,7 @@ function renderAgentVaultPanel() {
   }
   panel.hidden = !agentVaultOpen;
   updateAgentVaultToggleButton();
+  renderMetadataHud();
   if (!agentVaultOpen) {
     return;
   }
@@ -10883,6 +10996,7 @@ function applyThemeState(nextState: ThemeState) {
   renderCommandBar();
   renderSettingsControls();
   renderFooterLane();
+  renderMetadataHud();
   applyWorkerPaneDirectInputState();
   renderFirstRunWizard();
 }
@@ -16116,6 +16230,7 @@ function trapCommandBarTab(event: KeyboardEvent) {
 }
 
 function renderEditorSurface() {
+  renderMetadataHud();
   const title = document.getElementById("editor-surface-title");
   const summary = document.getElementById("editor-surface-summary");
   const path = document.getElementById("editor-file-path");
@@ -16396,6 +16511,7 @@ function renderEditorSurface() {
     });
     tabs.appendChild(tab);
   }
+  renderMetadataHud();
 }
 
 function splitEditorCodeLines(content: string): EditorCodeLine[] {
@@ -18407,6 +18523,7 @@ function renderDesktopSurfaces() {
   renderAgentWorkDashboard();
   renderAgentVaultPanel();
   renderConversation(getConversationItems());
+  renderMetadataHud();
 }
 
 function formatPaneMetaTime(timestamp: string) {
@@ -18884,6 +19001,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceEntries();
   renderEvidenceView();
   renderAgentVaultPanel();
+  renderMetadataHud();
   void refreshAttentionCenter().then(() => renderAgentVaultPanel());
   renderContextPanel();
   renderSettingsControls();
