@@ -52,6 +52,7 @@ fn settings_view_keeps_user_overrides_after_preset_fields() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("\"source\":\"override\"") || stdout.contains("\"source\": \"override\""));
+    assert!(stdout.contains("\"resettable\":true") || stdout.contains("\"resettable\": true"));
     assert!(stdout.contains("worker-6"));
     assert!(stdout.contains("reasoning-effort"));
     assert!(stdout.contains("one-shot"));

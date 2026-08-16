@@ -38,6 +38,7 @@ export const TEAM_PROFILE_TASK_CLASSES = [
 export interface TeamProfileFieldView {
   value: unknown;
   source: "preset" | "override" | "legacy";
+  resettable?: boolean;
 }
 
 export interface TeamProfileRuntimeDisplay {
@@ -109,10 +110,9 @@ export function confirmTeamProfileReset(input: { confirmed?: boolean }): boolean
 }
 
 export function shouldExposeTeamProfileReset(
-  view: TeamProfileSettingsView,
-  source: TeamProfileFieldView["source"] | string,
+  field?: TeamProfileFieldView | null,
 ): boolean {
-  return view.opted_in === true && source === "override";
+  return field?.resettable === true;
 }
 
 export function keepOverridesAfterPresetApply<T extends Record<string, unknown>>(
@@ -215,11 +215,12 @@ export function renderTeamProfileSettingsPanel(
     for (const field of fields) {
       const cell = doc.createElement("div");
       cell.className = "team-profile-settings-field";
-      const source = row.fields?.[field]?.source ?? "preset";
-      const value = row.fields?.[field]?.value;
+      const fieldView = row.fields?.[field];
+      const source = fieldView?.source ?? "preset";
+      const value = fieldView?.value;
       cell.setAttribute("data-source", String(source));
       cell.textContent = `${field}: ${String(value ?? "")} (${source})`;
-      if (shouldExposeTeamProfileReset(view, source)) {
+      if (shouldExposeTeamProfileReset(fieldView)) {
         const reset = doc.createElement("button");
         reset.type = "button";
         reset.className = "ghost-btn ghost-btn-small team-profile-reset";

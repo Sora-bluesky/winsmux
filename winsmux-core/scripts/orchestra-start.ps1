@@ -25,6 +25,7 @@ $sessionName = 'winsmux-orchestra'
 $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $script:winsmuxBin = $null
+$script:teamProfileOptedIn = $false
 $script:RequestedProjectDir = $RequestedRootPath
 
 function Enable-OrchestraManagedWarmSuppression {
@@ -1127,15 +1128,6 @@ function New-OrchestraWorkerLaunchApproval {
 }
 
 
-function Test-TeamProfileOptInDocument {
-    param([AllowEmptyString()][string]$Yaml)
-
-    if ([string]::IsNullOrWhiteSpace($Yaml)) {
-        return $false
-    }
-    return [bool]($Yaml -match '(?m)(^|[\s{,])["'']?team[-_]profile["'']?\s*:')
-}
-
 function Invoke-TeamProfileLaunchProjection {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1145,12 +1137,7 @@ function Invoke-TeamProfileLaunchProjection {
         [string]$ReadWriteScope = 'session'
     )
 
-    $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
-    if (-not (Test-Path -LiteralPath $settingsPath)) {
-        return $null
-    }
-    $raw = Get-Content -LiteralPath $settingsPath -Raw -ErrorAction SilentlyContinue
-    if (-not (Test-TeamProfileOptInDocument -Yaml $raw)) {
+    if ($script:teamProfileOptedIn -ne $true) {
         return $null
     }
 
@@ -1189,48 +1176,49 @@ function Invoke-TeamProfileLaunchProjection {
     }
 }
 
-function Apply-TeamProfileLaunchProjection {
+function New-TeamProfileSlotAgentConfig {
     param(
-        [Parameter(Mandatory = $true)]$SlotAgentConfig,
-        [Parameter(Mandatory = $true)]$Projection,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)]$Assignment,
+        $Settings,
         [string]$RootPath = ''
     )
 
-    $assignment = $null
-    if ($null -ne $Projection.projection -and $null -ne $Projection.projection.pane) {
-        $assignment = $Projection.projection.pane.assignment
+    $provider = [string]$Assignment.provider
+    $launchModel = [string]$Assignment.launch_model
+    if ([string]::IsNullOrWhiteSpace($launchModel)) {
+        $launchModel = [string]$Assignment.model
     }
-    if ($null -eq $assignment) {
-        return
+    $effort = [string]$Assignment.reasoning_effort
+    $backend = [string]$Assignment.worker_backend
+    if ([string]::IsNullOrWhiteSpace($backend)) {
+        $backend = [string]$Assignment.'worker-backend'
     }
 
-    $provider = [string]$assignment.provider
-    $launchModel = [string]$assignment.launch_model
-    $effort = [string]$assignment.reasoning_effort
-    if (-not [string]::IsNullOrWhiteSpace($provider)) {
-        $SlotAgentConfig.Agent = $provider
-        if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
-            $capability = Resolve-BridgeProviderCapability -ProviderId $provider -RootPath $RootPath -RequireWhenRegistryPresent
-            if ($null -ne $capability) {
-                $SlotAgentConfig.CapabilityAdapter = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'adapter' -Default $provider)
-                $SlotAgentConfig.CapabilityCommand = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'command' -Default '')
-            }
-        }
-    }
-    if (-not [string]::IsNullOrWhiteSpace($launchModel)) {
-        $SlotAgentConfig.Model = $launchModel
-        $SlotAgentConfig.ModelSource = 'operator-override'
-    }
-    if (-not [string]::IsNullOrWhiteSpace($effort)) {
-        $SlotAgentConfig.ReasoningEffort = $effort
-    }
-    $backend = [string]$assignment.worker_backend
-    if ([string]::IsNullOrWhiteSpace($backend)) {
-        $backend = [string]$assignment.'worker-backend'
+    $slot = [ordered]@{
+        slot_id = $SlotId
+        provider = $provider
+        model = $launchModel
+        reasoning_effort = $effort
     }
     if (-not [string]::IsNullOrWhiteSpace($backend)) {
-        $SlotAgentConfig.WorkerBackend = $backend
+        $slot['worker_backend'] = $backend
     }
+
+    $overlay = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+    if ($Settings -is [System.Collections.IDictionary]) {
+        foreach ($key in @($Settings.Keys)) {
+            $overlay[$key] = $Settings[$key]
+        }
+    } elseif ($null -ne $Settings -and $null -ne $Settings.PSObject) {
+        foreach ($property in $Settings.PSObject.Properties) {
+            $overlay[$property.Name] = $property.Value
+        }
+    }
+    $overlay['agent_slots'] = @([pscustomobject]$slot)
+
+    return Get-SlotAgentConfig -Role $Role -SlotId $SlotId -Settings $overlay -RootPath $RootPath -IgnoreProviderRegistry
 }
 
 function Add-TeamProfileBundleToLaunchCommand {
@@ -1260,12 +1248,9 @@ function Assert-TeamProfileStartGate {
         [Parameter(Mandatory = $true)][string]$ProjectDir
     )
 
+    $script:teamProfileOptedIn = $false
     $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
     if (-not (Test-Path -LiteralPath $settingsPath)) {
-        return
-    }
-    $raw = Get-Content -LiteralPath $settingsPath -Raw -ErrorAction SilentlyContinue
-    if (-not (Test-TeamProfileOptInDocument -Yaml $raw)) {
         return
     }
 
@@ -1280,9 +1265,19 @@ function Assert-TeamProfileStartGate {
     $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @(
         'team-profile', '--action', 'start-gate', '--json', '--project-dir', $ProjectDir
     ) 2>&1
+    $text = ($output | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) {
-        throw ("Team Profile start gate refused before worker panes were created: {0}" -f ($output | Out-String))
+        throw ("Team Profile start gate refused before worker panes were created: {0}" -f $text)
     }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "Team Profile start gate returned no JSON."
+    }
+    try {
+        $payload = $text | ConvertFrom-Json
+    } catch {
+        throw ("Team Profile start gate returned invalid JSON: {0}" -f $text)
+    }
+    $script:teamProfileOptedIn = [bool]($payload.opted_in -eq $true)
 }
 
 function New-OrchestraPaneBootstrapPlan {
@@ -3198,13 +3193,19 @@ if ($MyInvocation.InvocationName -ne '.') {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
+        $slotAgentConfig = $null
         $teamProfileProjection = $null
         if ($canonicalRole -eq 'Worker') {
             $teamProfileProjection = Invoke-TeamProfileLaunchProjection -ProjectDir $projectDir -SessionId $sessionName -SlotId $label -Worktree $launchDir -ReadWriteScope 'session'
-            if ($null -ne $teamProfileProjection) {
-                Apply-TeamProfileLaunchProjection -SlotAgentConfig $slotAgentConfig -Projection $teamProfileProjection -RootPath $projectDir
+            if ($null -ne $teamProfileProjection -and $null -ne $teamProfileProjection.projection -and $null -ne $teamProfileProjection.projection.pane) {
+                $assignment = $teamProfileProjection.projection.pane.assignment
+                if ($null -ne $assignment) {
+                    $slotAgentConfig = New-TeamProfileSlotAgentConfig -Role $canonicalRole -SlotId $label -Assignment $assignment -Settings $settings -RootPath $projectDir
+                }
             }
+        }
+        if ($null -eq $slotAgentConfig) {
+            $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
         }
         $execModeAgent = [string]$slotAgentConfig.CapabilityAdapter
         if ([string]::IsNullOrWhiteSpace($execModeAgent)) {

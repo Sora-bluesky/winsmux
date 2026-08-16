@@ -394,7 +394,8 @@ fn field_sources(slot: &ResolvedSlot, inherited: &str) -> JsonValue {
             name.to_string(),
             json!({
                 "value": value,
-                "source": source
+                "source": source,
+                "resettable": source == "override"
             }),
         );
     }
@@ -593,6 +594,13 @@ mod tests {
         let rows = view["rows"].as_array().unwrap();
         assert_eq!(rows.len(), 6);
         assert!(rows.iter().all(|row| row["fields"]["provider"]["source"] == "preset"));
+        assert!(rows.iter().all(|row| {
+            row["fields"]
+                .as_object()
+                .unwrap()
+                .values()
+                .all(|field| field["resettable"] == false)
+        }));
         assert!(rows.iter().all(|row| row["cannot_run"] == false));
         assert_eq!(view["checkpoints"]["task_785_artifact"]["pty_capture_is_auxiliary"], true);
         assert_eq!(view["checkpoints"]["task_662"]["status"], "pending");
@@ -619,8 +627,10 @@ mod tests {
         let view = settings_view(dir.path());
         let rows = view["rows"].as_array().unwrap();
         assert_eq!(rows[5]["fields"]["reasoning-effort"]["source"], "override");
+        assert_eq!(rows[5]["fields"]["reasoning-effort"]["resettable"], true);
         assert_eq!(rows[5]["fields"]["reasoning-effort"]["value"], "low");
         assert_eq!(rows[0]["fields"]["reasoning-effort"]["source"], "preset");
+        assert_eq!(rows[0]["fields"]["reasoning-effort"]["resettable"], false);
         assert_eq!(rows[0]["fields"]["provider"]["source"], "preset");
     }
 

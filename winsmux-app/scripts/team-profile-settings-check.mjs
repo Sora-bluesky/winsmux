@@ -118,11 +118,15 @@ const officialView = parseTeamProfileSettingsView({
     cannot_run: false,
     launch_blocked: false,
     fields: {
-      provider: { value: "codex", source: "preset" },
-      model: { value: "codex-gpt-5-6-terra", source: "preset" },
-      "reasoning-effort": { value: "high", source: slot_id === "worker-6" ? "override" : "preset" },
-      "role-profile": { value: "builder", source: "preset" },
-      lifecycle: { value: "task", source: "preset" },
+      provider: { value: "codex", source: "preset", resettable: false },
+      model: { value: "codex-gpt-5-6-terra", source: "preset", resettable: false },
+      "reasoning-effort": {
+        value: "high",
+        source: slot_id === "worker-6" ? "override" : "preset",
+        resettable: slot_id === "worker-6",
+      },
+      "role-profile": { value: "builder", source: "preset", resettable: false },
+      lifecycle: { value: "task", source: "preset", resettable: false },
     },
     runtime_display: {
       slot_id,
@@ -178,10 +182,12 @@ assert.equal(shouldRefuseTeamProfileApply(invalidView), true);
 assert.equal(confirmTeamProfileReset({ confirmed: false }), false);
 assert.equal(confirmTeamProfileReset({}), false);
 assert.equal(confirmTeamProfileReset({ confirmed: true }), true);
-assert.equal(shouldExposeTeamProfileReset(officialView, "override"), true);
-assert.equal(shouldExposeTeamProfileReset(officialView, "preset"), false);
-assert.equal(shouldExposeTeamProfileReset({ ...officialView, opted_in: false }, "override"), false);
-assert.equal(shouldExposeTeamProfileReset({ ...officialView, opted_in: false }, "legacy"), false);
+assert.equal(shouldExposeTeamProfileReset({ value: "low", source: "override", resettable: true }), true);
+assert.equal(shouldExposeTeamProfileReset({ value: "low", source: "override" }), false);
+assert.equal(shouldExposeTeamProfileReset({ value: "high", source: "preset", resettable: false }), false);
+assert.equal(shouldExposeTeamProfileReset({ value: "codex", source: "legacy", resettable: false }), false);
+assert.equal(source.includes("opted_in === true && source ==="), false);
+assert.ok(source.includes("resettable"));
 
 const chips = formatTeamProfileRuntimeChips(officialView.rows[0].runtime_display);
 assert.deepEqual(chips.map((chip) => chip.field), ["provider", "model", "effort", "role", "lifecycle", "task-classes", "source", "validation", "bundle"]);
@@ -228,7 +234,7 @@ const legacyView = parseTeamProfileSettingsView({
   rows: officialView.rows.map((row) => ({
     ...row,
     fields: Object.fromEntries(
-      Object.entries(row.fields).map(([field, value]) => [field, { ...value, source: "legacy" }]),
+      Object.entries(row.fields).map(([field, value]) => [field, { ...value, source: "legacy", resettable: false }]),
     ),
   })),
 });

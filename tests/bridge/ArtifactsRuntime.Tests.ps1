@@ -182,28 +182,31 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
     }
 
-    It 'uses the YAML-aware Team Profile opt-in detector for the start gate' {
-        $script:orchestraStartContent | Should -Match 'function Test-TeamProfileOptInDocument'
+    It 'always invokes Team Profile start-gate when .winsmux.yaml exists' {
+        $script:orchestraStartContent | Should -Not -Match 'function Test-TeamProfileOptInDocument'
+        $script:orchestraStartContent | Should -Not -Match 'Test-TeamProfileOptInDocument'
         $script:orchestraStartContent | Should -Match 'function Assert-TeamProfileStartGate'
-        $script:orchestraStartContent | Should -Match 'if \(-not \(Test-TeamProfileOptInDocument -Yaml \$raw\)\) \{'
-        $script:orchestraStartContent | Should -Not -Match '\(\?m\)\^\[ 	\]\*team-profile\[ 	\]\*:'
-        $script:orchestraStartContent | Should -Match 'team\[-_\]profile'
+        $script:orchestraStartContent | Should -Match "'--action', 'start-gate'"
+        $script:orchestraStartContent | Should -Match '\$script:teamProfileOptedIn = \[bool\]\(\$payload\.opted_in -eq \$true\)'
+        $startGate = $script:orchestraStartContent.IndexOf('function Assert-TeamProfileStartGate')
+        $next = $script:orchestraStartContent.IndexOf("`nfunction ", $startGate + 1)
+        $startGate | Should -BeGreaterThan -1
+        $next | Should -BeGreaterThan $startGate
+        $body = $script:orchestraStartContent.Substring($startGate, $next - $startGate)
+        $body | Should -Match 'start-gate'
+        $body | Should -Not -Match 'Get-Content'
+        $body | Should -Not -Match 'team\[-_\]profile'
     }
 
-    It 'recognizes snake_case Team Profile opt-in keys' {
-        $start = $script:orchestraStartContent.IndexOf('function Test-TeamProfileOptInDocument')
-        $next = $script:orchestraStartContent.IndexOf("`nfunction ", $start + 1)
-        $start | Should -BeGreaterThan -1
-        $next | Should -BeGreaterThan $start
-        Invoke-Expression $script:orchestraStartContent.Substring($start, $next - $start)
-        Test-TeamProfileOptInDocument -Yaml "team_profile:`n  schema-version: 1" | Should -BeTrue
-        Test-TeamProfileOptInDocument -Yaml '"team_profile": { schema-version: 1 }' | Should -BeTrue
-        Test-TeamProfileOptInDocument -Yaml "team-profile:`n  schema-version: 1" | Should -BeTrue
-        Test-TeamProfileOptInDocument -Yaml "agent-slots:`n  - slot-id: worker-1" | Should -BeFalse
-    }
-
-    It 'applies projected worker backend before pane launch' {
-        $script:orchestraStartContent | Should -Match '\$SlotAgentConfig\.WorkerBackend = \$backend'
+    It 'builds opted-in worker SlotAgentConfig from Team Profile assignment overlay' {
+        $script:orchestraStartContent | Should -Match 'function New-TeamProfileSlotAgentConfig'
+        $script:orchestraStartContent | Should -Match 'New-TeamProfileSlotAgentConfig -Role \$canonicalRole -SlotId \$label -Assignment \$assignment -Settings \$settings -RootPath \$projectDir'
+        $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$Role -SlotId \$SlotId -Settings \$overlay -RootPath \$RootPath -IgnoreProviderRegistry'
+        $script:orchestraStartContent | Should -Match '\$overlay\[''agent_slots''\]'
+        $script:orchestraStartContent | Should -Match '\$slot\[''worker_backend''\] = \$backend'
+        $script:orchestraStartContent | Should -Not -Match '\$SlotAgentConfig\.WorkerBackend = \$backend'
+        $script:orchestraStartContent | Should -Not -Match 'function Apply-TeamProfileLaunchProjection'
+        $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
     }
 
     It 'builds pane launch commands through provider capability metadata' {

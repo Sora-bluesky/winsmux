@@ -5109,6 +5109,7 @@ function resetDesktopProjectState() {
   workerStatusRefreshSequence += 1;
   teamProfileSettingsView = null;
   teamProfileSettingsRefreshSequence += 1;
+  document.getElementById("team-profile-settings-root")?.replaceChildren();
   selectedRunId = null;
   selectedEditorKey = "";
   selectedPreviewUrl = "";
@@ -5152,6 +5153,7 @@ function setActiveProjectDir(projectDir: string | null) {
   persistActiveProjectDir();
   resetDesktopProjectState();
   renderDesktopSurfaces();
+  void loadAndRenderTeamProfileSettings();
   void refreshProjectExplorerEntries();
   void refreshBrowserSourceControl();
   void refreshWorkerStatusSurface();
@@ -12329,7 +12331,11 @@ async function loadAndRenderTeamProfileSettings() {
     }
   }
   const root = document.getElementById("team-profile-settings-root");
-  if (!root || !teamProfileSettingsView) {
+  if (!root) {
+    return;
+  }
+  if (!teamProfileSettingsView) {
+    root.replaceChildren();
     return;
   }
   const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
