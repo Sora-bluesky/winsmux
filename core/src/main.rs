@@ -34,6 +34,7 @@ mod dogfood;
 mod machine_contract;
 mod context_pack;
 mod operator_cli;
+mod condensed_events;
 mod workspace_migrate;
 mod team_profile;
 mod team_profile_settings;
@@ -1011,6 +1012,7 @@ fn run_main() -> io::Result<()> {
         "consult-error" => return operator_cli::run_consult_error_command(&cmd_args[1..]),
         "search-ledger" => return search_ledger::run_search_ledger_command(&cmd_args[1..]),
         "poll-events" => return operator_cli::run_poll_events_command(&cmd_args[1..]),
+        "events" => return condensed_events::run_events_command(&cmd_args[1..]),
         "dispatch-review" => return operator_cli::run_dispatch_review_command(&cmd_args[1..]),
         "review-request" => return operator_cli::run_review_request_command(&cmd_args[1..]),
         "review-approve" => return operator_cli::run_review_approve_command(&cmd_args[1..]),
