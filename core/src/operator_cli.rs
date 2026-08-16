@@ -18,6 +18,7 @@ use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::ledger::{attach_evidence_chain_to_event, public_changed_files};
 use crate::machine_contract::machine_contract_catalog;
 use crate::read_path;
+use crate::shell_lifecycle::shell_prompt_ready;
 use crate::types::VERSION;
 use crate::workflow::normalize_workspace_plan_payload;
 use crate::workspace_project_settings::{self, WorkspacePlanProjectSettings};
@@ -6987,6 +6988,7 @@ fn usage_for(command: &str) -> &'static str {
             "usage: winsmux workspace-plan --recipe-id <id> [--workflow-id <id>] [--run-id <id>] [--context-pack-id <id> --context-pack-input -] --json [--project-dir <path>]"
         }
         "workspace-migrate" => crate::workspace_migrate::USAGE,
+        "team-profile" => crate::team_profile::USAGE,
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
@@ -8421,7 +8423,7 @@ fn wait_for_shell_prompt(pane_id: &str) -> io::Result<()> {
     let deadline = Instant::now() + Duration::from_secs(15);
     while Instant::now() < deadline {
         let text = capture_pane_tail(pane_id)?;
-        if text.lines().any(|line| line.trim().starts_with("PS ")) {
+        if shell_prompt_ready(&text) {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(500));

@@ -1425,3 +1425,30 @@ fn operator_cli_review_reset_removes_empty_review_state_file() {
     assert!(!project_dir.join(".winsmux").join("review-state.json").exists());
     let _ = std::fs::remove_dir_all(project_dir);
 }
+
+#[test]
+fn shell_prompt_ready_accepts_unwrapped_powershell_prompt() {
+    assert!(shell_prompt_ready("PS C:\\repo>"));
+    assert!(shell_prompt_ready("PS /home/user>"));
+}
+
+#[test]
+fn shell_prompt_ready_accepts_wrapped_powershell_prompt() {
+    let wrapped = "PS C:\\Users\\Administrator\\Documents\\winsmux-o\nrchestra>";
+    assert!(shell_prompt_ready(wrapped));
+    let wrapped_gt = "PS C:\\very\\long\\path\\winsmux-orchestra\n>";
+    assert!(shell_prompt_ready(wrapped_gt));
+}
+
+#[test]
+fn shell_prompt_ready_rejects_copyright_banner_and_busy_output() {
+    let banner = concat!(
+        "PowerShell 7.5.4\n",
+        "Copyright (c) Microsoft Corporation.\n",
+        "https://aka.ms/powershell\n",
+        "Type 'help' to get help."
+    );
+    assert!(!shell_prompt_ready(banner));
+    let busy = "PS C:\\repo> pwsh -NoProfile -File launch.ps1\nrunning bootstrap";
+    assert!(!shell_prompt_ready(busy));
+}

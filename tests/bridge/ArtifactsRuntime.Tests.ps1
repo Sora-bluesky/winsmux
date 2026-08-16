@@ -3157,6 +3157,96 @@ Describe 'winsmux send fallback' {
         $script:sendAttempts | Should -Be @('%7 paste', 'default:0.3 paste', 'default:0.3 Enter')
     }
 
+    It 'TASK833 injects the read-before-interact mark before the first send-keys' {
+        $script:protocolTrace = [System.Collections.Generic.List[string]]::new()
+        $script:snapshotCount = 0
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Split-SendKeysLiteralChunks { @('echo test') }
+        Mock Get-PaneSnapshotText {
+            $script:snapshotCount++
+            switch ($script:snapshotCount) {
+                1 { return 'PS C:\repo> ' }
+                2 { return 'PS C:\repo> echo test' }
+                default { return "PS C:\repo> echo test`nresult" }
+            }
+        }
+        Mock Assert-SendPaneRuntimeLease { }
+        Mock Set-ReadMark { $script:protocolTrace.Add('read-mark') | Out-Null }
+        Mock Invoke-WinsmuxSendKeys {
+            $script:protocolTrace.Add('send-keys') | Out-Null
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Save-Watermark { }
+
+        $result = Send-TextToPane -PaneId '%7' -CommandText 'echo test'
+        $result | Should -Be 'sent to %7 via %7'
+        $script:protocolTrace[0] | Should -Be 'read-mark'
+        ($script:protocolTrace.IndexOf('read-mark')) | Should -BeLessThan ($script:protocolTrace.IndexOf('send-keys'))
+    }
+
+    It 'TASK833 fails closed when pre-send capture returns null' {
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Get-PaneSnapshotText { $null }
+        Mock Stop-WithError { param([string]$Message) throw $Message }
+        Mock Set-ReadMark { throw 'read mark must not be set after failed capture' }
+        Mock Invoke-WinsmuxSendKeys { throw 'send-keys must not run after failed capture' }
+
+        { Send-TextToPane -PaneId '%7' -CommandText 'echo test' } |
+            Should -Throw '*pre-send capture failed*'
+    }
+
+    It 'TASK833 observes a wrapped startup command echo before Enter' {
+        $launch = 'pwsh -NoProfile -File C:\Users\Administrator\Documents\winsmux-orchestra\winsmux-core\scripts\orchestra-pane-bootstrap.ps1 -PlanFile C:\Users\Administrator\Documents\winsmux-orchestra\.winsmux\orchestra-bootstrap\%2.json'
+        $wrapped = @(
+            'PS C:\Users\Administrator\Documents\winsmux-orchestra> pwsh -NoProfile -File C:\Users\Administrator\Documents\winsmux-o'
+            '> rchestra\winsmux-core\scripts\orchestra-pane-bootstrap.ps1 -PlanFile C:\Users\Administrator\Documents\winsmux-orchestra\.winsmux\orchestra-bootstrap\%2.json'
+        ) -join "`n"
+        $script:snapshotCount = 0
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Split-SendKeysLiteralChunks { @($launch) }
+        Mock Get-PaneSnapshotText {
+            $script:snapshotCount++
+            switch ($script:snapshotCount) {
+                1 { return 'PS C:\Users\Administrator\Documents\winsmux-orchestra>' }
+                2 { return $wrapped }
+                default { return "$wrapped`nstarting" }
+            }
+        }
+        Mock Assert-SendPaneRuntimeLease { }
+        Mock Invoke-WinsmuxSendKeys { [PSCustomObject]@{ ExitCode = 0; Output = '' } }
+        Mock Save-Watermark { }
+        Mock Set-ReadMark { }
+
+        Send-TextToPane -PaneId '%7' -CommandText $launch | Should -Be 'sent to %7 via %7'
+        Should -Invoke Invoke-WinsmuxSendKeys -Times 1 -Exactly -ParameterFilter {
+            -not $Literal -and [string]$Keys[0] -ceq 'Enter'
+        }
+    }
+
+    It 'TASK833 observes wrapped task text when only the prefix is captured' {
+        $task = 'Implement TASK-833 operator dispatch path reliability for wrap-tolerant echo matching and shell prompt detection across startup commands and task text.'
+        $script:snapshotCount = 0
+        Mock Resolve-TerminalBackend { 'tauri' }
+        Mock Split-SendKeysLiteralChunks { @($task) }
+        Mock Get-PaneSnapshotText {
+            $script:snapshotCount++
+            switch ($script:snapshotCount) {
+                1 { return '> ' }
+                2 { return ('> ' + $task.Substring(0, 72)) }
+                default { return ('> ' + $task.Substring(0, 72) + "`nsubmitted") }
+            }
+        }
+        Mock Assert-SendPaneRuntimeLease { }
+        Mock Invoke-WinsmuxSendKeys { [PSCustomObject]@{ ExitCode = 0; Output = '' } }
+        Mock Save-Watermark { }
+        Mock Set-ReadMark { }
+
+        Send-TextToPane -PaneId '%7' -CommandText $task | Should -Be 'sent to %7 via %7'
+        Should -Invoke Invoke-WinsmuxSendKeys -Times 1 -Exactly -ParameterFilter {
+            -not $Literal -and [string]$Keys[0] -ceq 'Enter'
+        }
+    }
+
 }
 
 Describe 'watermark helpers' {

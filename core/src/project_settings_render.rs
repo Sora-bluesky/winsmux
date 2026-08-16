@@ -132,6 +132,53 @@ pub(crate) fn render_owned_workspace_recipes(
     .map_err(|_| generic_error())
 }
 
+pub(crate) fn render_owned_lane_b(
+    original_yaml: &str,
+    team_profile: Option<serde_json::Value>,
+    agent_slots: Option<serde_json::Value>,
+) -> io::Result<String> {
+    let mut desired_settings = serde_json::Map::new();
+    let mut owned_keys = Vec::new();
+    if let Some(profile) = team_profile {
+        desired_settings.insert("team-profile".to_string(), profile);
+        owned_keys.push("team-profile".to_string());
+    }
+    if let Some(slots) = agent_slots {
+        desired_settings.insert("agent-slots".to_string(), slots);
+        owned_keys.push("agent-slots".to_string());
+    }
+    if owned_keys.is_empty() {
+        return Err(generic_error());
+    }
+    let mut aliases = BTreeMap::new();
+    aliases.insert("agent".to_string(), "provider".to_string());
+    render(RenderRequest {
+        original_yaml: original_yaml.to_string(),
+        desired_settings,
+        owned_keys,
+        nested_contract: NestedContractRequest {
+            agent_slots: KeyedSequenceContractRequest {
+                identity_key: "slot-id".to_string(),
+                owned_keys: vec![
+                    "slot-id".to_string(),
+                    "provider".to_string(),
+                    "model".to_string(),
+                    "reasoning-effort".to_string(),
+                    "role-profile".to_string(),
+                    "lifecycle".to_string(),
+                    "task-classes".to_string(),
+                    "delegation".to_string(),
+                ],
+                aliases,
+            },
+            roles: MappingValuesContractRequest {
+                owned_keys: Vec::new(),
+            },
+        },
+    })
+    .map_err(|_| generic_error())
+}
+
 fn render_from_stdin(args: &[String]) -> Result<String, ()> {
     if !args.is_empty() {
         return Err(());

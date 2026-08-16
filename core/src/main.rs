@@ -34,6 +34,7 @@ mod machine_contract;
 mod context_pack;
 mod operator_cli;
 mod workspace_migrate;
+mod team_profile;
 mod project_settings_render;
 mod client;
 mod app;
@@ -911,10 +912,33 @@ fn run_main() -> io::Result<()> {
     }
 
     if is_winsmux_core_bridge_command(cmd) {
+        let mut owned_dispatch_args = None;
+        if cmd == "dispatch-task" {
+            match team_profile::gate_dispatch(&cmd_args[1..])? {
+                team_profile::DispatchGate::Refused(payload) => {
+                    println!("{payload}");
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "dispatch-task refused unclassifiable or operator-owned work.",
+                    ));
+                }
+                team_profile::DispatchGate::Classified { slot_id } => {
+                    owned_dispatch_args =
+                        Some(team_profile::with_classified_slot(&cmd_args, &slot_id));
+                }
+                team_profile::DispatchGate::Passthrough => {}
+            }
+        }
+        let forwarded_owned = owned_dispatch_args;
+        let forwarded: Vec<&String> = if let Some(ref owned) = forwarded_owned {
+            owned.iter().collect()
+        } else {
+            cmd_args.clone()
+        };
         if let Some(script_path) = find_winsmux_core_script() {
             return run_winsmux_core_script(
                 script_path,
-                &cmd_args,
+                &forwarded,
                 l_socket_name.as_deref(),
                 s_socket_selector.as_deref(),
                 session_namespace.as_deref(),
@@ -940,6 +964,7 @@ fn run_main() -> io::Result<()> {
         "workspace-migrate" => {
             return workspace_migrate::run_workspace_migrate_command(&cmd_args[1..])
         }
+        "team-profile" => return team_profile::run_team_profile_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),

@@ -43,6 +43,9 @@ $script:BridgeSlotScalarKeys = @(
     'model',
     'model_source',
     'reasoning_effort',
+    'provider',
+    'role_profile',
+    'lifecycle',
     'prompt_transport',
     'mcp_mode',
     'auth_mode',
@@ -53,7 +56,7 @@ $script:BridgeSlotScalarKeys = @(
     'pane_title',
     'fallback_model'
 )
-$script:BridgeSlotListKeys = @()
+$script:BridgeSlotListKeys = @('task_classes', 'delegation')
 $script:BridgeRoleScalarKeys = @(
     'agent',
     'model',
@@ -496,6 +499,35 @@ function ConvertTo-BridgeSlotKey {
     }
 }
 
+function Get-BridgeSlotAgentName {
+    param([AllowNull()]$Slot)
+
+    if ($null -eq $Slot) {
+        return ''
+    }
+
+    if ($Slot -is [System.Collections.IDictionary]) {
+        if ($Slot.Contains('provider') -and -not [string]::IsNullOrWhiteSpace([string]$Slot['provider'])) {
+            return [string]$Slot['provider']
+        }
+        if ($Slot.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$Slot['agent'])) {
+            return [string]$Slot['agent']
+        }
+        return ''
+    }
+
+    if ($null -ne $Slot.PSObject) {
+        if ($Slot.PSObject.Properties.Name -contains 'provider' -and -not [string]::IsNullOrWhiteSpace([string]$Slot.provider)) {
+            return [string]$Slot.provider
+        }
+        if ($Slot.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$Slot.agent)) {
+            return [string]$Slot.agent
+        }
+    }
+
+    return ''
+}
+
 function ConvertTo-BridgeSlotEntry {
     param([AllowNull()]$Value)
 
@@ -564,6 +596,11 @@ function ConvertTo-BridgeSlotEntry {
         } else {
             $slot.model_source = 'operator-override'
         }
+    }
+
+    $canonicalAgent = Get-BridgeSlotAgentName -Slot $slot
+    if (-not [string]::IsNullOrWhiteSpace($canonicalAgent)) {
+        $slot.agent = $canonicalAgent
     }
 
     return $slot
@@ -2995,7 +3032,9 @@ function Get-RoleAgentConfig {
     $roleModelSet = $false
     $roleModelSourceSet = $false
     if ($resolvedRoleConfig -is [System.Collections.IDictionary]) {
-        if ($resolvedRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['agent'])) {
+        if ($resolvedRoleConfig.Contains('provider') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['provider'])) {
+            $agent = [string]$resolvedRoleConfig['provider']
+        } elseif ($resolvedRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['agent'])) {
             $agent = [string]$resolvedRoleConfig['agent']
         }
 
@@ -3021,7 +3060,9 @@ function Get-RoleAgentConfig {
             $authMode = [string]$resolvedRoleConfig['auth_mode']
         }
     } elseif ($null -ne $resolvedRoleConfig -and $null -ne $resolvedRoleConfig.PSObject) {
-        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.agent)) {
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'provider' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.provider)) {
+            $agent = [string]$resolvedRoleConfig.provider
+        } elseif ($resolvedRoleConfig.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.agent)) {
             $agent = [string]$resolvedRoleConfig.agent
         }
 
@@ -3054,7 +3095,9 @@ function Get-RoleAgentConfig {
     if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
         $runtimeRoleConfig = Get-BridgeRuntimeRolePreference -Role $Role -RootPath $RootPath
         if ($runtimeRoleConfig -is [System.Collections.IDictionary]) {
-            if ($runtimeRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['agent'])) {
+            if ($runtimeRoleConfig.Contains('provider') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['provider'])) {
+                $agent = [string]$runtimeRoleConfig['provider']
+            } elseif ($runtimeRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['agent'])) {
                 $agent = [string]$runtimeRoleConfig['agent']
             }
             if ($runtimeRoleConfig.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['model'])) {
@@ -3169,9 +3212,7 @@ function Get-SlotAgentConfig {
                 if ($slot.Contains('slot_id')) {
                     $candidateSlotId = [string]$slot['slot_id']
                 }
-                if ($slot.Contains('agent')) {
-                    $slotAgent = [string]$slot['agent']
-                }
+                $slotAgent = Get-BridgeSlotAgentName -Slot $slot
                 if ($slot.Contains('model')) {
                     $slotModel = [string]$slot['model']
                     $slotModelSet = $true
@@ -3211,9 +3252,7 @@ function Get-SlotAgentConfig {
                 if ($slot.PSObject.Properties.Name -contains 'slot_id') {
                     $candidateSlotId = [string]$slot.slot_id
                 }
-                if ($slot.PSObject.Properties.Name -contains 'agent') {
-                    $slotAgent = [string]$slot.agent
-                }
+                $slotAgent = Get-BridgeSlotAgentName -Slot $slot
                 if ($slot.PSObject.Properties.Name -contains 'model') {
                     $slotModel = [string]$slot.model
                     $slotModelSet = $true

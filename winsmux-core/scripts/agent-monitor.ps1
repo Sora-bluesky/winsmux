@@ -30,6 +30,7 @@ Set-StrictMode -Version Latest
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/agent-readiness.ps1"
+. "$scriptDir/pane-dispatch-detect.ps1"
 . "$scriptDir/pane-control.ps1"
 . "$scriptDir/orchestra-state.ps1"
 . "$scriptDir/clm-safe-io.ps1"
@@ -473,16 +474,7 @@ function Get-MonitorContextRemainingPercent {
 function Test-PowerShellPromptText {
     param([AllowNull()][string]$Text)
 
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        return $false
-    }
-
-    $lastLine = Get-LastNonEmptyLine -Text $Text
-    if ($null -eq $lastLine) {
-        return $false
-    }
-
-    return $lastLine.TrimStart() -match '^PS [A-Z]:\\'
+    return (Test-ShellPromptText -Text $Text)
 }
 
 function Wait-MonitorPaneShellReady {
@@ -496,7 +488,7 @@ function Wait-MonitorPaneShellReady {
         try {
             $snapshot = Invoke-MonitorWinsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
             $text = ($snapshot | Out-String).TrimEnd()
-            if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
+            if (Test-ShellPromptText -Text $text) {
                 return
             }
         } catch {

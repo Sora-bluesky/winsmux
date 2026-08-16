@@ -242,6 +242,9 @@ function Write-InstallProfileManifest {
 
 function Install-CoreSupportScripts {
     Download-File "winsmux-core/scripts/json-compat.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "json-compat.ps1")
+    # winsmux-core.ps1 calls Test-PaneContainsCommandFragment / Test-ShellPromptText
+    # on every profile, including core and security.
+    Download-File "winsmux-core/scripts/pane-dispatch-detect.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-dispatch-detect.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-workers.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-workers.ps1")
     Download-OptionalFile "winsmux-core/scripts/control-plane-ledger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "control-plane-ledger.ps1")
 }
