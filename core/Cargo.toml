@@ -78,6 +78,22 @@ path = "tests-rs/workspace_migrate_gallery.rs"
 name = "team_profile_contract"
 path = "tests-rs/team_profile_contract.rs"
 
+[[test]]
+name = "instruction_pack_contract"
+path = "tests-rs/instruction_pack_contract.rs"
+
+[[test]]
+name = "prompt_bundle_contract"
+path = "tests-rs/prompt_bundle_contract.rs"
+
+[[test]]
+name = "worker_artifact_contract"
+path = "tests-rs/worker_artifact_contract.rs"
+
+[[test]]
+name = "team_profile_settings_contract"
+path = "tests-rs/team_profile_settings_contract.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]

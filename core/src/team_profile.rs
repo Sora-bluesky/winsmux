@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use crate::project_settings_render;
 use crate::workspace_recipe::parse_workspace_yaml;
 
-pub(crate) const USAGE: &str = "usage: winsmux team-profile --action <validate|resolve|save|reset-field|classify> --json [--project-dir <path>] [--slot-id <id>] [--field <name>] [--value <value>] [--task-class <id>] [--delegation <id>] [--text <text>]";
+pub(crate) const USAGE: &str = "usage: winsmux team-profile --action <validate|resolve|save|reset-field|classify|project-launch|settings-view|start-gate|pre-release-gate> --json [--project-dir <path>] [--slot-id <id>] [--field <name>] [--value <value>] [--task-class <id>] [--delegation <id>] [--text <text>] [--session-id <id>] [--worktree <path>] [--read-write-scope <scope>]";
 
 const OFFICIAL_PRESET_ID: &str = "official-balanced-v1";
 const OFFICIAL_PRESET_YAML: &str =
@@ -140,6 +140,7 @@ struct ModelEntry {
 #[derive(Clone, Debug)]
 struct Catalog {
     providers: BTreeSet<String>,
+    provider_readiness: BTreeMap<String, String>,
     models: BTreeMap<String, ModelEntry>,
     backends: BTreeMap<String, Vec<String>>,
 }
@@ -157,6 +158,7 @@ struct DispatchOptions {
     delegation: Option<String>,
     slot_id: Option<String>,
     project_dir: Option<PathBuf>,
+    output: Option<PathBuf>,
     text: String,
 }
 
@@ -181,6 +183,9 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
     let mut task_class = None;
     let mut delegation = None;
     let mut text = None;
+    let mut session_id = None;
+    let mut worktree = None;
+    let mut read_write_scope = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -216,6 +221,18 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
                 text = Some(required_option(args, index, "--text")?);
                 index += 2;
             }
+            "--session-id" => {
+                session_id = Some(required_option(args, index, "--session-id")?);
+                index += 2;
+            }
+            "--worktree" => {
+                worktree = Some(required_option(args, index, "--worktree")?);
+                index += 2;
+            }
+            "--read-write-scope" => {
+                read_write_scope = Some(required_option(args, index, "--read-write-scope")?);
+                index += 2;
+            }
             "--json" => {
                 json = true;
                 index += 1;
@@ -229,7 +246,7 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
         return Err(invalid_input("team-profile requires --json."));
     }
     let action = action.ok_or_else(|| {
-        invalid_input("team-profile requires --action validate, resolve, save, reset-field, or classify.")
+        invalid_input("team-profile requires --action validate, resolve, save, reset-field, classify, project-launch, settings-view, start-gate, or pre-release-gate.")
     })?;
     let project_dir = project_dir.unwrap_or(env::current_dir()?);
     match action.as_str() {
@@ -264,8 +281,39 @@ pub(crate) fn run_team_profile_command(args: &[&String]) -> io::Result<()> {
             )?;
             print_json(payload)
         }
+        "project-launch" => {
+            let slot_id = slot_id.ok_or_else(|| invalid_input("project-launch requires --slot-id."))?;
+            let session_id = session_id.ok_or_else(|| invalid_input("project-launch requires --session-id."))?;
+            let payload = crate::prompt_bundle::project_launch(
+                &project_dir,
+                &session_id,
+                &slot_id,
+                worktree.as_deref(),
+                read_write_scope.as_deref(),
+            )?;
+            print_json(payload)
+        }
+        "settings-view" => print_json(crate::team_profile_settings::settings_view(&project_dir)),
+        "start-gate" => {
+            let (payload, allowed) = crate::team_profile_settings::start_gate(&project_dir);
+            print_json(payload.clone())?;
+            if allowed {
+                Ok(())
+            } else {
+                Err(invalid_data("team-profile start gate refused."))
+            }
+        }
+        "pre-release-gate" => {
+            let payload = crate::team_profile_settings::pre_release_gate();
+            print_json(payload.clone())?;
+            if payload["ok"] == true {
+                Ok(())
+            } else {
+                Err(invalid_data("team-profile pre-release gate failed."))
+            }
+        }
         _ => Err(invalid_input(
-            "team-profile --action must be validate, resolve, save, reset-field, or classify.",
+            "team-profile --action must be validate, resolve, save, reset-field, classify, project-launch, settings-view, start-gate, or pre-release-gate.",
         )),
     }
 }
@@ -317,8 +365,13 @@ pub(crate) fn with_classified_slot(cmd_args: &[&String], slot_id: &str) -> Vec<S
     if dispatch_args_have_slot_id(&forwarded) {
         return forwarded;
     }
-    forwarded.push("--slot-id".to_string());
-    forwarded.push(slot_id.to_string());
+    if let Some(separator) = forwarded.iter().position(|arg| arg == "--") {
+        forwarded.insert(separator, "--slot-id".to_string());
+        forwarded.insert(separator + 1, slot_id.to_string());
+    } else {
+        forwarded.push("--slot-id".to_string());
+        forwarded.push(slot_id.to_string());
+    }
     forwarded
 }
 
@@ -373,11 +426,17 @@ fn issue(
     }
 }
 
-fn document_has_team_profile(yaml: &str) -> bool {
-    yaml.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
-    })
+pub(crate) fn document_has_team_profile(yaml: &str) -> bool {
+    match parse_workspace_yaml(yaml) {
+        Ok(root) => root.as_mapping().is_some_and(|mapping| {
+            mapping.contains_key(&Value::String("team-profile".into()))
+                || mapping.contains_key(&Value::String("team_profile".into()))
+        }),
+        Err(_) => yaml.lines().any(|line| {
+            let trimmed = line.trim().trim_start_matches(|c: char| matches!(c, '\'' | '"'));
+            trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
+        }),
+    }
 }
 
 fn parse_dispatch_options(args: &[&String]) -> DispatchOptions {
@@ -400,6 +459,10 @@ fn parse_dispatch_options(args: &[&String]) -> DispatchOptions {
             }
             "--project-dir" if index + 1 < args.len() => {
                 options.project_dir = Some(PathBuf::from(args[index + 1].as_str()));
+                index += 2;
+            }
+            "--output" | "-o" if index + 1 < args.len() => {
+                options.output = Some(PathBuf::from(args[index + 1].as_str()));
                 index += 2;
             }
             "--json" => index += 1,
@@ -451,8 +514,17 @@ fn parse_model_capabilities(source: &str) -> Catalog {
             },
         );
     }
+    let mut provider_readiness = BTreeMap::new();
+    for object in extract_objects(array_body(source, "providerCapabilities")) {
+        if let Some(id) = ts_string_field(object, "id") {
+            if let Some(state) = ts_readiness_state(object) {
+                provider_readiness.insert(id, state);
+            }
+        }
+    }
     Catalog {
         providers,
+        provider_readiness,
         models,
         backends,
     }
@@ -609,7 +681,32 @@ fn ts_readiness_state(object: &str) -> Option<String> {
     ts_string_field(&object[idx..], "state")
 }
 
-fn resolve_project(project_dir: &Path) -> Result<ResolvedTeam, Vec<ValidationIssue>> {
+
+pub(crate) fn model_readiness(model_id: &str) -> Option<String> {
+    catalog().models.get(model_id).map(|model| model.readiness_state.clone())
+}
+
+pub(crate) fn provider_readiness(provider_id: &str) -> Option<String> {
+    catalog().provider_readiness.get(provider_id).cloned()
+}
+
+pub(crate) fn catalog_readiness_states() -> Vec<String> {
+    let catalog = catalog();
+    let mut states = BTreeSet::new();
+    for state in catalog.provider_readiness.values() {
+        if !state.is_empty() {
+            states.insert(state.clone());
+        }
+    }
+    for model in catalog.models.values() {
+        if !model.readiness_state.is_empty() {
+            states.insert(model.readiness_state.clone());
+        }
+    }
+    states.into_iter().collect()
+}
+
+pub(crate) fn resolve_project(project_dir: &Path) -> Result<ResolvedTeam, Vec<ValidationIssue>> {
     let path = project_dir.join(".winsmux.yaml");
     let yaml = fs::read_to_string(&path).map_err(|_| {
         vec![issue(
@@ -858,6 +955,9 @@ fn resolve_slot(
             format!("Unknown model capability ID '{}'.", record.model),
         )]
     })?;
+    if worker_backend.is_none() {
+        worker_backend = inferred_worker_backend(model, catalog);
+    }
     Ok(ResolvedSlot {
         slot_id: record.slot_id,
         provider: record.provider,
@@ -886,6 +986,20 @@ fn overlay_provider(overlay: &OverlaySlot) -> Result<Option<String>, Vec<Validat
         (Some(provider), _) => Ok(Some(provider)),
         (None, Some(agent)) => Ok(Some(agent)),
         (None, None) => Ok(None),
+    }
+}
+
+fn inferred_worker_backend(model: &ModelEntry, catalog: &Catalog) -> Option<String> {
+    let allowed = catalog.backends.get(&model.required_backend)?;
+    let concrete: Vec<String> = allowed
+        .iter()
+        .filter(|backend| !backend.is_empty() && backend.as_str() != "*")
+        .cloned()
+        .collect();
+    if concrete.len() == 1 {
+        Some(concrete[0].clone())
+    } else {
+        None
     }
 }
 
@@ -1531,14 +1645,44 @@ fn classify_team(
         matches.retain(|slot| slot.slot_id == requested);
     }
     if let Some(slot) = matches.first() {
-        return Ok(classify_payload(
-            "worker",
-            Some(delegation),
-            Some(task_class),
-            Some(&slot.slot_id),
-            "slot_matched",
-            "dispatchable",
-        ));
+        match crate::instruction_pack::compose_json(
+            &slot.provider,
+            &slot.model,
+            &slot.role_profile,
+            &slot.lifecycle,
+            &slot.task_classes,
+        ) {
+            Ok(pack) => {
+                let mut payload = classify_payload(
+                    "worker",
+                    Some(delegation),
+                    Some(task_class),
+                    Some(&slot.slot_id),
+                    "slot_matched",
+                    "dispatchable",
+                );
+                payload["instruction_pack"] = pack;
+                payload["artifact"] = serde_json::json!({
+                    "output": format!(".winsmux/runs/{}/result.md", slot.slot_id),
+                    "completion_authority": "output-file-and-exit-code",
+                    "pty_capture_is_auxiliary": true
+                });
+                return Ok(payload);
+            }
+            Err(issues) => {
+                return Ok(serde_json::json!({
+                    "schema_version": 1,
+                    "action": "dispatch-classify",
+                    "delegation": "unclassifiable",
+                    "delegation_class": delegation,
+                    "task_class": task_class,
+                    "slot_id": slot.slot_id,
+                    "reason_code": "missing_instruction_pack",
+                    "status": "refused",
+                    "issues": issues
+                }));
+            }
+        }
     }
     Ok(classify_payload(
         "operator",
@@ -1570,6 +1714,16 @@ fn classify_payload(
     })
 }
 
+fn require_opted_in_mutation(original: &str, action: &str) -> io::Result<()> {
+    if document_has_team_profile(original) {
+        Ok(())
+    } else {
+        Err(invalid_input(format!(
+            "{action} requires an opted-in team-profile."
+        )))
+    }
+}
+
 fn project_yaml_path(project_dir: &Path) -> PathBuf {
     if project_dir.ends_with(".winsmux.yaml") {
         project_dir.to_path_buf()
@@ -1593,6 +1747,7 @@ fn save_slot_field(
     }
     let path = project_yaml_path(project_dir);
     let original = fs::read_to_string(&path)?;
+    require_opted_in_mutation(&original, "save")?;
     let mut overlays = overlay_json_from_yaml(&original)?;
     let entry = overlays.iter_mut().find(|entry| {
         entry
@@ -1636,6 +1791,7 @@ fn reset_slot_field(project_dir: &Path, slot_id: &str, field: &str) -> io::Resul
     }
     let path = project_yaml_path(project_dir);
     let original = fs::read_to_string(&path)?;
+    require_opted_in_mutation(&original, "reset-field")?;
     let mut overlays = overlay_json_from_yaml(&original)?;
     overlays.retain_mut(|entry| {
         let matches = entry
@@ -1793,11 +1949,46 @@ fn replace_file(path: &Path, contents: &str) -> io::Result<()> {
         std::process::id()
     ));
     fs::write(&tmp, contents)?;
-    let result = fs::rename(&tmp, path);
+    let result = replace_existing_file(&tmp, path);
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+#[cfg(windows)]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(value: &Path) -> Vec<u16> {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let tmp = wide(tmp_path);
+    let target = wide(path);
+    let moved = unsafe {
+        MoveFileExW(
+            tmp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(tmp_path, path)
 }
 
 #[cfg(test)]
@@ -1811,6 +2002,24 @@ mod tests {
 
     fn catalog_fixture() -> Catalog {
         catalog()
+    }
+
+    #[test]
+    fn every_selectable_catalog_model_has_an_instruction_pack() {
+        let catalog = catalog_fixture();
+        for (id, model) in &catalog.models {
+            if id == "provider-default" {
+                continue;
+            }
+            crate::instruction_pack::compose_pack(
+                &model.provider_id,
+                id,
+                "builder",
+                "task",
+                &["implementation".to_string()],
+            )
+            .unwrap_or_else(|issues| panic!("{id}: {issues:?}"));
+        }
     }
 
     #[test]
@@ -1883,6 +2092,30 @@ agent-slots:
         assert_eq!(worker6.worker_backend.as_deref(), Some("api_llm"));
         assert!(worker6.overrides.contains(&"provider".to_string()));
         assert_eq!(team.slots[0].provider, "codex");
+        assert!(team.slots[0].worker_backend.is_none());
+    }
+
+    #[test]
+    fn omitted_worker_backend_is_derived_from_a_unique_assignable_backend() {
+        let yaml = r#"
+config-version: 1
+team-profile:
+  schema-version: 1
+  preset: official-balanced-v1
+  preset-revision: 1
+  update-policy: retain-overrides
+agent-slots:
+  - slot-id: worker-6
+    provider: openrouter
+    model: openrouter-glm-5-2
+    reasoning-effort: provider-default
+    role-profile: maintainer
+    lifecycle: task
+    task-classes: [documentation, repository-operations]
+"#;
+        let team = resolve_yaml(yaml, OFFICIAL_PRESET_YAML, &catalog_fixture()).expect("derived");
+        assert_eq!(team.slots[5].worker_backend.as_deref(), Some("api_llm"));
+        assert!(team.slots[0].worker_backend.is_none());
     }
 
     #[test]
@@ -2067,6 +2300,34 @@ agent-slots:
     }
 
     #[test]
+    fn reset_field_refuses_legacy_roster_without_team_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".winsmux.yaml");
+        let original = "agent-slots:\n  - slot-id: worker-1\n    agent: codex\n";
+        fs::write(&path, original).unwrap();
+        let err = reset_slot_field(dir.path(), "worker-1", "provider").unwrap_err();
+        assert!(
+            err.to_string().contains("opted-in team-profile"),
+            "reset must refuse legacy roster, err={err}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn save_field_refuses_legacy_roster_without_team_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".winsmux.yaml");
+        let original = "agent-slots:\n  - slot-id: worker-1\n    agent: codex\n";
+        fs::write(&path, original).unwrap();
+        let err = save_slot_field(dir.path(), "worker-1", "provider", "codex").unwrap_err();
+        assert!(
+            err.to_string().contains("opted-in team-profile"),
+            "save must refuse legacy roster, err={err}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
     fn failed_validation_leaves_original_file_intact() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".winsmux.yaml");
@@ -2114,6 +2375,12 @@ agent-slots:
         .unwrap();
         assert_eq!(worker["status"], "dispatchable");
         assert_eq!(worker["slot_id"], "worker-2");
+        assert_eq!(worker["instruction_pack"]["a1"]["worker"][0], "frozen-spec-implementation");
+        assert!(worker["instruction_pack"]["template_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == "base"));
     }
 
     #[test]
@@ -2143,6 +2410,16 @@ agent-slots:
         let team = resolve_yaml(&saved, OFFICIAL_PRESET_YAML, &catalog_fixture()).unwrap();
         assert_eq!(team.slots[1].provider, "codex");
         assert!(team.slots[1].overrides.contains(&"provider".to_string()));
+    }
+
+    #[test]
+    fn quoted_team_profile_key_is_detected_as_opt_in() {
+        let yaml = "\"team-profile\":\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots: []\n";
+        assert!(document_has_team_profile(yaml));
+        let flow = "{ \"team-profile\": { schema-version: 1, preset: official-balanced-v1, preset-revision: 1, update-policy: retain-overrides }, agent-slots: [] }\n";
+        assert!(document_has_team_profile(flow));
+        assert!(document_has_team_profile("team_profile:\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots: []\n"));
+        assert!(!document_has_team_profile("agent-slots:\n  - slot-id: worker-1\n"));
     }
 
     #[test]
@@ -2200,6 +2477,24 @@ agent-slots:
                 "dispatch-task".to_string(),
                 "--slot-id".to_string(),
                 "worker-3".to_string(),
+                "implement the frozen spec".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn with_classified_slot_inserts_flag_before_end_of_options() {
+        let command = "dispatch-task".to_string();
+        let separator = "--".to_string();
+        let text = "implement the frozen spec".to_string();
+        let forwarded = with_classified_slot(&[&command, &separator, &text], "worker-2");
+        assert_eq!(
+            forwarded,
+            vec![
+                "dispatch-task".to_string(),
+                "--slot-id".to_string(),
+                "worker-2".to_string(),
+                "--".to_string(),
                 "implement the frozen spec".to_string()
             ]
         );

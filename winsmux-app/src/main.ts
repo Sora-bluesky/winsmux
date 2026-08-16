@@ -17,7 +17,9 @@ import {
   getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
   getDesktopWorkersStatus,
+  getDesktopTeamProfileSettingsView,
   getDesktopVoiceCaptureStatus,
+  resetDesktopTeamProfileField,
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
@@ -98,6 +100,13 @@ import {
   renderSettingsPreferenceOptions,
   type SettingsPreferenceOption,
 } from "./settingsPreferenceOptions";
+import {
+  formatTeamProfileRuntimeChips,
+  parseTeamProfileSettingsView,
+  renderTeamProfileSettingsPanel,
+  shouldRefuseTeamProfileStart,
+  type TeamProfileSettingsView,
+} from "./teamProfileSettings";
 import {
   filterSettingsSections,
   getSettingsSectionScope,
@@ -2723,6 +2732,18 @@ function renderWorkerStatusSurface() {
     detailStrip.appendChild(createWorkerStatusChip("backend", "backend", getLaunchApprovalField(launch, "worker_backend") || focusedRow.backend || "unknown"));
     detailStrip.appendChild(createWorkerStatusChip("provider", "provider", getWorkerProvider(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("model", "model", getWorkerModel(focusedRow)));
+    if (teamProfileSettingsView) {
+      const display = teamProfileSettingsView.runtime_display?.find((row) => row.slot_id === target)
+        ?? teamProfileSettingsView.rows.find((row) => row.slot_id === target)?.runtime_display;
+      if (display) {
+        for (const chip of formatTeamProfileRuntimeChips(display)) {
+          detailStrip.appendChild(createWorkerStatusChip(`team-profile-${chip.field}`, chip.field, chip.value));
+        }
+      }
+      if (shouldRefuseTeamProfileStart(teamProfileSettingsView)) {
+        detailStrip.appendChild(createWorkerStatusChip("team-profile-start", "start", "refused"));
+      }
+    }
     detailStrip.appendChild(createWorkerStatusChip("profile", "prof", getWorkerExecutionProfile(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("workspace", "ws", getWorkerWorkspaceState(focusedRow)));
     detailStrip.appendChild(createWorkerStatusChip("auth", "auth", getWorkerAuthState(focusedRow)));
@@ -5086,6 +5107,9 @@ function resetDesktopProjectState() {
   workerStatusError = "";
   workerStatusRefreshInFlight = null;
   workerStatusRefreshSequence += 1;
+  teamProfileSettingsView = null;
+  teamProfileSettingsRefreshSequence += 1;
+  document.getElementById("team-profile-settings-root")?.replaceChildren();
   selectedRunId = null;
   selectedEditorKey = "";
   selectedPreviewUrl = "";
@@ -5129,6 +5153,7 @@ function setActiveProjectDir(projectDir: string | null) {
   persistActiveProjectDir();
   resetDesktopProjectState();
   renderDesktopSurfaces();
+  void loadAndRenderTeamProfileSettings();
   void refreshProjectExplorerEntries();
   void refreshBrowserSourceControl();
   void refreshWorkerStatusSurface();
@@ -10285,6 +10310,14 @@ function applyLanguageChrome() {
   setElementText("settings-nav-common", japanese ? "よく使用するもの" : "Commonly Used");
   setElementText("settings-nav-editor", japanese ? "テキスト エディター" : "Text Editor");
   setElementText("settings-nav-workbench", japanese ? "ワークベンチ" : "Workbench");
+  setElementText("settings-nav-team-profile", japanese ? "チームプロファイル" : "Team Profile");
+  setElementText("settings-team-profile-label", japanese ? "チームプロファイル" : "Team Profile");
+  setElementText(
+    "settings-team-profile-value",
+    japanese
+      ? "6つのワーカースロットは公式プリセットを継承します。上書きはリセットするまで残ります。実行できないスロットがあると起動しません。"
+      : "Six worker slots inherit the official preset. Overrides stay until you reset a field. Start is refused when a slot cannot run.",
+  );
   setElementText("settings-nav-window", japanese ? "ウィンドウ" : "Window");
   setElementText("settings-nav-chat", japanese ? "チャット" : "Chat");
   setElementText("settings-nav-features", japanese ? "機能" : "Features");
@@ -12260,6 +12293,73 @@ function renderRuntimeRoleControls() {
   root.appendChild(renderWorkerModelAssignmentPanel(japanese));
 }
 
+let teamProfileSettingsView: TeamProfileSettingsView | null = null;
+let teamProfileSettingsRefreshSequence = 0;
+
+function injectedTeamProfileSettingsView() {
+  return (window as Window & { __WINSMUX_TEAM_PROFILE_VIEW__?: unknown }).__WINSMUX_TEAM_PROFILE_VIEW__;
+}
+
+function renderTeamProfileSettings() {
+  void loadAndRenderTeamProfileSettings();
+}
+
+async function loadAndRenderTeamProfileSettings() {
+  const pending = injectedTeamProfileSettingsView();
+  if (pending) {
+    teamProfileSettingsView = parseTeamProfileSettingsView(pending);
+  } else {
+    const requestProjectKey = captureProjectRequestKey();
+    const requestSequence = ++teamProfileSettingsRefreshSequence;
+    try {
+      const payload = await getDesktopTeamProfileSettingsView(getActiveProjectDirPayload());
+      if (
+        requestSequence !== teamProfileSettingsRefreshSequence
+        || !isProjectRequestCurrent(requestProjectKey)
+      ) {
+        return;
+      }
+      teamProfileSettingsView = parseTeamProfileSettingsView(payload);
+    } catch {
+      if (
+        requestSequence !== teamProfileSettingsRefreshSequence
+        || !isProjectRequestCurrent(requestProjectKey)
+      ) {
+        return;
+      }
+      teamProfileSettingsView = null;
+    }
+  }
+  const root = document.getElementById("team-profile-settings-root");
+  if (!root) {
+    return;
+  }
+  if (!teamProfileSettingsView) {
+    root.replaceChildren();
+    return;
+  }
+  const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
+  renderTeamProfileSettingsPanel(root, teamProfileSettingsView, {
+    japanese,
+    onResetField: (slotId, field) => {
+      void resetAndReloadTeamProfileField(slotId, field);
+    },
+  });
+}
+
+async function resetAndReloadTeamProfileField(slotId: string, field: string) {
+  if (!injectedTeamProfileSettingsView()) {
+    try {
+      await resetDesktopTeamProfileField(slotId, field, getActiveProjectDirPayload());
+    } catch (error) {
+      console.error(error);
+      return;
+    }
+    teamProfileSettingsView = null;
+  }
+  await loadAndRenderTeamProfileSettings();
+}
+
 function renderSettingsControls() {
   const activeState = settingsDraftState ?? themeState;
 
@@ -12301,6 +12401,7 @@ function renderSettingsControls() {
   });
 
   renderRuntimeRoleControls();
+  renderTeamProfileSettings();
   updateSettingsApplyButton();
 
   renderFooterLane();

@@ -394,3 +394,46 @@ Promotion targets include:
 - reusable investigation prompts
 
 This keeps successful debugging, build, and verification loops durable and reusable across future runs.
+
+## 13. Team Profile settings
+
+Opting into `team-profile` in `.winsmux.yaml` overlays the official six-slot
+preset onto `agent-slots`. The Settings workspace tab shows those six rows with
+an inherited or override marker on each field. Applying the default preset keeps
+existing user overrides (`update-policy: retain-overrides`) until the operator
+explicitly resets a field.
+
+`winsmux team-profile --action settings-view --json` is the typed contract the
+desktop settings screen consumes. It does not invent a second provider/model
+table. Capability mismatch uses the catalog states already documented in
+[provider and model support](provider-and-model-support.md):
+
+- `blocked`, `reference-only`, and `unavailable` are non-runnable. Settings
+  warn and mark the row; start/apply of a fresh orchestra is refused.
+- `candidate` and `setup-required` are warnings while editing. They never
+  authorize launch. Start rechecks runtime readiness and refuses unless the
+  slot is runnable.
+- Unknown provider, model, effort, role, lifecycle, or task class is an error
+  on the field. The transaction is rejected.
+
+`winsmux team-profile --action start-gate --json` is fail-closed and
+transactional: if any opted-in slot cannot run, no new worker pane is created.
+Projects without `team-profile` keep the legacy `agent-slots` roster and do not
+receive a preset.
+
+Worker completion is the dispatch output file plus exit code, not PTY text.
+The default artifact path is `.winsmux/runs/<slot-id>/result.md`. Judge it with
+`winsmux worker-artifact --action judge --json`.
+
+<!-- team-profile-settings-example -->
+```yaml
+config-version: 1
+team-profile:
+  schema-version: 1
+  preset: official-balanced-v1
+  preset-revision: 1
+  update-policy: retain-overrides
+agent-slots:
+  - slot-id: worker-6
+    reasoning-effort: low
+```

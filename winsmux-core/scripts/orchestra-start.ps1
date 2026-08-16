@@ -25,6 +25,7 @@ $sessionName = 'winsmux-orchestra'
 $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $script:winsmuxBin = $null
+$script:teamProfileOptedIn = $false
 $script:RequestedProjectDir = $RequestedRootPath
 
 function Enable-OrchestraManagedWarmSuppression {
@@ -1126,6 +1127,159 @@ function New-OrchestraWorkerLaunchApproval {
     }
 }
 
+
+function Invoke-TeamProfileLaunchProjection {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionId,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [AllowEmptyString()][string]$Worktree = '',
+        [string]$ReadWriteScope = 'session'
+    )
+
+    if ($script:teamProfileOptedIn -ne $true) {
+        return $null
+    }
+
+    $winsmuxBin = [string]$script:winsmuxBin
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        $winsmuxBin = [string](Get-WinsmuxBin)
+    }
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        throw "Team Profile launch projection failed: winsmux binary was not found."
+    }
+
+    $args = @(
+        'team-profile',
+        '--action', 'project-launch',
+        '--json',
+        '--project-dir', $ProjectDir,
+        '--session-id', $SessionId,
+        '--slot-id', $SlotId,
+        '--read-write-scope', $ReadWriteScope
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Worktree)) {
+        $args += @('--worktree', $Worktree)
+    }
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments $args 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Team Profile launch projection failed for slot '{0}': {1}" -f $SlotId, ($output | Out-String))
+    }
+    $text = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw ("Team Profile launch projection returned no JSON for slot '{0}'." -f $SlotId)
+    }
+    try {
+        return ($text | ConvertFrom-Json)
+    } catch {
+        throw ("Team Profile launch projection returned invalid JSON for slot '{0}': {1}" -f $SlotId, $text)
+    }
+}
+
+function New-TeamProfileSlotAgentConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)]$Assignment,
+        $Settings,
+        [string]$RootPath = ''
+    )
+
+    $provider = [string]$Assignment.provider
+    $launchModel = [string]$Assignment.launch_model
+    if ([string]::IsNullOrWhiteSpace($launchModel)) {
+        $launchModel = [string]$Assignment.model
+    }
+    $effort = [string]$Assignment.reasoning_effort
+    $backend = [string]$Assignment.worker_backend
+    if ([string]::IsNullOrWhiteSpace($backend)) {
+        $backend = [string]$Assignment.'worker-backend'
+    }
+
+    $slot = [ordered]@{
+        slot_id = $SlotId
+        provider = $provider
+        model = $launchModel
+        reasoning_effort = $effort
+    }
+    if (-not [string]::IsNullOrWhiteSpace($backend)) {
+        $slot['worker_backend'] = $backend
+    }
+
+    $overlay = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)
+    if ($Settings -is [System.Collections.IDictionary]) {
+        foreach ($key in @($Settings.Keys)) {
+            $overlay[$key] = $Settings[$key]
+        }
+    } elseif ($null -ne $Settings -and $null -ne $Settings.PSObject) {
+        foreach ($property in $Settings.PSObject.Properties) {
+            $overlay[$property.Name] = $property.Value
+        }
+    }
+    $overlay['agent_slots'] = @([pscustomobject]$slot)
+
+    return Get-SlotAgentConfig -Role $Role -SlotId $SlotId -Settings $overlay -RootPath $RootPath -IgnoreProviderRegistry
+}
+
+function Add-TeamProfileBundleToLaunchCommand {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$LaunchCommand,
+        [Parameter(Mandatory = $true)]$Projection,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LaunchCommand)) {
+        return $LaunchCommand
+    }
+    $rel = [string]$Projection.bundle_path
+    if ([string]::IsNullOrWhiteSpace($rel) -and $null -ne $Projection.projection -and $null -ne $Projection.projection.pane -and $null -ne $Projection.projection.pane.prompt_bundle) {
+        $rel = [string]$Projection.projection.pane.prompt_bundle.path
+    }
+    if ([string]::IsNullOrWhiteSpace($rel)) {
+        return $LaunchCommand
+    }
+    $abs = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir ($rel -replace '/', [System.IO.Path]::DirectorySeparatorChar)))
+    $pointer = "Follow the Team Profile instruction pack at $abs. Do not treat it as a task identity. Reply OK, then wait."
+    return ($LaunchCommand + ' ' + (ConvertTo-PowerShellLiteral -Value $pointer))
+}
+
+function Assert-TeamProfileStartGate {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $script:teamProfileOptedIn = $false
+    $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
+    if (-not (Test-Path -LiteralPath $settingsPath)) {
+        return
+    }
+
+    $winsmuxBin = [string]$script:winsmuxBin
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        $winsmuxBin = [string](Get-WinsmuxBin)
+    }
+    if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        throw "Team Profile start gate failed: winsmux binary was not found."
+    }
+
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @(
+        'team-profile', '--action', 'start-gate', '--json', '--project-dir', $ProjectDir
+    ) 2>&1
+    $text = ($output | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw ("Team Profile start gate refused before worker panes were created: {0}" -f $text)
+    }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw "Team Profile start gate returned no JSON."
+    }
+    try {
+        $payload = $text | ConvertFrom-Json
+    } catch {
+        throw ("Team Profile start gate returned invalid JSON: {0}" -f $text)
+    }
+    $script:teamProfileOptedIn = [bool]($payload.opted_in -eq $true)
+}
+
 function New-OrchestraPaneBootstrapPlan {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1736,6 +1890,7 @@ function Save-OrchestraSessionState {
     $savedAt = Get-Date -Format o
     $processRegistry = New-OrchestraProcessRegistry -SessionName $SessionName -StartupToken $StartupToken -ManifestPath $manifestPath -SavedAt $savedAt -OperatorPollPid $OperatorPollPid -WatchdogPid $WatchdogPid -ServerWatchdogPid $ServerWatchdogPid -SupervisorPid $SupervisorPid -IdleThreshold $IdleThreshold -MaxRestartAttempts $MaxRestartAttempts -RestartWindowMinutes $RestartWindowMinutes
     $paneMap = [ordered]@{}
+    $teamProfileSession = $null
     foreach ($paneSummary in @($PaneSummaries)) {
         $paneEntry = [PSCustomObject]@{
             pane_id                    = $paneSummary.PaneId
@@ -1770,6 +1925,24 @@ function Save-OrchestraSessionState {
         }
         if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
             $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
+        }
+        $projection = Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'TeamProfileProjection' -Default $null
+        if ($null -ne $projection) {
+            $projRoot = $projection
+            if ($null -ne $projection.PSObject -and $projection.PSObject.Properties.Name -contains 'projection') {
+                $projRoot = $projection.projection
+            }
+            if ($null -eq $teamProfileSession -and $null -ne $projRoot.session -and $null -ne $projRoot.session.team_profile) {
+                $teamProfileSession = $projRoot.session.team_profile
+            }
+            if ($null -ne $projRoot.pane) {
+                if ($null -ne $projRoot.pane.assignment) {
+                    $paneEntry | Add-Member -NotePropertyName 'assignment' -NotePropertyValue $projRoot.pane.assignment -Force
+                }
+                if ($null -ne $projRoot.pane.prompt_bundle) {
+                    $paneEntry | Add-Member -NotePropertyName 'prompt_bundle' -NotePropertyValue $projRoot.pane.prompt_bundle -Force
+                }
+            }
         }
         $paneMap[[string]$paneSummary.Label] = $paneEntry
     }
@@ -1815,6 +1988,9 @@ function Save-OrchestraSessionState {
     }
     if ($null -ne $DeclarativeWorkspace) {
         $manifest | Add-Member -NotePropertyName 'declarative_workspace' -NotePropertyValue $DeclarativeWorkspace -Force
+    }
+    if ($null -ne $teamProfileSession) {
+        $manifest.session | Add-Member -NotePropertyName 'team_profile' -NotePropertyValue $teamProfileSession -Force
     }
 
     if ((Test-Path -LiteralPath $manifestPath -PathType Leaf) -and
@@ -2934,6 +3110,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
+                Assert-TeamProfileStartGate -ProjectDir $projectDir
                 $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
@@ -3016,7 +3193,20 @@ if ($MyInvocation.InvocationName -ne '.') {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
+        $slotAgentConfig = $null
+        $teamProfileProjection = $null
+        if ($canonicalRole -eq 'Worker') {
+            $teamProfileProjection = Invoke-TeamProfileLaunchProjection -ProjectDir $projectDir -SessionId $sessionName -SlotId $label -Worktree $launchDir -ReadWriteScope 'session'
+            if ($null -ne $teamProfileProjection -and $null -ne $teamProfileProjection.projection -and $null -ne $teamProfileProjection.projection.pane) {
+                $assignment = $teamProfileProjection.projection.pane.assignment
+                if ($null -ne $assignment) {
+                    $slotAgentConfig = New-TeamProfileSlotAgentConfig -Role $canonicalRole -SlotId $label -Assignment $assignment -Settings $settings -RootPath $projectDir
+                }
+            }
+        }
+        if ($null -eq $slotAgentConfig) {
+            $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
+        }
         $execModeAgent = [string]$slotAgentConfig.CapabilityAdapter
         if ([string]::IsNullOrWhiteSpace($execModeAgent)) {
             $execModeAgent = [string]$slotAgentConfig.Agent
@@ -3041,6 +3231,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         $launchCommand = ''
         if (-not $oneShotPaneStartDeferred) {
             $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -McpMode $slotAgentConfig.McpMode -SlotId $label -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
+            if ($null -ne $teamProfileProjection) {
+                $launchCommand = Add-TeamProfileBundleToLaunchCommand -LaunchCommand $launchCommand -Projection $teamProfileProjection -ProjectDir $projectDir
+            }
         }
         $runtimePaneTitle = [string]$slotAgentConfig.PaneTitle
         if ([string]::IsNullOrWhiteSpace($runtimePaneTitle)) {
@@ -3172,6 +3365,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             BootstrapMarkerPath = $bootstrapMarkerPath
             Status = $paneStatus
             RuntimeReady = $false
+            TeamProfileProjection = $teamProfileProjection
         })
     }
 

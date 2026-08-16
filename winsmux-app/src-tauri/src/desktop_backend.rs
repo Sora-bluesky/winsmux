@@ -1,4 +1,5 @@
 use crate::desktop_session_restore::json_rpc as session_restore_rpc;
+use crate::desktop_team_profile;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -22,7 +23,7 @@ use windows_sys::Win32::Media::MMSYSERR_NOERROR;
 pub(crate) const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
-const JSON_RPC_INVALID_PARAMS: i32 = -32602;
+pub(crate) const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 pub(crate) const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 pub(crate) const JSON_RPC_SERVER_ERROR: i32 = -32000;
 const PROVIDER_SWITCH_SELECTOR_PARAM_KEYS: &[&str] = &[
@@ -807,6 +808,14 @@ pub enum DesktopCommand {
         event_json: String,
         project_dir: Option<String>,
     },
+    TeamProfileSettingsView {
+        project_dir: Option<String>,
+    },
+    TeamProfileResetField {
+        slot_id: String,
+        field: String,
+        project_dir: Option<String>,
+    },
 }
 
 pub enum DesktopStreamCommand {
@@ -937,10 +946,12 @@ impl DesktopCommand {
             DesktopCommand::ProviderSwitch { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RuntimeRolesApply { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::DogfoodEvent { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::TeamProfileSettingsView { project_dir } => project_dir.as_deref(),
+            DesktopCommand::TeamProfileResetField { project_dir, .. } => project_dir.as_deref(),
         }
     }
 
-    fn winsmux_args(&self) -> Vec<String> {
+    pub(crate) fn winsmux_args(&self) -> Vec<String> {
         match self {
             DesktopCommand::SummarySnapshot { .. } => {
                 vec!["desktop-summary".to_string(), "--json".to_string()]
@@ -1066,6 +1077,22 @@ impl DesktopCommand {
                 "event".to_string(),
                 "--event-json".to_string(),
                 event_json.clone(),
+                "--json".to_string(),
+            ],
+            DesktopCommand::TeamProfileSettingsView { .. } => vec![
+                "team-profile".to_string(),
+                "--action".to_string(),
+                "settings-view".to_string(),
+                "--json".to_string(),
+            ],
+            DesktopCommand::TeamProfileResetField { slot_id, field, .. } => vec![
+                "team-profile".to_string(),
+                "--action".to_string(),
+                "reset-field".to_string(),
+                "--slot-id".to_string(),
+                slot_id.clone(),
+                "--field".to_string(),
+                field.clone(),
                 "--json".to_string(),
             ],
         }
@@ -1580,6 +1607,8 @@ pub fn handle_desktop_json_rpc(
                     "desktop.explorer.list",
                     "desktop.editor.read",
                     "desktop.file.read_full",
+                    "desktop.team_profile.settings_view",
+                    "desktop.team_profile.reset_field",
                 ],
             }),
         ),
@@ -1735,6 +1764,21 @@ pub fn handle_desktop_json_rpc(
                 Ok(result) => json_rpc_result(request_id, result),
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
+        }
+        "desktop.team_profile.settings_view" => {
+            return desktop_team_profile::json_rpc_settings_view(
+                transport,
+                request_id,
+                resolved_project_dir,
+            );
+        }
+        "desktop.team_profile.reset_field" => {
+            return desktop_team_profile::json_rpc_reset_field(
+                transport,
+                request_id,
+                resolved_project_dir,
+                params,
+            );
         }
         "desktop.provider.switch" => {
             let slot = match get_required_string_param(params.as_ref(), &["slot", "target"]) {

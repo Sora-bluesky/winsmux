@@ -182,6 +182,33 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
     }
 
+    It 'always invokes Team Profile start-gate when .winsmux.yaml exists' {
+        $script:orchestraStartContent | Should -Not -Match 'function Test-TeamProfileOptInDocument'
+        $script:orchestraStartContent | Should -Not -Match 'Test-TeamProfileOptInDocument'
+        $script:orchestraStartContent | Should -Match 'function Assert-TeamProfileStartGate'
+        $script:orchestraStartContent | Should -Match "'--action', 'start-gate'"
+        $script:orchestraStartContent | Should -Match '\$script:teamProfileOptedIn = \[bool\]\(\$payload\.opted_in -eq \$true\)'
+        $startGate = $script:orchestraStartContent.IndexOf('function Assert-TeamProfileStartGate')
+        $next = $script:orchestraStartContent.IndexOf("`nfunction ", $startGate + 1)
+        $startGate | Should -BeGreaterThan -1
+        $next | Should -BeGreaterThan $startGate
+        $body = $script:orchestraStartContent.Substring($startGate, $next - $startGate)
+        $body | Should -Match 'start-gate'
+        $body | Should -Not -Match 'Get-Content'
+        $body | Should -Not -Match 'team\[-_\]profile'
+    }
+
+    It 'builds opted-in worker SlotAgentConfig from Team Profile assignment overlay' {
+        $script:orchestraStartContent | Should -Match 'function New-TeamProfileSlotAgentConfig'
+        $script:orchestraStartContent | Should -Match 'New-TeamProfileSlotAgentConfig -Role \$canonicalRole -SlotId \$label -Assignment \$assignment -Settings \$settings -RootPath \$projectDir'
+        $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$Role -SlotId \$SlotId -Settings \$overlay -RootPath \$RootPath -IgnoreProviderRegistry'
+        $script:orchestraStartContent | Should -Match '\$overlay\[''agent_slots''\]'
+        $script:orchestraStartContent | Should -Match '\$slot\[''worker_backend''\] = \$backend'
+        $script:orchestraStartContent | Should -Not -Match '\$SlotAgentConfig\.WorkerBackend = \$backend'
+        $script:orchestraStartContent | Should -Not -Match 'function Apply-TeamProfileLaunchProjection'
+        $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
+    }
+
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
         $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -McpMode \$slotAgentConfig\.McpMode -SlotId \$label -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'

@@ -1,0 +1,151 @@
+# Package-owned instruction-pack registry. Templates are static; they are not a catalog.
+schema-version: 1
+registry-id: official-instruction-packs-v1
+base: base.md
+a1:
+  worker:
+    - frozen-spec-implementation
+    - repro-fix
+    - mechanical-migration
+  operator:
+    - design-judgment
+    - api-judgment
+    - small-tweak
+    - secrets-mcp
+    - destructive-ops
+providers:
+  - id: codex
+    template: providers/codex.md
+  - id: claude
+    template: providers/claude.md
+  - id: antigravity
+    template: providers/antigravity.md
+  - id: grok-build
+    template: providers/grok-build.md
+  - id: openrouter
+    template: providers/openrouter.md
+roles:
+  - id: architect
+    template: roles/architect.md
+  - id: builder
+    template: roles/builder.md
+  - id: reviewer
+    template: roles/reviewer.md
+  - id: researcher
+    template: roles/researcher.md
+  - id: maintainer
+    template: roles/maintainer.md
+lifecycles:
+  - id: session
+    template: lifecycles/session.md
+  - id: task
+    template: lifecycles/task.md
+  - id: one-shot
+    template: lifecycles/one-shot.md
+task-classes:
+  - id: architecture
+    template: task-classes/architecture.md
+  - id: protocol
+    template: task-classes/protocol.md
+  - id: security
+    template: task-classes/security.md
+  - id: implementation
+    template: task-classes/implementation.md
+  - id: test
+    template: task-classes/test.md
+  - id: review
+    template: task-classes/review.md
+  - id: research
+    template: task-classes/research.md
+  - id: documentation
+    template: task-classes/documentation.md
+  - id: repository-operations
+    template: task-classes/repository-operations.md
+models:
+  - id: codex-gpt-5-6-sol
+    provider: codex
+    template: models/codex/codex-gpt-5-6-sol.md
+  - id: codex-gpt-5-6-terra
+    provider: codex
+    template: models/codex/codex-gpt-5-6-terra.md
+  - id: codex-gpt-5-6-luna
+    provider: codex
+    template: models/codex/codex-gpt-5-6-luna.md
+  - id: codex-gpt-5-5
+    provider: codex
+    template: models/codex/codex-gpt-5-5.md
+  - id: codex-gpt-5-4
+    provider: codex
+    template: models/codex/codex-gpt-5-4.md
+  - id: codex-gpt-5-4-mini
+    provider: codex
+    template: models/codex/codex-gpt-5-4-mini.md
+  - id: codex-spark
+    provider: codex
+    template: models/codex/codex-spark.md
+  - id: claude-fable-5
+    provider: claude
+    template: models/claude/claude-fable-5.md
+  - id: claude-opus-5
+    provider: claude
+    template: models/claude/claude-opus-5.md
+  - id: claude-sonnet-5
+    provider: claude
+    template: models/claude/claude-sonnet-5.md
+  - id: claude-opus-4-8
+    provider: claude
+    template: models/claude/claude-opus-4-8.md
+  - id: claude-sonnet-4-6
+    provider: claude
+    template: models/claude/claude-sonnet-4-6.md
+  - id: claude-haiku-4-5
+    provider: claude
+    template: models/claude/claude-haiku-4-5.md
+  - id: claude-opus-4-7
+    provider: claude
+    template: models/claude/claude-opus-4-7.md
+  - id: claude-opus-4-6
+    provider: claude
+    template: models/claude/claude-opus-4-6.md
+  - id: antigravity-gemini-3-5-flash-medium
+    provider: antigravity
+    template: models/antigravity/antigravity-gemini-3-5-flash-medium.md
+  - id: antigravity-gemini-3-5-flash-high
+    provider: antigravity
+    template: models/antigravity/antigravity-gemini-3-5-flash-high.md
+  - id: antigravity-gemini-3-5-flash-low
+    provider: antigravity
+    template: models/antigravity/antigravity-gemini-3-5-flash-low.md
+  - id: antigravity-gemini-3-1-pro-low
+    provider: antigravity
+    template: models/antigravity/antigravity-gemini-3-1-pro-low.md
+  - id: antigravity-gemini-3-1-pro-high
+    provider: antigravity
+    template: models/antigravity/antigravity-gemini-3-1-pro-high.md
+  - id: antigravity-claude-sonnet-4-6-thinking
+    provider: antigravity
+    template: models/antigravity/antigravity-claude-sonnet-4-6-thinking.md
+  - id: antigravity-claude-opus-4-6-thinking
+    provider: antigravity
+    template: models/antigravity/antigravity-claude-opus-4-6-thinking.md
+  - id: antigravity-gpt-oss-120b-medium
+    provider: antigravity
+    template: models/antigravity/antigravity-gpt-oss-120b-medium.md
+  - id: grok-build-grok-4-3
+    provider: grok-build
+    template: models/grok-build/grok-build-grok-4-3.md
+  - id: grok-build-composer-2-5-fast
+    provider: grok-build
+    template: models/grok-build/grok-build-composer-2-5-fast.md
+  - id: openrouter-sakana-fugu-ultra
+    provider: openrouter
+    template: models/openrouter/openrouter-sakana-fugu-ultra.md
+  - id: openrouter-glm-5-2
+    provider: openrouter
+    template: models/openrouter/openrouter-glm-5-2.md
+  - id: openrouter-kimi-k2-7-code
+    provider: openrouter
+    template: models/openrouter/openrouter-kimi-k2-7-code.md
+dynamic-providers:
+  - provider: openrouter
+    template: models/openrouter/_dynamic.md
