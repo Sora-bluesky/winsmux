@@ -9,8 +9,9 @@ use control_pipe::{
     control_pipe_ui_is_enabled, start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV,
 };
 use desktop_backend::{
-    handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
-    resolve_repo_root, spawn_desktop_summary_refresh_stream, DesktopExplainPayload,
+    handle_desktop_json_rpc, load_desktop_events_json, load_desktop_run_explain,
+    load_desktop_summary_snapshot, resolve_repo_root, spawn_desktop_summary_refresh_stream,
+    DesktopExplainPayload,
     DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopStreamCommand,
     DesktopSummaryRefreshSignal, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
     PwshScriptTransport,
@@ -1170,6 +1171,11 @@ async fn desktop_run_explain(
 }
 
 #[tauri::command]
+fn desktop_events_json(project_dir: String, cursor: Option<u64>) -> Result<String, String> {
+    load_desktop_events_json(project_dir, cursor.unwrap_or(0))
+}
+
+#[tauri::command]
 async fn desktop_json_rpc(
     request: DesktopJsonRpcRequest,
     project_dir: Option<String>,
@@ -2043,6 +2049,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_summary_snapshot,
             desktop_run_explain,
+            desktop_events_json,
             desktop_json_rpc,
             desktop_voice_capture_status,
             desktop_voice_capture_start,
