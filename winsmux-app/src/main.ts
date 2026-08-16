@@ -119,6 +119,7 @@ import {
   maybeStartFirstRunOnboarding,
   renderFirstRunWizard,
 } from "./firstRunWizard";
+import * as vaultOrganize from "./agentVaultOrganize";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -680,7 +681,10 @@ let agentVaultProviderFilter: AgentVaultProviderFilter = "all";
 let agentVaultWorkspaceFilter = "all";
 let agentVaultStatusMessage = "";
 let selectedAgentVaultSessionId = "";
+let agentVaultOrganizeState = vaultOrganize.emptyAgentVaultOrganize();
+let agentVaultShowArchived = false;
 const agentVaultCollapsedProviderIds = new Set<AgentVaultProviderId>();
+const agentVaultCollapsedGroupIds = new Set<string>();
 let workbenchLayout: WorkbenchLayoutMode = "3x2";
 let focusedWorkbenchPaneId: string | null = null;
 let composerImeActive = false;
@@ -2892,6 +2896,62 @@ function persistAgentVaultPreferences() {
   }
 }
 
+function persistAgentVaultOrganizeState(next: vaultOrganize.AgentVaultOrganizeState) {
+  const saved = vaultOrganize.persistAgentVaultOrganizeToStorage(window.localStorage, next);
+  if (!saved.ok) {
+    agentVaultStatusMessage = getLanguageText(saved.error, "Agent Vault の整理データを保存できませんでした。");
+    return false;
+  }
+  agentVaultOrganizeState = next;
+  return true;
+}
+
+function applyAgentVaultOrganizeMutation(result: vaultOrganize.AgentVaultOrganizeMutationResult, okStatus?: string) {
+  if (!result.ok) {
+    agentVaultStatusMessage = getLanguageText(result.error, result.error);
+    renderAgentVaultPanel();
+    return false;
+  }
+  if (!persistAgentVaultOrganizeState(result.state)) {
+    renderAgentVaultPanel();
+    return false;
+  }
+  if (okStatus) {
+    agentVaultStatusMessage = okStatus;
+  }
+  renderAgentVaultPanel();
+  return true;
+}
+
+function toggleAgentVaultShowArchived() {
+  agentVaultShowArchived = !agentVaultShowArchived;
+  renderAgentVaultPanel();
+}
+
+function toggleAgentVaultArchive(entry: AgentVaultSessionEntry) {
+  const archived = vaultOrganize.isArchived(agentVaultOrganizeState, entry.id);
+  applyAgentVaultOrganizeMutation(
+    archived
+      ? vaultOrganize.unarchiveSession(agentVaultOrganizeState, entry.id)
+      : vaultOrganize.archiveSession(agentVaultOrganizeState, entry.id),
+    archived
+      ? getLanguageText(`Unarchived ${entry.title}.`, `${entry.title} のアーカイブを解除しました。`)
+      : getLanguageText(`Archived ${entry.title}.`, `${entry.title} をアーカイブしました。`),
+  );
+}
+
+function groupAgentVaultSession(entry: AgentVaultSessionEntry) {
+  const current = vaultOrganize.groupNameForSession(agentVaultOrganizeState, entry.id) ?? "";
+  const name = window.prompt(getLanguageText("Group name (1-64 characters)", "グループ名（1～64文字）"), current);
+  if (name === null) {
+    return;
+  }
+  applyAgentVaultOrganizeMutation(
+    vaultOrganize.assignSessionToGroup(agentVaultOrganizeState, entry.id, name),
+    getLanguageText(`Grouped ${entry.title}.`, `${entry.title} をグループに入れました。`),
+  );
+}
+
 function normalizeAgentVaultText(value: string | null | undefined, fallback = "") {
   const normalized = (value ?? "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
@@ -3083,7 +3143,12 @@ function buildAgentVaultEntries() {
 
 function getVisibleAgentVaultEntries() {
   const query = agentVaultQuery.trim().toLowerCase();
-  return buildAgentVaultEntries().filter((entry) => {
+  const allEntries = buildAgentVaultEntries();
+  const visibleIds = new Set(vaultOrganize.visibleVaultEntryIds(allEntries, agentVaultOrganizeState, agentVaultShowArchived));
+  return allEntries.filter((entry) => {
+    if (!visibleIds.has(entry.id)) {
+      return false;
+    }
     if (agentVaultProjectOnly && !entry.thisProject) {
       return false;
     }
@@ -3093,7 +3158,8 @@ function getVisibleAgentVaultEntries() {
     if (agentVaultWorkspaceFilter !== "all" && entry.workspaceKey !== agentVaultWorkspaceFilter) {
       return false;
     }
-    return !query || entry.searchText.includes(query);
+    const searchText = vaultOrganize.searchTextWithGroupName(entry, agentVaultOrganizeState);
+    return !query || searchText.includes(query);
   });
 }
 
@@ -3212,6 +3278,38 @@ function renderAgentVaultWorkspaceFilter(root: HTMLSelectElement, entries: Agent
   root.value = agentVaultWorkspaceFilter;
 }
 
+function appendAgentVaultSessionGroup(
+  list: HTMLElement,
+  key: string,
+  label: string,
+  groupEntries: AgentVaultSessionEntry[],
+  collapsed: boolean,
+  onToggle: () => void,
+) {
+  const group = document.createElement("section");
+  group.className = "agent-vault-provider-group";
+  group.dataset.groupKey = key;
+  group.dataset.collapsed = collapsed ? "true" : "false";
+  const heading = document.createElement("button");
+  heading.type = "button";
+  heading.className = "agent-vault-provider-heading";
+  heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  heading.addEventListener("click", onToggle);
+  const title = document.createElement("span");
+  title.textContent = label;
+  const count = document.createElement("span");
+  count.className = "agent-vault-provider-count";
+  count.textContent = `${groupEntries.length}`;
+  heading.append(title, count);
+  group.appendChild(heading);
+  if (!collapsed) {
+    for (const entry of groupEntries) {
+      group.appendChild(renderAgentVaultSessionCard(entry));
+    }
+  }
+  list.appendChild(group);
+}
+
 function renderAgentVaultPanel() {
   const panel = document.getElementById("agent-vault-panel");
   if (!panel) {
@@ -3258,6 +3356,14 @@ function renderAgentVaultPanel() {
   if (providerFilters) {
     renderAgentVaultProviderFilters(providerFilters, allEntries);
   }
+  vaultOrganize.ensureAgentVaultShowArchivedToggle(
+    document.querySelector(".agent-vault-search-controls"),
+    {
+      pressed: agentVaultShowArchived,
+      label: getLanguageText("Show archived", "アーカイブを表示"),
+      onToggle: toggleAgentVaultShowArchived,
+    },
+  );
   if (status) {
     status.textContent = agentVaultStatusMessage || getLanguageText("Drag a session card onto a worker pane, or restore it into a new pane.", "セッションカードをワーカーペインへドラッグするか、新しいペインへ復元できます。");
   }
@@ -3271,20 +3377,23 @@ function renderAgentVaultPanel() {
         : getLanguageText("No sessions match the current filters.", "現在の条件に一致するセッションはありません。");
       list.appendChild(empty);
     } else {
+      const partitioned = vaultOrganize.partitionEntriesByUserGroup(visibleEntries, agentVaultOrganizeState);
+      for (const userGroup of partitioned.groups) {
+        appendAgentVaultSessionGroup(list, userGroup.id, userGroup.name, userGroup.entries, agentVaultCollapsedGroupIds.has(userGroup.id), () => {
+          if (agentVaultCollapsedGroupIds.has(userGroup.id)) {
+            agentVaultCollapsedGroupIds.delete(userGroup.id);
+          } else {
+            agentVaultCollapsedGroupIds.add(userGroup.id);
+          }
+          renderAgentVaultPanel();
+        });
+      }
       for (const provider of agentVaultProviders) {
-        const providerEntries = visibleEntries.filter((entry) => entry.provider === provider.id);
+        const providerEntries = partitioned.ungrouped.filter((entry) => entry.provider === provider.id);
         if (providerEntries.length === 0) {
           continue;
         }
-        const collapsed = agentVaultCollapsedProviderIds.has(provider.id);
-        const group = document.createElement("section");
-        group.className = "agent-vault-provider-group";
-        group.dataset.collapsed = collapsed ? "true" : "false";
-        const heading = document.createElement("button");
-        heading.type = "button";
-        heading.className = "agent-vault-provider-heading";
-        heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
-        heading.addEventListener("click", () => {
+        appendAgentVaultSessionGroup(list, provider.id, getAgentVaultProviderLabel(provider.id), providerEntries, agentVaultCollapsedProviderIds.has(provider.id), () => {
           if (agentVaultCollapsedProviderIds.has(provider.id)) {
             agentVaultCollapsedProviderIds.delete(provider.id);
           } else {
@@ -3293,19 +3402,6 @@ function renderAgentVaultPanel() {
           persistAgentVaultPreferences();
           renderAgentVaultPanel();
         });
-        const label = document.createElement("span");
-        label.textContent = getAgentVaultProviderLabel(provider.id);
-        const count = document.createElement("span");
-        count.className = "agent-vault-provider-count";
-        count.textContent = `${providerEntries.length}`;
-        heading.append(label, count);
-        group.appendChild(heading);
-        if (!collapsed) {
-          for (const entry of providerEntries) {
-            group.appendChild(renderAgentVaultSessionCard(entry));
-          }
-        }
-        list.appendChild(group);
       }
     }
   }
@@ -3362,6 +3458,7 @@ function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
   card.tabIndex = 0;
   card.dataset.sessionId = entry.id;
   card.dataset.selected = selectedAgentVaultSessionId === entry.id ? "true" : "false";
+  card.dataset.archived = vaultOrganize.isArchived(agentVaultOrganizeState, entry.id) ? "true" : "false";
   card.setAttribute("aria-label", getLanguageText(`Agent Vault session ${entry.title}`, `Agent Vault セッション ${entry.title}`));
 
   card.addEventListener("dragstart", (event) => {
@@ -3433,45 +3530,54 @@ function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
     void restoreAgentVaultSession(entry.id, getFocusedWorkbenchPaneId() ?? undefined);
   });
   actions.append(newPane, focusedPane);
+  vaultOrganize.appendAgentVaultOrganizeActions(actions, {
+    archived: vaultOrganize.isArchived(agentVaultOrganizeState, entry.id),
+    forkDisabled: panes.size >= MAX_WORKBENCH_PANES,
+    labels: {
+      archive: getLanguageText("Archive", "アーカイブ"),
+      unarchive: getLanguageText("Unarchive", "アーカイブ解除"),
+      group: getLanguageText("Group", "グループ"),
+      fork: getLanguageText("Fork", "フォーク"),
+    },
+    onArchive: (event) => {
+      event.stopPropagation();
+      toggleAgentVaultArchive(entry);
+    },
+    onGroup: (event) => {
+      event.stopPropagation();
+      groupAgentVaultSession(entry);
+    },
+    onFork: (event) => {
+      event.stopPropagation();
+      void forkAgentVaultSession(entry.id);
+    },
+  });
   card.append(title, summary, meta, actions);
   return card;
 }
 
-function quotePowerShellArgument(value: string) {
-  return `'${value.replace(/'/g, "''")}'`;
+async function forkAgentVaultSession(entryId: string) {
+  await restoreAgentVaultSession(entryId, undefined, "fork");
 }
 
-function getSafeAgentVaultResumeId(entry: AgentVaultSessionEntry) {
-  const resumeId = normalizeAgentVaultText(entry.resumeId);
-  if (!resumeId || resumeId.length > 512 || /[\u0000-\u001f\u007f]/.test(resumeId)) {
-    return "";
-  }
-  return resumeId;
-}
-
-function buildAgentVaultResumeCommand(entry: AgentVaultSessionEntry) {
-  const resumeId = getSafeAgentVaultResumeId(entry);
-  if (!resumeId) {
-    return "";
-  }
-  switch (entry.provider) {
-    case "claude":
-      return `claude --resume ${quotePowerShellArgument(resumeId)}`;
-    case "codex":
-      return `codex resume ${quotePowerShellArgument(resumeId)}`;
-    case "opencode":
-      return `opencode --session ${quotePowerShellArgument(resumeId)}`;
-  }
-}
-
-async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) {
+async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, mode: "resume" | "fork" = "resume") {
   const entry = buildAgentVaultEntries().find((item) => item.id === entryId);
   if (!entry) {
     agentVaultStatusMessage = getLanguageText("Session metadata is no longer available.", "セッションメタデータが見つかりません。");
     renderAgentVaultPanel();
     return;
   }
-  const command = buildAgentVaultResumeCommand(entry);
+  const command = mode === "fork"
+    ? vaultOrganize.buildAgentVaultForkLaunchCommand(entry.provider)
+    : vaultOrganize.buildAgentVaultResumeCommand(entry.provider, entry.resumeId);
+  if (mode === "fork" && (!command || vaultOrganize.isResumeCommand(command))) {
+    agentVaultStatusMessage = getLanguageText(
+      "Fork could not start a fresh worker for this provider.",
+      "このプロバイダーの新規ワーカーを起動できません。",
+    );
+    renderAgentVaultPanel();
+    return;
+  }
   if (!command) {
     const rejectedId = entry.resumeId ? entry.resumeId.slice(0, 32) : "empty";
     agentVaultStatusMessage = getLanguageText(
@@ -3482,12 +3588,24 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) 
     return;
   }
   if (!targetPaneId && panes.size >= MAX_WORKBENCH_PANES) {
-    agentVaultStatusMessage = getLanguageText(
-      `Resume ${entry.resumeId.slice(0, 32)} could not create a new pane: maximum pane count reached.`,
-      `再開 ID ${entry.resumeId.slice(0, 32)} は新しいペインを作れませんでした。ペイン数が上限です。`,
-    );
+    agentVaultStatusMessage = mode === "fork"
+      ? getLanguageText(
+          "Fork could not create a new pane: maximum pane count reached.",
+          "フォークは新しいペインを作れませんでした。ペイン数が上限です。",
+        )
+      : getLanguageText(
+          `Resume ${entry.resumeId.slice(0, 32)} could not create a new pane: maximum pane count reached.`,
+          `再開 ID ${entry.resumeId.slice(0, 32)} は新しいペインを作れませんでした。ペイン数が上限です。`,
+        );
     renderAgentVaultPanel();
     return;
+  }
+
+  if (mode === "fork") {
+    const recorded = vaultOrganize.recordFork(agentVaultOrganizeState, entry.id, entry.workspaceKey);
+    if (!applyAgentVaultOrganizeMutation(recorded)) {
+      return;
+    }
   }
 
   setTerminalDrawer(true);
@@ -3513,10 +3631,16 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) 
       }
       await ensurePanePtyStarted(paneId);
     }
-    agentVaultStatusMessage = getLanguageText(
-      `Restoring ${entry.title} in ${getPaneDisplayLabel(paneId)}.`,
-      `${entry.title} を ${getPaneDisplayLabel(paneId)} で復元しています。`,
-    );
+    agentVaultStatusMessage = mode === "fork"
+      ? getLanguageText(`Forked from ${entry.title}`, `${entry.title} からフォークしました。`)
+      : getLanguageText(
+          `Restoring ${entry.title} in ${getPaneDisplayLabel(paneId)}.`,
+          `${entry.title} を ${getPaneDisplayLabel(paneId)} で復元しています。`,
+        );
+    if (mode === "fork") {
+      renderDesktopSurfaces();
+      return;
+    }
     appendRuntimeConversation({
       type: "system",
       category: "activity",
@@ -18449,6 +18573,15 @@ window.addEventListener("DOMContentLoaded", async () => {
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
   applyAgentVaultPreferences();
+  try {
+    const loadedOrganize = vaultOrganize.loadAgentVaultOrganize(window.localStorage.getItem(vaultOrganize.AGENT_VAULT_ORGANIZE_STORAGE_KEY));
+    agentVaultOrganizeState = loadedOrganize.state;
+    if (loadedOrganize.error) {
+      agentVaultStatusMessage = getLanguageText(loadedOrganize.error, "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
+    }
+  } catch {
+    agentVaultStatusMessage = getLanguageText("Agent Vault organize data was rejected. Previous state was kept.", "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
+  }
 
   applyShellPreferences();
   applyLanguageChrome();

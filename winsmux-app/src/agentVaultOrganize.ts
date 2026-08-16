@@ -434,3 +434,96 @@ function nextOrganizeId(prefix: "grp" | "fork", existingIds: string[]): string {
   }
   throw new Error("Could not allocate an organize id.");
 }
+
+export function persistAgentVaultOrganizeToStorage(
+  storage: Pick<Storage, "setItem"> | null | undefined,
+  state: AgentVaultOrganizeState,
+): { ok: true } | { ok: false; error: string } {
+  if (!storage) {
+    return { ok: false, error: "Agent Vault organize data could not be saved." };
+  }
+  try {
+    storage.setItem(AGENT_VAULT_ORGANIZE_STORAGE_KEY, serializeAgentVaultOrganize(state));
+    return { ok: true };
+  } catch {
+    return { ok: false, error: "Agent Vault organize data could not be saved." };
+  }
+}
+
+export function partitionEntriesByUserGroup<T extends { id: string }>(
+  entries: T[],
+  organize: AgentVaultOrganizeState,
+): { groups: Array<{ id: string; name: string; entries: T[] }>; ungrouped: T[] } {
+  const groupedIds = new Set<string>();
+  const groups: Array<{ id: string; name: string; entries: T[] }> = [];
+  for (const group of organize.groups) {
+    const members = entries.filter((entry) => group.sessionIds.includes(entry.id));
+    if (members.length === 0) {
+      continue;
+    }
+    for (const member of members) {
+      groupedIds.add(member.id);
+    }
+    groups.push({ id: group.id, name: group.name, entries: members });
+  }
+  return {
+    groups,
+    ungrouped: entries.filter((entry) => !groupedIds.has(entry.id)),
+  };
+}
+
+export function createAgentVaultActionButton(
+  label: string,
+  disabled: boolean,
+  onClick: (event: MouseEvent) => void,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "agent-vault-action";
+  button.textContent = label;
+  button.disabled = disabled;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+export function appendAgentVaultOrganizeActions(
+  actions: HTMLElement,
+  options: {
+    archived: boolean;
+    forkDisabled: boolean;
+    labels: { archive: string; unarchive: string; group: string; fork: string };
+    onArchive: (event: MouseEvent) => void;
+    onGroup: (event: MouseEvent) => void;
+    onFork: (event: MouseEvent) => void;
+  },
+): void {
+  actions.append(
+    createAgentVaultActionButton(
+      options.archived ? options.labels.unarchive : options.labels.archive,
+      false,
+      options.onArchive,
+    ),
+    createAgentVaultActionButton(options.labels.group, false, options.onGroup),
+    createAgentVaultActionButton(options.labels.fork, options.forkDisabled, options.onFork),
+  );
+}
+
+export function ensureAgentVaultShowArchivedToggle(
+  parent: HTMLElement | null,
+  options: { pressed: boolean; label: string; onToggle: () => void },
+): void {
+  if (!parent) {
+    return;
+  }
+  let button = parent.querySelector("#agent-vault-show-archived") as HTMLButtonElement | null;
+  if (!button) {
+    button = document.createElement("button");
+    button.id = "agent-vault-show-archived";
+    button.type = "button";
+    button.className = "agent-vault-filter-btn";
+    button.addEventListener("click", options.onToggle);
+    parent.appendChild(button);
+  }
+  button.textContent = options.label;
+  button.setAttribute("aria-pressed", options.pressed ? "true" : "false");
+}
