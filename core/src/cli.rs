@@ -160,6 +160,7 @@ OPERATOR COMMANDS:
     consult-error           Record a consultation error packet and event
     search-ledger           Search .winsmux/events.jsonl via SQLite FTS5
     poll-events             Return new monitor events from .winsmux/events.jsonl
+    events --json           Print condensed events from .winsmux/events.jsonl
     dispatch-review         Send review-request to a review-capable pane
     review-request          Record a pending review request for the current branch
     review-approve          Record PASS for the pending review request
