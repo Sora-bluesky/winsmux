@@ -2006,6 +2006,12 @@ match cmd {
         Ok(_) => {} // Continue processing
     }
 } // end command loop
+    if !persistent {
+        // One-shot clients drain until EOF. Dropping the socket without a write
+        // shutdown can surface as WSAECONNRESET (10054) on Windows loopback
+        // instead of FIN, which fails `read_to_string` after a complete frame.
+        let _ = write_stream.shutdown(std::net::Shutdown::Write);
+    }
 }
 
 /// Dispatch a command from a control mode client.
@@ -2757,6 +2763,19 @@ mod tests {
         output
     }
 
+    fn read_closed_direct_response(reader: &mut BufReader<std::net::TcpStream>) -> String {
+        let mut response = String::new();
+        match reader.read_to_string(&mut response) {
+            Ok(_) => response,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ConnectionReset && !response.is_empty() =>
+            {
+                response
+            }
+            Err(error) => panic!("failed to read closed direct response: {error}"),
+        }
+    }
+
     #[test]
     fn direct_named_environment_frame_round_trips_multiline_utf8() {
         let (address, request_rx, server) = spawn_test_server();
@@ -2771,8 +2790,7 @@ mod tests {
         client.flush().unwrap();
         answer_show_environment(&request_rx, Some("TARGET_VAR"), Ok(expected.clone()));
 
-        let mut response = String::new();
-        reader.read_to_string(&mut response).unwrap();
+        let response = read_closed_direct_response(&mut reader);
         assert_eq!(
             crate::commands::decode_safe_environment_response(&response).unwrap(),
             crate::commands::SafeEnvironmentResponse::Ok(expected)
@@ -2794,8 +2812,7 @@ mod tests {
         client.flush().unwrap();
         answer_show_environment(&request_rx, None, Ok(expected.clone()));
 
-        let mut response = String::new();
-        reader.read_to_string(&mut response).unwrap();
+        let response = read_closed_direct_response(&mut reader);
         assert_eq!(
             crate::commands::decode_safe_environment_response(&response).unwrap(),
             crate::commands::SafeEnvironmentResponse::Ok(expected)
