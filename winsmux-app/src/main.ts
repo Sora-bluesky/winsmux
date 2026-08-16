@@ -114,6 +114,11 @@ import {
   shouldDisableSettingsNavItem,
   type SettingsScope,
 } from "./settingsNavigation";
+import {
+  bindFirstRunWizard,
+  maybeStartFirstRunOnboarding,
+  renderFirstRunWizard,
+} from "./firstRunWizard";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -5173,7 +5178,7 @@ async function promptAndAddProjectSession() {
     } catch (error) {
       console.warn("Failed to open project folder picker", error);
       window.alert(getLanguageText("Could not open the folder picker.", "フォルダ選択を開けませんでした。"));
-      return;
+      return false;
     }
   } else {
     selectedPath = window.prompt(getLanguageText("Project path", "プロジェクトのパス"));
@@ -5181,7 +5186,7 @@ async function promptAndAddProjectSession() {
 
   const projectDir = normalizeProjectDirInput(selectedPath);
   if (!projectDir) {
-    return;
+    return false;
   }
 
   setActiveProjectDir(projectDir);
@@ -5195,6 +5200,7 @@ async function promptAndAddProjectSession() {
       projectName: getProjectDisplayName(projectDir),
     },
   });
+  return true;
 }
 
 function nextStartupTick() {
@@ -10464,6 +10470,7 @@ function applyLanguageChrome() {
     sourceControlMessage.placeholder = japanese ? "コミットメッセージ" : "Commit message";
   }
   applyWorkerPaneDirectInputState();
+  renderFirstRunWizard();
 }
 
 function applyThemeState(nextState: ThemeState) {
@@ -10506,6 +10513,7 @@ function applyThemeState(nextState: ThemeState) {
   renderSettingsControls();
   renderFooterLane();
   applyWorkerPaneDirectInputState();
+  renderFirstRunWizard();
 }
 
 function applyWorkerPaneDirectInputState(state: ThemeState = themeState) {
@@ -18509,7 +18517,41 @@ window.addEventListener("DOMContentLoaded", async () => {
   setTerminalDrawer(true);
   void initializeDesktopUpdateState();
   window.setTimeout(() => {
-    void applyInitialProjectDirFromLaunchArgs();
+    void (async () => {
+      bindFirstRunWizard({
+        getLanguageText,
+        getActiveProjectDir: () => activeProjectDir,
+        promptAndAddProjectSession,
+        recordDogfoodInput: (taskRef, taskClass, payload) => {
+          void recordOperatorDogfoodEvent({
+            actionType: "input",
+            inputSource: "shortcut",
+            taskRef,
+            taskClass,
+            payload,
+          });
+        },
+        focusWorkerPane: focusWorkerPaneFromStatus,
+        loadTeamProfileSettings: loadAndRenderTeamProfileSettings,
+        getTeamProfileSettingsView: () => teamProfileSettingsView,
+        appendRuntimeNotice: (title, body) => {
+          appendRuntimeConversation({
+            type: "system",
+            category: "attention",
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+            actor: "winsmux",
+            title,
+            body,
+            tone: "warning",
+          });
+          renderConversation(getConversationItems());
+        },
+        startFocusedWorker: startFocusedWorkerFromDesktop,
+      });
+      const firstRunSessionCountAtBoot = projectSessionEntries.length;
+      await applyInitialProjectDirFromLaunchArgs();
+      await maybeStartFirstRunOnboarding(firstRunSessionCountAtBoot);
+    })();
   }, 0);
   applyPopoutSurfaceState(popoutSurfaceState);
   registerDesktopSummaryLiveRefresh();

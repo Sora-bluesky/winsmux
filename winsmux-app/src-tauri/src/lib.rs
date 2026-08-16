@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
@@ -122,6 +122,134 @@ where
 #[tauri::command]
 fn desktop_initial_project_dir() -> Option<String> {
     resolve_initial_project_dir_from_args(std::env::args())
+}
+
+const ORCHESTRA_MODE_RELATIVE_PATH: &str = ".winsmux/orchestra-mode.json";
+
+#[derive(Debug, Serialize)]
+struct OrchestraModeWriteResult {
+    ok: bool,
+    relative_path: String,
+}
+
+fn is_allowed_orchestra_mode_relative_path(relative_path: &str) -> bool {
+    let normalized = relative_path.replace('\\', "/");
+    if normalized.contains("..") {
+        return false;
+    }
+    let path = Path::new(relative_path);
+    if path.is_absolute() {
+        return false;
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => return false,
+        }
+    }
+    normalized == ORCHESTRA_MODE_RELATIVE_PATH
+}
+
+fn parse_orchestra_mode_json(contents: &str) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(contents)
+        .map_err(|err| format!("Invalid orchestra-mode JSON: {err}"))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| "orchestra-mode JSON must be an object".to_string())?;
+    if object.len() != 2 || !object.contains_key("schema_version") || !object.contains_key("mode") {
+        return Err("orchestra-mode JSON must contain only schema_version and mode".to_string());
+    }
+    match object.get("schema_version") {
+        Some(serde_json::Value::Number(number)) if number.as_u64() == Some(1) => {}
+        _ => return Err("orchestra-mode JSON schema_version must be 1".to_string()),
+    }
+    match object.get("mode").and_then(|value| value.as_str()) {
+        Some("simple") | Some("team") => Ok(()),
+        _ => Err("orchestra-mode JSON mode must be simple or team".to_string()),
+    }
+}
+
+fn resolve_orchestra_mode_write_path(
+    project_dir: &str,
+    relative_path: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    if !is_allowed_orchestra_mode_relative_path(relative_path) {
+        return Err(
+            "desktop_write_orchestra_mode only writes .winsmux/orchestra-mode.json".to_string(),
+        );
+    }
+    if project_dir.trim().is_empty() {
+        return Err("desktop_write_orchestra_mode requires a project directory".to_string());
+    }
+    let project = PathBuf::from(project_dir.trim());
+    if !project.is_dir() {
+        return Err("desktop_write_orchestra_mode project directory does not exist".to_string());
+    }
+    let canonical_project = project.canonicalize().map_err(|err| {
+        format!("desktop_write_orchestra_mode failed to resolve project directory: {err}")
+    })?;
+    let target = canonical_project.join(relative_path);
+    if !target.starts_with(&canonical_project) {
+        return Err(
+            "desktop_write_orchestra_mode rejected a path outside the project directory".to_string(),
+        );
+    }
+    Ok((canonical_project, target))
+}
+
+fn write_orchestra_mode_file(
+    project_dir: &str,
+    relative_path: &str,
+    contents: &str,
+) -> Result<PathBuf, String> {
+    parse_orchestra_mode_json(contents)?;
+    let (canonical_project, target) = resolve_orchestra_mode_write_path(project_dir, relative_path)?;
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            format!("desktop_write_orchestra_mode failed to create .winsmux: {err}")
+        })?;
+        let canonical_parent = parent.canonicalize().map_err(|err| {
+            format!("desktop_write_orchestra_mode failed to resolve .winsmux: {err}")
+        })?;
+        if !canonical_parent.starts_with(&canonical_project) {
+            return Err(
+                "desktop_write_orchestra_mode rejected a path outside the project directory"
+                    .to_string(),
+            );
+        }
+    }
+    if orchestra_mode_target_is_symlink(&target)? {
+        return Err(
+            "desktop_write_orchestra_mode refused a symlink at .winsmux/orchestra-mode.json"
+                .to_string(),
+        );
+    }
+    std::fs::write(&target, contents)
+        .map_err(|err| format!("desktop_write_orchestra_mode failed to write file: {err}"))?;
+    Ok(target)
+}
+
+fn orchestra_mode_target_is_symlink(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!(
+            "desktop_write_orchestra_mode failed to inspect .winsmux/orchestra-mode.json: {err}"
+        )),
+    }
+}
+
+#[tauri::command]
+fn desktop_write_orchestra_mode(
+    project_dir: String,
+    relative_path: String,
+    contents: String,
+) -> Result<OrchestraModeWriteResult, String> {
+    write_orchestra_mode_file(&project_dir, &relative_path, &contents)?;
+    Ok(OrchestraModeWriteResult {
+        ok: true,
+        relative_path: ORCHESTRA_MODE_RELATIVE_PATH.to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1883,6 +2011,7 @@ pub fn run() {
             desktop_voice_capture_start,
             desktop_voice_capture_stop,
             desktop_initial_project_dir,
+            desktop_write_orchestra_mode,
             desktop_control_pipe_enabled,
             desktop_update_check,
             desktop_update_download_installer,
@@ -2342,6 +2471,94 @@ mod tests {
             .browser_fallback
             .reason
             .contains("does not transcribe audio into text"));
+    }
+
+    #[test]
+    fn orchestra_mode_write_accepts_simple_and_rejects_invalid_payloads() {
+        let project_dir = make_temp_launch_project("orchestra-mode");
+        let project = project_dir.to_string_lossy().to_string();
+        let valid = r#"{"schema_version":1,"mode":"simple"}"#;
+        assert!(write_orchestra_mode_file(&project, "../orchestra-mode.json", valid).is_err());
+        assert!(write_orchestra_mode_file(&project, "/tmp/orchestra-mode.json", valid).is_err());
+        assert!(write_orchestra_mode_file(
+            &project,
+            ".winsmux/orchestra-mode.json",
+            r#"{"schema_version":1,"mode":"simple","extra":true}"#
+        )
+        .is_err());
+        assert!(write_orchestra_mode_file(
+            &project,
+            ".winsmux/orchestra-mode.json",
+            r#"{"schema_version":2,"mode":"simple"}"#
+        )
+        .is_err());
+        assert!(write_orchestra_mode_file(
+            &project,
+            ".winsmux/orchestra-mode.json",
+            r#"{"schema_version":1,"mode":"advanced"}"#
+        )
+        .is_err());
+        let written = write_orchestra_mode_file(
+            &project,
+            ".winsmux/orchestra-mode.json",
+            valid,
+        )
+        .expect("valid orchestra-mode.json should write");
+        let body = std::fs::read_to_string(&written).expect("written orchestra-mode.json should read");
+        assert_eq!(body, valid);
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    fn try_create_file_symlink(original: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link).is_ok()
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link).is_ok()
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = (original, link);
+            false
+        }
+    }
+
+    #[test]
+    fn orchestra_mode_write_refuses_symlink_target() {
+        let project_dir = make_temp_launch_project("orchestra-mode-symlink");
+        let project = project_dir.to_string_lossy().to_string();
+        let outside = project_dir.join("outside.txt");
+        std::fs::write(&outside, "keep-me").expect("outside target should write");
+        let winsmux_dir = project_dir.join(".winsmux");
+        std::fs::create_dir_all(&winsmux_dir).expect(".winsmux should exist");
+        let link = winsmux_dir.join("orchestra-mode.json");
+        if !try_create_file_symlink(&outside, &link) {
+            assert!(
+                !orchestra_mode_target_is_symlink(&link).expect("missing path is not a symlink")
+            );
+            let _ = std::fs::remove_dir_all(project_dir);
+            return;
+        }
+        assert!(
+            orchestra_mode_target_is_symlink(&link).expect("created path should be a symlink")
+        );
+        let err = write_orchestra_mode_file(
+            &project,
+            ".winsmux/orchestra-mode.json",
+            r#"{"schema_version":1,"mode":"simple"}"#,
+        )
+        .expect_err("symlink orchestra-mode.json must be refused");
+        assert!(
+            err.contains("refused a symlink"),
+            "unexpected refuse error: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("outside target should remain"),
+            "keep-me"
+        );
+        let _ = std::fs::remove_dir_all(project_dir);
     }
 
     #[test]

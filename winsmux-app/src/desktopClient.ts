@@ -957,6 +957,25 @@ export async function getDesktopInitialProjectDir() {
   return await invoke<string | null>("desktop_initial_project_dir");
 }
 
+export async function writeDesktopOrchestraMode(
+  projectDir: string,
+  relativePath: string,
+  contents: string,
+) {
+  if (!isTauri()) {
+    throw new Error("desktop_write_orchestra_mode is unavailable outside the Tauri runtime");
+  }
+  try {
+    return await invoke<{ ok: boolean; relative_path: string }>("desktop_write_orchestra_mode", {
+      projectDir,
+      relativePath,
+      contents,
+    });
+  } catch (error) {
+    throw normalizeDesktopError("desktop_write_orchestra_mode", error);
+  }
+}
+
 function buildProjectDirPayload(projectDir?: string | null) {
   const normalized = projectDir?.trim();
   return normalized ? { projectDir: normalized } : {};
