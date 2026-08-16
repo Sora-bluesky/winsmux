@@ -10,7 +10,7 @@ use serde_json::{json, Map};
 pub(crate) const USAGE: &str = "usage: winsmux workspace-migrate --action <list|preview|apply|rollback> --json [--preset <id>] [--project-dir <path>]";
 
 const WORKSPACE_MIGRATE_LIST_JSON: &str = "{\"schema_version\":1,\"action\":\"list\",\"presets\":[{\"preset_id\":\"bugfix\"},{\"preset_id\":\"review\"},{\"preset_id\":\"research\"},{\"preset_id\":\"benchmark\"}]}\n";
-const WORKSPACE_MIGRATE_SHIPPED_PRESETS: [&str; 4] = ["bugfix", "review", "research", "benchmark"];
+pub(crate) const WORKSPACE_MIGRATE_SHIPPED_PRESETS: [&str; 4] = ["bugfix", "review", "research", "benchmark"];
 const WORKSPACE_MIGRATE_SIDECAR_NAME: &str = "workspace-preset.json";
 
 enum WorkspaceMigrateCommand {
@@ -194,14 +194,14 @@ fn workspace_migrate_render_preset(previous_yaml: &str, preset: &str) -> io::Res
     crate::project_settings_render::render_owned_workspace_recipes(previous_yaml, recipes)
 }
 
-fn preview_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Result<String> {
+pub(crate) fn preview_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Result<String> {
     let yaml_path = workspace_migrate_yaml_path(project_dir);
     let (_yaml_existed, original_yaml) = workspace_migrate_read_yaml(&yaml_path)?;
     workspace_migrate_render_preset(&original_yaml, preset)?;
     Ok(workspace_migrate_action_json("preview", preset))
 }
 
-fn apply_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Result<String> {
+pub(crate) fn apply_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Result<String> {
     let yaml_path = workspace_migrate_yaml_path(project_dir);
     let sidecar_path = workspace_migrate_sidecar_path(project_dir);
     if sidecar_path.exists() {
@@ -240,7 +240,7 @@ fn apply_workspace_migrate_preset(preset: &str, project_dir: &Path) -> io::Resul
     Ok(workspace_migrate_action_json("apply", preset))
 }
 
-fn rollback_workspace_migrate(project_dir: &Path) -> io::Result<String> {
+pub(crate) fn rollback_workspace_migrate(project_dir: &Path) -> io::Result<String> {
     let yaml_path = workspace_migrate_yaml_path(project_dir);
     let sidecar_path = workspace_migrate_sidecar_path(project_dir);
     let sidecar_bytes = fs::read(&sidecar_path).map_err(|_| {

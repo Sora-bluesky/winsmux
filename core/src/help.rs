@@ -325,6 +325,7 @@ const CLI_COMMANDS: &[(&str, &str, &str)] = &[
     ("explain",           "",         "Print one run explanation JSON"),
     ("meta-plan",         "",         "Draft a read-only multi-role planning packet"),
     ("workspace-plan",    "",         "Validate and print a declarative workspace plan"),
+    ("workflow-gate",     "",         "Aggregate workflow and Team Profile pre-release sub-gates"),
     ("skills",            "",         "Print agent-readable command skill contracts"),
     // Misc
     ("confirm-before",    "confirm",  "Confirm before running command"),
