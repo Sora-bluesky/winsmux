@@ -75,6 +75,36 @@ pub fn should_reset_warm_pane_after_default_shell_change(old_shell: &str, new_sh
     old_shell != new_shell
 }
 
+pub fn shell_prompt_ready(text: &str) -> bool {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return false;
+    }
+    if lines[lines.len() - 1].starts_with("PS ") {
+        return true;
+    }
+
+    let start = lines.len().saturating_sub(6);
+    let collapsed: String = lines[start..]
+        .join("")
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect();
+    if collapsed.is_empty() || !collapsed.ends_with('>') {
+        return false;
+    }
+
+    let lower = collapsed.to_ascii_lowercase();
+    match lower.find("ps") {
+        Some(idx) => collapsed[idx + 2..].chars().count() >= 2,
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

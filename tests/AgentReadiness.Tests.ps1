@@ -160,3 +160,76 @@ Describe 'agent readiness prompt detection' {
         }
     }
 }
+
+Describe 'dispatch pane echo and shell prompt detection' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-dispatch-detect.ps1')
+    }
+
+    It 'accepts an unwrapped PowerShell prompt' {
+        Test-ShellPromptText -Text 'PS C:\repo>' | Should -BeTrue
+        Test-ShellPromptText -Text 'PS /home/user>' | Should -BeTrue
+    }
+
+    It 'accepts a ConPTY-wrapped PowerShell prompt split across lines' {
+        $wrapped = @(
+            'PS C:\Users\Administrator\Documents\winsmux-o'
+            'rchestra>'
+        ) -join "`n"
+        Test-ShellPromptText -Text $wrapped | Should -BeTrue
+    }
+
+    It 'accepts a wrapped prompt whose last visible line is only >' {
+        $wrapped = @(
+            'PS C:\very\long\path\winsmux-orchestra'
+            '>'
+        ) -join "`n"
+        Test-ShellPromptText -Text $wrapped | Should -BeTrue
+    }
+
+    It 'rejects a copyright banner before the shell prompt exists' {
+        $banner = @(
+            'PowerShell 7.5.4'
+            'Copyright (c) Microsoft Corporation.'
+            'https://aka.ms/powershell'
+            "Type 'help' to get help."
+        ) -join "`n"
+        Test-ShellPromptText -Text $banner | Should -BeFalse
+    }
+
+    It 'rejects a busy pane whose last line is not a prompt' {
+        $busy = @(
+            'PS C:\repo> pwsh -NoProfile -File C:\repo\winsmux-core\scripts\orchestra-pane-bootstrap.ps1'
+            'running bootstrap'
+        ) -join "`n"
+        Test-ShellPromptText -Text $busy | Should -BeFalse
+    }
+
+    It 'matches a wrapped long startup command with line-leading prompt decorations' {
+        $command = 'pwsh -NoProfile -File C:\Users\Administrator\Documents\winsmux-orchestra\winsmux-core\scripts\orchestra-pane-bootstrap.ps1 -PlanFile C:\Users\Administrator\Documents\winsmux-orchestra\.winsmux\orchestra-bootstrap\%2.json'
+        $pane = @(
+            'PS C:\Users\Administrator\Documents\winsmux-orchestra> pwsh -NoProfile -File C:\Users\Administrator\Documents\winsmux-o'
+            '> rchestra\winsmux-core\scripts\orchestra-pane-bootstrap.ps1 -PlanFile C:\Users\Administrator\Documents\winsmux-orchestra\.winsmux\orchestra-bootstrap\%2.json'
+        ) -join "`n"
+        Test-PaneContainsCommandFragment -PaneText $pane -CommandText $command | Should -BeTrue
+    }
+
+    It 'matches long task text when only the prefix is visible in the TUI' {
+        $task = 'Implement TASK-833 operator dispatch path reliability for wrap-tolerant echo matching and shell prompt detection across startup commands and task text.'
+        $pane = '> ' + $task.Substring(0, 72)
+        Test-PaneContainsCommandFragment -PaneText $pane -CommandText $task | Should -BeTrue
+    }
+
+    It 'matches long task text when wrap decorations split the suffix' {
+        $task = 'Implement TASK-833 operator dispatch path reliability for wrap-tolerant echo matching and shell prompt detection across startup commands and task text.'
+        $raw = '> ' + $task
+        $lines = [System.Collections.Generic.List[string]]::new()
+        while ($raw.Length -gt 42) {
+            $lines.Add($raw.Substring(0, 42)) | Out-Null
+            $raw = '> ' + $raw.Substring(42)
+        }
+        $lines.Add($raw) | Out-Null
+        $pane = $lines -join "`n"
+        Test-PaneContainsCommandFragment -PaneText $pane -CommandText $task | Should -BeTrue
+    }
+}

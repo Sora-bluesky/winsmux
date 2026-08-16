@@ -5519,6 +5519,29 @@ body.is-resizing-workbench {
   text-overflow: ellipsis;
 }
 
+.pane-direct-input-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ws-chrome-bg);
+  background: #d97706;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.pane-direct-input-badge[hidden] {
+  display: none;
+}
+
+.pane[data-direct-input="on"] {
+  box-shadow: inset 0 0 0 1px rgba(217, 119, 6, 0.55);
+}
+
 .pane-close {
   background: none;
   border: none;

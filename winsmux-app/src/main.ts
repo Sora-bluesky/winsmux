@@ -89,6 +89,7 @@ import {
   selectConfiguredWorkerStartRoster,
 } from "./workerStartPlanning";
 import { hasWorkerReadyPromptInAnySource } from "./workerReadinessPrompt";
+import { isDirectWorkerPaneInputEnabled, shouldForwardWorkerPaneInput } from "./workerPaneInput";
 import {
   DesktopSummaryRefreshScheduler,
   type DesktopSummaryRefreshContext,
@@ -408,6 +409,7 @@ interface ThemeState {
   editorFontSize: number;
   voiceShortcut: string;
   persistVoiceDraftLocally: boolean;
+  directWorkerPaneInput: boolean;
   focusMode: FocusMode;
   language: LanguageMode;
 }
@@ -891,6 +893,7 @@ const themeState: ThemeState = {
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   voiceShortcut: DEFAULT_VOICE_SHORTCUT,
   persistVoiceDraftLocally: false,
+  directWorkerPaneInput: false,
   focusMode: "standard",
   language: "en",
 };
@@ -1918,6 +1921,10 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
   meta.className = "pane-meta";
   meta.textContent = getLanguageText("No branch · waiting for summary", "ブランチなし・要約待ち");
 
+  const directInputBadge = document.createElement("span");
+  directInputBadge.className = "pane-direct-input-badge";
+  directInputBadge.hidden = true;
+
   const closeBtn = document.createElement("button");
   closeBtn.className = "pane-close";
   closeBtn.textContent = "×";
@@ -1925,6 +1932,7 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
 
   labelGroup.appendChild(label);
   labelGroup.appendChild(meta);
+  labelGroup.appendChild(directInputBadge);
   header.appendChild(labelGroup);
   header.appendChild(closeBtn);
 
@@ -1943,7 +1951,12 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
   terminal.open(termDiv);
 
   terminal.onData((data: string) => {
-    void ensurePanePtyStarted(id).then(() => writePtyData(id, data)).catch((error) => {
+    void ensurePanePtyStarted(id).then(() => {
+      if (!shouldForwardWorkerPaneInput("user", themeState.directWorkerPaneInput)) {
+        return;
+      }
+      return writePtyData(id, data);
+    }).catch((error) => {
       console.warn("Failed to write PTY data", error);
     });
   });
@@ -1978,6 +1991,8 @@ function createPane(paneId?: string, options?: { deferWorkbenchUpdate?: boolean 
     updateWorkbenchControls();
     scheduleWorkbenchPaneFit();
   }
+
+  applyWorkerPaneDirectInputState();
 
   if (shouldAutoStartPane(id)) {
     void ensurePanePtyStarted(id);
@@ -9707,6 +9722,7 @@ function cloneThemeState(state: ThemeState): ThemeState {
     editorFontSize: state.editorFontSize,
     voiceShortcut: state.voiceShortcut,
     persistVoiceDraftLocally: state.persistVoiceDraftLocally,
+    directWorkerPaneInput: state.directWorkerPaneInput === true,
     focusMode: state.focusMode,
     language: state.language,
   };
@@ -9721,6 +9737,7 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
     && left.editorFontSize === right.editorFontSize
     && left.voiceShortcut === right.voiceShortcut
     && left.persistVoiceDraftLocally === right.persistVoiceDraftLocally
+    && left.directWorkerPaneInput === right.directWorkerPaneInput
     && left.focusMode === right.focusMode
     && left.language === right.language;
 }
@@ -9983,6 +10000,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const editorFontSize = clampEditorFontSize(parsedEditorFontSize);
     const voiceShortcut = normalizeVoiceShortcut(parsed.voiceShortcut);
     const persistVoiceDraftLocally = parsed.persistVoiceDraftLocally === true;
+    const directWorkerPaneInput = parsed.directWorkerPaneInput === true;
     const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
     const language = languageOptions.find((item) => item.value === parsed.language)?.value ?? "en";
     if (!theme || !density || !wrapMode) {
@@ -10017,6 +10035,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       editorFontSize,
       voiceShortcut,
       persistVoiceDraftLocally,
+      directWorkerPaneInput,
       focusMode,
       language,
       sidebarWidth: Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(normalizedSidebarWidth))),
@@ -10046,6 +10065,7 @@ function persistThemeState() {
       editorFontSize: themeState.editorFontSize,
       voiceShortcut: normalizeVoiceShortcut(themeState.voiceShortcut),
       persistVoiceDraftLocally: themeState.persistVoiceDraftLocally,
+      directWorkerPaneInput: themeState.directWorkerPaneInput === true,
       focusMode: themeState.focusMode,
       language: themeState.language,
       sidebarWidth,
@@ -10326,6 +10346,14 @@ function applyLanguageChrome() {
       : "Keeps a text-only recovery copy for long voice drafts on this device. Raw audio is never stored.",
   );
   setElementText("voice-draft-storage-toggle-label", japanese ? "長時間の音声下書きをローカルに保存" : "Save long voice drafts locally");
+  setElementText("direct-worker-pane-input-label", japanese ? "ワーカーペインへの直接入力" : "Direct Worker Pane Input");
+  setElementText(
+    "direct-worker-pane-input-description",
+    japanese
+      ? "既定ではワーカーペインは表示専用です。オンにすると、フォーカス中のワーカーペインへ直接入力・貼り付けできます。オペレーターからの dispatch には影響しません。"
+      : "Worker panes stay read-only by default. When on, typing and paste reach the focused worker pane. Operator dispatch is unchanged.",
+  );
+  setElementText("direct-worker-pane-input-toggle-label", japanese ? "ワーカーペインへ直接入力する" : "Allow typing and paste into worker panes");
   setSelectorText(".brand-block .sidebar-caption", japanese ? "オペレーターシェル" : "Operator shell");
   setSelectorText('[data-i18n="sessions-title"]', japanese ? "セッション" : "Sessions");
   setSelectorText('[data-i18n="files-title"]', japanese ? "ファイル" : "Files");
@@ -10402,6 +10430,7 @@ function applyLanguageChrome() {
   if (sourceControlMessage) {
     sourceControlMessage.placeholder = japanese ? "コミットメッセージ" : "Commit message";
   }
+  applyWorkerPaneDirectInputState();
 }
 
 function applyThemeState(nextState: ThemeState) {
@@ -10416,6 +10445,7 @@ function applyThemeState(nextState: ThemeState) {
   if (!themeState.persistVoiceDraftLocally) {
     clearVoiceDraftRecoveryStorage();
   }
+  themeState.directWorkerPaneInput = nextState.directWorkerPaneInput === true;
   themeState.focusMode = nextState.focusMode;
   themeState.language = nextState.language;
   applyShellPreferences();
@@ -10442,6 +10472,22 @@ function applyThemeState(nextState: ThemeState) {
   renderCommandBar();
   renderSettingsControls();
   renderFooterLane();
+  applyWorkerPaneDirectInputState();
+}
+
+function applyWorkerPaneDirectInputState(state: ThemeState = themeState) {
+  const enabled = isDirectWorkerPaneInputEnabled(state.directWorkerPaneInput);
+  const badgeText = state.language === "ja" ? "直接入力" : "Direct input";
+  panes.forEach((pane) => {
+    pane.terminal.options.disableStdin = !enabled;
+    pane.container.classList.toggle("pane-direct-input", enabled);
+    pane.container.dataset.directInput = enabled ? "on" : "off";
+    const badge = pane.container.querySelector(".pane-direct-input-badge");
+    if (badge instanceof HTMLElement) {
+      badge.hidden = !enabled;
+      badge.textContent = badgeText;
+    }
+  });
 }
 
 function applyCodeFontToPanes(state: ThemeState = themeState) {
@@ -10651,6 +10697,20 @@ function updateVoiceDraftStorageControl(activeState: ThemeState) {
   input.onchange = () => {
     const draft = getSettingsDraftState();
     draft.persistVoiceDraftLocally = input.checked;
+    updateSettingsApplyButton();
+    renderFooterLane();
+  };
+}
+
+function updateDirectWorkerPaneInputControl(activeState: ThemeState) {
+  const input = document.getElementById("direct-worker-pane-input") as HTMLInputElement | null;
+  if (!input) {
+    return;
+  }
+  input.checked = isDirectWorkerPaneInputEnabled(activeState.directWorkerPaneInput);
+  input.onchange = () => {
+    const draft = getSettingsDraftState();
+    draft.directWorkerPaneInput = input.checked;
     updateSettingsApplyButton();
     renderFooterLane();
   };
@@ -12207,6 +12267,7 @@ function renderSettingsControls() {
   updateFontFamilyControl(activeState);
   updateVoiceShortcutControl(activeState);
   updateVoiceDraftStorageControl(activeState);
+  updateDirectWorkerPaneInputControl(activeState);
   renderSettingsFontFamilyMenu(activeState);
 
   renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {

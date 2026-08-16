@@ -2852,8 +2852,18 @@ Describe 'orchestra-start rollback helpers' {
     }
 
     It 'delivers launch commands in-process without public bridge argv' {
-        Mock Invoke-Winsmux { }
+        $script:launchCaptureCount = 0
+        Mock Invoke-Winsmux {
+            if ($Arguments[0] -eq 'capture-pane') {
+                $script:launchCaptureCount += 1
+                if ($script:launchCaptureCount -eq 1) {
+                    return 'PS C:\repo>'
+                }
+                return 'PS C:\repo> pwsh -NoProfile -File bootstrap.ps1'
+            }
+        }
         Mock Invoke-Bridge { throw 'launch delivery must not use public bridge argv' }
+        Mock Start-Sleep { }
 
         Send-OrchestraBridgeCommand `
             -Target '%2' `
@@ -2862,6 +2872,12 @@ Describe 'orchestra-start rollback helpers' {
             -SessionName 'winsmux-orchestra'
 
         Should -Invoke Invoke-Bridge -Times 0 -Exactly
+        Should -Invoke Invoke-Winsmux -Times 2 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'capture-pane' -and
+            $Arguments[1] -eq '-t' -and
+            $Arguments[2] -eq '%2' -and
+            $TargetSessionName -eq 'winsmux-orchestra'
+        }
         Should -Invoke Invoke-Winsmux -Times 1 -Exactly -ParameterFilter {
             @($Arguments) -join '|' -eq 'send-keys|-t|%2|-l|--|pwsh -NoProfile -File bootstrap.ps1' -and
             $TargetSessionName -eq 'winsmux-orchestra'
@@ -2869,6 +2885,28 @@ Describe 'orchestra-start rollback helpers' {
         Should -Invoke Invoke-Winsmux -Times 1 -Exactly -ParameterFilter {
             @($Arguments) -join '|' -eq 'send-keys|-t|%2|Enter' -and
             $TargetSessionName -eq 'winsmux-orchestra'
+        }
+    }
+
+    It 'fails closed when launch echo fragment is not observed' {
+        Mock Invoke-Winsmux {
+            if ($Arguments[0] -eq 'capture-pane') {
+                return 'PS C:\repo>'
+            }
+        }
+        Mock Invoke-Bridge { throw 'launch delivery must not use public bridge argv' }
+        Mock Start-Sleep { }
+
+        {
+            Send-OrchestraBridgeCommand `
+                -Target '%2' `
+                -Text 'pwsh -NoProfile -File bootstrap.ps1' `
+                -DeliveryClass 'launch' `
+                -SessionName 'winsmux-orchestra'
+        } | Should -Throw '*launch command fragment was not observed*'
+
+        Should -Invoke Invoke-Winsmux -Times 0 -Exactly -ParameterFilter {
+            @($Arguments) -join '|' -eq 'send-keys|-t|%2|Enter'
         }
     }
 
