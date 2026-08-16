@@ -18,7 +18,6 @@ import {
   getDesktopSummarySnapshot,
   getDesktopWorkersStatus,
   getDesktopTeamProfileSettingsView,
-  writeDesktopOrchestraMode,
   getDesktopVoiceCaptureStatus,
   resetDesktopTeamProfileField,
   pickDesktopRunWinner,
@@ -116,15 +115,10 @@ import {
   type SettingsScope,
 } from "./settingsNavigation";
 import {
-  ORCHESTRA_MODE_RELATIVE_PATH,
-  ORCHESTRA_MODE_STORAGE_KEY,
-  launchTargetsAfterMode,
-  nextWizardStep,
-  serializeOrchestraMode,
-  shouldShowFirstRunWizard,
-  type OrchestraMode,
-  type WizardStepId,
-} from "./firstRunOnboarding";
+  bindFirstRunWizard,
+  maybeStartFirstRunOnboarding,
+  renderFirstRunWizard,
+} from "./firstRunWizard";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -954,10 +948,6 @@ const agentVaultProviders: AgentVaultProviderDefinition[] = [
 ];
 let projectSessionEntries: ProjectSessionEntry[] = readStoredProjectSessions();
 let activeProjectDir: string | null = readStoredActiveProjectDir();
-let firstRunWizardOpen = false;
-let firstRunWizardStep: WizardStepId = "select-project";
-let firstRunWizardError = "";
-let firstRunSelectedMode: OrchestraMode | null = null;
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
   { mode: "ask", label: "Ask", placeholder: "Ask a question or request guidance" },
@@ -5212,310 +5202,6 @@ async function promptAndAddProjectSession() {
   });
   return true;
 }
-
-async function maybeStartFirstRunOnboarding() {
-  if (!shouldShowFirstRunWizard(projectSessionEntries.length)) {
-    return;
-  }
-  firstRunWizardOpen = true;
-  firstRunWizardStep = "select-project";
-  firstRunWizardError = "";
-  firstRunSelectedMode = null;
-  renderFirstRunWizard();
-}
-
-function closeFirstRunWizard() {
-  firstRunWizardOpen = false;
-  firstRunWizardError = "";
-  const overlay = document.getElementById("first-run-wizard");
-  if (!overlay) {
-    return;
-  }
-  overlay.classList.remove("open");
-  overlay.hidden = true;
-  overlay.replaceChildren();
-}
-
-function ensureFirstRunWizard() {
-  let overlay = document.getElementById("first-run-wizard");
-  if (overlay) {
-    return overlay;
-  }
-  overlay = document.createElement("div");
-  overlay.id = "first-run-wizard";
-  overlay.className = "first-run-wizard";
-  overlay.setAttribute("role", "presentation");
-  document.body.appendChild(overlay);
-  return overlay;
-}
-
-async function readExistingOrchestraModeJson(projectDir: string | null) {
-  if (!projectDir) {
-    return null;
-  }
-  if (!isTauri()) {
-    try {
-      return window.localStorage.getItem(ORCHESTRA_MODE_STORAGE_KEY);
-    } catch {
-      return null;
-    }
-  }
-  try {
-    const file = await getDesktopFullFile(ORCHESTRA_MODE_RELATIVE_PATH, undefined, projectDir);
-    return file.content;
-  } catch {
-    return null;
-  }
-}
-
-async function persistFirstRunOrchestraMode(mode: OrchestraMode) {
-  const projectDir = activeProjectDir;
-  if (!projectDir) {
-    throw new Error(getLanguageText("Select a project folder first.", "先にプロジェクトフォルダを選択してください。"));
-  }
-  const json = serializeOrchestraMode(mode);
-  try {
-    window.localStorage.setItem(ORCHESTRA_MODE_STORAGE_KEY, json);
-  } catch (error) {
-    console.warn("Failed to persist orchestra mode locally", error);
-  }
-  if (!isTauri()) {
-    return;
-  }
-  try {
-    await writeDesktopOrchestraMode(projectDir, ORCHESTRA_MODE_RELATIVE_PATH, json);
-  } catch (error) {
-    try {
-      window.localStorage.removeItem(ORCHESTRA_MODE_STORAGE_KEY);
-    } catch {
-      // Keep fail-closed: do not leave a local mode after a rejected project write.
-    }
-    throw error;
-  }
-}
-
-async function handleFirstRunSelectProject() {
-  const selected = await promptAndAddProjectSession();
-  if (!selected) {
-    firstRunWizardStep = nextWizardStep({
-      sessionCount: 0,
-      pickerCancelled: true,
-    }).step;
-    renderFirstRunWizard();
-    return;
-  }
-  const existing = await readExistingOrchestraModeJson(activeProjectDir);
-  const decision = nextWizardStep({
-    sessionCount: 0,
-    projectChosen: true,
-    existingModeJson: existing,
-  });
-  firstRunWizardStep = decision.step;
-  firstRunSelectedMode = decision.persistMode;
-  firstRunWizardError = decision.modeRejected
-    ? getLanguageText(
-      "The existing orchestra mode file is invalid. Choose Simple or Team again.",
-      "既存のオーケストラモードファイルが無効です。Simple または Team を選び直してください。",
-    )
-    : "";
-  renderFirstRunWizard();
-}
-
-async function handleFirstRunChooseMode(mode: OrchestraMode) {
-  const decision = nextWizardStep({
-    sessionCount: 0,
-    projectChosen: true,
-    selectedMode: mode,
-  });
-  if (decision.writeMode && decision.persistMode) {
-    try {
-      await persistFirstRunOrchestraMode(decision.persistMode);
-    } catch (error) {
-      firstRunWizardError = error instanceof Error ? error.message : String(error);
-      firstRunWizardStep = "choose-mode";
-      renderFirstRunWizard();
-      return;
-    }
-  }
-  firstRunSelectedMode = decision.persistMode;
-  firstRunWizardStep = decision.step;
-  firstRunWizardError = "";
-  void recordOperatorDogfoodEvent({
-    actionType: "input",
-    inputSource: "shortcut",
-    taskRef: "desktop-first-run-mode",
-    taskClass: "first_launch_mode_selection",
-    payload: {
-      selected: true,
-      mode: decision.persistMode,
-    },
-  });
-  renderFirstRunWizard();
-}
-
-function handleFirstRunModeCancel() {
-  const decision = nextWizardStep({
-    sessionCount: 0,
-    projectChosen: true,
-    modeStepCancelled: true,
-  });
-  firstRunSelectedMode = null;
-  firstRunWizardStep = decision.step;
-  renderFirstRunWizard();
-}
-
-async function handleFirstRunLaunch() {
-  const mode = firstRunSelectedMode;
-  if (!mode) {
-    firstRunWizardStep = "choose-mode";
-    renderFirstRunWizard();
-    return;
-  }
-  closeFirstRunWizard();
-  await launchFirstRunManagedWorker(mode);
-}
-
-async function launchFirstRunManagedWorker(mode: OrchestraMode) {
-  const targets = launchTargetsAfterMode(mode);
-  const target = targets[0];
-  if (target) {
-    focusWorkerPaneFromStatus(target);
-    if (mode === "team") {
-      await loadAndRenderTeamProfileSettings();
-      if (!teamProfileSettingsView || shouldRefuseTeamProfileStart(teamProfileSettingsView)) {
-        appendRuntimeConversation({
-          type: "system",
-          category: "attention",
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
-          actor: "winsmux",
-          title: getLanguageText("Worker start blocked", "ワーカー起動を停止"),
-          body: getLanguageText(
-            "Start refused. One or more slots cannot run.",
-            "起動できません。実行できないスロットがあります。",
-          ),
-          tone: "warning",
-        });
-        renderConversation(getConversationItems());
-        return;
-      }
-    }
-    await startFocusedWorkerFromDesktop();
-  }
-}
-
-function renderFirstRunWizard() {
-  if (!firstRunWizardOpen) {
-    const existing = document.getElementById("first-run-wizard");
-    if (existing) {
-      existing.classList.remove("open");
-      existing.hidden = true;
-      existing.replaceChildren();
-    }
-    return;
-  }
-
-  const overlay = ensureFirstRunWizard();
-  overlay.hidden = false;
-  overlay.classList.add("open");
-
-  const panel = document.createElement("div");
-  panel.className = "first-run-wizard-panel";
-  panel.setAttribute("role", "dialog");
-  panel.setAttribute("aria-modal", "true");
-  panel.setAttribute("aria-labelledby", "first-run-wizard-title");
-
-  const content = document.createElement("div");
-  content.className = "first-run-wizard-content";
-
-  const stepNumber = firstRunWizardStep === "select-project" ? 1 : firstRunWizardStep === "choose-mode" ? 2 : 3;
-  content.appendChild(createTextElement(
-    "p",
-    "first-run-wizard-step",
-    getLanguageText(`Step ${stepNumber} of 3`, `ステップ ${stepNumber} / 3`),
-  ));
-
-  let title = getLanguageText("Select project folder", "プロジェクトフォルダを選択");
-  let body = getLanguageText("Choose a local project folder", "ローカルプロジェクトのフォルダを選択");
-  if (firstRunWizardStep === "choose-mode") {
-    title = getLanguageText("Choose Simple or Team", "Simple または Team を選択");
-    body = getLanguageText(
-      "Simple uses one live worker. Team keeps the existing Team Profile start-gate.",
-      "Simple はライブワーカーを1つ使います。Team は既存のチームプロファイル起動ゲートを維持します。",
-    );
-  } else if (firstRunWizardStep === "launch") {
-    title = getLanguageText("Launch", "起動");
-    body = getLanguageText(
-      "Start the first managed worker, then focus worker-1.",
-      "最初の管理ワーカーを起動し、worker-1 にフォーカスします。",
-    );
-  }
-
-  const heading = createTextElement("h2", "first-run-wizard-title", title);
-  heading.id = "first-run-wizard-title";
-  content.appendChild(heading);
-  content.appendChild(createTextElement("p", "first-run-wizard-body", body));
-
-  const error = createTextElement("p", "first-run-wizard-error", firstRunWizardError);
-  error.hidden = !firstRunWizardError;
-  error.setAttribute("role", "alert");
-  content.appendChild(error);
-
-  const actions = document.createElement("div");
-  actions.className = "first-run-wizard-actions";
-
-  if (firstRunWizardStep === "select-project") {
-    const selectButton = document.createElement("button");
-    selectButton.type = "button";
-    selectButton.className = "first-run-wizard-primary";
-    selectButton.textContent = getLanguageText("Select project", "プロジェクトを選択");
-    selectButton.addEventListener("click", () => {
-      void handleFirstRunSelectProject();
-    });
-    actions.appendChild(selectButton);
-  } else if (firstRunWizardStep === "choose-mode") {
-    const simpleButton = document.createElement("button");
-    simpleButton.type = "button";
-    simpleButton.className = "first-run-wizard-primary";
-    simpleButton.textContent = getLanguageText("Simple (one live worker)", "Simple（ライブワーカーは1つ）");
-    simpleButton.addEventListener("click", () => {
-      void handleFirstRunChooseMode("simple");
-    });
-    const teamButton = document.createElement("button");
-    teamButton.type = "button";
-    teamButton.className = "first-run-wizard-secondary";
-    teamButton.textContent = getLanguageText(
-      "Team (existing Team Profile start-gate)",
-      "Team（既存のチームプロファイル起動ゲート）",
-    );
-    teamButton.addEventListener("click", () => {
-      void handleFirstRunChooseMode("team");
-    });
-    const cancelButton = document.createElement("button");
-    cancelButton.type = "button";
-    cancelButton.className = "first-run-wizard-cancel";
-    cancelButton.textContent = getLanguageText("Cancel", "キャンセル");
-    cancelButton.addEventListener("click", () => {
-      handleFirstRunModeCancel();
-    });
-    actions.appendChild(simpleButton);
-    actions.appendChild(teamButton);
-    actions.appendChild(cancelButton);
-  } else {
-    const startButton = document.createElement("button");
-    startButton.type = "button";
-    startButton.className = "first-run-wizard-primary";
-    startButton.textContent = getLanguageText("Start", "起動");
-    startButton.addEventListener("click", () => {
-      void handleFirstRunLaunch();
-    });
-    actions.appendChild(startButton);
-  }
-
-  content.appendChild(actions);
-  panel.appendChild(content);
-  overlay.replaceChildren(panel);
-}
-
 
 function nextStartupTick() {
   return new Promise<void>((resolve) => {
@@ -18832,8 +18518,39 @@ window.addEventListener("DOMContentLoaded", async () => {
   void initializeDesktopUpdateState();
   window.setTimeout(() => {
     void (async () => {
+      bindFirstRunWizard({
+        getLanguageText,
+        getActiveProjectDir: () => activeProjectDir,
+        promptAndAddProjectSession,
+        recordDogfoodInput: (taskRef, taskClass, payload) => {
+          void recordOperatorDogfoodEvent({
+            actionType: "input",
+            inputSource: "shortcut",
+            taskRef,
+            taskClass,
+            payload,
+          });
+        },
+        focusWorkerPane: focusWorkerPaneFromStatus,
+        loadTeamProfileSettings: loadAndRenderTeamProfileSettings,
+        getTeamProfileSettingsView: () => teamProfileSettingsView,
+        appendRuntimeNotice: (title, body) => {
+          appendRuntimeConversation({
+            type: "system",
+            category: "attention",
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+            actor: "winsmux",
+            title,
+            body,
+            tone: "warning",
+          });
+          renderConversation(getConversationItems());
+        },
+        startFocusedWorker: startFocusedWorkerFromDesktop,
+      });
+      const firstRunSessionCountAtBoot = projectSessionEntries.length;
       await applyInitialProjectDirFromLaunchArgs();
-      await maybeStartFirstRunOnboarding();
+      await maybeStartFirstRunOnboarding(firstRunSessionCountAtBoot);
     })();
   }, 0);
   applyPopoutSurfaceState(popoutSurfaceState);

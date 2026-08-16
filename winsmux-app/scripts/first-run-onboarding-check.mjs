@@ -154,19 +154,50 @@ assert.equal(isAllowedOrchestraModeRelativePath("/tmp/orchestra-mode.json"), fal
 assert.equal(isAllowedOrchestraModeRelativePath(".winsmux/../secrets.json"), false);
 
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
-assert.match(mainSource, /from "\.\/firstRunOnboarding"/);
-assert.match(mainSource, /shouldShowFirstRunWizard/);
-assert.match(mainSource, /ORCHESTRA_MODE_STORAGE_KEY/);
-assert.match(mainSource, /first_launch_mode_selection/);
-assert.match(mainSource, /async function launchFirstRunManagedWorker/);
-assert.match(mainSource, /writeDesktopOrchestraMode/);
+const wizardSource = await readFile(path.resolve("src/firstRunWizard.ts"), "utf8");
+assert.match(mainSource, /from "\.\/firstRunWizard"/);
 assert.match(mainSource, /maybeStartFirstRunOnboarding/);
+assert.match(wizardSource, /from "\.\/firstRunOnboarding"/);
+assert.match(wizardSource, /shouldShowFirstRunWizard/);
+assert.match(wizardSource, /ORCHESTRA_MODE_STORAGE_KEY/);
+assert.match(wizardSource, /first_launch_mode_selection/);
+assert.match(wizardSource, /async function launchFirstRunManagedWorker/);
+assert.match(wizardSource, /writeDesktopOrchestraMode/);
 assert.equal(simpleModeMustNotHideExtraPanes(mainSource), true);
+assert.equal(simpleModeMustNotHideExtraPanes(wizardSource), true);
 
-const launchFn = mainSource.match(/async function launchFirstRunManagedWorker[\s\S]*?\n\}/);
+const launchFn = wizardSource.match(/async function launchFirstRunManagedWorker[\s\S]*?\n\}/);
 assert.ok(launchFn, "launchFirstRunManagedWorker must exist");
 assert.equal(/worker-[2-6]/.test(launchFn[0]), false, "first-run launch must not start worker-2..6");
 assert.match(launchFn[0], /launchTargetsAfterMode|launchTargetAfterMode|worker-1/);
+
+// F11: empty-store first run with --project-dir must use the boot session count,
+// not the post-launch-arg session list, and start at choose-mode when a project is already set.
+const f11 = nextWizardStep({ sessionCount: 0, projectChosen: true });
+assert.equal(shouldShowFirstRunWizard(0), true);
+assert.equal(f11.step, "choose-mode");
+assert.equal(f11.writeMode, false);
+const f11Existing = nextWizardStep({
+  sessionCount: 0,
+  projectChosen: true,
+  existingModeJson: '{"schema_version":1,"mode":"simple"}',
+});
+assert.equal(f11Existing.step, "launch");
+assert.equal(f11Existing.writeMode, false);
+assert.match(mainSource, /firstRunSessionCountAtBoot = projectSessionEntries\.length/);
+assert.match(mainSource, /await applyInitialProjectDirFromLaunchArgs\(\);/);
+assert.match(mainSource, /maybeStartFirstRunOnboarding\(firstRunSessionCountAtBoot\)/);
+const bootSnapshotAt = mainSource.indexOf("const firstRunSessionCountAtBoot = projectSessionEntries.length");
+const applyLaunchAt = mainSource.indexOf("await applyInitialProjectDirFromLaunchArgs()");
+const maybeStartAt = mainSource.indexOf("await maybeStartFirstRunOnboarding(firstRunSessionCountAtBoot)");
+assert.ok(bootSnapshotAt >= 0 && applyLaunchAt > bootSnapshotAt && maybeStartAt > applyLaunchAt);
+assert.match(wizardSource, /shouldShowFirstRunWizard\(sessionCountAtBoot\)/);
+assert.equal(
+  /projectSessionEntries\.length/.test(wizardSource),
+  false,
+  "wizard skip-check must not reread projectSessionEntries.length after launch-arg apply",
+);
+assert.doesNotMatch(mainSource, /shouldShowFirstRunWizard\(projectSessionEntries\.length\)/);
 
 const desktopClient = await readFile(path.resolve("src/desktopClient.ts"), "utf8");
 assert.match(desktopClient, /desktop_write_orchestra_mode/);
@@ -174,5 +205,8 @@ assert.match(desktopClient, /desktop_write_orchestra_mode/);
 const libSource = await readFile(path.resolve("src-tauri/src/lib.rs"), "utf8");
 assert.match(libSource, /fn desktop_write_orchestra_mode/);
 assert.match(libSource, /fn write_orchestra_mode_file/);
+assert.match(libSource, /fn orchestra_mode_target_is_symlink/);
+assert.match(libSource, /symlink_metadata/);
+assert.match(libSource, /refused a symlink/);
 
 console.log("first-run-onboarding-check: ok");

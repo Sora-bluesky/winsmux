@@ -218,9 +218,25 @@ fn write_orchestra_mode_file(
             );
         }
     }
+    if orchestra_mode_target_is_symlink(&target)? {
+        return Err(
+            "desktop_write_orchestra_mode refused a symlink at .winsmux/orchestra-mode.json"
+                .to_string(),
+        );
+    }
     std::fs::write(&target, contents)
         .map_err(|err| format!("desktop_write_orchestra_mode failed to write file: {err}"))?;
     Ok(target)
+}
+
+fn orchestra_mode_target_is_symlink(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.file_type().is_symlink()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(format!(
+            "desktop_write_orchestra_mode failed to inspect .winsmux/orchestra-mode.json: {err}"
+        )),
+    }
 }
 
 #[tauri::command]
@@ -2490,6 +2506,58 @@ mod tests {
         .expect("valid orchestra-mode.json should write");
         let body = std::fs::read_to_string(&written).expect("written orchestra-mode.json should read");
         assert_eq!(body, valid);
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    fn try_create_file_symlink(original: &Path, link: &Path) -> bool {
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(original, link).is_ok()
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(original, link).is_ok()
+        }
+        #[cfg(not(any(windows, unix)))]
+        {
+            let _ = (original, link);
+            false
+        }
+    }
+
+    #[test]
+    fn orchestra_mode_write_refuses_symlink_target() {
+        let project_dir = make_temp_launch_project("orchestra-mode-symlink");
+        let project = project_dir.to_string_lossy().to_string();
+        let outside = project_dir.join("outside.txt");
+        std::fs::write(&outside, "keep-me").expect("outside target should write");
+        let winsmux_dir = project_dir.join(".winsmux");
+        std::fs::create_dir_all(&winsmux_dir).expect(".winsmux should exist");
+        let link = winsmux_dir.join("orchestra-mode.json");
+        if !try_create_file_symlink(&outside, &link) {
+            assert!(
+                !orchestra_mode_target_is_symlink(&link).expect("missing path is not a symlink")
+            );
+            let _ = std::fs::remove_dir_all(project_dir);
+            return;
+        }
+        assert!(
+            orchestra_mode_target_is_symlink(&link).expect("created path should be a symlink")
+        );
+        let err = write_orchestra_mode_file(
+            &project,
+            ".winsmux/orchestra-mode.json",
+            r#"{"schema_version":1,"mode":"simple"}"#,
+        )
+        .expect_err("symlink orchestra-mode.json must be refused");
+        assert!(
+            err.contains("refused a symlink"),
+            "unexpected refuse error: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside).expect("outside target should remain"),
+            "keep-me"
+        );
         let _ = std::fs::remove_dir_all(project_dir);
     }
 
