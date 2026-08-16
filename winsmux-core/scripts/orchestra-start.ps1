@@ -1133,7 +1133,7 @@ function Test-TeamProfileOptInDocument {
     if ([string]::IsNullOrWhiteSpace($Yaml)) {
         return $false
     }
-    return [bool]($Yaml -match '(?m)(^|[\s{,])["'']?team-profile["'']?\s*:')
+    return [bool]($Yaml -match '(?m)(^|[\s{,])["'']?team[-_]profile["'']?\s*:')
 }
 
 function Invoke-TeamProfileLaunchProjection {

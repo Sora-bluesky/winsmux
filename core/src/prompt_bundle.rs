@@ -67,37 +67,44 @@ pub(crate) fn project_launch(
         &digest,
         &pack.template_ids,
     )?;
-    let merged_manifest = match original_manifest.as_deref() {
-        Some(original) => merge_manifest(original, &projection, &slot.slot_id)?,
-        None => merge_manifest(
-            "version: 2\nsession: {}\npanes: {}\n",
-            &projection,
-            &slot.slot_id,
-        )?,
-    };
+    let merged_manifest = original_manifest
+        .as_deref()
+        .map(|original| merge_manifest(original, &projection, &slot.slot_id))
+        .transpose()?;
 
     fs::create_dir_all(bundle_path.parent().ok_or_else(|| {
         invalid_input("prompt-bundle path has no parent directory.")
     })?)?;
-    fs::create_dir_all(manifest_path.parent().ok_or_else(|| {
-        invalid_input("manifest path has no parent directory.")
-    })?)?;
     let tmp_bundle = bundle_path.with_extension("md.tmp-prompt-bundle");
     fs::write(&tmp_bundle, &body)?;
-    let tmp_manifest = manifest_path.with_extension("yaml.tmp-prompt-bundle");
-    fs::write(&tmp_manifest, &merged_manifest)?;
+    let tmp_manifest = merged_manifest.as_ref().map(|merged| {
+        (
+            manifest_path.with_extension("yaml.tmp-prompt-bundle"),
+            merged,
+        )
+    });
+    if let Some((tmp_path, merged)) = tmp_manifest.as_ref() {
+        fs::create_dir_all(manifest_path.parent().ok_or_else(|| {
+            invalid_input("manifest path has no parent directory.")
+        })?)?;
+        fs::write(tmp_path, merged)?;
+    }
     if let Err(error) = replace_existing_file(&tmp_bundle, &bundle_path) {
         let _ = fs::remove_file(&tmp_bundle);
-        let _ = fs::remove_file(&tmp_manifest);
-        return Err(error);
-    }
-    if let Err(error) = replace_existing_file(&tmp_manifest, &manifest_path) {
-        let _ = fs::remove_file(&tmp_manifest);
-        let _ = fs::remove_file(&bundle_path);
-        if let Some(original) = original_manifest {
-            let _ = fs::write(&manifest_path, original);
+        if let Some((tmp_path, _)) = tmp_manifest.as_ref() {
+            let _ = fs::remove_file(tmp_path);
         }
         return Err(error);
+    }
+    if let Some((tmp_path, _)) = tmp_manifest.as_ref() {
+        if let Err(error) = replace_existing_file(tmp_path, &manifest_path) {
+            let _ = fs::remove_file(tmp_path);
+            let _ = fs::remove_file(&bundle_path);
+            if let Some(original) = original_manifest {
+                let _ = fs::write(&manifest_path, original);
+            }
+            return Err(error);
+        }
     }
     Ok(json!({
         "schema_version": 1,
@@ -335,20 +342,21 @@ mod tests {
             .contains_key("worker_backend"));
         assert!(payload["projection"]["pane"]["prompt_bundle"]["sha256"].as_str().unwrap().len() == 64);
         assert!(payload["projection"]["pane"].get("task_id").is_none());
-        let saved = fs::read_to_string(dir.path().join(".winsmux/manifest.yaml")).unwrap();
-        assert!(saved.contains("team_profile:"));
-        assert!(saved.contains("prompt_bundle:"));
+        assert!(payload["projection"]["session"]["team_profile"].is_object());
+        assert!(!dir.path().join(".winsmux/manifest.yaml").exists());
     }
 
     #[test]
-    fn project_launch_writes_manifest_when_missing() {
+    fn project_launch_does_not_create_stub_manifest_when_missing() {
         let dir = seed_project();
         assert!(!dir.path().join(".winsmux/manifest.yaml").exists());
-        project_launch(dir.path(), "sess-1", "worker-1", None, None).unwrap();
-        let saved = fs::read_to_string(dir.path().join(".winsmux/manifest.yaml")).unwrap();
-        assert!(saved.contains("team_profile:"));
-        assert!(saved.contains("prompt_bundle:"));
-        assert!(saved.contains("worker-1"));
+        let payload = project_launch(dir.path(), "sess-1", "worker-1", None, None).unwrap();
+        assert!(!dir.path().join(".winsmux/manifest.yaml").exists());
+        assert_eq!(
+            payload["projection"]["pane"]["prompt_bundle"]["path"],
+            ".winsmux/runtime/prompt-bundles/sess-1/worker-1.md"
+        );
+        assert!(payload["projection"]["session"]["team_profile"].is_object());
     }
 
     #[test]

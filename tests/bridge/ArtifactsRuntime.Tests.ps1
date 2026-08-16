@@ -187,6 +187,19 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'function Assert-TeamProfileStartGate'
         $script:orchestraStartContent | Should -Match 'if \(-not \(Test-TeamProfileOptInDocument -Yaml \$raw\)\) \{'
         $script:orchestraStartContent | Should -Not -Match '\(\?m\)\^\[ 	\]\*team-profile\[ 	\]\*:'
+        $script:orchestraStartContent | Should -Match 'team\[-_\]profile'
+    }
+
+    It 'recognizes snake_case Team Profile opt-in keys' {
+        $start = $script:orchestraStartContent.IndexOf('function Test-TeamProfileOptInDocument')
+        $next = $script:orchestraStartContent.IndexOf("`nfunction ", $start + 1)
+        $start | Should -BeGreaterThan -1
+        $next | Should -BeGreaterThan $start
+        Invoke-Expression $script:orchestraStartContent.Substring($start, $next - $start)
+        Test-TeamProfileOptInDocument -Yaml "team_profile:`n  schema-version: 1" | Should -BeTrue
+        Test-TeamProfileOptInDocument -Yaml '"team_profile": { schema-version: 1 }' | Should -BeTrue
+        Test-TeamProfileOptInDocument -Yaml "team-profile:`n  schema-version: 1" | Should -BeTrue
+        Test-TeamProfileOptInDocument -Yaml "agent-slots:`n  - slot-id: worker-1" | Should -BeFalse
     }
 
     It 'applies projected worker backend before pane launch' {

@@ -2337,6 +2337,7 @@ agent-slots:
         assert!(document_has_team_profile(yaml));
         let flow = "{ \"team-profile\": { schema-version: 1, preset: official-balanced-v1, preset-revision: 1, update-policy: retain-overrides }, agent-slots: [] }\n";
         assert!(document_has_team_profile(flow));
+        assert!(document_has_team_profile("team_profile:\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots: []\n"));
         assert!(!document_has_team_profile("agent-slots:\n  - slot-id: worker-1\n"));
     }
 
