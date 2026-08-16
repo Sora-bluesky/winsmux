@@ -108,6 +108,13 @@ export function confirmTeamProfileReset(input: { confirmed?: boolean }): boolean
   return input.confirmed === true;
 }
 
+export function shouldExposeTeamProfileReset(
+  view: TeamProfileSettingsView,
+  source: TeamProfileFieldView["source"] | string,
+): boolean {
+  return view.opted_in === true && source === "override";
+}
+
 export function keepOverridesAfterPresetApply<T extends Record<string, unknown>>(
   presetSlots: Record<string, T>,
   overlay: Record<string, Partial<T>>,
@@ -212,26 +219,28 @@ export function renderTeamProfileSettingsPanel(
       const value = row.fields?.[field]?.value;
       cell.setAttribute("data-source", String(source));
       cell.textContent = `${field}: ${String(value ?? "")} (${source})`;
-      const reset = doc.createElement("button");
-      reset.type = "button";
-      reset.className = "ghost-btn ghost-btn-small team-profile-reset";
-      reset.setAttribute("aria-label", japanese ? `${slotId} の ${field} をリセット` : `Reset ${slotId} ${field}`);
-      reset.setAttribute("aria-expanded", "false");
-      reset.textContent = japanese ? "リセット" : "Reset";
-      reset.addEventListener("click", () => {
-        if (reset.getAttribute("data-confirming") === "true") {
-          if (confirmTeamProfileReset({ confirmed: true })) {
-            options.onResetField?.(slotId, field);
+      if (shouldExposeTeamProfileReset(view, source)) {
+        const reset = doc.createElement("button");
+        reset.type = "button";
+        reset.className = "ghost-btn ghost-btn-small team-profile-reset";
+        reset.setAttribute("aria-label", japanese ? `${slotId} の ${field} をリセット` : `Reset ${slotId} ${field}`);
+        reset.setAttribute("aria-expanded", "false");
+        reset.textContent = japanese ? "リセット" : "Reset";
+        reset.addEventListener("click", () => {
+          if (reset.getAttribute("data-confirming") === "true") {
+            if (confirmTeamProfileReset({ confirmed: true })) {
+              options.onResetField?.(slotId, field);
+            }
+            reset.setAttribute("data-confirming", "false");
+            reset.setAttribute("aria-expanded", "false");
+            return;
           }
-          reset.setAttribute("data-confirming", "false");
-          reset.setAttribute("aria-expanded", "false");
-          return;
-        }
-        reset.setAttribute("data-confirming", "true");
-        reset.setAttribute("aria-expanded", "true");
-        reset.textContent = japanese ? "確認" : "Confirm reset";
-      });
-      cell.appendChild(reset);
+          reset.setAttribute("data-confirming", "true");
+          reset.setAttribute("aria-expanded", "true");
+          reset.textContent = japanese ? "確認" : "Confirm reset";
+        });
+        cell.appendChild(reset);
+      }
       rowEl.appendChild(cell);
     }
     if (row.cannot_run || row.launch_blocked) {

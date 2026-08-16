@@ -1714,6 +1714,16 @@ fn classify_payload(
     })
 }
 
+fn require_opted_in_mutation(original: &str, action: &str) -> io::Result<()> {
+    if document_has_team_profile(original) {
+        Ok(())
+    } else {
+        Err(invalid_input(format!(
+            "{action} requires an opted-in team-profile."
+        )))
+    }
+}
+
 fn project_yaml_path(project_dir: &Path) -> PathBuf {
     if project_dir.ends_with(".winsmux.yaml") {
         project_dir.to_path_buf()
@@ -1737,6 +1747,7 @@ fn save_slot_field(
     }
     let path = project_yaml_path(project_dir);
     let original = fs::read_to_string(&path)?;
+    require_opted_in_mutation(&original, "save")?;
     let mut overlays = overlay_json_from_yaml(&original)?;
     let entry = overlays.iter_mut().find(|entry| {
         entry
@@ -1780,6 +1791,7 @@ fn reset_slot_field(project_dir: &Path, slot_id: &str, field: &str) -> io::Resul
     }
     let path = project_yaml_path(project_dir);
     let original = fs::read_to_string(&path)?;
+    require_opted_in_mutation(&original, "reset-field")?;
     let mut overlays = overlay_json_from_yaml(&original)?;
     overlays.retain_mut(|entry| {
         let matches = entry
@@ -2285,6 +2297,34 @@ agent-slots:
         let team = resolve_yaml(&after, OFFICIAL_PRESET_YAML, &catalog_fixture()).unwrap();
         assert_eq!(team.slots[5].reasoning_effort, "medium");
         assert!(!team.slots[5].overrides.contains(&"reasoning-effort".to_string()));
+    }
+
+    #[test]
+    fn reset_field_refuses_legacy_roster_without_team_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".winsmux.yaml");
+        let original = "agent-slots:\n  - slot-id: worker-1\n    agent: codex\n";
+        fs::write(&path, original).unwrap();
+        let err = reset_slot_field(dir.path(), "worker-1", "provider").unwrap_err();
+        assert!(
+            err.to_string().contains("opted-in team-profile"),
+            "reset must refuse legacy roster, err={err}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn save_field_refuses_legacy_roster_without_team_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".winsmux.yaml");
+        let original = "agent-slots:\n  - slot-id: worker-1\n    agent: codex\n";
+        fs::write(&path, original).unwrap();
+        let err = save_slot_field(dir.path(), "worker-1", "provider", "codex").unwrap_err();
+        assert!(
+            err.to_string().contains("opted-in team-profile"),
+            "save must refuse legacy roster, err={err}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
     }
 
     #[test]

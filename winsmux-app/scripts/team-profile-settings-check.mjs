@@ -86,6 +86,7 @@ const {
   shouldRefuseTeamProfileStart,
   shouldRefuseTeamProfileApply,
   confirmTeamProfileReset,
+  shouldExposeTeamProfileReset,
   keepOverridesAfterPresetApply,
   modelsForProvider,
   effortsForModel,
@@ -177,6 +178,10 @@ assert.equal(shouldRefuseTeamProfileApply(invalidView), true);
 assert.equal(confirmTeamProfileReset({ confirmed: false }), false);
 assert.equal(confirmTeamProfileReset({}), false);
 assert.equal(confirmTeamProfileReset({ confirmed: true }), true);
+assert.equal(shouldExposeTeamProfileReset(officialView, "override"), true);
+assert.equal(shouldExposeTeamProfileReset(officialView, "preset"), false);
+assert.equal(shouldExposeTeamProfileReset({ ...officialView, opted_in: false }, "override"), false);
+assert.equal(shouldExposeTeamProfileReset({ ...officialView, opted_in: false }, "legacy"), false);
 
 const chips = formatTeamProfileRuntimeChips(officialView.rows[0].runtime_display);
 assert.deepEqual(chips.map((chip) => chip.field), ["provider", "model", "effort", "role", "lifecycle", "task-classes", "source", "validation", "bundle"]);
@@ -196,12 +201,43 @@ assert.equal(grid.children.length, 6, "settings UI must render six slot rows");
 assert.equal(grid.children[5].children[3].getAttribute("data-source"), "override");
 assert.equal(grid.children[0].children[1].getAttribute("data-source"), "preset");
 
-const resetButton = grid.children[0].children[1].children[0];
+function collectResetButtons(node, found = []) {
+  for (const child of node.children ?? []) {
+    if (String(child.className).includes("team-profile-reset")) {
+      found.push(child);
+    }
+    collectResetButtons(child, found);
+  }
+  return found;
+}
+
+assert.equal(grid.children[0].children[1].children.length, 0, "preset fields must not expose Reset");
+const resetButtons = collectResetButtons(grid);
+assert.equal(resetButtons.length, 1, "only override fields expose Reset");
+const resetButton = grid.children[5].children[3].children[0];
+assert.equal(resetButton, resetButtons[0]);
 resetButton.click();
 assert.deepEqual(resets, []);
 assert.equal(resetButton.getAttribute("aria-expanded"), "true");
 resetButton.click();
-assert.deepEqual(resets, ["worker-1:provider"]);
+assert.deepEqual(resets, ["worker-6:reasoning-effort"]);
+
+const legacyView = parseTeamProfileSettingsView({
+  ...officialView,
+  opted_in: false,
+  rows: officialView.rows.map((row) => ({
+    ...row,
+    fields: Object.fromEntries(
+      Object.entries(row.fields).map(([field, value]) => [field, { ...value, source: "legacy" }]),
+    ),
+  })),
+});
+const legacyRoot = fakeDocument.createElement("div");
+legacyRoot.ownerDocument = fakeDocument;
+renderTeamProfileSettingsPanel(legacyRoot, legacyView, {
+  onResetField: (slotId, field) => resets.push(`legacy:${slotId}:${field}`),
+});
+assert.equal(collectResetButtons(legacyRoot).length, 0, "legacy roster must not expose Reset");
 
 const refusedRoot = fakeDocument.createElement("div");
 refusedRoot.ownerDocument = fakeDocument;

@@ -58,6 +58,11 @@ pub(crate) fn project_launch(
     } else {
         None
     };
+    let original_bundle = if bundle_path.is_file() {
+        Some(fs::read(&bundle_path)?)
+    } else {
+        None
+    };
     let projection = projection_value(
         &team,
         &slot,
@@ -99,7 +104,7 @@ pub(crate) fn project_launch(
     if let Some((tmp_path, _)) = tmp_manifest.as_ref() {
         if let Err(error) = replace_existing_file(tmp_path, &manifest_path) {
             let _ = fs::remove_file(tmp_path);
-            let _ = fs::remove_file(&bundle_path);
+            restore_previous_bundle(&bundle_path, original_bundle.as_deref());
             if let Some(original) = original_manifest {
                 let _ = fs::write(&manifest_path, original);
             }
@@ -273,8 +278,37 @@ fn invalid_data(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message.into())
 }
 
-#[cfg(windows)]
+fn restore_previous_bundle(bundle_path: &Path, original_bundle: Option<&[u8]>) {
+    if let Some(original) = original_bundle {
+        let _ = fs::write(bundle_path, original);
+    } else {
+        let _ = fs::remove_file(bundle_path);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_NEXT_MANIFEST_REPLACE: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if path.file_name().is_some_and(|name| name == "manifest.yaml")
+        && FAIL_NEXT_MANIFEST_REPLACE.with(std::cell::Cell::get)
+    {
+        FAIL_NEXT_MANIFEST_REPLACE.with(|flag| flag.set(false));
+        let _ = fs::remove_file(tmp_path);
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            "injected manifest replace failure",
+        ));
+    }
+    replace_existing_file_os(tmp_path, path)
+}
+
+#[cfg(windows)]
+fn replace_existing_file_os(tmp_path: &Path, path: &Path) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
@@ -304,7 +338,7 @@ fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn replace_existing_file(tmp_path: &Path, path: &Path) -> io::Result<()> {
+fn replace_existing_file_os(tmp_path: &Path, path: &Path) -> io::Result<()> {
     fs::rename(tmp_path, path)
 }
 
@@ -376,6 +410,32 @@ mod tests {
         assert!(saved.contains("prompt_bundle:"));
         assert!(saved.contains("role: Operator"));
         assert!(!saved.contains("A1 delegation"));
+    }
+
+    #[test]
+    fn manifest_replace_failure_restores_previous_bundle() {
+        let dir = seed_project();
+        let winsmux = dir.path().join(".winsmux");
+        fs::create_dir_all(winsmux.join("runtime/prompt-bundles/sess-1")).unwrap();
+        let original_manifest = "version: 1\nsession:\n  name: keep\npanes: {}\n";
+        fs::write(winsmux.join("manifest.yaml"), original_manifest).unwrap();
+        let bundle = dir
+            .path()
+            .join(".winsmux/runtime/prompt-bundles/sess-1/worker-1.md");
+        fs::write(&bundle, "OLD BUNDLE\n").unwrap();
+        FAIL_NEXT_MANIFEST_REPLACE.with(|flag| flag.set(true));
+        let result = project_launch(dir.path(), "sess-1", "worker-1", None, None);
+        FAIL_NEXT_MANIFEST_REPLACE.with(|flag| flag.set(false));
+        let err = result.expect_err("manifest replace must fail");
+        assert!(
+            err.to_string().contains("injected manifest replace failure"),
+            "err={err}"
+        );
+        assert_eq!(fs::read_to_string(&bundle).unwrap(), "OLD BUNDLE\n");
+        assert_eq!(
+            fs::read_to_string(winsmux.join("manifest.yaml")).unwrap(),
+            original_manifest
+        );
     }
 
     #[test]

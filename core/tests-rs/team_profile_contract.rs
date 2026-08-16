@@ -155,6 +155,37 @@ fn dispatch_task_forwards_classified_slot_instead_of_refusing() {
 }
 
 #[test]
+fn team_profile_reset_field_refuses_legacy_roster() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".winsmux.yaml");
+    let original = "agent-slots:\n  - slot-id: worker-1\n    agent: codex\n";
+    fs::write(&path, original).unwrap();
+    let output = bin()
+        .args([
+            "team-profile",
+            "--action",
+            "reset-field",
+            "--json",
+            "--project-dir",
+        ])
+        .arg(dir.path())
+        .args(["--slot-id", "worker-1", "--field", "provider"])
+        .output()
+        .expect("reset-field legacy");
+    assert!(!output.status.success(), "legacy reset-field must fail");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("opted-in team-profile"),
+        "legacy reset-field must name the opt-in guard combined={combined}"
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn dispatch_task_without_team_profile_does_not_emit_team_profile_refusal() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
