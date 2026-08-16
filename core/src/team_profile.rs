@@ -426,7 +426,7 @@ fn issue(
     }
 }
 
-fn document_has_team_profile(yaml: &str) -> bool {
+pub(crate) fn document_has_team_profile(yaml: &str) -> bool {
     match parse_workspace_yaml(yaml) {
         Ok(root) => root.as_mapping().is_some_and(|mapping| {
             mapping.contains_key(&Value::String("team-profile".into()))
@@ -955,6 +955,9 @@ fn resolve_slot(
             format!("Unknown model capability ID '{}'.", record.model),
         )]
     })?;
+    if worker_backend.is_none() {
+        worker_backend = inferred_worker_backend(model, catalog);
+    }
     Ok(ResolvedSlot {
         slot_id: record.slot_id,
         provider: record.provider,
@@ -983,6 +986,20 @@ fn overlay_provider(overlay: &OverlaySlot) -> Result<Option<String>, Vec<Validat
         (Some(provider), _) => Ok(Some(provider)),
         (None, Some(agent)) => Ok(Some(agent)),
         (None, None) => Ok(None),
+    }
+}
+
+fn inferred_worker_backend(model: &ModelEntry, catalog: &Catalog) -> Option<String> {
+    let allowed = catalog.backends.get(&model.required_backend)?;
+    let concrete: Vec<String> = allowed
+        .iter()
+        .filter(|backend| !backend.is_empty() && backend.as_str() != "*")
+        .cloned()
+        .collect();
+    if concrete.len() == 1 {
+        Some(concrete[0].clone())
+    } else {
+        None
     }
 }
 
@@ -2063,6 +2080,30 @@ agent-slots:
         assert_eq!(worker6.worker_backend.as_deref(), Some("api_llm"));
         assert!(worker6.overrides.contains(&"provider".to_string()));
         assert_eq!(team.slots[0].provider, "codex");
+        assert!(team.slots[0].worker_backend.is_none());
+    }
+
+    #[test]
+    fn omitted_worker_backend_is_derived_from_a_unique_assignable_backend() {
+        let yaml = r#"
+config-version: 1
+team-profile:
+  schema-version: 1
+  preset: official-balanced-v1
+  preset-revision: 1
+  update-policy: retain-overrides
+agent-slots:
+  - slot-id: worker-6
+    provider: openrouter
+    model: openrouter-glm-5-2
+    reasoning-effort: provider-default
+    role-profile: maintainer
+    lifecycle: task
+    task-classes: [documentation, repository-operations]
+"#;
+        let team = resolve_yaml(yaml, OFFICIAL_PRESET_YAML, &catalog_fixture()).expect("derived");
+        assert_eq!(team.slots[5].worker_backend.as_deref(), Some("api_llm"));
+        assert!(team.slots[0].worker_backend.is_none());
     }
 
     #[test]

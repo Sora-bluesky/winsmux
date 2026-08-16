@@ -136,14 +136,6 @@ fn filesystem_profiles_root() -> Option<PathBuf> {
             }
         }
     }
-    if let Ok(cwd) = env::current_dir() {
-        for ancestor in cwd.ancestors() {
-            let path = ancestor.join(REGISTRY_REL);
-            if path.join(REGISTRY_FILE).is_file() {
-                return Some(path);
-            }
-        }
-    }
     None
 }
 

@@ -129,10 +129,7 @@ pub(crate) fn pre_release_gate() -> JsonValue {
 
 fn view_from_failure(project_dir: &Path, issues: Vec<ValidationIssue>) -> JsonValue {
     let yaml = fs::read_to_string(project_dir.join(".winsmux.yaml")).unwrap_or_default();
-    let opted_in = yaml.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with("team-profile:") || trimmed.starts_with("team_profile:")
-    });
+    let opted_in = crate::team_profile::document_has_team_profile(&yaml);
     json!({
         "schema_version": 1,
         "action": "settings-view",
@@ -685,6 +682,24 @@ agent-slots:
         let (gate, allowed) = start_gate(dir.path());
         assert!(!allowed);
         assert_eq!(gate["transaction"], "rejected");
+    }
+
+    #[test]
+    fn quoted_invalid_profile_stays_opted_in_and_refuses_start() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".winsmux.yaml"),
+            "config-version: 1\n\"team-profile\":\n  schema-version: 1\n  preset: official-balanced-v1\n  preset-revision: 1\n  update-policy: retain-overrides\nagent-slots:\n  - slot-id: worker-1\n    model: definitely-not-a-catalog-id\n",
+        )
+        .unwrap();
+        let view = settings_view(dir.path());
+        assert_eq!(view["opted_in"], true);
+        assert_eq!(view["ok"], false);
+        let (gate, allowed) = start_gate(dir.path());
+        assert!(!allowed);
+        assert_eq!(gate["opted_in"], true);
+        assert_eq!(gate["transaction"], "rejected");
+        assert_ne!(gate["reason_code"], "legacy_roster");
     }
 
     #[test]
