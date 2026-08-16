@@ -2009,7 +2009,8 @@ match cmd {
     if !persistent {
         // One-shot clients drain until EOF. Dropping the socket without a write
         // shutdown can surface as WSAECONNRESET (10054) on Windows loopback
-        // instead of FIN, which fails `read_to_string` after a complete frame.
+        // instead of FIN. The direct round-trip tests treat that reset as a
+        // closed frame, matching capability_probe_restores_short_timeout_for_non_persistent_batching.
         let _ = write_stream.shutdown(std::net::Shutdown::Write);
     }
 }
