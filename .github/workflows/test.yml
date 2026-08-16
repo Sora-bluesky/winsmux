@@ -722,11 +722,12 @@ jobs:
           exit $task810ExitCode
 
       - name: Upload V03630 desktop debug process results
-        if: ${{ always() && hashFiles('test-results-desktop-debug-v03630.xml') != '' }}
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: test-results-desktop-debug-v03630
           path: test-results-desktop-debug-v03630.xml
+          if-no-files-found: ignore
 
   task811-operator-infra:
     name: TASK-811 Operator Infrastructure Receipt
