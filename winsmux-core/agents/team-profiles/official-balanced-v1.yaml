@@ -1,0 +1,85 @@
+# Package-owned official Team Profile preset. Immutable once released.
+# Digest covers the six canonical slot records (kebab-case JSON, sorted keys).
+preset-id: official-balanced-v1
+preset-revision: 1
+digest-sha256: 7d671140ed9020dae23e27458242f5deb1146bead5d4886d6c2f786059a9b8f5
+slots:
+  - slot-id: worker-1
+    provider: codex
+    model: codex-gpt-5-6-sol
+    reasoning-effort: xhigh
+    role-profile: architect
+    lifecycle: session
+    task-classes:
+      - architecture
+      - protocol
+      - security
+    delegation:
+      - frozen-spec-implementation
+      - repro-fix
+      - mechanical-migration
+  - slot-id: worker-2
+    provider: codex
+    model: codex-gpt-5-6-terra
+    reasoning-effort: high
+    role-profile: builder
+    lifecycle: task
+    task-classes:
+      - implementation
+      - test
+    delegation:
+      - frozen-spec-implementation
+      - repro-fix
+      - mechanical-migration
+  - slot-id: worker-3
+    provider: codex
+    model: codex-gpt-5-6-terra
+    reasoning-effort: high
+    role-profile: builder
+    lifecycle: task
+    task-classes:
+      - implementation
+      - test
+    delegation:
+      - frozen-spec-implementation
+      - repro-fix
+      - mechanical-migration
+  - slot-id: worker-4
+    provider: codex
+    model: codex-gpt-5-6-sol
+    reasoning-effort: xhigh
+    role-profile: reviewer
+    lifecycle: task
+    task-classes:
+      - review
+      - security
+    delegation:
+      - frozen-spec-implementation
+      - repro-fix
+      - mechanical-migration
+  - slot-id: worker-5
+    provider: codex
+    model: codex-gpt-5-6-terra
+    reasoning-effort: high
+    role-profile: researcher
+    lifecycle: task
+    task-classes:
+      - research
+      - documentation
+    delegation:
+      - frozen-spec-implementation
+      - repro-fix
+      - mechanical-migration
+  - slot-id: worker-6
+    provider: codex
+    model: codex-gpt-5-6-luna
+    reasoning-effort: medium
+    role-profile: maintainer
+    lifecycle: task
+    task-classes:
+      - documentation
+      - repository-operations
+    delegation:
+      - frozen-spec-implementation
+      - repro-fix
+      - mechanical-migration
