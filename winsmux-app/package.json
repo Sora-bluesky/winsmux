@@ -43,6 +43,7 @@
     "test:first-run-onboarding": "node ./scripts/first-run-onboarding-check.mjs",
     "test:agent-vault-organize": "node ./scripts/agent-vault-organize-check.mjs",
     "test:attention-center": "node ./scripts/attention-center-check.mjs",
+    "test:metadata-hud": "node ./scripts/metadata-hud-check.mjs",
     "test:source-graph": "node ./scripts/source-graph-check.mjs",
     "test:windows-context-menu": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-context-menu-e2e.ps1",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
