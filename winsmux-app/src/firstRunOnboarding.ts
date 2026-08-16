@@ -26,6 +26,7 @@ export interface WizardState {
   selectedMode?: OrchestraMode | null;
   modeStepCancelled?: boolean;
   existingModeJson?: string | null;
+  existingModeReadFailed?: boolean;
 }
 
 const EXTRA_WORKER_PANE_IDS = ["worker-2", "worker-3", "worker-4", "worker-5", "worker-6"] as const;
@@ -35,6 +36,15 @@ const HIDE_DECLARATION =
 
 export function shouldShowFirstRunWizard(sessionCount: number): boolean {
   return !(sessionCount >= 1);
+}
+
+export function isMissingOrchestraModeFileError(message: string): boolean {
+  return (
+    /cannot find the file specified/i.test(message)
+    || /cannot find the path specified/i.test(message)
+    || /No such file or directory/i.test(message)
+    || /\(os error 2\)/i.test(message)
+  );
 }
 
 export function teamModeStartGateContract(): { mustHonorStartGate: true } {
@@ -122,6 +132,13 @@ export function nextWizardStep(state: WizardState): WizardDecision {
 
   if (state.pickerCancelled || !projectChosen) {
     return emptyDecision("select-project");
+  }
+
+  if (state.existingModeReadFailed) {
+    return emptyDecision("choose-mode", {
+      mustHonorStartGate: teamModeStartGateContract().mustHonorStartGate,
+      modeRejected: true,
+    });
   }
 
   let existingMode: OrchestraMode | null = null;

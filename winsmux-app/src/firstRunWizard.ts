@@ -4,10 +4,12 @@ import {
   ORCHESTRA_MODE_RELATIVE_PATH,
   ORCHESTRA_MODE_STORAGE_KEY,
   launchTargetsAfterMode,
+  isMissingOrchestraModeFileError,
   nextWizardStep,
   serializeOrchestraMode,
   shouldShowFirstRunWizard,
   type OrchestraMode,
+  type WizardDecision,
   type WizardStepId,
 } from "./firstRunOnboarding";
 import {
@@ -67,11 +69,7 @@ export async function maybeStartFirstRunOnboarding(sessionCountAtBoot: number) {
   const projectDir = host().getActiveProjectDir();
   if (projectDir) {
     const existing = await readExistingOrchestraModeJson(projectDir);
-    const decision = nextWizardStep({
-      sessionCount: sessionCountAtBoot,
-      projectChosen: true,
-      existingModeJson: existing,
-    });
+    const decision = wizardDecisionFromExistingMode(sessionCountAtBoot, existing);
     firstRunWizardStep = decision.step;
     firstRunSelectedMode = decision.persistMode;
     firstRunWizardError = decision.modeRejected
@@ -111,22 +109,53 @@ function ensureFirstRunWizard() {
   return overlay;
 }
 
-async function readExistingOrchestraModeJson(projectDir: string | null) {
+type ExistingOrchestraModeRead =
+  | { status: "missing" }
+  | { status: "present"; json: string }
+  | { status: "unreadable" };
+
+function wizardDecisionFromExistingMode(
+  sessionCount: number,
+  existing: ExistingOrchestraModeRead,
+): WizardDecision {
+  if (existing.status === "unreadable") {
+    return nextWizardStep({
+      sessionCount,
+      projectChosen: true,
+      existingModeReadFailed: true,
+    });
+  }
+  return nextWizardStep({
+    sessionCount,
+    projectChosen: true,
+    existingModeJson: existing.status === "present" ? existing.json : null,
+  });
+}
+
+function desktopErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function readExistingOrchestraModeJson(projectDir: string | null): Promise<ExistingOrchestraModeRead> {
   if (!projectDir) {
-    return null;
+    return { status: "missing" };
   }
   if (!isTauri()) {
     try {
-      return window.localStorage.getItem(ORCHESTRA_MODE_STORAGE_KEY);
+      const stored = window.localStorage.getItem(ORCHESTRA_MODE_STORAGE_KEY);
+      return stored === null ? { status: "missing" } : { status: "present", json: stored };
     } catch {
-      return null;
+      return { status: "unreadable" };
     }
   }
   try {
     const file = await getDesktopFullFile(ORCHESTRA_MODE_RELATIVE_PATH, undefined, projectDir);
-    return file.content;
-  } catch {
-    return null;
+    return { status: "present", json: file.content };
+  } catch (error) {
+    if (isMissingOrchestraModeFileError(desktopErrorMessage(error))) {
+      return { status: "missing" };
+    }
+    return { status: "unreadable" };
   }
 }
 
@@ -167,11 +196,7 @@ async function handleFirstRunSelectProject() {
     return;
   }
   const existing = await readExistingOrchestraModeJson(host().getActiveProjectDir());
-  const decision = nextWizardStep({
-    sessionCount: 0,
-    projectChosen: true,
-    existingModeJson: existing,
-  });
+  const decision = wizardDecisionFromExistingMode(0, existing);
   firstRunWizardStep = decision.step;
   firstRunSelectedMode = decision.persistMode;
   firstRunWizardError = decision.modeRejected

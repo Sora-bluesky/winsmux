@@ -32,6 +32,7 @@ const {
   ORCHESTRA_MODE_RELATIVE_PATH,
   ORCHESTRA_MODE_STORAGE_KEY,
   isAllowedOrchestraModeRelativePath,
+  isMissingOrchestraModeFileError,
   launchTargetAfterMode,
   launchTargetsAfterMode,
   nextWizardStep,
@@ -115,6 +116,26 @@ assert.equal(f07.step, "choose-mode");
 assert.equal(f07.modeRejected, true);
 assert.equal(f07.writeMode, false);
 assert.deepEqual(f07.launchTargets, []);
+const f07Unreadable = nextWizardStep({
+  sessionCount: 0,
+  projectChosen: true,
+  existingModeReadFailed: true,
+});
+assert.equal(f07Unreadable.step, "choose-mode");
+assert.equal(f07Unreadable.modeRejected, true);
+assert.equal(f07Unreadable.writeMode, false);
+assert.equal(
+  isMissingOrchestraModeFileError("desktop_file_read_full(.winsmux/orchestra-mode.json) failed: Failed to read full file: The system cannot find the file specified. (os error 2)"),
+  true,
+);
+assert.equal(
+  isMissingOrchestraModeFileError("desktop_file_read_full(.winsmux/orchestra-mode.json) failed: desktop.file.read_full rejected a file larger than 1048576 bytes"),
+  false,
+);
+assert.equal(
+  isMissingOrchestraModeFileError("desktop_file_read_full(.winsmux/orchestra-mode.json) failed: Failed to decode full file as UTF-8: invalid utf-8"),
+  false,
+);
 
 // F08: launch after simple does not include worker-2..6 start targets
 assert.equal(launchTargetAfterMode("simple"), "worker-1");
@@ -192,6 +213,13 @@ const applyLaunchAt = mainSource.indexOf("await applyInitialProjectDirFromLaunch
 const maybeStartAt = mainSource.indexOf("await maybeStartFirstRunOnboarding(firstRunSessionCountAtBoot)");
 assert.ok(bootSnapshotAt >= 0 && applyLaunchAt > bootSnapshotAt && maybeStartAt > applyLaunchAt);
 assert.match(wizardSource, /shouldShowFirstRunWizard\(sessionCountAtBoot\)/);
+assert.match(wizardSource, /existingModeReadFailed/);
+assert.match(wizardSource, /isMissingOrchestraModeFileError/);
+assert.match(wizardSource, /status: "unreadable"/);
+assert.doesNotMatch(
+  wizardSource,
+  /getDesktopFullFile[\s\S]{0,240}catch \{[\s\S]{0,40}return null;/,
+);
 assert.equal(
   /projectSessionEntries\.length/.test(wizardSource),
   false,
