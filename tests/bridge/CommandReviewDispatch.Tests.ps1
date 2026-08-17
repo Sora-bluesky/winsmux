@@ -1631,3 +1631,80 @@ Describe 'winsmux control-plane dispatch module' {
         $script:controlPlaneDispatchContent | Should -Match 'function Invoke-WinsmuxShadowCutoverGateCommand'
     }
 }
+
+Describe 'TASK-789 dispatch spawn and archive-pane' {
+    BeforeAll {
+        $repoRoot = Split-Path -Parent $script:BridgeTestsRoot
+        $script:task789DispatchPath = Join-Path $repoRoot 'winsmux-core\scripts\control-plane-dispatch.ps1'
+        $script:task789DispatchContent = Get-Content -LiteralPath $script:task789DispatchPath -Raw -Encoding UTF8
+        $script:task789WinsmuxCorePath = Join-Path $repoRoot 'scripts\winsmux-core.ps1'
+        $script:task789WinsmuxCoreContent = Get-Content -LiteralPath $script:task789WinsmuxCorePath -Raw -Encoding UTF8
+        $script:task789PaneScalerPath = Join-Path $repoRoot 'winsmux-core\scripts\pane-scaler.ps1'
+        $script:task789PaneScalerContent = Get-Content -LiteralPath $script:task789PaneScalerPath -Raw -Encoding UTF8
+        . $script:task789DispatchPath
+    }
+
+    It 'documents public archive-pane in usage and the command table' {
+        $script:task789WinsmuxCoreContent | Should -Match 'archive-pane <slot>\s+'
+        $script:task789WinsmuxCoreContent | Should -Match "'archive-pane'\s*\{\s*Invoke-WinsmuxArchivePaneCommand"
+        $script:task789DispatchContent | Should -Match 'function Invoke-WinsmuxArchivePaneCommand'
+    }
+
+    It 'archives by interrupt-then-Remove-OrchestraPane and never calls workers-stop respawn' {
+        $script:task789DispatchContent | Should -Match 'function Invoke-WinsmuxArchivePaneCommand'
+        $archiveIndex = $script:task789DispatchContent.IndexOf('function Invoke-WinsmuxArchivePaneCommand')
+        $archiveIndex | Should -BeGreaterThan -1
+        $next = $script:task789DispatchContent.IndexOf("`nfunction ", $archiveIndex + 1)
+        if ($next -lt 0) {
+            $next = $script:task789DispatchContent.Length
+        }
+        $body = $script:task789DispatchContent.Substring($archiveIndex, $next - $archiveIndex)
+        $body | Should -Match 'Remove-OrchestraPane'
+        $body | Should -Match 'C-c'
+        $body | Should -Match 'pane\.idle'
+        $body | Should -Not -Match 'Invoke-WorkersStop'
+        $body | Should -Not -Match 'respawn-pane'
+        $body | Should -Not -Match 'workers stop'
+        $script:task789PaneScalerContent | Should -Match 'kill-pane'
+    }
+
+    It 'spawns a missing live worker through Add-OrchestraPane and Team Profile assignment overlay' {
+        $script:task789DispatchContent | Should -Match 'function Ensure-DispatchTaskLiveWorkerPane'
+        $ensureIndex = $script:task789DispatchContent.IndexOf('function Ensure-DispatchTaskLiveWorkerPane')
+        $ensureIndex | Should -BeGreaterThan -1
+        $next = $script:task789DispatchContent.IndexOf("`nfunction ", $ensureIndex + 1)
+        if ($next -lt 0) {
+            $next = $script:task789DispatchContent.Length
+        }
+        $body = $script:task789DispatchContent.Substring($ensureIndex, $next - $ensureIndex)
+        $body | Should -Match 'Add-OrchestraPane'
+        $body | Should -Match 'New-TeamProfileSlotAgentConfig'
+        $body | Should -Match 'Invoke-TeamProfileLaunchProjection'
+        $body | Should -Match 'worker_backend'
+        $body | Should -Not -Match 'requiredBackend'
+        $body | Should -Match 'simple_mode_live_worker_limit'
+        $script:task789DispatchContent | Should -Match 'Ensure-DispatchTaskLiveWorkerPane'
+    }
+
+    It 'fail-closes simple mode instead of spawning a second live worker pane' {
+        Get-Command Ensure-DispatchTaskLiveWorkerPane -ErrorAction Stop | Should -Not -BeNullOrEmpty
+        function Get-OrchestraModeDocument {
+            param([string]$ProjectDir)
+            [pscustomobject]@{ schema_version = 1; mode = 'simple'; valid = $true; source = 'file' }
+        }
+        function Get-OrchestraLiveWorkerRolePaneCount {
+            param($Manifest)
+            1
+        }
+        function Add-OrchestraPane {
+            throw 'simple mode must not spawn a second live worker pane'
+        }
+        function New-TeamProfileSlotAgentConfig {
+            throw 'simple mode must not spawn a second live worker pane'
+        }
+
+        $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir (Join-Path ([System.IO.Path]::GetTempPath()) 'winsmux-task789-missing') -Label 'worker-2' -ManifestEntry $null
+        $result.Spawned | Should -BeFalse
+        $result.ReasonCode | Should -Be 'simple_mode_live_worker_limit'
+    }
+}
