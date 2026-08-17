@@ -34,6 +34,8 @@ const {
   buildAgentVaultForkLaunchCommand,
   buildAgentVaultResumeCommand,
   resolveAgentVaultLaunchDirectory,
+  shouldQueueAgentVaultLaunchCwd,
+  applyAgentVaultGroupPrompt,
   emptyAgentVaultOrganize,
   groupNameForSession,
   isArchived,
@@ -180,6 +182,17 @@ assert.equal(v13.groups.find((group) => group.name === "release")?.sessionIds.in
 assert.equal(assignSessionToGroup(v13, "summary:run-id", "").ok, false);
 assert.equal(assignSessionToGroup(v13, "summary:run-id", "   ").ok, false);
 
+const groupedForPrompt = assertOk(assignSessionToGroup(emptyAgentVaultOrganize(), "summary:run-id", "release"));
+assert.equal(groupNameForSession(assertOk(applyAgentVaultGroupPrompt(groupedForPrompt, "summary:run-id", "")), "summary:run-id"), null);
+assert.equal(groupNameForSession(assertOk(applyAgentVaultGroupPrompt(groupedForPrompt, "summary:run-id", "   ")), "summary:run-id"), null);
+const invalidPrompt = applyAgentVaultGroupPrompt(groupedForPrompt, "summary:run-id", "x".repeat(65));
+assert.equal(invalidPrompt.ok, false);
+assert.equal(groupNameForSession(groupedForPrompt, "summary:run-id"), "release");
+assert.equal(
+  groupNameForSession(assertOk(applyAgentVaultGroupPrompt(groupedForPrompt, "summary:run-id", "follow-up")), "summary:run-id"),
+  "follow-up",
+);
+
 // V14: fork cwd — `.` / relative worktree resolve against the active project; `..` fail-closed
 const baseDir = "C:/Users/sorab/proj";
 assert.equal(resolveAgentVaultLaunchDirectory("C:/other/app", baseDir), "C:/other/app");
@@ -193,6 +206,11 @@ assert.equal(resolveAgentVaultLaunchDirectory(".", ""), "");
 assert.equal(resolveAgentVaultLaunchDirectory("../escape", baseDir), "");
 assert.equal(resolveAgentVaultLaunchDirectory("workspace:c:/other", baseDir), "");
 assert.equal(resolveAgentVaultLaunchDirectory("", ""), "");
+
+assert.equal(shouldQueueAgentVaultLaunchCwd("fork", "C:/proj"), true);
+assert.equal(shouldQueueAgentVaultLaunchCwd("resume", "C:/proj"), false);
+assert.equal(shouldQueueAgentVaultLaunchCwd("fork", ""), false);
+assert.equal(shouldQueueAgentVaultLaunchCwd("resume", ""), false);
 
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
 assert.match(mainSource, /from "\.\/agentVaultOrganize"/);
@@ -208,12 +226,14 @@ assert.match(mainSource, /Forked from/);
 assert.match(mainSource, /buildAgentVaultForkLaunchCommand/);
 assert.match(mainSource, /isResumeCommand/);
 assert.match(mainSource, /workspacePath/);
+assert.match(mainSource, /shouldQueueAgentVaultLaunchCwd\(mode, launchCwd\)/);
 assert.match(mainSource, /queuePaneStartupCwd\(paneId, launchCwd\)/);
 assert.match(mainSource, /spawnPtyPane\(paneId, cols, rows, startupInput, cwd\)/);
 assert.match(mainSource, /mode === "fork" && !launchCwd/);
 assert.match(mainSource, /vaultOrganize\.resolveAgentVaultLaunchDirectory/);
 assert.doesNotMatch(mainSource, /function resolveAgentVaultLaunchDirectory/);
-assert.match(mainSource, /removeSessionFromGroup/);
+assert.match(mainSource, /applyAgentVaultGroupPrompt/);
+assert.doesNotMatch(mainSource, /if \(launchCwd\) \{/);
 assert.match(mainSource, /id: `worker:\$\{runId\}`/);
 assert.doesNotMatch(mainSource, /id: `worker:\$\{target\}`/);
 assert.match(mainSource, /row\.heartbeat\?\.run_id \|\| row\.workspace\?\.run_id/);

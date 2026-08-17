@@ -2963,16 +2963,12 @@ function groupAgentVaultSession(entry: AgentVaultSessionEntry) {
   if (name === null) {
     return;
   }
-  if (!vaultOrganize.normalizeGroupName(name)) {
-    applyAgentVaultOrganizeMutation(
-      vaultOrganize.removeSessionFromGroup(agentVaultOrganizeState, entry.id),
-      getLanguageText(`Removed ${entry.title} from its group.`, `${entry.title} をグループから外しました。`),
-    );
-    return;
-  }
+  const cleared = name.trim() === "";
   applyAgentVaultOrganizeMutation(
-    vaultOrganize.assignSessionToGroup(agentVaultOrganizeState, entry.id, name),
-    getLanguageText(`Grouped ${entry.title}.`, `${entry.title} をグループに入れました。`),
+    vaultOrganize.applyAgentVaultGroupPrompt(agentVaultOrganizeState, entry.id, name),
+    cleared
+      ? getLanguageText(`Removed ${entry.title} from its group.`, `${entry.title} をグループから外しました。`)
+      : getLanguageText(`Grouped ${entry.title}.`, `${entry.title} をグループに入れました。`),
   );
 }
 
@@ -3496,7 +3492,7 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, 
         renderAgentVaultPanel();
         return;
       }
-      if (launchCwd) {
+      if (vaultOrganize.shouldQueueAgentVaultLaunchCwd(mode, launchCwd)) {
         queuePaneStartupCwd(paneId, launchCwd);
       }
       queuePaneStartupInput(paneId, startupInput);

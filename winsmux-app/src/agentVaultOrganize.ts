@@ -294,6 +294,25 @@ export function resolveAgentVaultLaunchDirectory(workspacePath: string, baseDir:
   return segments.length === 0 ? baseNormalized : `${baseNormalized}/${segments.join("/")}`;
 }
 
+export function shouldQueueAgentVaultLaunchCwd(mode: "resume" | "fork", launchCwd: string): boolean {
+  return mode === "fork" && launchCwd !== "";
+}
+
+export function applyAgentVaultGroupPrompt(
+  state: AgentVaultOrganizeState,
+  sessionId: string,
+  name: string,
+): AgentVaultOrganizeMutationResult {
+  if (name.trim() === "") {
+    return removeSessionFromGroup(state, sessionId);
+  }
+  const groupName = normalizeGroupName(name);
+  if (!groupName) {
+    return { ok: false, error: "Group name must be 1-64 visible characters." };
+  }
+  return assignSessionToGroup(state, sessionId, groupName);
+}
+
 export function normalizeAgentVaultText(value: string | null | undefined, fallback = ""): string {
   const normalized = (value ?? "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
