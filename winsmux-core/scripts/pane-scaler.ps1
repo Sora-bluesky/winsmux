@@ -3,7 +3,26 @@ Set-StrictMode -Version Latest
 
 $scriptDir = $PSScriptRoot
 . (Join-Path $scriptDir 'settings.ps1')
+# agent-monitor.ps1 is dual-mode: param() binds when dotted and would clobber
+# a caller $ProjectDir (DW15 rollback probe, other send helpers).
+$monitorCallerVars = [ordered]@{}
+foreach ($name in @('ProjectDir', 'SessionName', 'HungThresholdSeconds', 'ContextResetThresholdPercent')) {
+    $existing = Get-Variable -Name $name -ErrorAction SilentlyContinue
+    if ($null -ne $existing) {
+        $monitorCallerVars[$name] = [pscustomobject]@{ Present = $true; Value = $existing.Value }
+    } else {
+        $monitorCallerVars[$name] = [pscustomobject]@{ Present = $false; Value = $null }
+    }
+}
 . (Join-Path $scriptDir 'agent-monitor.ps1')
+foreach ($name in @($monitorCallerVars.Keys)) {
+    $saved = $monitorCallerVars[$name]
+    if ([bool]$saved.Present) {
+        Set-Variable -Name $name -Value $saved.Value
+    } else {
+        Remove-Variable -Name $name -ErrorAction SilentlyContinue
+    }
+}
 . (Join-Path $scriptDir 'builder-worktree.ps1')
 . (Join-Path $scriptDir 'clm-safe-io.ps1')
 . (Join-Path $scriptDir 'manifest.ps1')
@@ -796,6 +815,30 @@ function Add-OrchestraWorkerPane {
             runtime_ready          = $runtimeReady
             bootstrap_plan_path    = $bootstrapPlanPath
             bootstrap_marker_path  = $bootstrapMarkerPath
+        }
+        if ($null -ne $Projection) {
+            $projRoot = $Projection
+            $nestedProjection = Get-WinsmuxRuntimeValue -InputObject $Projection -Name 'projection'
+            if ($null -ne $nestedProjection) {
+                $projRoot = $nestedProjection
+            }
+            $projectedPane = Get-WinsmuxRuntimeValue -InputObject $projRoot -Name 'pane'
+            $projectedAssignment = Get-WinsmuxRuntimeValue -InputObject $projectedPane -Name 'assignment'
+            $projectedBundle = Get-WinsmuxRuntimeValue -InputObject $projectedPane -Name 'prompt_bundle'
+            if ($null -ne $projectedAssignment) {
+                $newPane['assignment'] = $projectedAssignment
+            }
+            if ($null -ne $projectedBundle) {
+                $newPane['prompt_bundle'] = $projectedBundle
+            }
+            $projectedSession = Get-WinsmuxRuntimeValue -InputObject $projRoot -Name 'session'
+            $projectedTeamProfile = Get-WinsmuxRuntimeValue -InputObject $projectedSession -Name 'team_profile'
+            if ($null -ne $projectedTeamProfile) {
+                if ($null -eq $manifest.Session) {
+                    $manifest | Add-Member -NotePropertyName 'Session' -NotePropertyValue ([pscustomobject]@{}) -Force
+                }
+                $manifest.Session | Add-Member -NotePropertyName 'team_profile' -NotePropertyValue $projectedTeamProfile -Force
+            }
         }
         $paneObject = [PSCustomObject]@{}
         foreach ($entry in $newPane.GetEnumerator()) {

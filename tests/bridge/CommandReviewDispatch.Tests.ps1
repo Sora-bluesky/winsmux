@@ -1883,6 +1883,7 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $body | Should -Match 'Get-WinsmuxArchivePaneRuntimeRefusal'
         $body | Should -Match 'C-c'
         $body | Should -Match 'pane\.idle'
+        $body | Should -Match 'Get-PaneAgentStatus'
         $body.IndexOf('Get-WinsmuxArchivePaneRuntimeRefusal') | Should -BeLessThan $body.IndexOf('C-c')
         $script:task789DispatchContent | Should -Match "Operation stop_transition"
         $body | Should -Not -Match 'Invoke-WorkersStop'
@@ -1908,6 +1909,7 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $body | Should -Not -Match 'requiredBackend'
         $body | Should -Match 'simple_mode_live_worker_limit'
         $body | Should -Match 'team_profile_projection_unavailable'
+        $body | Should -Match 'team_profile_projection_mutated_live_manifest'
         $script:task789DispatchContent | Should -Match 'Ensure-DispatchTaskLiveWorkerPane'
         $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskCatalogSlotIds'
         $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskMissingCatalogSlotIds'
@@ -2206,6 +2208,75 @@ panes:
         $result.ReasonCode | Should -Be 'team_profile_projection_unavailable'
         $result.Diagnostic | Should -Be $ProjectionError
         Should -Invoke Add-OrchestraPane -Times 0
+    }
+
+    It 'E10 fail-closes spawn when Team Profile projection mutates the live manifest' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $original = "version: 1`nsession:`n  name: keep`npanes: {}`n"
+        [System.IO.File]::WriteAllText($manifestPath, $original)
+        $before = [System.IO.File]::ReadAllBytes($manifestPath)
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-BridgeSettings { $null }
+        Mock Get-WinsmuxManifest { $null }
+        Mock Invoke-TeamProfileLaunchProjection {
+            [System.IO.File]::AppendAllText($manifestPath, "session:`n  team_profile:`n    preset: leaked`n")
+            [pscustomobject]@{
+                bundle_path = '.winsmux/runtime/prompt-bundles/sess/worker-2.md'
+                projection  = [pscustomobject]@{
+                    pane = [pscustomobject]@{
+                        assignment = [pscustomobject]@{ provider = 'codex'; worker_backend = 'codex' }
+                    }
+                }
+            }
+        }
+        Mock Add-OrchestraPane { throw 'E10 must not spawn after live manifest mutation' }
+
+        $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir $script:task789FixRoot -Label 'worker-2' -ManifestEntry $null
+        $result.Spawned | Should -BeFalse
+        $result.ReasonCode | Should -Be 'team_profile_projection_mutated_live_manifest'
+        Should -Invoke Add-OrchestraPane -Times 0
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $before
+    }
+
+    It 'E10 continues spawn when Team Profile projection leaves live pane-set files unchanged' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        [System.IO.File]::WriteAllText($manifestPath, "version: 1`nsession:`n  name: keep`npanes: {}`n")
+        $before = [System.IO.File]::ReadAllBytes($manifestPath)
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-BridgeSettings { $null }
+        Mock Get-WinsmuxManifest { $null }
+        Mock Invoke-TeamProfileLaunchProjection {
+            [pscustomobject]@{
+                bundle_path = '.winsmux/runtime/prompt-bundles/sess/worker-2.md'
+                projection  = [pscustomobject]@{
+                    pane = [pscustomobject]@{
+                        assignment = [pscustomobject]@{ provider = 'codex'; worker_backend = 'codex' }
+                    }
+                }
+            }
+        }
+        Mock New-TeamProfileSlotAgentConfig {
+            [pscustomobject]@{ Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = $SlotId }
+        }
+        Mock Add-OrchestraPane {
+            return [pscustomobject]@{ Changed = $true; Label = $SlotId; PaneId = '%5' }
+        }
+        Mock Get-DispatchTaskManifestEntry {
+            script:New-Task789LiveEntry -Label 'worker-2' -PaneId '%5'
+        }
+
+        $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir $script:task789FixRoot -Label 'worker-2' -ManifestEntry $null
+        $result.Spawned | Should -BeTrue
+        Should -Invoke Add-OrchestraPane -Times 1
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $before
     }
 
     It 'does not publish a new registry when the guarded manifest save fails' {
@@ -3272,8 +3343,16 @@ Write-Output 'reached-after-exit'
         Test-Path -LiteralPath $killedPath | Should -BeFalse
     }
 
+    It 'keeps a single control-plane flag as a one-element argument list' {
+        $parts = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget '--json' -CommandRest @()
+        )
+        $parts.Count | Should -Be 1
+        $parts[0] | Should -Be '--json'
+    }
+
     It 'E03 public argv parse keeps --slot-id and --project-dir as separate tokens' {
-        $parts = @(
+        $parts = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
             Get-WinsmuxControlPlaneArguments -CommandTarget '--slot-id' -CommandRest @(
                 'worker-2', '--project-dir', $script:task789FixRoot, 'implement the focused change'
             )
@@ -3282,7 +3361,7 @@ Write-Output 'reached-after-exit'
         $parsed.SlotId | Should -Be 'worker-2'
         $parsed.ProjectDir | Should -Be $script:task789FixRoot
         $parsed.TaskText | Should -Be 'implement the focused change'
-        @($parts).Count | Should -Be 5
+        $parts.Count | Should -Be 5
         $parts[0] | Should -Be '--slot-id'
         $parts[1] | Should -Be 'worker-2'
     }

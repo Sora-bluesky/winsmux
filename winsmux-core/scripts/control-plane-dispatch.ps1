@@ -14,11 +14,40 @@ function Get-WinsmuxControlPlaneArguments {
         [AllowNull()][string[]]$CommandRest
     )
 
-    return @(@($CommandTarget) + @($CommandRest) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $items = [System.Collections.Generic.List[string]]::new()
+    foreach ($part in @(@($CommandTarget) + @($CommandRest))) {
+        if ([string]::IsNullOrWhiteSpace([string]$part)) {
+            continue
+        }
+        $items.Add([string]$part)
+    }
+    return $items
+}
+
+function ConvertTo-WinsmuxControlPlaneArgumentList {
+    param([AllowNull()]$Value)
+
+    $items = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Value) {
+        return , $items
+    }
+    if ($Value -is [string]) {
+        if (-not [string]::IsNullOrWhiteSpace($Value)) {
+            $items.Add($Value)
+        }
+        return , $items
+    }
+    foreach ($part in $Value) {
+        if ([string]::IsNullOrWhiteSpace([string]$part)) {
+            continue
+        }
+        $items.Add([string]$part)
+    }
+    return , $items
 }
 
 function Split-WinsmuxDispatchTaskArguments {
-    param([AllowNull()][string[]]$Parts)
+    param([AllowNull()]$Parts)
 
     $slotId = ''
     $taskClass = ''
@@ -26,7 +55,16 @@ function Split-WinsmuxDispatchTaskArguments {
     $projectDir = ''
     $textParts = New-Object System.Collections.Generic.List[string]
     $index = 0
-    $items = @($Parts)
+    $items = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $Parts) {
+        if ($Parts -is [string]) {
+            $items.Add([string]$Parts)
+        } else {
+            foreach ($part in $Parts) {
+                $items.Add([string]$part)
+            }
+        }
+    }
     while ($index -lt $items.Count) {
         $current = [string]$items[$index]
         if ($current -ceq '--') {
@@ -69,14 +107,26 @@ function Split-WinsmuxDispatchTaskArguments {
 }
 
 function Join-WinsmuxControlPlaneText {
-    param([AllowNull()][object[]]$Arguments)
+    param([AllowNull()]$Arguments)
 
-    return (@(
-        @($Arguments) |
-            Where-Object { $_ } |
-            ForEach-Object { ([string]$_).Trim() } |
-            Where-Object { $_ }
-    ) -join ' ')
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Arguments) {
+        return ''
+    }
+    if ($Arguments -is [string]) {
+        $text = $Arguments.Trim()
+        if ($text) {
+            $parts.Add($text)
+        }
+        return ($parts -join ' ')
+    }
+    foreach ($arg in $Arguments) {
+        $text = ([string]$arg).Trim()
+        if ($text) {
+            $parts.Add($text)
+        }
+    }
+    return ($parts -join ' ')
 }
 
 function Get-WinsmuxControlPlaneScriptPath {
@@ -112,7 +162,9 @@ function Invoke-WinsmuxGithubPreflightCommand {
     )
 
     $preflightArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--repo' {
@@ -812,7 +864,9 @@ function Invoke-WinsmuxOrchestraSmokeCommand {
     )
 
     $smokeArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--json' { $smokeArgs += '-AsJson' }
@@ -843,7 +897,9 @@ function Invoke-WinsmuxOrchestraAttachCommand {
     )
 
     $attachArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--json' { $attachArgs += '-AsJson' }
@@ -873,7 +929,9 @@ function Invoke-WinsmuxHarnessCheckCommand {
     )
 
     $checkArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--json' { $checkArgs += '-AsJson' }
@@ -903,7 +961,9 @@ function Invoke-WinsmuxShadowCutoverGateCommand {
         [AllowNull()][string[]]$CommandRest
     )
 
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     $expectedPath = ''
     $actualPath = ''
     $surface = 'unspecified'
@@ -960,7 +1020,9 @@ function Invoke-WinsmuxPowerShellDeescalationCommand {
     )
 
     $contractArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     foreach ($argument in $remaining) {
         switch ($argument) {
             '--json' { $contractArgs += '-AsJson' }
@@ -983,7 +1045,9 @@ function Invoke-WinsmuxAssignCommand {
     )
 
     $assignArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--task' {
@@ -1067,6 +1131,43 @@ function Get-DispatchTaskEntryPaneId {
     return ''
 }
 
+function Test-DispatchTaskLiveFileBytesEqual {
+    param($Before, $After)
+    if ($null -eq $Before -and $null -eq $After) {
+        return $true
+    }
+    if ($null -eq $Before -or $null -eq $After) {
+        return $false
+    }
+    if ($Before.Length -ne $After.Length) {
+        return $false
+    }
+    for ($i = 0; $i -lt $Before.Length; $i++) {
+        if ($Before[$i] -ne $After[$i]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Restore-DispatchTaskLiveFileBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        $Bytes
+    )
+    if ($null -eq $Bytes) {
+        if (Test-Path -LiteralPath $Path) {
+            Remove-Item -LiteralPath $Path -Force
+        }
+        return
+    }
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllBytes($Path, $Bytes)
+}
+
 function Ensure-DispatchTaskLiveWorkerPane {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -1139,12 +1240,54 @@ function Ensure-DispatchTaskLiveWorkerPane {
         }
     }
 
+    $liveManifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $liveRegistryPath = $null
+    if (Get-Command Get-WinsmuxRuntimeRegistryPath -ErrorAction SilentlyContinue) {
+        $liveRegistryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    } else {
+        $liveRegistryPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'runtime\registry.json'
+    }
+    $beforeManifest = $null
+    $beforeRegistry = $null
+    if (Test-Path -LiteralPath $liveManifestPath -PathType Leaf) {
+        $beforeManifest = [System.IO.File]::ReadAllBytes($liveManifestPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath) -and (Test-Path -LiteralPath $liveRegistryPath -PathType Leaf)) {
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
+    }
+
     $assignment = $null
     try {
         $projection = Invoke-TeamProfileLaunchProjection -ProjectDir $ProjectDir -SessionId 'winsmux-orchestra' -SlotId $Label -Worktree '' -ReadWriteScope 'session' -Force
-        if ($null -ne $projection -and $null -ne $projection.projection -and $null -ne $projection.projection.pane) {
-            $assignment = $projection.projection.pane.assignment
+        $afterManifest = $null
+        $afterRegistry = $null
+        if (Test-Path -LiteralPath $liveManifestPath -PathType Leaf) {
+            $afterManifest = [System.IO.File]::ReadAllBytes($liveManifestPath)
         }
+        if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath) -and (Test-Path -LiteralPath $liveRegistryPath -PathType Leaf)) {
+            $afterRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
+        }
+        $manifestMutated = -not (Test-DispatchTaskLiveFileBytesEqual -Before $beforeManifest -After $afterManifest)
+        $registryMutated = -not (Test-DispatchTaskLiveFileBytesEqual -Before $beforeRegistry -After $afterRegistry)
+        if ($manifestMutated -or $registryMutated) {
+            Restore-DispatchTaskLiveFileBytes -Path $liveManifestPath -Bytes $beforeManifest
+            if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath)) {
+                Restore-DispatchTaskLiveFileBytes -Path $liveRegistryPath -Bytes $beforeRegistry
+            }
+            return [pscustomobject]@{
+                Spawned        = $false
+                ManifestEntry  = $null
+                ReasonCode     = 'team_profile_projection_mutated_live_manifest'
+                Diagnostic     = "Team Profile launch projection mutated live pane-set files for slot '$Label'."
+            }
+        }
+        $projRoot = $projection
+        $nestedProjection = Get-WinsmuxRuntimeValue -InputObject $projection -Name 'projection'
+        if ($null -ne $nestedProjection) {
+            $projRoot = $nestedProjection
+        }
+        $projectedPane = Get-WinsmuxRuntimeValue -InputObject $projRoot -Name 'pane'
+        $assignment = Get-WinsmuxRuntimeValue -InputObject $projectedPane -Name 'assignment'
         if ($null -eq $assignment) {
             return [pscustomobject]@{
                 Spawned        = $false
@@ -1154,6 +1297,10 @@ function Ensure-DispatchTaskLiveWorkerPane {
             }
         }
     } catch {
+        Restore-DispatchTaskLiveFileBytes -Path $liveManifestPath -Bytes $beforeManifest
+        if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath)) {
+            Restore-DispatchTaskLiveFileBytes -Path $liveRegistryPath -Bytes $beforeRegistry
+        }
         return [pscustomobject]@{
             Spawned        = $false
             ManifestEntry  = $null
@@ -1498,6 +1645,19 @@ function Invoke-WinsmuxArchivePaneCommand {
         $becameIdle = $false
         for ($attempt = 1; $attempt -le 8; $attempt++) {
             Start-Sleep -Milliseconds 250
+            if (Get-Command Get-PaneAgentStatus -ErrorAction SilentlyContinue) {
+                $liveStatus = ''
+                try {
+                    $live = Get-PaneAgentStatus -PaneId $paneId -Role 'Worker'
+                    $liveStatus = [string](Get-WinsmuxRuntimeValue -InputObject $live -Name 'Status' -Default '')
+                } catch {
+                    $liveStatus = ''
+                }
+                if ($liveStatus -in @('ready', 'waiting_for_dispatch')) {
+                    $becameIdle = $true
+                    break
+                }
+            }
             $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
             $waitState = Resolve-WinsmuxArchivePaneIdleState -Result (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir)
             if ([bool]$waitState.Idle -and $waitState.Evidence -ceq 'idle') {
