@@ -576,6 +576,7 @@ function Add-OrchestraWorkerPane {
         $Settings = $null,
         $SlotAgentConfig = $null,
         $Assignment = $null,
+        $Projection = $null,
         [int]$AgentReadyTimeoutSeconds = 60,
         [int]$AgentReadyPollMilliseconds = 2000
     )
@@ -691,6 +692,17 @@ function Add-OrchestraWorkerPane {
         $launchCommand = Get-PaneScalerLaunchCommand -Agent $agent -Model $model -ModelSource $modelSource -ReasoningEffort $effort -McpMode $mcpMode -SlotId $SlotId -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir
         if ([string]::IsNullOrWhiteSpace($launchCommand)) {
             throw 'Worker spawn requires a non-empty orchestra bootstrap launch command.'
+        }
+        if ($null -ne $Projection) {
+            if (-not (Get-Command Add-TeamProfileBundleToLaunchCommand -ErrorAction SilentlyContinue)) {
+                if (Get-Command Import-Task789OrchestraHelpers -ErrorAction SilentlyContinue) {
+                    Import-Task789OrchestraHelpers -IncludePaneScaler
+                }
+            }
+            if (-not (Get-Command Add-TeamProfileBundleToLaunchCommand -ErrorAction SilentlyContinue)) {
+                throw 'Worker spawn requires Add-TeamProfileBundleToLaunchCommand to attach the Team Profile bundle.'
+            }
+            $launchCommand = Add-TeamProfileBundleToLaunchCommand -LaunchCommand $launchCommand -Projection $Projection -ProjectDir $projectDir
         }
 
         $paneTitle = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'PaneTitle' -Default $SlotId)
@@ -1020,11 +1032,12 @@ function Add-OrchestraPane {
         [ValidateSet('Builder', 'Worker')][string]$Role = 'Builder',
         [AllowEmptyString()][string]$SlotId = '',
         $SlotAgentConfig = $null,
-        $Assignment = $null
+        $Assignment = $null,
+        $Projection = $null
     )
 
     if ($Role -eq 'Worker') {
-        return Add-OrchestraWorkerPane -ManifestPath $ManifestPath -SlotId $SlotId -Settings $Settings -SlotAgentConfig $SlotAgentConfig -Assignment $Assignment
+        return Add-OrchestraWorkerPane -ManifestPath $ManifestPath -SlotId $SlotId -Settings $Settings -SlotAgentConfig $SlotAgentConfig -Assignment $Assignment -Projection $Projection
     }
 
     $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath

@@ -14,7 +14,7 @@ function Get-WinsmuxControlPlaneArguments {
         [AllowNull()][string[]]$CommandRest
     )
 
-    return ,@(@($CommandTarget) + @($CommandRest) | Where-Object { $_ })
+    return @(@($CommandTarget) + @($CommandRest) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
 }
 
 function Split-WinsmuxDispatchTaskArguments {
@@ -221,6 +221,41 @@ function Get-DispatchTaskManifestEntry {
     return $null
 }
 
+function Get-DispatchTaskObjectText {
+    param(
+        [AllowNull()]$InputObject = $null,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [AllowEmptyString()][string]$Default = ''
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    foreach ($name in @($Names)) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            continue
+        }
+        $value = $null
+        if ($InputObject -is [System.Collections.IDictionary]) {
+            if ($InputObject.Contains($name)) {
+                $value = $InputObject[$name]
+            }
+        } elseif ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $name) {
+            $value = $InputObject.PSObject.Properties[$name].Value
+        }
+        if ($null -eq $value) {
+            continue
+        }
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return $text
+        }
+    }
+
+    return $Default
+}
+
 function Test-DispatchTaskReviewerManifestEntry {
     param([AllowNull()]$Entry = $null)
 
@@ -228,15 +263,127 @@ function Test-DispatchTaskReviewerManifestEntry {
         return $false
     }
 
-    $role = [string](Get-SendConfigValue -InputObject $Entry -Name 'Role' -Default '')
-    $workerRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'WorkerRole' -Default '')
-    $agentRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'AgentRole' -Default '')
+    $role = Get-DispatchTaskObjectText -InputObject $Entry -Names @('Role', 'role')
+    $workerRole = Get-DispatchTaskObjectText -InputObject $Entry -Names @('WorkerRole', 'worker_role')
+    $agentRole = Get-DispatchTaskObjectText -InputObject $Entry -Names @('AgentRole', 'agent_role')
 
     return (
         [string]::Equals($role, 'Reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]::Equals($workerRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]::Equals($agentRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase)
     )
+}
+
+function Get-DispatchTaskLiveSpawnBudget {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $mode = 'team'
+    if (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue) {
+        try {
+            $mode = [string](Get-OrchestraModeDocument -ProjectDir $ProjectDir).mode
+        } catch {
+            return [pscustomobject]@{
+                Mode        = ''
+                LiveWorkers = 0
+                MaxLive     = 0
+                Allowed     = $false
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        $mode = 'team'
+    }
+
+    $maxLive = 6
+    if (Get-Command Get-OrchestraMaxLiveWorkerPaneCount -ErrorAction SilentlyContinue) {
+        $maxLive = [int](Get-OrchestraMaxLiveWorkerPaneCount -Mode $mode)
+    } elseif ($mode -ceq 'simple') {
+        $maxLive = 1
+    }
+
+    $liveWorkers = 0
+    $hasManifestReader = [bool](Get-Command Get-WinsmuxManifest -ErrorAction SilentlyContinue)
+    $hasLiveWorkerCounter = [bool](Get-Command Get-OrchestraLiveWorkerRolePaneCount -ErrorAction SilentlyContinue)
+    if ($hasManifestReader -and $hasLiveWorkerCounter) {
+        try {
+            $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+            $liveWorkers = [int](Get-OrchestraLiveWorkerRolePaneCount -Manifest $manifest)
+        } catch {
+            $liveWorkers = 0
+        }
+    }
+
+    return [pscustomobject]@{
+        Mode        = $mode
+        LiveWorkers = $liveWorkers
+        MaxLive     = $maxLive
+        Allowed     = ($liveWorkers -lt $maxLive)
+    }
+}
+
+function Get-DispatchTaskCatalogSlotIds {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        return @()
+    }
+    if (-not (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue)) {
+        return @()
+    }
+
+    $slots = @()
+    try {
+        $settings = Get-BridgeSettings -RootPath $ProjectDir
+        if ($settings -is [System.Collections.IDictionary] -and $settings.Contains('agent_slots')) {
+            $slots = @($settings['agent_slots'])
+        } elseif ($null -ne $settings -and $null -ne $settings.PSObject -and $settings.PSObject.Properties.Name -contains 'agent_slots') {
+            $slots = @($settings.agent_slots)
+        }
+    } catch {
+        return @()
+    }
+
+    $ids = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($slot in @($slots)) {
+        $slotId = Get-DispatchTaskObjectText -InputObject $slot -Names @('slot_id', 'SlotId', 'label', 'Label')
+        if ([string]::IsNullOrWhiteSpace($slotId)) {
+            continue
+        }
+        $entry = [pscustomobject]@{
+            Label      = $slotId
+            Role       = (Get-DispatchTaskObjectText -InputObject $slot -Names @('role', 'Role'))
+            WorkerRole = (Get-DispatchTaskObjectText -InputObject $slot -Names @('worker_role', 'WorkerRole'))
+            AgentRole  = (Get-DispatchTaskObjectText -InputObject $slot -Names @('agent_role', 'AgentRole'))
+        }
+        if (Test-DispatchTaskReviewerManifestEntry -Entry $entry) {
+            continue
+        }
+        $runtimeRole = Get-DispatchTaskObjectText -InputObject $slot -Names @('runtime_role', 'RuntimeRole')
+        if (-not [string]::IsNullOrWhiteSpace($runtimeRole) -and
+            -not [string]::Equals($runtimeRole, 'worker', [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ($seen.Add($slotId)) {
+            $ids.Add($slotId) | Out-Null
+        }
+    }
+
+    return @($ids)
+}
+
+function Get-DispatchTaskMissingCatalogSlotIds {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    foreach ($slotId in @(Get-DispatchTaskCatalogSlotIds -ProjectDir $ProjectDir)) {
+        $entry = Get-DispatchTaskManifestEntry -ProjectDir $ProjectDir -Label $slotId
+        if ([string]::IsNullOrWhiteSpace((Get-DispatchTaskEntryPaneId -Entry $entry))) {
+            $missing.Add($slotId) | Out-Null
+        }
+    }
+    return @($missing)
 }
 
 function Get-DispatchTaskAvailableTargets {
@@ -262,6 +409,21 @@ function Get-DispatchTaskAvailableTargets {
     }
     if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
         $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    $budget = Get-DispatchTaskLiveSpawnBudget -ProjectDir $ProjectDir
+    if (-not [bool]$budget.Allowed) {
+        return @($availableTargets)
+    }
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($label in @($availableTargets)) {
+        [void]$seen.Add([string]$label)
+    }
+    foreach ($slotId in @(Get-DispatchTaskMissingCatalogSlotIds -ProjectDir $ProjectDir)) {
+        if ($seen.Add($slotId)) {
+            $availableTargets += $slotId
+        }
     }
 
     return @($availableTargets)
@@ -303,9 +465,11 @@ function Invoke-WinsmuxDispatchTaskCommand {
     $paneId = ''
     $resolvedRole = 'Worker'
     $classifiedSlotId = [string]$parsed.SlotId
+    $route = $null
     if (-not [string]::IsNullOrWhiteSpace($classifiedSlotId)) {
         $selectedLabel = $classifiedSlotId
         $resolvedRole = 'Worker'
+        $route = Get-DispatchRoute -Text $taskText -AvailableTargets @($classifiedSlotId) -DefaultRole 'Worker'
     } else {
         $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
         if ($route.HandleLocally) {
@@ -316,6 +480,29 @@ function Invoke-WinsmuxDispatchTaskCommand {
 
         $selectedLabel = [string]$route.SelectedTarget
         $resolvedRole = [string]$route.SelectedRole
+        if ($resolvedRole -ne 'Reviewer' -and $resolvedRole -ne 'Operator') {
+            $budget = Get-DispatchTaskLiveSpawnBudget -ProjectDir $projectDir
+            $missingSlots = @(Get-DispatchTaskMissingCatalogSlotIds -ProjectDir $projectDir)
+            if ([bool]$budget.Allowed -and $missingSlots.Count -gt 0) {
+                $selectedIsMissing = $false
+                foreach ($missingId in $missingSlots) {
+                    if ([string]::Equals([string]$missingId, $selectedLabel, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $selectedIsMissing = $true
+                        break
+                    }
+                }
+                if (-not $selectedIsMissing) {
+                    $preferredMissing = Get-DispatchRouterPreferredLabel -Role 'Worker' -AvailableTargets $missingSlots
+                    if (-not [string]::IsNullOrWhiteSpace([string]$preferredMissing)) {
+                        $selectedLabel = [string]$preferredMissing
+                        $resolvedRole = 'Worker'
+                    }
+                }
+            }
+        }
+    }
+    if ($null -eq $route) {
+        $route = Get-DispatchRoute -Text $taskText -AvailableTargets @($selectedLabel) -DefaultRole 'Worker'
     }
 
     $manifestEntry = $null
@@ -836,7 +1023,8 @@ function Import-Task789OrchestraHelpers {
     if (-not $IncludePaneScaler) {
         return
     }
-    if (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) {
+    if ((Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) -and
+        (Get-Command Add-TeamProfileBundleToLaunchCommand -ErrorAction SilentlyContinue)) {
         return
     }
 
@@ -989,7 +1177,7 @@ function Ensure-DispatchTaskLiveWorkerPane {
     }
 
     $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
-    $null = Add-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -SlotId $Label -Settings $settings -SlotAgentConfig $slotAgentConfig -Assignment $assignment
+    $null = Add-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -SlotId $Label -Settings $settings -SlotAgentConfig $slotAgentConfig -Assignment $assignment -Projection $projection
     $spawnedEntry = Get-DispatchTaskManifestEntry -ProjectDir $ProjectDir -Label $Label
     return [pscustomobject]@{
         Spawned        = $true

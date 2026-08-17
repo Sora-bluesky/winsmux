@@ -1644,6 +1644,23 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $script:task789ManifestPath = Join-Path $repoRoot 'winsmux-core\scripts\manifest.ps1'
         . $script:task789ManifestPath
         . $script:task789DispatchPath
+        $script:task789SubmissionContractPath = Join-Path $repoRoot 'winsmux-core\scripts\submission-contract.ps1'
+        if (Test-Path -LiteralPath $script:task789SubmissionContractPath -PathType Leaf) {
+            . $script:task789SubmissionContractPath
+        }
+        $script:task789ScriptsRoot = Join-Path $repoRoot 'scripts'
+        if (-not (Get-Command Stop-WithError -ErrorAction SilentlyContinue)) {
+            function script:Stop-WithError {
+                param([string]$Message)
+                throw $Message
+            }
+        }
+        if (-not (Get-Command Start-DeferredPaneFromManifestEntry -ErrorAction SilentlyContinue)) {
+            function script:Start-DeferredPaneFromManifestEntry {
+                param($ProjectDir, $ManifestEntry, $ExpectedGenerationId)
+                return $false
+            }
+        }
         if (-not (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
             function script:New-TeamProfileSlotAgentConfig {
                 param($Role, $SlotId, $Assignment, $Settings, $RootPath)
@@ -1652,6 +1669,12 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         if (-not (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue)) {
             function script:Invoke-TeamProfileLaunchProjection {
                 param($ProjectDir, $SessionId, $SlotId, $Worktree, $ReadWriteScope, [switch]$Force)
+            }
+        }
+        if (-not (Get-Command Add-TeamProfileBundleToLaunchCommand -ErrorAction SilentlyContinue)) {
+            function script:Add-TeamProfileBundleToLaunchCommand {
+                param($LaunchCommand, $Projection, $ProjectDir)
+                return $LaunchCommand
             }
         }
         if (-not (Get-Command New-OrchestraPaneBootstrapPlan -ErrorAction SilentlyContinue)) {
@@ -1793,6 +1816,37 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
                 throw ("unexpected pane-control winsmux: {0}" -f (@($Arguments) -join ' '))
             }
         }
+
+        function script:New-Task789LiveEntry {
+            param(
+                [Parameter(Mandatory = $true)][string]$Label,
+                [Parameter(Mandatory = $true)][string]$PaneId,
+                [string]$Status = 'ready'
+            )
+            return [pscustomobject]@{
+                Label         = $Label
+                SlotId        = $Label
+                PaneId        = $PaneId
+                Role          = 'Worker'
+                WorkerRole    = 'worker'
+                WorkerBackend = 'codex'
+                Title         = $Label
+                Status        = $Status
+            }
+        }
+
+        function script:Invoke-Task789PublicDispatchTask {
+            param([Parameter(Mandatory = $true)][string[]]$Argv)
+            $target = [string]$Argv[0]
+            $rest = @()
+            if ($Argv.Count -gt 1) {
+                $rest = @($Argv[1..($Argv.Count - 1)])
+            }
+            return @(
+                Invoke-WinsmuxDispatchTaskCommand -BridgeScriptRoot $script:task789ScriptsRoot `
+                    -CommandTarget $target -CommandRest $rest
+            )
+        }
     }
 
     BeforeEach {
@@ -1849,11 +1903,25 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $body | Should -Match 'Add-OrchestraPane'
         $body | Should -Match 'New-TeamProfileSlotAgentConfig'
         $body | Should -Match 'Invoke-TeamProfileLaunchProjection'
+        $body | Should -Match '-Projection \$projection'
         $body | Should -Match 'worker_backend'
         $body | Should -Not -Match 'requiredBackend'
         $body | Should -Match 'simple_mode_live_worker_limit'
         $body | Should -Match 'team_profile_projection_unavailable'
         $script:task789DispatchContent | Should -Match 'Ensure-DispatchTaskLiveWorkerPane'
+        $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskCatalogSlotIds'
+        $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskMissingCatalogSlotIds'
+        $script:task789DispatchContent | Should -Match 'Get-DispatchTaskAvailableTargets'
+        $invokeIndex = $script:task789DispatchContent.IndexOf('function Invoke-WinsmuxDispatchTaskCommand')
+        $invokeIndex | Should -BeGreaterThan -1
+        $invokeNext = $script:task789DispatchContent.IndexOf("`nfunction ", $invokeIndex + 1)
+        if ($invokeNext -lt 0) {
+            $invokeNext = $script:task789DispatchContent.Length
+        }
+        $invokeBody = $script:task789DispatchContent.Substring($invokeIndex, $invokeNext - $invokeIndex)
+        $invokeBody | Should -Match 'Get-DispatchRoute -Text \$taskText -AvailableTargets @\(\$classifiedSlotId\)'
+        $invokeBody | Should -Match 'Get-DispatchTaskMissingCatalogSlotIds'
+        $script:task789PaneScalerContent | Should -Match 'Add-TeamProfileBundleToLaunchCommand'
     }
 
     It 'fail-closes simple mode instead of spawning a second live worker pane' {
@@ -3202,5 +3270,639 @@ Write-Output 'reached-after-exit'
         ($output | Out-String) | Should -Not -Match 'reached-after-exit'
         Test-Path -LiteralPath $sentPath | Should -BeTrue
         Test-Path -LiteralPath $killedPath | Should -BeFalse
+    }
+
+    It 'E03 public argv parse keeps --slot-id and --project-dir as separate tokens' {
+        $parts = @(
+            Get-WinsmuxControlPlaneArguments -CommandTarget '--slot-id' -CommandRest @(
+                'worker-2', '--project-dir', $script:task789FixRoot, 'implement the focused change'
+            )
+        )
+        $parsed = Split-WinsmuxDispatchTaskArguments -Parts $parts
+        $parsed.SlotId | Should -Be 'worker-2'
+        $parsed.ProjectDir | Should -Be $script:task789FixRoot
+        $parsed.TaskText | Should -Be 'implement the focused change'
+        @($parts).Count | Should -Be 5
+        $parts[0] | Should -Be '--slot-id'
+        $parts[1] | Should -Be 'worker-2'
+    }
+
+    It 'E01 public dispatch-task without --slot-id spawns a missing catalog slot instead of only the live worker' {
+        $null = New-Item -ItemType File -Path (Join-Path $script:task789FixRoot '.winsmux.yaml') -Force
+        $script:task789SpawnedSlots = @()
+        $script:task789SubmittedLabel = ''
+        $script:task789Receipt = $null
+        $script:task789Worker2Live = $false
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-WinsmuxManifest {
+            [pscustomobject]@{
+                Panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{ pane_id = '%3'; role = 'Worker' }
+                }
+            }
+        }
+        Mock Get-BridgeSettings {
+            [ordered]@{
+                agent_slots = @(
+                    [pscustomobject]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worker_role = 'impl' }
+                    [pscustomobject]@{ slot_id = 'worker-2'; runtime_role = 'worker'; worker_role = 'impl' }
+                )
+            }
+        }
+        Mock Get-PaneControlManifestEntries {
+            $entries = @(script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3')
+            if ($script:task789Worker2Live) {
+                $entries += script:New-Task789LiveEntry -Label 'worker-2' -PaneId '%5'
+            }
+            return $entries
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-1', 'worker-2') }
+        Mock Invoke-TeamProfileLaunchProjection {
+            [pscustomobject]@{
+                bundle_path = '.winsmux/team-profile/worker-2.md'
+                projection  = [pscustomobject]@{
+                    pane = [pscustomobject]@{
+                        assignment    = [pscustomobject]@{ provider = 'codex'; launch_model = 'gpt-5.4'; worker_backend = 'codex' }
+                        prompt_bundle = [pscustomobject]@{ path = '.winsmux/team-profile/worker-2.md' }
+                    }
+                }
+            }
+        }
+        Mock New-TeamProfileSlotAgentConfig {
+            [pscustomobject]@{ Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = $SlotId }
+        }
+        Mock Add-OrchestraPane {
+            $script:task789SpawnedSlots += [string]$SlotId
+            $script:task789Worker2Live = $true
+            return [pscustomobject]@{ Changed = $true; Label = $SlotId; PaneId = '%5' }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid       = $true
+                reason_code = 'dispatch_verified'
+                diagnostic  = 'ok'
+                context     = [ordered]@{ generation_id = 'generation-789' }
+            }
+        }
+        Mock Start-DeferredPaneFromManifestEntry { $false }
+        Mock Invoke-WinsmuxSubmissionAdapter {
+            param($ProjectDir, $ManifestEntry, $Kind, $Content, $SubmissionId)
+            $script:task789SubmittedLabel = [string]$ManifestEntry.Label
+            return [pscustomobject]@{
+                protocol_version = 1
+                submission_id    = $SubmissionId
+                kind             = 'task'
+                status           = 'accepted'
+                backend          = 'codex'
+                reason_code      = ''
+                diagnostic       = ''
+                target           = [ordered]@{ label = [string]$ManifestEntry.Label; pane_id = [string]$ManifestEntry.PaneId; role = 'Worker' }
+                routing          = $null
+                acknowledgement  = $null
+            }
+        }
+        Mock ConvertTo-WinsmuxSubmissionReceiptJson {
+            param($Receipt)
+            $script:task789Receipt = $Receipt
+            return ($Receipt | ConvertTo-Json -Compress -Depth 8)
+        }
+
+        $null = script:Invoke-Task789PublicDispatchTask -Argv @(
+            '--project-dir', $script:task789FixRoot, 'implement the focused change'
+        )
+
+        $script:task789SpawnedSlots | Should -Be @('worker-2')
+        $script:task789SubmittedLabel | Should -Be 'worker-2'
+        $script:task789Receipt.routing.matched_rule | Should -Not -BeNullOrEmpty
+        Should -Invoke Add-OrchestraPane -Times 1
+    }
+
+    It 'E03 public --slot-id spawn initializes route and emits routing.matched_rule' {
+        $null = New-Item -ItemType File -Path (Join-Path $script:task789FixRoot '.winsmux.yaml') -Force
+        $script:task789SpawnedSlots = @()
+        $script:task789SubmittedLabel = ''
+        $script:task789Receipt = $null
+        $script:task789Worker2Live = $false
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-WinsmuxManifest {
+            [pscustomobject]@{
+                Panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{ pane_id = '%3'; role = 'Worker' }
+                }
+            }
+        }
+        Mock Get-PaneControlManifestEntries {
+            $entries = @(script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3')
+            if ($script:task789Worker2Live) {
+                $entries += script:New-Task789LiveEntry -Label 'worker-2' -PaneId '%5'
+            }
+            return $entries
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-1', 'worker-2') }
+        Mock Get-BridgeSettings {
+            [ordered]@{
+                agent_slots = @(
+                    [pscustomobject]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worker_role = 'impl' }
+                    [pscustomobject]@{ slot_id = 'worker-2'; runtime_role = 'worker'; worker_role = 'impl' }
+                )
+            }
+        }
+        Mock Invoke-TeamProfileLaunchProjection {
+            [pscustomobject]@{
+                bundle_path = '.winsmux/team-profile/worker-2.md'
+                projection  = [pscustomobject]@{
+                    pane = [pscustomobject]@{
+                        assignment = [pscustomobject]@{ provider = 'codex'; launch_model = 'gpt-5.4'; worker_backend = 'codex' }
+                    }
+                }
+            }
+        }
+        Mock New-TeamProfileSlotAgentConfig {
+            [pscustomobject]@{ Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = $SlotId }
+        }
+        Mock Add-OrchestraPane {
+            $script:task789SpawnedSlots += [string]$SlotId
+            $script:task789Worker2Live = $true
+            return [pscustomobject]@{ Changed = $true; Label = $SlotId; PaneId = '%5' }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid       = $true
+                reason_code = 'dispatch_verified'
+                diagnostic  = 'ok'
+                context     = [ordered]@{ generation_id = 'generation-789' }
+            }
+        }
+        Mock Start-DeferredPaneFromManifestEntry { $false }
+        Mock Invoke-WinsmuxSubmissionAdapter {
+            param($ProjectDir, $ManifestEntry, $Kind, $Content, $SubmissionId)
+            $script:task789SubmittedLabel = [string]$ManifestEntry.Label
+            return [pscustomobject]@{
+                protocol_version = 1
+                submission_id    = $SubmissionId
+                kind             = 'task'
+                status           = 'accepted'
+                backend          = 'codex'
+                reason_code      = ''
+                diagnostic       = ''
+                target           = [ordered]@{ label = [string]$ManifestEntry.Label; pane_id = [string]$ManifestEntry.PaneId; role = 'Worker' }
+                routing          = $null
+                acknowledgement  = $null
+            }
+        }
+        Mock ConvertTo-WinsmuxSubmissionReceiptJson {
+            param($Receipt)
+            $script:task789Receipt = $Receipt
+            return ($Receipt | ConvertTo-Json -Compress -Depth 8)
+        }
+
+        { script:Invoke-Task789PublicDispatchTask -Argv @(
+            '--slot-id', 'worker-2', '--project-dir', $script:task789FixRoot, 'implement the focused change'
+        ) } | Should -Not -Throw
+
+        $script:task789SpawnedSlots | Should -Be @('worker-2')
+        $script:task789SubmittedLabel | Should -Be 'worker-2'
+        $script:task789Receipt.routing.matched_rule | Should -Not -BeNullOrEmpty
+        $script:task789Receipt.routing.expected_owner | Should -Be 'Worker'
+    }
+
+    It 'E04 public --slot-id on a live worker does not spawn and still initializes route' {
+        $null = New-Item -ItemType File -Path (Join-Path $script:task789FixRoot '.winsmux.yaml') -Force
+        $script:task789SpawnedSlots = @()
+        $script:task789SubmittedLabel = ''
+        $script:task789Receipt = $null
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-WinsmuxManifest {
+            [pscustomobject]@{
+                Panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{ pane_id = '%3'; role = 'Worker' }
+                }
+            }
+        }
+        Mock Get-BridgeSettings {
+            [ordered]@{
+                agent_slots = @(
+                    [pscustomobject]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worker_role = 'impl' }
+                    [pscustomobject]@{ slot_id = 'worker-2'; runtime_role = 'worker'; worker_role = 'impl' }
+                )
+            }
+        }
+        Mock Get-PaneControlManifestEntries {
+            @(script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3')
+        }
+        Mock Get-DispatchTaskManifestEntry {
+            param($ProjectDir, $Label)
+            if ([string]$Label -eq 'worker-1') {
+                return (script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3')
+            }
+            return $null
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-1', 'worker-2') }
+        Mock Invoke-TeamProfileLaunchProjection { throw 'E04 must not project a live slot' }
+        Mock Add-OrchestraPane {
+            $script:task789SpawnedSlots += [string]$SlotId
+            throw 'E04 must not spawn a second pane for a live slot'
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid       = $true
+                reason_code = 'dispatch_verified'
+                diagnostic  = 'ok'
+                context     = [ordered]@{ generation_id = 'generation-789' }
+            }
+        }
+        Mock Start-DeferredPaneFromManifestEntry { $false }
+        Mock Invoke-WinsmuxSubmissionAdapter {
+            param($ProjectDir, $ManifestEntry, $Kind, $Content, $SubmissionId)
+            $script:task789SubmittedLabel = [string]$ManifestEntry.Label
+            return [pscustomobject]@{
+                protocol_version = 1
+                submission_id    = $SubmissionId
+                kind             = 'task'
+                status           = 'accepted'
+                backend          = 'codex'
+                reason_code      = ''
+                diagnostic       = ''
+                target           = [ordered]@{ label = [string]$ManifestEntry.Label; pane_id = [string]$ManifestEntry.PaneId; role = 'Worker' }
+                routing          = $null
+                acknowledgement  = $null
+            }
+        }
+        Mock ConvertTo-WinsmuxSubmissionReceiptJson {
+            param($Receipt)
+            $script:task789Receipt = $Receipt
+            return ($Receipt | ConvertTo-Json -Compress -Depth 8)
+        }
+
+        $null = script:Invoke-Task789PublicDispatchTask -Argv @(
+            '--slot-id', 'worker-1', '--project-dir', $script:task789FixRoot, 'implement the focused change'
+        )
+
+        $script:task789SpawnedSlots | Should -Be @()
+        $script:task789SubmittedLabel | Should -Be 'worker-1'
+        $script:task789Receipt | Should -Not -BeNullOrEmpty
+        $script:task789Receipt.routing.matched_rule | Should -Not -BeNullOrEmpty
+        Should -Invoke Add-OrchestraPane -Times 0
+    }
+
+    It 'E02 public dispatch-task at the live worker cap does not spawn' {
+        $script:task789SpawnedSlots = @()
+        $script:task789SubmittedLabel = ''
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 6 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-WinsmuxManifest {
+            [pscustomobject]@{
+                Panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{ pane_id = '%3'; role = 'Worker' }
+                    'worker-2' = [pscustomobject]@{ pane_id = '%4'; role = 'Worker' }
+                    'worker-3' = [pscustomobject]@{ pane_id = '%5'; role = 'Worker' }
+                    'worker-4' = [pscustomobject]@{ pane_id = '%6'; role = 'Worker' }
+                    'worker-5' = [pscustomobject]@{ pane_id = '%7'; role = 'Worker' }
+                    'worker-6' = [pscustomobject]@{ pane_id = '%8'; role = 'Worker' }
+                }
+            }
+        }
+        Mock Get-PaneControlManifestEntries {
+            @(
+                script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3'
+                script:New-Task789LiveEntry -Label 'worker-2' -PaneId '%4'
+                script:New-Task789LiveEntry -Label 'worker-3' -PaneId '%5'
+                script:New-Task789LiveEntry -Label 'worker-4' -PaneId '%6'
+                script:New-Task789LiveEntry -Label 'worker-5' -PaneId '%7'
+                script:New-Task789LiveEntry -Label 'worker-6' -PaneId '%8'
+            )
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-1', 'worker-2', 'worker-3', 'worker-4', 'worker-5', 'worker-6') }
+        Mock Add-OrchestraPane { throw 'E02 must not spawn when live workers are at max' }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid       = $true
+                reason_code = 'dispatch_verified'
+                diagnostic  = 'ok'
+                context     = [ordered]@{ generation_id = 'generation-789' }
+            }
+        }
+        Mock Start-DeferredPaneFromManifestEntry { $false }
+        Mock Invoke-WinsmuxSubmissionAdapter {
+            param($ProjectDir, $ManifestEntry, $Kind, $Content, $SubmissionId)
+            $script:task789SubmittedLabel = [string]$ManifestEntry.Label
+            return [pscustomobject]@{
+                protocol_version = 1
+                submission_id    = $SubmissionId
+                kind             = 'task'
+                status           = 'accepted'
+                backend          = 'codex'
+                reason_code      = ''
+                diagnostic       = ''
+                target           = [ordered]@{ label = [string]$ManifestEntry.Label; pane_id = [string]$ManifestEntry.PaneId; role = 'Worker' }
+                routing          = $null
+                acknowledgement  = $null
+            }
+        }
+        Mock ConvertTo-WinsmuxSubmissionReceiptJson {
+            param($Receipt)
+            return ($Receipt | ConvertTo-Json -Compress -Depth 8)
+        }
+
+        $null = script:Invoke-Task789PublicDispatchTask -Argv @(
+            '--project-dir', $script:task789FixRoot, 'implement the focused change'
+        )
+
+        $script:task789SpawnedSlots | Should -Be @()
+        $script:task789SubmittedLabel | Should -Match '^worker-\d+$'
+        Should -Invoke Add-OrchestraPane -Times 0
+    }
+
+    It 'E05 public simple mode does not spawn a second live worker-role pane' {
+        $null = New-Item -ItemType File -Path (Join-Path $script:task789FixRoot '.winsmux.yaml') -Force
+        $script:task789SpawnedSlots = @()
+        $script:task789SubmittedLabel = ''
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'simple'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 1 }
+        Mock Get-WinsmuxManifest {
+            [pscustomobject]@{
+                Panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{ pane_id = '%3'; role = 'Worker' }
+                }
+            }
+        }
+        Mock Get-PaneControlManifestEntries {
+            @(script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3')
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-1', 'worker-2') }
+        Mock Get-BridgeSettings {
+            [ordered]@{
+                agent_slots = @(
+                    [pscustomobject]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worker_role = 'impl' }
+                    [pscustomobject]@{ slot_id = 'worker-2'; runtime_role = 'worker'; worker_role = 'impl' }
+                )
+            }
+        }
+        Mock Add-OrchestraPane {
+            $script:task789SpawnedSlots += [string]$SlotId
+            throw 'E05 must not spawn a second simple-mode worker'
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid       = $true
+                reason_code = 'dispatch_verified'
+                diagnostic  = 'ok'
+                context     = [ordered]@{ generation_id = 'generation-789' }
+            }
+        }
+        Mock Start-DeferredPaneFromManifestEntry { $false }
+        Mock Invoke-WinsmuxSubmissionAdapter {
+            param($ProjectDir, $ManifestEntry, $Kind, $Content, $SubmissionId)
+            $script:task789SubmittedLabel = [string]$ManifestEntry.Label
+            return [pscustomobject]@{
+                protocol_version = 1
+                submission_id    = $SubmissionId
+                kind             = 'task'
+                status           = 'accepted'
+                backend          = 'codex'
+                reason_code      = ''
+                diagnostic       = ''
+                target           = [ordered]@{ label = [string]$ManifestEntry.Label; pane_id = [string]$ManifestEntry.PaneId; role = 'Worker' }
+                routing          = $null
+                acknowledgement  = $null
+            }
+        }
+        Mock ConvertTo-WinsmuxSubmissionReceiptJson {
+            param($Receipt)
+            return ($Receipt | ConvertTo-Json -Compress -Depth 8)
+        }
+
+        $null = script:Invoke-Task789PublicDispatchTask -Argv @(
+            '--project-dir', $script:task789FixRoot, 'implement the focused change'
+        )
+
+        $script:task789SpawnedSlots | Should -Be @()
+        $script:task789SubmittedLabel | Should -Be 'worker-1'
+        Should -Invoke Add-OrchestraPane -Times 0
+    }
+
+    It 'E08 public spawn launch command attaches the Team Profile bundle from the same projection' {
+        $null = New-Item -ItemType File -Path (Join-Path $script:task789FixRoot '.winsmux.yaml') -Force
+        $script:task789BundleCalls = @()
+        $script:task789LaunchCommands = @()
+        $script:task789SubmittedLabel = ''
+        $script:task789Worker2Live = $false
+        $projection = [pscustomobject]@{
+            bundle_path = '.winsmux/team-profile/worker-2.md'
+            projection  = [pscustomobject]@{
+                pane = [pscustomobject]@{
+                    assignment    = [pscustomobject]@{ provider = 'codex'; launch_model = 'gpt-5.4'; worker_backend = 'codex' }
+                    prompt_bundle = [pscustomobject]@{ path = '.winsmux/team-profile/worker-2.md' }
+                }
+            }
+        }
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-WinsmuxManifest {
+            [pscustomobject]@{
+                Panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{ pane_id = '%3'; role = 'Worker' }
+                }
+            }
+        }
+        Mock Get-PaneControlManifestEntries {
+            $entries = @(script:New-Task789LiveEntry -Label 'worker-1' -PaneId '%3')
+            if ($script:task789Worker2Live) {
+                $entries += script:New-Task789LiveEntry -Label 'worker-2' -PaneId '%5'
+            }
+            return $entries
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-1', 'worker-2') }
+        Mock Invoke-TeamProfileLaunchProjection { $projection }
+        Mock New-TeamProfileSlotAgentConfig {
+            [pscustomobject]@{ Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = $SlotId }
+        }
+        Mock Add-TeamProfileBundleToLaunchCommand {
+            param($LaunchCommand, $Projection, $ProjectDir)
+            $script:task789BundleCalls += [pscustomobject]@{
+                LaunchCommand = [string]$LaunchCommand
+                BundlePath    = [string]$Projection.bundle_path
+                ProjectDir    = [string]$ProjectDir
+            }
+            $script:task789LaunchCommands += ([string]$LaunchCommand + ' TEAM-PROFILE-BUNDLE')
+            return ($LaunchCommand + ' TEAM-PROFILE-BUNDLE')
+        }
+        Mock Add-OrchestraWorkerPane {
+            param($ManifestPath, $SlotId, $Settings, $SlotAgentConfig, $Assignment, $Projection)
+            if ($null -eq $Projection -or [string]::IsNullOrWhiteSpace([string]$Projection.bundle_path)) {
+                throw 'E08 spawn must receive the Team Profile projection'
+            }
+            $null = Add-TeamProfileBundleToLaunchCommand -LaunchCommand 'echo spawn-worker-2' -Projection $Projection -ProjectDir $script:task789FixRoot
+            $script:task789Worker2Live = $true
+            return [pscustomobject]@{ Changed = $true; Label = $SlotId; PaneId = '%5' }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid       = $true
+                reason_code = 'dispatch_verified'
+                diagnostic  = 'ok'
+                context     = [ordered]@{ generation_id = 'generation-789' }
+            }
+        }
+        Mock Start-DeferredPaneFromManifestEntry { $false }
+        Mock Invoke-WinsmuxSubmissionAdapter {
+            param($ProjectDir, $ManifestEntry, $Kind, $Content, $SubmissionId)
+            $script:task789SubmittedLabel = [string]$ManifestEntry.Label
+            return [pscustomobject]@{
+                protocol_version = 1
+                submission_id    = $SubmissionId
+                kind             = 'task'
+                status           = 'accepted'
+                backend          = 'codex'
+                reason_code      = ''
+                diagnostic       = ''
+                target           = [ordered]@{ label = [string]$ManifestEntry.Label; pane_id = [string]$ManifestEntry.PaneId; role = 'Worker' }
+                routing          = $null
+                acknowledgement  = $null
+            }
+        }
+        Mock ConvertTo-WinsmuxSubmissionReceiptJson {
+            param($Receipt)
+            return ($Receipt | ConvertTo-Json -Compress -Depth 8)
+        }
+
+        $null = script:Invoke-Task789PublicDispatchTask -Argv @(
+            '--slot-id', 'worker-2', '--project-dir', $script:task789FixRoot, 'implement the focused change'
+        )
+
+        $script:task789SubmittedLabel | Should -Be 'worker-2'
+        $script:task789BundleCalls.Count | Should -BeGreaterThan 0
+        $script:task789BundleCalls[0].BundlePath | Should -Be '.winsmux/team-profile/worker-2.md'
+        $script:task789LaunchCommands[0] | Should -Match 'TEAM-PROFILE-BUNDLE'
+    }
+
+    It 'E08 Add-OrchestraWorkerPane launch command calls Add-TeamProfileBundleToLaunchCommand' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $supervisor = script:Get-Task789SupervisorIdentity
+        script:Write-Task789V2Manifest -Path $manifestPath -ProjectDir $script:task789FixRoot -Panes @(
+            script:New-Task789V2Pane -Label 'worker-1' -PaneId '%3'
+        )
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
+            -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $script:task789Observed = @(
+            script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'
+            script:New-Task789ObservedPane -PaneId '%3' -Title 'worker-1'
+        )
+        $script:task789BundleCalls = @()
+        script:Mock-Task789LiveServer
+        $worktreePath = Join-Path $script:task789FixRoot '.worktrees\worker-2'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        $projection = [pscustomobject]@{
+            bundle_path = '.winsmux/team-profile/worker-2.md'
+            projection  = [pscustomobject]@{
+                pane = [pscustomobject]@{
+                    prompt_bundle = [pscustomobject]@{ path = '.winsmux/team-profile/worker-2.md' }
+                }
+            }
+        }
+        Mock New-PaneScalerWorkerWorktree {
+            [pscustomobject]@{ WorktreePath = $worktreePath; BranchName = 'worktree-worker-2'; GitWorktreeDir = $worktreePath }
+        }
+        Mock Invoke-MonitorWinsmux {
+            param($Arguments)
+            $argsList = @($Arguments)
+            if ($argsList -contains 'split-window') {
+                $script:task789Observed = @($script:task789Observed) + @(
+                    script:New-Task789ObservedPane -PaneId '%5' -Title 'worker-2'
+                )
+                return '%5'
+            }
+            if ($argsList -contains 'select-pane') { return }
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
+        Mock Add-TeamProfileBundleToLaunchCommand {
+            param($LaunchCommand, $Projection, $ProjectDir)
+            $script:task789BundleCalls += [pscustomobject]@{
+                LaunchCommand = [string]$LaunchCommand
+                BundlePath    = [string]$Projection.bundle_path
+                ProjectDir    = [string]$ProjectDir
+            }
+            return ($LaunchCommand + ' TEAM-PROFILE-BUNDLE')
+        }
+        Mock New-OrchestraPaneBootstrapPlan {
+            param($LaunchCommand)
+            $script:task789CapturedLaunch = [string]$LaunchCommand
+            $planDir = Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap'
+            New-Item -ItemType Directory -Path $planDir -Force | Out-Null
+            $planPath = Join-Path $planDir '5.json'
+            Set-Content -LiteralPath $planPath -Value '{}' -Encoding utf8
+            return $planPath
+        }
+        Mock Get-OrchestraPaneBootstrapMarkerPath {
+            Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap\5-generation-789.ready.json'
+        }
+        Mock Start-OrchestraPaneBootstrap { }
+        Mock Get-BridgeSettings { [ordered]@{ agent = 'codex'; model = 'gpt-5.4' } }
+
+        $result = Add-OrchestraWorkerPane -ManifestPath $manifestPath -SlotId 'worker-2' -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = 'worker-2'
+        }) -Projection $projection
+        $result.Changed | Should -BeTrue
+        $script:task789BundleCalls.Count | Should -Be 1
+        $script:task789BundleCalls[0].BundlePath | Should -Be '.winsmux/team-profile/worker-2.md'
+        $script:task789CapturedLaunch | Should -Match 'TEAM-PROFILE-BUNDLE'
+        $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
+        $saved.version | Should -Be 2
+        $saved.Session.expected_pane_count | Should -Be 2
+    }
+
+    It 'E09 Get-DispatchTaskAvailableTargets still excludes reviewer-only live slots after catalog union' {
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-PaneControlManifestEntries {
+            @(
+                [PSCustomObject]@{ Label = 'worker-1'; PaneId = '%1'; Role = 'Worker'; WorkerRole = 'reviewer'; AgentRole = '' },
+                [PSCustomObject]@{ Label = 'worker-2'; PaneId = '%2'; Role = 'Worker'; WorkerRole = 'impl'; AgentRole = '' }
+            )
+        }
+        Mock Get-DispatchTaskCatalogSlotIds { @('worker-2', 'worker-3') }
+        Mock Get-BridgeSettings {
+            [ordered]@{
+                agent_slots = @(
+                    [pscustomobject]@{ slot_id = 'worker-1'; runtime_role = 'worker'; worker_role = 'reviewer' }
+                    [pscustomobject]@{ slot_id = 'worker-2'; runtime_role = 'worker'; worker_role = 'impl' }
+                    [pscustomobject]@{ slot_id = 'worker-3'; runtime_role = 'worker'; worker_role = 'impl' }
+                )
+            }
+        }
+        $null = New-Item -ItemType File -Path (Join-Path $script:task789FixRoot '.winsmux.yaml') -Force
+
+        $targets = @(Get-DispatchTaskAvailableTargets -ProjectDir $script:task789FixRoot)
+        $targets | Should -Contain 'worker-2'
+        $targets | Should -Contain 'worker-3'
+        $targets | Should -Not -Contain 'worker-1'
     }
 }
