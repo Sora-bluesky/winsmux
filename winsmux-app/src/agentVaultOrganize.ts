@@ -183,13 +183,24 @@ export function removeSessionFromGroup(
   return { ok: true, state: next };
 }
 
+export function persistableAgentVaultWorkspaceKey(key: string): string {
+  const normalized = (key ?? "").trim();
+  if (normalized === "__this_project__" || normalized === "unknown" || normalized === "workspace") {
+    return normalized;
+  }
+  if (!normalized) {
+    return "";
+  }
+  return "workspace";
+}
+
 export function recordFork(
   state: AgentVaultOrganizeState,
   fromId: string,
   workspaceKey: string,
 ): AgentVaultOrganizeMutationResult {
   const sourceId = readMutableSessionId(fromId);
-  const key = readWorkspaceKey(workspaceKey);
+  const key = persistableAgentVaultWorkspaceKey(readWorkspaceKey(workspaceKey));
   if (!sourceId || !key) {
     return { ok: false, error: "Fork requires a vault session id and workspace." };
   }
@@ -612,7 +623,7 @@ function parseFork(value: unknown, index: number): AgentVaultOrganizeFork {
   if (typeof record.id !== "string" || !FORK_ID_PATTERN.test(record.id)) {
     throw new Error(`forks[${index}].id is invalid.`);
   }
-  const workspaceKey = readWorkspaceKey(record.workspaceKey);
+  const workspaceKey = persistableAgentVaultWorkspaceKey(readWorkspaceKey(record.workspaceKey));
   if (!workspaceKey) {
     throw new Error(`forks[${index}].workspaceKey is invalid.`);
   }

@@ -36,6 +36,7 @@ const {
   resolveAgentVaultLaunchDirectory,
   shouldQueueAgentVaultLaunchCwd,
   applyAgentVaultGroupPrompt,
+  persistableAgentVaultWorkspaceKey,
   emptyAgentVaultOrganize,
   groupNameForSession,
   isArchived,
@@ -124,7 +125,13 @@ assert.deepEqual(v07Loaded.state, v07Previous);
 const v08 = assertOk(recordFork(emptyAgentVaultOrganize(), "summary:run-id", "C:/proj"));
 assert.equal(v08.forks.length, 1);
 assert.equal(v08.forks[0].fromId, "summary:run-id");
-assert.equal(v08.forks[0].workspaceKey, "C:/proj");
+assert.equal(v08.forks[0].workspaceKey, "workspace");
+assert.equal(
+  assertOk(recordFork(emptyAgentVaultOrganize(), "summary:run-id", "workspace:c:/users/sorab/secret")).forks[0].workspaceKey,
+  "workspace",
+);
+assert.equal(persistableAgentVaultWorkspaceKey("__this_project__"), "__this_project__");
+assert.equal(persistableAgentVaultWorkspaceKey("unknown"), "unknown");
 assert.match(v08.forks[0].id, /^fork_[A-Za-z0-9]+$/);
 assert.equal(isArchived(v08, "summary:run-id"), false);
 assert.deepEqual(visibleVaultEntryIds(entries, v08, false), ["summary:run-id", "worker:w1"]);
@@ -166,7 +173,7 @@ const v12State = {
   schema_version: 1,
   archivedIds: ["summary:run-id"],
   groups: [{ id: "grp_01", name: "release", sessionIds: ["summary:run-id"] }],
-  forks: [{ id: "fork_01", fromId: "summary:run-id", workspaceKey: "C:/proj" }],
+  forks: [{ id: "fork_01", fromId: "summary:run-id", workspaceKey: "workspace" }],
 };
 const v12Json = serializeAgentVaultOrganize(v12State);
 const v12Parsed = JSON.parse(v12Json);
@@ -174,6 +181,16 @@ assert.deepEqual(Object.keys(v12Parsed), ["schema_version", "archivedIds", "grou
 assert.deepEqual(Object.keys(v12Parsed.groups[0]), ["id", "name", "sessionIds"]);
 assert.deepEqual(Object.keys(v12Parsed.forks[0]), ["id", "fromId", "workspaceKey"]);
 assert.deepEqual(parseAgentVaultOrganizeJson(v12Json), v12State);
+assert.equal(v12Parsed.forks[0].workspaceKey, "workspace");
+assert.doesNotMatch(v12Json, /C:\/|\\\\users\\/i);
+const v12Legacy = parseAgentVaultOrganizeJson(JSON.stringify({
+  schema_version: 1,
+  archivedIds: [],
+  groups: [],
+  forks: [{ id: "fork_01", fromId: "summary:run-id", workspaceKey: "C:/Users/sorab/secret" }],
+}));
+assert.equal(v12Legacy.forks[0].workspaceKey, "workspace");
+assert.doesNotMatch(serializeAgentVaultOrganize(v12Legacy), /Users\/sorab\/secret/i);
 
 // V13: empty/cleared group name is a UI concern; mutation layer still rejects empty assign
 const v13 = assertOk(removeSessionFromGroup(v04, "summary:run-id"));
