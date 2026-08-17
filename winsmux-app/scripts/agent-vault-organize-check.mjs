@@ -40,6 +40,7 @@ const {
   loadAgentVaultOrganize,
   parseAgentVaultOrganizeJson,
   recordFork,
+  removeSessionFromGroup,
   searchTextWithGroupName,
   serializeAgentVaultOrganize,
   unarchiveSession,
@@ -171,6 +172,13 @@ assert.deepEqual(Object.keys(v12Parsed.groups[0]), ["id", "name", "sessionIds"])
 assert.deepEqual(Object.keys(v12Parsed.forks[0]), ["id", "fromId", "workspaceKey"]);
 assert.deepEqual(parseAgentVaultOrganizeJson(v12Json), v12State);
 
+// V13: empty/cleared group name is a UI concern; mutation layer still rejects empty assign
+const v13 = assertOk(removeSessionFromGroup(v04, "summary:run-id"));
+assert.equal(groupNameForSession(v13, "summary:run-id"), null);
+assert.equal(v13.groups.find((group) => group.name === "release")?.sessionIds.includes("summary:run-id") ?? false, false);
+assert.equal(assignSessionToGroup(v13, "summary:run-id", "").ok, false);
+assert.equal(assignSessionToGroup(v13, "summary:run-id", "   ").ok, false);
+
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
 assert.match(mainSource, /from "\.\/agentVaultOrganize"/);
 assert.match(mainSource, /AGENT_VAULT_ORGANIZE_STORAGE_KEY|winsmux\.agent-vault\.organize\.v1/);
@@ -184,7 +192,23 @@ assert.match(mainSource, /forkAgentVaultSession/);
 assert.match(mainSource, /Forked from/);
 assert.match(mainSource, /buildAgentVaultForkLaunchCommand/);
 assert.match(mainSource, /isResumeCommand/);
+assert.match(mainSource, /workspacePath/);
+assert.match(mainSource, /queuePaneStartupCwd\(paneId, launchCwd\)/);
+assert.match(mainSource, /spawnPtyPane\(paneId, cols, rows, startupInput, cwd\)/);
+assert.match(mainSource, /mode === "fork" && !launchCwd/);
+assert.match(mainSource, /removeSessionFromGroup/);
+assert.match(mainSource, /id: `worker:\$\{runId\}`/);
+assert.doesNotMatch(mainSource, /id: `worker:\$\{target\}`/);
+assert.match(mainSource, /function readAgentVaultWorkerRunId/);
 assert.doesNotMatch(mainSource, /desktop_write_.*organize|writeDesktopOrganize|\.winsmux\/.*organize/i);
+
+const restoreFn = mainSource.slice(mainSource.indexOf("async function restoreAgentVaultSession"));
+const recordAt = restoreFn.indexOf("recordFork");
+const startedAt = restoreFn.indexOf("ensurePanePtyStarted");
+assert.ok(startedAt >= 0, "restoreAgentVaultSession must start a pane");
+assert.ok(recordAt > startedAt, "recordFork must run after pane startup succeeds");
+const forkGuardAt = restoreFn.indexOf("mode === \"fork\" && !launchCwd");
+assert.ok(forkGuardAt >= 0 && (recordAt < 0 || forkGuardAt < recordAt), "fork without a path must fail before recording");
 
 const forbiddenFirstRun = [
   "src/firstRunOnboarding.ts",

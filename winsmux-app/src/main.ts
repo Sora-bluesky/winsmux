@@ -594,6 +594,7 @@ interface AgentVaultSessionEntry {
   provider: AgentVaultProviderId;
   title: string;
   workspaceKey: string;
+  workspacePath: string;
   workspaceLabel: string;
   resumeId: string;
   paneId: string;
@@ -808,6 +809,7 @@ const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
 const comparingRunPairKeys = new Set<string>();
 const pendingPaneStartupInputs = new Map<string, string>();
+const pendingPaneStartupCwds = new Map<string, string>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
@@ -2026,7 +2028,7 @@ function shouldAutoStartPane(_paneId: string) {
 function getPaneStartupInput(_paneId: string) {
   const startupInput = pendingPaneStartupInputs.get(_paneId);
   if (startupInput) {
-    clearPaneStartupInput(_paneId);
+    pendingPaneStartupInputs.delete(_paneId);
     return startupInput;
   }
   return undefined;
@@ -2034,6 +2036,20 @@ function getPaneStartupInput(_paneId: string) {
 
 function clearPaneStartupInput(paneId: string) {
   pendingPaneStartupInputs.delete(paneId);
+  pendingPaneStartupCwds.delete(paneId);
+}
+
+function getPaneStartupCwd(paneId: string) {
+  const cwd = pendingPaneStartupCwds.get(paneId);
+  if (cwd) {
+    pendingPaneStartupCwds.delete(paneId);
+    return cwd;
+  }
+  return undefined;
+}
+
+function queuePaneStartupCwd(paneId: string, cwd: string) {
+  pendingPaneStartupCwds.set(paneId, cwd);
 }
 
 function hasPaneStartupInput(paneId: string) {
@@ -2154,7 +2170,8 @@ function ensurePanePtyStarted(paneId: string) {
   entry.metaElement.textContent = getLanguageText("starting shell", "シェル起動中");
   renderWorkerStatusSurface();
   const startupInput = getPaneStartupInput(paneId);
-  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, startupInput)
+  const cwd = getPaneStartupCwd(paneId);
+  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, startupInput, cwd)
     .then(() => {
       entry.ptyStarted = true;
       entry.activeStartupInput = startupInput ?? "";
@@ -2946,6 +2963,13 @@ function groupAgentVaultSession(entry: AgentVaultSessionEntry) {
   if (name === null) {
     return;
   }
+  if (!vaultOrganize.normalizeGroupName(name)) {
+    applyAgentVaultOrganizeMutation(
+      vaultOrganize.removeSessionFromGroup(agentVaultOrganizeState, entry.id),
+      getLanguageText(`Removed ${entry.title} from its group.`, `${entry.title} をグループから外しました。`),
+    );
+    return;
+  }
   applyAgentVaultOrganizeMutation(
     vaultOrganize.assignSessionToGroup(agentVaultOrganizeState, entry.id, name),
     getLanguageText(`Grouped ${entry.title}.`, `${entry.title} をグループに入れました。`),
@@ -2983,6 +3007,21 @@ function getAgentVaultWorkspaceLabel(path: string | null | undefined, snapshotPr
   }
   const parts = normalized.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? getLanguageText("workspace", "ワークスペース");
+}
+
+function resolveAgentVaultLaunchDirectory(entry: AgentVaultSessionEntry): string {
+  const raw = (entry.workspacePath ?? "").trim();
+  if (!raw || raw === "__this_project__" || raw.startsWith("workspace:")) {
+    return "";
+  }
+  const isAbsolute = /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("/") || raw.startsWith("//");
+  return isAbsolute ? raw : "";
+}
+
+function readAgentVaultWorkerRunId(row: DesktopWorkerStatusRow): string {
+  return normalizeAgentVaultText(
+    row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || "",
+  );
 }
 
 function getAgentVaultWorkspaceKey(path: string | null | undefined, snapshotProjectDir?: string | null) {
@@ -3082,6 +3121,7 @@ function buildAgentVaultEntries() {
       provider,
       title,
       workspaceKey: getAgentVaultWorkspaceKey(workspacePath, snapshot?.project_dir),
+      workspacePath,
       workspaceLabel: getAgentVaultWorkspaceLabel(workspacePath, snapshot?.project_dir),
       resumeId: normalizeAgentVaultText(projection.run_id || projection.pane_id),
       paneId: projection.pane_id,
@@ -3101,7 +3141,10 @@ function buildAgentVaultEntries() {
     if (!target) {
       continue;
     }
-    const runId = row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || target;
+    const runId = readAgentVaultWorkerRunId(row);
+    if (!runId) {
+      continue;
+    }
     const existing = Array.from(entries.values()).some((entry) => entry.runId === runId || entry.paneId === target);
     if (existing) {
       continue;
@@ -3110,10 +3153,11 @@ function buildAgentVaultEntries() {
     const provider = inferAgentVaultProvider(row.backend, row.role, getWorkerProvider(row), getLaunchApprovalField(launch, "agent"));
     const workspacePath = row.workspace?.workspace || activeProjectDir || desktopSummarySnapshot?.project_dir || "";
     const base: Omit<AgentVaultSessionEntry, "searchText"> = {
-      id: `worker:${target}`,
+      id: `worker:${runId}`,
       provider,
       title: truncateAgentVaultText(`${getPaneDisplayLabel(target)} ${row.role || row.backend || "worker"}`, 72),
       workspaceKey: getAgentVaultWorkspaceKey(workspacePath, desktopSummarySnapshot?.project_dir),
+      workspacePath,
       workspaceLabel: getAgentVaultWorkspaceLabel(workspacePath, desktopSummarySnapshot?.project_dir),
       resumeId: normalizeAgentVaultText(runId),
       paneId: target,
@@ -3567,6 +3611,15 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, 
     renderAgentVaultPanel();
     return;
   }
+  const launchCwd = resolveAgentVaultLaunchDirectory(entry);
+  if (mode === "fork" && !launchCwd) {
+    agentVaultStatusMessage = getLanguageText(
+      "Fork could not resolve the source workspace directory.",
+      "フォークは元ワークスペースのディレクトリを解決できませんでした。",
+    );
+    renderAgentVaultPanel();
+    return;
+  }
   const command = mode === "fork"
     ? vaultOrganize.buildAgentVaultForkLaunchCommand(entry.provider)
     : vaultOrganize.buildAgentVaultResumeCommand(entry.provider, entry.resumeId);
@@ -3601,13 +3654,6 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, 
     return;
   }
 
-  if (mode === "fork") {
-    const recorded = vaultOrganize.recordFork(agentVaultOrganizeState, entry.id, entry.workspaceKey);
-    if (!applyAgentVaultOrganizeMutation(recorded)) {
-      return;
-    }
-  }
-
   setTerminalDrawer(true);
   const paneId = targetPaneId && panes.has(targetPaneId) ? targetPaneId : createPane();
   focusedWorkbenchPaneId = paneId;
@@ -3621,7 +3667,7 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, 
     if (pane?.ptyStarted) {
       await writePtyData(paneId, startupInput);
     } else {
-      if (pane?.ptyStarting || !queuePaneStartupInput(paneId, startupInput)) {
+      if (pane?.ptyStarting || hasPaneStartupInput(paneId)) {
         agentVaultStatusMessage = getLanguageText(
           `${getPaneDisplayLabel(paneId)} is already starting a restore. Wait for it to finish before restoring another session.`,
           `${getPaneDisplayLabel(paneId)} は復元を開始中です。完了してから別のセッションを復元してください。`,
@@ -3629,18 +3675,24 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, 
         renderAgentVaultPanel();
         return;
       }
+      if (launchCwd) {
+        queuePaneStartupCwd(paneId, launchCwd);
+      }
+      queuePaneStartupInput(paneId, startupInput);
       await ensurePanePtyStarted(paneId);
     }
-    agentVaultStatusMessage = mode === "fork"
-      ? getLanguageText(`Forked from ${entry.title}`, `${entry.title} からフォークしました。`)
-      : getLanguageText(
-          `Restoring ${entry.title} in ${getPaneDisplayLabel(paneId)}.`,
-          `${entry.title} を ${getPaneDisplayLabel(paneId)} で復元しています。`,
-        );
     if (mode === "fork") {
+      applyAgentVaultOrganizeMutation(
+        vaultOrganize.recordFork(agentVaultOrganizeState, entry.id, entry.workspaceKey),
+        getLanguageText(`Forked from ${entry.title}`, `${entry.title} からフォークしました。`),
+      );
       renderDesktopSurfaces();
       return;
     }
+    agentVaultStatusMessage = getLanguageText(
+      `Restoring ${entry.title} in ${getPaneDisplayLabel(paneId)}.`,
+      `${entry.title} を ${getPaneDisplayLabel(paneId)} で復元しています。`,
+    );
     appendRuntimeConversation({
       type: "system",
       category: "activity",
