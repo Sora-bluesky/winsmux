@@ -232,7 +232,6 @@ function Test-DispatchTaskReviewerManifestEntry {
 function Get-DispatchTaskAvailableTargets {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
-    Import-Task789OrchestraHelpers
     $availableTargets = @()
     $manifestTargetsResolved = $false
     if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
@@ -253,38 +252,6 @@ function Get-DispatchTaskAvailableTargets {
     }
     if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
         $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    }
-
-    if (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue) {
-        $mode = ''
-        try {
-            $mode = [string](Get-OrchestraModeDocument -ProjectDir $ProjectDir).mode
-        } catch {
-            $mode = ''
-        }
-        if ($mode -ceq 'team' -and (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue)) {
-            try {
-                $settings = Get-BridgeSettings -RootPath $ProjectDir
-                $slots = @()
-                if ($settings -is [System.Collections.IDictionary] -and $settings.Contains('agent_slots')) {
-                    $slots = @($settings.agent_slots)
-                } elseif ($null -ne $settings -and $null -ne $settings.PSObject -and $settings.PSObject.Properties.Name -contains 'agent_slots') {
-                    $slots = @($settings.agent_slots)
-                }
-                foreach ($slot in $slots) {
-                    $slotId = ''
-                    if ($slot -is [System.Collections.IDictionary] -and $slot.Contains('slot_id')) {
-                        $slotId = [string]$slot['slot_id']
-                    } elseif ($null -ne $slot -and $null -ne $slot.PSObject -and $slot.PSObject.Properties.Name -contains 'slot_id') {
-                        $slotId = [string]$slot.slot_id
-                    }
-                    if (-not [string]::IsNullOrWhiteSpace($slotId) -and $availableTargets -notcontains $slotId) {
-                        $availableTargets += $slotId
-                    }
-                }
-            } catch {
-            }
-        }
     }
 
     return @($availableTargets)
