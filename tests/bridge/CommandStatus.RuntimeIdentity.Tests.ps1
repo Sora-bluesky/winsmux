@@ -759,6 +759,8 @@ panes:
             -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
             -Now ([datetime]'2026-07-15T00:05:05Z') -LeaseSeconds 15
         $refreshed.lease.expires_at | Should -Be '2026-07-15T00:05:20.0000000Z'
+        @($refreshed.panes).Count | Should -Be @($registry.panes).Count
+        $refreshed.panes[0].slot_id | Should -Be $registry.panes[0].slot_id
 
         $foreignSessionClose = Close-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
             -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
