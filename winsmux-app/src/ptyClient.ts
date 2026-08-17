@@ -128,12 +128,17 @@ export async function spawnPtyPane(
   cols: number,
   rows: number,
   startupInput?: string,
+  cwd?: string,
 ) {
   try {
-    await ptyCommandTransport.request(
-      "pty.spawn",
-      startupInput ? { paneId, cols, rows, startupInput } : { paneId, cols, rows },
-    );
+    const payload: Record<string, unknown> = { paneId, cols, rows };
+    if (startupInput) {
+      payload.startupInput = startupInput;
+    }
+    if (cwd) {
+      payload.cwd = cwd;
+    }
+    await ptyCommandTransport.request("pty.spawn", payload);
   } catch (error) {
     throw normalizePtyError(`pty.spawn(${paneId})`, error);
   }

@@ -58,6 +58,7 @@ pub enum PtyCommand {
         cols: u16,
         rows: u16,
         startup_input: Option<String>,
+        cwd: Option<String>,
     },
     Write {
         pane_id: String,
@@ -132,6 +133,7 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
             cols: get_required_u16_param(params, &["cols"])?,
             rows: get_required_u16_param(params, &["rows"])?,
             startup_input: get_optional_string_param(params, &["startupInput", "startup_input"])?,
+            cwd: get_optional_string_param(params, &["cwd"])?,
         }),
         "pty.write" => Ok(PtyCommand::Write {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
@@ -376,7 +378,8 @@ mod tests {
                 pane_id: "pane-1".to_string(),
                 cols: 120,
                 rows: 40,
-                startup_input: None
+                startup_input: None,
+                cwd: None
             }]
         );
     }
@@ -418,7 +421,52 @@ mod tests {
                 pane_id: "main".to_string(),
                 cols: 120,
                 rows: 40,
-                startup_input: Some("claude\r".to_string())
+                startup_input: Some("claude\r".to_string()),
+                cwd: None
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_spawn_cwd() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "fork-1" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-cwd"),
+                method: "pty.spawn".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "fork-1",
+                    "cols": 80,
+                    "rows": 24,
+                    "startupInput": "codex\r",
+                    "cwd": "C:/proj"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "fork-1");
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Spawn {
+                pane_id: "fork-1".to_string(),
+                cols: 80,
+                rows: 24,
+                startup_input: Some("codex\r".to_string()),
+                cwd: Some("C:/proj".to_string())
             }]
         );
     }
