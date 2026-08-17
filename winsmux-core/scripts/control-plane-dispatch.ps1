@@ -1,3 +1,13 @@
+# Pane scaler helpers must land in this script's scope. Dot-sourcing
+# orchestra-start.ps1 / pane-scaler.ps1 inside a function would leave
+# Add-OrchestraPane / Remove-OrchestraPane defined only in that function.
+if (-not (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'manifest.ps1')
+}
+if (-not (Get-Command Add-OrchestraPane -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'pane-scaler.ps1')
+}
+
 function Get-WinsmuxControlPlaneArguments {
     param(
         [AllowNull()][string]$CommandTarget,
@@ -820,16 +830,35 @@ function Invoke-WinsmuxAssignCommand {
 function Import-Task789OrchestraHelpers {
     param([switch]$IncludePaneScaler)
 
-    if (-not (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue)) {
-        . (Join-Path $PSScriptRoot 'manifest.ps1')
+    # Manifest + pane-scaler are loaded at script scope above. Promoting
+    # Team Profile helpers here keeps New-TeamProfileSlotAgentConfig and
+    # Invoke-TeamProfileLaunchProjection available after this function returns.
+    if (-not $IncludePaneScaler) {
+        return
     }
-    if ($IncludePaneScaler) {
-        if (-not (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
-            . (Join-Path $PSScriptRoot 'orchestra-start.ps1')
+    if (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    $orchestraStartPath = Join-Path $PSScriptRoot 'orchestra-start.ps1'
+    if (-not (Test-Path -LiteralPath $orchestraStartPath -PathType Leaf)) {
+        return
+    }
+
+    $before = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @((Get-ChildItem -Path Function:).Name)) {
+        [void]$before.Add([string]$name)
+    }
+
+    # Bind RequestedRootPath so leftover CLI args cannot become the project dir.
+    . $orchestraStartPath -RequestedRootPath ''
+
+    foreach ($fn in @(Get-ChildItem -Path Function:)) {
+        $name = [string]$fn.Name
+        if ($before.Contains($name)) {
+            continue
         }
-        if (-not (Get-Command Add-OrchestraPane -ErrorAction SilentlyContinue)) {
-            . (Join-Path $PSScriptRoot 'pane-scaler.ps1')
-        }
+        Set-Item -LiteralPath ("Function:script:{0}" -f $name) -Value $fn.ScriptBlock
     }
 }
 
@@ -913,22 +942,50 @@ function Ensure-DispatchTaskLiveWorkerPane {
     if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
         $settings = Get-BridgeSettings -RootPath $ProjectDir
     }
+    if (-not (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'team_profile_projection_unavailable'
+            Diagnostic     = "Team Profile launch projection is unavailable for slot '$Label'."
+        }
+    }
+
     $assignment = $null
-    if (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue) {
-        try {
-            $projection = Invoke-TeamProfileLaunchProjection -ProjectDir $ProjectDir -SessionId 'winsmux-orchestra' -SlotId $Label -Worktree '' -ReadWriteScope 'session'
-            if ($null -ne $projection -and $null -ne $projection.projection -and $null -ne $projection.projection.pane) {
-                $assignment = $projection.projection.pane.assignment
+    try {
+        $projection = Invoke-TeamProfileLaunchProjection -ProjectDir $ProjectDir -SessionId 'winsmux-orchestra' -SlotId $Label -Worktree '' -ReadWriteScope 'session' -Force
+        if ($null -ne $projection -and $null -ne $projection.projection -and $null -ne $projection.projection.pane) {
+            $assignment = $projection.projection.pane.assignment
+        }
+        if ($null -eq $assignment) {
+            return [pscustomobject]@{
+                Spawned        = $false
+                ManifestEntry  = $null
+                ReasonCode     = 'team_profile_projection_unavailable'
+                Diagnostic     = "Team Profile launch projection did not produce an assignment for slot '$Label'."
             }
-        } catch {
-            $assignment = $null
+        }
+    } catch {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'team_profile_projection_unavailable'
+            Diagnostic     = [string]$_.Exception.Message
         }
     }
 
     $slotAgentConfig = $null
-    if ($null -ne $assignment -and (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
+    if (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) {
         # Spawn uses Team Profile assignment.worker_backend via New-TeamProfileSlotAgentConfig.
         $slotAgentConfig = New-TeamProfileSlotAgentConfig -Role 'Worker' -SlotId $Label -Assignment $assignment -Settings $settings -RootPath $ProjectDir
+    }
+    if ($null -eq $slotAgentConfig) {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'team_profile_projection_unavailable'
+            Diagnostic     = "Team Profile slot agent config is unavailable for slot '$Label'."
+        }
     }
 
     $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
@@ -1013,6 +1070,44 @@ function Test-WinsmuxArchivePaneIdle {
     return $true
 }
 
+function Get-WinsmuxArchivePaneRefusal {
+    param(
+        [AllowNull()]$Entry = $null,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()]$Manifest = $null
+    )
+
+    $paneId = Get-DispatchTaskEntryPaneId -Entry $Entry
+    if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace($paneId)) {
+        return [pscustomobject]@{
+            ReasonCode = 'pane_not_live'
+            Diagnostic = "archive-pane: slot '$Label' has no live pane."
+        }
+    }
+
+    $role = ''
+    if (Get-Command Get-OrchestraCanonicalPaneRole -ErrorAction SilentlyContinue) {
+        $role = [string](Get-OrchestraCanonicalPaneRole -Pane $Entry -Label $Label)
+    }
+    if ($role -cne 'Worker') {
+        return [pscustomobject]@{
+            ReasonCode = 'archive_role_not_worker'
+            Diagnostic = "archive-pane: slot '$Label' is not a Worker pane."
+        }
+    }
+
+    if (Get-Command Test-OrchestraArchiveRemovesLastRequiredWorker -ErrorAction SilentlyContinue) {
+        if (Test-OrchestraArchiveRemovesLastRequiredWorker -Manifest $Manifest -Label $Label) {
+            return [pscustomobject]@{
+                ReasonCode = 'last_required_worker'
+                Diagnostic = "archive-pane: refusing to archive the last required worker pane '$Label'."
+            }
+        }
+    }
+
+    return $null
+}
+
 function Invoke-WinsmuxArchivePaneCommand {
     param(
         [Parameter(Mandatory = $true)][string]$BridgeScriptRoot,
@@ -1058,13 +1153,24 @@ function Invoke-WinsmuxArchivePaneCommand {
     Import-Task789OrchestraHelpers -IncludePaneScaler
     $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
     $paneId = Get-DispatchTaskEntryPaneId -Entry $entry
-    if ($null -eq $entry -or [string]::IsNullOrWhiteSpace($paneId)) {
+    $manifestPath = Join-Path (Join-Path $projectDir '.winsmux') 'manifest.yaml'
+    $manifest = $null
+    if (Get-Command Read-PaneScalerManifest -ErrorAction SilentlyContinue -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        try {
+            $manifest = Read-PaneScalerManifest -ManifestPath $manifestPath
+        } catch {
+            $manifest = $null
+        }
+    }
+    $refusal = Get-WinsmuxArchivePaneRefusal -Entry $entry -Label $slot -Manifest $manifest
+    if ($null -ne $refusal) {
         $payload = [ordered]@{
             ok          = $false
             action      = 'archive-pane'
             slot        = $slot
-            reason_code = 'pane_not_live'
-            diagnostic  = "archive-pane: slot '$slot' has no live pane."
+            pane_id     = $paneId
+            reason_code = [string]$refusal.ReasonCode
+            diagnostic  = [string]$refusal.Diagnostic
         }
         if ($json) {
             $payload | ConvertTo-Json -Compress
@@ -1112,7 +1218,6 @@ function Invoke-WinsmuxArchivePaneCommand {
         }
     }
 
-    $manifestPath = Join-Path (Join-Path $projectDir '.winsmux') 'manifest.yaml'
     $removed = Remove-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -Label $slot
     $payload = [ordered]@{
         ok          = [bool]$removed.Changed

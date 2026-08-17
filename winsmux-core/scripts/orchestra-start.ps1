@@ -1132,10 +1132,11 @@ function Invoke-TeamProfileLaunchProjection {
         [Parameter(Mandatory = $true)][string]$SessionId,
         [Parameter(Mandatory = $true)][string]$SlotId,
         [AllowEmptyString()][string]$Worktree = '',
-        [string]$ReadWriteScope = 'session'
+        [string]$ReadWriteScope = 'session',
+        [switch]$Force
     )
 
-    if ($script:teamProfileOptedIn -ne $true) {
+    if (-not $Force -and $script:teamProfileOptedIn -ne $true) {
         return $null
     }
 

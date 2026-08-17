@@ -472,8 +472,12 @@ function Update-PaneScalerLiveExpectedPaneCount {
     )
 
     $liveCount = @($Manifest.Panes.Keys).Count
+    if (Get-Command Set-OrchestraLiveExpectedPaneCount -ErrorAction SilentlyContinue) {
+        return Set-OrchestraLiveExpectedPaneCount -Manifest $Manifest -ExpectedPaneCount $liveCount -ProjectDir $ProjectDir
+    }
+
     if ($liveCount -lt 1) {
-        $liveCount = 1
+        throw 'Live expected pane count must be 1 or greater.'
     }
     $session = $Manifest.Session
     if ($null -ne $session) {
@@ -483,10 +487,43 @@ function Update-PaneScalerLiveExpectedPaneCount {
             $session | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $liveCount -Force
         }
     }
-    if (Get-Command Set-OrchestraLiveExpectedPaneCount -ErrorAction SilentlyContinue) {
-        Set-OrchestraLiveExpectedPaneCount -Manifest $Manifest -ExpectedPaneCount $liveCount -ProjectDir $ProjectDir | Out-Null
-    }
     return $liveCount
+}
+
+function Test-OrchestraArchiveRemovesLastRequiredWorker {
+    param(
+        [AllowNull()]$Manifest = $null,
+        [AllowEmptyString()][string]$Label = ''
+    )
+
+    $min = 1
+    if (Get-Command Get-OrchestraMinLiveWorkerPaneCount -ErrorAction SilentlyContinue) {
+        $min = [int](Get-OrchestraMinLiveWorkerPaneCount)
+    }
+    $liveWorkers = 0
+    if (Get-Command Get-OrchestraLiveWorkerRolePaneCount -ErrorAction SilentlyContinue) {
+        $liveWorkers = [int](Get-OrchestraLiveWorkerRolePaneCount -Manifest $Manifest)
+    }
+    if ($liveWorkers -gt $min) {
+        return $false
+    }
+
+    if ($null -eq $Manifest -or [string]::IsNullOrWhiteSpace($Label)) {
+        return ($liveWorkers -le $min)
+    }
+
+    $map = ConvertTo-ManifestPropertyMap -Value (
+        Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default (
+            Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Panes' -Default $null
+        )
+    )
+    if (-not $map.Contains($Label)) {
+        return $false
+    }
+    $pane = $map[$Label]
+    $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+    $role = [string](Get-OrchestraCanonicalPaneRole -Pane $pane -Label $Label)
+    return ($role -eq 'Worker' -and -not [string]::IsNullOrWhiteSpace($paneId))
 }
 
 function Add-OrchestraWorkerPane {
@@ -634,6 +671,29 @@ function Remove-OrchestraWorkerPane {
     }
 
     $pane = $manifest.Panes[$Label]
+    $canonicalRole = ''
+    if (Get-Command Get-OrchestraCanonicalPaneRole -ErrorAction SilentlyContinue) {
+        $canonicalRole = [string](Get-OrchestraCanonicalPaneRole -Pane $pane -Label $Label)
+    } else {
+        $canonicalRole = [string](Get-PaneScalerCanonicalRole -Role ([string](Get-MonitorPropertyValue -InputObject $pane -Name 'role' -Default '')) -Label $Label)
+    }
+    if ($canonicalRole -cne 'Worker') {
+        return [PSCustomObject]@{
+            Changed = $false
+            Action  = 'no_change'
+            Reason  = 'archive_role_not_worker'
+            Label   = $Label
+        }
+    }
+    if (Test-OrchestraArchiveRemovesLastRequiredWorker -Manifest $manifest -Label $Label) {
+        return [PSCustomObject]@{
+            Changed = $false
+            Action  = 'no_change'
+            Reason  = 'last_required_worker'
+            Label   = $Label
+        }
+    }
+
     $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
     $worktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
     $branchName = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_branch' -Default '')

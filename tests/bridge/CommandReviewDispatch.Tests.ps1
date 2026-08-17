@@ -1644,6 +1644,27 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $script:task789ManifestPath = Join-Path $repoRoot 'winsmux-core\scripts\manifest.ps1'
         . $script:task789ManifestPath
         . $script:task789DispatchPath
+        if (-not (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
+            function script:New-TeamProfileSlotAgentConfig {
+                param($Role, $SlotId, $Assignment, $Settings, $RootPath)
+            }
+        }
+        if (-not (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue)) {
+            function script:Invoke-TeamProfileLaunchProjection {
+                param($ProjectDir, $SessionId, $SlotId, $Worktree, $ReadWriteScope, [switch]$Force)
+            }
+        }
+    }
+
+    BeforeEach {
+        $script:task789FixRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-task789-fix-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:task789FixRoot '.winsmux') -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:task789FixRoot -and (Test-Path -LiteralPath $script:task789FixRoot)) {
+            Remove-Item -LiteralPath $script:task789FixRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'documents public archive-pane in usage and the command table' {
@@ -1685,6 +1706,7 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $body | Should -Match 'worker_backend'
         $body | Should -Not -Match 'requiredBackend'
         $body | Should -Match 'simple_mode_live_worker_limit'
+        $body | Should -Match 'team_profile_projection_unavailable'
         $script:task789DispatchContent | Should -Match 'Ensure-DispatchTaskLiveWorkerPane'
     }
 
@@ -1696,5 +1718,258 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir (Join-Path ([System.IO.Path]::GetTempPath()) 'winsmux-task789-missing') -Label 'worker-2' -ManifestEntry $null
         $result.Spawned | Should -BeFalse
         $result.ReasonCode | Should -Be 'simple_mode_live_worker_limit'
+    }
+
+    It 'exposes Add-OrchestraPane after loading only control-plane-dispatch.ps1' {
+        $probePath = Join-Path $script:task789FixRoot 'scope-probe.ps1'
+        $dispatchPath = $script:task789DispatchPath
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+if (Get-Command Add-OrchestraPane -ErrorAction SilentlyContinue) {
+    throw 'Add-OrchestraPane already existed before dispatch load'
+}
+if (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) {
+    throw 'orchestra-start.ps1 was pre-loaded'
+}
+. '$($dispatchPath.Replace("'", "''"))'
+if (-not (Get-Command Add-OrchestraPane -ErrorAction SilentlyContinue)) {
+    throw 'Add-OrchestraPane missing after dispatch load'
+}
+if (-not (Get-Command Remove-OrchestraPane -ErrorAction SilentlyContinue)) {
+    throw 'Remove-OrchestraPane missing after dispatch load'
+}
+if (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) {
+    throw 'Add-OrchestraPane must not depend on pre-loading orchestra-start.ps1'
+}
+`$null = Get-Command Ensure-DispatchTaskLiveWorkerPane -ErrorAction Stop
+`$null = Get-Command Invoke-WinsmuxArchivePaneCommand -ErrorAction Stop
+try {
+    `$null = Ensure-DispatchTaskLiveWorkerPane -ProjectDir '$($script:task789FixRoot.Replace("'", "''"))' -Label 'worker-2' -ManifestEntry `$null
+} catch {
+    if (`$_.FullyQualifiedErrorId -eq 'CommandNotFoundException' -and [string]`$_.Exception.Message -match 'Add-OrchestraPane|Remove-OrchestraPane') {
+        throw
+    }
+}
+Write-Output 'ok'
+"@
+        Set-Content -LiteralPath $probePath -Value $probe -Encoding utf8
+        $output = & pwsh -NoProfile -File $probePath 2>&1
+        $LASTEXITCODE | Should -Be 0
+        ($output | Out-String) | Should -Match 'ok'
+    }
+
+    It 'transitions registry pane identities together with expected_pane_count' {
+        $operatorPane = [PSCustomObject]@{
+            label = 'operator'; slot_id = 'operator'; pane_id = '%2'; backend = 'local'
+            role = 'operator'; title = 'Operator'; state = 'live'; bootstrap_pid = 4100
+            bootstrap_process_started_at = '2026-08-17T00:00:00.0000000Z'; marker_path = ''
+        }
+        $worker1Pane = [PSCustomObject]@{
+            label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'
+            role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200
+            bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = ''
+        }
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 2 `
+            -Panes @($operatorPane, $worker1Pane)
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+
+        $manifest = [pscustomobject]@{
+            Session = [pscustomobject]@{ expected_pane_count = 2 }
+            Panes   = [ordered]@{
+                'operator' = [pscustomobject]@{
+                    slot_id = 'operator'; pane_id = '%2'; role = 'Operator'
+                    worker_role = 'operator'; worker_backend = 'local'; title = 'Operator'
+                }
+                'worker-1' = [pscustomobject]@{
+                    slot_id = 'worker-1'; pane_id = '%3'; role = 'Worker'
+                    worker_role = 'worker'; worker_backend = 'codex'; title = 'worker-1'
+                }
+                'worker-2' = [pscustomobject]@{
+                    slot_id = 'worker-2'; pane_id = '%4'; role = 'Worker'
+                    worker_role = 'worker'; worker_backend = 'codex'; title = 'worker-2'
+                }
+            }
+        }
+
+        $count = Set-OrchestraLiveExpectedPaneCount -Manifest $manifest -ExpectedPaneCount 3 -ProjectDir $script:task789FixRoot
+        $count | Should -Be 3
+        $manifest.Session.expected_pane_count | Should -Be 3
+
+        $read = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot
+        $read.expected_pane_count | Should -Be 3
+        @($read.panes).Count | Should -Be 3
+        @($read.panes | ForEach-Object { [string]$_.label }) | Should -Be @('operator', 'worker-1', 'worker-2')
+        ($read.panes | Where-Object { $_.label -eq 'worker-2' }).pane_id | Should -Be '%4'
+    }
+
+    It 'does not clamp an empty pane set to expected_pane_count 1' {
+        $workerPane = [PSCustomObject]@{
+            label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'
+            role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200
+            bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = ''
+        }
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 1 `
+            -Panes @($workerPane)
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+
+        $manifest = [pscustomobject]@{
+            Session = [pscustomobject]@{ expected_pane_count = 1 }
+            Panes   = [ordered]@{}
+        }
+        { Update-PaneScalerLiveExpectedPaneCount -Manifest $manifest -ProjectDir $script:task789FixRoot } |
+            Should -Throw '*1 or greater*'
+
+        $read = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot
+        $read.expected_pane_count | Should -Be 1
+        @($read.panes).Count | Should -Be 1
+        $read.panes[0].label | Should -Be 'worker-1'
+    }
+
+    It 'rejects operator and a non-worker label without mutating the session' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $yaml = @"
+version: 1
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  generation_id: generation-789
+  server_session_id: '`$9'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 3
+panes:
+  operator:
+    label: operator
+    slot_id: operator
+    pane_id: '%2'
+    role: Operator
+    worker_role: operator
+    worker_backend: local
+    title: Operator
+    status: ready
+  reviewer:
+    label: reviewer
+    slot_id: reviewer
+    pane_id: '%4'
+    role: Reviewer
+    worker_role: reviewer
+    worker_backend: local
+    title: Reviewer
+    status: ready
+  worker-1:
+    label: worker-1
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    worker_backend: codex
+    title: worker-1
+    status: ready
+"@
+        Set-Content -LiteralPath $manifestPath -Value $yaml -Encoding utf8
+        $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 3 `
+            -Panes @(
+                [PSCustomObject]@{ label = 'operator'; slot_id = 'operator'; pane_id = '%2'; backend = 'local'; role = 'operator'; title = 'Operator'; state = 'live'; bootstrap_pid = 0; bootstrap_process_started_at = ''; marker_path = '' },
+                [PSCustomObject]@{ label = 'reviewer'; slot_id = 'reviewer'; pane_id = '%4'; backend = 'local'; role = 'reviewer'; title = 'Reviewer'; state = 'live'; bootstrap_pid = 0; bootstrap_process_started_at = ''; marker_path = '' },
+                [PSCustomObject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 0; bootstrap_process_started_at = ''; marker_path = '' }
+            )
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
+
+        Mock Invoke-MonitorWinsmux { throw 'kill-pane must not run for a non-worker archive' }
+
+        foreach ($label in @('operator', 'reviewer')) {
+            $result = Remove-OrchestraWorkerPane -ManifestPath $manifestPath -Label $label
+            $result.Changed | Should -BeFalse
+            $result.Reason | Should -Be 'archive_role_not_worker'
+
+            $entry = [pscustomobject]@{ Label = $label; Role = $label; PaneId = '%2' }
+            $refusal = Get-WinsmuxArchivePaneRefusal -Entry $entry -Label $label -Manifest (Read-PaneScalerManifest -ManifestPath $manifestPath)
+            $refusal.ReasonCode | Should -Be 'archive_role_not_worker'
+        }
+
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $beforeManifest
+        [System.IO.File]::ReadAllBytes($registryPath) | Should -Be $beforeRegistry
+        Should -Invoke Invoke-MonitorWinsmux -Times 0
+    }
+
+    It 'refuses to archive the last required worker without mutating the session' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $yaml = @"
+version: 1
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  generation_id: generation-789
+  server_session_id: '`$9'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 1
+panes:
+  worker-1:
+    label: worker-1
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    worker_backend: codex
+    title: worker-1
+    status: ready
+"@
+        Set-Content -LiteralPath $manifestPath -Value $yaml -Encoding utf8
+        $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 1 `
+            -Panes @(
+                [PSCustomObject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 0; bootstrap_process_started_at = ''; marker_path = '' }
+            )
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
+
+        Mock Invoke-MonitorWinsmux { throw 'kill-pane must not run for the last required worker' }
+
+        $result = Remove-OrchestraWorkerPane -ManifestPath $manifestPath -Label 'worker-1'
+        $result.Changed | Should -BeFalse
+        $result.Reason | Should -Be 'last_required_worker'
+
+        $entry = [pscustomobject]@{ Label = 'worker-1'; Role = 'Worker'; PaneId = '%3' }
+        $refusal = Get-WinsmuxArchivePaneRefusal -Entry $entry -Label 'worker-1' -Manifest (Read-PaneScalerManifest -ManifestPath $manifestPath)
+        $refusal.ReasonCode | Should -Be 'last_required_worker'
+
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $beforeManifest
+        [System.IO.File]::ReadAllBytes($registryPath) | Should -Be $beforeRegistry
+        Should -Invoke Invoke-MonitorWinsmux -Times 0
+    }
+
+    It 'fail-closes spawn when Team Profile projection <Case>' -ForEach @(
+        @{ Case = 'mistyped_slot'; ProjectionError = "Team Profile launch projection failed for slot 'worker-99': unknown slot" }
+        @{ Case = 'invalid_profile'; ProjectionError = "Team Profile launch projection failed for slot 'worker-2': invalid profile" }
+        @{ Case = 'bridge_error'; ProjectionError = "Team Profile launch projection failed for slot 'worker-2': winsmux binary was not found." }
+    ) {
+        $script:task789ProjectionError = $ProjectionError
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-BridgeSettings { $null }
+        Mock Get-WinsmuxManifest { $null }
+        Mock Invoke-TeamProfileLaunchProjection { throw $script:task789ProjectionError }
+        Mock Add-OrchestraPane { throw 'should not spawn an unconfigured worker' }
+
+        $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir $script:task789FixRoot -Label 'worker-2' -ManifestEntry $null
+        $result.Spawned | Should -BeFalse
+        $result.ReasonCode | Should -Be 'team_profile_projection_unavailable'
+        $result.Diagnostic | Should -Be $ProjectionError
+        Should -Invoke Add-OrchestraPane -Times 0
     }
 }

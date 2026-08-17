@@ -2071,27 +2071,87 @@ function Test-OrchestraSimpleModeLiveWorkerLimit {
     return ($LiveWorkerPaneCount -le $max)
 }
 
+function ConvertTo-OrchestraLiveRegistryPanes {
+    param(
+        [AllowNull()]$Manifest = $null,
+        [AllowNull()]$ExistingRegistry = $null
+    )
+
+    $manifestPanes = ConvertTo-ManifestPropertyMap -Value (
+        Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default $null
+    )
+    $existingByLabel = [ordered]@{}
+    foreach ($pane in @((Get-WinsmuxRuntimeValue -InputObject $ExistingRegistry -Name 'panes' -Default @()))) {
+        $label = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'label' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($label)) {
+            $existingByLabel[$label] = $pane
+        }
+    }
+
+    $result = @()
+    foreach ($labelObj in @($manifestPanes.Keys)) {
+        $label = [string]$labelObj
+        $pane = $manifestPanes[$label]
+        $slotId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'slot_id' -Default $label)
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        $backend = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'worker_backend' -Default '')
+        $role = Resolve-WinsmuxRuntimeRole `
+            -WorkerRole ([string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'worker_role' -Default '')) `
+            -CanonicalRole ([string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'role' -Default ''))
+        $title = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'title' -Default $label)
+        $prior = $null
+        if ($existingByLabel.Keys -contains $label) {
+            $prior = $existingByLabel[$label]
+        }
+        $state = 'live'
+        $bootstrapPid = 0
+        $bootstrapStartedAt = ''
+        $markerPath = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'bootstrap_marker_path' -Default '')
+        if ($null -ne $prior) {
+            $priorState = [string](Get-WinsmuxRuntimeValue -InputObject $prior -Name 'state' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($priorState)) {
+                $state = $priorState
+            }
+            $priorPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $prior -Name 'bootstrap_pid' -Default 0)
+            if ($null -ne $priorPid) {
+                $bootstrapPid = $priorPid
+            }
+            $priorStarted = [string](Get-WinsmuxRuntimeValue -InputObject $prior -Name 'bootstrap_process_started_at' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($priorStarted)) {
+                $bootstrapStartedAt = $priorStarted
+            }
+            $priorMarker = [string](Get-WinsmuxRuntimeValue -InputObject $prior -Name 'marker_path' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($priorMarker)) {
+                $markerPath = $priorMarker
+            }
+        }
+        $result += [PSCustomObject]@{
+            label                        = $label
+            slot_id                      = $slotId
+            pane_id                      = $paneId
+            backend                      = $backend
+            role                         = $role
+            title                        = $title
+            state                        = $state
+            bootstrap_pid                = $bootstrapPid
+            bootstrap_process_started_at = $bootstrapStartedAt
+            marker_path                  = $markerPath
+        }
+    }
+
+    return @($result)
+}
+
 function Set-OrchestraLiveExpectedPaneCount {
     param(
         [AllowNull()]$Manifest = $null,
         [AllowNull()]$Registry = $null,
-        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [int]$ExpectedPaneCount = 0,
         [Parameter(Mandatory = $true)][string]$ProjectDir
     )
 
-    if ($ExpectedPaneCount -lt 1) {
-        throw 'Live expected pane count must be 1 or greater.'
-    }
-
-    if ($null -ne $Manifest) {
-        $session = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'session' -Default (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Session' -Default $null)
-        if ($null -ne $session) {
-            if ($session -is [System.Collections.IDictionary]) {
-                $session['expected_pane_count'] = $ExpectedPaneCount
-            } else {
-                $session | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
-            }
-        }
+    if ($null -eq $Manifest) {
+        throw 'Live expected pane count requires the current pane set.'
     }
 
     if ($null -eq $Registry) {
@@ -2102,11 +2162,29 @@ function Set-OrchestraLiveExpectedPaneCount {
         }
     }
 
+    $registryPanes = @(ConvertTo-OrchestraLiveRegistryPanes -Manifest $Manifest -ExistingRegistry $Registry)
+    $derivedCount = @($registryPanes).Count
+    if ($derivedCount -lt 1) {
+        throw 'Live expected pane count must be 1 or greater.'
+    }
+    $ExpectedPaneCount = $derivedCount
+
+    $session = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'session' -Default (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Session' -Default $null)
+    if ($null -ne $session) {
+        if ($session -is [System.Collections.IDictionary]) {
+            $session['expected_pane_count'] = $ExpectedPaneCount
+        } else {
+            $session | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
+        }
+    }
+
     if ($null -ne $Registry) {
         if ($Registry -is [System.Collections.IDictionary]) {
             $Registry['expected_pane_count'] = $ExpectedPaneCount
+            $Registry['panes'] = $registryPanes
         } else {
             $Registry | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
+            $Registry | Add-Member -NotePropertyName 'panes' -NotePropertyValue $registryPanes -Force
         }
         Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $Registry | Out-Null
     }
