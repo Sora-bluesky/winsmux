@@ -2,13 +2,42 @@
 
 winsmux は、デスクトップアプリと同じ Windows マシンで動く外部自動化クライアント向けに、ローカルの named pipe JSON-RPC エンドポイントを公開します。
 
+すでに起動しているデスクトップ（起動前に `WINSMUX_CONTROL_PIPE_TOKEN` をセットしていない通常起動）から、ソースを読まずに `desktop.operator.snapshot` まで到達できます。
+
 ## 伝送方式
 
 - パイプ: `\\.\pipe\winsmux-control`
 - プロトコル: JSON-RPC 2.0
 - ネットワーク伝送: なし。localhost HTTP や WebSocket エンドポイントはありません。
 - リモートクライアントは、ユーザーが承認したローカルブリッジを経由する必要があります。デスクトップアプリは、この pipe をネットワークへ公開しません。
-- 認可: `desktop.control_plane.contract` だけはトークンなしで取得できます。それ以外のメソッドは、winsmux CLI ヘルパーがローカル環境変数 `WINSMUX_CONTROL_PIPE_TOKEN` から注入する `auth.token` を要求します。
+
+## 起動モード
+
+通常のデスクトップ起動では、プロセス環境に `WINSMUX_CONTROL_PIPE_TOKEN` は不要です。起動時、デスクトップアプリは `%LOCALAPPDATA%\winsmux\control-pipe\token` をユーザー専用 DACL（Windows における `0600` 相当）で作り、新しい現行トークンを書き、直前のトークンはプロセスメモリにだけ残します。直前値は、新しいトークンでの初回成功認証まで、またはプロセス時間 60 秒まで受け付け、その後破棄します。ログに出してよい印は `control-pipe token: rotated` だけです。トークン値も、展開済みファイルパスも書いてはいけません。
+
+一部のランチャーは、いまもデスクトッププロセスに `WINSMUX_CONTROL_PIPE_TOKEN` をセットします。その明示 env は引き続き有効で、デスクトップ pipe と CLI の両方でトークンファイルより優先します。
+
+## トークンの用意
+
+保護対象は control-pipe トークンのバイト列です。信頼境界はローカルユーザープロファイルであり、git リポジトリでもプロジェクトの `.winsmux` でもありません。
+
+発見経路はこの正確なパスだけです。
+
+`%LOCALAPPDATA%\winsmux\control-pipe\token`
+
+リポジトリ、プロジェクト `.winsmux`、`TEMP`、別ファイル名へ置いたファイルは勝ってはいけません。
+
+デスクトップ pipe と `winsmux control-rpc` のトークン取得順:
+
+1. 空でないプロセス環境変数 `WINSMUX_CONTROL_PIPE_TOKEN`（既存テストと明示ランチャーを維持）
+2. それ以外は上記の正確なトークンファイル
+3. どちらも無ければ安全側で失敗
+
+トークン値を印刷しないでください。例の秘密スロットは `<token-file>` です。
+
+## 認可
+
+`desktop.control_plane.contract` だけはトークンなしで取得できます。それ以外のメソッドは `auth.token` を要求します。通常は `winsmux control-rpc` を使います。env 上書きがあればそれを、無ければ正確なトークンファイルを読んで `auth.token` を注入します。
 
 外部契約は次の呼び出しで取得します。
 
@@ -16,15 +45,40 @@ winsmux は、デスクトップアプリと同じ Windows マシンで動く外
 {"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}
 ```
 
-この要求を named pipe 経由で送ると、`methods` には pipe の許可リストが受け付けるメソッドだけが入ります。
+この要求を named pipe 経由で送ると、`methods` には pipe の許可リストが受け付けるメソッドだけが入ります。契約の `auth.token_env` は `WINSMUX_CONTROL_PIPE_TOKEN`、`auth.token_file` は `%LOCALAPPDATA%\winsmux\control-pipe\token` です。
 
 `desktop.control_plane.contract` 以外のメソッドでは、`params` の外側にローカル制御トークンを含めます。
 
 ```json
-{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"<token-file>"}}
 ```
 
-トークン値をシェル履歴に直接書かないでください。通常は `winsmux control-rpc` を使います。このコマンドは現在のプロセス環境の `WINSMUX_CONTROL_PIPE_TOKEN` を読み、非契約メソッドへ `auth.token` を注入します。
+トークン値をシェル履歴に直接書かないでください。
+
+## ゼロから operator-snapshot まで
+
+1. デスクトップアプリを通常起動するか、まだ env をセットするランチャーを使います。
+2. 契約をトークンなしで確認します。
+
+```powershell
+winsmux control-rpc '{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}'
+```
+
+3. operator 出力を取得します。CLI は env 上書きがあればそれを、無ければ正確なトークンファイルを使います。
+
+```powershell
+winsmux operator-snapshot --lines 80
+```
+
+同等の生 JSON-RPC:
+
+```json
+{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<token-file>"}}
+```
+
+## エラー意味論
+
+非契約呼び出しは、使えるトークンが無い（env が空で正確なファイルも無い／空）、`auth.token` が無い、またはトークンが一致しないときに安全側で失敗します。pipe は既存の JSON-RPC 失敗閉のままです。エラーコードは `-32600`（Invalid Request）で、メッセージは `WINSMUX_CONTROL_PIPE_TOKEN` を名前で示します。CLI ヘルパーは `control-rpc requires WINSMUX_CONTROL_PIPE_TOKEN for non-contract methods` で失敗します。新しい公開エラーコードは追加しません。
 
 ## 公開メソッド
 
@@ -52,16 +106,16 @@ winsmux operator-snapshot --lines 80
 winsmux operator-submit --text "Restore the six-pane orchestra and report can_dispatch."
 ```
 
-このヘルパーは `WINSMUX_CONTROL_PIPE_TOKEN` を読み取り、
+このヘルパーは同じトークン優先順（env 上書き、無ければ正確なトークンファイル）を使い、
 `desktop.operator.snapshot` / `desktop.operator.submit` だけを呼びます。
 worker ペインの指定は受け付けません。独自の named pipe クライアントを実装する場合は、次の JSON-RPC を直接送れます。
 
 ```json
-{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<token-file>"}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":"operator-submit","method":"desktop.operator.submit","params":{"message":"Restore the six-pane orchestra and report can_dispatch."},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+{"jsonrpc":"2.0","id":"operator-submit","method":"desktop.operator.submit","params":{"message":"Restore the six-pane orchestra and report can_dispatch."},"auth":{"token":"<token-file>"}}
 ```
 
 同じ pipe は、ローカルペイン制御用に次の PTY メソッドも公開します。
@@ -106,7 +160,7 @@ Tauri アプリは、より広い内部 `desktop_json_rpc` 面を使います。
 
 ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。
 
-デスクトップアプリが `WINSMUX_CONTROL_PIPE_TOKEN` 付きで起動されていない場合、または要求に `auth.token` がない場合、契約取得以外の呼び出しは安全側で失敗します。
+空でない `WINSMUX_CONTROL_PIPE_TOKEN` も正確なトークンファイルも認証に使えない場合、または要求に `auth.token` がない場合、契約取得以外の呼び出しは安全側で失敗します。
 
 エージェント CLI も、ユーザーがローカルコマンド実行を許可した場合は、ローカルシェルやツール呼び出しから pipe を操作できます。専用の特権 API 面はありません。他のローカルクライアントと同じ外部契約だけを見ます。
 

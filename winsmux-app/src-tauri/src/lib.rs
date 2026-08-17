@@ -5,7 +5,7 @@ mod desktop_team_profile;
 mod pty_backend;
 mod remote_debug_gate;
 
-use control_pipe::{start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV};
+use control_pipe::{control_pipe_auth_is_available, start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV};
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
     resolve_repo_root, spawn_desktop_summary_refresh_stream, DesktopExplainPayload,
@@ -254,7 +254,7 @@ fn desktop_write_orchestra_mode(
 
 #[tauri::command]
 fn desktop_control_pipe_enabled() -> bool {
-    std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV).is_some()
+    control_pipe_auth_is_available()
 }
 
 #[derive(Debug, Deserialize)]

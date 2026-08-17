@@ -111,9 +111,10 @@ Resolution order is fixed:
    catalog.
 2. Lane A validates recipe bindings against slot IDs and capabilities from
    that catalog.
-3. A recipe may require a provider capability or refer to `slot_id`; it may not
-   override a slot's provider, model, reasoning effort, role profile,
-   lifecycle, or task classes.
+3. A recipe may require a provider capability or refer to a YAML `slot-ref`;
+   it may not override a slot's provider, model, reasoning effort, role
+   profile, lifecycle, or task classes. Runtime objects may expose the resolved
+   identity as `slot_id`.
 4. The dry-run output shows the resolved slot for every logical recipe role.
    A missing, ambiguous, unavailable, or capability-incompatible binding fails
    closed before pane creation.
@@ -125,6 +126,22 @@ parsing Lane A configuration. TASK-662 cannot declare the v0.36.29 release
 gate complete until TASK-718 has verified the combined desktop/CLI behavior.
 
 ### 3.2 Schema sketch
+
+Canonical `.winsmux.yaml` keys are kebab-case, matching the live product
+contract: `team-profile`, `agent-slots`, `workspace-recipes`, `slot-ref`, and
+the other hyphenated fields in the fragment below. Snake_case spellings such as
+`team_profile` / `agent_slots` are load-only aliases where the live loader
+already accepts them (`mapping_lookup` in `core/src/team_profile.rs`, and the
+legacy settings loader's hyphen-to-underscore fold). They are not the
+canonical on-disk form. Do not reverse live product keys to snake_case.
+
+A scalar `team-profile: default` is not a valid Lane B opt-in. The live parser
+requires a mapping and fails closed with "team-profile must be a mapping."
+This document does not introduce a scalar migration alias.
+
+Normalized runtime objects, including `.winsmux/manifest.yaml` projections,
+may still use snake_case field names. That runtime spelling is not the YAML
+settings contract.
 
 Public YAML uses the repository's existing hyphenated spelling; normalized
 runtime objects use snake_case. The marker-delimited fragment below is the
@@ -572,6 +589,12 @@ The current `.winsmux.yaml` keys, default external-operator layout,
 `agent-slots` behavior, `orchestra-start.ps1` entrypoint, one-shot
 `team-pipeline.ps1` path, and operator-owned decisions are intentionally
 preserved.
+
+Slot and session launch is task-agnostic. Orchestra startup may create or
+respawn worker panes and record launch approval before any task assignment
+exists. Launch bundles and `orchestra-start.ps1` must not require a task ID;
+dispatch carries task metadata later. This document does not change
+`orchestra-start.ps1`.
 
 Lane A keys are opt-in. Absence of `workspace-recipes`, `workflows`, and
 `context-packs` selects current behavior. The gallery may generate a proposal,

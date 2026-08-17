@@ -3,6 +3,10 @@
 winsmux exposes a local Windows named-pipe JSON-RPC endpoint for external
 automation clients that run on the same machine as the desktop app.
 
+A new external agent can follow this page from a already-running desktop (no
+`WINSMUX_CONTROL_PIPE_TOKEN` set before launch) to a successful
+`desktop.operator.snapshot` without reading source.
+
 ## Transport
 
 - Pipe: `\\.\pipe\winsmux-control`
@@ -10,9 +14,50 @@ automation clients that run on the same machine as the desktop app.
 - Network transport: none. There is no localhost HTTP or WebSocket endpoint.
 - Remote clients must connect through a user-approved local bridge; the desktop
   app does not expose this pipe to the network.
-- Authorization: `desktop.control_plane.contract` is discoverable without a
-  token. Every other method requires `auth.token`, supplied from the local
-  `WINSMUX_CONTROL_PIPE_TOKEN` environment variable by the winsmux CLI helper.
+
+## Launch modes
+
+Normal desktop start does not require `WINSMUX_CONTROL_PIPE_TOKEN` in the
+process environment. On start, the desktop app creates
+`%LOCALAPPDATA%\winsmux\control-pipe\token` with a user-only DACL (Windows
+equivalent of `0600`), writes a new current token, and keeps any previous token
+in process memory only. The previous value is accepted until the first
+successful auth with the new token, or until 60 seconds of process time, then
+the old bytes are dropped. Logs may contain the marker
+`control-pipe token: rotated`. They must not contain the token value or the
+expanded filesystem path.
+
+Some launchers still set `WINSMUX_CONTROL_PIPE_TOKEN` on the desktop process
+(for example bakeoff helpers). That explicit env remains supported and wins
+over the token file for both the desktop pipe and the CLI.
+
+## Token provisioning
+
+The protected asset is the control-pipe token bytes. The trust boundary is the
+local user profile, not the git repo and not project `.winsmux`.
+
+Discovery is this exact path only:
+
+`%LOCALAPPDATA%\winsmux\control-pipe\token`
+
+A planted file under the repo, project `.winsmux`, `TEMP`, or any other name
+must not win.
+
+Token source precedence for the desktop pipe and for `winsmux control-rpc`:
+
+1. Non-empty process env `WINSMUX_CONTROL_PIPE_TOKEN` (keeps existing tests and
+   explicit launchers)
+2. Else the exact token file above
+3. Else fail closed
+
+Do not print the token. Secret slots in examples use `<token-file>`.
+
+## Authorization
+
+`desktop.control_plane.contract` is discoverable without a token. Every other
+method requires `auth.token`. Prefer `winsmux control-rpc`, which injects
+`auth.token` from the env override or, when the env is unset, from the exact
+token file.
 
 Clients can discover the external contract by calling:
 
@@ -21,18 +66,51 @@ Clients can discover the external contract by calling:
 ```
 
 When that request is sent through the named pipe, `methods` contains only the
-methods that the pipe allowlist accepts.
+methods that the pipe allowlist accepts. The contract advertises
+`auth.token_env` as `WINSMUX_CONTROL_PIPE_TOKEN` and `auth.token_file` as
+`%LOCALAPPDATA%\winsmux\control-pipe\token`.
 
 For any method other than `desktop.control_plane.contract`, clients must include
 the local control token outside `params`:
 
 ```json
-{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"pane-1"},"auth":{"token":"<token-file>"}}
 ```
 
-Do not write the token directly in shell history. Prefer `winsmux control-rpc`,
-which reads `WINSMUX_CONTROL_PIPE_TOKEN` from the current process environment
-and injects `auth.token` into non-contract requests.
+Do not write the token directly in shell history.
+
+## Connect from zero to operator-snapshot
+
+1. Start the desktop app normally, or use a launcher that may still set
+   `WINSMUX_CONTROL_PIPE_TOKEN`.
+2. Confirm the contract (no token):
+
+```powershell
+winsmux control-rpc '{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}'
+```
+
+3. Capture operator output. The CLI reads the env override if set, otherwise
+   the exact token file:
+
+```powershell
+winsmux operator-snapshot --lines 80
+```
+
+Equivalent raw JSON-RPC:
+
+```json
+{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<token-file>"}}
+```
+
+## Error semantics
+
+Non-contract calls fail closed when no usable token exists (env unset and the
+exact file missing or empty), when `auth.token` is omitted, or when the token
+does not match. The pipe keeps the existing JSON-RPC fail-closed behavior:
+error code `-32600` (Invalid Request) with a message that names
+`WINSMUX_CONTROL_PIPE_TOKEN`. The CLI helper fails with
+`control-rpc requires WINSMUX_CONTROL_PIPE_TOKEN for non-contract methods`.
+This page does not introduce a new public error code.
 
 ## Exposed Methods
 
@@ -64,17 +142,17 @@ winsmux operator-snapshot --lines 80
 winsmux operator-submit --text "Restore the six-pane orchestra and report can_dispatch."
 ```
 
-Those helpers read `WINSMUX_CONTROL_PIPE_TOKEN`, call only
-`desktop.operator.snapshot` / `desktop.operator.submit`, and never accept a
-worker pane target. Raw JSON-RPC remains available for clients that implement
-their own named-pipe transport:
+Those helpers follow the same token precedence (env override, else the exact
+token file), call only `desktop.operator.snapshot` /
+`desktop.operator.submit`, and never accept a worker pane target. Raw JSON-RPC
+remains available for clients that implement their own named-pipe transport:
 
 ```json
-{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+{"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<token-file>"}}
 ```
 
 ```json
-{"jsonrpc":"2.0","id":"operator-submit","method":"desktop.operator.submit","params":{"message":"Restore the six-pane orchestra and report can_dispatch."},"auth":{"token":"<WINSMUX_CONTROL_PIPE_TOKEN>"}}
+{"jsonrpc":"2.0","id":"operator-submit","method":"desktop.operator.submit","params":{"message":"Restore the six-pane orchestra and report can_dispatch."},"auth":{"token":"<token-file>"}}
 ```
 
 The same pipe also exposes these PTY methods for local pane control:
@@ -142,8 +220,9 @@ implement JSON-RPC over the named pipe. They should call
 `desktop.control_plane.contract` first and generate client capabilities from
 the returned `methods` list.
 
-Non-contract calls fail closed when the desktop app was not launched with
-`WINSMUX_CONTROL_PIPE_TOKEN`, or when the request omits `auth.token`.
+Non-contract calls fail closed when neither a non-empty
+`WINSMUX_CONTROL_PIPE_TOKEN` nor the exact token file can authenticate the
+request, or when the request omits `auth.token`. See [Error semantics](#error-semantics).
 
 Agent CLIs can also drive the pipe from a local shell or tool call when the user
 has granted permission to run a local command. They do not get a special

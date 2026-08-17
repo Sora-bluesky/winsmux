@@ -309,6 +309,44 @@ function Get-ControlRpcTokenEnvName {
     return 'WINSMUX_CONTROL_PIPE_TOKEN'
 }
 
+function Get-ControlRpcTokenFileTemplate {
+    return '%LOCALAPPDATA%\winsmux\control-pipe\token'
+}
+
+function Get-ControlRpcTokenFilePath {
+    $localAppData = [Environment]::GetEnvironmentVariable('LOCALAPPDATA', 'Process')
+    if ([string]::IsNullOrWhiteSpace($localAppData)) {
+        return $null
+    }
+    return [System.IO.Path]::Combine($localAppData, 'winsmux', 'control-pipe', 'token')
+}
+
+function Get-ControlRpcToken {
+    $tokenEnvName = Get-ControlRpcTokenEnvName
+    $token = [string][Environment]::GetEnvironmentVariable($tokenEnvName, 'Process')
+    if (-not [string]::IsNullOrWhiteSpace($token)) {
+        return $token
+    }
+
+    $tokenPath = Get-ControlRpcTokenFilePath
+    if ([string]::IsNullOrWhiteSpace($tokenPath)) {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $fileToken = [System.IO.File]::ReadAllText($tokenPath)
+    } catch {
+        return $null
+    }
+    if ([string]::IsNullOrWhiteSpace($fileToken)) {
+        return $null
+    }
+    return $fileToken.Trim()
+}
+
 function Add-ControlRpcAuthToPayload {
     param([Parameter(Mandatory = $true)]$Payload)
 
@@ -318,7 +356,7 @@ function Add-ControlRpcAuthToPayload {
     }
 
     $tokenEnvName = Get-ControlRpcTokenEnvName
-    $token = [string][Environment]::GetEnvironmentVariable($tokenEnvName, 'Process')
+    $token = Get-ControlRpcToken
     if ([string]::IsNullOrWhiteSpace($token)) {
         Stop-WithError "control-rpc requires $tokenEnvName for non-contract methods"
     }

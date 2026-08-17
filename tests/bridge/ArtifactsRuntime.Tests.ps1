@@ -1828,10 +1828,28 @@ Describe 'winsmux control-rpc command' {
 
     BeforeEach {
         $script:previousControlPipeToken = $env:WINSMUX_CONTROL_PIPE_TOKEN
+        $script:previousControlPipeLocalAppData = $env:LOCALAPPDATA
         Remove-Item Env:\WINSMUX_CONTROL_PIPE_TOKEN -ErrorAction SilentlyContinue
+        $script:controlPipeLocalAppDataRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-control-pipe-pester-" + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:controlPipeLocalAppDataRoot -Force | Out-Null
+        $env:LOCALAPPDATA = $script:controlPipeLocalAppDataRoot
+        $script:controlPipePlantedPaths = @()
     }
 
     AfterEach {
+        foreach ($plantedPath in @($script:controlPipePlantedPaths)) {
+            if (-not [string]::IsNullOrWhiteSpace($plantedPath) -and (Test-Path -LiteralPath $plantedPath)) {
+                Remove-Item -LiteralPath $plantedPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($script:controlPipeLocalAppDataRoot) -and (Test-Path -LiteralPath $script:controlPipeLocalAppDataRoot)) {
+            Remove-Item -LiteralPath $script:controlPipeLocalAppDataRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -eq $script:previousControlPipeLocalAppData) {
+            Remove-Item Env:\LOCALAPPDATA -ErrorAction SilentlyContinue
+        } else {
+            $env:LOCALAPPDATA = $script:previousControlPipeLocalAppData
+        }
         if ($null -eq $script:previousControlPipeToken) {
             Remove-Item Env:\WINSMUX_CONTROL_PIPE_TOKEN -ErrorAction SilentlyContinue
         } else {
@@ -1849,6 +1867,8 @@ Describe 'winsmux control-rpc command' {
         $script:controlRpcBridgeContent | Should -Match '\$client\.ReadAsync\(\$buffer, 0, \$buffer\.Length\)'
         $script:controlRpcBridgeContent | Should -Match 'timed out waiting for response'
         $script:controlRpcBridgeContent | Should -Match 'WINSMUX_CONTROL_PIPE_TOKEN'
+        $script:controlRpcBridgeContent | Should -Match 'Get-ControlRpcTokenFileTemplate'
+        Get-ControlRpcTokenFileTemplate | Should -Be '%LOCALAPPDATA%\winsmux\control-pipe\token'
         Get-ControlRpcPipeName | Should -Be 'winsmux-control'
         Get-ControlRpcPipeDisplayName | Should -Be '\\.\pipe\winsmux-control'
     }
@@ -1883,6 +1903,61 @@ Describe 'winsmux control-rpc command' {
     It 'fails closed when a non-contract method has no control pipe token' {
         { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}' } |
             Should -Throw '*WINSMUX_CONTROL_PIPE_TOKEN*'
+    }
+
+    It 'uses the LOCALAPPDATA control-pipe token file when the env is unset' {
+        $tokenDir = Join-Path $env:LOCALAPPDATA 'winsmux\control-pipe'
+        New-Item -ItemType Directory -Path $tokenDir -Force | Out-Null
+        $tokenPath = Join-Path $tokenDir 'token'
+        $generated = [guid]::NewGuid().ToString('N')
+        [System.IO.File]::WriteAllText($tokenPath, $generated)
+
+        try {
+            $payload = ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}'
+            $request = $payload | ConvertFrom-Json
+            $request.method | Should -Be 'pty.capture'
+            $request.auth.token | Should -Be $generated
+        } finally {
+            if (Test-Path -LiteralPath $tokenPath) {
+                Remove-Item -LiteralPath $tokenPath -Force
+            }
+        }
+    }
+
+    It 'ignores a planted repo .winsmux token file' {
+        $repoRoot = Split-Path -Parent $script:BridgeTestsRoot
+        $plantedDir = Join-Path $repoRoot '.winsmux'
+        $createdPlantedDir = -not (Test-Path -LiteralPath $plantedDir)
+        $plantedPath = Join-Path $plantedDir 'token'
+        $script:controlPipePlantedPaths += $plantedPath
+        $plantedToken = 'planted-' + [guid]::NewGuid().ToString('N')
+        New-Item -ItemType Directory -Path $plantedDir -Force | Out-Null
+        [System.IO.File]::WriteAllText($plantedPath, $plantedToken)
+
+        try {
+            { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}' } |
+                Should -Throw '*WINSMUX_CONTROL_PIPE_TOKEN*'
+
+            $tokenDir = Join-Path $env:LOCALAPPDATA 'winsmux\control-pipe'
+            New-Item -ItemType Directory -Path $tokenDir -Force | Out-Null
+            $tokenPath = Join-Path $tokenDir 'token'
+            $generated = [guid]::NewGuid().ToString('N')
+            [System.IO.File]::WriteAllText($tokenPath, $generated)
+            $payload = ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}'
+            $request = $payload | ConvertFrom-Json
+            $request.auth.token | Should -Be $generated
+            $request.auth.token | Should -Not -Be $plantedToken
+        } finally {
+            if (Test-Path -LiteralPath $plantedPath) {
+                Remove-Item -LiteralPath $plantedPath -Force
+            }
+            if ($createdPlantedDir -and (Test-Path -LiteralPath $plantedDir)) {
+                $remaining = @(Get-ChildItem -LiteralPath $plantedDir -Force -ErrorAction SilentlyContinue)
+                if ($remaining.Count -eq 0) {
+                    Remove-Item -LiteralPath $plantedDir -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
 
     It 'rejects missing JSON-RPC payloads' {
