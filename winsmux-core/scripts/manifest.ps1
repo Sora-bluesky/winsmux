@@ -1918,3 +1918,198 @@ function New-WinsmuxDeclarativeWorkspaceProjection {
     }
     return $projection
 }
+
+
+function Get-OrchestraMinLiveWorkerPaneCount {
+    return 1
+}
+
+function Get-OrchestraMaxLiveWorkerPaneCount {
+    param([AllowEmptyString()][string]$Mode = 'team')
+
+    if ([string]::Equals($Mode, 'simple', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return 1
+    }
+
+    return 6
+}
+
+function Get-OrchestraModeDocument {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $modePath = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-mode.json'
+    if (-not (Test-Path -LiteralPath $modePath -PathType Leaf)) {
+        return [pscustomobject]@{
+            schema_version = 1
+            mode           = 'team'
+            valid          = $true
+            source         = 'default'
+        }
+    }
+
+    $raw = Get-Content -LiteralPath $modePath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'orchestra-mode.json is not valid JSON'
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json
+    } catch {
+        throw 'orchestra-mode.json is not valid JSON'
+    }
+
+    if ($null -eq $parsed) {
+        throw 'orchestra-mode.json must be an object'
+    }
+    if ($parsed -is [System.Collections.IEnumerable] -and $parsed -isnot [System.Collections.IDictionary] -and $parsed -isnot [string]) {
+        throw 'orchestra-mode.json must be an object'
+    }
+    if ($null -eq $parsed.PSObject) {
+        throw 'orchestra-mode.json must be an object'
+    }
+
+    $names = @($parsed.PSObject.Properties.Name)
+    if ($names.Count -ne 2 -or $names -notcontains 'schema_version' -or $names -notcontains 'mode') {
+        throw 'orchestra-mode.json must contain only schema_version and mode'
+    }
+
+    $versionValue = $parsed.schema_version
+    $versionOk = $false
+    if ($versionValue -is [int] -or $versionValue -is [long] -or $versionValue -is [decimal] -or $versionValue -is [double]) {
+        $versionOk = ([int]$versionValue -eq 1)
+    }
+    if (-not $versionOk) {
+        throw 'orchestra-mode.json schema_version must be 1'
+    }
+
+    $mode = [string]$parsed.mode
+    if ($mode -cne 'simple' -and $mode -cne 'team') {
+        throw 'orchestra-mode.json mode must be simple or team'
+    }
+
+    return [pscustomobject]@{
+        schema_version = 1
+        mode           = $mode
+        valid          = $true
+        source         = 'file'
+    }
+}
+
+function Get-OrchestraCanonicalPaneRole {
+    param(
+        [AllowNull()]$Pane = $null,
+        [AllowEmptyString()][string]$Label = ''
+    )
+
+    $role = [string](Get-WinsmuxRuntimeValue -InputObject $Pane -Name 'role' -Default '')
+    $candidate = if ([string]::IsNullOrWhiteSpace($role)) { $Label } else { $role }
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return ''
+    }
+
+    switch -Regex ($candidate.Trim()) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
+        '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
+        '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
+        '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
+        '^(?i)operator(?:$|[-_:/\s])' { return 'Operator' }
+        default { return $candidate.Trim() }
+    }
+}
+
+function Get-OrchestraLiveWorkerRolePaneCount {
+    param([AllowNull()]$Manifest = $null)
+
+    if ($null -eq $Manifest) {
+        return 0
+    }
+
+    $panes = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default $null
+    if ($null -eq $panes) {
+        $panes = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Panes' -Default $null
+    }
+    if ($null -eq $panes) {
+        return 0
+    }
+
+    $count = 0
+    $map = $null
+    if ($panes -is [System.Collections.IDictionary]) {
+        $map = $panes
+    } elseif ($null -ne $panes.PSObject) {
+        $map = [ordered]@{}
+        foreach ($property in $panes.PSObject.Properties) {
+            $map[$property.Name] = $property.Value
+        }
+    }
+
+    if ($null -eq $map) {
+        return 0
+    }
+
+    foreach ($label in @($map.Keys)) {
+        $pane = $map[$label]
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($paneId)) {
+            continue
+        }
+        if ((Get-OrchestraCanonicalPaneRole -Pane $pane -Label ([string]$label)) -eq 'Worker') {
+            $count++
+        }
+    }
+
+    return $count
+}
+
+function Test-OrchestraSimpleModeLiveWorkerLimit {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Mode,
+        [Parameter(Mandatory = $true)][int]$LiveWorkerPaneCount
+    )
+
+    $max = Get-OrchestraMaxLiveWorkerPaneCount -Mode $Mode
+    return ($LiveWorkerPaneCount -le $max)
+}
+
+function Set-OrchestraLiveExpectedPaneCount {
+    param(
+        [AllowNull()]$Manifest = $null,
+        [AllowNull()]$Registry = $null,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    if ($ExpectedPaneCount -lt 1) {
+        throw 'Live expected pane count must be 1 or greater.'
+    }
+
+    if ($null -ne $Manifest) {
+        $session = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'session' -Default (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Session' -Default $null)
+        if ($null -ne $session) {
+            if ($session -is [System.Collections.IDictionary]) {
+                $session['expected_pane_count'] = $ExpectedPaneCount
+            } else {
+                $session | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
+            }
+        }
+    }
+
+    if ($null -eq $Registry) {
+        try {
+            $Registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        } catch {
+            $Registry = $null
+        }
+    }
+
+    if ($null -ne $Registry) {
+        if ($Registry -is [System.Collections.IDictionary]) {
+            $Registry['expected_pane_count'] = $ExpectedPaneCount
+        } else {
+            $Registry | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
+        }
+        Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $Registry | Out-Null
+    }
+
+    return $ExpectedPaneCount
+}

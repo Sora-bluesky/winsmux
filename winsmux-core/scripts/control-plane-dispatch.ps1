@@ -232,6 +232,7 @@ function Test-DispatchTaskReviewerManifestEntry {
 function Get-DispatchTaskAvailableTargets {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
+    Import-Task789OrchestraHelpers
     $availableTargets = @()
     $manifestTargetsResolved = $false
     if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
@@ -252,6 +253,38 @@ function Get-DispatchTaskAvailableTargets {
     }
     if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
         $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    if (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue) {
+        $mode = ''
+        try {
+            $mode = [string](Get-OrchestraModeDocument -ProjectDir $ProjectDir).mode
+        } catch {
+            $mode = ''
+        }
+        if ($mode -ceq 'team' -and (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue)) {
+            try {
+                $settings = Get-BridgeSettings -RootPath $ProjectDir
+                $slots = @()
+                if ($settings -is [System.Collections.IDictionary] -and $settings.Contains('agent_slots')) {
+                    $slots = @($settings.agent_slots)
+                } elseif ($null -ne $settings -and $null -ne $settings.PSObject -and $settings.PSObject.Properties.Name -contains 'agent_slots') {
+                    $slots = @($settings.agent_slots)
+                }
+                foreach ($slot in $slots) {
+                    $slotId = ''
+                    if ($slot -is [System.Collections.IDictionary] -and $slot.Contains('slot_id')) {
+                        $slotId = [string]$slot['slot_id']
+                    } elseif ($null -ne $slot -and $null -ne $slot.PSObject -and $slot.PSObject.Properties.Name -contains 'slot_id') {
+                        $slotId = [string]$slot.slot_id
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($slotId) -and $availableTargets -notcontains $slotId) {
+                        $availableTargets += $slotId
+                    }
+                }
+            } catch {
+            }
+        }
     }
 
     return @($availableTargets)
@@ -321,13 +354,25 @@ function Invoke-WinsmuxDispatchTaskCommand {
         $paneId = [string]$manifestEntry.PaneId
     } else {
         $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
-        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
-            $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'target_unavailable' -Diagnostic "dispatch-task could not resolve target '$selectedLabel' to a pane."
-            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
-            exit 1
+        $paneId = Get-DispatchTaskEntryPaneId -Entry $manifestEntry
+        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace($paneId)) {
+            $spawn = Ensure-DispatchTaskLiveWorkerPane -ProjectDir $projectDir -Label $selectedLabel -ManifestEntry $manifestEntry
+            if (-not [bool]$spawn.Spawned) {
+                $reason = [string]$spawn.ReasonCode
+                if ([string]::IsNullOrWhiteSpace($reason)) {
+                    $reason = 'target_unavailable'
+                }
+                $diagnostic = [string]$spawn.Diagnostic
+                if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                    $diagnostic = "dispatch-task could not resolve target '$selectedLabel' to a pane."
+                }
+                $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode $reason -Diagnostic $diagnostic
+                ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+                exit 1
+            }
+            $manifestEntry = $spawn.ManifestEntry
+            $paneId = Get-DispatchTaskEntryPaneId -Entry $manifestEntry
         }
-
-        $paneId = [string]$manifestEntry.PaneId
     }
 
     $entryStatus = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'Status' -Default '')
@@ -802,4 +847,320 @@ function Invoke-WinsmuxAssignCommand {
         -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'assignment-policy.ps1') `
         -Arguments $assignArgs `
         -PropagateExitCode
+}
+
+
+function Import-Task789OrchestraHelpers {
+    param([switch]$IncludePaneScaler)
+
+    if (-not (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue)) {
+        . (Join-Path $PSScriptRoot 'manifest.ps1')
+    }
+    if ($IncludePaneScaler) {
+        if (-not (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
+            . (Join-Path $PSScriptRoot 'orchestra-start.ps1')
+        }
+        if (-not (Get-Command Add-OrchestraPane -ErrorAction SilentlyContinue)) {
+            . (Join-Path $PSScriptRoot 'pane-scaler.ps1')
+        }
+    }
+}
+
+function Get-DispatchTaskEntryPaneId {
+    param([AllowNull()]$Entry = $null)
+
+    if ($null -eq $Entry) {
+        return ''
+    }
+    foreach ($name in @('PaneId', 'pane_id')) {
+        if ($Entry -is [System.Collections.IDictionary] -and $Entry.Contains($name)) {
+            return [string]$Entry[$name]
+        }
+        if ($null -ne $Entry.PSObject -and $Entry.PSObject.Properties.Name -contains $name) {
+            return [string]$Entry.PSObject.Properties[$name].Value
+        }
+    }
+    return ''
+}
+
+function Ensure-DispatchTaskLiveWorkerPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()]$ManifestEntry = $null
+    )
+
+    $paneId = Get-DispatchTaskEntryPaneId -Entry $ManifestEntry
+    if (-not [string]::IsNullOrWhiteSpace($paneId)) {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $ManifestEntry
+            ReasonCode     = ''
+            Diagnostic     = ''
+        }
+    }
+
+    Import-Task789OrchestraHelpers
+    $mode = 'team'
+    try {
+        $mode = [string](Get-OrchestraModeDocument -ProjectDir $ProjectDir).mode
+    } catch {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'orchestra_mode_invalid'
+            Diagnostic     = [string]$_.Exception.Message
+        }
+    }
+
+    $manifest = $null
+    if (Get-Command Get-WinsmuxManifest -ErrorAction SilentlyContinue) {
+        try {
+            $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+        } catch {
+            $manifest = $null
+        }
+    }
+    $liveWorkers = 0
+    if (Get-Command Get-OrchestraLiveWorkerRolePaneCount -ErrorAction SilentlyContinue) {
+        $liveWorkers = [int](Get-OrchestraLiveWorkerRolePaneCount -Manifest $manifest)
+    }
+    $maxLive = 6
+    if (Get-Command Get-OrchestraMaxLiveWorkerPaneCount -ErrorAction SilentlyContinue) {
+        $maxLive = [int](Get-OrchestraMaxLiveWorkerPaneCount -Mode $mode)
+    } elseif ($mode -ceq 'simple') {
+        $maxLive = 1
+    }
+    if ($liveWorkers -ge $maxLive) {
+        $reason = if ($mode -ceq 'simple') { 'simple_mode_live_worker_limit' } else { 'team_mode_live_worker_limit' }
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = $reason
+            Diagnostic     = ("{0}: live worker-role panes={1} max={2}" -f $reason, $liveWorkers, $maxLive)
+        }
+    }
+
+    Import-Task789OrchestraHelpers -IncludePaneScaler
+    $settings = $null
+    if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
+        $settings = Get-BridgeSettings -RootPath $ProjectDir
+    }
+    $assignment = $null
+    if (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue) {
+        try {
+            $projection = Invoke-TeamProfileLaunchProjection -ProjectDir $ProjectDir -SessionId 'winsmux-orchestra' -SlotId $Label -Worktree '' -ReadWriteScope 'session'
+            if ($null -ne $projection -and $null -ne $projection.projection -and $null -ne $projection.projection.pane) {
+                $assignment = $projection.projection.pane.assignment
+            }
+        } catch {
+            $assignment = $null
+        }
+    }
+
+    $slotAgentConfig = $null
+    if ($null -ne $assignment -and (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
+        # Spawn uses Team Profile assignment.worker_backend via New-TeamProfileSlotAgentConfig.
+        $slotAgentConfig = New-TeamProfileSlotAgentConfig -Role 'Worker' -SlotId $Label -Assignment $assignment -Settings $settings -RootPath $ProjectDir
+    }
+
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $null = Add-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -SlotId $Label -Settings $settings -SlotAgentConfig $slotAgentConfig -Assignment $assignment
+    $spawnedEntry = Get-DispatchTaskManifestEntry -ProjectDir $ProjectDir -Label $Label
+    return [pscustomobject]@{
+        Spawned        = $true
+        ManifestEntry  = $spawnedEntry
+        ReasonCode     = ''
+        Diagnostic     = ''
+    }
+}
+
+function Test-WinsmuxArchivePaneIdle {
+    param(
+        [AllowNull()]$Entry = $null,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $status = ''
+    $lastEvent = ''
+    $label = ''
+    $paneId = ''
+    if ($null -ne $Entry) {
+        foreach ($pair in @(@('Status', 'status'), @('LastEvent', 'last_event'), @('Label', 'label'), @('PaneId', 'pane_id'))) {
+            $value = ''
+            foreach ($name in $pair) {
+                if ($Entry -is [System.Collections.IDictionary] -and $Entry.Contains($name)) {
+                    $value = [string]$Entry[$name]
+                    break
+                }
+                if ($null -ne $Entry.PSObject -and $Entry.PSObject.Properties.Name -contains $name) {
+                    $value = [string]$Entry.PSObject.Properties[$name].Value
+                    break
+                }
+            }
+            switch ($pair[0]) {
+                'Status' { $status = $value }
+                'LastEvent' { $lastEvent = $value }
+                'Label' { $label = $value }
+                'PaneId' { $paneId = $value }
+            }
+        }
+    }
+
+    $idleEvents = @('pane.idle', 'pane.completed', 'pane.ready')
+    $busyEvents = @('pane.progress', 'pane.approval_waiting', 'pane.busy', 'pane.hung', 'pane.stalled')
+    if ($busyEvents -contains $lastEvent) {
+        return $false
+    }
+    if ($idleEvents -contains $lastEvent) {
+        return $true
+    }
+    if ($status -in @('busy', 'approval_waiting', 'hung', 'stalled')) {
+        return $false
+    }
+    if ($status -in @('ready', 'waiting_for_dispatch', 'deferred_start', 'deferred_starting')) {
+        return $true
+    }
+
+    if (Get-Command Get-BridgeEventRecords -ErrorAction SilentlyContinue) {
+        $events = @(Get-BridgeEventRecords -ProjectDir $ProjectDir)
+        $matching = @(
+            $events | Where-Object {
+                $eventLabel = [string]$_['label']
+                $eventPane = [string]$_['pane_id']
+                ((-not [string]::IsNullOrWhiteSpace($label) -and $eventLabel -ceq $label) -or
+                 (-not [string]::IsNullOrWhiteSpace($paneId) -and $eventPane -ceq $paneId))
+            }
+        )
+        if ($matching.Count -gt 0) {
+            $eventName = [string]$matching[-1]['event']
+            if ($busyEvents -contains $eventName) {
+                return $false
+            }
+            if ($idleEvents -contains $eventName) {
+                return $true
+            }
+        }
+    }
+
+    return $true
+}
+
+function Invoke-WinsmuxArchivePaneCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$BridgeScriptRoot,
+        [AllowNull()][string]$CommandTarget,
+        [AllowNull()][string[]]$CommandRest
+    )
+
+    $parts = @(
+        Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ }
+    )
+    $projectDir = (Get-Location).Path
+    $json = $false
+    $slot = ''
+    $index = 0
+    while ($index -lt $parts.Count) {
+        $current = [string]$parts[$index]
+        if ($current -ceq '--project-dir') {
+            if ($index + 1 -ge $parts.Count) {
+                Stop-WithError 'usage: winsmux archive-pane <slot> [--json] [--project-dir <path>]'
+            }
+            $projectDir = [string]$parts[$index + 1]
+            $index += 2
+            continue
+        }
+        if ($current -ceq '--json') {
+            $json = $true
+            $index++
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($slot)) {
+            $slot = $current
+            $index++
+            continue
+        }
+        Stop-WithError 'usage: winsmux archive-pane <slot> [--json] [--project-dir <path>]'
+    }
+    if ([string]::IsNullOrWhiteSpace($slot)) {
+        Stop-WithError 'usage: winsmux archive-pane <slot> [--json] [--project-dir <path>]'
+    }
+
+    Import-Task789OrchestraHelpers -IncludePaneScaler
+    $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
+    $paneId = Get-DispatchTaskEntryPaneId -Entry $entry
+    if ($null -eq $entry -or [string]::IsNullOrWhiteSpace($paneId)) {
+        $payload = [ordered]@{
+            ok          = $false
+            action      = 'archive-pane'
+            slot        = $slot
+            reason_code = 'pane_not_live'
+            diagnostic  = "archive-pane: slot '$slot' has no live pane."
+        }
+        if ($json) {
+            $payload | ConvertTo-Json -Compress
+        } else {
+            Write-Output $payload.diagnostic
+        }
+        exit 1
+    }
+
+    $idle = Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir
+    # Collect requires pane.idle (or equivalent idle status) after interrupt before kill-pane.
+    if (-not $idle) {
+        if (Get-Command Invoke-WinsmuxRaw -ErrorAction SilentlyContinue) {
+            Invoke-WinsmuxRaw -Arguments @('keys', $paneId, 'C-c') | Out-Null
+        } elseif (Get-Command Invoke-MonitorWinsmux -ErrorAction SilentlyContinue) {
+            Invoke-MonitorWinsmux -Arguments @('keys', $paneId, 'C-c') | Out-Null
+        } else {
+            throw "archive-pane could not send interrupt to pane $paneId"
+        }
+
+        $becameIdle = $false
+        for ($attempt = 1; $attempt -le 8; $attempt++) {
+            Start-Sleep -Milliseconds 250
+            $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
+            if (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir) {
+                $becameIdle = $true
+                break
+            }
+        }
+        if (-not $becameIdle) {
+            $payload = [ordered]@{
+                ok          = $false
+                action      = 'archive-pane'
+                slot        = $slot
+                pane_id     = $paneId
+                reason_code = 'archive_idle_required'
+                diagnostic  = "archive-pane: interrupt did not make '$slot' idle; pane was left in place."
+            }
+            if ($json) {
+                $payload | ConvertTo-Json -Compress
+            } else {
+                Write-Output $payload.diagnostic
+            }
+            exit 1
+        }
+    }
+
+    $manifestPath = Join-Path (Join-Path $projectDir '.winsmux') 'manifest.yaml'
+    $removed = Remove-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -Label $slot
+    $payload = [ordered]@{
+        ok          = [bool]$removed.Changed
+        action      = 'archive-pane'
+        slot        = $slot
+        pane_id     = $paneId
+        removed     = [bool]$removed.Changed
+        reason_code = if ([bool]$removed.Changed) { '' } else { [string]$removed.Reason }
+    }
+    if ($json) {
+        $payload | ConvertTo-Json -Compress
+    } else {
+        Write-Output ("archive-pane {0}: {1}" -f $slot, $(if ($payload.ok) { 'archived' } else { 'unchanged' }))
+    }
+    if (-not $payload.ok) {
+        exit 1
+    }
 }

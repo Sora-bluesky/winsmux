@@ -1641,6 +1641,8 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $script:task789WinsmuxCoreContent = Get-Content -LiteralPath $script:task789WinsmuxCorePath -Raw -Encoding UTF8
         $script:task789PaneScalerPath = Join-Path $repoRoot 'winsmux-core\scripts\pane-scaler.ps1'
         $script:task789PaneScalerContent = Get-Content -LiteralPath $script:task789PaneScalerPath -Raw -Encoding UTF8
+        $script:task789ManifestPath = Join-Path $repoRoot 'winsmux-core\scripts\manifest.ps1'
+        . $script:task789ManifestPath
         . $script:task789DispatchPath
     }
 
@@ -1687,22 +1689,10 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
     }
 
     It 'fail-closes simple mode instead of spawning a second live worker pane' {
-        Get-Command Ensure-DispatchTaskLiveWorkerPane -ErrorAction Stop | Should -Not -BeNullOrEmpty
-        function Get-OrchestraModeDocument {
-            param([string]$ProjectDir)
+        Mock Get-OrchestraModeDocument {
             [pscustomobject]@{ schema_version = 1; mode = 'simple'; valid = $true; source = 'file' }
         }
-        function Get-OrchestraLiveWorkerRolePaneCount {
-            param($Manifest)
-            1
-        }
-        function Add-OrchestraPane {
-            throw 'simple mode must not spawn a second live worker pane'
-        }
-        function New-TeamProfileSlotAgentConfig {
-            throw 'simple mode must not spawn a second live worker pane'
-        }
-
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
         $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir (Join-Path ([System.IO.Path]::GetTempPath()) 'winsmux-task789-missing') -Label 'worker-2' -ManifestEntry $null
         $result.Spawned | Should -BeFalse
         $result.ReasonCode | Should -Be 'simple_mode_live_worker_limit'

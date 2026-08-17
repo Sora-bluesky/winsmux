@@ -412,11 +412,269 @@ function Get-PaneWorkload {
     }
 }
 
+
+function Get-PaneScalerSeedPane {
+    param([Parameter(Mandatory = $true)]$Manifest)
+
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    foreach ($label in @($Manifest.Panes.Keys)) {
+        $pane = $Manifest.Panes[$label]
+        $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($paneId)) {
+            continue
+        }
+        $role = Get-PaneScalerCanonicalRole -Role ([string](Get-MonitorPropertyValue -InputObject $pane -Name 'role' -Default '')) -Label $label
+        $candidates.Add([PSCustomObject]@{
+            Label  = [string]$label
+            PaneId = $paneId
+            Role   = $role
+            Pane   = $pane
+        }) | Out-Null
+    }
+
+    $workerSeed = @($candidates | Where-Object { $_.Role -eq 'Worker' } | Select-Object -Last 1)
+    if ($workerSeed.Count -gt 0) {
+        return $workerSeed[0]
+    }
+    $any = @($candidates | Select-Object -Last 1)
+    if ($any.Count -eq 0) {
+        throw 'Cannot spawn a Worker pane because no live seed pane was found.'
+    }
+    return $any[0]
+}
+
+function Get-PaneScalerWorkerIndex {
+    param([Parameter(Mandatory = $true)][string]$Label)
+
+    if ($Label -match '(?i)^worker-(\d+)$') {
+        return [int]$Matches[1]
+    }
+    return 0
+}
+
+function New-PaneScalerWorkerWorktree {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][int]$WorkerIndex
+    )
+
+    if (Get-Command New-BuilderWorktree -ErrorAction SilentlyContinue) {
+        return New-BuilderWorktree -ProjectDir $ProjectDir -BuilderIndex $WorkerIndex
+    }
+
+    return New-PaneScalerBuilderWorktree -ProjectDir $ProjectDir -BuilderIndex $WorkerIndex
+}
+
+function Update-PaneScalerLiveExpectedPaneCount {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $liveCount = @($Manifest.Panes.Keys).Count
+    if ($liveCount -lt 1) {
+        $liveCount = 1
+    }
+    $session = $Manifest.Session
+    if ($null -ne $session) {
+        if ($session -is [System.Collections.IDictionary]) {
+            $session['expected_pane_count'] = $liveCount
+        } else {
+            $session | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $liveCount -Force
+        }
+    }
+    if (Get-Command Set-OrchestraLiveExpectedPaneCount -ErrorAction SilentlyContinue) {
+        Set-OrchestraLiveExpectedPaneCount -Manifest $Manifest -ExpectedPaneCount $liveCount -ProjectDir $ProjectDir | Out-Null
+    }
+    return $liveCount
+}
+
+function Add-OrchestraWorkerPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        $Settings = $null,
+        $SlotAgentConfig = $null,
+        $Assignment = $null
+    )
+
+    $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
+    $expectedGenerationId = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'generation_id' -Default '')
+    $projectDir = Get-PaneScalerProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+    if ($null -eq $Settings) {
+        $Settings = Get-BridgeSettings -RootPath $projectDir
+    }
+
+    if ([string]::IsNullOrWhiteSpace($SlotId)) {
+        throw 'Worker spawn requires a Team Profile slot id.'
+    }
+    if ($manifest.Panes.Contains($SlotId)) {
+        $existing = $manifest.Panes[$SlotId]
+        $existingPaneId = [string](Get-MonitorPropertyValue -InputObject $existing -Name 'pane_id' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($existingPaneId)) {
+            return [PSCustomObject]@{
+                Changed = $false
+                Action  = 'already_live'
+                Label   = $SlotId
+                PaneId  = $existingPaneId
+            }
+        }
+    }
+
+    if ($null -eq $SlotAgentConfig -and $null -ne $Assignment -and (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue)) {
+        $SlotAgentConfig = New-TeamProfileSlotAgentConfig -Role 'Worker' -SlotId $SlotId -Assignment $Assignment -Settings $Settings -RootPath $projectDir
+    }
+
+    $seed = Get-PaneScalerSeedPane -Manifest $manifest
+    $workerIndex = Get-PaneScalerWorkerIndex -Label $SlotId
+    if ($workerIndex -lt 1) {
+        $workerIndex = @($manifest.Panes.Keys).Count + 1
+    }
+
+    $worktree = $null
+    $newPaneId = ''
+    try {
+        $worktree = New-PaneScalerWorkerWorktree -ProjectDir $projectDir -WorkerIndex $workerIndex
+        $splitOutput = Invoke-MonitorWinsmux -Arguments @('split-window', '-t', $seed.PaneId, '-h', '-c', $worktree.WorktreePath, '-P', '-F', '#{pane_id}') -CaptureOutput
+        $newPaneId = (($splitOutput | Out-String).Trim() -split "\r?\n" | Where-Object { $_ -match '^%\d+$' } | Select-Object -Last 1)
+        if ([string]::IsNullOrWhiteSpace($newPaneId)) {
+            throw 'winsmux split-window did not return a pane id.'
+        }
+
+        Invoke-MonitorWinsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $SlotId) | Out-Null
+
+        $agent = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'Agent' -Default ([string]$Settings.agent))
+        $model = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'Model' -Default ([string]$Settings.model))
+        $modelSource = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'ModelSource' -Default '')
+        $effort = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'ReasoningEffort' -Default '')
+        $mcpMode = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'McpMode' -Default '')
+        $workerBackend = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'WorkerBackend' -Default 'local')
+        if ($null -ne $Assignment) {
+            $assignmentBackend = [string](Get-MonitorPropertyValue -InputObject $Assignment -Name 'worker_backend' -Default '')
+            if ([string]::IsNullOrWhiteSpace($assignmentBackend)) {
+                $assignmentBackend = [string](Get-MonitorPropertyValue -InputObject $Assignment -Name 'worker-backend' -Default '')
+            }
+            if (-not [string]::IsNullOrWhiteSpace($assignmentBackend)) {
+                $workerBackend = $assignmentBackend
+            }
+        }
+
+        Wait-MonitorPaneShellReady -PaneId $newPaneId
+        if (-not [string]::IsNullOrWhiteSpace($agent)) {
+            Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent $agent -Model $model -ModelSource $modelSource -ReasoningEffort $effort -McpMode $mcpMode -SlotId $SlotId -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir) -DeliveryClass 'launch'
+        }
+
+        $paneTitle = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'PaneTitle' -Default $SlotId)
+        $newPane = [ordered]@{
+            label                  = $SlotId
+            slot_id                = $SlotId
+            pane_id                = $newPaneId
+            role                   = 'Worker'
+            worker_role            = 'worker'
+            worker_backend         = $workerBackend
+            title                  = $paneTitle
+            exec_mode              = 'false'
+            launch_dir             = $worktree.WorktreePath
+            builder_branch         = $worktree.BranchName
+            builder_worktree_path  = $worktree.WorktreePath
+            task                   = $null
+            status                 = 'ready'
+        }
+        $paneObject = [PSCustomObject]@{}
+        foreach ($entry in $newPane.GetEnumerator()) {
+            Add-Member -InputObject $paneObject -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
+        }
+        $manifest.Panes[$SlotId] = $paneObject
+        Update-PaneScalerLiveExpectedPaneCount -Manifest $manifest -ProjectDir $projectDir | Out-Null
+        $manifest.SavedAt = Get-Date -Format o
+        Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
+
+        return [PSCustomObject]@{
+            Changed      = $true
+            Action       = 'spawn_worker'
+            Label        = $SlotId
+            PaneId       = $newPaneId
+            WorktreePath = $worktree.WorktreePath
+            BranchName   = $worktree.BranchName
+        }
+    } catch {
+        if (-not [string]::IsNullOrWhiteSpace($newPaneId)) {
+            try {
+                Invoke-MonitorWinsmux -Arguments @('kill-pane', '-t', $newPaneId) | Out-Null
+            } catch {
+            }
+        }
+        if ($null -ne $worktree) {
+            try {
+                Remove-PaneScalerBuilderWorktree -ProjectDir $projectDir -WorktreePath $worktree.WorktreePath -BranchName $worktree.BranchName
+            } catch {
+            }
+        }
+        throw
+    }
+}
+
+function Remove-OrchestraWorkerPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$Label,
+        $Settings = $null
+    )
+
+    $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
+    $expectedGenerationId = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'generation_id' -Default '')
+    $projectDir = Get-PaneScalerProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+    if (-not $manifest.Panes.Contains($Label)) {
+        return [PSCustomObject]@{
+            Changed = $false
+            Action  = 'no_change'
+            Reason  = 'pane_not_live'
+            Label   = $Label
+        }
+    }
+
+    $pane = $manifest.Panes[$Label]
+    $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
+    $worktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
+    $branchName = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_branch' -Default '')
+    [void]$manifest.Panes.Remove($Label)
+    Update-PaneScalerLiveExpectedPaneCount -Manifest $manifest -ProjectDir $projectDir | Out-Null
+    $manifest.SavedAt = Get-Date -Format o
+    Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $manifest -ExpectedGenerationId $expectedGenerationId
+
+    if (-not [string]::IsNullOrWhiteSpace($paneId)) {
+        Invoke-MonitorWinsmux -Arguments @('kill-pane', '-t', $paneId) | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($worktreePath)) {
+        try {
+            Remove-PaneScalerBuilderWorktree -ProjectDir $projectDir -WorktreePath $worktreePath -BranchName $branchName
+        } catch {
+        }
+    }
+
+    return [PSCustomObject]@{
+        Changed      = $true
+        Action       = 'archive'
+        Label        = $Label
+        PaneId       = $paneId
+        WorktreePath = $worktreePath
+        BranchName   = $branchName
+    }
+}
+
 function Add-OrchestraPane {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
-        $Settings = $null
+        $Settings = $null,
+        [ValidateSet('Builder', 'Worker')][string]$Role = 'Builder',
+        [AllowEmptyString()][string]$SlotId = '',
+        $SlotAgentConfig = $null,
+        $Assignment = $null
     )
+
+    if ($Role -eq 'Worker') {
+        return Add-OrchestraWorkerPane -ManifestPath $ManifestPath -SlotId $SlotId -Settings $Settings -SlotAgentConfig $SlotAgentConfig -Assignment $Assignment
+    }
 
     $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
     Assert-PaneScalerPaneCountMutationSupported -Manifest $manifest
@@ -511,8 +769,14 @@ function Remove-OrchestraPane {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         $Settings = $null,
-        [int]$MinimumBuilders = 2
+        [int]$MinimumBuilders = 2,
+        [ValidateSet('Builder', 'Worker')][string]$Role = 'Builder',
+        [AllowEmptyString()][string]$Label = ''
     )
+
+    if ($Role -eq 'Worker') {
+        return Remove-OrchestraWorkerPane -ManifestPath $ManifestPath -Label $Label -Settings $Settings
+    }
 
     $currentManifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
     Assert-PaneScalerPaneCountMutationSupported -Manifest $currentManifest
