@@ -119,6 +119,7 @@ import {
   maybeStartFirstRunOnboarding,
   renderFirstRunWizard,
 } from "./firstRunWizard";
+import * as vaultOrganize from "./agentVaultOrganize";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -593,6 +594,7 @@ interface AgentVaultSessionEntry {
   provider: AgentVaultProviderId;
   title: string;
   workspaceKey: string;
+  workspacePath: string;
   workspaceLabel: string;
   resumeId: string;
   paneId: string;
@@ -680,7 +682,10 @@ let agentVaultProviderFilter: AgentVaultProviderFilter = "all";
 let agentVaultWorkspaceFilter = "all";
 let agentVaultStatusMessage = "";
 let selectedAgentVaultSessionId = "";
+let agentVaultOrganizeState = vaultOrganize.emptyAgentVaultOrganize();
+let agentVaultShowArchived = false;
 const agentVaultCollapsedProviderIds = new Set<AgentVaultProviderId>();
+const agentVaultCollapsedGroupIds = new Set<string>();
 let workbenchLayout: WorkbenchLayoutMode = "3x2";
 let focusedWorkbenchPaneId: string | null = null;
 let composerImeActive = false;
@@ -804,6 +809,7 @@ const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
 const comparingRunPairKeys = new Set<string>();
 const pendingPaneStartupInputs = new Map<string, string>();
+const pendingPaneStartupCwds = new Map<string, string>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
@@ -2022,7 +2028,7 @@ function shouldAutoStartPane(_paneId: string) {
 function getPaneStartupInput(_paneId: string) {
   const startupInput = pendingPaneStartupInputs.get(_paneId);
   if (startupInput) {
-    clearPaneStartupInput(_paneId);
+    pendingPaneStartupInputs.delete(_paneId);
     return startupInput;
   }
   return undefined;
@@ -2030,6 +2036,20 @@ function getPaneStartupInput(_paneId: string) {
 
 function clearPaneStartupInput(paneId: string) {
   pendingPaneStartupInputs.delete(paneId);
+  pendingPaneStartupCwds.delete(paneId);
+}
+
+function getPaneStartupCwd(paneId: string) {
+  const cwd = pendingPaneStartupCwds.get(paneId);
+  if (cwd) {
+    pendingPaneStartupCwds.delete(paneId);
+    return cwd;
+  }
+  return undefined;
+}
+
+function queuePaneStartupCwd(paneId: string, cwd: string) {
+  pendingPaneStartupCwds.set(paneId, cwd);
 }
 
 function hasPaneStartupInput(paneId: string) {
@@ -2150,7 +2170,8 @@ function ensurePanePtyStarted(paneId: string) {
   entry.metaElement.textContent = getLanguageText("starting shell", "シェル起動中");
   renderWorkerStatusSurface();
   const startupInput = getPaneStartupInput(paneId);
-  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, startupInput)
+  const cwd = getPaneStartupCwd(paneId);
+  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, startupInput, cwd)
     .then(() => {
       entry.ptyStarted = true;
       entry.activeStartupInput = startupInput ?? "";
@@ -2892,114 +2913,63 @@ function persistAgentVaultPreferences() {
   }
 }
 
-function normalizeAgentVaultText(value: string | null | undefined, fallback = "") {
-  const normalized = (value ?? "")
-    .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return normalized || fallback;
+function persistAgentVaultOrganizeState(next: vaultOrganize.AgentVaultOrganizeState) {
+  const saved = vaultOrganize.persistAgentVaultOrganizeToStorage(window.localStorage, next);
+  if (!saved.ok) {
+    agentVaultStatusMessage = getLanguageText(saved.error, "Agent Vault の整理データを保存できませんでした。");
+    return false;
+  }
+  agentVaultOrganizeState = next;
+  return true;
 }
 
-function sanitizeAgentVaultDisplayText(value: string | null | undefined, fallback = "") {
-  const normalized = normalizeAgentVaultText(value, fallback);
-  return normalized
-    .replace(/[A-Za-z]:[\\/][^\s"'<>]+/g, "[local path]")
-    .replace(/\\\\[^\s"'<>]+/g, "[network path]");
+function applyAgentVaultOrganizeMutation(result: vaultOrganize.AgentVaultOrganizeMutationResult, okStatus?: string) {
+  if (!result.ok) {
+    agentVaultStatusMessage = getLanguageText(result.error, result.error);
+    renderAgentVaultPanel();
+    return false;
+  }
+  if (!persistAgentVaultOrganizeState(result.state)) {
+    renderAgentVaultPanel();
+    return false;
+  }
+  if (okStatus) {
+    agentVaultStatusMessage = okStatus;
+  }
+  renderAgentVaultPanel();
+  return true;
 }
 
-function truncateAgentVaultText(value: string, limit = 128) {
-  const normalized = sanitizeAgentVaultDisplayText(value);
-  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+function toggleAgentVaultShowArchived() {
+  agentVaultShowArchived = !agentVaultShowArchived;
+  renderAgentVaultPanel();
 }
 
-function getAgentVaultWorkspaceLabel(path: string | null | undefined, snapshotProjectDir?: string | null) {
-  const normalized = normalizeProjectDirInput(path) || "";
-  const active = normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(snapshotProjectDir) || "";
-  if (!normalized) {
-    return getLanguageText("unknown workspace", "不明なワークスペース");
-  }
-  if (active && normalized.toLowerCase() === active.toLowerCase()) {
-    return getLanguageText("This project", "このプロジェクト");
-  }
-  const parts = normalized.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? getLanguageText("workspace", "ワークスペース");
+function toggleAgentVaultArchive(entry: AgentVaultSessionEntry) {
+  const archived = vaultOrganize.isArchived(agentVaultOrganizeState, entry.id);
+  applyAgentVaultOrganizeMutation(
+    archived
+      ? vaultOrganize.unarchiveSession(agentVaultOrganizeState, entry.id)
+      : vaultOrganize.archiveSession(agentVaultOrganizeState, entry.id),
+    archived
+      ? getLanguageText(`Unarchived ${entry.title}.`, `${entry.title} のアーカイブを解除しました。`)
+      : getLanguageText(`Archived ${entry.title}.`, `${entry.title} をアーカイブしました。`),
+  );
 }
 
-function getAgentVaultWorkspaceKey(path: string | null | undefined, snapshotProjectDir?: string | null) {
-  const normalized = normalizeProjectDirInput(path) || "";
-  const active = normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(snapshotProjectDir) || "";
-  if (!normalized) {
-    return "unknown";
+function groupAgentVaultSession(entry: AgentVaultSessionEntry) {
+  const current = vaultOrganize.groupNameForSession(agentVaultOrganizeState, entry.id) ?? "";
+  const name = window.prompt(getLanguageText("Group name (1-64 characters)", "グループ名（1～64文字）"), current);
+  if (name === null) {
+    return;
   }
-  if (active && normalized.toLowerCase() === active.toLowerCase()) {
-    return "__this_project__";
-  }
-  return `workspace:${normalized.toLowerCase()}`;
-}
-
-function isAgentVaultThisProject(path: string | null | undefined, snapshotProjectDir?: string | null) {
-  const normalized = normalizeProjectDirInput(path) || "";
-  const active = normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(snapshotProjectDir) || "";
-  return Boolean(normalized && active && normalized.toLowerCase() === active.toLowerCase());
-}
-
-function inferAgentVaultProvider(...values: string[]): AgentVaultProviderId {
-  const text = values.join(" ").toLowerCase();
-  if (text.includes("opencode") || text.includes("open code")) {
-    return "opencode";
-  }
-  if (text.includes("codex")) {
-    return "codex";
-  }
-  return "claude";
-}
-
-function getAgentVaultReviewTone(reviewState: string, state: string): SurfaceTone {
-  const review = reviewState.toUpperCase();
-  const normalizedState = state.toLowerCase();
-  if (review === "FAIL" || review === "FAILED" || normalizedState.includes("blocked")) {
-    return "danger";
-  }
-  if (review === "PENDING" || normalizedState.includes("waiting")) {
-    return "warning";
-  }
-  if (review === "PASS" || normalizedState.includes("ready")) {
-    return "success";
-  }
-  return "info";
-}
-
-function getAgentVaultLastSeen(entryTime: string | null | undefined, fallbackTime?: string | null) {
-  const timestamp = normalizeAgentVaultText(entryTime || fallbackTime || "");
-  if (!timestamp) {
-    return getLanguageText("not seen yet", "未確認");
-  }
-  const parsed = Date.parse(timestamp);
-  if (Number.isNaN(parsed)) {
-    return timestamp;
-  }
-  return new Date(parsed).toLocaleString([], {
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function buildAgentVaultSearchText(entry: Omit<AgentVaultSessionEntry, "searchText">) {
-  return [
-    entry.id,
-    entry.provider,
-    getAgentVaultProviderLabel(entry.provider),
-    entry.title,
-    entry.workspaceLabel,
-    entry.resumeId,
-    entry.paneId,
-    entry.runId,
-    entry.state,
-    entry.reviewState,
-    entry.summary,
-  ].join(" ").toLowerCase();
+  const cleared = name.trim() === "";
+  applyAgentVaultOrganizeMutation(
+    vaultOrganize.applyAgentVaultGroupPrompt(agentVaultOrganizeState, entry.id, name),
+    cleared
+      ? getLanguageText(`Removed ${entry.title} from its group.`, `${entry.title} をグループから外しました。`)
+      : getLanguageText(`Grouped ${entry.title}.`, `${entry.title} をグループに入れました。`),
+  );
 }
 
 function buildAgentVaultEntries() {
@@ -3007,12 +2977,19 @@ function buildAgentVaultEntries() {
   const entries = new Map<string, AgentVaultSessionEntry>();
   const digestByRun = new Map((snapshot?.digest.items ?? []).map((item) => [item.run_id, item]));
   const paneById = new Map((snapshot?.board.panes ?? []).map((pane) => [pane.pane_id, pane]));
+  const activeDir = getActiveProjectDirPayload();
+  const workspaceLabels = {
+    unknown: getLanguageText("unknown workspace", "不明なワークスペース"),
+    thisProject: getLanguageText("This project", "このプロジェクト"),
+    workspace: getLanguageText("workspace", "ワークスペース"),
+  };
+  const unseen = getLanguageText("not seen yet", "未確認");
 
   for (const projection of snapshot?.run_projections ?? []) {
     const digest = digestByRun.get(projection.run_id);
     const pane = paneById.get(projection.pane_id);
-    const provider = inferAgentVaultProvider(projection.provider_target, projection.label, projection.task);
-    const title = truncateAgentVaultText(
+    const provider = vaultOrganize.inferAgentVaultProvider(projection.provider_target, projection.label, projection.task);
+    const title = vaultOrganize.truncateAgentVaultText(
       projection.task || projection.summary || projection.label || projection.run_id,
       72,
     );
@@ -3021,19 +2998,26 @@ function buildAgentVaultEntries() {
       id: `summary:${projection.run_id}`,
       provider,
       title,
-      workspaceKey: getAgentVaultWorkspaceKey(workspacePath, snapshot?.project_dir),
-      workspaceLabel: getAgentVaultWorkspaceLabel(workspacePath, snapshot?.project_dir),
-      resumeId: normalizeAgentVaultText(projection.run_id || projection.pane_id),
+      workspaceKey: vaultOrganize.getAgentVaultWorkspaceKey(workspacePath, snapshot?.project_dir, activeDir),
+      workspacePath,
+      workspaceLabel: vaultOrganize.getAgentVaultWorkspaceLabel(workspacePath, snapshot?.project_dir, activeDir, workspaceLabels),
+      resumeId: vaultOrganize.normalizeAgentVaultText(projection.run_id || projection.pane_id),
       paneId: projection.pane_id,
       runId: projection.run_id,
-      lastSeen: getAgentVaultLastSeen(digest?.last_event_at, snapshot?.generated_at),
-      state: normalizeAgentVaultText(projection.task_state || projection.phase || projection.activity, "indexed"),
-      reviewState: normalizeAgentVaultText(projection.review_state, "n/a"),
-      summary: truncateAgentVaultText(projection.summary || projection.next_action || projection.detail || projection.activity, 140),
-      thisProject: isAgentVaultThisProject(workspacePath, snapshot?.project_dir),
+      lastSeen: vaultOrganize.formatAgentVaultLastSeen(digest?.last_event_at, snapshot?.generated_at, unseen),
+      state: vaultOrganize.normalizeAgentVaultText(projection.task_state || projection.phase || projection.activity, "indexed"),
+      reviewState: vaultOrganize.normalizeAgentVaultText(projection.review_state, "n/a"),
+      summary: vaultOrganize.truncateAgentVaultText(projection.summary || projection.next_action || projection.detail || projection.activity, 140),
+      thisProject: vaultOrganize.isAgentVaultThisProject(workspacePath, snapshot?.project_dir, activeDir),
       source: "summary",
     };
-    entries.set(base.id, { ...base, searchText: buildAgentVaultSearchText(base) });
+    entries.set(base.id, {
+      ...base,
+      searchText: vaultOrganize.buildAgentVaultSearchText({
+        ...base,
+        providerLabel: getAgentVaultProviderLabel(base.provider),
+      }),
+    });
   }
 
   for (const row of workerStatusRows) {
@@ -3041,31 +3025,43 @@ function buildAgentVaultEntries() {
     if (!target) {
       continue;
     }
-    const runId = row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || target;
+    const runId = vaultOrganize.normalizeAgentVaultText(
+      row.heartbeat?.run_id || row.workspace?.run_id || row.secret_projection?.run_id || row.policy?.run_id || "",
+    );
+    if (!runId) {
+      continue;
+    }
     const existing = Array.from(entries.values()).some((entry) => entry.runId === runId || entry.paneId === target);
     if (existing) {
       continue;
     }
     const launch = getWorkerStatusLaunch(row);
-    const provider = inferAgentVaultProvider(row.backend, row.role, getWorkerProvider(row), getLaunchApprovalField(launch, "agent"));
+    const provider = vaultOrganize.inferAgentVaultProvider(row.backend, row.role, getWorkerProvider(row), getLaunchApprovalField(launch, "agent"));
     const workspacePath = row.workspace?.workspace || activeProjectDir || desktopSummarySnapshot?.project_dir || "";
     const base: Omit<AgentVaultSessionEntry, "searchText"> = {
-      id: `worker:${target}`,
+      id: `worker:${runId}`,
       provider,
-      title: truncateAgentVaultText(`${getPaneDisplayLabel(target)} ${row.role || row.backend || "worker"}`, 72),
-      workspaceKey: getAgentVaultWorkspaceKey(workspacePath, desktopSummarySnapshot?.project_dir),
-      workspaceLabel: getAgentVaultWorkspaceLabel(workspacePath, desktopSummarySnapshot?.project_dir),
-      resumeId: normalizeAgentVaultText(runId),
+      title: vaultOrganize.truncateAgentVaultText(`${getPaneDisplayLabel(target)} ${row.role || row.backend || "worker"}`, 72),
+      workspaceKey: vaultOrganize.getAgentVaultWorkspaceKey(workspacePath, desktopSummarySnapshot?.project_dir, activeDir),
+      workspacePath,
+      workspaceLabel: vaultOrganize.getAgentVaultWorkspaceLabel(workspacePath, desktopSummarySnapshot?.project_dir, activeDir, workspaceLabels),
+      resumeId: vaultOrganize.normalizeAgentVaultText(runId),
       paneId: target,
       runId,
-      lastSeen: getAgentVaultLastSeen(row.heartbeat?.heartbeat_at || row.last_command_at, desktopSummarySnapshot?.generated_at),
-      state: normalizeAgentVaultText(row.heartbeat_state || row.state || row.pane_state, "worker"),
-      reviewState: normalizeAgentVaultText(row.heartbeat_health || row.manifest_status, "n/a"),
-      summary: truncateAgentVaultText(row.failure_reason || row.heartbeat?.message || row.last_command || row.backend || row.role, 140),
-      thisProject: isAgentVaultThisProject(workspacePath, desktopSummarySnapshot?.project_dir),
+      lastSeen: vaultOrganize.formatAgentVaultLastSeen(row.heartbeat?.heartbeat_at || row.last_command_at, desktopSummarySnapshot?.generated_at, unseen),
+      state: vaultOrganize.normalizeAgentVaultText(row.heartbeat_state || row.state || row.pane_state, "worker"),
+      reviewState: vaultOrganize.normalizeAgentVaultText(row.heartbeat_health || row.manifest_status, "n/a"),
+      summary: vaultOrganize.truncateAgentVaultText(row.failure_reason || row.heartbeat?.message || row.last_command || row.backend || row.role, 140),
+      thisProject: vaultOrganize.isAgentVaultThisProject(workspacePath, desktopSummarySnapshot?.project_dir, activeDir),
       source: "worker",
     };
-    entries.set(base.id, { ...base, searchText: buildAgentVaultSearchText(base) });
+    entries.set(base.id, {
+      ...base,
+      searchText: vaultOrganize.buildAgentVaultSearchText({
+        ...base,
+        providerLabel: getAgentVaultProviderLabel(base.provider),
+      }),
+    });
   }
 
   return Array.from(entries.values()).sort((left, right) => {
@@ -3083,7 +3079,12 @@ function buildAgentVaultEntries() {
 
 function getVisibleAgentVaultEntries() {
   const query = agentVaultQuery.trim().toLowerCase();
-  return buildAgentVaultEntries().filter((entry) => {
+  const allEntries = buildAgentVaultEntries();
+  const visibleIds = new Set(vaultOrganize.visibleVaultEntryIds(allEntries, agentVaultOrganizeState, agentVaultShowArchived));
+  return allEntries.filter((entry) => {
+    if (!visibleIds.has(entry.id)) {
+      return false;
+    }
     if (agentVaultProjectOnly && !entry.thisProject) {
       return false;
     }
@@ -3093,7 +3094,8 @@ function getVisibleAgentVaultEntries() {
     if (agentVaultWorkspaceFilter !== "all" && entry.workspaceKey !== agentVaultWorkspaceFilter) {
       return false;
     }
-    return !query || entry.searchText.includes(query);
+    const searchText = vaultOrganize.searchTextWithGroupName(entry, agentVaultOrganizeState);
+    return !query || searchText.includes(query);
   });
 }
 
@@ -3104,7 +3106,7 @@ function buildAgentVaultFeedEntries(): AgentVaultFeedEntry[] {
       id: `inbox:${item.pane_id}:${item.timestamp}:${item.kind}`,
       tone: item.priority <= 1 ? "danger" : item.priority <= 2 ? "warning" : "info",
       label: item.label || item.kind || "notification",
-      body: truncateAgentVaultText(item.message || item.detail || item.activity || item.event, 110),
+      body: vaultOrganize.truncateAgentVaultText(item.message || item.detail || item.activity || item.event, 110),
       paneId: item.pane_id,
     });
   }
@@ -3117,22 +3119,12 @@ function buildAgentVaultFeedEntries(): AgentVaultFeedEntry[] {
       id: `worker:${target}:${row.state}:${row.heartbeat_state}`,
       tone: isWorkerStatusBlocked(row) ? "danger" : "warning",
       label: target || row.slot || "worker",
-      body: truncateAgentVaultText(row.failure_reason || row.heartbeat?.reason || row.heartbeat?.message || getWorkerRecoveryAction(row), 110),
+      body: vaultOrganize.truncateAgentVaultText(row.failure_reason || row.heartbeat?.reason || row.heartbeat?.message || getWorkerRecoveryAction(row), 110),
       paneId: target,
       runId: row.heartbeat?.run_id || row.workspace?.run_id,
     });
   }
   return entries.slice(0, 5);
-}
-
-function getAgentVaultNotificationTone(feedEntries: AgentVaultFeedEntry[]): SurfaceTone {
-  if (feedEntries.some((entry) => entry.tone === "danger")) {
-    return "danger";
-  }
-  if (feedEntries.some((entry) => entry.tone === "warning")) {
-    return "warning";
-  }
-  return "info";
 }
 
 function focusAgentVaultFeedEntry(entry: AgentVaultFeedEntry) {
@@ -3145,16 +3137,6 @@ function focusAgentVaultFeedEntry(entry: AgentVaultFeedEntry) {
     `フィードから ${getPaneDisplayLabel(entry.paneId)} へ移動しました。`,
   );
   renderAgentVaultPanel();
-}
-
-function createAgentVaultChip(label: string, value: string, tone?: SurfaceTone) {
-  const chip = document.createElement("span");
-  chip.className = "agent-vault-chip";
-  if (tone) {
-    chip.dataset.tone = tone;
-  }
-  chip.textContent = `${label}: ${value}`;
-  return chip;
 }
 
 function renderAgentVaultProviderFilters(root: HTMLElement, entries: AgentVaultSessionEntry[]) {
@@ -3179,37 +3161,6 @@ function renderAgentVaultProviderFilters(root: HTMLElement, entries: AgentVaultS
     });
     root.appendChild(button);
   }
-}
-
-function renderAgentVaultWorkspaceFilter(root: HTMLSelectElement, entries: AgentVaultSessionEntry[]) {
-  const workspaceCounts = new Map<string, { label: string; count: number }>();
-  for (const entry of entries) {
-    const current = workspaceCounts.get(entry.workspaceKey);
-    if (current) {
-      current.count += 1;
-    } else {
-      workspaceCounts.set(entry.workspaceKey, { label: entry.workspaceLabel, count: 1 });
-    }
-  }
-  if (agentVaultWorkspaceFilter !== "all" && !workspaceCounts.has(agentVaultWorkspaceFilter)) {
-    agentVaultWorkspaceFilter = "all";
-  }
-
-  root.replaceChildren();
-  const allOption = document.createElement("option");
-  allOption.value = "all";
-  allOption.textContent = getLanguageText(`All folders (${entries.length})`, `すべてのフォルダー (${entries.length})`);
-  root.appendChild(allOption);
-
-  const workspaces = Array.from(workspaceCounts.entries())
-    .sort((left, right) => left[1].label.localeCompare(right[1].label));
-  for (const [key, workspace] of workspaces) {
-    const option = document.createElement("option");
-    option.value = key;
-    option.textContent = `${workspace.label} (${workspace.count})`;
-    root.appendChild(option);
-  }
-  root.value = agentVaultWorkspaceFilter;
 }
 
 function renderAgentVaultPanel() {
@@ -3239,7 +3190,12 @@ function renderAgentVaultPanel() {
     search.value = agentVaultQuery;
   }
   if (workspaceFilter) {
-    renderAgentVaultWorkspaceFilter(workspaceFilter, allEntries);
+    agentVaultWorkspaceFilter = vaultOrganize.renderAgentVaultWorkspaceFilter(
+      workspaceFilter,
+      allEntries,
+      agentVaultWorkspaceFilter,
+      getLanguageText(`All folders (${allEntries.length})`, `すべてのフォルダー (${allEntries.length})`),
+    );
   }
   const visibleEntries = getVisibleAgentVaultEntries();
 
@@ -3248,7 +3204,7 @@ function renderAgentVaultPanel() {
   }
   if (ring) {
     ring.textContent = feedEntries.length > 0 ? `${feedEntries.length}` : "OK";
-    ring.dataset.tone = getAgentVaultNotificationTone(feedEntries);
+    ring.dataset.tone = vaultOrganize.getAgentVaultNotificationTone(feedEntries);
     ring.title = getLanguageText("Feed and worker notification ring", "フィードとワーカー通知リング");
   }
   if (projectFilter) {
@@ -3258,6 +3214,14 @@ function renderAgentVaultPanel() {
   if (providerFilters) {
     renderAgentVaultProviderFilters(providerFilters, allEntries);
   }
+  vaultOrganize.ensureAgentVaultShowArchivedToggle(
+    document.querySelector(".agent-vault-search-controls"),
+    {
+      pressed: agentVaultShowArchived,
+      label: getLanguageText("Show archived", "アーカイブを表示"),
+      onToggle: toggleAgentVaultShowArchived,
+    },
+  );
   if (status) {
     status.textContent = agentVaultStatusMessage || getLanguageText("Drag a session card onto a worker pane, or restore it into a new pane.", "セッションカードをワーカーペインへドラッグするか、新しいペインへ復元できます。");
   }
@@ -3271,20 +3235,23 @@ function renderAgentVaultPanel() {
         : getLanguageText("No sessions match the current filters.", "現在の条件に一致するセッションはありません。");
       list.appendChild(empty);
     } else {
+      const partitioned = vaultOrganize.partitionEntriesByUserGroup(visibleEntries, agentVaultOrganizeState);
+      for (const userGroup of partitioned.groups) {
+        vaultOrganize.appendAgentVaultSessionGroup(list, userGroup.id, userGroup.name, userGroup.entries, agentVaultCollapsedGroupIds.has(userGroup.id), () => {
+          if (agentVaultCollapsedGroupIds.has(userGroup.id)) {
+            agentVaultCollapsedGroupIds.delete(userGroup.id);
+          } else {
+            agentVaultCollapsedGroupIds.add(userGroup.id);
+          }
+          renderAgentVaultPanel();
+        }, renderAgentVaultSessionCard);
+      }
       for (const provider of agentVaultProviders) {
-        const providerEntries = visibleEntries.filter((entry) => entry.provider === provider.id);
+        const providerEntries = partitioned.ungrouped.filter((entry) => entry.provider === provider.id);
         if (providerEntries.length === 0) {
           continue;
         }
-        const collapsed = agentVaultCollapsedProviderIds.has(provider.id);
-        const group = document.createElement("section");
-        group.className = "agent-vault-provider-group";
-        group.dataset.collapsed = collapsed ? "true" : "false";
-        const heading = document.createElement("button");
-        heading.type = "button";
-        heading.className = "agent-vault-provider-heading";
-        heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
-        heading.addEventListener("click", () => {
+        vaultOrganize.appendAgentVaultSessionGroup(list, provider.id, getAgentVaultProviderLabel(provider.id), providerEntries, agentVaultCollapsedProviderIds.has(provider.id), () => {
           if (agentVaultCollapsedProviderIds.has(provider.id)) {
             agentVaultCollapsedProviderIds.delete(provider.id);
           } else {
@@ -3292,20 +3259,7 @@ function renderAgentVaultPanel() {
           }
           persistAgentVaultPreferences();
           renderAgentVaultPanel();
-        });
-        const label = document.createElement("span");
-        label.textContent = getAgentVaultProviderLabel(provider.id);
-        const count = document.createElement("span");
-        count.className = "agent-vault-provider-count";
-        count.textContent = `${providerEntries.length}`;
-        heading.append(label, count);
-        group.appendChild(heading);
-        if (!collapsed) {
-          for (const entry of providerEntries) {
-            group.appendChild(renderAgentVaultSessionCard(entry));
-          }
-        }
-        list.appendChild(group);
+        }, renderAgentVaultSessionCard);
       }
     }
   }
@@ -3362,6 +3316,7 @@ function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
   card.tabIndex = 0;
   card.dataset.sessionId = entry.id;
   card.dataset.selected = selectedAgentVaultSessionId === entry.id ? "true" : "false";
+  card.dataset.archived = vaultOrganize.isArchived(agentVaultOrganizeState, entry.id) ? "true" : "false";
   card.setAttribute("aria-label", getLanguageText(`Agent Vault session ${entry.title}`, `Agent Vault セッション ${entry.title}`));
 
   card.addEventListener("dragstart", (event) => {
@@ -3406,11 +3361,11 @@ function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
   const meta = document.createElement("div");
   meta.className = "agent-vault-card-meta";
   meta.append(
-    createAgentVaultChip("provider", getAgentVaultProviderLabel(entry.provider)),
-    createAgentVaultChip("workspace", entry.workspaceLabel),
-    createAgentVaultChip("resume", entry.resumeId.slice(0, 12)),
-    createAgentVaultChip("seen", entry.lastSeen),
-    createAgentVaultChip("state", entry.state, getAgentVaultReviewTone(entry.reviewState, entry.state)),
+    vaultOrganize.createAgentVaultChip("provider", getAgentVaultProviderLabel(entry.provider)),
+    vaultOrganize.createAgentVaultChip("workspace", entry.workspaceLabel),
+    vaultOrganize.createAgentVaultChip("resume", entry.resumeId.slice(0, 12)),
+    vaultOrganize.createAgentVaultChip("seen", entry.lastSeen),
+    vaultOrganize.createAgentVaultChip("state", entry.state, vaultOrganize.getAgentVaultReviewTone(entry.reviewState, entry.state)),
   );
   const actions = document.createElement("div");
   actions.className = "agent-vault-card-actions";
@@ -3433,45 +3388,66 @@ function renderAgentVaultSessionCard(entry: AgentVaultSessionEntry) {
     void restoreAgentVaultSession(entry.id, getFocusedWorkbenchPaneId() ?? undefined);
   });
   actions.append(newPane, focusedPane);
+  vaultOrganize.appendAgentVaultOrganizeActions(actions, {
+    archived: vaultOrganize.isArchived(agentVaultOrganizeState, entry.id),
+    forkDisabled: panes.size >= MAX_WORKBENCH_PANES,
+    labels: {
+      archive: getLanguageText("Archive", "アーカイブ"),
+      unarchive: getLanguageText("Unarchive", "アーカイブ解除"),
+      group: getLanguageText("Group", "グループ"),
+      fork: getLanguageText("Fork", "フォーク"),
+    },
+    onArchive: (event) => {
+      event.stopPropagation();
+      toggleAgentVaultArchive(entry);
+    },
+    onGroup: (event) => {
+      event.stopPropagation();
+      groupAgentVaultSession(entry);
+    },
+    onFork: (event) => {
+      event.stopPropagation();
+      void forkAgentVaultSession(entry.id);
+    },
+  });
   card.append(title, summary, meta, actions);
   return card;
 }
 
-function quotePowerShellArgument(value: string) {
-  return `'${value.replace(/'/g, "''")}'`;
+async function forkAgentVaultSession(entryId: string) {
+  await restoreAgentVaultSession(entryId, undefined, "fork");
 }
 
-function getSafeAgentVaultResumeId(entry: AgentVaultSessionEntry) {
-  const resumeId = normalizeAgentVaultText(entry.resumeId);
-  if (!resumeId || resumeId.length > 512 || /[\u0000-\u001f\u007f]/.test(resumeId)) {
-    return "";
-  }
-  return resumeId;
-}
-
-function buildAgentVaultResumeCommand(entry: AgentVaultSessionEntry) {
-  const resumeId = getSafeAgentVaultResumeId(entry);
-  if (!resumeId) {
-    return "";
-  }
-  switch (entry.provider) {
-    case "claude":
-      return `claude --resume ${quotePowerShellArgument(resumeId)}`;
-    case "codex":
-      return `codex resume ${quotePowerShellArgument(resumeId)}`;
-    case "opencode":
-      return `opencode --session ${quotePowerShellArgument(resumeId)}`;
-  }
-}
-
-async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) {
+async function restoreAgentVaultSession(entryId: string, targetPaneId?: string, mode: "resume" | "fork" = "resume") {
   const entry = buildAgentVaultEntries().find((item) => item.id === entryId);
   if (!entry) {
     agentVaultStatusMessage = getLanguageText("Session metadata is no longer available.", "セッションメタデータが見つかりません。");
     renderAgentVaultPanel();
     return;
   }
-  const command = buildAgentVaultResumeCommand(entry);
+  const launchCwd = vaultOrganize.resolveAgentVaultLaunchDirectory(
+    entry.workspacePath,
+    normalizeProjectDirInput(getActiveProjectDirPayload()) || normalizeProjectDirInput(desktopSummarySnapshot?.project_dir) || "",
+  );
+  if (mode === "fork" && !launchCwd) {
+    agentVaultStatusMessage = getLanguageText(
+      "Fork could not resolve the source workspace directory.",
+      "フォークは元ワークスペースのディレクトリを解決できませんでした。",
+    );
+    renderAgentVaultPanel();
+    return;
+  }
+  const command = mode === "fork"
+    ? vaultOrganize.buildAgentVaultForkLaunchCommand(entry.provider)
+    : vaultOrganize.buildAgentVaultResumeCommand(entry.provider, entry.resumeId);
+  if (mode === "fork" && (!command || vaultOrganize.isResumeCommand(command))) {
+    agentVaultStatusMessage = getLanguageText(
+      "Fork could not start a fresh worker for this provider.",
+      "このプロバイダーの新規ワーカーを起動できません。",
+    );
+    renderAgentVaultPanel();
+    return;
+  }
   if (!command) {
     const rejectedId = entry.resumeId ? entry.resumeId.slice(0, 32) : "empty";
     agentVaultStatusMessage = getLanguageText(
@@ -3482,10 +3458,15 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) 
     return;
   }
   if (!targetPaneId && panes.size >= MAX_WORKBENCH_PANES) {
-    agentVaultStatusMessage = getLanguageText(
-      `Resume ${entry.resumeId.slice(0, 32)} could not create a new pane: maximum pane count reached.`,
-      `再開 ID ${entry.resumeId.slice(0, 32)} は新しいペインを作れませんでした。ペイン数が上限です。`,
-    );
+    agentVaultStatusMessage = mode === "fork"
+      ? getLanguageText(
+          "Fork could not create a new pane: maximum pane count reached.",
+          "フォークは新しいペインを作れませんでした。ペイン数が上限です。",
+        )
+      : getLanguageText(
+          `Resume ${entry.resumeId.slice(0, 32)} could not create a new pane: maximum pane count reached.`,
+          `再開 ID ${entry.resumeId.slice(0, 32)} は新しいペインを作れませんでした。ペイン数が上限です。`,
+        );
     renderAgentVaultPanel();
     return;
   }
@@ -3503,7 +3484,7 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) 
     if (pane?.ptyStarted) {
       await writePtyData(paneId, startupInput);
     } else {
-      if (pane?.ptyStarting || !queuePaneStartupInput(paneId, startupInput)) {
+      if (pane?.ptyStarting || hasPaneStartupInput(paneId)) {
         agentVaultStatusMessage = getLanguageText(
           `${getPaneDisplayLabel(paneId)} is already starting a restore. Wait for it to finish before restoring another session.`,
           `${getPaneDisplayLabel(paneId)} は復元を開始中です。完了してから別のセッションを復元してください。`,
@@ -3511,7 +3492,19 @@ async function restoreAgentVaultSession(entryId: string, targetPaneId?: string) 
         renderAgentVaultPanel();
         return;
       }
+      if (vaultOrganize.shouldQueueAgentVaultLaunchCwd(mode, launchCwd)) {
+        queuePaneStartupCwd(paneId, launchCwd);
+      }
+      queuePaneStartupInput(paneId, startupInput);
       await ensurePanePtyStarted(paneId);
+    }
+    if (mode === "fork") {
+      applyAgentVaultOrganizeMutation(
+        vaultOrganize.recordFork(agentVaultOrganizeState, entry.id, entry.workspaceKey),
+        getLanguageText(`Forked from ${entry.title}`, `${entry.title} からフォークしました。`),
+      );
+      renderDesktopSurfaces();
+      return;
     }
     agentVaultStatusMessage = getLanguageText(
       `Restoring ${entry.title} in ${getPaneDisplayLabel(paneId)}.`,
@@ -18449,6 +18442,15 @@ window.addEventListener("DOMContentLoaded", async () => {
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
   applyAgentVaultPreferences();
+  try {
+    const loadedOrganize = vaultOrganize.loadAgentVaultOrganize(window.localStorage.getItem(vaultOrganize.AGENT_VAULT_ORGANIZE_STORAGE_KEY));
+    agentVaultOrganizeState = loadedOrganize.state;
+    if (loadedOrganize.error) {
+      agentVaultStatusMessage = getLanguageText(loadedOrganize.error, "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
+    }
+  } catch {
+    agentVaultStatusMessage = getLanguageText("Agent Vault organize data was rejected. Previous state was kept.", "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
+  }
 
   applyShellPreferences();
   applyLanguageChrome();

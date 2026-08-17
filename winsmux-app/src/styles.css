@@ -3460,6 +3460,15 @@ body[data-popout-surface="1"] #editor-surface {
   border-color: rgba(89, 211, 196, 0.7);
 }
 
+.agent-vault-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.agent-vault-card[data-archived="true"] {
+  opacity: 0.72;
+}
+
 .agent-vault-feed {
   display: grid;
   gap: 6px;

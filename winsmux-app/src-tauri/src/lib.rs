@@ -614,6 +614,7 @@ struct SinglePty {
     generation: u64,
     cols: u16,
     rows: u16,
+    cwd: PathBuf,
 }
 
 struct PtyManager {
@@ -1186,7 +1187,7 @@ async fn pty_json_rpc(
 
 #[tauri::command]
 async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    spawn_pty(&app, pane_id, cols, rows, None, "pty.spawn")
+    spawn_pty(&app, pane_id, cols, rows, None, None, "pty.spawn")
 }
 
 #[tauri::command]
@@ -1224,6 +1225,7 @@ fn spawn_pty(
     cols: u16,
     rows: u16,
     startup_input: Option<String>,
+    cwd: Option<String>,
     reason: &str,
 ) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
@@ -1235,7 +1237,8 @@ fn spawn_pty(
     }
 
     let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
-    let (single, reader, output_history, alive) = create_single_pty(cols, rows, generation)?;
+    let (single, reader, output_history, alive) =
+        create_single_pty(cols, rows, generation, cwd.as_deref())?;
 
     {
         let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
@@ -1318,7 +1321,31 @@ fn build_pty_command(workspace_dir: &Path) -> CommandBuilder {
     cmd
 }
 
-fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyParts, String> {
+fn resolve_pty_workspace_dir(cwd: Option<&str>) -> Result<PathBuf, String> {
+    let trimmed = cwd.map(str::trim).filter(|value| !value.is_empty());
+    let Some(raw) = trimmed else {
+        return resolve_repo_root();
+    };
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err(format!(
+            "pty.spawn cwd must be an existing absolute directory: {raw}"
+        ));
+    }
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_dir() => Ok(path),
+        _ => Err(format!(
+            "pty.spawn cwd must be an existing absolute directory: {raw}"
+        )),
+    }
+}
+
+fn create_single_pty(
+    cols: u16,
+    rows: u16,
+    generation: u64,
+    cwd: Option<&str>,
+) -> Result<SinglePtyParts, String> {
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -1330,7 +1357,7 @@ fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyP
         })
         .map_err(|e| format!("Failed to open PTY: {e}"))?;
 
-    let workspace_dir = resolve_repo_root()?;
+    let workspace_dir = resolve_pty_workspace_dir(cwd)?;
     let cmd = build_pty_command(&workspace_dir);
 
     let child = pair
@@ -1359,6 +1386,7 @@ fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyP
         generation,
         cols,
         rows,
+        cwd: workspace_dir,
     };
 
     Ok((single, reader, output_history, alive))
@@ -1724,15 +1752,20 @@ fn submit_operator_text(
 
 fn respawn_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
-    let (cols, rows) = {
+    let (cols, rows, cwd) = {
         let panes = manager.panes.lock().map_err(|e| e.to_string())?;
         let entry = panes
             .get(pane_id)
             .ok_or_else(|| format!("Pane {} not found", pane_id))?;
-        (entry.cols, entry.rows)
+        (
+            entry.cols,
+            entry.rows,
+            entry.cwd.to_string_lossy().into_owned(),
+        )
     };
     let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
-    let (single, reader, output_history, alive) = create_single_pty(cols, rows, generation)?;
+    let (single, reader, output_history, alive) =
+        create_single_pty(cols, rows, generation, Some(cwd.as_str()))?;
 
     let old_entry = {
         let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
@@ -1898,6 +1931,7 @@ impl PtyCommandTransport for TauriPtyTransport {
                 cols,
                 rows,
                 startup_input,
+                cwd,
             } => {
                 spawn_pty(
                     &self.app,
@@ -1905,6 +1939,7 @@ impl PtyCommandTransport for TauriPtyTransport {
                     *cols,
                     *rows,
                     startup_input.clone(),
+                    cwd.clone(),
                     "pty.spawn",
                 )?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
@@ -2592,5 +2627,64 @@ mod tests {
             .browser_fallback
             .reason
             .contains("does not transcribe audio into text"));
+    }
+
+    #[test]
+    fn resolve_pty_workspace_dir_uses_repo_root_when_cwd_absent() {
+        let expected = resolve_repo_root().expect("repo root should resolve");
+        let resolved = resolve_pty_workspace_dir(None).expect("missing cwd should use repo root");
+        assert_eq!(resolved, expected);
+        let blank = resolve_pty_workspace_dir(Some("   ")).expect("blank cwd should use repo root");
+        assert_eq!(blank, expected);
+    }
+
+    #[test]
+    fn resolve_pty_workspace_dir_rejects_relative_cwd() {
+        let err = resolve_pty_workspace_dir(Some("relative/workspace"))
+            .expect_err("relative cwd must fail closed");
+        assert!(
+            err.contains("existing absolute directory"),
+            "unexpected relative cwd error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_pty_workspace_dir_rejects_missing_cwd() {
+        let missing = std::env::temp_dir().join(format!(
+            "winsmux-pty-cwd-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&missing);
+        let err = resolve_pty_workspace_dir(Some(missing.to_string_lossy().as_ref()))
+            .expect_err("missing directory must fail closed");
+        assert!(
+            err.contains("existing absolute directory"),
+            "unexpected missing cwd error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_pty_workspace_dir_rejects_file_cwd() {
+        let file_path = std::env::temp_dir().join(format!(
+            "winsmux-pty-cwd-file-{}.txt",
+            std::process::id()
+        ));
+        std::fs::write(&file_path, "not-a-directory").expect("temp file should write");
+        let err = resolve_pty_workspace_dir(Some(file_path.to_string_lossy().as_ref()))
+            .expect_err("file cwd must fail closed");
+        let _ = std::fs::remove_file(&file_path);
+        assert!(
+            err.contains("existing absolute directory"),
+            "unexpected file cwd error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_pty_workspace_dir_accepts_existing_absolute_directory() {
+        let dir = make_temp_launch_project("pty-cwd-ok");
+        let resolved = resolve_pty_workspace_dir(Some(dir.to_string_lossy().as_ref()))
+            .expect("existing absolute directory should be accepted");
+        assert_eq!(resolved, dir);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
