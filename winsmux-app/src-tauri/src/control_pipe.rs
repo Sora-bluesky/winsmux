@@ -119,11 +119,11 @@ fn write_control_pipe_token_file(path: &Path, token: &str) -> Result<(), String>
         .parent()
         .ok_or_else(|| "control-pipe token rotate failed".to_string())?;
     fs::create_dir_all(parent).map_err(|_| "control-pipe token rotate failed".to_string())?;
-    #[cfg(windows)]
-    apply_user_only_dacl(parent)?;
     fs::write(path, token.as_bytes()).map_err(|_| "control-pipe token rotate failed".to_string())?;
     #[cfg(windows)]
     apply_user_only_dacl(path)?;
+    #[cfg(windows)]
+    apply_user_only_dacl(parent)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -252,7 +252,9 @@ fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
     };
 
     let sid = current_user_sid_string()?;
-    let sddl = format!("D:P(A;;FA;;;{sid})");
+    // GENERIC_ALL maps for both files and directories. FILE_ALL_ACCESS (FA) on a
+    // directory can fail SetNamedSecurityInfoW on GitHub-hosted Windows images.
+    let sddl = format!("D:P(A;;GA;;;{sid})");
     let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
     let mut path_wide = path_to_wide(path);
     unsafe {
@@ -284,7 +286,7 @@ fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
         );
         local_free_ptr(sd);
         if status != ERROR_SUCCESS {
-            Err("control-pipe token rotate failed".to_string())
+            Err(format!("control-pipe token rotate failed ({status})"))
         } else {
             Ok(())
         }
@@ -808,7 +810,7 @@ mod tests {
     fn isolate_control_pipe_paths_for_test() -> ControlPipeTokenEnvGuard {
         let lock = CONTROL_PIPE_TOKEN_ENV_LOCK
             .lock()
-            .expect("control pipe token env lock");
+            .unwrap_or_else(|err| err.into_inner());
         reset_control_pipe_auth_state();
         let previous_token = std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
         let previous_localappdata = std::env::var_os("LOCALAPPDATA");
