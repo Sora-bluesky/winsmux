@@ -1108,6 +1108,42 @@ function Get-WinsmuxArchivePaneRefusal {
     return $null
 }
 
+function Get-WinsmuxArchivePaneRuntimeRefusal {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()]$Entry = $null
+    )
+
+    if (-not (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            ReasonCode = 'runtime_target_mismatch'
+            Diagnostic = 'archive-pane: runtime ownership validation is unavailable.'
+        }
+    }
+
+    $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $Entry -Operation stop_transition
+    if ($null -ne $runtimeResult -and [bool]$runtimeResult.valid) {
+        return $null
+    }
+
+    $reasonCode = 'runtime_target_mismatch'
+    $diagnostic = 'archive-pane: runtime ownership validation failed.'
+    if ($null -ne $runtimeResult) {
+        $candidateReason = [string](Get-WinsmuxRuntimeValue -InputObject $runtimeResult -Name 'reason_code' -Default '')
+        $candidateDiagnostic = [string](Get-WinsmuxRuntimeValue -InputObject $runtimeResult -Name 'diagnostic' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($candidateReason)) {
+            $reasonCode = $candidateReason
+        }
+        if (-not [string]::IsNullOrWhiteSpace($candidateDiagnostic)) {
+            $diagnostic = $candidateDiagnostic
+        }
+    }
+    return [pscustomobject]@{
+        ReasonCode = $reasonCode
+        Diagnostic = $diagnostic
+    }
+}
+
 function Invoke-WinsmuxArchivePaneCommand {
     param(
         [Parameter(Mandatory = $true)][string]$BridgeScriptRoot,
@@ -1171,6 +1207,24 @@ function Invoke-WinsmuxArchivePaneCommand {
             pane_id     = $paneId
             reason_code = [string]$refusal.ReasonCode
             diagnostic  = [string]$refusal.Diagnostic
+        }
+        if ($json) {
+            $payload | ConvertTo-Json -Compress
+        } else {
+            Write-Output $payload.diagnostic
+        }
+        exit 1
+    }
+
+    $runtimeRefusal = Get-WinsmuxArchivePaneRuntimeRefusal -ProjectDir $projectDir -Entry $entry
+    if ($null -ne $runtimeRefusal) {
+        $payload = [ordered]@{
+            ok          = $false
+            action      = 'archive-pane'
+            slot        = $slot
+            pane_id     = $paneId
+            reason_code = [string]$runtimeRefusal.ReasonCode
+            diagnostic  = [string]$runtimeRefusal.Diagnostic
         }
         if ($json) {
             $payload | ConvertTo-Json -Compress

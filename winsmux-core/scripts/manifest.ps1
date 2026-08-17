@@ -2103,7 +2103,7 @@ function ConvertTo-OrchestraLiveRegistryPanes {
         if ($existingByLabel.Keys -contains $label) {
             $prior = $existingByLabel[$label]
         }
-        $state = 'live'
+        $state = 'bootstrap_pending'
         $bootstrapPid = 0
         $bootstrapStartedAt = ''
         $markerPath = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'bootstrap_marker_path' -Default '')
@@ -2124,6 +2124,28 @@ function ConvertTo-OrchestraLiveRegistryPanes {
             if (-not [string]::IsNullOrWhiteSpace($priorMarker)) {
                 $markerPath = $priorMarker
             }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($markerPath) -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+            try {
+                $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $markerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_pid' -Default $null)
+                $markerStarted = [string](Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_process_started_at' -Default '')
+                if ($null -ne $markerPid -and $markerPid -gt 0) {
+                    $bootstrapPid = $markerPid
+                }
+                if (-not [string]::IsNullOrWhiteSpace($markerStarted)) {
+                    $bootstrapStartedAt = $markerStarted
+                }
+            } catch {
+            }
+        }
+        $manifestStatus = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'status' -Default '')
+        $statusClassification = Get-WinsmuxRuntimeStatusClassification -Status $manifestStatus
+        $runtimeReady = (Get-WinsmuxRuntimeValue -InputObject $pane -Name 'runtime_ready' -Default $false) -eq $true
+        if ([bool]$statusClassification.IsDeferred) {
+            $state = 'deferred'
+        } elseif ($runtimeReady -or $bootstrapPid -gt 0) {
+            $state = 'live'
         }
         $result += [PSCustomObject]@{
             label                        = $label
@@ -2186,8 +2208,76 @@ function Set-OrchestraLiveExpectedPaneCount {
             $Registry | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
             $Registry | Add-Member -NotePropertyName 'panes' -NotePropertyValue $registryPanes -Force
         }
-        Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $Registry | Out-Null
     }
 
     return $ExpectedPaneCount
+}
+
+function Save-OrchestraLivePaneSetTransition {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [AllowEmptyString()][string]$RuntimePaneId = ''
+    )
+
+    $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    $oldManifestBytes = $null
+    $oldRegistryBytes = $null
+    if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
+        $oldManifestBytes = [System.IO.File]::ReadAllBytes($ManifestPath)
+    }
+    if (Test-Path -LiteralPath $registryPath -PathType Leaf) {
+        $oldRegistryBytes = [System.IO.File]::ReadAllBytes($registryPath)
+    }
+
+    $registry = $null
+    try {
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+    } catch {
+        $registry = $null
+    }
+
+    $count = Set-OrchestraLiveExpectedPaneCount -Manifest $Manifest -Registry $registry -ProjectDir $ProjectDir
+    $manifestVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'version' -Default (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Version' -Default $null))
+    $saveGenerationId = $ExpectedGenerationId
+    if ($manifestVersion -ne 2) {
+        $saveGenerationId = ''
+    }
+    $manifestPublished = $false
+    $registryPublished = $false
+    try {
+        if (Get-Command Save-PaneScalerManifest -ErrorAction SilentlyContinue) {
+            Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $Manifest `
+                -ExpectedGenerationId $saveGenerationId -RuntimePaneId $RuntimePaneId `
+                -RuntimeOperation 'stop_transition'
+        } elseif (Get-Command Save-PaneControlManifestDocument -ErrorAction SilentlyContinue) {
+            Save-PaneControlManifestDocument -ManifestPath $ManifestPath -Manifest $Manifest `
+                -ExpectedGenerationId $saveGenerationId -RuntimePaneId $RuntimePaneId `
+                -RuntimeOperation 'stop_transition'
+        } else {
+            throw 'Pane-set transition requires a guarded manifest save.'
+        }
+        $manifestPublished = $true
+
+        if ($null -ne $registry) {
+            Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
+            $registryPublished = $true
+        }
+    } catch {
+        if ($manifestPublished -and $null -ne $oldManifestBytes) {
+            [System.IO.File]::WriteAllBytes($ManifestPath, $oldManifestBytes)
+        }
+        if ($registryPublished) {
+            if ($null -ne $oldRegistryBytes) {
+                [System.IO.File]::WriteAllBytes($registryPath, $oldRegistryBytes)
+            } elseif (Test-Path -LiteralPath $registryPath -PathType Leaf) {
+                Remove-Item -LiteralPath $registryPath -Force
+            }
+        }
+        throw
+    }
+
+    return $count
 }

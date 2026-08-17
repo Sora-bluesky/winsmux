@@ -1654,6 +1654,24 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
                 param($ProjectDir, $SessionId, $SlotId, $Worktree, $ReadWriteScope, [switch]$Force)
             }
         }
+        if (-not (Get-Command New-OrchestraPaneBootstrapPlan -ErrorAction SilentlyContinue)) {
+            function script:New-OrchestraPaneBootstrapPlan {
+                param($ProjectDir, $PaneId, $Label, $SlotId, $Role, $WorkerBackend, $WorkerRole, $PaneTitle, $GenerationId, $ServerSessionId, $Agent, $Model, $StartupToken, $LaunchDir, $CleanPtyEnv, $LaunchCommand, $SupportsInterrupt, $ApprovedLaunch)
+                throw 'New-OrchestraPaneBootstrapPlan not mocked'
+            }
+        }
+        if (-not (Get-Command Get-OrchestraPaneBootstrapMarkerPath -ErrorAction SilentlyContinue)) {
+            function script:Get-OrchestraPaneBootstrapMarkerPath {
+                param($PlanPath, $GenerationId)
+                throw 'Get-OrchestraPaneBootstrapMarkerPath not mocked'
+            }
+        }
+        if (-not (Get-Command Start-OrchestraPaneBootstrap -ErrorAction SilentlyContinue)) {
+            function script:Start-OrchestraPaneBootstrap {
+                param($PaneId, $PlanPath, $SessionName)
+                throw 'Start-OrchestraPaneBootstrap not mocked'
+            }
+        }
     }
 
     BeforeEach {
@@ -1683,8 +1701,11 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         }
         $body = $script:task789DispatchContent.Substring($archiveIndex, $next - $archiveIndex)
         $body | Should -Match 'Remove-OrchestraPane'
+        $body | Should -Match 'Get-WinsmuxArchivePaneRuntimeRefusal'
         $body | Should -Match 'C-c'
         $body | Should -Match 'pane\.idle'
+        $body.IndexOf('Get-WinsmuxArchivePaneRuntimeRefusal') | Should -BeLessThan $body.IndexOf('C-c')
+        $script:task789DispatchContent | Should -Match "Operation stop_transition"
         $body | Should -Not -Match 'Invoke-WorkersStop'
         $body | Should -Not -Match 'respawn-pane'
         $body | Should -Not -Match 'workers stop'
@@ -1793,7 +1814,26 @@ Write-Output 'ok'
             }
         }
 
-        $count = Set-OrchestraLiveExpectedPaneCount -Manifest $manifest -ExpectedPaneCount 3 -ProjectDir $script:task789FixRoot
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        @"
+version: 1
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  expected_pane_count: 2
+panes:
+  operator:
+    slot_id: operator
+    pane_id: '%2'
+    role: Operator
+  worker-1:
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+"@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        $manifest | Add-Member -NotePropertyName 'version' -NotePropertyValue 1 -Force
+        $count = Save-OrchestraLivePaneSetTransition -ManifestPath $manifestPath -Manifest $manifest -ProjectDir $script:task789FixRoot
         $count | Should -Be 3
         $manifest.Session.expected_pane_count | Should -Be 3
 
@@ -1802,6 +1842,8 @@ Write-Output 'ok'
         @($read.panes).Count | Should -Be 3
         @($read.panes | ForEach-Object { [string]$_.label }) | Should -Be @('operator', 'worker-1', 'worker-2')
         ($read.panes | Where-Object { $_.label -eq 'worker-2' }).pane_id | Should -Be '%4'
+        $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
+        @($saved.Panes.Keys) | Should -Be @('operator', 'worker-1', 'worker-2')
     }
 
     It 'does not clamp an empty pane set to expected_pane_count 1' {
@@ -1971,5 +2013,382 @@ panes:
         $result.ReasonCode | Should -Be 'team_profile_projection_unavailable'
         $result.Diagnostic | Should -Be $ProjectionError
         Should -Invoke Add-OrchestraPane -Times 0
+    }
+
+    It 'does not publish a new registry when the guarded manifest save fails' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot
+        @"
+version: 2
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  generation_id: generation-789
+  server_session_id: '`$9'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 1
+panes:
+  worker-1:
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    worker_backend: codex
+    title: worker-1
+    status: ready
+"@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 1 `
+            -Panes @(
+                [PSCustomObject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = '' }
+            )
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
+        $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
+
+        $manifest = Read-PaneScalerManifest -ManifestPath $manifestPath
+        $manifest.Panes['worker-2'] = [pscustomobject]@{
+            slot_id = 'worker-2'; pane_id = '%4'; role = 'Worker'; worker_role = 'worker'
+            worker_backend = 'codex'; title = 'worker-2'; status = 'ready'
+        }
+        Mock Save-PaneScalerManifest { throw 'injected manifest save failure' }
+        Mock Save-WinsmuxRuntimeRegistry { throw 'registry must not publish after a failed manifest save' }
+
+        { Save-OrchestraLivePaneSetTransition -ManifestPath $manifestPath -Manifest $manifest -ProjectDir $script:task789FixRoot -ExpectedGenerationId 'generation-789' } |
+            Should -Throw '*injected manifest save failure*'
+
+        [System.IO.File]::ReadAllBytes($registryPath) | Should -Be $beforeRegistry
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $beforeManifest
+        Should -Invoke Save-WinsmuxRuntimeRegistry -Times 0
+    }
+
+    It 'rolls both halves back when registry save fails after the new manifest is written' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot
+        $oldYaml = "version: 1`nsession:`n  name: old`npanes:`n  worker-1:`n    pane_id: '%3'`n"
+        Set-Content -LiteralPath $manifestPath -Value $oldYaml -Encoding utf8
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 1 `
+            -Panes @(
+                [PSCustomObject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = '' }
+            )
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
+        $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
+
+        $manifest = [pscustomobject]@{
+            version = 1
+            Session = [pscustomobject]@{ expected_pane_count = 1 }
+            Panes   = [ordered]@{
+                'worker-1' = [pscustomobject]@{ slot_id = 'worker-1'; pane_id = '%3'; role = 'Worker'; worker_role = 'worker'; worker_backend = 'codex'; title = 'worker-1' }
+                'worker-2' = [pscustomobject]@{ slot_id = 'worker-2'; pane_id = '%4'; role = 'Worker'; worker_role = 'worker'; worker_backend = 'codex'; title = 'worker-2' }
+            }
+        }
+        Mock Save-PaneScalerManifest {
+            [System.IO.File]::WriteAllText($ManifestPath, 'NEW-HALF-PUBLISHED-MANIFEST')
+        }
+        Mock Save-WinsmuxRuntimeRegistry { throw 'injected registry save failure' }
+
+        { Save-OrchestraLivePaneSetTransition -ManifestPath $manifestPath -Manifest $manifest -ProjectDir $script:task789FixRoot } |
+            Should -Throw '*injected registry save failure*'
+
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $beforeManifest
+        [System.IO.File]::ReadAllBytes($registryPath) | Should -Be $beforeRegistry
+    }
+
+    It 'does not expose a spawned worker as ready without a bootstrap marker identity' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        @"
+version: 1
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  generation_id: generation-789
+  server_session_id: '`$9'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 1
+panes:
+  worker-1:
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    worker_backend: codex
+    title: worker-1
+    status: ready
+"@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        $worktreePath = Join-Path $script:task789FixRoot '.worktrees\worker-2'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        Mock New-PaneScalerWorkerWorktree {
+            [pscustomobject]@{ WorktreePath = $worktreePath; BranchName = 'worktree-worker-2'; GitWorktreeDir = $worktreePath }
+        }
+        Mock Invoke-MonitorWinsmux {
+            param($Arguments)
+            if (@($Arguments) -contains 'split-window') { return '%5' }
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Send-MonitorBridgeCommand { throw 'direct launch must not replace orchestra bootstrap' }
+        Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
+        Mock New-OrchestraPaneBootstrapPlan {
+            $planDir = Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap'
+            New-Item -ItemType Directory -Path $planDir -Force | Out-Null
+            $planPath = Join-Path $planDir '5.json'
+            Set-Content -LiteralPath $planPath -Value '{}' -Encoding utf8
+            return $planPath
+        }
+        Mock Get-OrchestraPaneBootstrapMarkerPath {
+            Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap\5-generation-789.ready.json'
+        }
+        Mock Start-OrchestraPaneBootstrap { }
+        Mock Get-BridgeSettings { [ordered]@{ agent = 'codex'; model = 'gpt-5.4' } }
+
+        $result = Add-OrchestraWorkerPane -ManifestPath $manifestPath -SlotId 'worker-2' -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = 'worker-2'
+        })
+        $result.Changed | Should -BeTrue
+        $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
+        $saved.Panes['worker-2'].status | Should -Be 'deferred_starting'
+        $readyRaw = $saved.Panes['worker-2'].runtime_ready
+        ($readyRaw -eq $true -or [string]$readyRaw -ceq 'true') | Should -BeFalse
+        [string]$saved.Panes['worker-2'].bootstrap_marker_path | Should -Match '5-generation-789\.ready\.json'
+        Should -Invoke Send-MonitorBridgeCommand -Times 0
+        Should -Invoke Start-OrchestraPaneBootstrap -Times 1
+
+        $dispatchCheck = Test-WinsmuxRuntimeContext -Manifest ([pscustomobject]@{
+            version = 2
+            session = [pscustomobject]@{
+                name = 'winsmux-orchestra'; generation_id = 'generation-789'
+                server_session_id = '$9'; bootstrap_pane_id = '%1'; expected_pane_count = 2
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%3'; worker_backend = 'codex'; worker_role = 'worker'; role = 'Worker'; title = 'worker-1'; status = 'ready' }
+                'worker-2' = [ordered]@{ slot_id = 'worker-2'; pane_id = '%5'; worker_backend = 'codex'; worker_role = 'worker'; role = 'Worker'; title = 'worker-2'; status = 'ready' }
+            }
+        }) -Registry ([pscustomobject]@{
+            schema_version = 1; status = 'active'; session_name = 'winsmux-orchestra'
+            generation_id = 'generation-789'; server_session_id = '$9'; bootstrap_pane_id = '%1'
+            expected_pane_count = 2
+            supervisor = [pscustomobject]@{ pid = 4100; process_started_at = '2026-08-17T00:00:00.0000000Z' }
+            lease = [pscustomobject]@{ state = 'active'; expires_at = '2099-01-01T00:00:00.0000000Z' }
+            panes = @(
+                [pscustomobject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z' }
+                [pscustomobject]@{ label = 'worker-2'; slot_id = 'worker-2'; pane_id = '%5'; backend = 'codex'; role = 'worker'; title = 'worker-2'; state = 'live'; bootstrap_pid = 0; bootstrap_process_started_at = '' }
+            )
+        }) -ObservedServerSessionId '$9' -ObservedPanes @(
+            [pscustomobject]@{ pane_id = '%1'; title = 'bootstrap' }
+            [pscustomobject]@{ pane_id = '%3'; title = 'worker-1' }
+            [pscustomobject]@{ pane_id = '%5'; title = 'worker-2' }
+        ) -ManifestEntry ([pscustomobject]@{
+            Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%5'; WorkerBackend = 'codex'
+            WorkerRole = 'worker'; Role = 'Worker'; Title = 'worker-2'; Status = 'ready'
+        }) -PaneMarker $null -ProcessResolver {
+            param([int]$Id)
+            if ($Id -eq 4100) {
+                return [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-08-17T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' }
+            }
+            return $null
+        } -Operation dispatch -Now ([datetime]'2026-08-17T00:05:00Z')
+        $dispatchCheck.valid | Should -BeFalse
+        $dispatchCheck.reason_code | Should -Be 'runtime_target_mismatch'
+    }
+
+    It 'lets dispatch runtime succeed after a spawned worker persists bootstrap marker identity' {
+        $markerDir = Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
+        $markerPath = Join-Path $markerDir '5-generation-789.ready.json'
+        $startedAt = '2026-08-17T00:00:02.0000000Z'
+        @{
+            state = 'bootstrap_pending'
+            generation_id = 'generation-789'
+            server_session_id = '$9'
+            slot_id = 'worker-2'
+            pane_id = '%5'
+            backend = 'codex'
+            role = 'worker'
+            title = 'worker-2'
+            bootstrap_pid = 4300
+            bootstrap_process_started_at = $startedAt
+        } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
+
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        @"
+version: 1
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  generation_id: generation-789
+  server_session_id: '`$9'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 1
+panes:
+  worker-1:
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    worker_backend: codex
+    title: worker-1
+    status: ready
+"@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        $worktreePath = Join-Path $script:task789FixRoot '.worktrees\worker-2'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        Mock New-PaneScalerWorkerWorktree {
+            [pscustomobject]@{ WorktreePath = $worktreePath; BranchName = 'worktree-worker-2'; GitWorktreeDir = $worktreePath }
+        }
+        Mock Invoke-MonitorWinsmux {
+            param($Arguments)
+            if (@($Arguments) -contains 'split-window') { return '%5' }
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
+        Mock New-OrchestraPaneBootstrapPlan {
+            Join-Path $markerDir '5.json'
+        }
+        Mock Get-OrchestraPaneBootstrapMarkerPath { $markerPath }
+        Mock Start-OrchestraPaneBootstrap { }
+        Mock Get-BridgeSettings { [ordered]@{ agent = 'codex'; model = 'gpt-5.4' } }
+
+        $null = Add-OrchestraWorkerPane -ManifestPath $manifestPath -SlotId 'worker-2' -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = 'worker-2'
+        })
+        $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
+        $saved.Panes['worker-2'].status | Should -Be 'ready'
+        [bool]$saved.Panes['worker-2'].runtime_ready | Should -BeTrue
+        [string]$saved.Panes['worker-2'].bootstrap_marker_path | Should -Be $markerPath
+
+        $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $processResolver = {
+            param([int]$Id)
+            switch ($Id) {
+                4100 { return [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-08-17T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                4300 { return [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-08-17T00:00:02Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                default { return $null }
+            }
+        }
+        $dispatchCheck = Test-WinsmuxRuntimeContext -Manifest ([pscustomobject]@{
+            version = 2
+            session = [pscustomobject]@{
+                name = 'winsmux-orchestra'; generation_id = 'generation-789'
+                server_session_id = '$9'; bootstrap_pane_id = '%1'; expected_pane_count = 2
+            }
+            panes = [ordered]@{
+                'worker-1' = [ordered]@{ slot_id = 'worker-1'; pane_id = '%3'; worker_backend = 'codex'; worker_role = 'worker'; role = 'Worker'; title = 'worker-1'; status = 'ready' }
+                'worker-2' = [ordered]@{ slot_id = 'worker-2'; pane_id = '%5'; worker_backend = 'codex'; worker_role = 'worker'; role = 'Worker'; title = 'worker-2'; status = 'ready' }
+            }
+        }) -Registry ([pscustomobject]@{
+            schema_version = 1; status = 'active'; session_name = 'winsmux-orchestra'
+            generation_id = 'generation-789'; server_session_id = '$9'; bootstrap_pane_id = '%1'
+            expected_pane_count = 2
+            supervisor = [pscustomobject]@{ pid = 4100; process_started_at = '2026-08-17T00:00:00.0000000Z' }
+            lease = [pscustomobject]@{ state = 'active'; expires_at = '2099-01-01T00:00:00.0000000Z' }
+            panes = @(
+                [pscustomobject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z' }
+                [pscustomobject]@{ label = 'worker-2'; slot_id = 'worker-2'; pane_id = '%5'; backend = 'codex'; role = 'worker'; title = 'worker-2'; state = 'live'; bootstrap_pid = 4300; bootstrap_process_started_at = $startedAt }
+            )
+        }) -ObservedServerSessionId '$9' -ObservedPanes @(
+            [pscustomobject]@{ pane_id = '%1'; title = 'bootstrap' }
+            [pscustomobject]@{ pane_id = '%3'; title = 'worker-1' }
+            [pscustomobject]@{ pane_id = '%5'; title = 'worker-2' }
+        ) -ManifestEntry ([pscustomobject]@{
+            Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%5'; WorkerBackend = 'codex'
+            WorkerRole = 'worker'; Role = 'Worker'; Title = 'worker-2'; Status = 'ready'
+            BootstrapMarkerPath = $markerPath
+        }) -PaneMarker $marker -ProcessResolver $processResolver -Operation dispatch -Now ([datetime]'2026-08-17T00:05:00Z')
+        $dispatchCheck.valid | Should -BeTrue
+        $dispatchCheck.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'does not send C-c when archive runtime ownership is unverified' {
+        $entry = [pscustomobject]@{
+            Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%9'; Role = 'Worker'
+            WorkerRole = 'worker'; WorkerBackend = 'codex'; Title = 'worker-2'; Status = 'busy'
+        }
+        if (-not (Get-Command Invoke-WinsmuxRaw -ErrorAction SilentlyContinue)) {
+            function script:Invoke-WinsmuxRaw { param($Arguments) }
+        }
+        if (-not (Get-Command Invoke-MonitorWinsmux -ErrorAction SilentlyContinue)) {
+            function script:Invoke-MonitorWinsmux { param($Arguments) }
+        }
+        Mock Test-PaneControlRuntimeContext {
+            [pscustomobject]@{
+                valid = $false
+                reason_code = 'runtime_target_mismatch'
+                diagnostic = 'stale project-dir or unverified pane id'
+            }
+        }
+        Mock Invoke-WinsmuxRaw { throw 'C-c must not run after a failed runtime check' }
+        Mock Invoke-MonitorWinsmux { throw 'C-c must not run after a failed runtime check' }
+
+        $refusal = Get-WinsmuxArchivePaneRuntimeRefusal -ProjectDir $script:task789FixRoot -Entry $entry
+        $refusal.ReasonCode | Should -Be 'runtime_target_mismatch'
+        $refusal.Diagnostic | Should -Match 'stale project-dir'
+        Should -Invoke Invoke-WinsmuxRaw -Times 0
+        Should -Invoke Invoke-MonitorWinsmux -Times 0
+    }
+
+    It 'skips C-c in archive-pane when a mismatched project-dir fails runtime ownership' {
+        $probePath = Join-Path $script:task789FixRoot 'archive-runtime-probe.ps1'
+        $dispatchPath = $script:task789DispatchPath
+        $sentPath = Join-Path $script:task789FixRoot 'cc-sent.txt'
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  expected_pane_count: 2
+panes:
+  worker-1:
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    status: ready
+  worker-2:
+    slot_id: worker-2
+    pane_id: '%9'
+    role: Worker
+    worker_role: worker
+    status: busy
+"@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+function Stop-WithError { param([string]`$Message) throw `$Message }
+function Get-Labels { return @{ 'worker-2' = '%9' } }
+. '$($dispatchPath.Replace("'", "''"))'
+function Test-PaneControlRuntimeContext {
+    param(`$ProjectDir, `$ManifestEntry, `$Operation)
+    return [pscustomobject]@{ valid = `$false; reason_code = 'runtime_target_mismatch'; diagnostic = 'unverified pane' }
+}
+function Get-PaneControlManifestEntries {
+    param(`$ProjectDir)
+    return @([pscustomobject]@{
+        Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%9'; Role = 'Worker'
+        WorkerRole = 'worker'; WorkerBackend = 'codex'; Title = 'worker-2'
+        Status = 'busy'; LastEvent = 'pane.progress'
+    })
+}
+function Invoke-WinsmuxRaw {
+    param(`$Arguments)
+    if (@(`$Arguments) -contains 'C-c') { Set-Content -LiteralPath '$($sentPath.Replace("'", "''"))' -Value 'sent' -Encoding utf8 }
+}
+function Invoke-MonitorWinsmux {
+    param(`$Arguments)
+    if (@(`$Arguments) -contains 'C-c') { Set-Content -LiteralPath '$($sentPath.Replace("'", "''"))' -Value 'sent' -Encoding utf8 }
+}
+Set-Location -LiteralPath '$($script:task789FixRoot.Replace("'", "''"))'
+Invoke-WinsmuxArchivePaneCommand -BridgeScriptRoot '$($script:task789FixRoot.Replace("'", "''"))' -CommandTarget 'worker-2' -CommandRest @()
+Write-Output 'reached-after-exit'
+"@
+        Set-Content -LiteralPath $probePath -Value $probe -Encoding utf8
+        $output = & pwsh -NoProfile -File $probePath 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'unverified pane'
+        ($output | Out-String) | Should -Not -Match 'reached-after-exit'
+        Test-Path -LiteralPath $sentPath | Should -BeFalse
     }
 }
