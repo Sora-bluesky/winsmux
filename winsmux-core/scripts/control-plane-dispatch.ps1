@@ -999,6 +999,50 @@ function Ensure-DispatchTaskLiveWorkerPane {
     }
 }
 
+function New-WinsmuxArchivePaneIdleResult {
+    param(
+        [Parameter(Mandatory = $true)][bool]$Idle,
+        [Parameter(Mandatory = $true)][ValidateSet('idle', 'busy', 'unavailable')][string]$Evidence,
+        [AllowEmptyString()][string]$Status = '',
+        [AllowEmptyString()][string]$LastEvent = ''
+    )
+
+    return [pscustomobject]@{
+        Idle      = $Idle
+        Evidence  = $Evidence
+        Status    = $Status
+        LastEvent = $LastEvent
+    }
+}
+
+function Resolve-WinsmuxArchivePaneIdleState {
+    param([AllowNull()]$Result = $null)
+
+    if ($Result -is [bool]) {
+        return New-WinsmuxArchivePaneIdleResult -Idle ([bool]$Result) -Evidence $(if ($Result) { 'idle' } else { 'busy' })
+    }
+    if ($null -eq $Result) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'unavailable'
+    }
+
+    $evidence = [string](Get-WinsmuxRuntimeValue -InputObject $Result -Name 'Evidence' -Default '')
+    $idle = $false
+    $idleRaw = Get-WinsmuxRuntimeValue -InputObject $Result -Name 'Idle' -Default $null
+    if ($idleRaw -is [bool]) {
+        $idle = [bool]$idleRaw
+    }
+    if ([string]::IsNullOrWhiteSpace($evidence)) {
+        $evidence = if ($idle) { 'idle' } else { 'unavailable' }
+    }
+    if ($evidence -cnotin @('idle', 'busy', 'unavailable')) {
+        $evidence = 'unavailable'
+        $idle = $false
+    }
+    return New-WinsmuxArchivePaneIdleResult -Idle $idle -Evidence $evidence `
+        -Status ([string](Get-WinsmuxRuntimeValue -InputObject $Result -Name 'Status' -Default '')) `
+        -LastEvent ([string](Get-WinsmuxRuntimeValue -InputObject $Result -Name 'LastEvent' -Default ''))
+}
+
 function Test-WinsmuxArchivePaneIdle {
     param(
         [AllowNull()]$Entry = $null,
@@ -1034,16 +1078,16 @@ function Test-WinsmuxArchivePaneIdle {
     $idleEvents = @('pane.idle', 'pane.completed', 'pane.ready')
     $busyEvents = @('pane.progress', 'pane.approval_waiting', 'pane.busy', 'pane.hung', 'pane.stalled')
     if ($busyEvents -contains $lastEvent) {
-        return $false
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
     }
     if ($idleEvents -contains $lastEvent) {
-        return $true
+        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
     }
     if ($status -in @('busy', 'approval_waiting', 'hung', 'stalled')) {
-        return $false
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
     }
     if ($status -in @('ready', 'waiting_for_dispatch', 'deferred_start', 'deferred_starting')) {
-        return $true
+        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
     }
 
     if (Get-Command Get-BridgeEventRecords -ErrorAction SilentlyContinue) {
@@ -1059,15 +1103,15 @@ function Test-WinsmuxArchivePaneIdle {
         if ($matching.Count -gt 0) {
             $eventName = [string]$matching[-1]['event']
             if ($busyEvents -contains $eventName) {
-                return $false
+                return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $eventName
             }
             if ($idleEvents -contains $eventName) {
-                return $true
+                return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $eventName
             }
         }
     }
 
-    return $true
+    return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'unavailable' -Status $status -LastEvent $lastEvent
 }
 
 function Get-WinsmuxArchivePaneRefusal {
@@ -1234,9 +1278,26 @@ function Invoke-WinsmuxArchivePaneCommand {
         exit 1
     }
 
-    $idle = Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir
+    $idleState = Resolve-WinsmuxArchivePaneIdleState -Result (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir)
+    # Unknown/empty status with no recognized idle event is not interruptible busy.
+    if ($idleState.Evidence -ceq 'unavailable') {
+        $payload = [ordered]@{
+            ok          = $false
+            action      = 'archive-pane'
+            slot        = $slot
+            pane_id     = $paneId
+            reason_code = 'archive_idle_required'
+            diagnostic  = "archive-pane: idle evidence is unavailable for '$slot'; pane was left in place."
+        }
+        if ($json) {
+            $payload | ConvertTo-Json -Compress
+        } else {
+            Write-Output $payload.diagnostic
+        }
+        exit 1
+    }
     # Collect requires pane.idle (or equivalent idle status) after interrupt before kill-pane.
-    if (-not $idle) {
+    if (-not [bool]$idleState.Idle) {
         if (Get-Command Invoke-WinsmuxRaw -ErrorAction SilentlyContinue) {
             Invoke-WinsmuxRaw -Arguments @('keys', $paneId, 'C-c') | Out-Null
         } elseif (Get-Command Invoke-MonitorWinsmux -ErrorAction SilentlyContinue) {
@@ -1249,7 +1310,8 @@ function Invoke-WinsmuxArchivePaneCommand {
         for ($attempt = 1; $attempt -le 8; $attempt++) {
             Start-Sleep -Milliseconds 250
             $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
-            if (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir) {
+            $waitState = Resolve-WinsmuxArchivePaneIdleState -Result (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir)
+            if ([bool]$waitState.Idle -and $waitState.Evidence -ceq 'idle') {
                 $becameIdle = $true
                 break
             }

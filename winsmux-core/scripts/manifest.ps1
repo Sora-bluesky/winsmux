@@ -2129,7 +2129,7 @@ function ConvertTo-OrchestraLiveRegistryPanes {
             try {
                 $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
                 $markerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_pid' -Default $null)
-                $markerStarted = [string](Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_process_started_at' -Default '')
+                $markerStarted = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_process_started_at' -Default '')
                 if ($null -ne $markerPid -and $markerPid -gt 0) {
                     $bootstrapPid = $markerPid
                 }
@@ -2213,13 +2213,62 @@ function Set-OrchestraLiveExpectedPaneCount {
     return $ExpectedPaneCount
 }
 
+function New-OrchestraLiveTransitionManifestEntry {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [AllowEmptyString()][string]$RuntimePaneId = ''
+    )
+
+    $session = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'session' -Default $null
+    $bootstrapPaneId = [string](Get-WinsmuxRuntimeValue -InputObject $session -Name 'bootstrap_pane_id' -Default '')
+    $paneMap = ConvertTo-ManifestPropertyMap -Value (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default $null)
+    $chosenLabel = ''
+    $chosenPane = $null
+    foreach ($label in @($paneMap.Keys | Sort-Object)) {
+        $pane = $paneMap[$label]
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        if ($paneId -cnotmatch '^%[0-9]+$' -or
+            [string]::Equals($paneId, $bootstrapPaneId, [System.StringComparison]::Ordinal)) {
+            continue
+        }
+        if (-not [string]::IsNullOrWhiteSpace($RuntimePaneId)) {
+            if ($paneId -ceq $RuntimePaneId) {
+                $chosenLabel = [string]$label
+                $chosenPane = $pane
+                break
+            }
+            continue
+        }
+        if ($null -eq $chosenPane) {
+            $chosenLabel = [string]$label
+            $chosenPane = $pane
+        }
+    }
+    if ($null -eq $chosenPane) {
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        Label               = $chosenLabel
+        SlotId              = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'slot_id' -Default $chosenLabel)
+        PaneId              = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'pane_id' -Default '')
+        WorkerBackend       = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'worker_backend' -Default '')
+        WorkerRole          = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'worker_role' -Default '')
+        Role                = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'role' -Default '')
+        Title               = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'title' -Default '')
+        Status              = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'status' -Default '')
+        BootstrapMarkerPath = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'bootstrap_marker_path' -Default '')
+    }
+}
+
 function Save-OrchestraLivePaneSetTransition {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)]$Manifest,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [AllowEmptyString()][string]$ExpectedGenerationId = '',
-        [AllowEmptyString()][string]$RuntimePaneId = ''
+        [AllowEmptyString()][string]$RuntimePaneId = '',
+        [bool]$RestoreOnFailure = $true
     )
 
     $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
@@ -2230,6 +2279,17 @@ function Save-OrchestraLivePaneSetTransition {
     }
     if (Test-Path -LiteralPath $registryPath -PathType Leaf) {
         $oldRegistryBytes = [System.IO.File]::ReadAllBytes($registryPath)
+    }
+
+    $restorePublishedFiles = {
+        if ($null -ne $oldManifestBytes) {
+            [System.IO.File]::WriteAllBytes($ManifestPath, $oldManifestBytes)
+        }
+        if ($null -ne $oldRegistryBytes) {
+            [System.IO.File]::WriteAllBytes($registryPath, $oldRegistryBytes)
+        } elseif (Test-Path -LiteralPath $registryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $registryPath -Force
+        }
     }
 
     $registry = $null
@@ -2245,17 +2305,39 @@ function Save-OrchestraLivePaneSetTransition {
     if ($manifestVersion -ne 2) {
         $saveGenerationId = ''
     }
+
+    $transitionEntry = $null
+    if ($manifestVersion -eq 2) {
+        $transitionEntry = New-OrchestraLiveTransitionManifestEntry -Manifest $Manifest -RuntimePaneId $RuntimePaneId
+        if ($null -eq $transitionEntry) {
+            throw 'runtime dispatch refused (runtime_target_mismatch): Planned pane set has no managed runtime pane for the live transition.'
+        }
+        if ([string]::IsNullOrWhiteSpace($RuntimePaneId)) {
+            $RuntimePaneId = [string]$transitionEntry.PaneId
+        }
+        if (-not (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+            throw 'runtime dispatch refused (runtime_target_mismatch): Planned pane-set validation is unavailable.'
+        }
+        $plannedValidation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $transitionEntry `
+            -Operation stop_transition -PlannedManifest $Manifest -PlannedRegistry $registry
+        if ($null -eq $plannedValidation -or -not [bool]$plannedValidation.valid) {
+            $reasonCode = [string](Get-WinsmuxRuntimeValue -InputObject $plannedValidation -Name 'reason_code' -Default 'runtime_target_mismatch')
+            $diagnostic = [string](Get-WinsmuxRuntimeValue -InputObject $plannedValidation -Name 'diagnostic' -Default 'Planned pane set does not match the observed live server.')
+            throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+        }
+    }
+
     $manifestPublished = $false
     $registryPublished = $false
     try {
         if (Get-Command Save-PaneScalerManifest -ErrorAction SilentlyContinue) {
             Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $Manifest `
                 -ExpectedGenerationId $saveGenerationId -RuntimePaneId $RuntimePaneId `
-                -RuntimeOperation 'stop_transition'
+                -RuntimeOperation 'stop_transition' -AcceptPlannedPaneSet:($manifestVersion -eq 2)
         } elseif (Get-Command Save-PaneControlManifestDocument -ErrorAction SilentlyContinue) {
             Save-PaneControlManifestDocument -ManifestPath $ManifestPath -Manifest $Manifest `
                 -ExpectedGenerationId $saveGenerationId -RuntimePaneId $RuntimePaneId `
-                -RuntimeOperation 'stop_transition'
+                -RuntimeOperation 'stop_transition' -AcceptPlannedPaneSet:($manifestVersion -eq 2)
         } else {
             throw 'Pane-set transition requires a guarded manifest save.'
         }
@@ -2266,17 +2348,44 @@ function Save-OrchestraLivePaneSetTransition {
             $registryPublished = $true
         }
     } catch {
-        if ($manifestPublished -and $null -ne $oldManifestBytes) {
-            [System.IO.File]::WriteAllBytes($ManifestPath, $oldManifestBytes)
+        $saveError = $_
+        if ($RestoreOnFailure) {
+            if ($manifestPublished -or $registryPublished) {
+                & $restorePublishedFiles
+            }
+            throw $saveError
         }
-        if ($registryPublished) {
-            if ($null -ne $oldRegistryBytes) {
-                [System.IO.File]::WriteAllBytes($registryPath, $oldRegistryBytes)
-            } elseif (Test-Path -LiteralPath $registryPath -PathType Leaf) {
-                Remove-Item -LiteralPath $registryPath -Force
+
+        # Server mutation is already irreversible. Do not restore bytes that would
+        # advertise a pane the live server no longer has.
+        for ($fallbackAttempt = 1; $fallbackAttempt -le 2; $fallbackAttempt++) {
+            try {
+                if (-not $manifestPublished) {
+                    Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $Manifest -ExpectedGenerationId $saveGenerationId
+                    $manifestPublished = $true
+                }
+                if (-not $registryPublished -and $null -ne $registry) {
+                    Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
+                    $registryPublished = $true
+                }
+                break
+            } catch {
             }
         }
-        throw
+        throw $saveError
+    }
+
+    if ($manifestVersion -eq 2 -and (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+        $postValidation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $transitionEntry `
+            -Operation stop_transition
+        if ($null -eq $postValidation -or -not [bool]$postValidation.valid) {
+            $reasonCode = [string](Get-WinsmuxRuntimeValue -InputObject $postValidation -Name 'reason_code' -Default 'runtime_target_mismatch')
+            $diagnostic = [string](Get-WinsmuxRuntimeValue -InputObject $postValidation -Name 'diagnostic' -Default 'Post-commit pane set does not match the observed live server.')
+            if ($RestoreOnFailure) {
+                & $restorePublishedFiles
+            }
+            throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+        }
     }
 
     return $count

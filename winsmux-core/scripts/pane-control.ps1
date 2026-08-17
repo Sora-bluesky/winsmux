@@ -459,12 +459,14 @@ function Test-PaneControlRuntimeContext {
         [Parameter(Mandatory = $true)]$ManifestEntry,
         [ValidateSet('dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$Operation = 'dispatch',
         [AllowNull()]$CallerIdentity = $null,
-        [AllowNull()][scriptblock]$ProcessResolver = $null
+        [AllowNull()][scriptblock]$ProcessResolver = $null,
+        [AllowNull()]$PlannedManifest = $null,
+        [AllowNull()]$PlannedRegistry = $null
     )
 
     try {
-        $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
-        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        $manifest = if ($null -ne $PlannedManifest) { $PlannedManifest } else { Get-WinsmuxManifest -ProjectDir $ProjectDir }
+        $registry = if ($null -ne $PlannedRegistry) { $PlannedRegistry } else { Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir }
     } catch {
         return New-WinsmuxRuntimeValidationResult -Valid $false -ReasonCode 'manifest_regeneration_required' `
             -Diagnostic 'Runtime manifest or registry is missing or malformed; regenerate the orchestra session.'
@@ -671,7 +673,8 @@ function Save-PaneControlManifestDocument {
         [Parameter(Mandatory = $true)]$Manifest,
         [AllowEmptyString()][string]$ExpectedGenerationId = '',
         [AllowEmptyString()][string]$RuntimePaneId = '',
-        [ValidateSet('auto', 'dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$RuntimeOperation = 'auto'
+        [ValidateSet('auto', 'dispatch', 'start_deferred', 'caller_ack', 'stop_transition')][string]$RuntimeOperation = 'auto',
+        [switch]$AcceptPlannedPaneSet
     )
 
     $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
@@ -707,8 +710,12 @@ function Save-PaneControlManifestDocument {
         throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed before the manifest mutation began.'
     }
 
-    $bootstrapPaneId = [string](Get-WinsmuxRuntimeValue -InputObject $currentSession -Name 'bootstrap_pane_id' -Default '')
-    $paneMap = ConvertTo-ManifestPropertyMap -Value (Get-WinsmuxRuntimeValue -InputObject $currentManifest -Name 'panes' -Default $null)
+    $paneSourceManifest = if ($AcceptPlannedPaneSet) { $Manifest } else { $currentManifest }
+    $paneSourceSession = Get-WinsmuxRuntimeValue -InputObject $paneSourceManifest -Name 'session' -Default $null
+    $bootstrapPaneId = [string](Get-WinsmuxRuntimeValue -InputObject $paneSourceSession -Name 'bootstrap_pane_id' -Default (
+        Get-WinsmuxRuntimeValue -InputObject $currentSession -Name 'bootstrap_pane_id' -Default ''
+    ))
+    $paneMap = ConvertTo-ManifestPropertyMap -Value (Get-WinsmuxRuntimeValue -InputObject $paneSourceManifest -Name 'panes' -Default $null)
     $managedPaneIds = [System.Collections.Generic.List[string]]::new()
     $seenPaneIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
     foreach ($label in @($paneMap.Keys | Sort-Object)) {
@@ -729,24 +736,29 @@ function Save-PaneControlManifestDocument {
         }
         $RuntimePaneId = $managedPaneIds[0]
     } elseif ($RuntimePaneId -cnotmatch '^%[0-9]+$' -or -not $seenPaneIds.Contains($RuntimePaneId)) {
-        throw 'runtime dispatch refused (runtime_target_mismatch): RuntimePaneId must identify a managed non-bootstrap pane in the current v2 manifest.'
+        $paneSetName = if ($AcceptPlannedPaneSet) { 'planned' } else { 'current' }
+        throw ("runtime dispatch refused (runtime_target_mismatch): RuntimePaneId must identify a managed non-bootstrap pane in the {0} v2 manifest." -f $paneSetName)
     }
 
-    $manifestEntry = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $RuntimePaneId
-    $effectiveOperation = $RuntimeOperation
-    if ($effectiveOperation -ceq 'auto') {
-        $status = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'Status' -Default '')
-        $effectiveOperation = [string](Get-WinsmuxRuntimeStatusClassification -Status $status).RuntimeOperation
-    }
-    $runtimeValidation = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $manifestEntry -Operation $effectiveOperation
-    if ($null -eq $runtimeValidation -or -not [bool]$runtimeValidation.valid) {
-        $reasonCode = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'reason_code' -Default 'invalid_supervisor_identity')
-        $diagnostic = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'diagnostic' -Default 'Runtime identity validation failed immediately before manifest save.')
-        throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
-    }
-    $validatedGenerationId = [string](Get-PaneControlValue -InputObject $runtimeValidation.context -Name 'generation_id' -Default '')
-    if (-not [string]::Equals($validatedGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
-        throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed immediately before manifest save.'
+    # After split-window / kill-pane the live server already has the next set.
+    # Comparing the still-old on-disk documents to that server is a stale check.
+    if (-not $AcceptPlannedPaneSet) {
+        $manifestEntry = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $RuntimePaneId
+        $effectiveOperation = $RuntimeOperation
+        if ($effectiveOperation -ceq 'auto') {
+            $status = [string](Get-PaneControlValue -InputObject $manifestEntry -Name 'Status' -Default '')
+            $effectiveOperation = [string](Get-WinsmuxRuntimeStatusClassification -Status $status).RuntimeOperation
+        }
+        $runtimeValidation = Test-PaneControlRuntimeContext -ProjectDir $projectDir -ManifestEntry $manifestEntry -Operation $effectiveOperation
+        if ($null -eq $runtimeValidation -or -not [bool]$runtimeValidation.valid) {
+            $reasonCode = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'reason_code' -Default 'invalid_supervisor_identity')
+            $diagnostic = [string](Get-PaneControlValue -InputObject $runtimeValidation -Name 'diagnostic' -Default 'Runtime identity validation failed immediately before manifest save.')
+            throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+        }
+        $validatedGenerationId = [string](Get-PaneControlValue -InputObject $runtimeValidation.context -Name 'generation_id' -Default '')
+        if (-not [string]::Equals($validatedGenerationId, $ExpectedGenerationId, [System.StringComparison]::Ordinal)) {
+            throw 'runtime dispatch refused (invalid_supervisor_identity): Runtime generation changed immediately before manifest save.'
+        }
     }
 
     $freshManifest = Get-WinsmuxManifest -ProjectDir $projectDir
