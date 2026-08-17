@@ -1672,6 +1672,12 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
                 throw 'Start-OrchestraPaneBootstrap not mocked'
             }
         }
+        if (-not (Get-Command Get-BridgeEventRecords -ErrorAction SilentlyContinue)) {
+            function script:Get-BridgeEventRecords {
+                param([string]$ProjectDir)
+                return @()
+            }
+        }
 
         function script:Get-Task789SupervisorIdentity {
             $started = Get-WinsmuxRuntimeProcessStartedAt -ProcessId $PID
@@ -1794,6 +1800,8 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         New-Item -ItemType Directory -Path (Join-Path $script:task789FixRoot '.winsmux') -Force | Out-Null
         $script:task789Observed = @()
         $script:task789Killed = @()
+        $script:task789AgentReadyProbes = 0
+        $script:task789WorktreeRemoved = $false
     }
 
     AfterEach {
@@ -2348,6 +2356,10 @@ panes:
         Mock Invoke-MonitorWinsmux {
             param($Arguments)
             if (@($Arguments) -contains 'split-window') { return '%5' }
+            if (@($Arguments) -contains 'capture-pane') {
+                $script:task789AgentReadyProbes++
+                return '>'
+            }
         }
         Mock Wait-MonitorPaneShellReady { }
         Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
@@ -2365,6 +2377,7 @@ panes:
         $saved.Panes['worker-2'].status | Should -Be 'ready'
         [bool]$saved.Panes['worker-2'].runtime_ready | Should -BeTrue
         [string]$saved.Panes['worker-2'].bootstrap_marker_path | Should -Be $markerPath
+        $script:task789AgentReadyProbes | Should -BeGreaterThan 0
 
         $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $processResolver = {
@@ -2499,6 +2512,7 @@ Write-Output 'reached-after-exit'
     }
 
     It 'treats unrecognized or empty archive status without an idle event as unavailable' {
+        Mock Get-BridgeEventRecords { @() }
         $empty = Test-WinsmuxArchivePaneIdle -Entry ([pscustomobject]@{
             Label = 'worker-2'; PaneId = '%5'; Status = ''; LastEvent = ''
         }) -ProjectDir $script:task789FixRoot
@@ -2516,6 +2530,68 @@ Write-Output 'reached-after-exit'
         }) -ProjectDir $script:task789FixRoot
         $ready.Idle | Should -BeTrue
         $ready.Evidence | Should -Be 'idle'
+    }
+
+    It 'lets a later matching pane.progress event override stale archive status=ready' {
+        $idleIndex = $script:task789DispatchContent.IndexOf('function Test-WinsmuxArchivePaneIdle')
+        $idleIndex | Should -BeGreaterThan -1
+        $next = $script:task789DispatchContent.IndexOf("`nfunction ", $idleIndex + 1)
+        if ($next -lt 0) {
+            $next = $script:task789DispatchContent.Length
+        }
+        $body = $script:task789DispatchContent.Substring($idleIndex, $next - $idleIndex)
+        $body.IndexOf('Get-BridgeEventRecords') | Should -BeGreaterThan -1
+        $body.IndexOf('Get-BridgeEventRecords') | Should -BeLessThan $body.IndexOf("'ready', 'waiting_for_dispatch'")
+
+        Mock Get-BridgeEventRecords {
+            @(
+                [ordered]@{ event = 'pane.idle'; label = 'worker-2'; pane_id = '%5' }
+                [ordered]@{ event = 'pane.progress'; label = 'worker-2'; pane_id = '%5' }
+            )
+        }
+        $busy = Test-WinsmuxArchivePaneIdle -Entry ([pscustomobject]@{
+            Label = 'worker-2'; PaneId = '%5'; Status = 'ready'; LastEvent = ''
+        }) -ProjectDir $script:task789FixRoot
+        $busy.Idle | Should -BeFalse
+        $busy.Evidence | Should -Be 'busy'
+        $busy.LastEvent | Should -Be 'pane.progress'
+    }
+
+    It 'keeps archive idle when status=ready and the newest matching event or lastEvent is idle' {
+        Mock Get-BridgeEventRecords {
+            @(
+                [ordered]@{ event = 'pane.progress'; label = 'worker-2'; pane_id = '%5' }
+                [ordered]@{ event = 'pane.idle'; label = 'worker-2'; pane_id = '%5' }
+            )
+        }
+        $newestIdle = Test-WinsmuxArchivePaneIdle -Entry ([pscustomobject]@{
+            Label = 'worker-2'; PaneId = '%5'; Status = 'ready'; LastEvent = ''
+        }) -ProjectDir $script:task789FixRoot
+        $newestIdle.Idle | Should -BeTrue
+        $newestIdle.Evidence | Should -Be 'idle'
+        $newestIdle.LastEvent | Should -Be 'pane.idle'
+
+        Mock Get-BridgeEventRecords { @() }
+        $lastEventIdle = Test-WinsmuxArchivePaneIdle -Entry ([pscustomobject]@{
+            Label = 'worker-2'; PaneId = '%5'; Status = 'ready'; LastEvent = 'pane.idle'
+        }) -ProjectDir $script:task789FixRoot
+        $lastEventIdle.Idle | Should -BeTrue
+        $lastEventIdle.Evidence | Should -Be 'idle'
+        $lastEventIdle.LastEvent | Should -Be 'pane.idle'
+    }
+
+    It 'keeps lastEvent busy ahead of a later idle event' {
+        Mock Get-BridgeEventRecords {
+            @(
+                [ordered]@{ event = 'pane.idle'; label = 'worker-2'; pane_id = '%5' }
+            )
+        }
+        $busy = Test-WinsmuxArchivePaneIdle -Entry ([pscustomobject]@{
+            Label = 'worker-2'; PaneId = '%5'; Status = 'ready'; LastEvent = 'pane.progress'
+        }) -ProjectDir $script:task789FixRoot
+        $busy.Idle | Should -BeFalse
+        $busy.Evidence | Should -Be 'busy'
+        $busy.LastEvent | Should -Be 'pane.progress'
     }
 
     It 'commits a v2 spawn after split when the guarded save sees the new observed pane' {
@@ -2774,6 +2850,10 @@ Write-Output 'reached-after-exit'
                 return '%5'
             }
             if ($argsList -contains 'select-pane') { return }
+            if ($argsList -contains 'capture-pane') {
+                $script:task789AgentReadyProbes++
+                return '>'
+            }
         }
         Mock Wait-MonitorPaneShellReady { }
         Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
@@ -2788,6 +2868,7 @@ Write-Output 'reached-after-exit'
         $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
         $saved.Panes['worker-2'].status | Should -Be 'ready'
         [bool]$saved.Panes['worker-2'].runtime_ready | Should -BeTrue
+        $script:task789AgentReadyProbes | Should -BeGreaterThan 0
 
         $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $read = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot
@@ -2812,6 +2893,101 @@ Write-Output 'reached-after-exit'
             } -Operation dispatch -Now ([datetime]::UtcNow.AddMinutes(1))
         $dispatchCheck.valid | Should -BeTrue -Because ("dispatch diagnostic: {0} {1}" -f $dispatchCheck.reason_code, $dispatchCheck.diagnostic)
         $dispatchCheck.reason_code | Should -Be 'live_runtime_verified'
+    }
+
+    It 'does not publish v2 status=ready when a marker PID exists but agent-readiness times out' {
+        $scalerIndex = $script:task789PaneScalerContent.IndexOf('function Add-OrchestraWorkerPane')
+        $scalerIndex | Should -BeGreaterThan -1
+        $next = $script:task789PaneScalerContent.IndexOf("`nfunction ", $scalerIndex + 1)
+        if ($next -lt 0) {
+            $next = $script:task789PaneScalerContent.Length
+        }
+        $spawnBody = $script:task789PaneScalerContent.Substring($scalerIndex, $next - $scalerIndex)
+        $spawnBody | Should -Match 'Wait-OrchestraSpawnAgentReady'
+        $script:task789PaneScalerContent | Should -Match 'function Wait-OrchestraSpawnAgentReady'
+        $script:task789PaneScalerContent | Should -Match 'Get-PaneAgentStatus -PaneId \$PaneId -Agent \$Agent -Role ''Worker'''
+
+        $markerDir = Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
+        $markerPath = Join-Path $markerDir '5-generation-789.ready.json'
+        @{
+            state = 'bootstrap_pending'
+            generation_id = 'generation-789'
+            server_session_id = '$9'
+            slot_id = 'worker-2'
+            pane_id = '%5'
+            backend = 'codex'
+            role = 'worker'
+            title = 'worker-2'
+            bootstrap_pid = 4300
+            bootstrap_process_started_at = '2026-08-17T00:00:02.0000000Z'
+        } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
+
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot
+        $supervisor = script:Get-Task789SupervisorIdentity
+        script:Write-Task789V2Manifest -Path $manifestPath -ProjectDir $script:task789FixRoot -Panes @(
+            script:New-Task789V2Pane -Label 'worker-1' -PaneId '%3'
+        )
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
+            -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
+        $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
+        $script:task789Observed = @(
+            script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'
+            script:New-Task789ObservedPane -PaneId '%3' -Title 'worker-1'
+        )
+        $script:task789Killed = @()
+        script:Mock-Task789LiveServer
+        $worktreePath = Join-Path $script:task789FixRoot '.worktrees\worker-2'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        Mock New-PaneScalerWorkerWorktree {
+            [pscustomobject]@{ WorktreePath = $worktreePath; BranchName = 'worktree-worker-2'; GitWorktreeDir = $worktreePath }
+        }
+        Mock Remove-PaneScalerBuilderWorktree { $script:task789WorktreeRemoved = $true }
+        Mock Invoke-MonitorWinsmux {
+            param($Arguments)
+            $argsList = @($Arguments)
+            if ($argsList -contains 'split-window') {
+                $script:task789Observed = @($script:task789Observed) + @(
+                    script:New-Task789ObservedPane -PaneId '%5' -Title 'worker-2'
+                )
+                return '%5'
+            }
+            if ($argsList -contains 'select-pane') { return }
+            if ($argsList -contains 'capture-pane') {
+                $script:task789AgentReadyProbes++
+                return 'executing task...'
+            }
+            if ($argsList -contains 'kill-pane') {
+                $target = $argsList[$argsList.IndexOf('-t') + 1]
+                $script:task789Killed += $target
+                $script:task789Observed = @($script:task789Observed | Where-Object { $_.PaneId -ne $target })
+                return
+            }
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
+        Mock New-OrchestraPaneBootstrapPlan { Join-Path $markerDir '5.json' }
+        Mock Get-OrchestraPaneBootstrapMarkerPath { $markerPath }
+        Mock Start-OrchestraPaneBootstrap { }
+        Mock Get-BridgeSettings { [ordered]@{ agent = 'codex'; model = 'gpt-5.4' } }
+
+        { Add-OrchestraWorkerPane -ManifestPath $manifestPath -SlotId 'worker-2' -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = 'worker-2'
+        }) -AgentReadyTimeoutSeconds 0 } | Should -Throw '*timed out waiting for agent ready*'
+
+        $script:task789AgentReadyProbes | Should -BeGreaterThan 0
+        [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $beforeManifest
+        [System.IO.File]::ReadAllBytes($registryPath) | Should -Be $beforeRegistry
+        $script:task789Killed | Should -Contain '%5'
+        $script:task789WorktreeRemoved | Should -BeTrue
+        ($script:task789Observed | ForEach-Object { $_.PaneId }) | Should -Not -Contain '%5'
+        $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
+        $saved.Panes.Contains('worker-2') | Should -BeFalse
     }
 
     It 'restores v2 archive files when kill-pane fails and the pane is still listed' {
@@ -2957,6 +3133,74 @@ Write-Output 'reached-after-exit'
         ($output | Out-String) | Should -Match 'idle evidence is unavailable'
         ($output | Out-String) | Should -Not -Match 'reached-after-exit'
         Test-Path -LiteralPath $sentPath | Should -BeFalse
+        Test-Path -LiteralPath $killedPath | Should -BeFalse
+    }
+
+    It 'interrupts instead of skip-killing when archive-pane sees status=ready and a later pane.progress event' {
+        $probePath = Join-Path $script:task789FixRoot 'archive-ready-progress-probe.ps1'
+        $dispatchPath = $script:task789DispatchPath
+        $sentPath = Join-Path $script:task789FixRoot 'cc-sent.txt'
+        $killedPath = Join-Path $script:task789FixRoot 'killed.txt'
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        script:Write-Task789V2Manifest -Path $manifestPath -ProjectDir $script:task789FixRoot -Panes @(
+            script:New-Task789V2Pane -Label 'worker-1' -PaneId '%3' -Status 'ready'
+            script:New-Task789V2Pane -Label 'worker-2' -PaneId '%9' -Status 'ready'
+        )
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+function Stop-WithError { param([string]`$Message) throw `$Message }
+function Get-Labels { return @{ 'worker-2' = '%9' } }
+. '$($dispatchPath.Replace("'", "''"))'
+function Test-PaneControlRuntimeContext {
+    param(`$ProjectDir, `$ManifestEntry, `$Operation)
+    return [pscustomobject]@{ valid = `$true; reason_code = 'stop_transition_verified'; diagnostic = 'ok'; context = [pscustomobject]@{ generation_id = 'generation-789' } }
+}
+function Get-PaneControlManifestEntries {
+    param(`$ProjectDir)
+    return @(
+        [pscustomobject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%3'; Role = 'Worker'
+            WorkerRole = 'worker'; WorkerBackend = 'codex'; Title = 'worker-1'
+            Status = 'ready'; LastEvent = 'pane.idle'
+        },
+        [pscustomobject]@{
+            Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%9'; Role = 'Worker'
+            WorkerRole = 'worker'; WorkerBackend = 'codex'; Title = 'worker-2'
+            Status = 'ready'; LastEvent = ''
+        }
+    )
+}
+function Get-BridgeEventRecords {
+    param(`$ProjectDir)
+    return @(
+        [ordered]@{ event = 'pane.idle'; label = 'worker-2'; pane_id = '%9' }
+        [ordered]@{ event = 'pane.progress'; label = 'worker-2'; pane_id = '%9' }
+    )
+}
+function Invoke-WinsmuxRaw {
+    param(`$Arguments)
+    if (@(`$Arguments) -contains 'C-c') { Set-Content -LiteralPath '$($sentPath.Replace("'", "''"))' -Value 'sent' -Encoding utf8 }
+}
+function Invoke-MonitorWinsmux {
+    param(`$Arguments)
+    if (@(`$Arguments) -contains 'C-c') { Set-Content -LiteralPath '$($sentPath.Replace("'", "''"))' -Value 'sent' -Encoding utf8 }
+    if (@(`$Arguments) -contains 'kill-pane') { Set-Content -LiteralPath '$($killedPath.Replace("'", "''"))' -Value 'killed' -Encoding utf8 }
+}
+function Remove-OrchestraPane {
+    param(`$ManifestPath, `$Role, `$Label)
+    Set-Content -LiteralPath '$($killedPath.Replace("'", "''"))' -Value 'removed' -Encoding utf8
+    return [pscustomobject]@{ Changed = `$true; Reason = '' }
+}
+Set-Location -LiteralPath '$($script:task789FixRoot.Replace("'", "''"))'
+Invoke-WinsmuxArchivePaneCommand -BridgeScriptRoot '$($script:task789FixRoot.Replace("'", "''"))' -CommandTarget 'worker-2' -CommandRest @()
+Write-Output 'reached-after-exit'
+"@
+        Set-Content -LiteralPath $probePath -Value $probe -Encoding utf8
+        $output = & pwsh -NoProfile -File $probePath 2>&1
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'interrupt did not make'
+        ($output | Out-String) | Should -Not -Match 'reached-after-exit'
+        Test-Path -LiteralPath $sentPath | Should -BeTrue
         Test-Path -LiteralPath $killedPath | Should -BeFalse
     }
 }

@@ -539,13 +539,45 @@ function Test-OrchestraArchiveRemovesLastRequiredWorker {
     return ($role -eq 'Worker' -and -not [string]::IsNullOrWhiteSpace($paneId))
 }
 
+function Wait-OrchestraSpawnAgentReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Agent,
+        [int]$TimeoutSeconds = 60,
+        [int]$PollMilliseconds = 2000
+    )
+
+    if (-not (Get-Command Get-PaneAgentStatus -ErrorAction SilentlyContinue)) {
+        throw 'Worker spawn requires Get-PaneAgentStatus after the bootstrap marker is present.'
+    }
+
+    $timeoutSeconds = [Math]::Max(0, $TimeoutSeconds)
+    $pollMilliseconds = [Math]::Max(1, $PollMilliseconds)
+    $deadline = (Get-Date).AddSeconds($timeoutSeconds)
+    while ($true) {
+        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role 'Worker'
+        $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
+        if ($statusName -ceq 'ready') {
+            return
+        }
+
+        if ((Get-Date) -ge $deadline) {
+            throw ("Worker spawn timed out waiting for agent ready in pane {0}." -f $PaneId)
+        }
+
+        Start-Sleep -Milliseconds $pollMilliseconds
+    }
+}
+
 function Add-OrchestraWorkerPane {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$SlotId,
         $Settings = $null,
         $SlotAgentConfig = $null,
-        $Assignment = $null
+        $Assignment = $null,
+        [int]$AgentReadyTimeoutSeconds = 60,
+        [int]$AgentReadyPollMilliseconds = 2000
     )
 
     $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
@@ -714,19 +746,23 @@ function Add-OrchestraWorkerPane {
                 Start-Sleep -Milliseconds 100
             }
             if (Test-Path -LiteralPath $bootstrapMarkerPath -PathType Leaf) {
+                $markerPid = $null
                 try {
                     $marker = Get-Content -LiteralPath $bootstrapMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
-                    $markerPid = $null
                     if (Get-Command ConvertTo-WinsmuxRuntimeInteger -ErrorAction SilentlyContinue) {
                         $markerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_pid' -Default $null)
                     } else {
                         $markerPid = [int](Get-MonitorPropertyValue -InputObject $marker -Name 'bootstrap_pid' -Default 0)
                     }
-                    if ($null -ne $markerPid -and $markerPid -gt 0) {
-                        $runtimeReady = $true
-                        $paneStatus = 'ready'
-                    }
                 } catch {
+                    $markerPid = $null
+                }
+                if ($null -ne $markerPid -and $markerPid -gt 0) {
+                    Wait-OrchestraSpawnAgentReady -PaneId $newPaneId -Agent $agent `
+                        -TimeoutSeconds $AgentReadyTimeoutSeconds `
+                        -PollMilliseconds $AgentReadyPollMilliseconds
+                    $runtimeReady = $true
+                    $paneStatus = 'ready'
                 }
             }
         }

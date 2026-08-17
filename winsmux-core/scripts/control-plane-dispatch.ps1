@@ -1080,15 +1080,6 @@ function Test-WinsmuxArchivePaneIdle {
     if ($busyEvents -contains $lastEvent) {
         return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
     }
-    if ($idleEvents -contains $lastEvent) {
-        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
-    }
-    if ($status -in @('busy', 'approval_waiting', 'hung', 'stalled')) {
-        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
-    }
-    if ($status -in @('ready', 'waiting_for_dispatch', 'deferred_start', 'deferred_starting')) {
-        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
-    }
 
     if (Get-Command Get-BridgeEventRecords -ErrorAction SilentlyContinue) {
         $events = @(Get-BridgeEventRecords -ProjectDir $ProjectDir)
@@ -1109,6 +1100,16 @@ function Test-WinsmuxArchivePaneIdle {
                 return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $eventName
             }
         }
+    }
+
+    if ($idleEvents -contains $lastEvent) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
+    }
+    if ($status -in @('busy', 'approval_waiting', 'hung', 'stalled')) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
+    }
+    if ($status -in @('ready', 'waiting_for_dispatch', 'deferred_start', 'deferred_starting')) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
     }
 
     return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'unavailable' -Status $status -LastEvent $lastEvent
