@@ -682,6 +682,16 @@ function Add-OrchestraWorkerPane {
     $newPaneId = ''
     try {
         $worktree = New-PaneScalerWorkerWorktree -ProjectDir $projectDir -WorkerIndex $workerIndex
+        if (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue) {
+            try {
+                $worktreeProjection = Invoke-TeamProfileLaunchProjection -ProjectDir $projectDir -SessionId $sessionName -SlotId $SlotId -Worktree $worktree.WorktreePath -ReadWriteScope 'session' -Force
+                if ($null -ne $worktreeProjection) {
+                    $Projection = $worktreeProjection
+                }
+            } catch {
+                # Keep the caller projection when regeneration after worktree is unavailable.
+            }
+        }
         $splitOutput = Invoke-MonitorWinsmux -Arguments @('split-window', '-t', $seed.PaneId, '-h', '-c', $worktree.WorktreePath, '-P', '-F', '#{pane_id}') -CaptureOutput
         $newPaneId = (($splitOutput | Out-String).Trim() -split "\r?\n" | Where-Object { $_ -match '^%\d+$' } | Select-Object -Last 1)
         if ([string]::IsNullOrWhiteSpace($newPaneId)) {

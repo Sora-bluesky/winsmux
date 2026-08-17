@@ -1912,7 +1912,35 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $body | Should -Match 'team_profile_projection_mutated_live_manifest'
         $script:task789DispatchContent | Should -Match 'Ensure-DispatchTaskLiveWorkerPane'
         $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskCatalogSlotIds'
+        $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskResolvedTeamSlots'
         $script:task789DispatchContent | Should -Match 'function Get-DispatchTaskMissingCatalogSlotIds'
+        $catalogIndex = $script:task789DispatchContent.IndexOf('function Get-DispatchTaskCatalogSlotIds')
+        $catalogIndex | Should -BeGreaterThan -1
+        $catalogNext = $script:task789DispatchContent.IndexOf("`nfunction ", $catalogIndex + 1)
+        if ($catalogNext -lt 0) {
+            $catalogNext = $script:task789DispatchContent.Length
+        }
+        $catalogBody = $script:task789DispatchContent.Substring($catalogIndex, $catalogNext - $catalogIndex)
+        $catalogBody | Should -Match 'Get-DispatchTaskResolvedTeamSlots'
+        $catalogBody | Should -Not -Match 'Get-BridgeSettings'
+        $resolveIndex = $script:task789DispatchContent.IndexOf('function Get-DispatchTaskResolvedTeamPayload')
+        $resolveIndex | Should -BeGreaterThan -1
+        $resolveNext = $script:task789DispatchContent.IndexOf("`nfunction ", $resolveIndex + 1)
+        if ($resolveNext -lt 0) {
+            $resolveNext = $script:task789DispatchContent.Length
+        }
+        $resolveBody = $script:task789DispatchContent.Substring($resolveIndex, $resolveNext - $resolveIndex)
+        $resolveBody | Should -Match "--action', 'resolve'"
+        $script:task789PaneScalerContent | Should -Match 'Add-TeamProfileBundleToLaunchCommand'
+        $scalerIndex = $script:task789PaneScalerContent.IndexOf('function Add-OrchestraWorkerPane')
+        $scalerIndex | Should -BeGreaterThan -1
+        $scalerNext = $script:task789PaneScalerContent.IndexOf("`nfunction ", $scalerIndex + 1)
+        if ($scalerNext -lt 0) {
+            $scalerNext = $script:task789PaneScalerContent.Length
+        }
+        $scalerBody = $script:task789PaneScalerContent.Substring($scalerIndex, $scalerNext - $scalerIndex)
+        $scalerBody.IndexOf('New-PaneScalerWorkerWorktree') | Should -BeLessThan $scalerBody.IndexOf('Invoke-TeamProfileLaunchProjection')
+        $scalerBody | Should -Match '-Worktree \$worktree.WorktreePath'
         $script:task789DispatchContent | Should -Match 'Get-DispatchTaskAvailableTargets'
         $invokeIndex = $script:task789DispatchContent.IndexOf('function Invoke-WinsmuxDispatchTaskCommand')
         $invokeIndex | Should -BeGreaterThan -1
@@ -3953,6 +3981,102 @@ Write-Output 'reached-after-exit'
         $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
         $saved.version | Should -Be 2
         $saved.Session.expected_pane_count | Should -Be 2
+    }
+
+    It 'TASK-789 empty agent_slots still exposes the resolved six-slot catalog' {
+        Mock Get-BridgeSettings {
+            [ordered]@{ agent_slots = @() }
+        }
+        Mock Get-DispatchTaskResolvedTeamSlots {
+            @('worker-1', 'worker-2', 'worker-3', 'worker-4', 'worker-5', 'worker-6')
+        }
+        $ids = @(Get-DispatchTaskCatalogSlotIds -ProjectDir $script:task789FixRoot)
+        $ids.Count | Should -Be 6
+        $ids[0] | Should -Be 'worker-1'
+        $ids[5] | Should -Be 'worker-6'
+    }
+
+    It 'TASK-789 regenerates Team Profile projection after the spawned worktree exists' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        $supervisor = script:Get-Task789SupervisorIdentity
+        script:Write-Task789V2Manifest -Path $manifestPath -ProjectDir $script:task789FixRoot -Panes @(
+            script:New-Task789V2Pane -Label 'worker-1' -PaneId '%3'
+        )
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
+            -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $script:task789Observed = @(
+            script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'
+            script:New-Task789ObservedPane -PaneId '%3' -Title 'worker-1'
+        )
+        $script:task789BundleCalls = @()
+        $script:task789ProjectionWorktrees = @()
+        script:Mock-Task789LiveServer
+        $worktreePath = Join-Path $script:task789FixRoot '.worktrees\worker-2'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        Mock New-PaneScalerWorkerWorktree {
+            [pscustomobject]@{ WorktreePath = $worktreePath; BranchName = 'worktree-worker-2'; GitWorktreeDir = $worktreePath }
+        }
+        Mock Invoke-TeamProfileLaunchProjection {
+            param($ProjectDir, $SessionId, $SlotId, $Worktree, $ReadWriteScope, [switch]$Force)
+            $script:task789ProjectionWorktrees += [string]$Worktree
+            return [pscustomobject]@{
+                bundle_path = '.winsmux/team-profile/worker-2.md'
+                worktree    = [string]$Worktree
+                projection  = [pscustomobject]@{
+                    pane = [pscustomobject]@{
+                        prompt_bundle = [pscustomobject]@{ path = '.winsmux/team-profile/worker-2.md' }
+                    }
+                }
+            }
+        }
+        Mock Invoke-MonitorWinsmux {
+            param($Arguments)
+            $argsList = @($Arguments)
+            if ($argsList -contains 'split-window') {
+                $script:task789Observed = @($script:task789Observed) + @(
+                    script:New-Task789ObservedPane -PaneId '%5' -Title 'worker-2'
+                )
+                return '%5'
+            }
+            if ($argsList -contains 'select-pane') { return }
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
+        Mock Add-TeamProfileBundleToLaunchCommand {
+            param($LaunchCommand, $Projection, $ProjectDir)
+            $script:task789BundleCalls += [pscustomobject]@{
+                LaunchCommand = [string]$LaunchCommand
+                BundlePath    = [string]$Projection.bundle_path
+                Worktree      = [string]$Projection.worktree
+            }
+            return ($LaunchCommand + ' TEAM-PROFILE-BUNDLE')
+        }
+        Mock New-OrchestraPaneBootstrapPlan {
+            param($LaunchCommand)
+            $script:task789CapturedLaunch = [string]$LaunchCommand
+            $planDir = Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap'
+            New-Item -ItemType Directory -Path $planDir -Force | Out-Null
+            $planPath = Join-Path $planDir '5.json'
+            Set-Content -LiteralPath $planPath -Value '{}' -Encoding utf8
+            return $planPath
+        }
+        Mock Get-OrchestraPaneBootstrapMarkerPath {
+            Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap\5-generation-789.ready.json'
+        }
+        Mock Start-OrchestraPaneBootstrap { }
+        Mock Get-BridgeSettings { [ordered]@{ agent = 'codex'; model = 'gpt-5.4' } }
+
+        $stale = [pscustomobject]@{ bundle_path = 'stale'; worktree = '' }
+        $result = Add-OrchestraWorkerPane -ManifestPath $manifestPath -SlotId 'worker-2' -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = 'worker-2'
+        }) -Projection $stale
+        $result.Changed | Should -BeTrue
+        $script:task789ProjectionWorktrees.Count | Should -Be 1
+        $script:task789ProjectionWorktrees[0] | Should -Be $worktreePath
+        $script:task789BundleCalls[0].Worktree | Should -Be $worktreePath
     }
 
     It 'E09 Get-DispatchTaskAvailableTargets still excludes reviewer-only live slots after catalog union' {

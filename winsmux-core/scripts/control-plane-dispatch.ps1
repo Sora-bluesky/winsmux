@@ -373,46 +373,112 @@ function Get-DispatchTaskLiveSpawnBudget {
     }
 }
 
-function Get-DispatchTaskCatalogSlotIds {
+function Get-DispatchTaskWinsmuxBin {
+    if (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue) {
+        try {
+            return [string](Get-WinsmuxBin)
+        } catch {
+            return ''
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BIN) -and (Test-Path -LiteralPath $env:WINSMUX_BIN -PathType Leaf)) {
+        return [System.IO.Path]::GetFullPath($env:WINSMUX_BIN)
+    }
+    $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    foreach ($candidatePath in @(
+            (Join-Path $repoRoot 'target\release\winsmux.exe'),
+            (Join-Path $repoRoot 'target\debug\winsmux.exe')
+        )) {
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            return [System.IO.Path]::GetFullPath($candidatePath)
+        }
+    }
+    $command = Get-Command winsmux -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+        return [string]$command.Source
+    }
+    return ''
+}
+
+function Get-DispatchTaskResolvedTeamPayload {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
-    $settingsPath = Join-Path $ProjectDir '.winsmux.yaml'
-    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
-        return @()
+    $bin = Get-DispatchTaskWinsmuxBin
+    if ([string]::IsNullOrWhiteSpace($bin)) {
+        return $null
     }
-    if (-not (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue)) {
-        return @()
+    $resolveArgs = @('team-profile', '--action', 'resolve', '--json', '--project-dir', $ProjectDir)
+    $output = $null
+    $code = 1
+    if (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue) {
+        $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $bin -Arguments $resolveArgs 2>&1
+        $code = $LASTEXITCODE
+    } else {
+        $output = & $bin @resolveArgs 2>&1
+        $code = $LASTEXITCODE
     }
-
-    $slots = @()
+    if ($code -ne 0) {
+        return $null
+    }
+    $text = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
     try {
-        $settings = Get-BridgeSettings -RootPath $ProjectDir
-        if ($settings -is [System.Collections.IDictionary] -and $settings.Contains('agent_slots')) {
-            $slots = @($settings['agent_slots'])
-        } elseif ($null -ne $settings -and $null -ne $settings.PSObject -and $settings.PSObject.Properties.Name -contains 'agent_slots') {
-            $slots = @($settings.agent_slots)
-        }
+        return ($text | ConvertFrom-Json)
     } catch {
+        return $null
+    }
+}
+
+function Get-DispatchTaskResolvedTeamSlots {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $payload = Get-DispatchTaskResolvedTeamPayload -ProjectDir $ProjectDir
+    if ($null -eq $payload) {
         return @()
+    }
+    $okText = Get-DispatchTaskObjectText -InputObject $payload -Names @('ok')
+    if ([string]::Equals($okText, 'false', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @()
+    }
+    $team = $null
+    if ($payload -is [System.Collections.IDictionary] -and $payload.Contains('team')) {
+        $team = $payload['team']
+    } elseif ($null -ne $payload.PSObject -and $payload.PSObject.Properties.Name -contains 'team') {
+        $team = $payload.team
+    }
+    if ($null -eq $team) {
+        return @()
+    }
+    $optedIn = Get-DispatchTaskObjectText -InputObject $team -Names @('opted_in', 'opted-in')
+    if ([string]::Equals($optedIn, 'false', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @()
+    }
+    $slots = @()
+    if ($team -is [System.Collections.IDictionary] -and $team.Contains('slots')) {
+        $slots = @($team['slots'])
+    } elseif ($null -ne $team.PSObject -and $team.PSObject.Properties.Name -contains 'slots') {
+        $slots = @($team.slots)
     }
 
     $ids = New-Object System.Collections.Generic.List[string]
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($slot in @($slots)) {
-        $slotId = Get-DispatchTaskObjectText -InputObject $slot -Names @('slot_id', 'SlotId', 'label', 'Label')
+        $slotId = Get-DispatchTaskObjectText -InputObject $slot -Names @('slot-id', 'slot_id', 'SlotId', 'label', 'Label')
         if ([string]::IsNullOrWhiteSpace($slotId)) {
             continue
         }
         $entry = [pscustomobject]@{
             Label      = $slotId
             Role       = (Get-DispatchTaskObjectText -InputObject $slot -Names @('role', 'Role'))
-            WorkerRole = (Get-DispatchTaskObjectText -InputObject $slot -Names @('worker_role', 'WorkerRole'))
-            AgentRole  = (Get-DispatchTaskObjectText -InputObject $slot -Names @('agent_role', 'AgentRole'))
+            WorkerRole = (Get-DispatchTaskObjectText -InputObject $slot -Names @('worker_role', 'WorkerRole', 'worker-role'))
+            AgentRole  = (Get-DispatchTaskObjectText -InputObject $slot -Names @('agent_role', 'AgentRole', 'agent-role'))
         }
         if (Test-DispatchTaskReviewerManifestEntry -Entry $entry) {
             continue
         }
-        $runtimeRole = Get-DispatchTaskObjectText -InputObject $slot -Names @('runtime_role', 'RuntimeRole')
+        $runtimeRole = Get-DispatchTaskObjectText -InputObject $slot -Names @('runtime_role', 'RuntimeRole', 'runtime-role')
         if (-not [string]::IsNullOrWhiteSpace($runtimeRole) -and
             -not [string]::Equals($runtimeRole, 'worker', [System.StringComparison]::OrdinalIgnoreCase)) {
             continue
@@ -421,8 +487,14 @@ function Get-DispatchTaskCatalogSlotIds {
             $ids.Add($slotId) | Out-Null
         }
     }
-
     return @($ids)
+}
+
+function Get-DispatchTaskCatalogSlotIds {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    # Team Profile resolve owns worker-1..6. YAML agent_slots is an overlay, not the catalog.
+    return @(Get-DispatchTaskResolvedTeamSlots -ProjectDir $ProjectDir)
 }
 
 function Get-DispatchTaskMissingCatalogSlotIds {
