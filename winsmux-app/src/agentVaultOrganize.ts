@@ -263,6 +263,268 @@ export function buildAgentVaultForkLaunchCommand(provider: string): string {
   }
 }
 
+export function isAbsoluteAgentVaultLaunchPath(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) {
+    return false;
+  }
+  return /^[A-Za-z]:[\\/]/.test(raw) || raw.startsWith("\\\\") || raw.startsWith("//") || raw.startsWith("/");
+}
+
+export function resolveAgentVaultLaunchDirectory(workspacePath: string, baseDir: string): string {
+  const raw = (workspacePath ?? "").trim();
+  const base = (baseDir ?? "").trim();
+  if (raw.startsWith("workspace:")) {
+    return "";
+  }
+  if (!raw || raw === "__this_project__") {
+    return isAbsoluteAgentVaultLaunchPath(base) ? base : "";
+  }
+  if (isAbsoluteAgentVaultLaunchPath(raw)) {
+    return raw;
+  }
+  if (!isAbsoluteAgentVaultLaunchPath(base)) {
+    return "";
+  }
+  const segments = raw.split(/[\\/]+/).filter((part) => part.length > 0 && part !== ".");
+  if (segments.some((part) => part === "..")) {
+    return "";
+  }
+  const baseNormalized = base.replace(/[\\/]+$/, "").replace(/\\/g, "/");
+  return segments.length === 0 ? baseNormalized : `${baseNormalized}/${segments.join("/")}`;
+}
+
+export function normalizeAgentVaultText(value: string | null | undefined, fallback = ""): string {
+  const normalized = (value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized || fallback;
+}
+
+export function sanitizeAgentVaultDisplayText(value: string | null | undefined, fallback = ""): string {
+  return normalizeAgentVaultText(value, fallback)
+    .replace(/[A-Za-z]:[\\/][^\s"'<>]+/g, "[local path]")
+    .replace(/\\\\[^\s"'<>]+/g, "[network path]");
+}
+
+export function truncateAgentVaultText(value: string, limit = 128): string {
+  const normalized = sanitizeAgentVaultDisplayText(value);
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
+}
+
+function normalizeVaultPath(value: string | null | undefined): string {
+  return (value ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+export function getAgentVaultWorkspaceKey(
+  path: string | null | undefined,
+  snapshotProjectDir?: string | null,
+  activeProjectDir?: string | null,
+): string {
+  const normalized = normalizeVaultPath(path);
+  const active = normalizeVaultPath(activeProjectDir) || normalizeVaultPath(snapshotProjectDir);
+  if (!normalized) {
+    return "unknown";
+  }
+  if (active && normalized.toLowerCase() === active.toLowerCase()) {
+    return "__this_project__";
+  }
+  return `workspace:${normalized.toLowerCase()}`;
+}
+
+export function getAgentVaultWorkspaceLabel(
+  path: string | null | undefined,
+  snapshotProjectDir: string | null | undefined,
+  activeProjectDir: string | null | undefined,
+  labels: { unknown: string; thisProject: string; workspace: string },
+): string {
+  const normalized = normalizeVaultPath(path);
+  const active = normalizeVaultPath(activeProjectDir) || normalizeVaultPath(snapshotProjectDir);
+  if (!normalized) {
+    return labels.unknown;
+  }
+  if (active && normalized.toLowerCase() === active.toLowerCase()) {
+    return labels.thisProject;
+  }
+  const parts = normalized.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? labels.workspace;
+}
+
+export function isAgentVaultThisProject(
+  path: string | null | undefined,
+  snapshotProjectDir?: string | null,
+  activeProjectDir?: string | null,
+): boolean {
+  const normalized = normalizeVaultPath(path);
+  const active = normalizeVaultPath(activeProjectDir) || normalizeVaultPath(snapshotProjectDir);
+  return Boolean(normalized && active && normalized.toLowerCase() === active.toLowerCase());
+}
+
+export function inferAgentVaultProvider(...values: string[]): AgentVaultOrganizeProviderId {
+  const text = values.join(" ").toLowerCase();
+  if (text.includes("opencode") || text.includes("open code")) {
+    return "opencode";
+  }
+  if (text.includes("codex")) {
+    return "codex";
+  }
+  return "claude";
+}
+
+export function getAgentVaultReviewTone(reviewState: string, state: string): "danger" | "warning" | "success" | "info" {
+  const review = reviewState.toUpperCase();
+  const normalizedState = state.toLowerCase();
+  if (review === "FAIL" || review === "FAILED" || normalizedState.includes("blocked")) {
+    return "danger";
+  }
+  if (review === "PENDING" || normalizedState.includes("waiting")) {
+    return "warning";
+  }
+  if (review === "PASS" || normalizedState.includes("ready")) {
+    return "success";
+  }
+  return "info";
+}
+
+export function formatAgentVaultLastSeen(
+  entryTime: string | null | undefined,
+  fallbackTime: string | null | undefined,
+  unseenLabel: string,
+): string {
+  const timestamp = normalizeAgentVaultText(entryTime || fallbackTime || "");
+  if (!timestamp) {
+    return unseenLabel;
+  }
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return timestamp;
+  }
+  return new Date(parsed).toLocaleString([], {
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export function buildAgentVaultSearchText(entry: {
+  id: string;
+  provider: string;
+  title: string;
+  workspaceLabel: string;
+  resumeId: string;
+  paneId: string;
+  runId: string;
+  state: string;
+  reviewState: string;
+  summary: string;
+  providerLabel?: string;
+}): string {
+  return [
+    entry.id,
+    entry.provider,
+    entry.providerLabel ?? "",
+    entry.title,
+    entry.workspaceLabel,
+    entry.resumeId,
+    entry.paneId,
+    entry.runId,
+    entry.state,
+    entry.reviewState,
+    entry.summary,
+  ].join(" ").toLowerCase();
+}
+
+export function createAgentVaultChip(label: string, value: string, tone?: string): HTMLSpanElement {
+  const chip = document.createElement("span");
+  chip.className = "agent-vault-chip";
+  if (tone) {
+    chip.dataset.tone = tone;
+  }
+  chip.textContent = `${label}: ${value}`;
+  return chip;
+}
+
+export function appendAgentVaultSessionGroup<T>(
+  list: HTMLElement,
+  key: string,
+  label: string,
+  groupEntries: T[],
+  collapsed: boolean,
+  onToggle: () => void,
+  renderCard: (entry: T) => HTMLElement,
+): void {
+  const group = document.createElement("section");
+  group.className = "agent-vault-provider-group";
+  group.dataset.groupKey = key;
+  group.dataset.collapsed = collapsed ? "true" : "false";
+  const heading = document.createElement("button");
+  heading.type = "button";
+  heading.className = "agent-vault-provider-heading";
+  heading.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  heading.addEventListener("click", onToggle);
+  const title = document.createElement("span");
+  title.textContent = label;
+  const count = document.createElement("span");
+  count.className = "agent-vault-provider-count";
+  count.textContent = `${groupEntries.length}`;
+  heading.append(title, count);
+  group.appendChild(heading);
+  if (!collapsed) {
+    for (const entry of groupEntries) {
+      group.appendChild(renderCard(entry));
+    }
+  }
+  list.appendChild(group);
+}
+
+export function getAgentVaultNotificationTone(feedEntries: Array<{ tone: string }>): "danger" | "warning" | "info" {
+  if (feedEntries.some((entry) => entry.tone === "danger")) {
+    return "danger";
+  }
+  if (feedEntries.some((entry) => entry.tone === "warning")) {
+    return "warning";
+  }
+  return "info";
+}
+
+export function renderAgentVaultWorkspaceFilter<T extends { workspaceKey: string; workspaceLabel: string }>(
+  root: HTMLSelectElement,
+  entries: T[],
+  selected: string,
+  allLabel: string,
+): string {
+  const workspaceCounts = new Map<string, { label: string; count: number }>();
+  for (const entry of entries) {
+    const current = workspaceCounts.get(entry.workspaceKey);
+    if (current) {
+      current.count += 1;
+    } else {
+      workspaceCounts.set(entry.workspaceKey, { label: entry.workspaceLabel, count: 1 });
+    }
+  }
+  let nextSelected = selected;
+  if (nextSelected !== "all" && !workspaceCounts.has(nextSelected)) {
+    nextSelected = "all";
+  }
+  root.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "all";
+  allOption.textContent = allLabel;
+  root.appendChild(allOption);
+  const workspaces = Array.from(workspaceCounts.entries())
+    .sort((left, right) => left[1].label.localeCompare(right[1].label));
+  for (const [key, workspace] of workspaces) {
+    const option = document.createElement("option");
+    option.value = key;
+    option.textContent = `${workspace.label} (${workspace.count})`;
+    root.appendChild(option);
+  }
+  root.value = nextSelected;
+  return nextSelected;
+}
+
 export function isResumeCommand(command: string): boolean {
   const normalized = command.replace(/\s+/g, " ").trim();
   if (!normalized) {

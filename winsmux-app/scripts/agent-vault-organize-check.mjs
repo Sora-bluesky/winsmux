@@ -33,6 +33,7 @@ const {
   assignSessionToGroup,
   buildAgentVaultForkLaunchCommand,
   buildAgentVaultResumeCommand,
+  resolveAgentVaultLaunchDirectory,
   emptyAgentVaultOrganize,
   groupNameForSession,
   isArchived,
@@ -179,6 +180,20 @@ assert.equal(v13.groups.find((group) => group.name === "release")?.sessionIds.in
 assert.equal(assignSessionToGroup(v13, "summary:run-id", "").ok, false);
 assert.equal(assignSessionToGroup(v13, "summary:run-id", "   ").ok, false);
 
+// V14: fork cwd — `.` / relative worktree resolve against the active project; `..` fail-closed
+const baseDir = "C:/Users/sorab/proj";
+assert.equal(resolveAgentVaultLaunchDirectory("C:/other/app", baseDir), "C:/other/app");
+assert.equal(resolveAgentVaultLaunchDirectory("D:\\other\\app", baseDir), "D:\\other\\app");
+assert.equal(resolveAgentVaultLaunchDirectory(".", baseDir), baseDir);
+assert.equal(resolveAgentVaultLaunchDirectory("./", baseDir), baseDir);
+assert.equal(resolveAgentVaultLaunchDirectory("worktrees/task-665", baseDir), "C:/Users/sorab/proj/worktrees/task-665");
+assert.equal(resolveAgentVaultLaunchDirectory("", baseDir), baseDir);
+assert.equal(resolveAgentVaultLaunchDirectory("__this_project__", baseDir), baseDir);
+assert.equal(resolveAgentVaultLaunchDirectory(".", ""), "");
+assert.equal(resolveAgentVaultLaunchDirectory("../escape", baseDir), "");
+assert.equal(resolveAgentVaultLaunchDirectory("workspace:c:/other", baseDir), "");
+assert.equal(resolveAgentVaultLaunchDirectory("", ""), "");
+
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
 assert.match(mainSource, /from "\.\/agentVaultOrganize"/);
 assert.match(mainSource, /AGENT_VAULT_ORGANIZE_STORAGE_KEY|winsmux\.agent-vault\.organize\.v1/);
@@ -196,10 +211,12 @@ assert.match(mainSource, /workspacePath/);
 assert.match(mainSource, /queuePaneStartupCwd\(paneId, launchCwd\)/);
 assert.match(mainSource, /spawnPtyPane\(paneId, cols, rows, startupInput, cwd\)/);
 assert.match(mainSource, /mode === "fork" && !launchCwd/);
+assert.match(mainSource, /vaultOrganize\.resolveAgentVaultLaunchDirectory/);
+assert.doesNotMatch(mainSource, /function resolveAgentVaultLaunchDirectory/);
 assert.match(mainSource, /removeSessionFromGroup/);
 assert.match(mainSource, /id: `worker:\$\{runId\}`/);
 assert.doesNotMatch(mainSource, /id: `worker:\$\{target\}`/);
-assert.match(mainSource, /function readAgentVaultWorkerRunId/);
+assert.match(mainSource, /row\.heartbeat\?\.run_id \|\| row\.workspace\?\.run_id/);
 assert.doesNotMatch(mainSource, /desktop_write_.*organize|writeDesktopOrganize|\.winsmux\/.*organize/i);
 
 const restoreFn = mainSource.slice(mainSource.indexOf("async function restoreAgentVaultSession"));
