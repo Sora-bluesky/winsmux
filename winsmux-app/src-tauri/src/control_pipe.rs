@@ -501,29 +501,40 @@ fn replace_file_atomic(from: &Path, to: &Path) -> Result<(), String> {
 fn owner_sid_matches_current_principal(
     owner: windows_sys::Win32::Security::PSID,
     user_sid: windows_sys::Win32::Security::PSID,
-    token: windows_sys::Win32::Foundation::HANDLE,
+    token_owner_sid: windows_sys::Win32::Security::PSID,
 ) -> bool {
-    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
-    use windows_sys::Win32::Security::{CheckTokenMembership, EqualSid, PSID};
+    use windows_sys::Win32::Security::EqualSid;
 
     unsafe {
-        if EqualSid(owner, user_sid) != 0 {
+        // TokenOwner is the SID Windows stamps on files this process creates.
+        // Elevated tokens often use BUILTIN\Administrators there; that SID can
+        // be deny-only, so CheckTokenMembership is not a reliable owner check.
+        if !user_sid.is_null() && EqualSid(owner, user_sid) != 0 {
             return true;
         }
-        // Elevated Windows (including GitHub-hosted runners) often stores
-        // BUILTIN\Administrators as the owner of files the process just created.
-        let ba: Vec<u16> = "S-1-5-32-544".encode_utf16().chain(Some(0)).collect();
-        let mut ba_sid: PSID = core::ptr::null_mut();
-        if ConvertStringSidToSidW(ba.as_ptr(), &mut ba_sid) == 0 || ba_sid.is_null() {
-            return false;
+        !token_owner_sid.is_null() && EqualSid(owner, token_owner_sid) != 0
+    }
+}
+
+#[cfg(all(windows, test))]
+fn sid_to_string_for_test(sid: windows_sys::Win32::Security::PSID) -> String {
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    if sid.is_null() {
+        return "null".to_string();
+    }
+    unsafe {
+        let mut text: windows_sys::core::PWSTR = core::ptr::null_mut();
+        if ConvertSidToStringSidW(sid, &mut text) == 0 || text.is_null() {
+            return "unprintable".to_string();
         }
-        let is_builtin_admin = EqualSid(owner, ba_sid) != 0;
-        let mut is_member: windows_sys::core::BOOL = 0;
-        let trusted_admin = is_builtin_admin
-            && CheckTokenMembership(token, ba_sid, &mut is_member) != 0
-            && is_member != 0;
-        local_free_ptr(ba_sid);
-        trusted_admin
+        let mut len = 0usize;
+        while *text.add(len) != 0 {
+            len += 1;
+        }
+        let value = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+        local_free_ptr(text.cast());
+        value
     }
 }
 
@@ -534,9 +545,10 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
     use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetTokenInformation, TokenUser,
-        ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetTokenInformation, TokenOwner,
+        TokenUser, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_OWNER, TOKEN_QUERY,
+        TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -592,8 +604,30 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
             return Err("control-pipe token rotate failed".to_string());
         }
         let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut token_owner_required = 0u32;
+        GetTokenInformation(
+            token,
+            TokenOwner,
+            core::ptr::null_mut(),
+            0,
+            &mut token_owner_required,
+        );
+        let mut token_owner_buffer = vec![0u8; token_owner_required as usize];
+        let token_owner_sid = if token_owner_required > 0
+            && GetTokenInformation(
+                token,
+                TokenOwner,
+                token_owner_buffer.as_mut_ptr().cast(),
+                token_owner_required,
+                &mut token_owner_required,
+            ) != 0
+        {
+            (*(token_owner_buffer.as_ptr() as *const TOKEN_OWNER)).Owner
+        } else {
+            core::ptr::null_mut()
+        };
         let mut owner_matches =
-            owner_sid_matches_current_principal(owner, token_user.User.Sid, token);
+            owner_sid_matches_current_principal(owner, token_user.User.Sid, token_owner_sid);
         #[cfg(test)]
         {
             if FORCE_CONTROL_PIPE_OWNER_MISMATCH.load(std::sync::atomic::Ordering::SeqCst) {
@@ -612,6 +646,13 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
         }
         CloseHandle(token);
         if !owner_matches {
+            #[cfg(test)]
+            eprintln!(
+                "control-pipe owner rejected file={} user={} token_owner={}",
+                sid_to_string_for_test(owner),
+                sid_to_string_for_test(token_user.User.Sid),
+                sid_to_string_for_test(token_owner_sid)
+            );
             local_free_ptr(sd);
             return Ok(false);
         }
@@ -632,6 +673,8 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
             return Err("control-pipe token rotate failed".to_string());
         }
         if size_info.AceCount != 1 {
+            #[cfg(test)]
+            eprintln!("control-pipe DACL AceCount={}", size_info.AceCount);
             local_free_ptr(sd);
             return Ok(false);
         }
