@@ -1222,6 +1222,41 @@ function Test-DispatchTaskLiveFileBytesEqual {
     return $true
 }
 
+function Get-DispatchTaskLiveRegistryPaneSetToken {
+    param($Bytes)
+
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) {
+        return ''
+    }
+
+    try {
+        $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+        $registry = $text | ConvertFrom-Json
+    } catch {
+        return ''
+    }
+
+    $count = [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'expected_pane_count' -Default '')
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($pane in @($registry.panes)) {
+        $slotId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'slot_id' -Default '')
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        $parts.Add(('{0}:{1}' -f $slotId, $paneId)) | Out-Null
+    }
+    return '{0}|{1}' -f $count, ($parts -join ',')
+}
+
+function Test-DispatchTaskLiveRegistryPaneSetEqual {
+    param($Before, $After)
+
+    $beforeToken = Get-DispatchTaskLiveRegistryPaneSetToken -Bytes $Before
+    $afterToken = Get-DispatchTaskLiveRegistryPaneSetToken -Bytes $After
+    if ([string]::IsNullOrWhiteSpace($beforeToken) -or [string]::IsNullOrWhiteSpace($afterToken)) {
+        return (Test-DispatchTaskLiveFileBytesEqual -Before $Before -After $After)
+    }
+    return [string]::Equals($beforeToken, $afterToken, [System.StringComparison]::Ordinal)
+}
+
 function Restore-DispatchTaskLiveFileBytes {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1340,10 +1375,10 @@ function Ensure-DispatchTaskLiveWorkerPane {
             $afterRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
         }
         $manifestMutated = -not (Test-DispatchTaskLiveFileBytesEqual -Before $beforeManifest -After $afterManifest)
-        $registryMutated = -not (Test-DispatchTaskLiveFileBytesEqual -Before $beforeRegistry -After $afterRegistry)
-        if ($manifestMutated -or $registryMutated) {
+        $registryPaneSetMutated = -not (Test-DispatchTaskLiveRegistryPaneSetEqual -Before $beforeRegistry -After $afterRegistry)
+        if ($manifestMutated -or $registryPaneSetMutated) {
             Restore-DispatchTaskLiveFileBytes -Path $liveManifestPath -Bytes $beforeManifest
-            if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath)) {
+            if ($registryPaneSetMutated -and -not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath)) {
                 Restore-DispatchTaskLiveFileBytes -Path $liveRegistryPath -Bytes $beforeRegistry
             }
             return [pscustomobject]@{
@@ -1370,7 +1405,11 @@ function Ensure-DispatchTaskLiveWorkerPane {
         }
     } catch {
         Restore-DispatchTaskLiveFileBytes -Path $liveManifestPath -Bytes $beforeManifest
-        if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath)) {
+        $currentRegistry = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath) -and (Test-Path -LiteralPath $liveRegistryPath -PathType Leaf)) {
+            $currentRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
+        }
+        if (-not (Test-DispatchTaskLiveRegistryPaneSetEqual -Before $beforeRegistry -After $currentRegistry)) {
             Restore-DispatchTaskLiveFileBytes -Path $liveRegistryPath -Bytes $beforeRegistry
         }
         return [pscustomobject]@{

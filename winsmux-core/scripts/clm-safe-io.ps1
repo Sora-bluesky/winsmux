@@ -185,7 +185,8 @@ function Write-WinsmuxTextFile {
         [Parameter(Mandatory = $true)][string]$Path,
         [AllowEmptyString()][string]$Content = '',
         [AllowNull()][scriptblock]$ValidateLocked = $null,
-        [switch]$Append
+        [switch]$Append,
+        [switch]$AlreadyLocked
     )
 
     $parent = Split-Path -Parent $Path
@@ -194,7 +195,7 @@ function Write-WinsmuxTextFile {
     }
 
     $escapedPath = $Path -replace '"', '""'
-    Invoke-WinsmuxWithFileLock -Path $Path -Action {
+    $writeAction = {
         if ($null -ne $ValidateLocked) {
             & $ValidateLocked
         }
@@ -245,4 +246,11 @@ function Write-WinsmuxTextFile {
             }
         }
     }
+
+    if ($AlreadyLocked) {
+        & $writeAction
+        return
+    }
+
+    Invoke-WinsmuxWithFileLock -Path $Path -Action $writeAction
 }

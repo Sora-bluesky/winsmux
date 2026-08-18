@@ -2307,6 +2307,56 @@ panes:
         [System.IO.File]::ReadAllBytes($manifestPath) | Should -Be $before
     }
 
+    It 'TASK-789 spawn ignores concurrent registry lease bytes during projection' {
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        [System.IO.File]::WriteAllText($manifestPath, "version: 1`nsession:`n  name: keep`npanes: {}`n")
+        $supervisor = script:Get-Task789SupervisorIdentity
+        $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
+            -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
+            -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
+        $beforePanes = @((Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot).panes).Count
+        Mock Get-OrchestraModeDocument {
+            [pscustomobject]@{ schema_version = 1; mode = 'team'; valid = $true; source = 'file' }
+        }
+        Mock Get-OrchestraLiveWorkerRolePaneCount { 1 }
+        Mock Get-OrchestraMaxLiveWorkerPaneCount { 6 }
+        Mock Get-BridgeSettings { $null }
+        Mock Get-WinsmuxManifest { $null }
+        Mock Invoke-TeamProfileLaunchProjection {
+            $current = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot
+            $current.lease.expires_at = '2099-01-01T00:00:00.0000000Z'
+            $current.updated_at = '2099-01-01T00:00:00.0000000Z'
+            Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $current | Out-Null
+            [pscustomobject]@{
+                bundle_path = '.winsmux/runtime/prompt-bundles/sess/worker-2.md'
+                projection  = [pscustomobject]@{
+                    pane = [pscustomobject]@{
+                        assignment = [pscustomobject]@{ provider = 'codex'; worker_backend = 'codex' }
+                    }
+                }
+            }
+        }
+        Mock New-TeamProfileSlotAgentConfig {
+            [pscustomobject]@{ Agent = 'codex'; Model = 'gpt-5.4'; WorkerBackend = 'codex'; PaneTitle = $SlotId }
+        }
+        Mock Add-OrchestraPane {
+            return [pscustomobject]@{ Changed = $true; Label = $SlotId; PaneId = '%5' }
+        }
+        Mock Get-DispatchTaskManifestEntry {
+            script:New-Task789LiveEntry -Label 'worker-2' -PaneId '%5'
+        }
+
+        $result = Ensure-DispatchTaskLiveWorkerPane -ProjectDir $script:task789FixRoot -Label 'worker-2' -ManifestEntry $null
+        $result.Spawned | Should -BeTrue
+        Should -Invoke Add-OrchestraPane -Times 1
+        $after = Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot
+        $after.lease.expires_at | Should -Be '2099-01-01T00:00:00.0000000Z'
+        @($after.panes).Count | Should -Be $beforePanes
+        $after.panes[0].slot_id | Should -Be 'worker-1'
+    }
+
     It 'does not publish a new registry when the guarded manifest save fails' {
         $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
         $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot

@@ -426,10 +426,11 @@ function Write-ManifestTextFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [AllowEmptyString()][string]$Content = '',
-        [AllowNull()][scriptblock]$ValidateLocked = $null
+        [AllowNull()][scriptblock]$ValidateLocked = $null,
+        [switch]$AlreadyLocked
     )
 
-    Write-WinsmuxTextFile -Path $Path -Content $Content -ValidateLocked $ValidateLocked
+    Write-WinsmuxTextFile -Path $Path -Content $Content -ValidateLocked $ValidateLocked -AlreadyLocked:$AlreadyLocked
 }
 
 function Get-ManifestDir {
@@ -488,12 +489,13 @@ function Read-WinsmuxRuntimeRegistry {
 function Save-WinsmuxRuntimeRegistry {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)]$Registry
+        [Parameter(Mandatory = $true)]$Registry,
+        [switch]$AlreadyLocked
     )
 
     $path = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
     $json = $Registry | ConvertTo-Json -Depth 20
-    Write-ManifestTextFile -Path $path -Content ($json + "`n")
+    Write-ManifestTextFile -Path $path -Content ($json + "`n") -AlreadyLocked:$AlreadyLocked
     return $path
 }
 
@@ -654,31 +656,36 @@ function Update-WinsmuxRuntimeRegistryLease {
         [ValidateRange(5, 300)][int]$LeaseSeconds = 15
     )
 
-    $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
-    $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
-    $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
-    $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
-    $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
-    if ($null -eq $registry -or
-        [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'status' -Default '') -cne 'active' -or
-        -not [string]::Equals(
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
-            $GenerationId,
-            [System.StringComparison]::Ordinal) -or
-        $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or
-        [string]::IsNullOrWhiteSpace($ownerStartedAt) -or $ownerStartedAt -cne $expectedStartedAt) {
-        throw 'Runtime registry lease update refused because the writer does not own this generation.'
-    }
+    $path = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    $holder = @{ Registry = $null }
+    Invoke-WinsmuxWithFileLock -Path $path -Action {
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
+        $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
+        $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
+        $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
+        if ($null -eq $registry -or
+            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'status' -Default '') -cne 'active' -or
+            -not [string]::Equals(
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
+                $GenerationId,
+                [System.StringComparison]::Ordinal) -or
+            $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or
+            [string]::IsNullOrWhiteSpace($ownerStartedAt) -or $ownerStartedAt -cne $expectedStartedAt) {
+            throw 'Runtime registry lease update refused because the writer does not own this generation.'
+        }
 
-    $updatedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
-    $registry.lease.state = 'active'
-    $registry.lease.expires_at = $Now.ToUniversalTime().AddSeconds($LeaseSeconds).ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
-    $registry.updated_at = $updatedAt
-    if ($null -ne $Panes) {
-        $registry.panes = @($Panes)
+        $updatedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
+        $registry.lease.state = 'active'
+        $registry.lease.expires_at = $Now.ToUniversalTime().AddSeconds($LeaseSeconds).ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        $registry.updated_at = $updatedAt
+        if ($null -ne $Panes) {
+            $registry.panes = @($Panes)
+        }
+        Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry -AlreadyLocked | Out-Null
+        $holder.Registry = $registry
     }
-    Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
-    return $registry
+    return $holder.Registry
 }
 
 function Close-WinsmuxRuntimeRegistry {
@@ -692,34 +699,41 @@ function Close-WinsmuxRuntimeRegistry {
         [datetime]$Now = (Get-Date)
     )
 
-    $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
-    if ($null -eq $registry) {
-        return $false
-    }
+    $path = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    $holder = @{ Closed = $false }
+    Invoke-WinsmuxWithFileLock -Path $path -Action {
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        if ($null -eq $registry) {
+            $holder.Closed = $false
+            return
+        }
 
-    $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
-    $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
-    $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
-    $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
-    if (-not [string]::Equals(
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
-            $GenerationId,
-            [System.StringComparison]::Ordinal) -or
-        ((-not [string]::IsNullOrWhiteSpace($ExpectedSessionName)) -and
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'session_name' -Default '') -cne $ExpectedSessionName) -or
-        ((-not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) -and
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'server_session_id' -Default '') -cne $ExpectedServerSessionId) -or
-        $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or $ownerStartedAt -cne $expectedStartedAt) {
-        return $false
-    }
+        $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
+        $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
+        $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
+        $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
+        if (-not [string]::Equals(
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
+                $GenerationId,
+                [System.StringComparison]::Ordinal) -or
+            ((-not [string]::IsNullOrWhiteSpace($ExpectedSessionName)) -and
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'session_name' -Default '') -cne $ExpectedSessionName) -or
+            ((-not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) -and
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'server_session_id' -Default '') -cne $ExpectedServerSessionId) -or
+            $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or $ownerStartedAt -cne $expectedStartedAt) {
+            $holder.Closed = $false
+            return
+        }
 
-    $endedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
-    $registry.status = 'ended'
-    $registry.lease.state = 'ended'
-    $registry.lease.expires_at = $endedAt
-    $registry.updated_at = $endedAt
-    Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
-    return $true
+        $endedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
+        $registry.status = 'ended'
+        $registry.lease.state = 'ended'
+        $registry.lease.expires_at = $endedAt
+        $registry.updated_at = $endedAt
+        Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry -AlreadyLocked | Out-Null
+        $holder.Closed = $true
+    }
+    return [bool]$holder.Closed
 }
 
 function Get-WinsmuxRuntimeValue {

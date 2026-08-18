@@ -46,6 +46,7 @@ Describe 'TASK781 supervisor deferred runtime promotion' {
 
     It 'TASK-789 supervisor lease refresh does not rewrite registry panes from a snapshot' {
         $script:task781SupervisorContent | Should -Not -Match '-Panes @\(\$runtimeSnapshot\.panes\)'
+        $script:task781SupervisorContent | Should -Match 'Update-WinsmuxRuntimeRegistryLease'
     }
 
     It 'TASK781 C29 keeps deferred_starting deferred until its marker exists' {
