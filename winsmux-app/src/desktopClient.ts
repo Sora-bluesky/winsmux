@@ -957,6 +957,20 @@ export async function getDesktopInitialProjectDir() {
   return await invoke<string | null>("desktop_initial_project_dir");
 }
 
+export async function getDesktopEventsJson(projectDir: string, cursor = 0) {
+  if (!isTauri()) {
+    throw new Error("companion winsmux CLI was not found");
+  }
+  try {
+    return await invoke<string>("desktop_events_json", {
+      projectDir,
+      cursor,
+    });
+  } catch (error) {
+    throw normalizeDesktopError("desktop_events_json", error);
+  }
+}
+
 export async function writeDesktopOrchestraMode(
   projectDir: string,
   relativePath: string,

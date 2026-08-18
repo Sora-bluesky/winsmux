@@ -49,7 +49,7 @@ const WINSMUX_DISABLE_WINDOWS_TERMINAL_ATTACH_ENV: &str =
 const WINSMUX_BIN_ENV: &str = "WINSMUX_BIN";
 const WINSMUX_RAW_EXE_ENV: &str = "WINSMUX_RAW_EXE";
 
-fn hide_subprocess_window(command: &mut Command) {
+pub(crate) fn hide_subprocess_window(command: &mut Command) {
     crate::remote_debug_gate::scrub_gate_env_from_command(command);
     #[cfg(windows)] {
         command.creation_flags(CREATE_NO_WINDOW);
@@ -62,13 +62,13 @@ fn resolve_companion_winsmux_cli_from_exe_path(current_exe: &Path) -> Option<Pat
     candidate.is_file().then_some(candidate)
 }
 
-fn resolve_companion_winsmux_cli() -> Option<PathBuf> {
+pub(crate) fn resolve_companion_winsmux_cli() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|current_exe| resolve_companion_winsmux_cli_from_exe_path(&current_exe))
 }
 
-fn apply_desktop_winsmux_child_env(
+pub(crate) fn apply_desktop_winsmux_child_env(
     command: &mut Command,
     companion_cli: Option<&Path>,
     app_pid: u32,

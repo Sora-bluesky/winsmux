@@ -3469,6 +3469,72 @@ body[data-popout-surface="1"] #editor-surface {
   opacity: 0.72;
 }
 
+.attention-center {
+  display: grid;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+.attention-center-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.attention-center-title {
+  color: var(--ws-fg);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.attention-center-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attention-center-status {
+  color: var(--ws-fg-muted);
+  font-size: var(--text-xs);
+}
+
+.attention-center-empty {
+  color: var(--ws-fg-muted);
+  font-size: var(--text-xs);
+}
+
+.attention-center-row {
+  width: 100%;
+  border: 0;
+  border-left: 2px solid var(--ws-border-focus);
+  background: transparent;
+  padding-left: 7px;
+  color: var(--ws-fg-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+
+.attention-center-row:hover,
+.attention-center-row:focus-visible {
+  color: var(--ws-fg);
+  outline: none;
+}
+
+.attention-center-row:disabled {
+  cursor: default;
+}
+
+.attention-center-row[data-tone="warning"] {
+  border-left-color: #f5c15d;
+}
+
+.attention-center-row[data-tone="danger"] {
+  border-left-color: #ff8a8a;
+}
+
 .agent-vault-feed {
   display: grid;
   gap: 6px;

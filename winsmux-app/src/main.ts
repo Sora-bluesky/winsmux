@@ -120,6 +120,7 @@ import {
   renderFirstRunWizard,
 } from "./firstRunWizard";
 import * as vaultOrganize from "./agentVaultOrganize";
+import * as attentionCenterPanel from "./attentionCenterPanel";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -3184,6 +3185,7 @@ function renderAgentVaultPanel() {
   const providerFilters = document.getElementById("agent-vault-provider-filters");
   const status = document.getElementById("agent-vault-drop-status");
   const list = document.getElementById("agent-vault-session-list");
+  const attentionRoot = document.getElementById("attention-center");
   const feed = document.getElementById("agent-vault-feed");
 
   if (search && search.value !== agentVaultQuery) {
@@ -3202,11 +3204,7 @@ function renderAgentVaultPanel() {
   if (title) {
     title.textContent = getLanguageText(`${visibleEntries.length} indexed sessions`, `${visibleEntries.length} 件の索引済みセッション`);
   }
-  if (ring) {
-    ring.textContent = feedEntries.length > 0 ? `${feedEntries.length}` : "OK";
-    ring.dataset.tone = vaultOrganize.getAgentVaultNotificationTone(feedEntries);
-    ring.title = getLanguageText("Feed and worker notification ring", "フィードとワーカー通知リング");
-  }
+  attentionCenterPanel.applyVaultRing(ring, feedEntries);
   if (projectFilter) {
     projectFilter.textContent = getLanguageText("This project", "このプロジェクト");
     projectFilter.setAttribute("aria-pressed", agentVaultProjectOnly ? "true" : "false");
@@ -3262,6 +3260,9 @@ function renderAgentVaultPanel() {
         }, renderAgentVaultSessionCard);
       }
     }
+  }
+  if (attentionRoot) {
+    attentionCenterPanel.renderAttentionCenter(attentionRoot);
   }
   if (feed) {
     feed.replaceChildren();
@@ -18224,7 +18225,9 @@ async function refreshDesktopSummaryFromScheduler(context: DesktopSummaryRefresh
       }
     }
 
+    await attentionCenterPanel.refreshAttentionCenter();
     if (previousSnapshot && !diff.hasMeaningfulChange && !forceExplainRunId && !shouldPrefetchExplain) {
+      renderAgentVaultPanel();
       return;
     }
 
@@ -18451,6 +18454,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   } catch {
     agentVaultStatusMessage = getLanguageText("Agent Vault organize data was rejected. Previous state was kept.", "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
   }
+  attentionCenterPanel.bindAndLoadAttentionCenter({ getLanguageText, normalizeProjectDirInput, getActiveProjectDirPayload, getAvailableRunIds, focusWorkerPaneFromStatus, getPaneDisplayLabel, setSelectedRun, renderDesktopSurfaces, renderAgentVaultPanel });
 
   applyShellPreferences();
   applyLanguageChrome();
@@ -18503,6 +18507,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceEntries();
   renderEvidenceView();
   renderAgentVaultPanel();
+  void attentionCenterPanel.refreshAttentionCenter().then(() => renderAgentVaultPanel());
   renderContextPanel();
   renderSettingsControls();
   renderFooterLane();
