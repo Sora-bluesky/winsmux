@@ -6,11 +6,696 @@ use crate::pty_backend::{
     PTY_CONTROL_PIPE_METHODS,
 };
 use serde_json::{json, Value};
-use std::sync::Arc;
-use std::time::Duration;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub const WINSMUX_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
 pub const WINSMUX_CONTROL_PIPE_TOKEN_ENV: &str = "WINSMUX_CONTROL_PIPE_TOKEN";
+pub const WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE: &str =
+    r"%LOCALAPPDATA%\winsmux\control-pipe\token";
+const CONTROL_PIPE_TOKEN_ROTATED_MARKER: &str = "control-pipe token: rotated";
+const PREVIOUS_TOKEN_TTL: Duration = Duration::from_secs(60);
+const CONTROL_PIPE_TOKEN_RANDOM_BYTES: usize = 32;
+
+struct ControlPipeAuthState {
+    current: String,
+    previous: Option<String>,
+    previous_deadline: Instant,
+}
+
+static CONTROL_PIPE_AUTH_STATE: Mutex<Option<ControlPipeAuthState>> = Mutex::new(None);
+static CONTROL_PIPE_SERVER_INTENDED: AtomicBool = AtomicBool::new(false);
+
+fn control_pipe_auth_state_lock() -> std::sync::MutexGuard<'static, Option<ControlPipeAuthState>> {
+    CONTROL_PIPE_AUTH_STATE
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+fn reset_control_pipe_auth_state() {
+    *control_pipe_auth_state_lock() = None;
+}
+
+fn control_pipe_token_file_path() -> Option<PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    if local_app_data.is_empty() {
+        return None;
+    }
+    Some(
+        PathBuf::from(local_app_data)
+            .join("winsmux")
+            .join("control-pipe")
+            .join("token"),
+    )
+}
+
+fn process_env_control_pipe_token() -> Option<String> {
+    match std::env::var(WINSMUX_CONTROL_PIPE_TOKEN_ENV) {
+        Ok(value) if !value.trim().is_empty() => Some(value),
+        _ => None,
+    }
+}
+
+fn read_control_pipe_token_file() -> Option<String> {
+    let path = control_pipe_token_file_path()?;
+    let contents = fs::read_to_string(path).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+pub fn control_pipe_auth_is_available() -> bool {
+    process_env_control_pipe_token().is_some() || read_control_pipe_token_file().is_some()
+}
+
+pub fn control_pipe_ui_is_enabled() -> bool {
+    control_pipe_auth_is_available() || CONTROL_PIPE_SERVER_INTENDED.load(Ordering::SeqCst)
+}
+
+#[cfg(any(windows, test))]
+fn mark_control_pipe_server_intended() {
+    CONTROL_PIPE_SERVER_INTENDED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn reset_control_pipe_server_intended() {
+    CONTROL_PIPE_SERVER_INTENDED.store(false, Ordering::SeqCst);
+}
+
+fn generate_control_pipe_token() -> Result<String, String> {
+    let mut bytes = [0u8; CONTROL_PIPE_TOKEN_RANDOM_BYTES];
+    fill_random_bytes(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+#[cfg(windows)]
+fn fill_random_bytes(bytes: &mut [u8]) -> Result<(), String> {
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(
+            h_algorithm: *mut core::ffi::c_void,
+            pb_buffer: *mut u8,
+            cb_buffer: u32,
+            dw_flags: u32,
+        ) -> i32;
+    }
+    let status = unsafe {
+        BCryptGenRandom(
+            core::ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err("control-pipe token rotate failed".to_string())
+    }
+}
+
+#[cfg(not(windows))]
+fn fill_random_bytes(bytes: &mut [u8]) -> Result<(), String> {
+    use std::io::Read;
+    fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(bytes))
+        .map_err(|_| "control-pipe token rotate failed".to_string())
+}
+
+fn write_control_pipe_token_file(path: &Path, token: &str) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "control-pipe token rotate failed".to_string())?;
+    fs::create_dir_all(parent).map_err(|_| "control-pipe token rotate failed".to_string())?;
+    #[cfg(windows)]
+    {
+        write_control_pipe_token_file_windows(path, parent, token)
+    }
+    #[cfg(not(windows))]
+    {
+        fs::write(path, token.as_bytes())
+            .map_err(|_| "control-pipe token rotate failed".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
+    }
+}
+
+fn existing_token_file_is_trusted(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        control_pipe_token_file_dacl_is_user_only(path).unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        false
+    }
+}
+
+fn read_trusted_previous_control_pipe_token() -> Option<String> {
+    let path = control_pipe_token_file_path()?;
+    if !existing_token_file_is_trusted(&path) {
+        return None;
+    }
+    read_control_pipe_token_file()
+}
+
+fn bootstrap_control_pipe_token() -> Result<(), String> {
+    let path = control_pipe_token_file_path()
+        .ok_or_else(|| "control-pipe token rotate failed".to_string())?;
+    let previous = read_trusted_previous_control_pipe_token();
+    let current = generate_control_pipe_token()?;
+    write_control_pipe_token_file(&path, &current)?;
+    *control_pipe_auth_state_lock() = Some(ControlPipeAuthState {
+        current,
+        previous,
+        previous_deadline: Instant::now() + PREVIOUS_TOKEN_TTL,
+    });
+    eprintln!("{CONTROL_PIPE_TOKEN_ROTATED_MARKER}");
+    Ok(())
+}
+
+fn bootstrap_control_pipe_token_after_exclusive_pipe(
+    already_bootstrapped: &mut bool,
+) -> Result<(), String> {
+    if *already_bootstrapped {
+        return Ok(());
+    }
+    if process_env_control_pipe_token().is_some() {
+        *already_bootstrapped = true;
+        return Ok(());
+    }
+    bootstrap_control_pipe_token()?;
+    *already_bootstrapped = true;
+    Ok(())
+}
+
+fn authorize_rotated_or_file_token(provided: &str) -> bool {
+    let mut guard = control_pipe_auth_state_lock();
+    if let Some(state) = guard.as_mut() {
+        if constant_time_string_eq(provided.as_bytes(), state.current.as_bytes()) {
+            state.previous = None;
+            return true;
+        }
+        if state.previous.is_some() && Instant::now() >= state.previous_deadline {
+            state.previous = None;
+            return false;
+        }
+        if let Some(previous) = state.previous.as_ref() {
+            return constant_time_string_eq(provided.as_bytes(), previous.as_bytes());
+        }
+        return false;
+    }
+    drop(guard);
+    match read_control_pipe_token_file() {
+        Some(file_token) => constant_time_string_eq(provided.as_bytes(), file_token.as_bytes()),
+        None => false,
+    }
+}
+
+#[cfg(windows)]
+fn path_to_wide(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(windows)]
+fn local_free_ptr(ptr: *mut core::ffi::c_void) {
+    use windows_sys::Win32::Foundation::LocalFree;
+    if !ptr.is_null() {
+        unsafe {
+            LocalFree(ptr);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn current_user_sid_string() -> Result<String, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut required = 0u32;
+        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut required);
+        if required == 0 {
+            CloseHandle(token);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut buffer = vec![0u8; required as usize];
+        if GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        ) == 0
+        {
+            CloseHandle(token);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        CloseHandle(token);
+        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut sid_string: windows_sys::core::PWSTR = core::ptr::null_mut();
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_string) == 0 {
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut len = 0usize;
+        while *sid_string.add(len) != 0 {
+            len += 1;
+        }
+        let text = String::from_utf16_lossy(std::slice::from_raw_parts(sid_string, len));
+        local_free_ptr(sid_string.cast());
+        Ok(text)
+    }
+}
+
+#[cfg(all(windows, test))]
+static FORCE_CONTROL_PIPE_DACL_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(all(windows, test))]
+static FORCE_CONTROL_PIPE_OWNER_MISMATCH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(windows)]
+fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if FORCE_CONTROL_PIPE_DACL_FAILURE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+
+    let sid = current_user_sid_string()?;
+    // GENERIC_ALL maps for both files and directories. FILE_ALL_ACCESS (FA) on a
+    // directory can fail SetNamedSecurityInfoW on GitHub-hosted Windows images.
+    let sddl = format!("D:P(A;;GA;;;{sid})");
+    let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+    let mut path_wide = path_to_wide(path);
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            core::ptr::null_mut(),
+        ) == 0
+        {
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut present: windows_sys::core::BOOL = 0;
+        let mut defaulted: windows_sys::core::BOOL = 0;
+        let mut dacl: *mut ACL = core::ptr::null_mut();
+        if GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) == 0
+            || present == 0
+        {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let status = SetNamedSecurityInfoW(
+            path_wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            dacl,
+            core::ptr::null_mut(),
+        );
+        local_free_ptr(sd);
+        if status != ERROR_SUCCESS {
+            Err(format!("control-pipe token rotate failed ({status})"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[cfg(windows)]
+fn write_control_pipe_token_file_windows(
+    path: &Path,
+    parent: &Path,
+    token: &str,
+) -> Result<(), String> {
+    apply_user_only_dacl(parent)?;
+    let mut last_err = "control-pipe token rotate failed".to_string();
+    for _ in 0..8 {
+        let mut name_bytes = [0u8; 16];
+        fill_random_bytes(&mut name_bytes)?;
+        let temp_hex: String = name_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let temp_name = format!("token.{temp_hex}.tmp");
+        let temp_path = parent.join(temp_name);
+        match create_user_only_file_with_bytes(&temp_path, token.as_bytes()) {
+            Ok(()) => {
+                if let Err(err) = replace_file_atomic(&temp_path, path) {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(err);
+                }
+                return Ok(());
+            }
+            Err(err) if err == "control-pipe token rotate failed (exists)" => {
+                last_err = err;
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(err);
+            }
+        }
+    }
+    Err(last_err)
+}
+
+#[cfg(windows)]
+fn create_user_only_file_with_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FlushFileBuffers, WriteFile, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_WRITE_THROUGH,
+    };
+
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+
+    let sid = current_user_sid_string()?;
+    let sddl = format!("D:P(A;;GA;;;{sid})");
+    let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+    let path_wide = path_to_wide(path);
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            core::ptr::null_mut(),
+        ) == 0
+        {
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let handle: HANDLE = CreateFileW(
+            path_wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            &sa,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            core::ptr::null_mut(),
+        );
+        let create_error = GetLastError();
+        local_free_ptr(sd);
+        if handle == INVALID_HANDLE_VALUE {
+            if create_error == ERROR_FILE_EXISTS || create_error == ERROR_ALREADY_EXISTS {
+                return Err("control-pipe token rotate failed (exists)".to_string());
+            }
+            return Err(format!("control-pipe token rotate failed ({create_error})"));
+        }
+        let mut bytes_written = 0u32;
+        let write_ok = WriteFile(
+            handle,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+            &mut bytes_written,
+            core::ptr::null_mut(),
+        );
+        if write_ok == 0 || bytes_written as usize != bytes.len() {
+            CloseHandle(handle);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        FlushFileBuffers(handle);
+        CloseHandle(handle);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(from: &Path, to: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from_wide = path_to_wide(from);
+    let to_wide = path_to_wide(to);
+    let moved = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(format!("control-pipe token rotate failed ({})", unsafe {
+            GetLastError()
+        }))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn owner_sid_matches_current_principal(
+    owner: windows_sys::Win32::Security::PSID,
+    user_sid: windows_sys::Win32::Security::PSID,
+    token_owner_sid: windows_sys::Win32::Security::PSID,
+) -> bool {
+    use windows_sys::Win32::Security::EqualSid;
+
+    unsafe {
+        // TokenOwner is the SID Windows stamps on files this process creates.
+        // Elevated tokens often use BUILTIN\Administrators there; that SID can
+        // be deny-only, so CheckTokenMembership is not a reliable owner check.
+        if !user_sid.is_null() && EqualSid(owner, user_sid) != 0 {
+            return true;
+        }
+        !token_owner_sid.is_null() && EqualSid(owner, token_owner_sid) != 0
+    }
+}
+
+#[cfg(all(windows, test))]
+fn sid_to_string_for_test(sid: windows_sys::Win32::Security::PSID) -> String {
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+
+    if sid.is_null() {
+        return "null".to_string();
+    }
+    unsafe {
+        let mut text: windows_sys::core::PWSTR = core::ptr::null_mut();
+        if ConvertSidToStringSidW(sid, &mut text) == 0 || text.is_null() {
+            return "unprintable".to_string();
+        }
+        let mut len = 0usize;
+        while *text.add(len) != 0 {
+            len += 1;
+        }
+        let value = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+        local_free_ptr(text.cast());
+        value
+    }
+}
+
+#[cfg(windows)]
+fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
+    #[cfg(test)]
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetTokenInformation, TokenOwner,
+        TokenUser, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_OWNER, TOKEN_QUERY,
+        TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let path_wide = path_to_wide(path);
+    unsafe {
+        let mut owner: PSID = core::ptr::null_mut();
+        let mut group: PSID = core::ptr::null_mut();
+        let mut dacl: *mut ACL = core::ptr::null_mut();
+        let mut sacl: *mut ACL = core::ptr::null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
+        let status = GetNamedSecurityInfoW(
+            path_wide.as_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            &mut group,
+            &mut dacl,
+            &mut sacl,
+            &mut sd,
+        );
+        if status != ERROR_SUCCESS || dacl.is_null() {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        if owner.is_null() {
+            local_free_ptr(sd);
+            return Ok(false);
+        }
+
+        let mut token: HANDLE = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut required = 0u32;
+        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut required);
+        if required == 0 {
+            CloseHandle(token);
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut buffer = vec![0u8; required as usize];
+        if GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        ) == 0
+        {
+            CloseHandle(token);
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut token_owner_required = 0u32;
+        GetTokenInformation(
+            token,
+            TokenOwner,
+            core::ptr::null_mut(),
+            0,
+            &mut token_owner_required,
+        );
+        let mut token_owner_buffer = vec![0u8; token_owner_required as usize];
+        let token_owner_sid = if token_owner_required > 0
+            && GetTokenInformation(
+                token,
+                TokenOwner,
+                token_owner_buffer.as_mut_ptr().cast(),
+                token_owner_required,
+                &mut token_owner_required,
+            ) != 0
+        {
+            (*(token_owner_buffer.as_ptr() as *const TOKEN_OWNER)).Owner
+        } else {
+            core::ptr::null_mut()
+        };
+        let mut owner_matches =
+            owner_sid_matches_current_principal(owner, token_user.User.Sid, token_owner_sid);
+        #[cfg(test)]
+        {
+            if FORCE_CONTROL_PIPE_OWNER_MISMATCH.load(std::sync::atomic::Ordering::SeqCst) {
+                let everyone: Vec<u16> = "S-1-1-0".encode_utf16().chain(Some(0)).collect();
+                let mut everyone_sid: PSID = core::ptr::null_mut();
+                if ConvertStringSidToSidW(everyone.as_ptr(), &mut everyone_sid) == 0
+                    || everyone_sid.is_null()
+                {
+                    CloseHandle(token);
+                    local_free_ptr(sd);
+                    return Err("control-pipe token rotate failed".to_string());
+                }
+                owner_matches = EqualSid(owner, everyone_sid) != 0;
+                local_free_ptr(everyone_sid);
+            }
+        }
+        CloseHandle(token);
+        if !owner_matches {
+            #[cfg(test)]
+            eprintln!(
+                "control-pipe owner rejected file={} user={} token_owner={}",
+                sid_to_string_for_test(owner),
+                sid_to_string_for_test(token_user.User.Sid),
+                sid_to_string_for_test(token_owner_sid)
+            );
+            local_free_ptr(sd);
+            return Ok(false);
+        }
+
+        let mut size_info = ACL_SIZE_INFORMATION {
+            AceCount: 0,
+            AclBytesInUse: 0,
+            AclBytesFree: 0,
+        };
+        if GetAclInformation(
+            dacl,
+            std::ptr::addr_of_mut!(size_info).cast(),
+            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+            AclSizeInformation,
+        ) == 0
+        {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        if size_info.AceCount != 1 {
+            #[cfg(test)]
+            eprintln!("control-pipe DACL AceCount={}", size_info.AceCount);
+            local_free_ptr(sd);
+            return Ok(false);
+        }
+
+        let mut ace_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+        if GetAce(dacl, 0, &mut ace_ptr) == 0 {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let header = &*(ace_ptr as *const ACE_HEADER);
+        // ACCESS_ALLOWED_ACE_TYPE is 0; avoid extra SystemServices feature.
+        if header.AceType != 0 {
+            local_free_ptr(sd);
+            return Ok(false);
+        }
+        let sid: PSID = ace_ptr.cast::<u8>().add(8).cast();
+        let equal = EqualSid(sid, token_user.User.Sid) != 0;
+        local_free_ptr(sd);
+        Ok(equal)
+    }
+}
 
 const JSON_RPC_PARSE_ERROR: i32 = -32700;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
@@ -184,6 +869,7 @@ fn control_pipe_contract() -> Value {
     "auth": {
         "required_for_methods": true,
         "token_env": WINSMUX_CONTROL_PIPE_TOKEN_ENV,
+        "token_file": WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE,
         "request_field": "auth.token",
     },
     "methods": control_pipe_methods(),
@@ -195,10 +881,6 @@ fn control_pipe_contract() -> Value {
 }
 
 fn is_authorized_control_pipe_request(request_value: &Value) -> bool {
-    let expected_token = match std::env::var(WINSMUX_CONTROL_PIPE_TOKEN_ENV) {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => return false,
-    };
     let provided_token = match request_value
         .get("auth")
         .and_then(|auth| auth.get("token"))
@@ -208,7 +890,11 @@ fn is_authorized_control_pipe_request(request_value: &Value) -> bool {
         None => return false,
     };
 
-    constant_time_string_eq(provided_token.as_bytes(), expected_token.as_bytes())
+    if let Some(expected_token) = process_env_control_pipe_token() {
+        return constant_time_string_eq(provided_token.as_bytes(), expected_token.as_bytes());
+    }
+
+    authorize_rotated_or_file_token(provided_token)
 }
 
 fn constant_time_string_eq(left: &[u8], right: &[u8]) -> bool {
@@ -259,14 +945,20 @@ fn serialize_control_pipe_result(id: Value, result: Value) -> Vec<u8> {
 
 #[cfg(windows)]
 pub fn start_control_pipe_server(pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {
-    std::thread::spawn(move || loop {
-        if let Err(err) = serve_one_control_pipe_client(pty_transport.as_ref()) {
-            if is_control_pipe_startup_error(&err) {
-                eprintln!("winsmux control pipe disabled: {err}");
-                break;
+    mark_control_pipe_server_intended();
+    std::thread::spawn(move || {
+        let mut token_bootstrapped = false;
+        loop {
+            if let Err(err) =
+                serve_one_control_pipe_client(pty_transport.as_ref(), &mut token_bootstrapped)
+            {
+                if is_control_pipe_startup_error(&err) {
+                    eprintln!("winsmux control pipe disabled: {err}");
+                    break;
+                }
+                eprintln!("winsmux control pipe error: {err}");
+                std::thread::sleep(Duration::from_millis(250));
             }
-            eprintln!("winsmux control pipe error: {err}");
-            std::thread::sleep(Duration::from_millis(250));
         }
     });
 }
@@ -275,7 +967,10 @@ pub fn start_control_pipe_server(pty_transport: Arc<dyn PtyCommandTransport + Se
 pub fn start_control_pipe_server(_pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {}
 
 #[cfg(windows)]
-fn serve_one_control_pipe_client(pty_transport: &dyn PtyCommandTransport) -> Result<(), String> {
+fn serve_one_control_pipe_client(
+    pty_transport: &dyn PtyCommandTransport,
+    token_bootstrapped: &mut bool,
+) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
@@ -324,6 +1019,7 @@ fn serve_one_control_pipe_client(pty_transport: &dyn PtyCommandTransport) -> Res
         }));
     }
     let pipe = PipeHandle(handle);
+    bootstrap_control_pipe_token_after_exclusive_pipe(token_bootstrapped)?;
 
     let connected = unsafe { ConnectNamedPipe(pipe.0, null_mut()) };
     if connected == 0 {
@@ -385,6 +1081,7 @@ fn serve_one_control_pipe_client(pty_transport: &dyn PtyCommandTransport) -> Res
 #[cfg(windows)]
 fn is_control_pipe_startup_error(message: &str) -> bool {
     message.starts_with("CreateNamedPipeW failed")
+        || message.starts_with("control-pipe token rotate failed")
 }
 
 #[cfg(test)]
@@ -397,36 +1094,106 @@ mod tests {
     use std::sync::{Mutex, MutexGuard};
 
     static CONTROL_PIPE_TOKEN_ENV_LOCK: Mutex<()> = Mutex::new(());
+    static CONTROL_PIPE_TEST_ISOLATION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
 
     struct ControlPipeTokenEnvGuard {
-        previous: Option<OsString>,
+        previous_token: Option<OsString>,
+        previous_localappdata: Option<OsString>,
+        isolated_root: PathBuf,
         _lock: MutexGuard<'static, ()>,
     }
 
     impl Drop for ControlPipeTokenEnvGuard {
         fn drop(&mut self) {
-            if let Some(previous) = self.previous.take() {
+            reset_control_pipe_auth_state();
+            reset_control_pipe_server_intended();
+            if let Some(previous) = self.previous_token.take() {
                 std::env::set_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV, previous);
             } else {
                 std::env::remove_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
             }
+            if let Some(previous) = self.previous_localappdata.take() {
+                std::env::set_var("LOCALAPPDATA", previous);
+            } else {
+                std::env::remove_var("LOCALAPPDATA");
+            }
+            let _ = fs::remove_dir_all(&self.isolated_root);
+        }
+    }
+
+    fn isolate_control_pipe_paths_for_test() -> ControlPipeTokenEnvGuard {
+        let lock = CONTROL_PIPE_TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        reset_control_pipe_auth_state();
+        reset_control_pipe_server_intended();
+        let previous_token = std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+        let previous_localappdata = std::env::var_os("LOCALAPPDATA");
+        std::env::remove_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+        let isolated_root = std::env::temp_dir().join(format!(
+            "winsmux-control-pipe-test-{}-{}",
+            std::process::id(),
+            CONTROL_PIPE_TEST_ISOLATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&isolated_root).expect("isolated LOCALAPPDATA");
+        std::env::set_var("LOCALAPPDATA", &isolated_root);
+        ControlPipeTokenEnvGuard {
+            previous_token,
+            previous_localappdata,
+            isolated_root,
+            _lock: lock,
         }
     }
 
     fn set_control_pipe_token_for_test(token: Option<&str>) -> ControlPipeTokenEnvGuard {
-        let lock = CONTROL_PIPE_TOKEN_ENV_LOCK
-            .lock()
-            .expect("control pipe token env lock");
-        let previous = std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+        let guard = isolate_control_pipe_paths_for_test();
         if let Some(value) = token {
             std::env::set_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV, value);
-        } else {
-            std::env::remove_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
         }
-        ControlPipeTokenEnvGuard {
-            previous,
-            _lock: lock,
+        guard
+    }
+
+    fn leftover_control_pipe_token_temps(parent: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(parent) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("token.")
+                            && name.ends_with(".tmp")
+                            && name.len() == "token.".len() + 32 + ".tmp".len()
+                    })
+            })
+            .collect()
+    }
+
+    fn harden_existing_token_file_for_test(path: &Path) {
+        #[cfg(windows)]
+        apply_user_only_dacl(path).expect("harden previous token file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("chmod 0600");
         }
+    }
+
+    fn expire_previous_control_pipe_token_for_test() {
+        if let Some(state) = control_pipe_auth_state_lock().as_mut() {
+            state.previous_deadline = Instant::now() - Duration::from_secs(1);
+        }
+    }
+
+    fn capture_payload_with_token(token: &str) -> Vec<u8> {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{{"paneId":"pane-1"}},"auth":{{"token":"{token}"}}}}"#
+        )
+        .into_bytes()
     }
 
     struct StubDesktopTransport;
@@ -520,6 +1287,10 @@ mod tests {
         assert_eq!(
             value["result"]["auth"]["token_env"],
             WINSMUX_CONTROL_PIPE_TOKEN_ENV
+        );
+        assert_eq!(
+            value["result"]["auth"]["token_file"],
+            WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE
         );
         assert_eq!(value["result"]["auth"]["request_field"], "auth.token");
         assert_eq!(
@@ -776,5 +1547,422 @@ mod tests {
 
         assert_eq!(value["id"], 1);
         assert_eq!(value["error"]["code"], JSON_RPC_METHOD_NOT_FOUND);
+    }
+
+    #[test]
+    fn control_pipe_bootstrap_creates_token_file() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        assert!(!path.exists());
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let contents = fs::read_to_string(&path).expect("token file");
+        assert_eq!(contents.len(), CONTROL_PIPE_TOKEN_RANDOM_BYTES * 2);
+        assert!(contents.chars().all(|ch| ch.is_ascii_hexdigit()));
+        assert!(contents.chars().all(|ch| !ch.is_whitespace()));
+        assert!(control_pipe_auth_is_available());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_token_file_uses_user_only_dacl() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let path = control_pipe_token_file_path().expect("token path");
+        assert!(
+            control_pipe_token_file_dacl_is_user_only(&path).expect("dacl query"),
+            "token file DACL must be user-only"
+        );
+        let dir = path.parent().expect("token dir");
+        assert!(
+            control_pipe_token_file_dacl_is_user_only(dir).expect("dir dacl query"),
+            "token directory DACL must be user-only"
+        );
+    }
+
+    #[test]
+    fn control_pipe_ignores_planted_token_files() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA"));
+        let planted_repo = local.join("repo").join(".winsmux").join("token");
+        let planted_wrong_name = local.join("winsmux").join("control-pipe").join("token.bak");
+        let planted_temp = std::env::temp_dir()
+            .join(format!("winsmux-planted-{}-token", std::process::id()))
+            .join("winsmux")
+            .join("control-pipe")
+            .join("token");
+        fs::create_dir_all(planted_repo.parent().expect("repo parent")).expect("repo dir");
+        fs::create_dir_all(planted_wrong_name.parent().expect("wrong parent")).expect("wrong dir");
+        fs::create_dir_all(planted_temp.parent().expect("temp parent")).expect("temp dir");
+        fs::write(&planted_repo, "planted-repo-token").expect("repo plant");
+        fs::write(&planted_wrong_name, "planted-wrong-name-token").expect("name plant");
+        fs::write(&planted_temp, "planted-temp-token").expect("temp plant");
+
+        let exact = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(exact.parent().expect("exact parent")).expect("exact dir");
+        fs::write(&exact, "exact-file-token").expect("exact token");
+
+        let pty_transport = StubPtyTransport::new();
+        for planted in [
+            "planted-repo-token",
+            "planted-wrong-name-token",
+            "planted-temp-token",
+        ] {
+            let response = handle_control_pipe_payload(
+                &StubDesktopTransport,
+                &pty_transport,
+                &capture_payload_with_token(planted),
+                None,
+            );
+            let value: Value = serde_json::from_slice(&response).expect("json");
+            assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        }
+
+        let response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("exact-file-token"),
+            None,
+        );
+        let value: Value = serde_json::from_slice(&response).expect("json");
+        assert_eq!(value["result"]["paneId"], "pane-1");
+        let _ = fs::remove_dir_all(
+            planted_temp
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .unwrap_or(planted_temp.as_path()),
+        );
+    }
+
+    #[test]
+    fn control_pipe_rotate_accepts_previous_until_current_auth() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "previous-rotate-token").expect("previous token");
+        harden_existing_token_file_for_test(&path);
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let current = fs::read_to_string(&path).expect("current token");
+        assert_ne!(current, "previous-rotate-token");
+
+        let pty_transport = StubPtyTransport::new();
+        let previous_response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("previous-rotate-token"),
+            None,
+        );
+        let previous_value: Value =
+            serde_json::from_slice(&previous_response).expect("previous json");
+        assert_eq!(previous_value["result"]["paneId"], "pane-1");
+
+        let current_response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token(&current),
+            None,
+        );
+        let current_value: Value = serde_json::from_slice(&current_response).expect("current json");
+        assert_eq!(current_value["result"]["paneId"], "pane-1");
+
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("previous-rotate-token"),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+    }
+
+    #[test]
+    fn control_pipe_untrusted_previous_token_is_not_accepted() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "planted-previous-token").expect("planted token");
+        assert!(!existing_token_file_is_trusted(&path));
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let current = fs::read_to_string(&path).expect("current token");
+        assert_ne!(current, "planted-previous-token");
+        #[cfg(windows)]
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "replaced dest must keep the user-only create DACL"
+        );
+        assert!(
+            leftover_control_pipe_token_temps(path.parent().expect("parent")).is_empty(),
+            "atomic replace must not leave token.*.tmp"
+        );
+
+        let pty_transport = StubPtyTransport::new();
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("planted-previous-token"),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token(&current),
+            None,
+        );
+        let accepted_value: Value = serde_json::from_slice(&accepted).expect("accepted json");
+        assert_eq!(accepted_value["result"]["paneId"], "pane-1");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_foreign_owner_previous_token_is_not_accepted() {
+        struct ResetOwnerMismatch;
+        impl Drop for ResetOwnerMismatch {
+            fn drop(&mut self) {
+                FORCE_CONTROL_PIPE_OWNER_MISMATCH.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetOwnerMismatch;
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "planted-foreign-owner-token").expect("planted token");
+        apply_user_only_dacl(&path).expect("user-only DACL");
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "same-owner user-only DACL is the positive control"
+        );
+        FORCE_CONTROL_PIPE_OWNER_MISMATCH.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            !existing_token_file_is_trusted(&path),
+            "user-only DACL with a foreign owner must not be trusted"
+        );
+
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let current = fs::read_to_string(&path).expect("current token");
+        assert_ne!(current, "planted-foreign-owner-token");
+
+        let pty_transport = StubPtyTransport::new();
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("planted-foreign-owner-token"),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token(&current),
+            None,
+        );
+        let accepted_value: Value = serde_json::from_slice(&accepted).expect("accepted json");
+        assert_eq!(accepted_value["result"]["paneId"], "pane-1");
+    }
+
+    #[test]
+    fn control_pipe_drops_previous_token_after_process_ttl() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "previous-ttl-token").expect("previous token");
+        harden_existing_token_file_for_test(&path);
+        bootstrap_control_pipe_token().expect("bootstrap");
+        expire_previous_control_pipe_token_for_test();
+
+        let pty_transport = StubPtyTransport::new();
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("previous-ttl-token"),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let current = fs::read_to_string(&path).expect("current token");
+        let accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token(&current),
+            None,
+        );
+        let accepted_value: Value = serde_json::from_slice(&accepted).expect("accepted json");
+        assert_eq!(accepted_value["result"]["paneId"], "pane-1");
+    }
+
+    #[test]
+    fn control_pipe_env_token_wins_over_token_file() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "file-token-value").expect("file token");
+        std::env::set_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV, "env-token-value");
+
+        let pty_transport = StubPtyTransport::new();
+        let file_rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("file-token-value"),
+            None,
+        );
+        let file_value: Value = serde_json::from_slice(&file_rejected).expect("file json");
+        assert_eq!(file_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let env_accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("env-token-value"),
+            None,
+        );
+        let env_value: Value = serde_json::from_slice(&env_accepted).expect("env json");
+        assert_eq!(env_value["result"]["paneId"], "pane-1");
+    }
+
+    #[test]
+    fn control_pipe_does_not_rotate_until_exclusive_pipe_is_acquired() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "keep-existing-token").expect("existing token");
+
+        let mut bootstrapped = false;
+        assert_eq!(
+            fs::read_to_string(&path).expect("unread token"),
+            "keep-existing-token"
+        );
+        assert!(control_pipe_auth_state_lock().is_none());
+
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("first exclusive bootstrap");
+        assert!(bootstrapped);
+        let current = fs::read_to_string(&path).expect("rotated token");
+        assert_ne!(current, "keep-existing-token");
+        assert_eq!(current.len(), CONTROL_PIPE_TOKEN_RANDOM_BYTES * 2);
+
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("second exclusive bootstrap is a no-op");
+        assert_eq!(fs::read_to_string(&path).expect("stable token"), current);
+    }
+
+    #[test]
+    fn control_pipe_token_file_is_user_only_after_first_write() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        bootstrap_control_pipe_token().expect("bootstrap");
+        assert!(path.is_file());
+        #[cfg(windows)]
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "first write must create the dest with a user-only DACL"
+        );
+        assert!(
+            leftover_control_pipe_token_temps(path.parent().expect("parent")).is_empty(),
+            "first write must not leave token.*.tmp"
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_bootstrap_fail_closed_when_dacl_hardening_fails() {
+        struct ResetDaclFailure;
+        impl Drop for ResetDaclFailure {
+            fn drop(&mut self) {
+                FORCE_CONTROL_PIPE_DACL_FAILURE.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetDaclFailure;
+        let _guard = isolate_control_pipe_paths_for_test();
+        FORCE_CONTROL_PIPE_DACL_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let path = control_pipe_token_file_path().expect("token path");
+        let mut bootstrapped = false;
+        let err = bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect_err("hardening failure must fail closed");
+        assert!(!bootstrapped);
+        assert!(!path.exists(), "unhardened token file must be removed");
+        if let Some(parent) = path.parent() {
+            assert!(
+                leftover_control_pipe_token_temps(parent).is_empty(),
+                "fail-closed DACL must not leave a temp token file"
+            );
+        }
+        assert!(control_pipe_auth_state_lock().is_none());
+        assert!(!control_pipe_auth_is_available());
+        assert!(is_control_pipe_startup_error(&err));
+    }
+
+    #[test]
+    fn control_pipe_ui_enabled_before_token_file_exists() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        assert!(!path.exists());
+        assert!(!control_pipe_auth_is_available());
+        assert!(!control_pipe_ui_is_enabled());
+        mark_control_pipe_server_intended();
+        assert!(!control_pipe_auth_is_available());
+        assert!(control_pipe_ui_is_enabled());
+    }
+
+    #[test]
+    fn control_pipe_env_token_skips_file_rotate_after_exclusive_pipe() {
+        let _guard = set_control_pipe_token_for_test(Some("env-token-value"));
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "keep-file-token").expect("file token");
+        let mut bootstrapped = false;
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("env token must not require file rotate");
+        assert!(bootstrapped);
+        assert_eq!(
+            fs::read_to_string(&path).expect("unchanged file token"),
+            "keep-file-token"
+        );
+        assert!(control_pipe_auth_state_lock().is_none());
+        assert!(control_pipe_auth_is_available());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_env_token_survives_file_dacl_hardening_failure() {
+        struct ResetDaclFailure;
+        impl Drop for ResetDaclFailure {
+            fn drop(&mut self) {
+                FORCE_CONTROL_PIPE_DACL_FAILURE.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetDaclFailure;
+        let _guard = set_control_pipe_token_for_test(Some("env-token-value"));
+        FORCE_CONTROL_PIPE_DACL_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "keep-file-token").expect("file token");
+        let mut bootstrapped = false;
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("env token launch must not fail closed on file DACL");
+        assert!(bootstrapped);
+        assert_eq!(
+            fs::read_to_string(&path).expect("unchanged file token"),
+            "keep-file-token"
+        );
+        assert!(control_pipe_auth_is_available());
+    }
+
+    #[test]
+    fn control_pipe_operator_snapshot_accepts_file_token() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "operator-file-token").expect("file token");
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.operator.snapshot","params":{"lines":40},"auth":{"token":"operator-file-token"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("json");
+        assert_eq!(value["id"], 1);
+        assert!(value.get("error").is_none() || value["error"].is_null());
     }
 }

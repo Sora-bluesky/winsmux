@@ -90,6 +90,7 @@ $whitelistPatterns = @(
     'docs/project/v03622-context-continuity.ja.md',
     'docs/project/pre-ga-v10-planning-sync.md',
     'docs/project/v03629-team-profile-architecture.md',
+    'docs/project/v03629-declarative-workspace-architecture.md',
     '.agents/README.md',
     'scripts/bootstrap-git-guard.ps1',
     'scripts/bump-version.ps1',

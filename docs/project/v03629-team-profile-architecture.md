@@ -101,10 +101,20 @@ read-modify-write path that preserves unknown top-level keys. A save operation
 that parses only its own subtree and serializes a replacement root document is
 not acceptable.
 
-The canonical on-disk spelling is kebab-case. Existing snake_case spellings
-remain load-only compatibility aliases where the current settings loader
-already accepts them. New saves emit the canonical spelling without changing
-unrelated legacy keys merely to normalize formatting.
+The canonical on-disk spelling is kebab-case (`team-profile`, `agent-slots`,
+and their nested fields such as `slot-id`). The live opted-in parser in
+`core/src/team_profile.rs` looks up kebab-case first and accepts the matching
+snake_case spelling as a load-only alias (`mapping_lookup`). If both spellings
+are present for the same field, the parser fails closed with `ambiguous_alias`.
+Do not reverse live product keys to snake_case. New saves emit the canonical
+kebab-case spelling without rewriting unrelated legacy keys merely to
+normalize formatting.
+
+A scalar `team-profile: default` is not valid opt-in. The live parser requires
+`team-profile` to be a mapping with `schema-version`, `preset`,
+`preset-revision`, and `update-policy`; a scalar fails with
+`invalid_team_profile` / "team-profile must be a mapping." This document does
+not add a scalar migration alias.
 
 ### Composed example
 
@@ -347,7 +357,8 @@ authorization. When the operator dispatches real work, the existing typed
 dispatch packet carries the concrete task ID, task-scoped read/write bounds,
 and expected evidence contract. That packet may reference the immutable launch
 bundle digest, but it does not rewrite the launch bundle or infer task state
-from its text.
+from its text. `orchestra-start.ps1` remains the startup entrypoint and is not
+required to carry a task ID at slot or session launch.
 
 The bundle is written atomically beneath
 `.winsmux/runtime/prompt-bundles/<session-id>/<slot-id>.md`. It is ephemeral
