@@ -1021,3 +1021,17 @@ panes:
             -Now ([datetime]'2026-07-15T00:05:00Z')) | Should -BeFalse
     }
 }
+
+Describe 'pane-control live binary' {
+    It 'Invoke-PaneControlWinsmux uses Get-WinsmuxBin instead of PATH winsmux' {
+        $paneControl = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\pane-control.ps1') -Raw
+        $paneControl | Should -Match 'Invoke-WinsmuxBridgeCommand -WinsmuxBin \(Get-WinsmuxBin\)'
+        $paneControl | Should -Not -Match "Invoke-WinsmuxBridgeCommand -WinsmuxBin 'winsmux'"
+    }
+
+    It 'Invoke-PaneStatusWinsmux uses Get-WinsmuxBin instead of PATH winsmux' {
+        $paneStatus = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\pane-status.ps1') -Raw
+        $paneStatus | Should -Match 'Invoke-WinsmuxBridgeCommand -WinsmuxBin \(Get-WinsmuxBin\)'
+        $paneStatus | Should -Not -Match "Invoke-WinsmuxBridgeCommand -WinsmuxBin 'winsmux'"
+    }
+}

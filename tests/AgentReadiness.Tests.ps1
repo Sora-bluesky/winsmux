@@ -144,6 +144,26 @@ Describe 'agent readiness prompt detection' {
             Test-AgentPromptText -Text $text -Agent 'codex' | Should -BeTrue
         }
 
+        It 'detects the current Codex TUI prompt that starts with U+00BB' {
+            $text = @(
+                '⚠ MCP startup interrupted. The following servers were not initialized: codex_apps'
+                ([char]0x00BB).ToString() + ' Implement {feature}'
+                'gpt-5.6-sol ultra · C:\repo\.worktrees\builder-1'
+            ) -join "`n"
+
+            Test-AgentPromptText -Text $text -Agent 'codex' | Should -BeTrue
+        }
+
+        It 'does not treat a submitted Codex task as ready when U+00BB is followed by execution output' {
+            $text = @(
+                ([char]0x00BB).ToString() + ' Implement {feature}'
+                'Thinking about the change'
+                'editing pane-control.ps1'
+            ) -join "`n"
+
+            Test-AgentPromptText -Text $text -Agent 'codex' | Should -BeFalse
+        }
+
         It 'still detects a claude-ready banner' {
             $text = 'Welcome to Claude Code!'
             Test-AgentPromptText -Text $text -Agent 'claude' | Should -BeTrue

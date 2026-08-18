@@ -1,6 +1,7 @@
 $script:AgentReadinessPromptMarkers = @(
     '>',
     ([string][char]8250),
+    ([string][char]0x00BB),
     ([string][char]0x258C),
     ([string][char]0x276F)
 )
@@ -63,6 +64,53 @@ function ConvertTo-ReadinessAgentName {
     return ''
 }
 
+function Test-AgentGuillemetFooterLine {
+    param([AllowNull()][string]$Line)
+
+    $trimmed = if ($null -eq $Line) { '' } else { $Line.Trim() }
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $true
+    }
+
+    if ($trimmed.StartsWith([string][char]0x26A0) -or $trimmed.StartsWith('⚠') -or $trimmed.StartsWith('Tip:')) {
+        return $true
+    }
+
+    if ($trimmed.StartsWith('MCP ') -or $trimmed.StartsWith('Visit the Codex')) {
+        return $true
+    }
+
+    if ($trimmed -match '^(?:gpt-|codex\b)') {
+        return $true
+    }
+
+    return $trimmed -match '^[╭╮╯╰│─┌┐└┘]'
+}
+
+function Test-AgentGuillemetPromptIsIdle {
+    param([AllowNull()][string[]]$RecentLines)
+
+    $marker = [string][char]0x00BB
+    $promptIndex = -1
+    for ($index = 0; $index -lt @($RecentLines).Count; $index++) {
+        if (@($RecentLines)[$index].TrimStart().StartsWith($marker)) {
+            $promptIndex = $index
+        }
+    }
+
+    if ($promptIndex -lt 0) {
+        return $false
+    }
+
+    for ($index = $promptIndex + 1; $index -lt @($RecentLines).Count; $index++) {
+        if (-not (Test-AgentGuillemetFooterLine -Line @($RecentLines)[$index])) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Test-AgentPromptText {
     param(
         [AllowNull()][string]$Text,
@@ -97,10 +145,17 @@ function Test-AgentPromptText {
     foreach ($line in $recentLines) {
         $trimmed = $line.TrimStart()
         foreach ($marker in $script:AgentReadinessPromptMarkers) {
+            if ($marker -eq ([string][char]0x00BB)) {
+                continue
+            }
             if ($trimmed.StartsWith($marker)) {
                 return $true
             }
         }
+    }
+
+    if (Test-AgentGuillemetPromptIsIdle -RecentLines $recentLines) {
+        return $true
     }
 
     switch ($agentName) {
