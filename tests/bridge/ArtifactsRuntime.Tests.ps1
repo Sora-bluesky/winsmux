@@ -209,6 +209,18 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
     }
 
+    It 'TASK-789 applies Team Profile assignment at worker spawn and does not map catalog requiredBackend' {
+        $script:orchestraStartContent | Should -Not -Match '\$workers\s*=\s*\$agentSlots\.Count'
+        $script:orchestraStartContent | Should -Not -Match 'requiredBackend'
+        $script:orchestraStartContent | Should -Match 'function New-TeamProfileSlotAgentConfig'
+        $script:orchestraStartContent | Should -Match '\$slot\[''worker_backend''\] = \$backend'
+        $dispatchPath = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\control-plane-dispatch.ps1'
+        $dispatchContent = Get-Content -LiteralPath $dispatchPath -Raw -Encoding UTF8
+        $dispatchContent | Should -Match 'New-TeamProfileSlotAgentConfig'
+        $dispatchContent | Should -Not -Match 'requiredBackend'
+        $dispatchContent | Should -Match 'Add-OrchestraPane'
+    }
+
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
         $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -McpMode \$slotAgentConfig\.McpMode -SlotId \$label -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'

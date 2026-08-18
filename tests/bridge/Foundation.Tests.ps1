@@ -182,7 +182,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         $layout.ExternalOperator | Should -Be $true
         $layout.LegacyRoleLayout | Should -Be $false
         $layout.Operators | Should -Be 0
-        $layout.Workers | Should -Be 6
+        $layout.Workers | Should -Be 1
         $layout.Builders | Should -Be 0
         $layout.Researchers | Should -Be 0
         $layout.Reviewers | Should -Be 0
@@ -209,7 +209,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         $layout.ExternalOperator | Should -Be $true
         $layout.LegacyRoleLayout | Should -Be $false
         $layout.Operators | Should -Be 0
-        $layout.Workers | Should -Be 3
+        $layout.Workers | Should -Be 1
     }
 
     It 'allows agent slots without agent or model fields under strict mode' {
@@ -238,7 +238,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         $layout.ExternalOperator | Should -Be $true
         $layout.LegacyRoleLayout | Should -Be $false
         $layout.Operators | Should -Be 0
-        $layout.Workers | Should -Be 2
+        $layout.Workers | Should -Be 1
     }
 
     It 'rejects unsupported non-worker runtime_role overrides until slot runtime wiring expands' {
@@ -1648,7 +1648,7 @@ Describe 'TASK658 R37 project-settings startup and workspace-plan differential c
 
             if ($Startup -eq 'accept') {
                 $startupError | Should -BeNullOrEmpty
-                $startupLayout.Workers | Should -Be @($startupSettings.agent_slots).Count
+                $startupLayout.Workers | Should -Be 1
                 @($startupSettings.agent_slots | ForEach-Object { [string]$_.slot_id }) | Should -Contain 'worker-1'
             } else {
                 $startupError | Should -Not -BeNullOrEmpty

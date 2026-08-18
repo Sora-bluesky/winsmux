@@ -1986,6 +1986,16 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'stale_process_count'
     }
 
+    It 'TASK-789 accepts live expected_pane_count and fail-closes simple mode with extra worker panes' {
+        $script:orchestraSmokeContent | Should -Not -Match '\$workers\s*=\s*\$agentSlots\.Count'
+        $script:orchestraSmokeContent | Should -Match 'Get-OrchestraModeDocument'
+        $script:orchestraSmokeContent | Should -Match 'Test-OrchestraSimpleModeLiveWorkerLimit'
+        $script:orchestraSmokeContent | Should -Match 'simple_mode_live_worker_limit'
+        $script:orchestraSmokeContent | Should -Match 'Get-OrchestraLiveWorkerRolePaneCount'
+        $script:orchestraSmokeContent | Should -Not -Match 'expected_pane_count.*=\s*7'
+    }
+
+
     It 'reports process contract counts for worker shells background helpers attach hosts and warm processes' {
         $snapshot = [pscustomobject]@{
             Processes = @(

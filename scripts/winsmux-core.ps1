@@ -18603,6 +18603,7 @@ Commands:
   Bound review forms ignore process CWD; branch and HEAD come from the submission-resolved target worktree.
   dispatch-review           Dispatch review-request to a review-capable pane (Reviewer/Worker)
   dispatch-task <text>      Route and send task text to a managed pane using manifest-aware role selection
+  archive-pane <slot>       Interrupt a live worker if needed, then remove the pane without respawning [--json] [--project-dir <path>]
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
@@ -19163,6 +19164,7 @@ switch ($Command) {
     'github-preflight' { Invoke-WinsmuxGithubPreflightCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'verify'          { Invoke-Verify }
     'dispatch-task'   { Invoke-WinsmuxDispatchTaskCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
+    'archive-pane'    { Invoke-WinsmuxArchivePaneCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'dispatch-route'  { Invoke-WinsmuxDispatchRouteCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'task-split'      { Invoke-WinsmuxTaskSplitCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'pipeline'        { Invoke-WinsmuxTeamPipelineCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest -AllowDeclarativeWorkflow }

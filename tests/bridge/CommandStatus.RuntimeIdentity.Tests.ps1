@@ -759,6 +759,25 @@ panes:
             -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
             -Now ([datetime]'2026-07-15T00:05:05Z') -LeaseSeconds 15
         $refreshed.lease.expires_at | Should -Be '2026-07-15T00:05:20.0000000Z'
+        @($refreshed.panes).Count | Should -Be @($registry.panes).Count
+        $refreshed.panes[0].slot_id | Should -Be $registry.panes[0].slot_id
+        (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'winsmux-core\scripts\manifest.ps1') -Raw) |
+            Should -Match 'Invoke-WinsmuxWithFileLock -Path \$path'
+
+        $spawned = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-task781-test' -ServerSessionId '$9' `
+            -GenerationId 'generation-1' -SupervisorPid 4100 `
+            -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' -ExpectedPaneCount 2 `
+            -Panes @(
+                $registry.panes[0]
+                [pscustomobject]@{ label = 'worker-2'; slot_id = 'worker-2'; pane_id = '%5'; backend = 'codex'; role = 'worker'; title = 'worker-2'; state = 'live'; bootstrap_pid = 4300; bootstrap_process_started_at = '2026-07-15T00:00:02.0000000Z' }
+            ) -Now ([datetime]'2026-07-15T00:05:06Z') -LeaseSeconds 15
+        Save-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -Registry $spawned | Out-Null
+        $afterSpawn = Update-WinsmuxRuntimeRegistryLease -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
+            -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
+            -Now ([datetime]'2026-07-15T00:05:10Z') -LeaseSeconds 15
+        $afterSpawn.expected_pane_count | Should -Be 2
+        @($afterSpawn.panes).Count | Should -Be 2
+        $afterSpawn.panes[1].slot_id | Should -Be 'worker-2'
 
         $foreignSessionClose = Close-WinsmuxRuntimeRegistry -ProjectDir $script:task781TempRoot -GenerationId 'generation-1' `
             -SupervisorPid 4100 -SupervisorProcessStartedAt '2026-07-15T00:00:00.0000000Z' `
