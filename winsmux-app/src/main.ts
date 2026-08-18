@@ -16,7 +16,6 @@ import {
   getDesktopRunExplain,
   getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
-  getDesktopEventsJson,
   getDesktopWorkersStatus,
   getDesktopTeamProfileSettingsView,
   getDesktopVoiceCaptureStatus,
@@ -121,7 +120,7 @@ import {
   renderFirstRunWizard,
 } from "./firstRunWizard";
 import * as vaultOrganize from "./agentVaultOrganize";
-import * as attentionCenter from "./attentionCenter";
+import * as attentionCenterPanel from "./attentionCenterPanel";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -686,11 +685,6 @@ let agentVaultStatusMessage = "";
 let selectedAgentVaultSessionId = "";
 let agentVaultOrganizeState = vaultOrganize.emptyAgentVaultOrganize();
 let agentVaultShowArchived = false;
-let attentionCenterState = attentionCenter.emptyAttentionCenterState();
-let attentionCenterEvents: attentionCenter.CondensedEvent[] = [];
-let attentionCenterSnapshotCursor = 0;
-let attentionCenterStatusMessage = "";
-let attentionCenterFilter: attentionCenter.AttentionFilter = "unread";
 const agentVaultCollapsedProviderIds = new Set<AgentVaultProviderId>();
 const agentVaultCollapsedGroupIds = new Set<string>();
 let workbenchLayout: WorkbenchLayoutMode = "3x2";
@@ -3106,234 +3100,6 @@ function getVisibleAgentVaultEntries() {
   });
 }
 
-function persistAttentionCenterState() {
-  const saved = attentionCenter.persistAttentionCenterStateToStorage(window.localStorage, attentionCenterState);
-  if (!saved.ok) {
-    attentionCenterStatusMessage = getLanguageText(saved.error, "要確認センターの状態を保存できませんでした。");
-    return false;
-  }
-  return true;
-}
-
-function loadAttentionCenterStateFromStorage() {
-  const loaded = attentionCenter.loadAttentionCenterState(
-    window.localStorage.getItem(attentionCenter.ATTENTION_CENTER_STORAGE_KEY),
-  );
-  attentionCenterState = loaded.state;
-  if (loaded.error) {
-    attentionCenterStatusMessage = getLanguageText(loaded.error, "要確認センターの状態を読み込めませんでした。以前の状態を保持します。");
-  }
-}
-
-async function refreshAttentionCenter() {
-  const projectDir = normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
-  const previousProjectDir = attentionCenterState.projectDir;
-  attentionCenterState = attentionCenter.alignAttentionCenterProject(attentionCenterState, projectDir);
-  if (attentionCenterState.projectDir !== previousProjectDir) {
-    persistAttentionCenterState();
-  }
-  if (!projectDir) {
-    attentionCenterEvents = [];
-    attentionCenterSnapshotCursor = 0;
-    return;
-  }
-
-  try {
-    const argv = attentionCenter.buildEventsCommandArgv(projectDir, attentionCenterState.lastSeenCursor);
-    if (!argv.includes("--json")) {
-      attentionCenterEvents = [];
-      attentionCenterSnapshotCursor = 0;
-      attentionCenterStatusMessage = getLanguageText("events --json is required.", "events --json が必要です。");
-      return;
-    }
-    const stdout = await getDesktopEventsJson(projectDir, attentionCenterState.lastSeenCursor);
-    const snapshot = attentionCenter.parseEventsCommandJson(stdout);
-    attentionCenterEvents = snapshot.events;
-    attentionCenterSnapshotCursor = snapshot.cursor;
-    attentionCenterStatusMessage = "";
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (attentionCenter.isCompanionWinsmuxMissingError(message) || /companion winsmux CLI was not found/i.test(message)) {
-      attentionCenterStatusMessage = getLanguageText(
-        attentionCenter.COMPANION_WINSMUX_MISSING_STATUS,
-        "companion winsmux 実行ファイルが見つかりません。",
-      );
-      return;
-    }
-    attentionCenterEvents = [];
-    attentionCenterSnapshotCursor = 0;
-    if (attentionCenter.isEventsCommandUsageText(message)) {
-      attentionCenterStatusMessage = getLanguageText("events --json is required.", "events --json が必要です。");
-      return;
-    }
-    attentionCenterStatusMessage = getLanguageText(
-      "Condensed events could not be read.",
-      "要約イベントを読み取れませんでした。",
-    );
-  }
-}
-
-function describeAttentionEvent(event: attentionCenter.CondensedEvent): { title: string; body: string; tone: SurfaceTone } {
-  const kind = attentionCenter.classifyAttention(event);
-  switch (event.type) {
-    case "thread_created":
-      return {
-        title: getLanguageText("Unread thread", "未読スレッド"),
-        body: String(event.role || event.pane_id || event.run_id || ""),
-        tone: "info",
-      };
-    case "status_running":
-      return {
-        title: getLanguageText("Running", "実行中"),
-        body: String(event.pane_id || event.run_id || ""),
-        tone: "info",
-      };
-    case "status_idle":
-      return {
-        title: getLanguageText("Idle", "アイドル"),
-        body: String(event.stop_reason || event.pane_id || ""),
-        tone: "info",
-      };
-    case "message_received":
-      return {
-        title: getLanguageText("Waiting to collect", "回収待ち"),
-        body: String(event.task_id || event.run_id || ""),
-        tone: "warning",
-      };
-    case "requires_action":
-      if (kind === "failure") {
-        return { title: getLanguageText("Failure", "失敗"), body: String(event.kind || ""), tone: "danger" };
-      }
-      if (kind === "approval") {
-        return { title: getLanguageText("Approval", "承認"), body: String(event.kind || ""), tone: "warning" };
-      }
-      return { title: getLanguageText("Waiting", "待機"), body: String(event.kind || ""), tone: "warning" };
-    default:
-      return { title: event.type, body: "", tone: "info" };
-  }
-}
-
-function getAttentionAndFeedTone(feedEntries: AgentVaultFeedEntry[]): SurfaceTone {
-  const unread = attentionCenter.unreadEvents(attentionCenterEvents, attentionCenterState.lastSeenCursor);
-  if (unread.some((event) => attentionCenter.classifyAttention(event) === "failure") || feedEntries.some((entry) => entry.tone === "danger")) {
-    return "danger";
-  }
-  if (
-    unread.some((event) => {
-      const kind = attentionCenter.classifyAttention(event);
-      return kind === "approval" || kind === "waiting";
-    })
-    || feedEntries.some((entry) => entry.tone === "warning")
-  ) {
-    return "warning";
-  }
-  return vaultOrganize.getAgentVaultNotificationTone(feedEntries);
-}
-
-function markAllAttentionRead() {
-  attentionCenterState = attentionCenter.markAllRead(attentionCenterState, attentionCenterSnapshotCursor);
-  persistAttentionCenterState();
-  renderAgentVaultPanel();
-}
-
-function focusAttentionEvent(event: attentionCenter.CondensedEvent) {
-  const jump = attentionCenter.attentionJumpTarget(event, getAvailableRunIds());
-  attentionCenterState = attentionCenter.markEventRead(attentionCenterState, event);
-  persistAttentionCenterState();
-  if (jump.paneId) {
-    focusWorkerPaneFromStatus(jump.paneId);
-    attentionCenterStatusMessage = getLanguageText(
-      `Focused ${getPaneDisplayLabel(jump.paneId)} from Attention center.`,
-      `要確認センターから ${getPaneDisplayLabel(jump.paneId)} へ移動しました。`,
-    );
-  } else if (jump.runId) {
-    setSelectedRun(jump.runId);
-    attentionCenterStatusMessage = getLanguageText(
-      `Selected run ${jump.runId} from Attention center.`,
-      `要確認センターから run ${jump.runId} を選択しました。`,
-    );
-    renderDesktopSurfaces();
-    return;
-  } else {
-    attentionCenterStatusMessage = getLanguageText(
-      "No pane is attached to this event.",
-      "このイベントに紐づくペインはありません。",
-    );
-  }
-  renderAgentVaultPanel();
-}
-
-function renderAttentionCenter(root: HTMLElement) {
-  const counts = attentionCenter.attentionFilterCounts(attentionCenterEvents, attentionCenterState.lastSeenCursor);
-  const rows = attentionCenter.attentionEventsForFilter(
-    attentionCenterEvents,
-    attentionCenterState.lastSeenCursor,
-    attentionCenterFilter,
-  );
-  root.replaceChildren();
-
-  const header = document.createElement("div");
-  header.className = "attention-center-header";
-  const title = document.createElement("div");
-  title.className = "attention-center-title";
-  title.textContent = getLanguageText("Attention center", "要確認センター");
-  const markAll = document.createElement("button");
-  markAll.type = "button";
-  markAll.className = "agent-vault-filter-btn";
-  markAll.textContent = getLanguageText("Mark all read", "すべて既読");
-  markAll.addEventListener("click", () => markAllAttentionRead());
-  header.append(title, markAll);
-  root.appendChild(header);
-
-  const filters = document.createElement("div");
-  filters.className = "attention-center-filters";
-  const filterItems: Array<{ id: attentionCenter.AttentionFilter; label: string; count: number }> = [
-    { id: "unread", label: getLanguageText("Unread", "未読"), count: counts.unread },
-    { id: "waiting", label: getLanguageText("Waiting", "待機"), count: counts.waiting },
-    { id: "approval", label: getLanguageText("Approval", "承認"), count: counts.approval },
-    { id: "failure", label: getLanguageText("Failure", "失敗"), count: counts.failure },
-  ];
-  for (const filter of filterItems) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "agent-vault-filter-btn";
-    button.textContent = `${filter.label} ${filter.count}`;
-    button.setAttribute("aria-pressed", attentionCenterFilter === filter.id ? "true" : "false");
-    button.addEventListener("click", () => {
-      attentionCenterFilter = filter.id;
-      renderAgentVaultPanel();
-    });
-    filters.appendChild(button);
-  }
-  root.appendChild(filters);
-
-  if (attentionCenterStatusMessage) {
-    const status = document.createElement("div");
-    status.className = "attention-center-status";
-    status.textContent = attentionCenterStatusMessage;
-    root.appendChild(status);
-  }
-
-  if (rows.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "attention-center-empty";
-    empty.textContent = getLanguageText("No unread condensed events.", "未読の要約イベントはありません。");
-    root.appendChild(empty);
-    return;
-  }
-
-  for (const event of rows) {
-    const described = describeAttentionEvent(event);
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "attention-center-row";
-    row.dataset.tone = described.tone;
-    row.textContent = described.body ? `${described.title}: ${described.body}` : described.title;
-    row.addEventListener("click", () => focusAttentionEvent(event));
-    root.appendChild(row);
-  }
-}
-
 function buildAgentVaultFeedEntries(): AgentVaultFeedEntry[] {
   const entries: AgentVaultFeedEntry[] = [];
   for (const item of desktopSummarySnapshot?.inbox.items ?? []) {
@@ -3438,19 +3204,7 @@ function renderAgentVaultPanel() {
   if (title) {
     title.textContent = getLanguageText(`${visibleEntries.length} indexed sessions`, `${visibleEntries.length} 件の索引済みセッション`);
   }
-  const attentionCounts = attentionCenter.attentionFilterCounts(
-    attentionCenterEvents,
-    attentionCenterState.lastSeenCursor,
-  );
-  if (ring) {
-    const ringCount = attentionCounts.unread + feedEntries.length;
-    ring.textContent = ringCount > 0 ? `${ringCount}` : "OK";
-    ring.dataset.tone = getAttentionAndFeedTone(feedEntries);
-    ring.title = getLanguageText(
-      `${attentionCounts.unread} unread attention · ${feedEntries.length} inbox`,
-      `未読 ${attentionCounts.unread} · 受信箱 ${feedEntries.length}`,
-    );
-  }
+  attentionCenterPanel.applyVaultRing(ring, feedEntries);
   if (projectFilter) {
     projectFilter.textContent = getLanguageText("This project", "このプロジェクト");
     projectFilter.setAttribute("aria-pressed", agentVaultProjectOnly ? "true" : "false");
@@ -3508,7 +3262,7 @@ function renderAgentVaultPanel() {
     }
   }
   if (attentionRoot) {
-    renderAttentionCenter(attentionRoot);
+    attentionCenterPanel.renderAttentionCenter(attentionRoot);
   }
   if (feed) {
     feed.replaceChildren();
@@ -18471,7 +18225,7 @@ async function refreshDesktopSummaryFromScheduler(context: DesktopSummaryRefresh
       }
     }
 
-    await refreshAttentionCenter();
+    await attentionCenterPanel.refreshAttentionCenter();
     if (previousSnapshot && !diff.hasMeaningfulChange && !forceExplainRunId && !shouldPrefetchExplain) {
       renderAgentVaultPanel();
       return;
@@ -18700,7 +18454,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   } catch {
     agentVaultStatusMessage = getLanguageText("Agent Vault organize data was rejected. Previous state was kept.", "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
   }
-  loadAttentionCenterStateFromStorage();
+  attentionCenterPanel.bindAndLoadAttentionCenter({ getLanguageText, normalizeProjectDirInput, getActiveProjectDirPayload, getAvailableRunIds, focusWorkerPaneFromStatus, getPaneDisplayLabel, setSelectedRun, renderDesktopSurfaces, renderAgentVaultPanel });
 
   applyShellPreferences();
   applyLanguageChrome();
@@ -18753,7 +18507,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceEntries();
   renderEvidenceView();
   renderAgentVaultPanel();
-  void refreshAttentionCenter().then(() => renderAgentVaultPanel());
+  void attentionCenterPanel.refreshAttentionCenter().then(() => renderAgentVaultPanel());
   renderContextPanel();
   renderSettingsControls();
   renderFooterLane();

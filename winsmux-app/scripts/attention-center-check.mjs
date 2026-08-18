@@ -207,6 +207,7 @@ assert.deepEqual(
 );
 
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
+const panelSource = await readFile(path.resolve("src/attentionCenterPanel.ts"), "utf8");
 const htmlSource = await readFile(path.resolve("index.html"), "utf8");
 const stylesSource = await readFile(path.resolve("src/styles.css"), "utf8");
 const desktopClientSource = await readFile(path.resolve("src/desktopClient.ts"), "utf8");
@@ -214,23 +215,30 @@ const libSource = await readFile(path.resolve("src-tauri/src/lib.rs"), "utf8");
 const backendSource = await readFile(path.resolve("src-tauri/src/desktop_backend.rs"), "utf8");
 const splitGateSource = await readFile(path.resolve("../scripts/test-v03626-desktop-split-gate.ps1"), "utf8");
 
-assert.match(mainSource, /from "\.\/attentionCenter"/);
-assert.match(mainSource, /ATTENTION_CENTER_STORAGE_KEY|winsmux\.attention-center\.v1/);
-assert.match(mainSource, /parseEventsCommandJson|readEventsCommandSnapshot/);
-assert.match(mainSource, /buildEventsCommandArgv/);
-assert.match(mainSource, /getDesktopEventsJson/);
-assert.match(mainSource, /getLanguageText\("Attention center", "要確認センター"\)/);
-assert.match(mainSource, /getLanguageText\("Mark all read", "すべて既読"\)/);
-assert.match(mainSource, /getLanguageText\("Unread", "未読"\)/);
-assert.match(mainSource, /getLanguageText\("Waiting", "待機"\)/);
-assert.match(mainSource, /getLanguageText\("Approval", "承認"\)/);
-assert.match(mainSource, /getLanguageText\("Failure", "失敗"\)/);
-assert.match(mainSource, /companion winsmux CLI was not found|COMPANION_WINSMUX_MISSING_STATUS/);
+assert.match(mainSource, /from "\.\/attentionCenterPanel"/);
+assert.doesNotMatch(mainSource, /from "\.\/attentionCenter"/);
+assert.doesNotMatch(mainSource, /function persistAttentionCenterState|function renderAttentionCenter|function refreshAttentionCenter/);
+assert.match(mainSource, /bindAndLoadAttentionCenter/);
+assert.match(mainSource, /refreshAttentionCenter/);
 assert.match(mainSource, /buildAgentVaultFeedEntries/);
 assert.match(mainSource, /focusWorkerPaneFromStatus/);
-assert.match(mainSource, /refreshAttentionCenter/);
 assert.doesNotMatch(mainSource, /poll-events --json/);
 assert.doesNotMatch(mainSource, /appendPaneOutputBuffer\([^)]*attention/i);
+
+assert.match(panelSource, /from "\.\/attentionCenter"/);
+assert.match(panelSource, /ATTENTION_CENTER_STORAGE_KEY|winsmux\.attention-center\.v1/);
+assert.match(panelSource, /parseEventsCommandJson|readEventsCommandSnapshot/);
+assert.match(panelSource, /buildEventsCommandArgv/);
+assert.match(panelSource, /getDesktopEventsJson/);
+assert.match(panelSource, /getLanguageText\("Attention center", "要確認センター"\)/);
+assert.match(panelSource, /getLanguageText\("Mark all read", "すべて既読"\)/);
+assert.match(panelSource, /getLanguageText\("Unread", "未読"\)/);
+assert.match(panelSource, /getLanguageText\("Waiting", "待機"\)/);
+assert.match(panelSource, /getLanguageText\("Approval", "承認"\)/);
+assert.match(panelSource, /getLanguageText\("Failure", "失敗"\)/);
+assert.match(panelSource, /companion winsmux CLI was not found|COMPANION_WINSMUX_MISSING_STATUS/);
+assert.doesNotMatch(panelSource, /poll-events --json/);
+assert.doesNotMatch(panelSource, /appendPaneOutputBuffer/);
 
 assert.match(htmlSource, /id="attention-center"/);
 assert.match(htmlSource, /id="agent-vault-feed"/);
