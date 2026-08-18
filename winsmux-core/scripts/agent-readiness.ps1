@@ -1,6 +1,7 @@
 $script:AgentReadinessPromptMarkers = @(
     '>',
     ([string][char]8250),
+    ([string][char]0x00BB),
     ([string][char]0x258C),
     ([string][char]0x276F)
 )
