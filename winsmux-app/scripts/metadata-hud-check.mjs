@@ -97,19 +97,26 @@ assert.equal(chipById(h07, "cpu")?.value, "0");
 assert.equal(chipById(h07, "memory")?.value, "0");
 assert.deepEqual(chipIds(hudChipsFromSources({})), []);
 
-// H08: main.ts source imports metadataHud; does not invent cpu/memory HUD defaults
+// H08: main.ts wires the panel, not the domain module; does not invent cpu/memory HUD defaults
 const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
-assert.match(mainSource, /from "\.\/metadataHud"/);
-assert.match(mainSource, /hudChipsFromSources/);
-assert.doesNotMatch(mainSource, /cpuPercent:\s*0/);
-assert.doesNotMatch(mainSource, /memoryMb:\s*0/);
-
+const panelSource = await readFile(path.resolve("src/metadataHudPanel.ts"), "utf8");
 const htmlSource = await readFile(path.resolve("index.html"), "utf8");
 const stylesSource = await readFile(path.resolve("src/styles.css"), "utf8");
 const splitGateSource = await readFile(path.resolve("../scripts/test-v03626-desktop-split-gate.ps1"), "utf8");
 
-assert.match(mainSource, /getLanguageText\("Metadata", "メタデータ"\)/);
-assert.match(mainSource, /openPreviewTarget/);
+assert.match(mainSource, /from "\.\/metadataHudPanel"/);
+assert.doesNotMatch(mainSource, /from "\.\/metadataHud"/);
+assert.doesNotMatch(mainSource, /function collectMetadataHudSources|function renderMetadataHud|function metadataHudChipLabel/);
+assert.match(mainSource, /bindAndLoadMetadataHud/);
+assert.match(mainSource, /renderMetadataHud/);
+assert.doesNotMatch(mainSource, /cpuPercent:\s*0/);
+assert.doesNotMatch(mainSource, /memoryMb:\s*0/);
+
+assert.match(panelSource, /from "\.\/metadataHud"/);
+assert.match(panelSource, /hudChipsFromSources/);
+assert.match(panelSource, /getLanguageText\("Metadata", "メタデータ"\)/);
+assert.match(panelSource, /openPreviewTarget/);
+
 assert.match(htmlSource, /id="metadata-hud"/);
 assert.match(stylesSource, /\.metadata-hud\b/);
 assert.doesNotMatch(stylesSource, /#pane-worker-[2-6][^{]*\{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden)/);
@@ -121,5 +128,10 @@ assert.doesNotMatch(
   /appendPaneOutputBuffer|capture-pane|capturePtyPane|outputBuffer|pty_capture/,
 );
 assert.doesNotMatch(hudSource, /JSON\.parse\(\s*(?:pane|buffer|capture)/i);
+assert.doesNotMatch(
+  panelSource,
+  /appendPaneOutputBuffer|capture-pane|capturePtyPane|outputBuffer|pty_capture/,
+);
+assert.doesNotMatch(panelSource, /JSON\.parse\(\s*(?:pane|buffer|capture)/i);
 
 console.log("metadata-hud-check: ok");
