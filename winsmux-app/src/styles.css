@@ -3240,6 +3240,72 @@ body[data-popout-surface="1"] #editor-surface {
   gap: 10px;
 }
 
+.metadata-hud {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: auto hidden;
+}
+
+.metadata-hud[hidden] {
+  display: none;
+}
+
+.metadata-hud-title {
+  flex: 0 0 auto;
+  color: var(--ws-fg-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+
+.metadata-hud-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 168px;
+  border: 1px solid var(--border-muted);
+  border-radius: 3px;
+  background: var(--ws-bg-elevated);
+  color: var(--text-secondary);
+  padding: 1px 5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-2xs);
+}
+
+button.metadata-hud-chip {
+  margin: 0;
+  cursor: pointer;
+  font: inherit;
+}
+
+button.metadata-hud-chip:hover,
+button.metadata-hud-chip:focus-visible {
+  color: var(--ws-fg);
+  outline: none;
+}
+
+.metadata-hud-chip[data-hud-chip="cost"] {
+  color: var(--status-warning);
+  border-color: var(--status-warning-border);
+  background: color-mix(in srgb, var(--status-warning) 9%, var(--ws-bg-elevated));
+}
+
+.metadata-hud-chip[data-hud-chip="heartbeat"] {
+  color: var(--ws-accent);
+  border-color: color-mix(in srgb, var(--ws-accent) 28%, var(--border-muted));
+  background: color-mix(in srgb, var(--ws-accent) 8%, var(--ws-bg-elevated));
+}
+
+.metadata-hud-chip[data-hud-chip="preview"] {
+  color: var(--status-info);
+  border-color: color-mix(in srgb, var(--status-info) 38%, var(--border-muted));
+  background: color-mix(in srgb, var(--status-info) 9%, var(--ws-bg-elevated));
+}
+
 #agent-vault-ring {
   width: 42px;
   min-height: 42px;

@@ -194,6 +194,8 @@ $whitelistPatterns = @(
     'winsmux-app/src/agentVaultOrganize.ts',
     'winsmux-app/src/attentionCenter.ts',
     'winsmux-app/src/attentionCenterPanel.ts',
+    'winsmux-app/src/metadataHud.ts',
+    'winsmux-app/src/metadataHudPanel.ts',
     'winsmux-app/src/firstRunWizard.ts',
     'winsmux-app/src/workflowGate.ts',
     'winsmux-app/src/styles.css',

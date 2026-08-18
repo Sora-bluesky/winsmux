@@ -121,7 +121,7 @@ import {
 } from "./firstRunWizard";
 import * as vaultOrganize from "./agentVaultOrganize";
 import * as attentionCenterPanel from "./attentionCenterPanel";
-
+import * as metadataHudPanel from "./metadataHudPanel";
 interface PaneEntry {
   terminal: Terminal;
   fitAddon: FitAddon;
@@ -2698,7 +2698,7 @@ function renderWorkerStatusSurface() {
   bar.hidden = !workerStatusStripVisible;
   bar.setAttribute("aria-hidden", workerStatusStripVisible ? "false" : "true");
   if (!workerStatusStripVisible) {
-    bar.replaceChildren();
+    bar.replaceChildren(); metadataHudPanel.renderMetadataHud();
     return;
   }
 
@@ -2798,7 +2798,7 @@ function renderWorkerStatusSurface() {
   const shadowProposal = renderLocalRouterShadowProposal(rows, focusedPaneId);
   if (shadowProposal) {
     bar.appendChild(shadowProposal);
-  }
+  } metadataHudPanel.renderMetadataHud();
 }
 
 function setWorkerStatusStripVisible(visible: boolean, options?: { persist?: boolean }) {
@@ -3170,7 +3170,7 @@ function renderAgentVaultPanel() {
     return;
   }
   panel.hidden = !agentVaultOpen;
-  updateAgentVaultToggleButton();
+  updateAgentVaultToggleButton(); metadataHudPanel.renderMetadataHud();
   if (!agentVaultOpen) {
     return;
   }
@@ -15739,7 +15739,7 @@ function trapCommandBarTab(event: KeyboardEvent) {
 }
 
 function renderEditorSurface() {
-  const title = document.getElementById("editor-surface-title");
+  metadataHudPanel.renderMetadataHud(); const title = document.getElementById("editor-surface-title");
   const summary = document.getElementById("editor-surface-summary");
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
@@ -18455,7 +18455,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     agentVaultStatusMessage = getLanguageText("Agent Vault organize data was rejected. Previous state was kept.", "Agent Vault の整理データを読み込めませんでした。以前の状態を保持します。");
   }
   attentionCenterPanel.bindAndLoadAttentionCenter({ getLanguageText, normalizeProjectDirInput, getActiveProjectDirPayload, getAvailableRunIds, focusWorkerPaneFromStatus, getPaneDisplayLabel, setSelectedRun, renderDesktopSurfaces, renderAgentVaultPanel });
-
+  metadataHudPanel.bindAndLoadMetadataHud({ getLanguageText, openPreviewTarget, getWorkerStatusRowsForSurface, getFocusedWorkbenchPaneId, getWorkerStatusTarget, getWorkerApiPosture, getWorkerHeartbeatHealth, getWorkerHeartbeatState, getPrimaryRunProjection, getExplainForRunId: (runId) => desktopExplainCache.get(runId) ?? null, getPreviewUrl: () => selectedPreviewUrl });
   applyShellPreferences();
   applyLanguageChrome();
   syncResponsiveShell();
