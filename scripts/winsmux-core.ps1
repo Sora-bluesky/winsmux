@@ -4,7 +4,7 @@
 $script:WinsmuxBridgeArguments = @($args)
 $Command = if ($script:WinsmuxBridgeArguments.Count -ge 1) { [string]$script:WinsmuxBridgeArguments[0] } else { '' }
 $Target = if ($script:WinsmuxBridgeArguments.Count -ge 2) { [string]$script:WinsmuxBridgeArguments[1] } else { $null }
-$Rest = if ($script:WinsmuxBridgeArguments.Count -ge 3) { [string[]]$script:WinsmuxBridgeArguments[2..($script:WinsmuxBridgeArguments.Count - 1)] } else { @() }
+$Rest = if ($script:WinsmuxBridgeArguments.Count -ge 3) { [string[]]@($script:WinsmuxBridgeArguments[2..($script:WinsmuxBridgeArguments.Count - 1)]) } else { @() }
 
 $script:WinsmuxBridgeWasDotSourced = $MyInvocation.InvocationName -eq '.'
 $script:WinsmuxRequestedProcessExitCode = 0
@@ -19177,9 +19177,9 @@ switch ($Command) {
     'powershell-deescalation' { Invoke-WinsmuxPowerShellDeescalationCommand -BridgeScriptRoot $PSScriptRoot -CommandTarget $Target -CommandRest $Rest }
     'vault'           {
         switch ($Target) {
-            'set'    { $Target = $Rest[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }
-            'get'    { $Target = $Rest[0]; Invoke-VaultGet }
-            'inject' { $Target = $Rest[0]; Invoke-VaultInject }
+            'set'    { $Target = [string]@($Rest)[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }
+            'get'    { $Target = [string]@($Rest)[0]; Invoke-VaultGet }
+            'inject' { $Target = [string]@($Rest)[0]; Invoke-VaultInject }
             'list'   { Invoke-VaultList }
             default  { Stop-WithError "usage: winsmux vault [set|get|inject|list]" }
         }

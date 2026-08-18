@@ -104,6 +104,16 @@ public static class WinCredDeleteNative {
         $storedTargets | Should -Contain ('winsmux:{0}' -f $script:Target)
     }
 
+    It 'vault get through pwsh -File keeps a single rest token intact' {
+        $bridge = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $key = 'WINSMUX_BRIDGE_REST_SINGLE_TOKEN'
+        $output = & pwsh -NoProfile -File $bridge vault get $key 2>&1 | Out-String
+
+        $LASTEXITCODE | Should -Not -Be 0
+        $output | Should -Match ([regex]::Escape("credential not found: $key"))
+        $output | Should -Not -Match 'credential not found: W(\r|\n|$)'
+    }
+
     It 'vault get retrieves a stored credential' {
         $script:Target = '{0}:get' -f $script:RunPrefix
         $script:Rest = @('get-secret')
