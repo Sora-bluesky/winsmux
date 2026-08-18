@@ -156,10 +156,39 @@ fn write_control_pipe_token_file(path: &Path, token: &str) -> Result<(), String>
     Ok(())
 }
 
+fn existing_token_file_is_trusted(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        control_pipe_token_file_dacl_is_user_only(path).unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o777 == 0o600)
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        false
+    }
+}
+
+fn read_trusted_previous_control_pipe_token() -> Option<String> {
+    let path = control_pipe_token_file_path()?;
+    if !existing_token_file_is_trusted(&path) {
+        return None;
+    }
+    read_control_pipe_token_file()
+}
+
 fn bootstrap_control_pipe_token() -> Result<(), String> {
     let path = control_pipe_token_file_path()
         .ok_or_else(|| "control-pipe token rotate failed".to_string())?;
-    let previous = read_control_pipe_token_file();
+    let previous = read_trusted_previous_control_pipe_token();
     let current = generate_control_pipe_token()?;
     write_control_pipe_token_file(&path, &current)?;
     *control_pipe_auth_state_lock() = Some(ControlPipeAuthState {
@@ -891,6 +920,16 @@ mod tests {
         guard
     }
 
+    fn harden_existing_token_file_for_test(path: &Path) {
+        #[cfg(windows)]
+        apply_user_only_dacl(path).expect("harden previous token file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("chmod 0600");
+        }
+    }
+
     fn expire_previous_control_pipe_token_for_test() {
         if let Some(state) = control_pipe_auth_state_lock().as_mut() {
             state.previous_deadline = Instant::now() - Duration::from_secs(1);
@@ -1348,6 +1387,7 @@ mod tests {
         let path = control_pipe_token_file_path().expect("token path");
         fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
         fs::write(&path, "previous-rotate-token").expect("previous token");
+        harden_existing_token_file_for_test(&path);
         bootstrap_control_pipe_token().expect("bootstrap");
         let current = fs::read_to_string(&path).expect("current token");
         assert_ne!(current, "previous-rotate-token");
@@ -1383,11 +1423,43 @@ mod tests {
     }
 
     #[test]
+    fn control_pipe_untrusted_previous_token_is_not_accepted() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "planted-previous-token").expect("planted token");
+        assert!(!existing_token_file_is_trusted(&path));
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let current = fs::read_to_string(&path).expect("current token");
+        assert_ne!(current, "planted-previous-token");
+
+        let pty_transport = StubPtyTransport::new();
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("planted-previous-token"),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token(&current),
+            None,
+        );
+        let accepted_value: Value = serde_json::from_slice(&accepted).expect("accepted json");
+        assert_eq!(accepted_value["result"]["paneId"], "pane-1");
+    }
+
+    #[test]
     fn control_pipe_drops_previous_token_after_process_ttl() {
         let _guard = isolate_control_pipe_paths_for_test();
         let path = control_pipe_token_file_path().expect("token path");
         fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
         fs::write(&path, "previous-ttl-token").expect("previous token");
+        harden_existing_token_file_for_test(&path);
         bootstrap_control_pipe_token().expect("bootstrap");
         expire_previous_control_pipe_token_for_test();
 
