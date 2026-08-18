@@ -3157,6 +3157,107 @@ Write-Output 'reached-after-exit'
         $saved.Panes.Contains('worker-2') | Should -BeFalse
     }
 
+    It 'TASK-789 spawn readiness uses CapabilityAdapter instead of provider Agent' {
+        $scalerIndex = $script:task789PaneScalerContent.IndexOf('function Add-OrchestraWorkerPane')
+        $scalerIndex | Should -BeGreaterThan -1
+        $next = $script:task789PaneScalerContent.IndexOf("`nfunction ", $scalerIndex + 1)
+        if ($next -lt 0) {
+            $next = $script:task789PaneScalerContent.Length
+        }
+        $spawnBody = $script:task789PaneScalerContent.Substring($scalerIndex, $next - $scalerIndex)
+        $spawnBody | Should -Match 'Get-PaneScalerReadinessAgent'
+        $spawnBody | Should -Match 'Wait-OrchestraSpawnAgentReady -PaneId \$newPaneId -Agent \$readinessAgent'
+        $spawnBody | Should -Not -Match 'Wait-OrchestraSpawnAgentReady -PaneId \$newPaneId -Agent \$agent'
+        $script:task789PaneScalerContent | Should -Match 'function Get-PaneScalerReadinessAgent'
+
+        Get-PaneScalerReadinessAgent -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'openrouter'; CapabilityAdapter = 'openai-compatible'
+        }) -FallbackAgent 'codex' | Should -Be 'openai-compatible'
+        Get-PaneScalerReadinessAgent -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'openrouter'; CapabilityAdapter = ''
+        }) -FallbackAgent 'codex' | Should -Be 'openrouter'
+
+        $promptText = (@(
+            'status: ready'
+            'api_llm[worker-1]>'
+        ) -join [Environment]::NewLine)
+        Test-AgentPromptText -Text $promptText -Agent 'openrouter' | Should -BeFalse
+        Test-AgentPromptText -Text $promptText -Agent 'openai-compatible' | Should -BeTrue
+
+        $markerDir = Join-Path $script:task789FixRoot '.winsmux\orchestra-bootstrap'
+        New-Item -ItemType Directory -Path $markerDir -Force | Out-Null
+        $markerPath = Join-Path $markerDir '5-generation-789.ready.json'
+        @{
+            state = 'bootstrap_pending'
+            generation_id = 'generation-789'
+            server_session_id = '$9'
+            slot_id = 'worker-2'
+            pane_id = '%5'
+            backend = 'openrouter'
+            role = 'worker'
+            title = 'worker-2'
+            bootstrap_pid = 4300
+            bootstrap_process_started_at = '2026-08-17T00:00:02.0000000Z'
+        } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
+
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        @"
+version: 1
+saved_at: 2026-08-17T00:00:00Z
+session:
+  name: winsmux-orchestra
+  project_dir: $script:task789FixRoot
+  generation_id: generation-789
+  server_session_id: '`$9'
+  bootstrap_pane_id: '%1'
+  expected_pane_count: 1
+panes:
+  worker-1:
+    slot_id: worker-1
+    pane_id: '%3'
+    role: Worker
+    worker_role: worker
+    worker_backend: openrouter
+    title: worker-1
+    status: ready
+"@ | Set-Content -LiteralPath $manifestPath -Encoding utf8
+        $worktreePath = Join-Path $script:task789FixRoot '.worktrees\worker-2'
+        New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+        Mock New-PaneScalerWorkerWorktree {
+            [pscustomobject]@{ WorktreePath = $worktreePath; BranchName = 'worktree-worker-2'; GitWorktreeDir = $worktreePath }
+        }
+        Mock Invoke-MonitorWinsmux {
+            param($Arguments)
+            if (@($Arguments) -contains 'split-window') { return '%5' }
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Get-PaneScalerLaunchCommand { 'echo spawn-worker-2' }
+        Mock New-OrchestraPaneBootstrapPlan { Join-Path $markerDir '5.json' }
+        Mock Get-OrchestraPaneBootstrapMarkerPath { $markerPath }
+        Mock Start-OrchestraPaneBootstrap { }
+        Mock Get-BridgeSettings { [ordered]@{ agent = 'openrouter'; model = 'z-ai/glm-5.2' } }
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{
+                Status       = 'ready'
+                PaneId       = '%5'
+                SnapshotTail = ''
+                ExitReason   = ''
+            }
+        }
+
+        $null = Add-OrchestraWorkerPane -ManifestPath $manifestPath -SlotId 'worker-2' -SlotAgentConfig ([pscustomobject]@{
+            Agent = 'openrouter'; CapabilityAdapter = 'openai-compatible'; Model = 'z-ai/glm-5.2'; WorkerBackend = 'openrouter'; PaneTitle = 'worker-2'
+        })
+        $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
+        $saved.Panes['worker-2'].status | Should -Be 'ready'
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%5' -and $Agent -eq 'openai-compatible' -and $Role -eq 'Worker'
+        }
+        Should -Invoke Get-PaneAgentStatus -Times 0 -ParameterFilter {
+            $Agent -eq 'openrouter'
+        }
+    }
+
     It 'restores v2 archive files when kill-pane fails and the pane is still listed' {
         $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
         $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $script:task789FixRoot

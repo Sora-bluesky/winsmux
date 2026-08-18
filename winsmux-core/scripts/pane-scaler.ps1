@@ -295,6 +295,26 @@ function Test-PaneScalerParallelRunsAvailable {
     return [bool](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsParallelRuns' -Default $false)
 }
 
+function Get-PaneScalerReadinessAgent {
+    param(
+        [AllowNull()]$SlotAgentConfig,
+        [string]$FallbackAgent = ''
+    )
+
+    $readinessAgent = ''
+    if ($null -ne $SlotAgentConfig) {
+        $readinessAgent = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityAdapter' -Default '')
+        if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
+            $readinessAgent = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'Agent' -Default '')
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
+        $readinessAgent = [string]$FallbackAgent
+    }
+
+    return $readinessAgent
+}
+
 function New-PaneScalerBuilderWorktree {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -397,11 +417,7 @@ function Get-PaneWorkload {
             }
         }
 
-        $statusAgent = [string](Get-MonitorPropertyValue -InputObject $roleAgentConfig -Name 'CapabilityAdapter' -Default '')
-        if ([string]::IsNullOrWhiteSpace($statusAgent)) {
-            $statusAgent = [string]$roleAgentConfig.Agent
-        }
-
+        $statusAgent = Get-PaneScalerReadinessAgent -SlotAgentConfig $roleAgentConfig
         $status = Get-PaneAgentStatus -PaneId $paneId -Agent $statusAgent -Role 'Builder' -HungThreshold $HungThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
         if ($statusName -in @('busy', 'approval_waiting')) {
@@ -799,7 +815,8 @@ function Add-OrchestraWorkerPane {
                     $markerPid = $null
                 }
                 if ($null -ne $markerPid -and $markerPid -gt 0) {
-                    Wait-OrchestraSpawnAgentReady -PaneId $newPaneId -Agent $agent `
+                    $readinessAgent = Get-PaneScalerReadinessAgent -SlotAgentConfig $SlotAgentConfig -FallbackAgent $agent
+                    Wait-OrchestraSpawnAgentReady -PaneId $newPaneId -Agent $readinessAgent `
                         -TimeoutSeconds $AgentReadyTimeoutSeconds `
                         -PollMilliseconds $AgentReadyPollMilliseconds
                     $runtimeReady = $true
