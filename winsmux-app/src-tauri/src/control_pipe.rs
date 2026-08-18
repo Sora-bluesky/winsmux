@@ -498,6 +498,36 @@ fn replace_file_atomic(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn owner_sid_matches_current_principal(
+    owner: windows_sys::Win32::Security::PSID,
+    user_sid: windows_sys::Win32::Security::PSID,
+    token: windows_sys::Win32::Foundation::HANDLE,
+) -> bool {
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::{CheckTokenMembership, EqualSid, PSID};
+
+    unsafe {
+        if EqualSid(owner, user_sid) != 0 {
+            return true;
+        }
+        // Elevated Windows (including GitHub-hosted runners) often stores
+        // BUILTIN\Administrators as the owner of files the process just created.
+        let ba: Vec<u16> = "S-1-5-32-544".encode_utf16().chain(Some(0)).collect();
+        let mut ba_sid: PSID = core::ptr::null_mut();
+        if ConvertStringSidToSidW(ba.as_ptr(), &mut ba_sid) == 0 || ba_sid.is_null() {
+            return false;
+        }
+        let is_builtin_admin = EqualSid(owner, ba_sid) != 0;
+        let mut is_member: windows_sys::core::BOOL = 0;
+        let trusted_admin = is_builtin_admin
+            && CheckTokenMembership(token, ba_sid, &mut is_member) != 0
+            && is_member != 0;
+        local_free_ptr(ba_sid);
+        trusted_admin
+    }
+}
+
+#[cfg(windows)]
 fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String> {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
     #[cfg(test)]
@@ -561,27 +591,26 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
             local_free_ptr(sd);
             return Err("control-pipe token rotate failed".to_string());
         }
-        CloseHandle(token);
         let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
-        let mut expected_owner = token_user.User.Sid;
-        #[cfg(test)]
-        let mut everyone_sid: PSID = core::ptr::null_mut();
+        let mut owner_matches =
+            owner_sid_matches_current_principal(owner, token_user.User.Sid, token);
         #[cfg(test)]
         {
             if FORCE_CONTROL_PIPE_OWNER_MISMATCH.load(std::sync::atomic::Ordering::SeqCst) {
                 let everyone: Vec<u16> = "S-1-1-0".encode_utf16().chain(Some(0)).collect();
+                let mut everyone_sid: PSID = core::ptr::null_mut();
                 if ConvertStringSidToSidW(everyone.as_ptr(), &mut everyone_sid) == 0
                     || everyone_sid.is_null()
                 {
+                    CloseHandle(token);
                     local_free_ptr(sd);
                     return Err("control-pipe token rotate failed".to_string());
                 }
-                expected_owner = everyone_sid;
+                owner_matches = EqualSid(owner, everyone_sid) != 0;
+                local_free_ptr(everyone_sid);
             }
         }
-        let owner_matches = EqualSid(owner, expected_owner) != 0;
-        #[cfg(test)]
-        local_free_ptr(everyone_sid);
+        CloseHandle(token);
         if !owner_matches {
             local_free_ptr(sd);
             return Ok(false);
