@@ -315,6 +315,37 @@ function Get-PaneScalerReadinessAgent {
     return $readinessAgent
 }
 
+function New-PaneScalerWorkerLaunchApproval {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)]$SlotAgentConfig,
+        [bool]$AutoLaunch = $false
+    )
+
+    if (Get-Command New-OrchestraWorkerLaunchApproval -ErrorAction SilentlyContinue) {
+        return New-OrchestraWorkerLaunchApproval -SlotId $SlotId -SlotAgentConfig $SlotAgentConfig -AutoLaunch:$AutoLaunch
+    }
+
+    return [ordered]@{
+        packet_type             = 'worker_launch_approval'
+        source                  = 'user_approved_worker_config'
+        slot_id                 = $SlotId
+        worker_backend          = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'WorkerBackend' -Default '')
+        worker_role             = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'WorkerRole' -Default '')
+        agent                   = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'Agent' -Default '')
+        model                   = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'Model' -Default '')
+        model_source            = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'ModelSource' -Default '')
+        reasoning_effort        = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'ReasoningEffort' -Default '')
+        prompt_transport        = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'PromptTransport' -Default '')
+        auth_mode               = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'AuthMode' -Default '')
+        credential_requirements = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'CredentialRequirements' -Default '')
+        execution_profile       = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'ExecutionProfile' -Default '')
+        execution_backend       = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'ExecutionBackend' -Default '')
+        analysis_posture        = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'AnalysisPosture' -Default '')
+        auto_launch             = [bool]$AutoLaunch
+    }
+}
+
 function New-PaneScalerBuilderWorktree {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -759,6 +790,11 @@ function Add-OrchestraWorkerPane {
         if (Get-Command Resolve-WinsmuxRuntimeRole -ErrorAction SilentlyContinue) {
             $runtimeWorkerRole = Resolve-WinsmuxRuntimeRole -WorkerRole 'worker' -CanonicalRole 'Worker'
         }
+        $capabilityAdapter = Get-PaneScalerReadinessAgent -SlotAgentConfig $SlotAgentConfig -FallbackAgent $agent
+        $approvedLaunch = $null
+        if ($null -ne $SlotAgentConfig) {
+            $approvedLaunch = New-PaneScalerWorkerLaunchApproval -SlotId $SlotId -SlotAgentConfig $SlotAgentConfig -AutoLaunch $true
+        }
         $cleanPtyEnv = [pscustomobject]@{ Environment = [ordered]@{} }
         if (Get-Command Get-CleanPtyEnv -ErrorAction SilentlyContinue) {
             try {
@@ -790,7 +826,8 @@ function Add-OrchestraWorkerPane {
             -StartupToken $startupToken `
             -LaunchDir $worktree.WorktreePath `
             -CleanPtyEnv $cleanPtyEnv `
-            -LaunchCommand $launchCommand
+            -LaunchCommand $launchCommand `
+            -ApprovedLaunch $approvedLaunch
         Start-OrchestraPaneBootstrap -PaneId $newPaneId -PlanPath $bootstrapPlanPath -SessionName $sessionName
         $bootstrapMarkerPath = Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -GenerationId $expectedGenerationId
         $runtimeReady = $false
@@ -842,6 +879,12 @@ function Add-OrchestraWorkerPane {
             runtime_ready          = $runtimeReady
             bootstrap_plan_path    = $bootstrapPlanPath
             bootstrap_marker_path  = $bootstrapMarkerPath
+        }
+        if ($null -ne $approvedLaunch) {
+            $newPane['approved_launch'] = $approvedLaunch
+        }
+        if (-not [string]::IsNullOrWhiteSpace($capabilityAdapter)) {
+            $newPane['capability_adapter'] = $capabilityAdapter
         }
         if ($null -ne $Projection) {
             $projRoot = $Projection

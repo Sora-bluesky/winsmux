@@ -1561,6 +1561,42 @@ function Test-WinsmuxArchivePaneIdle {
     return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'unavailable' -Status $status -LastEvent $lastEvent
 }
 
+function Get-WinsmuxArchivePaneReadinessAgent {
+    param([AllowNull()]$Entry = $null)
+
+    $adapter = Get-DispatchTaskObjectText -InputObject $Entry -Names @('CapabilityAdapter', 'capability_adapter')
+    if (-not [string]::IsNullOrWhiteSpace($adapter)) {
+        return $adapter
+    }
+
+    $approved = $null
+    if ($null -ne $Entry) {
+        if (Get-Command Get-WinsmuxRuntimeValue -ErrorAction SilentlyContinue) {
+            $approved = Get-WinsmuxRuntimeValue -InputObject $Entry -Name 'ApprovedLaunch' -Default $null
+            if ($null -eq $approved) {
+                $approved = Get-WinsmuxRuntimeValue -InputObject $Entry -Name 'approved_launch' -Default $null
+            }
+        } elseif ($null -ne $Entry.PSObject) {
+            if ($Entry.PSObject.Properties.Name -contains 'ApprovedLaunch') {
+                $approved = $Entry.ApprovedLaunch
+            } elseif ($Entry.PSObject.Properties.Name -contains 'approved_launch') {
+                $approved = $Entry.approved_launch
+            }
+        }
+    }
+
+    $agent = Get-DispatchTaskObjectText -InputObject $approved -Names @('agent', 'Agent')
+    if (-not [string]::IsNullOrWhiteSpace($agent)) {
+        return $agent
+    }
+
+    if (Get-Command Get-PaneScalerReadinessAgent -ErrorAction SilentlyContinue) {
+        return [string](Get-PaneScalerReadinessAgent -SlotAgentConfig $Entry -FallbackAgent '')
+    }
+
+    return Get-DispatchTaskObjectText -InputObject $Entry -Names @('Agent', 'agent')
+}
+
 function Get-WinsmuxArchivePaneRefusal {
     param(
         [AllowNull()]$Entry = $null,
@@ -1754,12 +1790,13 @@ function Invoke-WinsmuxArchivePaneCommand {
         }
 
         $becameIdle = $false
+        $readinessAgent = Get-WinsmuxArchivePaneReadinessAgent -Entry $entry
         for ($attempt = 1; $attempt -le 8; $attempt++) {
             Start-Sleep -Milliseconds 250
             if (Get-Command Get-PaneAgentStatus -ErrorAction SilentlyContinue) {
                 $liveStatus = ''
                 try {
-                    $live = Get-PaneAgentStatus -PaneId $paneId -Role 'Worker'
+                    $live = Get-PaneAgentStatus -PaneId $paneId -Role 'Worker' -Agent $readinessAgent
                     $liveStatus = [string](Get-WinsmuxRuntimeValue -InputObject $live -Name 'Status' -Default '')
                 } catch {
                     $liveStatus = ''

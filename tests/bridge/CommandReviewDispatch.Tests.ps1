@@ -1884,6 +1884,8 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         $body | Should -Match 'C-c'
         $body | Should -Match 'pane\.idle'
         $body | Should -Match 'Get-PaneAgentStatus'
+        $body | Should -Match 'Get-WinsmuxArchivePaneReadinessAgent'
+        $body | Should -Match 'Get-PaneAgentStatus -PaneId \$paneId -Role ''Worker'' -Agent \$readinessAgent'
         $body.IndexOf('Get-WinsmuxArchivePaneRuntimeRefusal') | Should -BeLessThan $body.IndexOf('C-c')
         $script:task789DispatchContent | Should -Match "Operation stop_transition"
         $body | Should -Not -Match 'Invoke-WorkersStop'
@@ -3216,9 +3218,14 @@ Write-Output 'reached-after-exit'
         }
         $spawnBody = $script:task789PaneScalerContent.Substring($scalerIndex, $next - $scalerIndex)
         $spawnBody | Should -Match 'Get-PaneScalerReadinessAgent'
+        $spawnBody | Should -Match 'New-PaneScalerWorkerLaunchApproval'
         $spawnBody | Should -Match 'Wait-OrchestraSpawnAgentReady -PaneId \$newPaneId -Agent \$readinessAgent'
         $spawnBody | Should -Not -Match 'Wait-OrchestraSpawnAgentReady -PaneId \$newPaneId -Agent \$agent'
+        $spawnBody | Should -Match "newPane\['approved_launch'\]"
+        $spawnBody | Should -Match "newPane\['capability_adapter'\]"
         $script:task789PaneScalerContent | Should -Match 'function Get-PaneScalerReadinessAgent'
+        $script:task789PaneScalerContent | Should -Match 'function New-PaneScalerWorkerLaunchApproval'
+        $script:task789DispatchContent | Should -Match 'function Get-WinsmuxArchivePaneReadinessAgent'
 
         Get-PaneScalerReadinessAgent -SlotAgentConfig ([pscustomobject]@{
             Agent = 'openrouter'; CapabilityAdapter = 'openai-compatible'
@@ -3300,6 +3307,18 @@ panes:
         })
         $saved = Read-PaneScalerManifest -ManifestPath $manifestPath
         $saved.Panes['worker-2'].status | Should -Be 'ready'
+        [string]$saved.Panes['worker-2'].capability_adapter | Should -Be 'openai-compatible'
+        $rawApproved = $saved.Panes['worker-2'].approved_launch
+        $approved = $rawApproved
+        if ($approved -is [string]) {
+            if (Get-Command ConvertFrom-PaneControlSecurityPolicy -ErrorAction SilentlyContinue) {
+                $approved = ConvertFrom-PaneControlSecurityPolicy -Value $approved
+            } else {
+                $approved = ($approved | ConvertFrom-Json)
+            }
+        }
+        [string](Get-WinsmuxRuntimeValue -InputObject $approved -Name 'agent' -Default '') | Should -Be 'openrouter'
+        [string](Get-WinsmuxRuntimeValue -InputObject $approved -Name 'packet_type' -Default '') | Should -Be 'worker_launch_approval'
         Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%5' -and $Agent -eq 'openai-compatible' -and $Role -eq 'Worker'
         }
@@ -3520,6 +3539,83 @@ Write-Output 'reached-after-exit'
         ($output | Out-String) | Should -Not -Match 'reached-after-exit'
         Test-Path -LiteralPath $sentPath | Should -BeTrue
         Test-Path -LiteralPath $killedPath | Should -BeFalse
+    }
+
+    It 'passes the capability adapter to Get-PaneAgentStatus after archive interrupt' {
+        Get-WinsmuxArchivePaneReadinessAgent -Entry ([pscustomobject]@{
+            CapabilityAdapter = 'openai-compatible'
+            ApprovedLaunch    = [pscustomobject]@{ agent = 'openrouter' }
+        }) | Should -Be 'openai-compatible'
+        Get-WinsmuxArchivePaneReadinessAgent -Entry ([pscustomobject]@{
+            CapabilityAdapter = ''
+            ApprovedLaunch    = [pscustomobject]@{ agent = 'openrouter' }
+        }) | Should -Be 'openrouter'
+
+        $probePath = Join-Path $script:task789FixRoot 'archive-adapter-probe.ps1'
+        $dispatchPath = $script:task789DispatchPath
+        $sentPath = Join-Path $script:task789FixRoot 'cc-sent.txt'
+        $killedPath = Join-Path $script:task789FixRoot 'killed.txt'
+        $agentPath = Join-Path $script:task789FixRoot 'agent-seen.txt'
+        $manifestPath = Join-Path $script:task789FixRoot '.winsmux\manifest.yaml'
+        script:Write-Task789V2Manifest -Path $manifestPath -ProjectDir $script:task789FixRoot -Panes @(
+            script:New-Task789V2Pane -Label 'worker-1' -PaneId '%3' -Status 'ready'
+            script:New-Task789V2Pane -Label 'worker-2' -PaneId '%9' -Status 'busy'
+        )
+        $probe = @"
+`$ErrorActionPreference = 'Stop'
+function Stop-WithError { param([string]`$Message) throw `$Message }
+function Get-Labels { return @{ 'worker-2' = '%9' } }
+. '$($dispatchPath.Replace("'", "''"))'
+function Test-PaneControlRuntimeContext {
+    param(`$ProjectDir, `$ManifestEntry, `$Operation)
+    return [pscustomobject]@{ valid = `$true; reason_code = 'stop_transition_verified'; diagnostic = 'ok'; context = [pscustomobject]@{ generation_id = 'generation-789' } }
+}
+function Get-PaneControlManifestEntries {
+    param(`$ProjectDir)
+    return @(
+        [pscustomobject]@{
+            Label = 'worker-1'; SlotId = 'worker-1'; PaneId = '%3'; Role = 'Worker'
+            WorkerRole = 'worker'; WorkerBackend = 'openrouter'; Title = 'worker-1'
+            Status = 'ready'; LastEvent = 'pane.idle'; CapabilityAdapter = 'openai-compatible'
+        },
+        [pscustomobject]@{
+            Label = 'worker-2'; SlotId = 'worker-2'; PaneId = '%9'; Role = 'Worker'
+            WorkerRole = 'worker'; WorkerBackend = 'openrouter'; Title = 'worker-2'
+            Status = 'busy'; LastEvent = 'pane.progress'; CapabilityAdapter = 'openai-compatible'
+        }
+    )
+}
+function Get-PaneAgentStatus {
+    param(`$PaneId, `$Agent, `$Role)
+    Set-Content -LiteralPath '$($agentPath.Replace("'", "''"))' -Value ([string]`$Agent) -Encoding utf8
+    return [pscustomobject]@{ Status = 'ready'; PaneId = `$PaneId; SnapshotTail = ''; ExitReason = '' }
+}
+function Invoke-WinsmuxRaw {
+    param(`$Arguments)
+    if (@(`$Arguments) -contains 'C-c') { Set-Content -LiteralPath '$($sentPath.Replace("'", "''"))' -Value 'sent' -Encoding utf8 }
+}
+function Invoke-MonitorWinsmux {
+    param(`$Arguments)
+    if (@(`$Arguments) -contains 'C-c') { Set-Content -LiteralPath '$($sentPath.Replace("'", "''"))' -Value 'sent' -Encoding utf8 }
+    if (@(`$Arguments) -contains 'kill-pane') { Set-Content -LiteralPath '$($killedPath.Replace("'", "''"))' -Value 'killed' -Encoding utf8 }
+}
+function Remove-OrchestraPane {
+    param(`$ManifestPath, `$Role, `$Label)
+    Set-Content -LiteralPath '$($killedPath.Replace("'", "''"))' -Value 'removed' -Encoding utf8
+    return [pscustomobject]@{ Changed = `$true; Reason = '' }
+}
+function Test-OrchestraArchiveRemovesLastRequiredWorker { param(`$Manifest, `$Label) return `$false }
+Set-Location -LiteralPath '$($script:task789FixRoot.Replace("'", "''"))'
+Invoke-WinsmuxArchivePaneCommand -BridgeScriptRoot '$($script:task789FixRoot.Replace("'", "''"))' -CommandTarget 'worker-2' -CommandRest @()
+Write-Output 'reached-after-exit'
+"@
+        Set-Content -LiteralPath $probePath -Value $probe -Encoding utf8
+        $output = & pwsh -NoProfile -File $probePath 2>&1
+        $LASTEXITCODE | Should -Be 0
+        ($output | Out-String) | Should -Match 'reached-after-exit'
+        Test-Path -LiteralPath $sentPath | Should -BeTrue
+        Test-Path -LiteralPath $killedPath | Should -BeTrue
+        Get-Content -LiteralPath $agentPath -Raw | Should -Match 'openai-compatible'
     }
 
     It 'keeps a single control-plane flag as a one-element argument list' {
