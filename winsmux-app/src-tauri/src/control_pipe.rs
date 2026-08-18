@@ -299,6 +299,10 @@ fn current_user_sid_string() -> Result<String, String> {
 static FORCE_CONTROL_PIPE_DACL_FAILURE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(all(windows, test))]
+static FORCE_CONTROL_PIPE_OWNER_MISMATCH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(windows)]
 fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
     #[cfg(test)]
@@ -496,11 +500,13 @@ fn replace_file_atomic(from: &Path, to: &Path) -> Result<(), String> {
 #[cfg(windows)]
 fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String> {
     use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
+    #[cfg(test)]
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetTokenInformation, TokenUser,
-        ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-        PSID, TOKEN_QUERY, TOKEN_USER,
+        ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -514,7 +520,7 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
         let status = GetNamedSecurityInfoW(
             path_wide.as_ptr(),
             SE_FILE_OBJECT,
-            DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
             &mut group,
             &mut dacl,
@@ -524,6 +530,61 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
         if status != ERROR_SUCCESS || dacl.is_null() {
             local_free_ptr(sd);
             return Err("control-pipe token rotate failed".to_string());
+        }
+        if owner.is_null() {
+            local_free_ptr(sd);
+            return Ok(false);
+        }
+
+        let mut token: HANDLE = core::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut required = 0u32;
+        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut required);
+        if required == 0 {
+            CloseHandle(token);
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let mut buffer = vec![0u8; required as usize];
+        if GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            required,
+            &mut required,
+        ) == 0
+        {
+            CloseHandle(token);
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        CloseHandle(token);
+        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut expected_owner = token_user.User.Sid;
+        #[cfg(test)]
+        let mut everyone_sid: PSID = core::ptr::null_mut();
+        #[cfg(test)]
+        {
+            if FORCE_CONTROL_PIPE_OWNER_MISMATCH.load(std::sync::atomic::Ordering::SeqCst) {
+                let everyone: Vec<u16> = "S-1-1-0".encode_utf16().chain(Some(0)).collect();
+                if ConvertStringSidToSidW(everyone.as_ptr(), &mut everyone_sid) == 0
+                    || everyone_sid.is_null()
+                {
+                    local_free_ptr(sd);
+                    return Err("control-pipe token rotate failed".to_string());
+                }
+                expected_owner = everyone_sid;
+            }
+        }
+        let owner_matches = EqualSid(owner, expected_owner) != 0;
+        #[cfg(test)]
+        local_free_ptr(everyone_sid);
+        if !owner_matches {
+            local_free_ptr(sd);
+            return Ok(false);
         }
 
         let mut size_info = ACL_SIZE_INFORMATION {
@@ -558,34 +619,6 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
             return Ok(false);
         }
         let sid: PSID = ace_ptr.cast::<u8>().add(8).cast();
-
-        let mut token: HANDLE = core::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        let mut required = 0u32;
-        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut required);
-        if required == 0 {
-            CloseHandle(token);
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        let mut buffer = vec![0u8; required as usize];
-        if GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            required,
-            &mut required,
-        ) == 0
-        {
-            CloseHandle(token);
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        CloseHandle(token);
-        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
         let equal = EqualSid(sid, token_user.User.Sid) != 0;
         local_free_ptr(sd);
         Ok(equal)
@@ -1595,6 +1628,55 @@ mod tests {
             &StubDesktopTransport,
             &pty_transport,
             &capture_payload_with_token("planted-previous-token"),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token(&current),
+            None,
+        );
+        let accepted_value: Value = serde_json::from_slice(&accepted).expect("accepted json");
+        assert_eq!(accepted_value["result"]["paneId"], "pane-1");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_foreign_owner_previous_token_is_not_accepted() {
+        struct ResetOwnerMismatch;
+        impl Drop for ResetOwnerMismatch {
+            fn drop(&mut self) {
+                FORCE_CONTROL_PIPE_OWNER_MISMATCH.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetOwnerMismatch;
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "planted-foreign-owner-token").expect("planted token");
+        apply_user_only_dacl(&path).expect("user-only DACL");
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "same-owner user-only DACL is the positive control"
+        );
+        FORCE_CONTROL_PIPE_OWNER_MISMATCH.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            !existing_token_file_is_trusted(&path),
+            "user-only DACL with a foreign owner must not be trusted"
+        );
+
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let current = fs::read_to_string(&path).expect("current token");
+        assert_ne!(current, "planted-foreign-owner-token");
+
+        let pty_transport = StubPtyTransport::new();
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &capture_payload_with_token("planted-foreign-owner-token"),
             None,
         );
         let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
