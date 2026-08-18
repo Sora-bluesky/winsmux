@@ -1173,8 +1173,12 @@ async fn desktop_run_explain(
 }
 
 #[tauri::command]
-fn desktop_events_json(project_dir: String, cursor: Option<u64>) -> Result<String, String> {
-    load_desktop_events_json(project_dir, cursor.unwrap_or(0))
+async fn desktop_events_json(project_dir: String, cursor: Option<u64>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_desktop_events_json(project_dir, cursor.unwrap_or(0))
+    })
+    .await
+    .map_err(|err| format!("events worker failed: {err}"))?
 }
 
 #[tauri::command]

@@ -249,7 +249,8 @@ assert.match(stylesSource, /\.attention-center\b/);
 assert.doesNotMatch(stylesSource, /#pane-worker-[2-6][^{]*\{[^}]*(?:display\s*:\s*none|visibility\s*:\s*hidden)/);
 
 assert.match(desktopClientSource, /desktop_events_json/);
-assert.match(libSource, /fn desktop_events_json/);
+assert.match(libSource, /async fn desktop_events_json/);
+assert.match(libSource, /spawn_blocking/);
 assert.match(eventsBackendSource, /fn load_desktop_events_json/);
 assert.match(eventsBackendSource, /events/);
 assert.match(eventsBackendSource, /--json/);
