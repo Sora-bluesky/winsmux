@@ -49,7 +49,7 @@ const WINSMUX_DISABLE_WINDOWS_TERMINAL_ATTACH_ENV: &str =
 const WINSMUX_BIN_ENV: &str = "WINSMUX_BIN";
 const WINSMUX_RAW_EXE_ENV: &str = "WINSMUX_RAW_EXE";
 
-fn hide_subprocess_window(command: &mut Command) {
+pub(crate) fn hide_subprocess_window(command: &mut Command) {
     crate::remote_debug_gate::scrub_gate_env_from_command(command);
     #[cfg(windows)] {
         command.creation_flags(CREATE_NO_WINDOW);
@@ -62,13 +62,13 @@ fn resolve_companion_winsmux_cli_from_exe_path(current_exe: &Path) -> Option<Pat
     candidate.is_file().then_some(candidate)
 }
 
-fn resolve_companion_winsmux_cli() -> Option<PathBuf> {
+pub(crate) fn resolve_companion_winsmux_cli() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|current_exe| resolve_companion_winsmux_cli_from_exe_path(&current_exe))
 }
 
-fn apply_desktop_winsmux_child_env(
+pub(crate) fn apply_desktop_winsmux_child_env(
     command: &mut Command,
     companion_cli: Option<&Path>,
     app_pid: u32,
@@ -85,47 +85,6 @@ fn apply_desktop_winsmux_child_env(
             .env(WINSMUX_BIN_ENV, &path_value)
             .env(WINSMUX_RAW_EXE_ENV, path_value);
     }
-}
-
-fn build_companion_events_argv(project_dir: &str, cursor: u64) -> Vec<String> {
-    let mut args = vec!["events".to_string()];
-    if cursor > 0 {
-        args.push(cursor.to_string());
-    }
-    args.push("--json".to_string());
-    args.push("--project-dir".to_string());
-    args.push(project_dir.to_string());
-    args
-}
-
-pub fn load_desktop_events_json(project_dir: String, cursor: u64) -> Result<String, String> {
-    let companion = resolve_companion_winsmux_cli()
-        .ok_or_else(|| "companion winsmux CLI was not found".to_string())?;
-    let project_path = PathBuf::from(&project_dir);
-    if !project_path.is_dir() {
-        return Err(format!("project directory not found: {project_dir}"));
-    }
-
-    let args = build_companion_events_argv(&project_dir, cursor);
-    let mut command = Command::new(&companion);
-    command.args(&args).current_dir(&project_path);
-    apply_desktop_winsmux_child_env(&mut command, Some(companion.as_path()), std::process::id());
-    hide_subprocess_window(&mut command);
-
-    let output = command
-        .output()
-        .map_err(|err| format!("Failed to start companion winsmux: {err}"))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    if !output.status.success() {
-        let detail = if !stderr.trim().is_empty() {
-            stderr
-        } else {
-            stdout
-        };
-        return Err(format!("winsmux events failed: {}", detail.trim()));
-    }
-    Ok(stdout)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -2757,18 +2716,6 @@ mod tests {
             .get_envs()
             .find(|(name, _)| name.to_string_lossy() == key)
             .and_then(|(_, value)| value.map(|value| value.to_string_lossy().to_string()))
-    }
-
-    #[test]
-    fn companion_events_argv_matches_public_cli() {
-        assert_eq!(
-            build_companion_events_argv(r"C:\proj", 0),
-            vec!["events", "--json", "--project-dir", r"C:\proj"]
-        );
-        assert_eq!(
-            build_companion_events_argv("/tmp/proj", 3),
-            vec!["events", "3", "--json", "--project-dir", "/tmp/proj"]
-        );
     }
 
     #[test]

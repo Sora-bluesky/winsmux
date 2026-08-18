@@ -213,6 +213,7 @@ const stylesSource = await readFile(path.resolve("src/styles.css"), "utf8");
 const desktopClientSource = await readFile(path.resolve("src/desktopClient.ts"), "utf8");
 const libSource = await readFile(path.resolve("src-tauri/src/lib.rs"), "utf8");
 const backendSource = await readFile(path.resolve("src-tauri/src/desktop_backend.rs"), "utf8");
+const eventsBackendSource = await readFile(path.resolve("src-tauri/src/desktop_events.rs"), "utf8");
 const splitGateSource = await readFile(path.resolve("../scripts/test-v03626-desktop-split-gate.ps1"), "utf8");
 
 assert.match(mainSource, /from "\.\/attentionCenterPanel"/);
@@ -249,9 +250,10 @@ assert.doesNotMatch(stylesSource, /#pane-worker-[2-6][^{]*\{[^}]*(?:display\s*:\
 
 assert.match(desktopClientSource, /desktop_events_json/);
 assert.match(libSource, /fn desktop_events_json/);
-assert.match(backendSource, /fn load_desktop_events_json/);
-assert.match(backendSource, /events/);
-assert.match(backendSource, /--json/);
+assert.match(eventsBackendSource, /fn load_desktop_events_json/);
+assert.match(eventsBackendSource, /events/);
+assert.match(eventsBackendSource, /--json/);
+assert.doesNotMatch(backendSource, /fn load_desktop_events_json/);
 assert.doesNotMatch(splitGateSource, /attention-center-check/);
 
 console.log("attention-center-check: ok");

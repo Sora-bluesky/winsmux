@@ -1,5 +1,6 @@
 mod control_pipe;
 mod desktop_backend;
+mod desktop_events;
 mod desktop_session_restore;
 mod desktop_team_profile;
 mod pty_backend;
@@ -9,13 +10,14 @@ use control_pipe::{
     control_pipe_ui_is_enabled, start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV,
 };
 use desktop_backend::{
-    handle_desktop_json_rpc, load_desktop_events_json, load_desktop_run_explain,
+    handle_desktop_json_rpc, load_desktop_run_explain,
     load_desktop_summary_snapshot, resolve_repo_root, spawn_desktop_summary_refresh_stream,
     DesktopExplainPayload,
     DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopStreamCommand,
     DesktopSummaryRefreshSignal, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
     PwshScriptTransport,
 };
+use desktop_events::load_desktop_events_json;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use pty_backend::{
     handle_pty_json_rpc, PtyCommand, PtyCommandTransport, PtyJsonRpcRequest, PtyJsonRpcResponse,
