@@ -8,6 +8,7 @@ use crate::pty_backend::{
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,7 @@ struct ControlPipeAuthState {
 }
 
 static CONTROL_PIPE_AUTH_STATE: Mutex<Option<ControlPipeAuthState>> = Mutex::new(None);
+static CONTROL_PIPE_SERVER_INTENDED: AtomicBool = AtomicBool::new(false);
 
 fn control_pipe_auth_state_lock() -> std::sync::MutexGuard<'static, Option<ControlPipeAuthState>> {
     CONTROL_PIPE_AUTH_STATE
@@ -70,6 +72,21 @@ fn read_control_pipe_token_file() -> Option<String> {
 
 pub fn control_pipe_auth_is_available() -> bool {
     process_env_control_pipe_token().is_some() || read_control_pipe_token_file().is_some()
+}
+
+pub fn control_pipe_ui_is_enabled() -> bool {
+    control_pipe_auth_is_available()
+        || CONTROL_PIPE_SERVER_INTENDED.load(Ordering::SeqCst)
+}
+
+#[cfg(any(windows, test))]
+fn mark_control_pipe_server_intended() {
+    CONTROL_PIPE_SERVER_INTENDED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn reset_control_pipe_server_intended() {
+    CONTROL_PIPE_SERVER_INTENDED.store(false, Ordering::SeqCst);
 }
 
 fn generate_control_pipe_token() -> Result<String, String> {
@@ -158,6 +175,10 @@ fn bootstrap_control_pipe_token_after_exclusive_pipe(
     already_bootstrapped: &mut bool,
 ) -> Result<(), String> {
     if *already_bootstrapped {
+        return Ok(());
+    }
+    if process_env_control_pipe_token().is_some() {
+        *already_bootstrapped = true;
         return Ok(());
     }
     bootstrap_control_pipe_token()?;
@@ -661,6 +682,7 @@ fn serialize_control_pipe_result(id: Value, result: Value) -> Vec<u8> {
 
 #[cfg(windows)]
 pub fn start_control_pipe_server(pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {
+    mark_control_pipe_server_intended();
     std::thread::spawn(move || {
         let mut token_bootstrapped = false;
         loop {
@@ -822,6 +844,7 @@ mod tests {
     impl Drop for ControlPipeTokenEnvGuard {
         fn drop(&mut self) {
             reset_control_pipe_auth_state();
+            reset_control_pipe_server_intended();
             if let Some(previous) = self.previous_token.take() {
                 std::env::set_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV, previous);
             } else {
@@ -841,6 +864,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|err| err.into_inner());
         reset_control_pipe_auth_state();
+        reset_control_pipe_server_intended();
         let previous_token = std::env::var_os(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
         let previous_localappdata = std::env::var_os("LOCALAPPDATA");
         std::env::remove_var(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
@@ -1463,6 +1487,62 @@ mod tests {
         assert!(control_pipe_auth_state_lock().is_none());
         assert!(!control_pipe_auth_is_available());
         assert!(is_control_pipe_startup_error(&err));
+    }
+
+    #[test]
+    fn control_pipe_ui_enabled_before_token_file_exists() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        assert!(!path.exists());
+        assert!(!control_pipe_auth_is_available());
+        assert!(!control_pipe_ui_is_enabled());
+        mark_control_pipe_server_intended();
+        assert!(!control_pipe_auth_is_available());
+        assert!(control_pipe_ui_is_enabled());
+    }
+
+    #[test]
+    fn control_pipe_env_token_skips_file_rotate_after_exclusive_pipe() {
+        let _guard = set_control_pipe_token_for_test(Some("env-token-value"));
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "keep-file-token").expect("file token");
+        let mut bootstrapped = false;
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("env token must not require file rotate");
+        assert!(bootstrapped);
+        assert_eq!(
+            fs::read_to_string(&path).expect("unchanged file token"),
+            "keep-file-token"
+        );
+        assert!(control_pipe_auth_state_lock().is_none());
+        assert!(control_pipe_auth_is_available());
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_env_token_survives_file_dacl_hardening_failure() {
+        struct ResetDaclFailure;
+        impl Drop for ResetDaclFailure {
+            fn drop(&mut self) {
+                FORCE_CONTROL_PIPE_DACL_FAILURE.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetDaclFailure;
+        let _guard = set_control_pipe_token_for_test(Some("env-token-value"));
+        FORCE_CONTROL_PIPE_DACL_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "keep-file-token").expect("file token");
+        let mut bootstrapped = false;
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("env token launch must not fail closed on file DACL");
+        assert!(bootstrapped);
+        assert_eq!(
+            fs::read_to_string(&path).expect("unchanged file token"),
+            "keep-file-token"
+        );
+        assert!(control_pipe_auth_is_available());
     }
 
     #[test]
