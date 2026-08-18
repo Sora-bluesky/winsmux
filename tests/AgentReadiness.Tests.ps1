@@ -154,6 +154,16 @@ Describe 'agent readiness prompt detection' {
             Test-AgentPromptText -Text $text -Agent 'codex' | Should -BeTrue
         }
 
+        It 'does not treat a submitted Codex task as ready when U+00BB is followed by execution output' {
+            $text = @(
+                ([char]0x00BB).ToString() + ' Implement {feature}'
+                'Thinking about the change'
+                'editing pane-control.ps1'
+            ) -join "`n"
+
+            Test-AgentPromptText -Text $text -Agent 'codex' | Should -BeFalse
+        }
+
         It 'still detects a claude-ready banner' {
             $text = 'Welcome to Claude Code!'
             Test-AgentPromptText -Text $text -Agent 'claude' | Should -BeTrue
