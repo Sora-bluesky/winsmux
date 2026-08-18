@@ -426,10 +426,11 @@ function Write-ManifestTextFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [AllowEmptyString()][string]$Content = '',
-        [AllowNull()][scriptblock]$ValidateLocked = $null
+        [AllowNull()][scriptblock]$ValidateLocked = $null,
+        [switch]$AlreadyLocked
     )
 
-    Write-WinsmuxTextFile -Path $Path -Content $Content -ValidateLocked $ValidateLocked
+    Write-WinsmuxTextFile -Path $Path -Content $Content -ValidateLocked $ValidateLocked -AlreadyLocked:$AlreadyLocked
 }
 
 function Get-ManifestDir {
@@ -488,12 +489,13 @@ function Read-WinsmuxRuntimeRegistry {
 function Save-WinsmuxRuntimeRegistry {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)]$Registry
+        [Parameter(Mandatory = $true)]$Registry,
+        [switch]$AlreadyLocked
     )
 
     $path = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
     $json = $Registry | ConvertTo-Json -Depth 20
-    Write-ManifestTextFile -Path $path -Content ($json + "`n")
+    Write-ManifestTextFile -Path $path -Content ($json + "`n") -AlreadyLocked:$AlreadyLocked
     return $path
 }
 
@@ -654,31 +656,36 @@ function Update-WinsmuxRuntimeRegistryLease {
         [ValidateRange(5, 300)][int]$LeaseSeconds = 15
     )
 
-    $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
-    $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
-    $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
-    $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
-    $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
-    if ($null -eq $registry -or
-        [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'status' -Default '') -cne 'active' -or
-        -not [string]::Equals(
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
-            $GenerationId,
-            [System.StringComparison]::Ordinal) -or
-        $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or
-        [string]::IsNullOrWhiteSpace($ownerStartedAt) -or $ownerStartedAt -cne $expectedStartedAt) {
-        throw 'Runtime registry lease update refused because the writer does not own this generation.'
-    }
+    $path = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    $holder = @{ Registry = $null }
+    Invoke-WinsmuxWithFileLock -Path $path -Action {
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
+        $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
+        $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
+        $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
+        if ($null -eq $registry -or
+            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'status' -Default '') -cne 'active' -or
+            -not [string]::Equals(
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
+                $GenerationId,
+                [System.StringComparison]::Ordinal) -or
+            $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or
+            [string]::IsNullOrWhiteSpace($ownerStartedAt) -or $ownerStartedAt -cne $expectedStartedAt) {
+            throw 'Runtime registry lease update refused because the writer does not own this generation.'
+        }
 
-    $updatedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
-    $registry.lease.state = 'active'
-    $registry.lease.expires_at = $Now.ToUniversalTime().AddSeconds($LeaseSeconds).ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
-    $registry.updated_at = $updatedAt
-    if ($null -ne $Panes) {
-        $registry.panes = @($Panes)
+        $updatedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
+        $registry.lease.state = 'active'
+        $registry.lease.expires_at = $Now.ToUniversalTime().AddSeconds($LeaseSeconds).ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        $registry.updated_at = $updatedAt
+        if ($null -ne $Panes) {
+            $registry.panes = @($Panes)
+        }
+        Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry -AlreadyLocked | Out-Null
+        $holder.Registry = $registry
     }
-    Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
-    return $registry
+    return $holder.Registry
 }
 
 function Close-WinsmuxRuntimeRegistry {
@@ -692,34 +699,41 @@ function Close-WinsmuxRuntimeRegistry {
         [datetime]$Now = (Get-Date)
     )
 
-    $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
-    if ($null -eq $registry) {
-        return $false
-    }
+    $path = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    $holder = @{ Closed = $false }
+    Invoke-WinsmuxWithFileLock -Path $path -Action {
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        if ($null -eq $registry) {
+            $holder.Closed = $false
+            return
+        }
 
-    $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
-    $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
-    $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
-    $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
-    if (-not [string]::Equals(
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
-            $GenerationId,
-            [System.StringComparison]::Ordinal) -or
-        ((-not [string]::IsNullOrWhiteSpace($ExpectedSessionName)) -and
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'session_name' -Default '') -cne $ExpectedSessionName) -or
-        ((-not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) -and
-            [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'server_session_id' -Default '') -cne $ExpectedServerSessionId) -or
-        $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or $ownerStartedAt -cne $expectedStartedAt) {
-        return $false
-    }
+        $supervisor = Get-WinsmuxRuntimeValue -InputObject $registry -Name 'supervisor'
+        $ownerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'pid' -Default $null)
+        $ownerStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $supervisor -Name 'process_started_at' -Default '')
+        $expectedStartedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $SupervisorProcessStartedAt
+        if (-not [string]::Equals(
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'generation_id' -Default ''),
+                $GenerationId,
+                [System.StringComparison]::Ordinal) -or
+            ((-not [string]::IsNullOrWhiteSpace($ExpectedSessionName)) -and
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'session_name' -Default '') -cne $ExpectedSessionName) -or
+            ((-not [string]::IsNullOrWhiteSpace($ExpectedServerSessionId)) -and
+                [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'server_session_id' -Default '') -cne $ExpectedServerSessionId) -or
+            $null -eq $ownerPid -or $ownerPid -ne $SupervisorPid -or $ownerStartedAt -cne $expectedStartedAt) {
+            $holder.Closed = $false
+            return
+        }
 
-    $endedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
-    $registry.status = 'ended'
-    $registry.lease.state = 'ended'
-    $registry.lease.expires_at = $endedAt
-    $registry.updated_at = $endedAt
-    Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
-    return $true
+        $endedAt = ConvertTo-WinsmuxRuntimeUtcIdentity -Value $Now
+        $registry.status = 'ended'
+        $registry.lease.state = 'ended'
+        $registry.lease.expires_at = $endedAt
+        $registry.updated_at = $endedAt
+        Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry -AlreadyLocked | Out-Null
+        $holder.Closed = $true
+    }
+    return [bool]$holder.Closed
 }
 
 function Get-WinsmuxRuntimeValue {
@@ -1917,4 +1931,476 @@ function New-WinsmuxDeclarativeWorkspaceProjection {
         $projection['dry_run_plan_ref'] = $DryRunPlanRef
     }
     return $projection
+}
+
+
+function Get-OrchestraMinLiveWorkerPaneCount {
+    return 1
+}
+
+function Get-OrchestraMaxLiveWorkerPaneCount {
+    param([AllowEmptyString()][string]$Mode = 'team')
+
+    if ([string]::Equals($Mode, 'simple', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return 1
+    }
+
+    return 6
+}
+
+function Get-OrchestraModeDocument {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $modePath = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-mode.json'
+    if (-not (Test-Path -LiteralPath $modePath -PathType Leaf)) {
+        return [pscustomobject]@{
+            schema_version = 1
+            mode           = 'team'
+            valid          = $true
+            source         = 'default'
+        }
+    }
+
+    $raw = Get-Content -LiteralPath $modePath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        throw 'orchestra-mode.json is not valid JSON'
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json
+    } catch {
+        throw 'orchestra-mode.json is not valid JSON'
+    }
+
+    if ($null -eq $parsed) {
+        throw 'orchestra-mode.json must be an object'
+    }
+    if ($parsed -is [System.Collections.IEnumerable] -and $parsed -isnot [System.Collections.IDictionary] -and $parsed -isnot [string]) {
+        throw 'orchestra-mode.json must be an object'
+    }
+    if ($null -eq $parsed.PSObject) {
+        throw 'orchestra-mode.json must be an object'
+    }
+
+    $names = @($parsed.PSObject.Properties.Name)
+    if ($names.Count -ne 2 -or $names -notcontains 'schema_version' -or $names -notcontains 'mode') {
+        throw 'orchestra-mode.json must contain only schema_version and mode'
+    }
+
+    $versionValue = $parsed.schema_version
+    $versionOk = $false
+    if ($versionValue -is [int] -or $versionValue -is [long] -or $versionValue -is [decimal] -or $versionValue -is [double]) {
+        $versionOk = ([int]$versionValue -eq 1)
+    }
+    if (-not $versionOk) {
+        throw 'orchestra-mode.json schema_version must be 1'
+    }
+
+    $mode = [string]$parsed.mode
+    if ($mode -cne 'simple' -and $mode -cne 'team') {
+        throw 'orchestra-mode.json mode must be simple or team'
+    }
+
+    return [pscustomobject]@{
+        schema_version = 1
+        mode           = $mode
+        valid          = $true
+        source         = 'file'
+    }
+}
+
+function Get-OrchestraCanonicalPaneRole {
+    param(
+        [AllowNull()]$Pane = $null,
+        [AllowEmptyString()][string]$Label = ''
+    )
+
+    $role = [string](Get-WinsmuxRuntimeValue -InputObject $Pane -Name 'role' -Default '')
+    $candidate = if ([string]::IsNullOrWhiteSpace($role)) { $Label } else { $role }
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return ''
+    }
+
+    switch -Regex ($candidate.Trim()) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
+        '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
+        '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
+        '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
+        '^(?i)operator(?:$|[-_:/\s])' { return 'Operator' }
+        default { return $candidate.Trim() }
+    }
+}
+
+function Get-OrchestraLiveWorkerRolePaneCount {
+    param([AllowNull()]$Manifest = $null)
+
+    if ($null -eq $Manifest) {
+        return 0
+    }
+
+    $panes = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default $null
+    if ($null -eq $panes) {
+        $panes = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Panes' -Default $null
+    }
+    if ($null -eq $panes) {
+        return 0
+    }
+
+    $count = 0
+    $map = $null
+    if ($panes -is [System.Collections.IDictionary]) {
+        $map = $panes
+    } elseif ($null -ne $panes.PSObject) {
+        $map = [ordered]@{}
+        foreach ($property in $panes.PSObject.Properties) {
+            $map[$property.Name] = $property.Value
+        }
+    }
+
+    if ($null -eq $map) {
+        return 0
+    }
+
+    foreach ($label in @($map.Keys)) {
+        $pane = $map[$label]
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($paneId)) {
+            continue
+        }
+        if ((Get-OrchestraCanonicalPaneRole -Pane $pane -Label ([string]$label)) -eq 'Worker') {
+            $count++
+        }
+    }
+
+    return $count
+}
+
+function Test-OrchestraSimpleModeLiveWorkerLimit {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Mode,
+        [Parameter(Mandatory = $true)][int]$LiveWorkerPaneCount
+    )
+
+    $max = Get-OrchestraMaxLiveWorkerPaneCount -Mode $Mode
+    return ($LiveWorkerPaneCount -le $max)
+}
+
+function ConvertTo-OrchestraLiveRegistryPanes {
+    param(
+        [AllowNull()]$Manifest = $null,
+        [AllowNull()]$ExistingRegistry = $null
+    )
+
+    $manifestPanes = ConvertTo-ManifestPropertyMap -Value (
+        Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default $null
+    )
+    $existingByLabel = [ordered]@{}
+    foreach ($pane in @((Get-WinsmuxRuntimeValue -InputObject $ExistingRegistry -Name 'panes' -Default @()))) {
+        $label = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'label' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($label)) {
+            $existingByLabel[$label] = $pane
+        }
+    }
+
+    $result = @()
+    foreach ($labelObj in @($manifestPanes.Keys)) {
+        $label = [string]$labelObj
+        $pane = $manifestPanes[$label]
+        $slotId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'slot_id' -Default $label)
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        $backend = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'worker_backend' -Default '')
+        $role = Resolve-WinsmuxRuntimeRole `
+            -WorkerRole ([string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'worker_role' -Default '')) `
+            -CanonicalRole ([string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'role' -Default ''))
+        $title = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'title' -Default $label)
+        $prior = $null
+        if ($existingByLabel.Keys -contains $label) {
+            $prior = $existingByLabel[$label]
+        }
+        $state = 'bootstrap_pending'
+        $bootstrapPid = 0
+        $bootstrapStartedAt = ''
+        $markerPath = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'bootstrap_marker_path' -Default '')
+        if ($null -ne $prior) {
+            $priorState = [string](Get-WinsmuxRuntimeValue -InputObject $prior -Name 'state' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($priorState)) {
+                $state = $priorState
+            }
+            $priorPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $prior -Name 'bootstrap_pid' -Default 0)
+            if ($null -ne $priorPid) {
+                $bootstrapPid = $priorPid
+            }
+            $priorStarted = [string](Get-WinsmuxRuntimeValue -InputObject $prior -Name 'bootstrap_process_started_at' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($priorStarted)) {
+                $bootstrapStartedAt = $priorStarted
+            }
+            $priorMarker = [string](Get-WinsmuxRuntimeValue -InputObject $prior -Name 'marker_path' -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($priorMarker)) {
+                $markerPath = $priorMarker
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($markerPath) -and (Test-Path -LiteralPath $markerPath -PathType Leaf)) {
+            try {
+                $marker = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $markerPid = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_pid' -Default $null)
+                $markerStarted = ConvertTo-WinsmuxRuntimeUtcIdentity -Value (Get-WinsmuxRuntimeValue -InputObject $marker -Name 'bootstrap_process_started_at' -Default '')
+                if ($null -ne $markerPid -and $markerPid -gt 0) {
+                    $bootstrapPid = $markerPid
+                }
+                if (-not [string]::IsNullOrWhiteSpace($markerStarted)) {
+                    $bootstrapStartedAt = $markerStarted
+                }
+            } catch {
+            }
+        }
+        $manifestStatus = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'status' -Default '')
+        $statusClassification = Get-WinsmuxRuntimeStatusClassification -Status $manifestStatus
+        $runtimeReady = (Get-WinsmuxRuntimeValue -InputObject $pane -Name 'runtime_ready' -Default $false) -eq $true
+        if ([bool]$statusClassification.IsDeferred) {
+            $state = 'deferred'
+        } elseif ($runtimeReady -or $bootstrapPid -gt 0) {
+            $state = 'live'
+        }
+        $result += [PSCustomObject]@{
+            label                        = $label
+            slot_id                      = $slotId
+            pane_id                      = $paneId
+            backend                      = $backend
+            role                         = $role
+            title                        = $title
+            state                        = $state
+            bootstrap_pid                = $bootstrapPid
+            bootstrap_process_started_at = $bootstrapStartedAt
+            marker_path                  = $markerPath
+        }
+    }
+
+    return @($result)
+}
+
+function Set-OrchestraLiveExpectedPaneCount {
+    param(
+        [AllowNull()]$Manifest = $null,
+        [AllowNull()]$Registry = $null,
+        [int]$ExpectedPaneCount = 0,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    if ($null -eq $Manifest) {
+        throw 'Live expected pane count requires the current pane set.'
+    }
+
+    if ($null -eq $Registry) {
+        try {
+            $Registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+        } catch {
+            $Registry = $null
+        }
+    }
+
+    $registryPanes = @(ConvertTo-OrchestraLiveRegistryPanes -Manifest $Manifest -ExistingRegistry $Registry)
+    $derivedCount = @($registryPanes).Count
+    if ($derivedCount -lt 1) {
+        throw 'Live expected pane count must be 1 or greater.'
+    }
+    $ExpectedPaneCount = $derivedCount
+
+    $session = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'session' -Default (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Session' -Default $null)
+    if ($null -ne $session) {
+        if ($session -is [System.Collections.IDictionary]) {
+            $session['expected_pane_count'] = $ExpectedPaneCount
+        } else {
+            $session | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
+        }
+    }
+
+    if ($null -ne $Registry) {
+        if ($Registry -is [System.Collections.IDictionary]) {
+            $Registry['expected_pane_count'] = $ExpectedPaneCount
+            $Registry['panes'] = $registryPanes
+        } else {
+            $Registry | Add-Member -NotePropertyName 'expected_pane_count' -NotePropertyValue $ExpectedPaneCount -Force
+            $Registry | Add-Member -NotePropertyName 'panes' -NotePropertyValue $registryPanes -Force
+        }
+    }
+
+    return $ExpectedPaneCount
+}
+
+function New-OrchestraLiveTransitionManifestEntry {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [AllowEmptyString()][string]$RuntimePaneId = ''
+    )
+
+    $session = Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'session' -Default $null
+    $bootstrapPaneId = [string](Get-WinsmuxRuntimeValue -InputObject $session -Name 'bootstrap_pane_id' -Default '')
+    $paneMap = ConvertTo-ManifestPropertyMap -Value (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'panes' -Default $null)
+    $chosenLabel = ''
+    $chosenPane = $null
+    foreach ($label in @($paneMap.Keys | Sort-Object)) {
+        $pane = $paneMap[$label]
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        if ($paneId -cnotmatch '^%[0-9]+$' -or
+            [string]::Equals($paneId, $bootstrapPaneId, [System.StringComparison]::Ordinal)) {
+            continue
+        }
+        if (-not [string]::IsNullOrWhiteSpace($RuntimePaneId)) {
+            if ($paneId -ceq $RuntimePaneId) {
+                $chosenLabel = [string]$label
+                $chosenPane = $pane
+                break
+            }
+            continue
+        }
+        if ($null -eq $chosenPane) {
+            $chosenLabel = [string]$label
+            $chosenPane = $pane
+        }
+    }
+    if ($null -eq $chosenPane) {
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        Label               = $chosenLabel
+        SlotId              = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'slot_id' -Default $chosenLabel)
+        PaneId              = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'pane_id' -Default '')
+        WorkerBackend       = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'worker_backend' -Default '')
+        WorkerRole          = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'worker_role' -Default '')
+        Role                = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'role' -Default '')
+        Title               = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'title' -Default '')
+        Status              = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'status' -Default '')
+        BootstrapMarkerPath = [string](Get-WinsmuxRuntimeValue -InputObject $chosenPane -Name 'bootstrap_marker_path' -Default '')
+    }
+}
+
+function Save-OrchestraLivePaneSetTransition {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowEmptyString()][string]$ExpectedGenerationId = '',
+        [AllowEmptyString()][string]$RuntimePaneId = '',
+        [bool]$RestoreOnFailure = $true
+    )
+
+    $registryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    $oldManifestBytes = $null
+    $oldRegistryBytes = $null
+    if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
+        $oldManifestBytes = [System.IO.File]::ReadAllBytes($ManifestPath)
+    }
+    if (Test-Path -LiteralPath $registryPath -PathType Leaf) {
+        $oldRegistryBytes = [System.IO.File]::ReadAllBytes($registryPath)
+    }
+
+    $restorePublishedFiles = {
+        if ($null -ne $oldManifestBytes) {
+            [System.IO.File]::WriteAllBytes($ManifestPath, $oldManifestBytes)
+        }
+        if ($null -ne $oldRegistryBytes) {
+            [System.IO.File]::WriteAllBytes($registryPath, $oldRegistryBytes)
+        } elseif (Test-Path -LiteralPath $registryPath -PathType Leaf) {
+            Remove-Item -LiteralPath $registryPath -Force
+        }
+    }
+
+    $registry = $null
+    try {
+        $registry = Read-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir
+    } catch {
+        $registry = $null
+    }
+
+    $count = Set-OrchestraLiveExpectedPaneCount -Manifest $Manifest -Registry $registry -ProjectDir $ProjectDir
+    $manifestVersion = ConvertTo-WinsmuxRuntimeInteger -Value (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'version' -Default (Get-WinsmuxRuntimeValue -InputObject $Manifest -Name 'Version' -Default $null))
+    $saveGenerationId = $ExpectedGenerationId
+    if ($manifestVersion -ne 2) {
+        $saveGenerationId = ''
+    }
+
+    $transitionEntry = $null
+    if ($manifestVersion -eq 2) {
+        $transitionEntry = New-OrchestraLiveTransitionManifestEntry -Manifest $Manifest -RuntimePaneId $RuntimePaneId
+        if ($null -eq $transitionEntry) {
+            throw 'runtime dispatch refused (runtime_target_mismatch): Planned pane set has no managed runtime pane for the live transition.'
+        }
+        if ([string]::IsNullOrWhiteSpace($RuntimePaneId)) {
+            $RuntimePaneId = [string]$transitionEntry.PaneId
+        }
+        if (-not (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+            throw 'runtime dispatch refused (runtime_target_mismatch): Planned pane-set validation is unavailable.'
+        }
+        $plannedValidation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $transitionEntry `
+            -Operation stop_transition -PlannedManifest $Manifest -PlannedRegistry $registry
+        if ($null -eq $plannedValidation -or -not [bool]$plannedValidation.valid) {
+            $reasonCode = [string](Get-WinsmuxRuntimeValue -InputObject $plannedValidation -Name 'reason_code' -Default 'runtime_target_mismatch')
+            $diagnostic = [string](Get-WinsmuxRuntimeValue -InputObject $plannedValidation -Name 'diagnostic' -Default 'Planned pane set does not match the observed live server.')
+            throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+        }
+    }
+
+    $manifestPublished = $false
+    $registryPublished = $false
+    try {
+        if (Get-Command Save-PaneScalerManifest -ErrorAction SilentlyContinue) {
+            Save-PaneScalerManifest -ManifestPath $ManifestPath -Manifest $Manifest `
+                -ExpectedGenerationId $saveGenerationId -RuntimePaneId $RuntimePaneId `
+                -RuntimeOperation 'stop_transition' -AcceptPlannedPaneSet:($manifestVersion -eq 2)
+        } elseif (Get-Command Save-PaneControlManifestDocument -ErrorAction SilentlyContinue) {
+            Save-PaneControlManifestDocument -ManifestPath $ManifestPath -Manifest $Manifest `
+                -ExpectedGenerationId $saveGenerationId -RuntimePaneId $RuntimePaneId `
+                -RuntimeOperation 'stop_transition' -AcceptPlannedPaneSet:($manifestVersion -eq 2)
+        } else {
+            throw 'Pane-set transition requires a guarded manifest save.'
+        }
+        $manifestPublished = $true
+
+        if ($null -ne $registry) {
+            Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
+            $registryPublished = $true
+        }
+    } catch {
+        $saveError = $_
+        if ($RestoreOnFailure) {
+            if ($manifestPublished -or $registryPublished) {
+                & $restorePublishedFiles
+            }
+            throw $saveError
+        }
+
+        # Server mutation is already irreversible. Do not restore bytes that would
+        # advertise a pane the live server no longer has.
+        for ($fallbackAttempt = 1; $fallbackAttempt -le 2; $fallbackAttempt++) {
+            try {
+                if (-not $manifestPublished) {
+                    Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $Manifest -ExpectedGenerationId $saveGenerationId
+                    $manifestPublished = $true
+                }
+                if (-not $registryPublished -and $null -ne $registry) {
+                    Save-WinsmuxRuntimeRegistry -ProjectDir $ProjectDir -Registry $registry | Out-Null
+                    $registryPublished = $true
+                }
+                break
+            } catch {
+            }
+        }
+        throw $saveError
+    }
+
+    if ($manifestVersion -eq 2 -and (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+        $postValidation = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $transitionEntry `
+            -Operation stop_transition
+        if ($null -eq $postValidation -or -not [bool]$postValidation.valid) {
+            $reasonCode = [string](Get-WinsmuxRuntimeValue -InputObject $postValidation -Name 'reason_code' -Default 'runtime_target_mismatch')
+            $diagnostic = [string](Get-WinsmuxRuntimeValue -InputObject $postValidation -Name 'diagnostic' -Default 'Post-commit pane set does not match the observed live server.')
+            if ($RestoreOnFailure) {
+                & $restorePublishedFiles
+            }
+            throw ("runtime dispatch refused ({0}): {1}" -f $reasonCode, $diagnostic)
+        }
+    }
+
+    return $count
 }

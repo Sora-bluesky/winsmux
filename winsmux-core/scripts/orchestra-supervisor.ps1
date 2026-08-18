@@ -235,8 +235,11 @@ function Invoke-OrchestraSupervisorLoop {
         $runtimeSnapshot = Get-OrchestraSupervisorRuntimePaneSnapshot -Manifest $runtimeManifest `
             -GenerationId $GenerationId -ServerSessionId $ServerSessionId -ProcessResolver $processResolver
         if ([bool]$runtimeSnapshot.valid) {
+            # Lease refresh must not rewrite registry.panes. Spawn/archive owns the
+            # pane-set commit. Passing a snapshot taken before that commit races the
+            # supervisor into restoring the old pane set.
             Update-WinsmuxRuntimeRegistryLease -ProjectDir $runtimeProjectDir -GenerationId $GenerationId `
-                -SupervisorPid $PID -SupervisorProcessStartedAt $supervisorProcessStartedAt -Panes @($runtimeSnapshot.panes) `
+                -SupervisorPid $PID -SupervisorProcessStartedAt $supervisorProcessStartedAt `
                 -Now $now -LeaseSeconds 15 | Out-Null
         } else {
             Write-OrchestraSupervisorWarning -Component 'runtime-registry' -Message ([string]$runtimeSnapshot.diagnostic)

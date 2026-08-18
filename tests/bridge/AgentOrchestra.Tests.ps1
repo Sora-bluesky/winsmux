@@ -4959,3 +4959,175 @@ Describe 'orchestra layout script' {
         $global:layoutMutationCalls | Should -Be 1
     }
 }
+
+Describe 'TASK-789 dynamic worker pane lifecycle' {
+    BeforeAll {
+        $repoRoot = Split-Path -Parent $script:BridgeTestsRoot
+        $script:task789OrchestraStartPath = Join-Path $repoRoot 'winsmux-core\scripts\orchestra-start.ps1'
+        $script:task789OrchestraSmokePath = Join-Path $repoRoot 'winsmux-core\scripts\orchestra-smoke.ps1'
+        $script:task789PaneScalerPath = Join-Path $repoRoot 'winsmux-core\scripts\pane-scaler.ps1'
+        $script:task789ManifestPath = Join-Path $repoRoot 'winsmux-core\scripts\manifest.ps1'
+        $script:task789DispatchPath = Join-Path $repoRoot 'winsmux-core\scripts\control-plane-dispatch.ps1'
+        $script:task789WinsmuxCorePath = Join-Path $repoRoot 'scripts\winsmux-core.ps1'
+        . $script:task789OrchestraStartPath
+        . $script:task789ManifestPath
+        $script:task789OrchestraStartContent = Get-Content -LiteralPath $script:task789OrchestraStartPath -Raw -Encoding UTF8
+        $script:task789OrchestraSmokeContent = Get-Content -LiteralPath $script:task789OrchestraSmokePath -Raw -Encoding UTF8
+        $script:task789PaneScalerContent = Get-Content -LiteralPath $script:task789PaneScalerPath -Raw -Encoding UTF8
+        $script:task789DispatchContent = Get-Content -LiteralPath $script:task789DispatchPath -Raw -Encoding UTF8
+        $script:task789WinsmuxCoreContent = Get-Content -LiteralPath $script:task789WinsmuxCorePath -Raw -Encoding UTF8
+        $script:task789ManifestContent = Get-Content -LiteralPath $script:task789ManifestPath -Raw -Encoding UTF8
+        $script:task789AgentSlots = @(1..6 | ForEach-Object {
+            [ordered]@{
+                slot_id       = "worker-$_"
+                runtime_role  = 'worker'
+                agent         = 'codex'
+                model         = 'gpt-5.4'
+                worktree_mode = 'managed'
+            }
+        })
+    }
+
+    BeforeEach {
+        $script:task789TempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-task789-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:task789TempRoot '.winsmux') -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:task789TempRoot -and (Test-Path -LiteralPath $script:task789TempRoot)) {
+            Remove-Item -LiteralPath $script:task789TempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'starts a live worker pool of 1 even when the Team Profile catalog has 6 agent_slots' {
+        $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
+            external_operator  = $true
+            worker_count       = 6
+            agent_slots        = @($script:task789AgentSlots)
+            legacy_role_layout = $false
+            operators          = 0
+            builders           = 0
+            researchers        = 0
+            reviewers          = 0
+        })
+
+        $layout.ExternalOperator | Should -Be $true
+        $layout.Operators | Should -Be 0
+        $layout.Workers | Should -Be 1
+        $layout.Builders | Should -Be 0
+        (Get-OrchestraExpectedPaneCount -LayoutSettings $layout) | Should -Be 1
+    }
+
+    It 'does not persist a constant Operators+Workers pane count of 7 for managed operator + six catalog slots' {
+        $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
+            external_operator  = $false
+            worker_count       = 6
+            agent_slots        = @($script:task789AgentSlots)
+            legacy_role_layout = $false
+            operators          = 0
+            builders           = 0
+            researchers        = 0
+            reviewers          = 0
+        })
+
+        $layout.Operators | Should -Be 1
+        $layout.Workers | Should -Be 1
+        (Get-OrchestraExpectedPaneCount -LayoutSettings $layout) | Should -Be 2
+        (Get-OrchestraExpectedPaneCount -LayoutSettings $layout) | Should -Not -Be 7
+    }
+
+    It 'does not copy catalog size onto live layout workers' {
+        $script:task789OrchestraStartContent | Should -Not -Match '\$workers\s*=\s*\$agentSlots\.Count'
+        $script:task789OrchestraSmokeContent | Should -Not -Match '\$workers\s*=\s*\$agentSlots\.Count'
+        $script:task789OrchestraStartContent | Should -Match 'Get-OrchestraMinLiveWorkerPaneCount'
+    }
+
+    It 'persists expected_pane_count from the live layout pane count after panes are created' {
+        $layoutIndex = $script:task789OrchestraStartContent.IndexOf('$layout = . $layoutScript -SessionName $sessionName')
+        $layoutIndex | Should -BeGreaterThan -1
+        $afterLayout = $script:task789OrchestraStartContent.Substring($layoutIndex)
+        $afterLayout | Should -Match '\$expectedPaneCount\s*=\s*(?:\[int\])?\$layout\.Panes\.Count'
+        $script:task789OrchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+-ExpectedPaneCount \$expectedPaneCount'
+        $script:task789OrchestraStartContent | Should -Not -Match 'partial_start\s*=\s*\$true'
+    }
+
+    It 'still invokes Team Profile start-gate before layout and does not weaken it to YAML row presence' {
+        $startGateIndex = $script:task789OrchestraStartContent.IndexOf('Assert-TeamProfileStartGate -ProjectDir $projectDir')
+        $layoutIndex = $script:task789OrchestraStartContent.IndexOf('$layout = . $layoutScript -SessionName $sessionName')
+        $startGateIndex | Should -BeGreaterThan -1
+        $layoutIndex | Should -BeGreaterThan $startGateIndex
+        $script:task789OrchestraStartContent | Should -Match "'--action', 'start-gate'"
+        $script:task789OrchestraStartContent | Should -Not -Match 'six_slot_incomplete'
+        $script:task789OrchestraStartContent | Should -Not -Match 'partial_start\s*=\s*\$true'
+    }
+
+    It 'treats a missing orchestra-mode.json as team for returning users' {
+        $doc = Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot
+        $doc.mode | Should -Be 'team'
+        $doc.schema_version | Should -Be 1
+        $doc.valid | Should -Be $true
+        $doc.source | Should -Be 'default'
+    }
+
+    It 'fail-closes invalid orchestra-mode.json instead of guessing simple or team' {
+        $modePath = Join-Path $script:task789TempRoot '.winsmux\orchestra-mode.json'
+        '{not-json' | Set-Content -LiteralPath $modePath -Encoding UTF8
+        { Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot } | Should -Throw '*orchestra-mode.json*'
+
+        '{"schema_version":1,"mode":"team","extra":true}' | Set-Content -LiteralPath $modePath -Encoding UTF8
+        { Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot } | Should -Throw '*orchestra-mode.json*'
+
+        '{"schema_version":2,"mode":"team"}' | Set-Content -LiteralPath $modePath -Encoding UTF8
+        { Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot } | Should -Throw '*orchestra-mode.json*'
+
+        '{"schema_version":1,"mode":"solo"}' | Set-Content -LiteralPath $modePath -Encoding UTF8
+        { Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot } | Should -Throw '*orchestra-mode.json*'
+    }
+
+    It 'accepts a strict schema_version 1 simple or team orchestra-mode.json object' {
+        $modePath = Join-Path $script:task789TempRoot '.winsmux\orchestra-mode.json'
+        '{"schema_version":1,"mode":"simple"}' | Set-Content -LiteralPath $modePath -Encoding UTF8
+        $simple = Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot
+        $simple.mode | Should -Be 'simple'
+        $simple.valid | Should -Be $true
+        $simple.source | Should -Be 'file'
+
+        '{"schema_version":1,"mode":"team"}' | Set-Content -LiteralPath $modePath -Encoding UTF8
+        $team = Get-OrchestraModeDocument -ProjectDir $script:task789TempRoot
+        $team.mode | Should -Be 'team'
+    }
+
+    It 'counts only live worker-role panes and fail-closes simple mode above one live worker' {
+        Test-OrchestraSimpleModeLiveWorkerLimit -Mode 'simple' -LiveWorkerPaneCount 1 | Should -BeTrue
+        Test-OrchestraSimpleModeLiveWorkerLimit -Mode 'simple' -LiveWorkerPaneCount 2 | Should -BeFalse
+        Test-OrchestraSimpleModeLiveWorkerLimit -Mode 'team' -LiveWorkerPaneCount 6 | Should -BeTrue
+        Test-OrchestraSimpleModeLiveWorkerLimit -Mode 'team' -LiveWorkerPaneCount 7 | Should -BeFalse
+
+        $manifest = [pscustomobject]@{
+            panes = [ordered]@{
+                'operator' = [pscustomobject]@{ role = 'Operator'; pane_id = '%1' }
+                'worker-1' = [pscustomobject]@{ role = 'Worker'; pane_id = '%2' }
+                'worker-2' = [pscustomobject]@{ role = 'Worker'; pane_id = '%3' }
+            }
+        }
+        (Get-OrchestraLiveWorkerRolePaneCount -Manifest $manifest) | Should -Be 2
+    }
+
+    It 'makes orchestra-smoke not ready when simple mode has more than one live worker-role pane' {
+        $script:task789OrchestraSmokeContent | Should -Match 'Test-OrchestraSimpleModeLiveWorkerLimit'
+        $script:task789OrchestraSmokeContent | Should -Match 'simple_mode_live_worker_limit'
+        $script:task789OrchestraSmokeContent | Should -Match 'Get-OrchestraModeDocument'
+        $script:task789OrchestraSmokeContent | Should -Match 'Get-OrchestraLiveWorkerRolePaneCount'
+        $script:task789OrchestraSmokeContent | Should -Not -Match 'display:\s*none'
+        $script:task789ManifestContent | Should -Match 'function Get-OrchestraModeDocument'
+        $script:task789ManifestContent | Should -Match 'function Test-OrchestraSimpleModeLiveWorkerLimit'
+    }
+
+    It 'reuses Add-OrchestraPane and Remove-OrchestraPane for worker spawn and archive' {
+        $script:task789PaneScalerContent | Should -Match "ValidateSet\('Builder',\s*'Worker'\)"
+        $script:task789PaneScalerContent | Should -Match 'New-TeamProfileSlotAgentConfig'
+        $script:task789PaneScalerContent | Should -Not -Match 'requiredBackend'
+        $script:task789PaneScalerContent | Should -Match 'kill-pane'
+        $script:task789PaneScalerContent | Should -Match 'split-window'
+    }
+}

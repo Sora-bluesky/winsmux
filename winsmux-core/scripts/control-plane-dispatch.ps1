@@ -1,14 +1,53 @@
+# Pane scaler helpers must land in this script's scope. Dot-sourcing
+# orchestra-start.ps1 / pane-scaler.ps1 inside a function would leave
+# Add-OrchestraPane / Remove-OrchestraPane defined only in that function.
+if (-not (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'manifest.ps1')
+}
+if (-not (Get-Command Add-OrchestraPane -ErrorAction SilentlyContinue)) {
+    . (Join-Path $PSScriptRoot 'pane-scaler.ps1')
+}
+
 function Get-WinsmuxControlPlaneArguments {
     param(
         [AllowNull()][string]$CommandTarget,
         [AllowNull()][string[]]$CommandRest
     )
 
-    return ,@(@($CommandTarget) + @($CommandRest) | Where-Object { $_ })
+    $items = [System.Collections.Generic.List[string]]::new()
+    foreach ($part in @(@($CommandTarget) + @($CommandRest))) {
+        if ([string]::IsNullOrWhiteSpace([string]$part)) {
+            continue
+        }
+        $items.Add([string]$part)
+    }
+    return $items
+}
+
+function ConvertTo-WinsmuxControlPlaneArgumentList {
+    param([AllowNull()]$Value)
+
+    $items = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Value) {
+        return , $items
+    }
+    if ($Value -is [string]) {
+        if (-not [string]::IsNullOrWhiteSpace($Value)) {
+            $items.Add($Value)
+        }
+        return , $items
+    }
+    foreach ($part in $Value) {
+        if ([string]::IsNullOrWhiteSpace([string]$part)) {
+            continue
+        }
+        $items.Add([string]$part)
+    }
+    return , $items
 }
 
 function Split-WinsmuxDispatchTaskArguments {
-    param([AllowNull()][string[]]$Parts)
+    param([AllowNull()]$Parts)
 
     $slotId = ''
     $taskClass = ''
@@ -16,7 +55,16 @@ function Split-WinsmuxDispatchTaskArguments {
     $projectDir = ''
     $textParts = New-Object System.Collections.Generic.List[string]
     $index = 0
-    $items = @($Parts)
+    $items = [System.Collections.Generic.List[string]]::new()
+    if ($null -ne $Parts) {
+        if ($Parts -is [string]) {
+            $items.Add([string]$Parts)
+        } else {
+            foreach ($part in $Parts) {
+                $items.Add([string]$part)
+            }
+        }
+    }
     while ($index -lt $items.Count) {
         $current = [string]$items[$index]
         if ($current -ceq '--') {
@@ -59,14 +107,26 @@ function Split-WinsmuxDispatchTaskArguments {
 }
 
 function Join-WinsmuxControlPlaneText {
-    param([AllowNull()][object[]]$Arguments)
+    param([AllowNull()]$Arguments)
 
-    return (@(
-        @($Arguments) |
-            Where-Object { $_ } |
-            ForEach-Object { ([string]$_).Trim() } |
-            Where-Object { $_ }
-    ) -join ' ')
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Arguments) {
+        return ''
+    }
+    if ($Arguments -is [string]) {
+        $text = $Arguments.Trim()
+        if ($text) {
+            $parts.Add($text)
+        }
+        return ($parts -join ' ')
+    }
+    foreach ($arg in $Arguments) {
+        $text = ([string]$arg).Trim()
+        if ($text) {
+            $parts.Add($text)
+        }
+    }
+    return ($parts -join ' ')
 }
 
 function Get-WinsmuxControlPlaneScriptPath {
@@ -102,7 +162,9 @@ function Invoke-WinsmuxGithubPreflightCommand {
     )
 
     $preflightArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--repo' {
@@ -211,6 +273,41 @@ function Get-DispatchTaskManifestEntry {
     return $null
 }
 
+function Get-DispatchTaskObjectText {
+    param(
+        [AllowNull()]$InputObject = $null,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [AllowEmptyString()][string]$Default = ''
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    foreach ($name in @($Names)) {
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            continue
+        }
+        $value = $null
+        if ($InputObject -is [System.Collections.IDictionary]) {
+            if ($InputObject.Contains($name)) {
+                $value = $InputObject[$name]
+            }
+        } elseif ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $name) {
+            $value = $InputObject.PSObject.Properties[$name].Value
+        }
+        if ($null -eq $value) {
+            continue
+        }
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            return $text
+        }
+    }
+
+    return $Default
+}
+
 function Test-DispatchTaskReviewerManifestEntry {
     param([AllowNull()]$Entry = $null)
 
@@ -218,15 +315,199 @@ function Test-DispatchTaskReviewerManifestEntry {
         return $false
     }
 
-    $role = [string](Get-SendConfigValue -InputObject $Entry -Name 'Role' -Default '')
-    $workerRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'WorkerRole' -Default '')
-    $agentRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'AgentRole' -Default '')
+    $role = Get-DispatchTaskObjectText -InputObject $Entry -Names @('Role', 'role')
+    $workerRole = Get-DispatchTaskObjectText -InputObject $Entry -Names @('WorkerRole', 'worker_role')
+    $agentRole = Get-DispatchTaskObjectText -InputObject $Entry -Names @('AgentRole', 'agent_role')
 
     return (
         [string]::Equals($role, 'Reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]::Equals($workerRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
         [string]::Equals($agentRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase)
     )
+}
+
+function Get-DispatchTaskLiveSpawnBudget {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $mode = 'team'
+    if (Get-Command Get-OrchestraModeDocument -ErrorAction SilentlyContinue) {
+        try {
+            $mode = [string](Get-OrchestraModeDocument -ProjectDir $ProjectDir).mode
+        } catch {
+            return [pscustomobject]@{
+                Mode        = ''
+                LiveWorkers = 0
+                MaxLive     = 0
+                Allowed     = $false
+            }
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        $mode = 'team'
+    }
+
+    $maxLive = 6
+    if (Get-Command Get-OrchestraMaxLiveWorkerPaneCount -ErrorAction SilentlyContinue) {
+        $maxLive = [int](Get-OrchestraMaxLiveWorkerPaneCount -Mode $mode)
+    } elseif ($mode -ceq 'simple') {
+        $maxLive = 1
+    }
+
+    $liveWorkers = 0
+    $hasManifestReader = [bool](Get-Command Get-WinsmuxManifest -ErrorAction SilentlyContinue)
+    $hasLiveWorkerCounter = [bool](Get-Command Get-OrchestraLiveWorkerRolePaneCount -ErrorAction SilentlyContinue)
+    if ($hasManifestReader -and $hasLiveWorkerCounter) {
+        try {
+            $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+            $liveWorkers = [int](Get-OrchestraLiveWorkerRolePaneCount -Manifest $manifest)
+        } catch {
+            $liveWorkers = 0
+        }
+    }
+
+    return [pscustomobject]@{
+        Mode        = $mode
+        LiveWorkers = $liveWorkers
+        MaxLive     = $maxLive
+        Allowed     = ($liveWorkers -lt $maxLive)
+    }
+}
+
+function Get-DispatchTaskWinsmuxBin {
+    if (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue) {
+        try {
+            return [string](Get-WinsmuxBin)
+        } catch {
+            return ''
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BIN) -and (Test-Path -LiteralPath $env:WINSMUX_BIN -PathType Leaf)) {
+        return [System.IO.Path]::GetFullPath($env:WINSMUX_BIN)
+    }
+    $repoRoot = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    foreach ($candidatePath in @(
+            (Join-Path $repoRoot 'target\release\winsmux.exe'),
+            (Join-Path $repoRoot 'target\debug\winsmux.exe')
+        )) {
+        if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+            return [System.IO.Path]::GetFullPath($candidatePath)
+        }
+    }
+    $command = Get-Command winsmux -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+        return [string]$command.Source
+    }
+    return ''
+}
+
+function Get-DispatchTaskResolvedTeamPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $bin = Get-DispatchTaskWinsmuxBin
+    if ([string]::IsNullOrWhiteSpace($bin)) {
+        return $null
+    }
+    $resolveArgs = @('team-profile', '--action', 'resolve', '--json', '--project-dir', $ProjectDir)
+    $output = $null
+    $code = 1
+    if (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue) {
+        $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $bin -Arguments $resolveArgs 2>&1
+        $code = $LASTEXITCODE
+    } else {
+        $output = & $bin @resolveArgs 2>&1
+        $code = $LASTEXITCODE
+    }
+    if ($code -ne 0) {
+        return $null
+    }
+    $text = ($output | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+    try {
+        return ($text | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Get-DispatchTaskResolvedTeamSlots {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $payload = Get-DispatchTaskResolvedTeamPayload -ProjectDir $ProjectDir
+    if ($null -eq $payload) {
+        return @()
+    }
+    $okText = Get-DispatchTaskObjectText -InputObject $payload -Names @('ok')
+    if ([string]::Equals($okText, 'false', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @()
+    }
+    $team = $null
+    if ($payload -is [System.Collections.IDictionary] -and $payload.Contains('team')) {
+        $team = $payload['team']
+    } elseif ($null -ne $payload.PSObject -and $payload.PSObject.Properties.Name -contains 'team') {
+        $team = $payload.team
+    }
+    if ($null -eq $team) {
+        return @()
+    }
+    $optedIn = Get-DispatchTaskObjectText -InputObject $team -Names @('opted_in', 'opted-in')
+    if ([string]::Equals($optedIn, 'false', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return @()
+    }
+    $slots = @()
+    if ($team -is [System.Collections.IDictionary] -and $team.Contains('slots')) {
+        $slots = @($team['slots'])
+    } elseif ($null -ne $team.PSObject -and $team.PSObject.Properties.Name -contains 'slots') {
+        $slots = @($team.slots)
+    }
+
+    $ids = New-Object System.Collections.Generic.List[string]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($slot in @($slots)) {
+        $slotId = Get-DispatchTaskObjectText -InputObject $slot -Names @('slot-id', 'slot_id', 'SlotId', 'label', 'Label')
+        if ([string]::IsNullOrWhiteSpace($slotId)) {
+            continue
+        }
+        $entry = [pscustomobject]@{
+            Label      = $slotId
+            Role       = (Get-DispatchTaskObjectText -InputObject $slot -Names @('role', 'Role'))
+            WorkerRole = (Get-DispatchTaskObjectText -InputObject $slot -Names @('worker_role', 'WorkerRole', 'worker-role'))
+            AgentRole  = (Get-DispatchTaskObjectText -InputObject $slot -Names @('agent_role', 'AgentRole', 'agent-role'))
+        }
+        if (Test-DispatchTaskReviewerManifestEntry -Entry $entry) {
+            continue
+        }
+        $runtimeRole = Get-DispatchTaskObjectText -InputObject $slot -Names @('runtime_role', 'RuntimeRole', 'runtime-role')
+        if (-not [string]::IsNullOrWhiteSpace($runtimeRole) -and
+            -not [string]::Equals($runtimeRole, 'worker', [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if ($seen.Add($slotId)) {
+            $ids.Add($slotId) | Out-Null
+        }
+    }
+    return @($ids)
+}
+
+function Get-DispatchTaskCatalogSlotIds {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    # Team Profile resolve owns worker-1..6. YAML agent_slots is an overlay, not the catalog.
+    return @(Get-DispatchTaskResolvedTeamSlots -ProjectDir $ProjectDir)
+}
+
+function Get-DispatchTaskMissingCatalogSlotIds {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $missing = New-Object System.Collections.Generic.List[string]
+    foreach ($slotId in @(Get-DispatchTaskCatalogSlotIds -ProjectDir $ProjectDir)) {
+        $entry = Get-DispatchTaskManifestEntry -ProjectDir $ProjectDir -Label $slotId
+        if ([string]::IsNullOrWhiteSpace((Get-DispatchTaskEntryPaneId -Entry $entry))) {
+            $missing.Add($slotId) | Out-Null
+        }
+    }
+    return @($missing)
 }
 
 function Get-DispatchTaskAvailableTargets {
@@ -252,6 +533,21 @@ function Get-DispatchTaskAvailableTargets {
     }
     if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
         $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    $budget = Get-DispatchTaskLiveSpawnBudget -ProjectDir $ProjectDir
+    if (-not [bool]$budget.Allowed) {
+        return @($availableTargets)
+    }
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($label in @($availableTargets)) {
+        [void]$seen.Add([string]$label)
+    }
+    foreach ($slotId in @(Get-DispatchTaskMissingCatalogSlotIds -ProjectDir $ProjectDir)) {
+        if ($seen.Add($slotId)) {
+            $availableTargets += $slotId
+        }
     }
 
     return @($availableTargets)
@@ -293,9 +589,11 @@ function Invoke-WinsmuxDispatchTaskCommand {
     $paneId = ''
     $resolvedRole = 'Worker'
     $classifiedSlotId = [string]$parsed.SlotId
+    $route = $null
     if (-not [string]::IsNullOrWhiteSpace($classifiedSlotId)) {
         $selectedLabel = $classifiedSlotId
         $resolvedRole = 'Worker'
+        $route = Get-DispatchRoute -Text $taskText -AvailableTargets @($classifiedSlotId) -DefaultRole 'Worker'
     } else {
         $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
         if ($route.HandleLocally) {
@@ -306,6 +604,29 @@ function Invoke-WinsmuxDispatchTaskCommand {
 
         $selectedLabel = [string]$route.SelectedTarget
         $resolvedRole = [string]$route.SelectedRole
+        if ($resolvedRole -ne 'Reviewer' -and $resolvedRole -ne 'Operator') {
+            $budget = Get-DispatchTaskLiveSpawnBudget -ProjectDir $projectDir
+            $missingSlots = @(Get-DispatchTaskMissingCatalogSlotIds -ProjectDir $projectDir)
+            if ([bool]$budget.Allowed -and $missingSlots.Count -gt 0) {
+                $selectedIsMissing = $false
+                foreach ($missingId in $missingSlots) {
+                    if ([string]::Equals([string]$missingId, $selectedLabel, [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $selectedIsMissing = $true
+                        break
+                    }
+                }
+                if (-not $selectedIsMissing) {
+                    $preferredMissing = Get-DispatchRouterPreferredLabel -Role 'Worker' -AvailableTargets $missingSlots
+                    if (-not [string]::IsNullOrWhiteSpace([string]$preferredMissing)) {
+                        $selectedLabel = [string]$preferredMissing
+                        $resolvedRole = 'Worker'
+                    }
+                }
+            }
+        }
+    }
+    if ($null -eq $route) {
+        $route = Get-DispatchRoute -Text $taskText -AvailableTargets @($selectedLabel) -DefaultRole 'Worker'
     }
 
     $manifestEntry = $null
@@ -321,13 +642,25 @@ function Invoke-WinsmuxDispatchTaskCommand {
         $paneId = [string]$manifestEntry.PaneId
     } else {
         $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
-        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
-            $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode 'target_unavailable' -Diagnostic "dispatch-task could not resolve target '$selectedLabel' to a pane."
-            ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
-            exit 1
+        $paneId = Get-DispatchTaskEntryPaneId -Entry $manifestEntry
+        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace($paneId)) {
+            $spawn = Ensure-DispatchTaskLiveWorkerPane -ProjectDir $projectDir -Label $selectedLabel -ManifestEntry $manifestEntry
+            if (-not [bool]$spawn.Spawned) {
+                $reason = [string]$spawn.ReasonCode
+                if ([string]::IsNullOrWhiteSpace($reason)) {
+                    $reason = 'target_unavailable'
+                }
+                $diagnostic = [string]$spawn.Diagnostic
+                if ([string]::IsNullOrWhiteSpace($diagnostic)) {
+                    $diagnostic = "dispatch-task could not resolve target '$selectedLabel' to a pane."
+                }
+                $receipt = New-WinsmuxSubmissionReceipt -Kind task -Status unavailable -Backend noop -SubmissionId $submissionId -ReasonCode $reason -Diagnostic $diagnostic
+                ConvertTo-WinsmuxSubmissionReceiptJson -Receipt $receipt | Write-Output
+                exit 1
+            }
+            $manifestEntry = $spawn.ManifestEntry
+            $paneId = Get-DispatchTaskEntryPaneId -Entry $manifestEntry
         }
-
-        $paneId = [string]$manifestEntry.PaneId
     }
 
     $entryStatus = [string](Get-WinsmuxSubmissionValue -InputObject $manifestEntry -Name 'Status' -Default '')
@@ -603,7 +936,9 @@ function Invoke-WinsmuxOrchestraSmokeCommand {
     )
 
     $smokeArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--json' { $smokeArgs += '-AsJson' }
@@ -634,7 +969,9 @@ function Invoke-WinsmuxOrchestraAttachCommand {
     )
 
     $attachArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--json' { $attachArgs += '-AsJson' }
@@ -664,7 +1001,9 @@ function Invoke-WinsmuxHarnessCheckCommand {
     )
 
     $checkArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--json' { $checkArgs += '-AsJson' }
@@ -694,7 +1033,9 @@ function Invoke-WinsmuxShadowCutoverGateCommand {
         [AllowNull()][string[]]$CommandRest
     )
 
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     $expectedPath = ''
     $actualPath = ''
     $surface = 'unspecified'
@@ -751,7 +1092,9 @@ function Invoke-WinsmuxPowerShellDeescalationCommand {
     )
 
     $contractArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     foreach ($argument in $remaining) {
         switch ($argument) {
             '--json' { $contractArgs += '-AsJson' }
@@ -774,7 +1117,9 @@ function Invoke-WinsmuxAssignCommand {
     )
 
     $assignArgs = @()
-    $remaining = Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+    $remaining = ConvertTo-WinsmuxControlPlaneArgumentList -Value (
+            Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest
+        )
     for ($index = 0; $index -lt $remaining.Count; $index++) {
         switch ($remaining[$index]) {
             '--task' {
@@ -802,4 +1147,705 @@ function Invoke-WinsmuxAssignCommand {
         -ScriptPath (Get-WinsmuxControlPlaneScriptPath -BridgeScriptRoot $BridgeScriptRoot -ScriptName 'assignment-policy.ps1') `
         -Arguments $assignArgs `
         -PropagateExitCode
+}
+
+
+function Import-Task789OrchestraHelpers {
+    param([switch]$IncludePaneScaler)
+
+    # Manifest + pane-scaler are loaded at script scope above. Promoting
+    # Team Profile helpers here keeps New-TeamProfileSlotAgentConfig and
+    # Invoke-TeamProfileLaunchProjection available after this function returns.
+    if (-not $IncludePaneScaler) {
+        return
+    }
+    if ((Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) -and
+        (Get-Command Add-TeamProfileBundleToLaunchCommand -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $orchestraStartPath = Join-Path $PSScriptRoot 'orchestra-start.ps1'
+    if (-not (Test-Path -LiteralPath $orchestraStartPath -PathType Leaf)) {
+        return
+    }
+
+    $before = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @((Get-ChildItem -Path Function:).Name)) {
+        [void]$before.Add([string]$name)
+    }
+
+    # Bind RequestedRootPath so leftover CLI args cannot become the project dir.
+    . $orchestraStartPath -RequestedRootPath ''
+
+    foreach ($fn in @(Get-ChildItem -Path Function:)) {
+        $name = [string]$fn.Name
+        if ($before.Contains($name)) {
+            continue
+        }
+        Set-Item -LiteralPath ("Function:script:{0}" -f $name) -Value $fn.ScriptBlock
+    }
+}
+
+function Get-DispatchTaskEntryPaneId {
+    param([AllowNull()]$Entry = $null)
+
+    if ($null -eq $Entry) {
+        return ''
+    }
+    foreach ($name in @('PaneId', 'pane_id')) {
+        if ($Entry -is [System.Collections.IDictionary] -and $Entry.Contains($name)) {
+            return [string]$Entry[$name]
+        }
+        if ($null -ne $Entry.PSObject -and $Entry.PSObject.Properties.Name -contains $name) {
+            return [string]$Entry.PSObject.Properties[$name].Value
+        }
+    }
+    return ''
+}
+
+function Test-DispatchTaskLiveFileBytesEqual {
+    param($Before, $After)
+    if ($null -eq $Before -and $null -eq $After) {
+        return $true
+    }
+    if ($null -eq $Before -or $null -eq $After) {
+        return $false
+    }
+    if ($Before.Length -ne $After.Length) {
+        return $false
+    }
+    for ($i = 0; $i -lt $Before.Length; $i++) {
+        if ($Before[$i] -ne $After[$i]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-DispatchTaskLiveRegistryPaneSetToken {
+    param($Bytes)
+
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) {
+        return ''
+    }
+
+    try {
+        $text = [System.Text.Encoding]::UTF8.GetString($Bytes)
+        $registry = $text | ConvertFrom-Json
+    } catch {
+        return ''
+    }
+
+    $count = [string](Get-WinsmuxRuntimeValue -InputObject $registry -Name 'expected_pane_count' -Default '')
+    $parts = [System.Collections.Generic.List[string]]::new()
+    foreach ($pane in @($registry.panes)) {
+        $slotId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'slot_id' -Default '')
+        $paneId = [string](Get-WinsmuxRuntimeValue -InputObject $pane -Name 'pane_id' -Default '')
+        $parts.Add(('{0}:{1}' -f $slotId, $paneId)) | Out-Null
+    }
+    return '{0}|{1}' -f $count, ($parts -join ',')
+}
+
+function Test-DispatchTaskLiveRegistryPaneSetEqual {
+    param($Before, $After)
+
+    $beforeToken = Get-DispatchTaskLiveRegistryPaneSetToken -Bytes $Before
+    $afterToken = Get-DispatchTaskLiveRegistryPaneSetToken -Bytes $After
+    if ([string]::IsNullOrWhiteSpace($beforeToken) -or [string]::IsNullOrWhiteSpace($afterToken)) {
+        return (Test-DispatchTaskLiveFileBytesEqual -Before $Before -After $After)
+    }
+    return [string]::Equals($beforeToken, $afterToken, [System.StringComparison]::Ordinal)
+}
+
+function Restore-DispatchTaskLiveFileBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        $Bytes
+    )
+    if ($null -eq $Bytes) {
+        if (Test-Path -LiteralPath $Path) {
+            Remove-Item -LiteralPath $Path -Force
+        }
+        return
+    }
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    [System.IO.File]::WriteAllBytes($Path, $Bytes)
+}
+
+function Ensure-DispatchTaskLiveWorkerPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()]$ManifestEntry = $null
+    )
+
+    $paneId = Get-DispatchTaskEntryPaneId -Entry $ManifestEntry
+    if (-not [string]::IsNullOrWhiteSpace($paneId)) {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $ManifestEntry
+            ReasonCode     = ''
+            Diagnostic     = ''
+        }
+    }
+
+    Import-Task789OrchestraHelpers
+    $mode = 'team'
+    try {
+        $mode = [string](Get-OrchestraModeDocument -ProjectDir $ProjectDir).mode
+    } catch {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'orchestra_mode_invalid'
+            Diagnostic     = [string]$_.Exception.Message
+        }
+    }
+
+    $manifest = $null
+    if (Get-Command Get-WinsmuxManifest -ErrorAction SilentlyContinue) {
+        try {
+            $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+        } catch {
+            $manifest = $null
+        }
+    }
+    $liveWorkers = 0
+    if (Get-Command Get-OrchestraLiveWorkerRolePaneCount -ErrorAction SilentlyContinue) {
+        $liveWorkers = [int](Get-OrchestraLiveWorkerRolePaneCount -Manifest $manifest)
+    }
+    $maxLive = 6
+    if (Get-Command Get-OrchestraMaxLiveWorkerPaneCount -ErrorAction SilentlyContinue) {
+        $maxLive = [int](Get-OrchestraMaxLiveWorkerPaneCount -Mode $mode)
+    } elseif ($mode -ceq 'simple') {
+        $maxLive = 1
+    }
+    if ($liveWorkers -ge $maxLive) {
+        $reason = if ($mode -ceq 'simple') { 'simple_mode_live_worker_limit' } else { 'team_mode_live_worker_limit' }
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = $reason
+            Diagnostic     = ("{0}: live worker-role panes={1} max={2}" -f $reason, $liveWorkers, $maxLive)
+        }
+    }
+
+    Import-Task789OrchestraHelpers -IncludePaneScaler
+    $settings = $null
+    if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
+        $settings = Get-BridgeSettings -RootPath $ProjectDir
+    }
+    if (-not (Get-Command Invoke-TeamProfileLaunchProjection -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'team_profile_projection_unavailable'
+            Diagnostic     = "Team Profile launch projection is unavailable for slot '$Label'."
+        }
+    }
+
+    $liveManifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $liveRegistryPath = $null
+    if (Get-Command Get-WinsmuxRuntimeRegistryPath -ErrorAction SilentlyContinue) {
+        $liveRegistryPath = Get-WinsmuxRuntimeRegistryPath -ProjectDir $ProjectDir
+    } else {
+        $liveRegistryPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'runtime\registry.json'
+    }
+    $beforeManifest = $null
+    $beforeRegistry = $null
+    if (Test-Path -LiteralPath $liveManifestPath -PathType Leaf) {
+        $beforeManifest = [System.IO.File]::ReadAllBytes($liveManifestPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath) -and (Test-Path -LiteralPath $liveRegistryPath -PathType Leaf)) {
+        $beforeRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
+    }
+
+    $assignment = $null
+    try {
+        $projection = Invoke-TeamProfileLaunchProjection -ProjectDir $ProjectDir -SessionId 'winsmux-orchestra' -SlotId $Label -Worktree '' -ReadWriteScope 'session' -Force
+        $afterManifest = $null
+        $afterRegistry = $null
+        if (Test-Path -LiteralPath $liveManifestPath -PathType Leaf) {
+            $afterManifest = [System.IO.File]::ReadAllBytes($liveManifestPath)
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath) -and (Test-Path -LiteralPath $liveRegistryPath -PathType Leaf)) {
+            $afterRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
+        }
+        $manifestMutated = -not (Test-DispatchTaskLiveFileBytesEqual -Before $beforeManifest -After $afterManifest)
+        $registryPaneSetMutated = -not (Test-DispatchTaskLiveRegistryPaneSetEqual -Before $beforeRegistry -After $afterRegistry)
+        if ($manifestMutated -or $registryPaneSetMutated) {
+            Restore-DispatchTaskLiveFileBytes -Path $liveManifestPath -Bytes $beforeManifest
+            if ($registryPaneSetMutated -and -not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath)) {
+                Restore-DispatchTaskLiveFileBytes -Path $liveRegistryPath -Bytes $beforeRegistry
+            }
+            return [pscustomobject]@{
+                Spawned        = $false
+                ManifestEntry  = $null
+                ReasonCode     = 'team_profile_projection_mutated_live_manifest'
+                Diagnostic     = "Team Profile launch projection mutated live pane-set files for slot '$Label'."
+            }
+        }
+        $projRoot = $projection
+        $nestedProjection = Get-WinsmuxRuntimeValue -InputObject $projection -Name 'projection'
+        if ($null -ne $nestedProjection) {
+            $projRoot = $nestedProjection
+        }
+        $projectedPane = Get-WinsmuxRuntimeValue -InputObject $projRoot -Name 'pane'
+        $assignment = Get-WinsmuxRuntimeValue -InputObject $projectedPane -Name 'assignment'
+        if ($null -eq $assignment) {
+            return [pscustomobject]@{
+                Spawned        = $false
+                ManifestEntry  = $null
+                ReasonCode     = 'team_profile_projection_unavailable'
+                Diagnostic     = "Team Profile launch projection did not produce an assignment for slot '$Label'."
+            }
+        }
+    } catch {
+        Restore-DispatchTaskLiveFileBytes -Path $liveManifestPath -Bytes $beforeManifest
+        $currentRegistry = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$liveRegistryPath) -and (Test-Path -LiteralPath $liveRegistryPath -PathType Leaf)) {
+            $currentRegistry = [System.IO.File]::ReadAllBytes($liveRegistryPath)
+        }
+        if (-not (Test-DispatchTaskLiveRegistryPaneSetEqual -Before $beforeRegistry -After $currentRegistry)) {
+            Restore-DispatchTaskLiveFileBytes -Path $liveRegistryPath -Bytes $beforeRegistry
+        }
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'team_profile_projection_unavailable'
+            Diagnostic     = [string]$_.Exception.Message
+        }
+    }
+
+    $slotAgentConfig = $null
+    if (Get-Command New-TeamProfileSlotAgentConfig -ErrorAction SilentlyContinue) {
+        # Spawn uses Team Profile assignment.worker_backend via New-TeamProfileSlotAgentConfig.
+        $slotAgentConfig = New-TeamProfileSlotAgentConfig -Role 'Worker' -SlotId $Label -Assignment $assignment -Settings $settings -RootPath $ProjectDir
+    }
+    if ($null -eq $slotAgentConfig) {
+        return [pscustomobject]@{
+            Spawned        = $false
+            ManifestEntry  = $null
+            ReasonCode     = 'team_profile_projection_unavailable'
+            Diagnostic     = "Team Profile slot agent config is unavailable for slot '$Label'."
+        }
+    }
+
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $null = Add-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -SlotId $Label -Settings $settings -SlotAgentConfig $slotAgentConfig -Assignment $assignment -Projection $projection
+    $spawnedEntry = Get-DispatchTaskManifestEntry -ProjectDir $ProjectDir -Label $Label
+    return [pscustomobject]@{
+        Spawned        = $true
+        ManifestEntry  = $spawnedEntry
+        ReasonCode     = ''
+        Diagnostic     = ''
+    }
+}
+
+function New-WinsmuxArchivePaneIdleResult {
+    param(
+        [Parameter(Mandatory = $true)][bool]$Idle,
+        [Parameter(Mandatory = $true)][ValidateSet('idle', 'busy', 'unavailable')][string]$Evidence,
+        [AllowEmptyString()][string]$Status = '',
+        [AllowEmptyString()][string]$LastEvent = ''
+    )
+
+    return [pscustomobject]@{
+        Idle      = $Idle
+        Evidence  = $Evidence
+        Status    = $Status
+        LastEvent = $LastEvent
+    }
+}
+
+function Resolve-WinsmuxArchivePaneIdleState {
+    param([AllowNull()]$Result = $null)
+
+    if ($Result -is [bool]) {
+        return New-WinsmuxArchivePaneIdleResult -Idle ([bool]$Result) -Evidence $(if ($Result) { 'idle' } else { 'busy' })
+    }
+    if ($null -eq $Result) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'unavailable'
+    }
+
+    $evidence = [string](Get-WinsmuxRuntimeValue -InputObject $Result -Name 'Evidence' -Default '')
+    $idle = $false
+    $idleRaw = Get-WinsmuxRuntimeValue -InputObject $Result -Name 'Idle' -Default $null
+    if ($idleRaw -is [bool]) {
+        $idle = [bool]$idleRaw
+    }
+    if ([string]::IsNullOrWhiteSpace($evidence)) {
+        $evidence = if ($idle) { 'idle' } else { 'unavailable' }
+    }
+    if ($evidence -cnotin @('idle', 'busy', 'unavailable')) {
+        $evidence = 'unavailable'
+        $idle = $false
+    }
+    return New-WinsmuxArchivePaneIdleResult -Idle $idle -Evidence $evidence `
+        -Status ([string](Get-WinsmuxRuntimeValue -InputObject $Result -Name 'Status' -Default '')) `
+        -LastEvent ([string](Get-WinsmuxRuntimeValue -InputObject $Result -Name 'LastEvent' -Default ''))
+}
+
+function Test-WinsmuxArchivePaneIdle {
+    param(
+        [AllowNull()]$Entry = $null,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $status = ''
+    $lastEvent = ''
+    $label = ''
+    $paneId = ''
+    if ($null -ne $Entry) {
+        foreach ($pair in @(@('Status', 'status'), @('LastEvent', 'last_event'), @('Label', 'label'), @('PaneId', 'pane_id'))) {
+            $value = ''
+            foreach ($name in $pair) {
+                if ($Entry -is [System.Collections.IDictionary] -and $Entry.Contains($name)) {
+                    $value = [string]$Entry[$name]
+                    break
+                }
+                if ($null -ne $Entry.PSObject -and $Entry.PSObject.Properties.Name -contains $name) {
+                    $value = [string]$Entry.PSObject.Properties[$name].Value
+                    break
+                }
+            }
+            switch ($pair[0]) {
+                'Status' { $status = $value }
+                'LastEvent' { $lastEvent = $value }
+                'Label' { $label = $value }
+                'PaneId' { $paneId = $value }
+            }
+        }
+    }
+
+    $idleEvents = @('pane.idle', 'pane.completed', 'pane.ready')
+    $busyEvents = @('pane.progress', 'pane.approval_waiting', 'pane.busy', 'pane.hung', 'pane.stalled')
+    if ($busyEvents -contains $lastEvent) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
+    }
+
+    if (Get-Command Get-BridgeEventRecords -ErrorAction SilentlyContinue) {
+        $events = @(Get-BridgeEventRecords -ProjectDir $ProjectDir)
+        $matching = @(
+            $events | Where-Object {
+                $eventLabel = [string]$_['label']
+                $eventPane = [string]$_['pane_id']
+                ((-not [string]::IsNullOrWhiteSpace($label) -and $eventLabel -ceq $label) -or
+                 (-not [string]::IsNullOrWhiteSpace($paneId) -and $eventPane -ceq $paneId))
+            }
+        )
+        if ($matching.Count -gt 0) {
+            $eventName = [string]$matching[-1]['event']
+            if ($busyEvents -contains $eventName) {
+                return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $eventName
+            }
+            if ($idleEvents -contains $eventName) {
+                return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $eventName
+            }
+        }
+    }
+
+    if ($idleEvents -contains $lastEvent) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
+    }
+    if ($status -in @('busy', 'approval_waiting', 'hung', 'stalled')) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'busy' -Status $status -LastEvent $lastEvent
+    }
+    if ($status -in @('ready', 'waiting_for_dispatch', 'deferred_start', 'deferred_starting')) {
+        return New-WinsmuxArchivePaneIdleResult -Idle $true -Evidence 'idle' -Status $status -LastEvent $lastEvent
+    }
+
+    return New-WinsmuxArchivePaneIdleResult -Idle $false -Evidence 'unavailable' -Status $status -LastEvent $lastEvent
+}
+
+function Get-WinsmuxArchivePaneReadinessAgent {
+    param([AllowNull()]$Entry = $null)
+
+    $adapter = Get-DispatchTaskObjectText -InputObject $Entry -Names @('CapabilityAdapter', 'capability_adapter')
+    if (-not [string]::IsNullOrWhiteSpace($adapter)) {
+        return $adapter
+    }
+
+    $approved = $null
+    if ($null -ne $Entry) {
+        if (Get-Command Get-WinsmuxRuntimeValue -ErrorAction SilentlyContinue) {
+            $approved = Get-WinsmuxRuntimeValue -InputObject $Entry -Name 'ApprovedLaunch' -Default $null
+            if ($null -eq $approved) {
+                $approved = Get-WinsmuxRuntimeValue -InputObject $Entry -Name 'approved_launch' -Default $null
+            }
+        } elseif ($null -ne $Entry.PSObject) {
+            if ($Entry.PSObject.Properties.Name -contains 'ApprovedLaunch') {
+                $approved = $Entry.ApprovedLaunch
+            } elseif ($Entry.PSObject.Properties.Name -contains 'approved_launch') {
+                $approved = $Entry.approved_launch
+            }
+        }
+    }
+
+    $agent = Get-DispatchTaskObjectText -InputObject $approved -Names @('agent', 'Agent')
+    if (-not [string]::IsNullOrWhiteSpace($agent)) {
+        return $agent
+    }
+
+    if (Get-Command Get-PaneScalerReadinessAgent -ErrorAction SilentlyContinue) {
+        return [string](Get-PaneScalerReadinessAgent -SlotAgentConfig $Entry -FallbackAgent '')
+    }
+
+    return Get-DispatchTaskObjectText -InputObject $Entry -Names @('Agent', 'agent')
+}
+
+function Get-WinsmuxArchivePaneRefusal {
+    param(
+        [AllowNull()]$Entry = $null,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [AllowNull()]$Manifest = $null
+    )
+
+    $paneId = Get-DispatchTaskEntryPaneId -Entry $Entry
+    if ($null -eq $Entry -or [string]::IsNullOrWhiteSpace($paneId)) {
+        return [pscustomobject]@{
+            ReasonCode = 'pane_not_live'
+            Diagnostic = "archive-pane: slot '$Label' has no live pane."
+        }
+    }
+
+    $role = ''
+    if (Get-Command Get-OrchestraCanonicalPaneRole -ErrorAction SilentlyContinue) {
+        $role = [string](Get-OrchestraCanonicalPaneRole -Pane $Entry -Label $Label)
+    }
+    if ($role -cne 'Worker') {
+        return [pscustomobject]@{
+            ReasonCode = 'archive_role_not_worker'
+            Diagnostic = "archive-pane: slot '$Label' is not a Worker pane."
+        }
+    }
+
+    if (Get-Command Test-OrchestraArchiveRemovesLastRequiredWorker -ErrorAction SilentlyContinue) {
+        if (Test-OrchestraArchiveRemovesLastRequiredWorker -Manifest $Manifest -Label $Label) {
+            return [pscustomobject]@{
+                ReasonCode = 'last_required_worker'
+                Diagnostic = "archive-pane: refusing to archive the last required worker pane '$Label'."
+            }
+        }
+    }
+
+    return $null
+}
+
+function Get-WinsmuxArchivePaneRuntimeRefusal {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()]$Entry = $null
+    )
+
+    if (-not (Get-Command Test-PaneControlRuntimeContext -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{
+            ReasonCode = 'runtime_target_mismatch'
+            Diagnostic = 'archive-pane: runtime ownership validation is unavailable.'
+        }
+    }
+
+    $runtimeResult = Test-PaneControlRuntimeContext -ProjectDir $ProjectDir -ManifestEntry $Entry -Operation stop_transition
+    if ($null -ne $runtimeResult -and [bool]$runtimeResult.valid) {
+        return $null
+    }
+
+    $reasonCode = 'runtime_target_mismatch'
+    $diagnostic = 'archive-pane: runtime ownership validation failed.'
+    if ($null -ne $runtimeResult) {
+        $candidateReason = [string](Get-WinsmuxRuntimeValue -InputObject $runtimeResult -Name 'reason_code' -Default '')
+        $candidateDiagnostic = [string](Get-WinsmuxRuntimeValue -InputObject $runtimeResult -Name 'diagnostic' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($candidateReason)) {
+            $reasonCode = $candidateReason
+        }
+        if (-not [string]::IsNullOrWhiteSpace($candidateDiagnostic)) {
+            $diagnostic = $candidateDiagnostic
+        }
+    }
+    return [pscustomobject]@{
+        ReasonCode = $reasonCode
+        Diagnostic = $diagnostic
+    }
+}
+
+function Invoke-WinsmuxArchivePaneCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$BridgeScriptRoot,
+        [AllowNull()][string]$CommandTarget,
+        [AllowNull()][string[]]$CommandRest
+    )
+
+    $parts = @(
+        Get-WinsmuxControlPlaneArguments -CommandTarget $CommandTarget -CommandRest $CommandRest |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ }
+    )
+    $projectDir = (Get-Location).Path
+    $json = $false
+    $slot = ''
+    $index = 0
+    while ($index -lt $parts.Count) {
+        $current = [string]$parts[$index]
+        if ($current -ceq '--project-dir') {
+            if ($index + 1 -ge $parts.Count) {
+                Stop-WithError 'usage: winsmux archive-pane <slot> [--json] [--project-dir <path>]'
+            }
+            $projectDir = [string]$parts[$index + 1]
+            $index += 2
+            continue
+        }
+        if ($current -ceq '--json') {
+            $json = $true
+            $index++
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($slot)) {
+            $slot = $current
+            $index++
+            continue
+        }
+        Stop-WithError 'usage: winsmux archive-pane <slot> [--json] [--project-dir <path>]'
+    }
+    if ([string]::IsNullOrWhiteSpace($slot)) {
+        Stop-WithError 'usage: winsmux archive-pane <slot> [--json] [--project-dir <path>]'
+    }
+
+    Import-Task789OrchestraHelpers -IncludePaneScaler
+    $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
+    $paneId = Get-DispatchTaskEntryPaneId -Entry $entry
+    $manifestPath = Join-Path (Join-Path $projectDir '.winsmux') 'manifest.yaml'
+    $manifest = $null
+    if (Get-Command Read-PaneScalerManifest -ErrorAction SilentlyContinue -and (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        try {
+            $manifest = Read-PaneScalerManifest -ManifestPath $manifestPath
+        } catch {
+            $manifest = $null
+        }
+    }
+    $refusal = Get-WinsmuxArchivePaneRefusal -Entry $entry -Label $slot -Manifest $manifest
+    if ($null -ne $refusal) {
+        $payload = [ordered]@{
+            ok          = $false
+            action      = 'archive-pane'
+            slot        = $slot
+            pane_id     = $paneId
+            reason_code = [string]$refusal.ReasonCode
+            diagnostic  = [string]$refusal.Diagnostic
+        }
+        if ($json) {
+            $payload | ConvertTo-Json -Compress
+        } else {
+            Write-Output $payload.diagnostic
+        }
+        exit 1
+    }
+
+    $runtimeRefusal = Get-WinsmuxArchivePaneRuntimeRefusal -ProjectDir $projectDir -Entry $entry
+    if ($null -ne $runtimeRefusal) {
+        $payload = [ordered]@{
+            ok          = $false
+            action      = 'archive-pane'
+            slot        = $slot
+            pane_id     = $paneId
+            reason_code = [string]$runtimeRefusal.ReasonCode
+            diagnostic  = [string]$runtimeRefusal.Diagnostic
+        }
+        if ($json) {
+            $payload | ConvertTo-Json -Compress
+        } else {
+            Write-Output $payload.diagnostic
+        }
+        exit 1
+    }
+
+    $idleState = Resolve-WinsmuxArchivePaneIdleState -Result (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir)
+    # Unknown/empty status with no recognized idle event is not interruptible busy.
+    if ($idleState.Evidence -ceq 'unavailable') {
+        $payload = [ordered]@{
+            ok          = $false
+            action      = 'archive-pane'
+            slot        = $slot
+            pane_id     = $paneId
+            reason_code = 'archive_idle_required'
+            diagnostic  = "archive-pane: idle evidence is unavailable for '$slot'; pane was left in place."
+        }
+        if ($json) {
+            $payload | ConvertTo-Json -Compress
+        } else {
+            Write-Output $payload.diagnostic
+        }
+        exit 1
+    }
+    # Collect requires pane.idle (or equivalent idle status) after interrupt before kill-pane.
+    if (-not [bool]$idleState.Idle) {
+        if (Get-Command Invoke-WinsmuxRaw -ErrorAction SilentlyContinue) {
+            Invoke-WinsmuxRaw -Arguments @('keys', $paneId, 'C-c') | Out-Null
+        } elseif (Get-Command Invoke-MonitorWinsmux -ErrorAction SilentlyContinue) {
+            Invoke-MonitorWinsmux -Arguments @('keys', $paneId, 'C-c') | Out-Null
+        } else {
+            throw "archive-pane could not send interrupt to pane $paneId"
+        }
+
+        $becameIdle = $false
+        $readinessAgent = Get-WinsmuxArchivePaneReadinessAgent -Entry $entry
+        for ($attempt = 1; $attempt -le 8; $attempt++) {
+            Start-Sleep -Milliseconds 250
+            if (Get-Command Get-PaneAgentStatus -ErrorAction SilentlyContinue) {
+                $liveStatus = ''
+                try {
+                    $live = Get-PaneAgentStatus -PaneId $paneId -Role 'Worker' -Agent $readinessAgent
+                    $liveStatus = [string](Get-WinsmuxRuntimeValue -InputObject $live -Name 'Status' -Default '')
+                } catch {
+                    $liveStatus = ''
+                }
+                if ($liveStatus -in @('ready', 'waiting_for_dispatch')) {
+                    $becameIdle = $true
+                    break
+                }
+            }
+            $entry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $slot
+            $waitState = Resolve-WinsmuxArchivePaneIdleState -Result (Test-WinsmuxArchivePaneIdle -Entry $entry -ProjectDir $projectDir)
+            if ([bool]$waitState.Idle -and $waitState.Evidence -ceq 'idle') {
+                $becameIdle = $true
+                break
+            }
+        }
+        if (-not $becameIdle) {
+            $payload = [ordered]@{
+                ok          = $false
+                action      = 'archive-pane'
+                slot        = $slot
+                pane_id     = $paneId
+                reason_code = 'archive_idle_required'
+                diagnostic  = "archive-pane: interrupt did not make '$slot' idle; pane was left in place."
+            }
+            if ($json) {
+                $payload | ConvertTo-Json -Compress
+            } else {
+                Write-Output $payload.diagnostic
+            }
+            exit 1
+        }
+    }
+
+    $removed = Remove-OrchestraPane -ManifestPath $manifestPath -Role 'Worker' -Label $slot
+    $payload = [ordered]@{
+        ok          = [bool]$removed.Changed
+        action      = 'archive-pane'
+        slot        = $slot
+        pane_id     = $paneId
+        removed     = [bool]$removed.Changed
+        reason_code = if ([bool]$removed.Changed) { '' } else { [string]$removed.Reason }
+    }
+    if ($json) {
+        $payload | ConvertTo-Json -Compress
+    } else {
+        Write-Output ("archive-pane {0}: {1}" -f $slot, $(if ($payload.ok) { 'archived' } else { 'unchanged' }))
+    }
+    if (-not $payload.ok) {
+        exit 1
+    }
 }

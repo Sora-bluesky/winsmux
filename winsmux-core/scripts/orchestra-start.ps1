@@ -977,9 +977,7 @@ function Get-OrchestraLayoutSettings {
     }
 
     $managedOperators = if ($externalOperator) { 0 } else { 1 }
-    if ($agentSlots.Count -gt 0) {
-        $workers = $agentSlots.Count
-    }
+    $workers = Get-OrchestraMinLiveWorkerPaneCount
     if ($workers -lt 1) {
         throw "worker_count must be 1 or greater in external operator mode (got $workers)."
     }
@@ -1134,10 +1132,11 @@ function Invoke-TeamProfileLaunchProjection {
         [Parameter(Mandatory = $true)][string]$SessionId,
         [Parameter(Mandatory = $true)][string]$SlotId,
         [AllowEmptyString()][string]$Worktree = '',
-        [string]$ReadWriteScope = 'session'
+        [string]$ReadWriteScope = 'session',
+        [switch]$Force
     )
 
-    if ($script:teamProfileOptedIn -ne $true) {
+    if (-not $Force -and $script:teamProfileOptedIn -ne $true) {
         return $null
     }
 
@@ -3110,8 +3109,10 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
+                $null = Get-OrchestraModeDocument -ProjectDir $projectDir
                 Assert-TeamProfileStartGate -ProjectDir $projectDir
                 $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
+                $expectedPaneCount = [int]$layout.Panes.Count
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
                         $createdPaneIds += $sessionPaneId

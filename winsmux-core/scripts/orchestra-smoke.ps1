@@ -40,9 +40,7 @@ function Get-OrchestraSmokeLayoutSettings {
         }
     }
 
-    if ($agentSlots.Count -gt 0) {
-        $workers = $agentSlots.Count
-    }
+    $workers = Get-OrchestraMinLiveWorkerPaneCount
 
     return [ordered]@{
         Operators = if ([bool]$settings.external_operator) { 0 } else { 1 }
@@ -837,6 +835,16 @@ $winsmuxCorePath = [System.IO.Path]::GetFullPath($winsmuxCorePath)
 $layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
 $externalOperatorMode = ([int]$layoutSettings.Operators -eq 0)
 $expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
+$orchestraModeValid = $true
+$orchestraMode = 'team'
+$orchestraModeError = ''
+try {
+    $orchestraModeDocument = Get-OrchestraModeDocument -ProjectDir $ProjectDir
+    $orchestraMode = [string]$orchestraModeDocument.mode
+} catch {
+    $orchestraModeValid = $false
+    $orchestraModeError = [string]$_.Exception.Message
+}
 
 $winsmuxBin = ''
 try {
@@ -932,6 +940,12 @@ if ($manifestFound -and $manifestReadable) {
         $manifestObject = $null
     }
 }
+if ($null -ne $manifestObject -and $null -ne $manifestObject.session) {
+    $manifestExpected = ConvertTo-OrchestraSmokeInt (Get-OrchestraSmokeObjectPropertyValue -InputObject $manifestObject.session -Name 'expected_pane_count' -Default 0)
+    if ($manifestExpected -ge 1) {
+        $expectedPaneCount = $manifestExpected
+    }
+}
 
 $workerIsolation = Get-WinsmuxWorkerIsolationReport -ProjectDir $ProjectDir -Manifest $manifestObject -GitPath $gitPath
 
@@ -951,6 +965,14 @@ if ($paneProbeOk -and $paneCount -lt $expectedPaneCount) { $smokeErrors.Add("pan
 if (-not [bool]$workerIsolation.ok) {
     foreach ($finding in @($workerIsolation.findings)) {
         $smokeErrors.Add("worker isolation drift: $($finding.label): $($finding.message)") | Out-Null
+    }
+}
+if (-not $orchestraModeValid) {
+    $smokeErrors.Add(("orchestra-mode.json is invalid: {0}" -f $orchestraModeError)) | Out-Null
+} else {
+    $liveWorkerPaneCount = Get-OrchestraLiveWorkerRolePaneCount -Manifest $manifestObject
+    if (-not (Test-OrchestraSimpleModeLiveWorkerLimit -Mode $orchestraMode -LiveWorkerPaneCount $liveWorkerPaneCount)) {
+        $smokeErrors.Add('simple_mode_live_worker_limit: simple mode forbids more than one live worker-role pane.') | Out-Null
     }
 }
 
