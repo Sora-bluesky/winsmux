@@ -75,8 +75,7 @@ pub fn control_pipe_auth_is_available() -> bool {
 }
 
 pub fn control_pipe_ui_is_enabled() -> bool {
-    control_pipe_auth_is_available()
-        || CONTROL_PIPE_SERVER_INTENDED.load(Ordering::SeqCst)
+    control_pipe_auth_is_available() || CONTROL_PIPE_SERVER_INTENDED.load(Ordering::SeqCst)
 }
 
 #[cfg(any(windows, test))]
@@ -135,25 +134,21 @@ fn write_control_pipe_token_file(path: &Path, token: &str) -> Result<(), String>
         .parent()
         .ok_or_else(|| "control-pipe token rotate failed".to_string())?;
     fs::create_dir_all(parent).map_err(|_| "control-pipe token rotate failed".to_string())?;
-    fs::write(path, token.as_bytes())
-        .map_err(|_| "control-pipe token rotate failed".to_string())?;
     #[cfg(windows)]
     {
-        if let Err(err) = apply_user_only_dacl(path) {
-            let _ = fs::remove_file(path);
-            return Err(err);
-        }
-        if let Err(err) = apply_user_only_dacl(parent) {
-            let _ = fs::remove_file(path);
-            return Err(err);
-        }
+        write_control_pipe_token_file_windows(path, parent, token)
     }
-    #[cfg(unix)]
+    #[cfg(not(windows))]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        fs::write(path, token.as_bytes())
+            .map_err(|_| "control-pipe token rotate failed".to_string())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn existing_token_file_is_trusted(path: &Path) -> bool {
@@ -361,6 +356,140 @@ fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(windows)]
+fn write_control_pipe_token_file_windows(
+    path: &Path,
+    parent: &Path,
+    token: &str,
+) -> Result<(), String> {
+    apply_user_only_dacl(parent)?;
+    let mut last_err = "control-pipe token rotate failed".to_string();
+    for _ in 0..8 {
+        let mut name_bytes = [0u8; 16];
+        fill_random_bytes(&mut name_bytes)?;
+        let temp_hex: String = name_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let temp_name = format!("token.{temp_hex}.tmp");
+        let temp_path = parent.join(temp_name);
+        match create_user_only_file_with_bytes(&temp_path, token.as_bytes()) {
+            Ok(()) => {
+                if let Err(err) = replace_file_atomic(&temp_path, path) {
+                    let _ = fs::remove_file(&temp_path);
+                    return Err(err);
+                }
+                return Ok(());
+            }
+            Err(err) if err == "control-pipe token rotate failed (exists)" => {
+                last_err = err;
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(err);
+            }
+        }
+    }
+    Err(last_err)
+}
+
+#[cfg(windows)]
+fn create_user_only_file_with_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FlushFileBuffers, WriteFile, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+        FILE_FLAG_WRITE_THROUGH,
+    };
+
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+
+    let sid = current_user_sid_string()?;
+    let sddl = format!("D:P(A;;GA;;;{sid})");
+    let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+    let path_wide = path_to_wide(path);
+    unsafe {
+        let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl_wide.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            core::ptr::null_mut(),
+        ) == 0
+        {
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let handle: HANDLE = CreateFileW(
+            path_wide.as_ptr(),
+            GENERIC_WRITE,
+            0,
+            &sa,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH,
+            core::ptr::null_mut(),
+        );
+        let create_error = GetLastError();
+        local_free_ptr(sd);
+        if handle == INVALID_HANDLE_VALUE {
+            if create_error == ERROR_FILE_EXISTS || create_error == ERROR_ALREADY_EXISTS {
+                return Err("control-pipe token rotate failed (exists)".to_string());
+            }
+            return Err(format!("control-pipe token rotate failed ({create_error})"));
+        }
+        let mut bytes_written = 0u32;
+        let write_ok = WriteFile(
+            handle,
+            bytes.as_ptr(),
+            bytes.len() as u32,
+            &mut bytes_written,
+            core::ptr::null_mut(),
+        );
+        if write_ok == 0 || bytes_written as usize != bytes.len() {
+            CloseHandle(handle);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        FlushFileBuffers(handle);
+        CloseHandle(handle);
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_atomic(from: &Path, to: &Path) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let from_wide = path_to_wide(from);
+    let to_wide = path_to_wide(to);
+    let moved = unsafe {
+        MoveFileExW(
+            from_wide.as_ptr(),
+            to_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(format!("control-pipe token rotate failed ({})", unsafe {
+            GetLastError()
+        }))
+    } else {
+        Ok(())
     }
 }
 
@@ -920,6 +1049,25 @@ mod tests {
         guard
     }
 
+    fn leftover_control_pipe_token_temps(parent: &Path) -> Vec<PathBuf> {
+        let Ok(entries) = fs::read_dir(parent) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("token.")
+                            && name.ends_with(".tmp")
+                            && name.len() == "token.".len() + 32 + ".tmp".len()
+                    })
+            })
+            .collect()
+    }
+
     fn harden_existing_token_file_for_test(path: &Path) {
         #[cfg(windows)]
         apply_user_only_dacl(path).expect("harden previous token file");
@@ -1432,6 +1580,15 @@ mod tests {
         bootstrap_control_pipe_token().expect("bootstrap");
         let current = fs::read_to_string(&path).expect("current token");
         assert_ne!(current, "planted-previous-token");
+        #[cfg(windows)]
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "replaced dest must keep the user-only create DACL"
+        );
+        assert!(
+            leftover_control_pipe_token_temps(path.parent().expect("parent")).is_empty(),
+            "atomic replace must not leave token.*.tmp"
+        );
 
         let pty_transport = StubPtyTransport::new();
         let rejected = handle_control_pipe_payload(
@@ -1539,6 +1696,23 @@ mod tests {
     }
 
     #[test]
+    fn control_pipe_token_file_is_user_only_after_first_write() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        bootstrap_control_pipe_token().expect("bootstrap");
+        assert!(path.is_file());
+        #[cfg(windows)]
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "first write must create the dest with a user-only DACL"
+        );
+        assert!(
+            leftover_control_pipe_token_temps(path.parent().expect("parent")).is_empty(),
+            "first write must not leave token.*.tmp"
+        );
+    }
+
+    #[test]
     #[cfg(windows)]
     fn control_pipe_bootstrap_fail_closed_when_dacl_hardening_fails() {
         struct ResetDaclFailure;
@@ -1556,6 +1730,12 @@ mod tests {
             .expect_err("hardening failure must fail closed");
         assert!(!bootstrapped);
         assert!(!path.exists(), "unhardened token file must be removed");
+        if let Some(parent) = path.parent() {
+            assert!(
+                leftover_control_pipe_token_temps(parent).is_empty(),
+                "fail-closed DACL must not leave a temp token file"
+            );
+        }
         assert!(control_pipe_auth_state_lock().is_none());
         assert!(!control_pipe_auth_is_available());
         assert!(is_control_pipe_startup_error(&err));
