@@ -185,7 +185,7 @@ MCP クライアントは `winsmux_automation_contract`、`winsmux_automation_di
 
 ## クライアント互換性
 
-ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。
+ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。同じ文書の CI 検査済みコピーが `docs/control-plane-contract.v1.json` にあります。`control_pipe_contract()` の pretty-print で、ライブの pipe 応答と一致し続けます。
 
 空でない `WINSMUX_CONTROL_PIPE_TOKEN` も正確なトークンファイルも認証に使えない場合、または要求に `auth.token` がない場合、契約取得以外の呼び出しは安全側で失敗します。
 
