@@ -59,6 +59,10 @@ name = "automation_discover"
 path = "tests-rs/automation_discover.rs"
 
 [[test]]
+name = "automation_pair"
+path = "tests-rs/automation_pair.rs"
+
+[[test]]
 name = "condensed_events"
 path = "tests-rs/condensed_events.rs"
 

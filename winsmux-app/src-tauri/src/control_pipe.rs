@@ -713,6 +713,8 @@ pub const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.voice.capture_status",
 ];
 
+const PAIRING_CONTROL_PIPE_METHODS: &[&str] = &["desktop.pairing.confirm"];
+
 const CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS: &[&str] = &[
     "desktop.workers.status",
     "desktop.workers.start",
@@ -789,6 +791,34 @@ pub fn handle_control_pipe_payload(
         );
     }
 
+    if PAIRING_CONTROL_PIPE_METHODS.contains(&method) {
+        let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
+            Ok(value) => value,
+            Err(err) => {
+                return serialize_control_pipe_error(
+                    Value::Null,
+                    JSON_RPC_PARSE_ERROR,
+                    format!("Invalid JSON-RPC request: {err}"),
+                );
+            }
+        };
+        if request.jsonrpc != "2.0" {
+            return serialize_control_pipe_error(
+                request.id,
+                JSON_RPC_INVALID_REQUEST,
+                "desktop_json_rpc expects jsonrpc=\"2.0\"".to_string(),
+            );
+        }
+        return serialize_control_pipe_result(
+            request.id,
+            json!({
+                "paired": true,
+                "scope": "external_control_pipe",
+                "version": 1,
+            }),
+        );
+    }
+
     if DESKTOP_CONTROL_PIPE_METHODS.contains(&method) {
         let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
             Ok(value) => value,
@@ -853,6 +883,7 @@ fn control_pipe_methods() -> Vec<&'static str> {
         .iter()
         .chain(PTY_CONTROL_PIPE_METHODS.iter())
         .chain(OPERATOR_CONTROL_PIPE_METHODS.iter())
+        .chain(PAIRING_CONTROL_PIPE_METHODS.iter())
         .copied()
         .collect()
 }
@@ -876,6 +907,7 @@ fn control_pipe_contract() -> Value {
     "desktop_methods": DESKTOP_CONTROL_PIPE_METHODS,
     "pty_methods": PTY_CONTROL_PIPE_METHODS,
     "operator_methods": OPERATOR_CONTROL_PIPE_METHODS,
+    "pairing_methods": PAIRING_CONTROL_PIPE_METHODS,
     "internal_desktop_methods_excluded": CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS,
     })
 }
@@ -1196,6 +1228,18 @@ mod tests {
         .into_bytes()
     }
 
+    fn pairing_payload_with_token(token: Option<&str>) -> Vec<u8> {
+        let mut request = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "desktop.pairing.confirm",
+        });
+        if let Some(token) = token {
+            request["auth"] = json!({ "token": token });
+        }
+        serde_json::to_vec(&request).expect("pairing payload")
+    }
+
     struct StubDesktopTransport;
 
     impl DesktopCommandTransport for StubDesktopTransport {
@@ -1236,6 +1280,25 @@ mod tests {
                 })),
                 _ => Err("unexpected command".to_string()),
             }
+        }
+    }
+
+    struct RecordingDesktopTransport {
+        calls: Mutex<usize>,
+    }
+
+    impl RecordingDesktopTransport {
+        fn new() -> Self {
+            Self {
+                calls: Mutex::new(0),
+            }
+        }
+    }
+
+    impl DesktopCommandTransport for RecordingDesktopTransport {
+        fn request_json(&self, command: &DesktopCommand) -> Result<Value, String> {
+            *self.calls.lock().expect("calls lock") += 1;
+            StubDesktopTransport.request_json(command)
         }
     }
 
@@ -1295,6 +1358,10 @@ mod tests {
             result["operator_methods"],
             json!(OPERATOR_CONTROL_PIPE_METHODS)
         );
+        assert_eq!(
+            result["pairing_methods"],
+            json!(PAIRING_CONTROL_PIPE_METHODS)
+        );
         assert_eq!(result["methods"], json!(control_pipe_methods()));
         assert_eq!(
             result["internal_desktop_methods_excluded"],
@@ -1316,6 +1383,9 @@ mod tests {
         assert!(methods
             .iter()
             .any(|method| method.as_str() == Some("desktop.operator.submit")));
+        assert!(methods
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.pairing.confirm")));
     }
 
     #[test]
@@ -1334,6 +1404,156 @@ mod tests {
         // this Desktop test is the frozen allowlist proof (source of truth stays here).
         let value = automation_contract_jsonrpc_response();
         assert_automation_contract_result(&value["result"]);
+    }
+
+    #[test]
+    fn control_pipe_pairing_confirm_requires_token() {
+        let pty_transport = StubPtyTransport::new();
+        {
+            let _guard = set_control_pipe_token_for_test(None);
+            let missing = handle_control_pipe_payload(
+                &StubDesktopTransport,
+                &pty_transport,
+                &pairing_payload_with_token(None),
+                None,
+            );
+            let missing_value: Value = serde_json::from_slice(&missing).expect("missing json");
+            assert_eq!(missing_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+            assert!(missing_value["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        }
+
+        let _guard = set_control_pipe_token_for_test(Some("expected-token"));
+        let wrong = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &pairing_payload_with_token(Some("wrong-token")),
+            None,
+        );
+        let wrong_value: Value = serde_json::from_slice(&wrong).expect("wrong json");
+        assert_eq!(wrong_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(wrong_value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    #[test]
+    fn control_pipe_pairing_confirm_returns_static_result_without_transport() {
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        let desktop_transport = RecordingDesktopTransport::new();
+        let pty_transport = StubPtyTransport::new();
+        let response = handle_control_pipe_payload(
+            &desktop_transport,
+            &pty_transport,
+            &pairing_payload_with_token(Some("test-control-token")),
+            None,
+        );
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["result"]["paired"], true);
+        assert_eq!(value["result"]["scope"], "external_control_pipe");
+        assert_eq!(value["result"]["version"], 1);
+        assert_eq!(
+            *desktop_transport.calls.lock().expect("calls lock"),
+            0,
+            "pairing confirm must not call the desktop transport"
+        );
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    #[test]
+    fn control_pipe_pairing_confirm_accepts_previous_token_until_current_auth() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "previous-rotate-token").expect("previous token");
+        harden_existing_token_file_for_test(&path);
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let current = fs::read_to_string(&path).expect("current token");
+        assert_ne!(current, "previous-rotate-token");
+
+        let pty_transport = StubPtyTransport::new();
+        let previous_response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &pairing_payload_with_token(Some("previous-rotate-token")),
+            None,
+        );
+        let previous_value: Value =
+            serde_json::from_slice(&previous_response).expect("previous json");
+        assert_eq!(previous_value["result"]["paired"], true);
+
+        let current_response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &pairing_payload_with_token(Some(&current)),
+            None,
+        );
+        let current_value: Value = serde_json::from_slice(&current_response).expect("current json");
+        assert_eq!(current_value["result"]["paired"], true);
+
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &pairing_payload_with_token(Some("previous-rotate-token")),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    #[test]
+    fn control_pipe_pairing_confirm_rejects_previous_token_after_ttl() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "previous-ttl-token").expect("previous token");
+        harden_existing_token_file_for_test(&path);
+        bootstrap_control_pipe_token().expect("bootstrap");
+        expire_previous_control_pipe_token_for_test();
+
+        let pty_transport = StubPtyTransport::new();
+        let rejected = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &pairing_payload_with_token(Some("previous-ttl-token")),
+            None,
+        );
+        let rejected_value: Value = serde_json::from_slice(&rejected).expect("rejected json");
+        assert_eq!(rejected_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+
+        let current = fs::read_to_string(&path).expect("current token");
+        let accepted = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &pairing_payload_with_token(Some(&current)),
+            None,
+        );
+        let accepted_value: Value = serde_json::from_slice(&accepted).expect("accepted json");
+        assert_eq!(accepted_value["result"]["paired"], true);
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
     }
 
     #[test]

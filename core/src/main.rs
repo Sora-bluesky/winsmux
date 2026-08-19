@@ -1115,6 +1115,10 @@ fn run_main() -> io::Result<()> {
         return control_pipe_client::run_automation_discover_command();
     }
 
+    if cmd == control_pipe_client::AUTOMATION_PAIR_COMMAND {
+        return control_pipe_client::run_automation_pair_command();
+    }
+
     if is_winsmux_core_bridge_command(cmd) {
         let mut owned_dispatch_args = None;
         if cmd == "dispatch-task" {
