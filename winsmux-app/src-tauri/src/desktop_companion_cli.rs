@@ -3,6 +3,18 @@ use std::process::{Command, Stdio};
 
 use crate::desktop_backend::{apply_desktop_winsmux_child_env, hide_subprocess_window};
 
+const WINSMUX_CORE_SCRIPT_ENV: &str = "WINSMUX_CORE_SCRIPT";
+
+pub(crate) fn companion_bridge_script_path(companion: &Path) -> Option<PathBuf> {
+    let dir = companion.parent()?;
+    let sibling = dir.join("winsmux-core.ps1");
+    if sibling.is_file() {
+        return Some(sibling);
+    }
+    let bundled = dir.join("resources").join("winsmux-core.ps1");
+    bundled.is_file().then_some(bundled)
+}
+
 pub(crate) fn build_companion_ledger_command(
     companion: &Path,
     effective_project_dir: &Path,
@@ -12,6 +24,9 @@ pub(crate) fn build_companion_ledger_command(
     let mut command = Command::new(companion);
     command.args(args).current_dir(effective_project_dir);
     apply_desktop_winsmux_child_env(&mut command, Some(companion), app_pid);
+    if let Some(script) = companion_bridge_script_path(companion) {
+        command.env(WINSMUX_CORE_SCRIPT_ENV, script);
+    }
     hide_subprocess_window(&mut command);
     command
 }
@@ -371,6 +386,15 @@ panes:
             before_build.contains("prepare:companion-cli:release"),
             "beforeBuildCommand must stage the companion sidecar, got {before_build}"
         );
+        let resources = conf["bundle"]["resources"]
+            .as_array()
+            .expect("bundle.resources must ship the companion bridge script");
+        assert!(
+            resources
+                .iter()
+                .any(|value| value.as_str() == Some("binaries/winsmux-core.ps1")),
+            "bundle.resources must include binaries/winsmux-core.ps1, got {resources:?}"
+        );
     }
 
     #[test]
@@ -529,5 +553,122 @@ panes:
         let resolved = resolve_effective_project_dir(Some(path.display().to_string()))
             .expect("supplied project_dir must not require scripts/winsmux-core.ps1");
         assert_eq!(resolved, path);
+    }
+
+    #[test]
+    fn companion_ledger_command_pins_sidecar_bridge_script_when_present() {
+        let dir = make_temp_project_dir("sidecar-bridge");
+        let companion = dir.join("winsmux.exe");
+        let script = dir.join("winsmux-core.ps1");
+        fs::write(&companion, []).expect("write companion stub");
+        fs::write(&script, []).expect("write sibling bridge");
+        let command = build_companion_ledger_command(
+            &companion,
+            &dir,
+            &["desktop-summary".to_string(), "--json".to_string()],
+            7,
+        );
+        let pinned = command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("WINSMUX_CORE_SCRIPT"))
+            .and_then(|(_, value)| value.map(PathBuf::from));
+        assert_eq!(pinned.as_deref(), Some(script.as_path()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn expected_desktop_command_argv_head(command: &DesktopCommand) -> &'static str {
+        match command {
+            DesktopCommand::SummarySnapshot { .. } => "desktop-summary",
+            DesktopCommand::RunExplain { .. } => "explain",
+            DesktopCommand::RunCompare { .. } => "compare-runs",
+            DesktopCommand::RunPromote { .. } => "promote-tactic",
+            DesktopCommand::RunPickWinner { .. } => "consult-result",
+            DesktopCommand::WorkersStatus { .. } | DesktopCommand::WorkersStart { .. } => "workers",
+            DesktopCommand::ProviderSwitch { .. } => "provider-switch",
+            DesktopCommand::RuntimeRolesApply { .. } => "runtime-roles",
+            DesktopCommand::DogfoodEvent { .. } => "dogfood",
+            DesktopCommand::TeamProfileSettingsView { .. }
+            | DesktopCommand::TeamProfileResetField { .. } => "team-profile",
+        }
+    }
+
+    #[test]
+    fn desktop_ledger_commands_lock_companion_argv_heads() {
+        let none: Option<String> = None;
+        let commands = [
+            DesktopCommand::SummarySnapshot {
+                project_dir: none.clone(),
+            },
+            DesktopCommand::RunExplain {
+                run_id: "run".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::RunCompare {
+                left_run_id: "left".to_string(),
+                right_run_id: "right".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::RunPromote {
+                run_id: "run".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::RunPickWinner {
+                run_id: "run".to_string(),
+                peer_slot: "peer".to_string(),
+                recommendation: "ship".to_string(),
+                confidence: None,
+                next_test: "test".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::WorkersStatus {
+                target: "all".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::WorkersStart {
+                target: "all".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::ProviderSwitch {
+                slot: "builder-1".to_string(),
+                agent: None,
+                model: None,
+                model_source: None,
+                reasoning_effort: None,
+                prompt_transport: None,
+                auth_mode: None,
+                reason: None,
+                clear: true,
+                project_dir: none.clone(),
+            },
+            DesktopCommand::RuntimeRolesApply {
+                roles_json: "{}".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::DogfoodEvent {
+                event_json: "{}".to_string(),
+                project_dir: none.clone(),
+            },
+            DesktopCommand::TeamProfileSettingsView {
+                project_dir: none.clone(),
+            },
+            DesktopCommand::TeamProfileResetField {
+                slot_id: "builder-1".to_string(),
+                field: "model".to_string(),
+                project_dir: none,
+            },
+        ];
+        for command in &commands {
+            assert_eq!(
+                command.winsmux_args().first().map(String::as_str),
+                Some(expected_desktop_command_argv_head(command))
+            );
+        }
+        assert_eq!(
+            DesktopStreamCommand::Summary { project_dir: None }
+                .winsmux_args()
+                .first()
+                .map(String::as_str),
+            Some("desktop-summary")
+        );
     }
 }

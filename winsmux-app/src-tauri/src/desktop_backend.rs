@@ -1110,7 +1110,7 @@ impl DesktopStreamCommand {
         }
     }
 
-    fn winsmux_args(&self) -> Vec<String> {
+    pub(crate) fn winsmux_args(&self) -> Vec<String> {
         match self {
             DesktopStreamCommand::Summary { .. } => {
                 vec![

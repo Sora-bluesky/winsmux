@@ -39,4 +39,11 @@ if ([string]::IsNullOrWhiteSpace($hostTriple)) {
 
 $destination = Join-Path $binariesDir ("winsmux-{0}.exe" -f $hostTriple)
 Copy-Item -LiteralPath $source -Destination $destination -Force
+$bridgeSource = Join-Path $repoRoot 'scripts\winsmux-core.ps1'
+if (-not (Test-Path -LiteralPath $bridgeSource -PathType Leaf)) {
+    throw "companion bridge script was not found: $bridgeSource"
+}
+$bridgeDestination = Join-Path $binariesDir 'winsmux-core.ps1'
+Copy-Item -LiteralPath $bridgeSource -Destination $bridgeDestination -Force
 Write-Host "prepared companion sidecar $destination"
+Write-Host "prepared companion bridge $bridgeDestination"

@@ -258,6 +258,8 @@ fn winsmux_core_script_candidates(
                     candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
                 }
             }
+            candidates.push(exe_dir.join("winsmux-core.ps1"));
+            candidates.push(exe_dir.join("resources").join("winsmux-core.ps1"));
         }
     }
 
@@ -542,14 +544,74 @@ mod tests {
         assert!(!candidates.contains(&hostile_bridge));
 
         let installed_executable = home.join(".local").join("bin").join("winsmux.exe");
+        let installed_sibling = home
+            .join(".local")
+            .join("bin")
+            .join("winsmux-core.ps1");
         let installed_candidates = winsmux_core_script_candidates(
             None,
             Some(installed_executable.as_path()),
             Some(home.as_path()),
         );
-        assert_eq!(installed_candidates.first(), Some(&installed_bridge));
+        assert_eq!(installed_candidates.first(), Some(&installed_sibling));
+        assert!(installed_candidates.contains(&installed_bridge));
         assert!(!installed_candidates.contains(&source_bridge));
         assert!(!installed_candidates.contains(&hostile_bridge));
+    }
+
+    #[test]
+    fn packaged_sidecar_prefers_sibling_bridge_script_over_home() {
+        let temp = tempfile::tempdir().expect("create packaged fixture");
+        let root = temp.path();
+        let pack = root.join("pack");
+        let home = root.join("home");
+        let executable = pack.join("winsmux.exe");
+        let sibling = pack.join("winsmux-core.ps1");
+        let home_bridge = home.join(".winsmux").join("bin").join("winsmux-core.ps1");
+        std::fs::create_dir_all(&pack).expect("create pack dir");
+        std::fs::create_dir_all(home_bridge.parent().unwrap()).expect("create home scripts");
+        std::fs::write(&sibling, "").expect("write sibling bridge");
+        std::fs::write(&home_bridge, "").expect("write home bridge");
+
+        let candidates = winsmux_core_script_candidates(
+            None,
+            Some(executable.as_path()),
+            Some(home.as_path()),
+        );
+        assert_eq!(candidates.first(), Some(&sibling));
+        assert!(candidates.contains(&home_bridge));
+    }
+
+    #[test]
+    fn desktop_ledger_argv_heads_dispatch_on_companion() {
+        for command in [
+            "desktop-summary",
+            "explain",
+            "compare-runs",
+            "promote-tactic",
+            "consult-result",
+            "workers",
+            "provider-switch",
+            "runtime-roles",
+            "dogfood",
+            "team-profile",
+        ] {
+            assert!(
+                is_winsmux_core_bridge_command(command)
+                    || matches!(
+                        command,
+                        "desktop-summary"
+                            | "explain"
+                            | "compare-runs"
+                            | "promote-tactic"
+                            | "consult-result"
+                            | "provider-switch"
+                            | "dogfood"
+                            | "team-profile"
+                    ),
+                "{command} would miss companion dispatch"
+            );
+        }
     }
 
     #[test]

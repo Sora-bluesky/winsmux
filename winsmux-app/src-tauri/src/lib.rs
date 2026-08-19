@@ -686,11 +686,30 @@ struct TauriPtyTransport {
     app: AppHandle,
 }
 
+fn nonempty_project_dir(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn resolve_summary_stream_project_dir(
+    requested: Option<String>,
+    launch_project_dir: Option<String>,
+) -> Option<String> {
+    nonempty_project_dir(requested).or_else(|| nonempty_project_dir(launch_project_dir))
+}
+
 fn emit_desktop_summary_refresh(app: &AppHandle, signal: DesktopSummaryRefreshSignal) {
     let _ = app.emit(DESKTOP_SUMMARY_REFRESH_EVENT, signal);
 }
 
-fn start_desktop_summary_refresh_streams(app: &AppHandle) {
+fn start_desktop_summary_refresh_streams(app: &AppHandle, project_dir: Option<String>) {
+    let Some(project_dir) =
+        resolve_summary_stream_project_dir(project_dir, desktop_initial_project_dir())
+    else {
+        return;
+    };
     let manager = app.state::<DesktopSummaryStreamManager>();
     if manager.started.swap(true, Ordering::SeqCst) {
         return;
@@ -698,7 +717,9 @@ fn start_desktop_summary_refresh_streams(app: &AppHandle) {
 
     let summary_app = app.clone();
     if let Err(err) = spawn_desktop_summary_refresh_stream(
-        DesktopStreamCommand::Summary { project_dir: None },
+        DesktopStreamCommand::Summary {
+            project_dir: Some(project_dir),
+        },
         manager.stop_requested.clone(),
         move |signal| {
             emit_desktop_summary_refresh(&summary_app, signal);
@@ -711,7 +732,7 @@ fn start_desktop_summary_refresh_streams(app: &AppHandle) {
 fn schedule_desktop_summary_refresh_streams(app: AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(250));
-        start_desktop_summary_refresh_streams(&app);
+        start_desktop_summary_refresh_streams(&app, None);
     });
 }
 
@@ -1158,8 +1179,10 @@ fn calculate_pcm16_meter_level(bytes: &[u8]) -> f64 {
 
 #[tauri::command]
 async fn desktop_summary_snapshot(
+    app: AppHandle,
     project_dir: Option<String>,
 ) -> Result<DesktopSummarySnapshot, String> {
+    start_desktop_summary_refresh_streams(&app, project_dir.clone());
     let transport = PwshScriptTransport;
     load_desktop_summary_snapshot(&transport, project_dir)
 }
@@ -1184,9 +1207,11 @@ async fn desktop_events_json(project_dir: String, cursor: Option<u64>) -> Result
 
 #[tauri::command]
 async fn desktop_json_rpc(
+    app: AppHandle,
     request: DesktopJsonRpcRequest,
     project_dir: Option<String>,
 ) -> Result<DesktopJsonRpcResponse, String> {
+    start_desktop_summary_refresh_streams(&app, project_dir.clone());
     let transport = PwshScriptTransport;
     Ok(handle_desktop_json_rpc(&transport, request, project_dir))
 }
@@ -2127,6 +2152,30 @@ mod tests {
 
         assert_eq!(resolved, project_arg);
         let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    #[test]
+    fn summary_stream_stays_idle_without_a_project_dir() {
+        assert_eq!(
+            resolve_summary_stream_project_dir(None, None),
+            None,
+            "packaged desktop must not fall back to a source-tree repo root"
+        );
+        assert_eq!(
+            resolve_summary_stream_project_dir(Some("  ".to_string()), None),
+            None
+        );
+        assert_eq!(
+            resolve_summary_stream_project_dir(None, Some(r"C:\proj".to_string())),
+            Some(r"C:\proj".to_string())
+        );
+        assert_eq!(
+            resolve_summary_stream_project_dir(
+                Some(r"C:\opened".to_string()),
+                Some(r"C:\launch".to_string())
+            ),
+            Some(r"C:\opened".to_string())
+        );
     }
 
     #[test]
