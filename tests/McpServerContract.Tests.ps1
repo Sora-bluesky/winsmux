@@ -1,6 +1,27 @@
 BeforeAll {
     $script:RepoRoot = Split-Path -Parent $PSScriptRoot
     $script:McpServerPath = Join-Path $script:RepoRoot 'winsmux-core\mcp-server.js'
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_CLI)) {
+        $candidates = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+            $candidates += (Join-Path $env:CARGO_TARGET_DIR 'debug\winsmux.exe')
+        }
+        $dir = $script:RepoRoot
+        while ($dir) {
+            $candidates += (Join-Path $dir 'target\debug\winsmux.exe')
+            $parent = Split-Path -Parent $dir
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $dir) {
+                break
+            }
+            $dir = $parent
+        }
+        foreach ($candidate in $candidates) {
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $env:WINSMUX_CLI = $candidate
+                break
+            }
+        }
+    }
 }
 
 Describe 'winsmux MCP server contract' {
@@ -97,5 +118,120 @@ print(WinsmuxClient._resolve_default_server_path())
         (Split-Path -Leaf $resolvedPath) | Should -Be 'mcp-server.js'
         (Split-Path -Leaf (Split-Path -Parent $resolvedPath)) | Should -Be 'winsmux-core'
         (Test-Path -LiteralPath $resolvedPath -PathType Leaf) | Should -BeTrue
+    }
+
+    It 'exposes winsmux_automation_contract through the MCP tool list' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $responses[1].result.tools.name | Should -Contain 'winsmux_assign'
+        $responses[1].result.tools.name | Should -Contain 'winsmux_automation_contract'
+    }
+
+    It 'automation contract tool invokes the native winsmux CLI without pwsh' {
+        $content = Get-Content -LiteralPath $script:McpServerPath -Raw -Encoding UTF8
+
+        $content | Should -Match 'function invokeNativeCli'
+        $content | Should -Match 'case "winsmux_automation_contract":'
+        $content | Should -Match 'return invokeNativeCli\(\["automation-contract"\]\)'
+        $content | Should -Match 'execFileSync\(bin,'
+
+        $nativeStart = $content.IndexOf('function invokeNativeCli')
+        $nativeStart | Should -BeGreaterThan -1
+        $nativeEnd = $content.IndexOf('// --- Tool Handlers ---', $nativeStart)
+        $nativeEnd | Should -BeGreaterThan $nativeStart
+        $nativeFn = $content.Substring($nativeStart, $nativeEnd - $nativeStart)
+        $nativeFn | Should -Not -Match 'invokeBridge'
+        $nativeFn | Should -Not -Match 'pwsh'
+        $nativeFn | Should -Not -Match 'winsmux-core\.ps1'
+
+        $case = [Regex]::Match(
+            $content,
+            'case "winsmux_automation_contract":[\s\S]*?return invokeNativeCli\(\["automation-contract"\]\);'
+        )
+        $case.Success | Should -BeTrue
+        $case.Value | Should -Not -Match 'invokeBridge'
+        $case.Value | Should -Not -Match 'pwsh'
+        $case.Value | Should -Not -Match 'winsmux-core\.ps1'
+    }
+
+    It 'automation contract tool fails closed when the desktop pipe is absent' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_contract","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $call = $responses[1].result
+        if ($call.isError -ne $true) {
+            return
+        }
+        $text = [string]$call.content[0].text
+        $text | Should -Not -Match 'pwsh'
+        $text | Should -Not -Match 'winsmux-core\.ps1'
+        $text | Should -Not -Match 'unknown command'
+        (
+            $text -match 'desktop control pipe is not available' -or
+            $text -match 'ENOENT' -or
+            $text -match 'spawn'
+        ) | Should -BeTrue
+    }
+
+    It 'automation contract tool output matches the pipe contract when the desktop runs' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_contract","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $call = $responses[1].result
+        if ($call.isError -eq $true) {
+            $text = [string]$call.content[0].text
+            $text | Should -Not -Match 'pwsh'
+            $text | Should -Not -Match 'unknown command'
+            (
+                $text -match 'desktop control pipe is not available' -or
+                $text -match 'ENOENT' -or
+                $text -match 'spawn'
+            ) | Should -BeTrue
+            return
+        }
+
+        $contract = $call.content[0].text | ConvertFrom-Json
+        $contract.scope | Should -Be 'external_control_pipe'
+        @($contract.methods).Count | Should -BeGreaterThan 0
+        @($contract.desktop_methods).Count | Should -BeGreaterThan 0
+        @($contract.pty_methods).Count | Should -BeGreaterThan 0
+        @($contract.operator_methods).Count | Should -BeGreaterThan 0
     }
 }
