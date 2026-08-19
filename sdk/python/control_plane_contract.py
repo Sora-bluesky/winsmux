@@ -60,3 +60,526 @@ INTERNAL_DESKTOP_METHODS_EXCLUDED = (
     "desktop.explorer.list",
     "desktop.editor.read",
 )
+
+# Types mirror the v2 contract schemas; the desktop applies additional handler validation and accepts snake_case aliases not shown here. No runtime validation is performed.
+# Requires Python >= 3.11 (TypedDict + typing.NotRequired).
+
+from typing import Any, NotRequired, TypedDict
+
+class OperatorSnapshotParams(TypedDict):
+    lines: NotRequired[int | None]
+
+class PtyCaptureResult(TypedDict):
+    output: str
+    paneId: str
+
+class OperatorSubmitParams(TypedDict):
+    text: str
+
+class OperatorSubmitResult(TypedDict):
+    paneId: str
+    submitted: bool
+
+class PairingConfirmParams(TypedDict):
+    pass
+
+class PairingConfirmResult(TypedDict):
+    paired: bool
+    scope: str
+    version: int
+
+class DesktopRunCompareParams(TypedDict):
+    leftRunId: str
+    rightRunId: str
+
+class DesktopCompareDifference(TypedDict):
+    field: str
+    left: Any
+    right: Any
+
+class DesktopCompareRecommendation(TypedDict):
+    next_action: str
+    reconcile_consult: bool
+    winning_run_id: str
+
+class DesktopCompareRunSide(TypedDict):
+    branch: str
+    changed_files: NotRequired[list[str]]
+    confidence: NotRequired[float | None]
+    consultation_ref: str
+    label: str
+    next_action: str
+    observation_pack_ref: str
+    recommendable: bool
+    review_state: str
+    run_id: str
+    state: str
+    task_state: str
+
+class DesktopCompareRunsResult(TypedDict):
+    confidence_delta: NotRequired[float | None]
+    differences: NotRequired[list[DesktopCompareDifference]]
+    generated_at: str
+    left: DesktopCompareRunSide
+    left_only_changed_files: list[str]
+    recommend: DesktopCompareRecommendation
+    right: DesktopCompareRunSide
+    right_only_changed_files: list[str]
+    shared_changed_files: list[str]
+
+class DesktopRunExplainParams(TypedDict):
+    runId: str
+
+class DesktopDraftPrGate(TypedDict):
+    auto_merge_allowed: NotRequired[bool]
+    draft_pr_url: NotRequired[str]
+    kind: NotRequired[str]
+    merge_requires_human: NotRequired[bool]
+    state: NotRequired[str]
+    target: NotRequired[str]
+    trigger: NotRequired[str]
+
+class DesktopExplainActionItem(TypedDict):
+    event: str
+    kind: str
+    message: str
+    source: str
+    timestamp: str
+
+class DesktopExplainConsultationPacket(TypedDict):
+    confidence: float
+    generated_at: str
+    kind: str
+    mode: str
+    next_test: str
+    pane_id: str
+    recommendation: str
+    risks: list[str]
+    run_id: str
+    slot: str
+    target_slot: str
+    task_id: str
+
+class DesktopExplainCurrentState(TypedDict):
+    activity: NotRequired[str]
+    detail: NotRequired[str]
+    last_event: str
+    phase: NotRequired[str]
+    review_state: str
+    state: str
+    task_state: str
+
+class DesktopExplainEvidenceDigest(TypedDict):
+    changed_file_count: int
+    changed_files: NotRequired[list[str]]
+    next_action: str
+    security_blocked: str
+    verification_outcome: str
+
+class DesktopExplainExperimentPacket(TypedDict):
+    branch: str
+    command_hash: str
+    confidence: float
+    consultation_ref: str
+    env_fingerprint: str
+    hypothesis: str
+    next_action: str
+    observation_pack_ref: str
+    result: str
+    run_id: str
+    slot: str
+    test_plan: list[str]
+    worktree: str
+
+class DesktopExplainExplanation(TypedDict):
+    current_state: DesktopExplainCurrentState
+    next_action: str
+    reasons: NotRequired[list[str]]
+    summary: str
+
+class DesktopExplainObservationPack(TypedDict):
+    changed_files: list[str]
+    command_hash: str
+    env_fingerprint: str
+    failing_command: str
+    generated_at: str
+    hypothesis: str
+    pane_id: str
+    run_id: str
+    slot: str
+    task_id: str
+    test_plan: list[str]
+    working_tree_summary: str
+
+class DesktopExplainRecentEvent(TypedDict):
+    event: str
+    label: str
+    message: str
+    timestamp: str
+
+class DesktopPhaseGateStage(TypedDict):
+    event: NotRequired[str]
+    reason: NotRequired[str]
+    stage: NotRequired[str]
+    status: NotRequired[str]
+
+class DesktopPhaseGate(TypedDict):
+    current_stage: NotRequired[str]
+    order: NotRequired[list[str]]
+    stage: NotRequired[str]
+    stages: NotRequired[list[DesktopPhaseGateStage]]
+    status: NotRequired[str]
+    stop_reason: NotRequired[str]
+    stop_required: NotRequired[bool]
+
+class DesktopExplainRun(TypedDict):
+    action_items: NotRequired[list[DesktopExplainActionItem]]
+    activity: NotRequired[str]
+    agent_role: str
+    audit_chain: NotRequired[Any]
+    blocking: bool
+    branch: str
+    changed_file_count: int
+    changed_files: NotRequired[list[str]]
+    constraints: list[str]
+    detail: NotRequired[str]
+    draft_pr_gate: NotRequired[DesktopDraftPrGate | None]
+    expected_output: str
+    experiment_packet: DesktopExplainExperimentPacket
+    goal: str
+    handoff_refs: list[str]
+    head_sha: str
+    labels: list[str]
+    last_event: str
+    last_event_at: str
+    pane_count: int
+    pane_ids: list[str]
+    parent_run_id: str
+    phase: NotRequired[str]
+    phase_gate: NotRequired[DesktopPhaseGate | None]
+    primary_label: str
+    primary_pane_id: str
+    primary_role: str
+    priority: str
+    provider_target: str
+    read_scope: list[str]
+    review_required: bool
+    review_state: str
+    roles: list[str]
+    run_id: str
+    safe_trace_refs: NotRequired[list[str]]
+    security_policy: Any
+    security_verdict: Any
+    state: str
+    task: str
+    task_id: str
+    task_state: str
+    task_type: str
+    timeout_policy: str
+    tokens_remaining: str
+    verification_contract: Any
+    verification_envelope: NotRequired[Any]
+    verification_plan: list[str]
+    verification_result: Any
+    worktree: str
+    write_scope: list[str]
+
+class DesktopReviewPathspecPolicy(TypedDict):
+    include_definition_hosts: bool
+    incomplete_scope_is_review_gap: bool
+    issue_ref: str
+    source_task: str
+
+class DesktopReviewContract(TypedDict):
+    checklist_labels: list[str]
+    issue_ref: str
+    pathspec_policy: NotRequired[DesktopReviewPathspecPolicy | None]
+    rationale: str
+    required_scope: list[str]
+    source_task: str
+    style: str
+    version: int
+
+class DesktopReviewStateEvidence(TypedDict):
+    approved_at: NotRequired[str | None]
+    approved_via: NotRequired[str | None]
+    failed_at: NotRequired[str | None]
+    failed_via: NotRequired[str | None]
+    review_contract_snapshot: DesktopReviewContract
+
+class DesktopReviewStateRequest(TypedDict):
+    branch: str
+    dispatched_at: NotRequired[str | None]
+    head_sha: str
+    id: NotRequired[str | None]
+    review_contract: DesktopReviewContract
+    target_review_label: NotRequired[str | None]
+    target_review_pane_id: NotRequired[str | None]
+    target_review_role: NotRequired[str | None]
+    target_reviewer_label: NotRequired[str | None]
+    target_reviewer_pane_id: NotRequired[str | None]
+    target_reviewer_role: NotRequired[str | None]
+
+class DesktopReviewStateReviewer(TypedDict):
+    agent_name: NotRequired[str | None]
+    label: str
+    pane_id: str
+    role: str
+
+class DesktopReviewStateRecord(TypedDict):
+    branch: str
+    evidence: NotRequired[DesktopReviewStateEvidence | None]
+    head_sha: str
+    request: DesktopReviewStateRequest
+    reviewer: DesktopReviewStateReviewer
+    status: str
+    updatedAt: str
+
+class DesktopExplainPayload(TypedDict):
+    consultation_packet: DesktopExplainConsultationPacket
+    evidence_digest: DesktopExplainEvidenceDigest
+    explanation: DesktopExplainExplanation
+    generated_at: str
+    observation_pack: DesktopExplainObservationPack
+    project_dir: str
+    recent_events: NotRequired[list[DesktopExplainRecentEvent]]
+    review_state: NotRequired[DesktopReviewStateRecord | None]
+    run: DesktopExplainRun
+
+class DesktopRunPickWinnerParams(TypedDict):
+    confidence: NotRequired[float | None]
+    nextTest: str
+    peerSlot: str
+    recommendation: str
+    runId: str
+
+class DesktopPickWinnerResult(TypedDict):
+    confidence: NotRequired[float | None]
+    consultation_ref: str
+    generated_at: str
+    kind: str
+    mode: str
+    next_test: str
+    pane_id: str
+    recommendation: str
+    risks: NotRequired[list[str]]
+    run_id: str
+    slot: str
+    target_slot: str
+    task_id: str
+
+class DesktopRunPromoteParams(TypedDict):
+    runId: str
+
+class DesktopPromoteTacticCandidate(TypedDict):
+    changed_files: NotRequired[list[str]]
+    confidence: NotRequired[float | None]
+    consultation_ref: str
+    hypothesis: str
+    kind: str
+    next_action: str
+    observation_pack_ref: str
+    packet_type: str
+    summary: str
+    title: str
+
+class DesktopPromoteTacticResult(TypedDict):
+    candidate: DesktopPromoteTacticCandidate
+    candidate_path: str
+    candidate_ref: str
+    generated_at: str
+    run_id: str
+
+class DesktopSummarySnapshotParams(TypedDict):
+    pass
+
+class DesktopBoardPane(TypedDict):
+    activity: NotRequired[str]
+    branch: str
+    changed_file_count: int
+    detail: NotRequired[str]
+    head_sha: str
+    label: str
+    last_event_at: str
+    pane_id: str
+    phase: NotRequired[str]
+    review_state: str
+    role: str
+    state: str
+    task: str
+    task_state: str
+    worktree: str
+
+class DesktopBoardSummary(TypedDict):
+    by_review: dict[str, int]
+    by_state: dict[str, int]
+    by_task_state: dict[str, int]
+    dirty_panes: int
+    pane_count: int
+    review_failed: int
+    review_passed: int
+    review_pending: int
+    tasks_blocked: int
+    tasks_in_progress: int
+
+class DesktopBoardSnapshot(TypedDict):
+    panes: list[DesktopBoardPane]
+    summary: DesktopBoardSummary
+
+class DesktopDigestItem(TypedDict):
+    action_item_count: int
+    activity: NotRequired[str]
+    branch: str
+    changed_file_count: int
+    changed_files: list[str]
+    confidence: NotRequired[float | None]
+    consultation_ref: str
+    detail: NotRequired[str]
+    head_sha: str
+    head_short: str
+    hypothesis: str
+    label: str
+    last_event: str
+    last_event_at: str
+    next_action: str
+    observation_pack_ref: str
+    pane_id: str
+    phase: NotRequired[str]
+    provider_target: str
+    review_state: str
+    role: str
+    run_id: str
+    security_blocked: str
+    task: str
+    task_id: str
+    task_state: str
+    verification_outcome: str
+    worktree: str
+
+class DesktopDigestSummary(TypedDict):
+    actionable_items: int
+    dirty_items: int
+    item_count: int
+    review_failed: int
+    review_pending: int
+
+class DesktopDigestSnapshot(TypedDict):
+    items: list[DesktopDigestItem]
+    summary: DesktopDigestSummary
+
+class DesktopInboxItem(TypedDict):
+    activity: NotRequired[str]
+    branch: str
+    changed_file_count: int
+    detail: NotRequired[str]
+    event: str
+    head_sha: str
+    kind: str
+    label: str
+    message: str
+    pane_id: str
+    phase: NotRequired[str]
+    priority: int
+    review_state: str
+    role: str
+    source: str
+    task: str
+    task_id: str
+    task_state: str
+    timestamp: str
+
+class DesktopInboxSummary(TypedDict):
+    by_kind: dict[str, int]
+    item_count: int
+
+class DesktopInboxSnapshot(TypedDict):
+    items: list[DesktopInboxItem]
+    summary: DesktopInboxSummary
+
+class DesktopRunProjection(TypedDict):
+    activity: NotRequired[str]
+    branch: str
+    changed_files: list[str]
+    confidence: NotRequired[float | None]
+    consultation_ref: str
+    detail: NotRequired[str]
+    head_sha: str
+    head_short: str
+    hypothesis: str
+    label: str
+    next_action: str
+    observation_pack_ref: str
+    pane_id: str
+    phase: NotRequired[str]
+    provider_target: str
+    reasons: list[str]
+    review_state: str
+    run_id: str
+    security_blocked: str
+    summary: str
+    task: str
+    task_state: str
+    verification_outcome: str
+    worktree: str
+
+class DesktopSummarySnapshot(TypedDict):
+    board: DesktopBoardSnapshot
+    digest: DesktopDigestSnapshot
+    generated_at: str
+    inbox: DesktopInboxSnapshot
+    project_dir: str
+    run_projections: list[DesktopRunProjection]
+
+class DesktopVoiceCaptureStatusParams(TypedDict):
+    pass
+
+class DesktopVoiceCaptureBrowserFallbackStatus(TypedDict):
+    expected: bool
+    reason: str
+
+class DesktopVoiceCaptureNativeStatus(TypedDict):
+    available: bool
+    device: str
+    device_count: int
+    meter_level: float
+    meter_supported: bool
+    permission: str
+    reason: str
+    restart_supported: bool
+    state: str
+
+class DesktopVoiceCaptureStatus(TypedDict):
+    browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus
+    capture_mode: str
+    native: DesktopVoiceCaptureNativeStatus
+    state_contract: list[str]
+    version: int
+
+class PtyCaptureParams(TypedDict):
+    lines: NotRequired[int | None]
+    paneId: str
+
+class PtyCloseParams(TypedDict):
+    paneId: str
+
+class PtyPaneResult(TypedDict):
+    paneId: str
+
+class PtyResizeParams(TypedDict):
+    cols: int
+    paneId: str
+    rows: int
+
+class PtyRespawnParams(TypedDict):
+    paneId: str
+
+class PtySpawnParams(TypedDict):
+    cols: int
+    cwd: NotRequired[str | None]
+    paneId: str
+    rows: int
+    startupInput: NotRequired[str | None]
+
+class PtyWriteParams(TypedDict):
+    data: str
+    paneId: str

@@ -137,6 +137,17 @@ jobs:
         working-directory: winsmux-app
         run: npm run test:control-plane-bindings
 
+      - name: Smoke control plane binding syntax
+        working-directory: winsmux-app
+        run: |
+          set -euo pipefail
+          ts_path="../sdk/typescript/control-plane-contract.ts"
+          py_path="../sdk/python/control_plane_contract.py"
+          if [ ! -f "$ts_path" ]; then echo "missing $ts_path" >&2; exit 1; fi
+          if [ ! -f "$py_path" ]; then echo "missing $py_path" >&2; exit 1; fi
+          node --experimental-strip-types --input-type=module -e "await import('../sdk/typescript/control-plane-contract.ts')"
+          python3 -c "import importlib.util, pathlib, sys; p=pathlib.Path(r'$py_path'); spec=importlib.util.spec_from_file_location('control_plane_contract', p); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)"
+
   pester:
     name: Pester Tests (${{ matrix.name }})
     runs-on: windows-latest

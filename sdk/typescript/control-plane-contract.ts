@@ -60,3 +60,642 @@ export const INTERNAL_DESKTOP_METHODS_EXCLUDED = [
   "desktop.explorer.list",
   "desktop.editor.read",
 ] as const;
+
+// Types mirror the v2 contract schemas; the desktop applies additional handler validation and accepts snake_case aliases not shown here. No runtime validation is performed.
+
+export interface OperatorSnapshotParams {
+  lines?: number | null;
+}
+
+export interface PtyCaptureResult {
+  output: string;
+  paneId: string;
+}
+
+export interface OperatorSubmitParams {
+  text: string;
+}
+
+export interface OperatorSubmitResult {
+  paneId: string;
+  submitted: boolean;
+}
+
+export interface PairingConfirmParams {
+}
+
+export interface PairingConfirmResult {
+  paired: boolean;
+  scope: string;
+  version: number;
+}
+
+export interface DesktopRunCompareParams {
+  leftRunId: string;
+  rightRunId: string;
+}
+
+export interface DesktopCompareDifference {
+  field: string;
+  left: unknown;
+  right: unknown;
+}
+
+export interface DesktopCompareRecommendation {
+  next_action: string;
+  reconcile_consult: boolean;
+  winning_run_id: string;
+}
+
+export interface DesktopCompareRunSide {
+  branch: string;
+  changed_files?: string[];
+  confidence?: number | null;
+  consultation_ref: string;
+  label: string;
+  next_action: string;
+  observation_pack_ref: string;
+  recommendable: boolean;
+  review_state: string;
+  run_id: string;
+  state: string;
+  task_state: string;
+}
+
+export interface DesktopCompareRunsResult {
+  confidence_delta?: number | null;
+  differences?: DesktopCompareDifference[];
+  generated_at: string;
+  left: DesktopCompareRunSide;
+  left_only_changed_files: string[];
+  recommend: DesktopCompareRecommendation;
+  right: DesktopCompareRunSide;
+  right_only_changed_files: string[];
+  shared_changed_files: string[];
+}
+
+export interface DesktopRunExplainParams {
+  runId: string;
+}
+
+export interface DesktopDraftPrGate {
+  auto_merge_allowed?: boolean;
+  draft_pr_url?: string;
+  kind?: string;
+  merge_requires_human?: boolean;
+  state?: string;
+  target?: string;
+  trigger?: string;
+}
+
+export interface DesktopExplainActionItem {
+  event: string;
+  kind: string;
+  message: string;
+  source: string;
+  timestamp: string;
+}
+
+export interface DesktopExplainConsultationPacket {
+  confidence: number;
+  generated_at: string;
+  kind: string;
+  mode: string;
+  next_test: string;
+  pane_id: string;
+  recommendation: string;
+  risks: string[];
+  run_id: string;
+  slot: string;
+  target_slot: string;
+  task_id: string;
+}
+
+export interface DesktopExplainCurrentState {
+  activity?: string;
+  detail?: string;
+  last_event: string;
+  phase?: string;
+  review_state: string;
+  state: string;
+  task_state: string;
+}
+
+export interface DesktopExplainEvidenceDigest {
+  changed_file_count: number;
+  changed_files?: string[];
+  next_action: string;
+  security_blocked: string;
+  verification_outcome: string;
+}
+
+export interface DesktopExplainExperimentPacket {
+  branch: string;
+  command_hash: string;
+  confidence: number;
+  consultation_ref: string;
+  env_fingerprint: string;
+  hypothesis: string;
+  next_action: string;
+  observation_pack_ref: string;
+  result: string;
+  run_id: string;
+  slot: string;
+  test_plan: string[];
+  worktree: string;
+}
+
+export interface DesktopExplainExplanation {
+  current_state: DesktopExplainCurrentState;
+  next_action: string;
+  reasons?: string[];
+  summary: string;
+}
+
+export interface DesktopExplainObservationPack {
+  changed_files: string[];
+  command_hash: string;
+  env_fingerprint: string;
+  failing_command: string;
+  generated_at: string;
+  hypothesis: string;
+  pane_id: string;
+  run_id: string;
+  slot: string;
+  task_id: string;
+  test_plan: string[];
+  working_tree_summary: string;
+}
+
+export interface DesktopExplainRecentEvent {
+  event: string;
+  label: string;
+  message: string;
+  timestamp: string;
+}
+
+export interface DesktopPhaseGateStage {
+  event?: string;
+  reason?: string;
+  stage?: string;
+  status?: string;
+}
+
+export interface DesktopPhaseGate {
+  current_stage?: string;
+  order?: string[];
+  stage?: string;
+  stages?: DesktopPhaseGateStage[];
+  status?: string;
+  stop_reason?: string;
+  stop_required?: boolean;
+}
+
+export interface DesktopExplainRun {
+  action_items?: DesktopExplainActionItem[];
+  activity?: string;
+  agent_role: string;
+  audit_chain?: unknown;
+  blocking: boolean;
+  branch: string;
+  changed_file_count: number;
+  changed_files?: string[];
+  constraints: string[];
+  detail?: string;
+  draft_pr_gate?: DesktopDraftPrGate | null;
+  expected_output: string;
+  experiment_packet: DesktopExplainExperimentPacket;
+  goal: string;
+  handoff_refs: string[];
+  head_sha: string;
+  labels: string[];
+  last_event: string;
+  last_event_at: string;
+  pane_count: number;
+  pane_ids: string[];
+  parent_run_id: string;
+  phase?: string;
+  phase_gate?: DesktopPhaseGate | null;
+  primary_label: string;
+  primary_pane_id: string;
+  primary_role: string;
+  priority: string;
+  provider_target: string;
+  read_scope: string[];
+  review_required: boolean;
+  review_state: string;
+  roles: string[];
+  run_id: string;
+  safe_trace_refs?: string[];
+  security_policy: unknown;
+  security_verdict: unknown;
+  state: string;
+  task: string;
+  task_id: string;
+  task_state: string;
+  task_type: string;
+  timeout_policy: string;
+  tokens_remaining: string;
+  verification_contract: unknown;
+  verification_envelope?: unknown;
+  verification_plan: string[];
+  verification_result: unknown;
+  worktree: string;
+  write_scope: string[];
+}
+
+export interface DesktopReviewPathspecPolicy {
+  include_definition_hosts: boolean;
+  incomplete_scope_is_review_gap: boolean;
+  issue_ref: string;
+  source_task: string;
+}
+
+export interface DesktopReviewContract {
+  checklist_labels: string[];
+  issue_ref: string;
+  pathspec_policy?: DesktopReviewPathspecPolicy | null;
+  rationale: string;
+  required_scope: string[];
+  source_task: string;
+  style: string;
+  version: number;
+}
+
+export interface DesktopReviewStateEvidence {
+  approved_at?: string | null;
+  approved_via?: string | null;
+  failed_at?: string | null;
+  failed_via?: string | null;
+  review_contract_snapshot: DesktopReviewContract;
+}
+
+export interface DesktopReviewStateRequest {
+  branch: string;
+  dispatched_at?: string | null;
+  head_sha: string;
+  id?: string | null;
+  review_contract: DesktopReviewContract;
+  target_review_label?: string | null;
+  target_review_pane_id?: string | null;
+  target_review_role?: string | null;
+  target_reviewer_label?: string | null;
+  target_reviewer_pane_id?: string | null;
+  target_reviewer_role?: string | null;
+}
+
+export interface DesktopReviewStateReviewer {
+  agent_name?: string | null;
+  label: string;
+  pane_id: string;
+  role: string;
+}
+
+export interface DesktopReviewStateRecord {
+  branch: string;
+  evidence?: DesktopReviewStateEvidence | null;
+  head_sha: string;
+  request: DesktopReviewStateRequest;
+  reviewer: DesktopReviewStateReviewer;
+  status: string;
+  updatedAt: string;
+}
+
+export interface DesktopExplainPayload {
+  consultation_packet: DesktopExplainConsultationPacket;
+  evidence_digest: DesktopExplainEvidenceDigest;
+  explanation: DesktopExplainExplanation;
+  generated_at: string;
+  observation_pack: DesktopExplainObservationPack;
+  project_dir: string;
+  recent_events?: DesktopExplainRecentEvent[];
+  review_state?: DesktopReviewStateRecord | null;
+  run: DesktopExplainRun;
+}
+
+export interface DesktopRunPickWinnerParams {
+  confidence?: number | null;
+  nextTest: string;
+  peerSlot: string;
+  recommendation: string;
+  runId: string;
+}
+
+export interface DesktopPickWinnerResult {
+  confidence?: number | null;
+  consultation_ref: string;
+  generated_at: string;
+  kind: string;
+  mode: string;
+  next_test: string;
+  pane_id: string;
+  recommendation: string;
+  risks?: string[];
+  run_id: string;
+  slot: string;
+  target_slot: string;
+  task_id: string;
+}
+
+export interface DesktopRunPromoteParams {
+  runId: string;
+}
+
+export interface DesktopPromoteTacticCandidate {
+  changed_files?: string[];
+  confidence?: number | null;
+  consultation_ref: string;
+  hypothesis: string;
+  kind: string;
+  next_action: string;
+  observation_pack_ref: string;
+  packet_type: string;
+  summary: string;
+  title: string;
+}
+
+export interface DesktopPromoteTacticResult {
+  candidate: DesktopPromoteTacticCandidate;
+  candidate_path: string;
+  candidate_ref: string;
+  generated_at: string;
+  run_id: string;
+}
+
+export interface DesktopSummarySnapshotParams {
+}
+
+export interface DesktopBoardPane {
+  activity?: string;
+  branch: string;
+  changed_file_count: number;
+  detail?: string;
+  head_sha: string;
+  label: string;
+  last_event_at: string;
+  pane_id: string;
+  phase?: string;
+  review_state: string;
+  role: string;
+  state: string;
+  task: string;
+  task_state: string;
+  worktree: string;
+}
+
+export interface DesktopBoardSummary {
+  by_review: Record<string, number>;
+  by_state: Record<string, number>;
+  by_task_state: Record<string, number>;
+  dirty_panes: number;
+  pane_count: number;
+  review_failed: number;
+  review_passed: number;
+  review_pending: number;
+  tasks_blocked: number;
+  tasks_in_progress: number;
+}
+
+export interface DesktopBoardSnapshot {
+  panes: DesktopBoardPane[];
+  summary: DesktopBoardSummary;
+}
+
+export interface DesktopDigestItem {
+  action_item_count: number;
+  activity?: string;
+  branch: string;
+  changed_file_count: number;
+  changed_files: string[];
+  confidence?: number | null;
+  consultation_ref: string;
+  detail?: string;
+  head_sha: string;
+  head_short: string;
+  hypothesis: string;
+  label: string;
+  last_event: string;
+  last_event_at: string;
+  next_action: string;
+  observation_pack_ref: string;
+  pane_id: string;
+  phase?: string;
+  provider_target: string;
+  review_state: string;
+  role: string;
+  run_id: string;
+  security_blocked: string;
+  task: string;
+  task_id: string;
+  task_state: string;
+  verification_outcome: string;
+  worktree: string;
+}
+
+export interface DesktopDigestSummary {
+  actionable_items: number;
+  dirty_items: number;
+  item_count: number;
+  review_failed: number;
+  review_pending: number;
+}
+
+export interface DesktopDigestSnapshot {
+  items: DesktopDigestItem[];
+  summary: DesktopDigestSummary;
+}
+
+export interface DesktopInboxItem {
+  activity?: string;
+  branch: string;
+  changed_file_count: number;
+  detail?: string;
+  event: string;
+  head_sha: string;
+  kind: string;
+  label: string;
+  message: string;
+  pane_id: string;
+  phase?: string;
+  priority: number;
+  review_state: string;
+  role: string;
+  source: string;
+  task: string;
+  task_id: string;
+  task_state: string;
+  timestamp: string;
+}
+
+export interface DesktopInboxSummary {
+  by_kind: Record<string, number>;
+  item_count: number;
+}
+
+export interface DesktopInboxSnapshot {
+  items: DesktopInboxItem[];
+  summary: DesktopInboxSummary;
+}
+
+export interface DesktopRunProjection {
+  activity?: string;
+  branch: string;
+  changed_files: string[];
+  confidence?: number | null;
+  consultation_ref: string;
+  detail?: string;
+  head_sha: string;
+  head_short: string;
+  hypothesis: string;
+  label: string;
+  next_action: string;
+  observation_pack_ref: string;
+  pane_id: string;
+  phase?: string;
+  provider_target: string;
+  reasons: string[];
+  review_state: string;
+  run_id: string;
+  security_blocked: string;
+  summary: string;
+  task: string;
+  task_state: string;
+  verification_outcome: string;
+  worktree: string;
+}
+
+export interface DesktopSummarySnapshot {
+  board: DesktopBoardSnapshot;
+  digest: DesktopDigestSnapshot;
+  generated_at: string;
+  inbox: DesktopInboxSnapshot;
+  project_dir: string;
+  run_projections: DesktopRunProjection[];
+}
+
+export interface DesktopVoiceCaptureStatusParams {
+}
+
+export interface DesktopVoiceCaptureBrowserFallbackStatus {
+  expected: boolean;
+  reason: string;
+}
+
+export interface DesktopVoiceCaptureNativeStatus {
+  available: boolean;
+  device: string;
+  device_count: number;
+  meter_level: number;
+  meter_supported: boolean;
+  permission: string;
+  reason: string;
+  restart_supported: boolean;
+  state: string;
+}
+
+export interface DesktopVoiceCaptureStatus {
+  browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus;
+  capture_mode: string;
+  native: DesktopVoiceCaptureNativeStatus;
+  state_contract: string[];
+  version: number;
+}
+
+export interface PtyCaptureParams {
+  lines?: number | null;
+  paneId: string;
+}
+
+export interface PtyCloseParams {
+  paneId: string;
+}
+
+export interface PtyPaneResult {
+  paneId: string;
+}
+
+export interface PtyResizeParams {
+  cols: number;
+  paneId: string;
+  rows: number;
+}
+
+export interface PtyRespawnParams {
+  paneId: string;
+}
+
+export interface PtySpawnParams {
+  cols: number;
+  cwd?: string | null;
+  paneId: string;
+  rows: number;
+  startupInput?: string | null;
+}
+
+export interface PtyWriteParams {
+  data: string;
+  paneId: string;
+}
+
+export interface ControlPlaneSchemas {
+  "desktop.operator.snapshot": {
+    params: OperatorSnapshotParams;
+    result: PtyCaptureResult;
+  };
+  "desktop.operator.submit": {
+    params: OperatorSubmitParams;
+    result: OperatorSubmitResult;
+  };
+  "desktop.pairing.confirm": {
+    params: PairingConfirmParams;
+    result: PairingConfirmResult;
+  };
+  "desktop.run.compare": {
+    params: DesktopRunCompareParams;
+    result: DesktopCompareRunsResult;
+  };
+  "desktop.run.explain": {
+    params: DesktopRunExplainParams;
+    result: DesktopExplainPayload;
+  };
+  "desktop.run.pick_winner": {
+    params: DesktopRunPickWinnerParams;
+    result: DesktopPickWinnerResult;
+  };
+  "desktop.run.promote": {
+    params: DesktopRunPromoteParams;
+    result: DesktopPromoteTacticResult;
+  };
+  "desktop.summary.snapshot": {
+    params: DesktopSummarySnapshotParams;
+    result: DesktopSummarySnapshot;
+  };
+  "desktop.voice.capture_status": {
+    params: DesktopVoiceCaptureStatusParams;
+    result: DesktopVoiceCaptureStatus;
+  };
+  "pty.capture": {
+    params: PtyCaptureParams;
+    result: PtyCaptureResult;
+  };
+  "pty.close": {
+    params: PtyCloseParams;
+    result: PtyPaneResult;
+  };
+  "pty.resize": {
+    params: PtyResizeParams;
+    result: PtyPaneResult;
+  };
+  "pty.respawn": {
+    params: PtyRespawnParams;
+    result: PtyPaneResult;
+  };
+  "pty.spawn": {
+    params: PtySpawnParams;
+    result: PtyPaneResult;
+  };
+  "pty.write": {
+    params: PtyWriteParams;
+    result: PtyPaneResult;
+  };
+}

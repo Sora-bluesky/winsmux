@@ -17,7 +17,15 @@ No external dependencies required -- TypeScript uses Node.js built-ins, Python u
 
 ## Control-plane method names
 
-`python/control_plane_contract.py` and `typescript/control-plane-contract.ts` are generated from `docs/control-plane-contract.v2.json`. They bind named-pipe method names (and the contract version), not MCP tools. v2 adds per-method parameter/result schemas in the artifact; the generated files stay names + version. Regenerate with `npm run generate:control-plane-bindings` from `winsmux-app`. CI fails if they drift from the artifact.
+`python/control_plane_contract.py` and `typescript/control-plane-contract.ts` are generated from `docs/control-plane-contract.v2.json`. They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools. v2 adds per-method parameter/result schemas in the artifact. Regenerate with `npm run generate:control-plane-bindings` from `winsmux-app`. CI fails if they drift from the artifact.
+
+```typescript
+import { CONTROL_PIPE_METHODS, type ControlPlaneSchemas } from "./typescript/control-plane-contract";
+```
+
+```python
+from python.control_plane_contract import CONTROL_PIPE_METHODS
+```
 
 ## TypeScript
 
