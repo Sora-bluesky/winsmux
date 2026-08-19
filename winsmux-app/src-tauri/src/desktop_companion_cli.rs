@@ -98,7 +98,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-static LAST_SPAWNED: Mutex<Option<SpawnedCompanion>> = Mutex::new(None);
+static LAST_SPAWNED: Mutex<Vec<SpawnedCompanion>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(crate) fn companion_cli_override() -> Option<Option<PathBuf>> {
@@ -108,7 +108,6 @@ pub(crate) fn companion_cli_override() -> Option<Option<PathBuf>> {
 #[cfg(test)]
 pub(crate) fn set_companion_cli_override(path: Option<PathBuf>) {
     COMPANION_CLI_OVERRIDE.with(|cell| *cell.borrow_mut() = Some(path));
-    *LAST_SPAWNED.lock().expect("spawn probe") = None;
 }
 
 #[cfg(test)]
@@ -117,14 +116,20 @@ pub(crate) fn clear_companion_cli_override() {
 }
 
 #[cfg(test)]
-pub(crate) fn last_spawned_companion() -> Option<SpawnedCompanion> {
-    LAST_SPAWNED.lock().ok().and_then(|guard| guard.clone())
+pub(crate) fn last_spawned_companion_matching(program: &Path) -> Option<SpawnedCompanion> {
+    LAST_SPAWNED
+        .lock()
+        .ok()?
+        .iter()
+        .rev()
+        .find(|spawned| spawned.program == program)
+        .cloned()
 }
 
 #[cfg(test)]
 fn record_spawned_companion(program: PathBuf, pid: u32) {
     if let Ok(mut guard) = LAST_SPAWNED.lock() {
-        *guard = Some(SpawnedCompanion { program, pid });
+        guard.push(SpawnedCompanion { program, pid });
     }
 }
 
@@ -349,6 +354,26 @@ panes:
     }
 
     #[test]
+    fn tauri_conf_bundles_companion_winsmux_sidecar() {
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json should parse");
+        let external_bin = conf["bundle"]["externalBin"]
+            .as_array()
+            .expect("bundle.externalBin must exist so packaged desktop has companion winsmux.exe");
+        assert!(
+            external_bin.iter().any(|value| value.as_str() == Some("binaries/winsmux")),
+            "bundle.externalBin must include binaries/winsmux, got {external_bin:?}"
+        );
+        let before_build = conf["build"]["beforeBuildCommand"]
+            .as_str()
+            .expect("beforeBuildCommand");
+        assert!(
+            before_build.contains("prepare:companion-cli:release"),
+            "beforeBuildCommand must stage the companion sidecar, got {before_build}"
+        );
+    }
+
+    #[test]
     fn summary_transport_spawns_companion_winsmux_not_pwsh() {
         let companion = PathBuf::from(r"C:\winsmux-task801\winsmux.exe");
         let project_dir = PathBuf::from(r"C:\winsmux-task801\project");
@@ -464,9 +489,9 @@ panes:
         .expect("companion stream should start");
 
         let spawned = (0..200)
-            .find_map(|_| match last_spawned_companion() {
-                Some(spawned) if spawned.program == mock_bin => Some(spawned),
-                _ => {
+            .find_map(|_| match last_spawned_companion_matching(&mock_bin) {
+                Some(spawned) => Some(spawned),
+                None => {
                     thread::sleep(Duration::from_millis(50));
                     None
                 }

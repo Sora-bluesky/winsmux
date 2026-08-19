@@ -216,6 +216,7 @@ __pycache__/
 # =========================
 # Build output
 # =========================
+winsmux-app/src-tauri/binaries/*.exe
 dist/
 build/
 out/

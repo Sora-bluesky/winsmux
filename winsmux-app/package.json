@@ -48,6 +48,8 @@
     "test:windows-context-menu": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-context-menu-e2e.ps1",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
     "preview": "vite preview",
+    "prepare:companion-cli": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/prepare-companion-cli.ps1",
+    "prepare:companion-cli:release": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/prepare-companion-cli.ps1 -Release",
     "tauri": "tauri"
   },
   "dependencies": {
