@@ -1,7 +1,9 @@
 use std::io;
+use std::path::PathBuf;
 
 pub const AUTOMATION_CONTRACT_COMMAND: &str = "automation-contract";
 pub const AUTOMATION_DISCOVER_COMMAND: &str = "automation-discover";
+pub const AUTOMATION_PAIR_COMMAND: &str = "automation-pair";
 pub const DESKTOP_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
 const AUTOMATION_CONTRACT_REQUEST: &[u8] =
     br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#;
@@ -74,28 +76,160 @@ pub fn run_automation_discover_command() -> io::Result<()> {
     }
 }
 
-fn discover_auth_source() -> &'static str {
-    match std::env::var(CONTROL_PIPE_TOKEN_ENV) {
-        Ok(value) if !value.trim().is_empty() => "env",
-        _ if control_pipe_token_file_is_nonempty() => "file",
-        _ => "none",
+pub fn run_automation_pair_command() -> io::Result<()> {
+    let (auth_source, token) = match resolve_control_pipe_token() {
+        Some(resolved) => resolved,
+        None => {
+            print_pair_document(false, "none", Some("no_token"))?;
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{CONTROL_PIPE_TOKEN_ENV} or a non-empty token file is required"),
+            ));
+        }
+    };
+
+    let request = pairing_confirm_request(&token)?;
+    drop(token);
+
+    match send_control_pipe_request(&request) {
+        Ok(response) => match classify_pairing_response(&response) {
+            PairClassify::Paired => {
+                print_pair_document(true, auth_source, None)?;
+                Ok(())
+            }
+            PairClassify::AuthRejected => {
+                print_pair_document(false, auth_source, Some("auth_rejected"))?;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Control pipe method requires a valid {CONTROL_PIPE_TOKEN_ENV} value in auth.token"
+                    ),
+                ))
+            }
+            PairClassify::Invalid => {
+                print_pair_document(false, auth_source, Some("invalid_response"))?;
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "desktop control pipe returned an invalid pairing response",
+                ))
+            }
+        },
+        Err(_) => {
+            print_pair_document(false, auth_source, Some("pipe_unavailable"))?;
+            Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE))
+        }
     }
 }
 
-fn control_pipe_token_file_is_nonempty() -> bool {
-    let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") else {
-        return false;
+fn print_pair_document(
+    paired: bool,
+    auth_source: &str,
+    reason: Option<&str>,
+) -> io::Result<()> {
+    let document = serde_json::json!({
+        "paired": paired,
+        "pipe": DESKTOP_CONTROL_PIPE_NAME,
+        "auth_source": auth_source,
+        "reason": reason,
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&document).map_err(|err| io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("automation pair result could not be serialized: {err}"),
+        ))?
+    );
+    Ok(())
+}
+
+fn pairing_confirm_request(token: &str) -> io::Result<Vec<u8>> {
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "desktop.pairing.confirm",
+        "auth": { "token": token },
+    }))
+    .map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pairing request could not be serialized: {err}"),
+        )
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PairClassify {
+    Paired,
+    AuthRejected,
+    Invalid,
+}
+
+fn classify_pairing_response(response: &[u8]) -> PairClassify {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(response) else {
+        return PairClassify::Invalid;
     };
-    if local_app_data.is_empty() {
-        return false;
+    if value.get("jsonrpc").and_then(|item| item.as_str()) != Some("2.0") {
+        return PairClassify::Invalid;
     }
-    let path = std::path::PathBuf::from(local_app_data)
+    if value.get("id") != Some(&serde_json::json!(1)) {
+        return PairClassify::Invalid;
+    }
+    if let Some(error) = value.get("error") {
+        let code = error.get("code").and_then(|item| item.as_i64());
+        let message = error
+            .get("message")
+            .and_then(|item| item.as_str())
+            .unwrap_or("");
+        if code == Some(-32600) && message.contains(CONTROL_PIPE_TOKEN_ENV) {
+            return PairClassify::AuthRejected;
+        }
+        return PairClassify::Invalid;
+    }
+    let Some(result) = value.get("result") else {
+        return PairClassify::Invalid;
+    };
+    if result.get("paired") != Some(&serde_json::json!(true)) {
+        return PairClassify::Invalid;
+    }
+    if result.get("scope").and_then(|item| item.as_str()) != Some("external_control_pipe") {
+        return PairClassify::Invalid;
+    }
+    if !result.get("version").is_some_and(|item| item.is_number()) {
+        return PairClassify::Invalid;
+    }
+    PairClassify::Paired
+}
+
+fn discover_auth_source() -> &'static str {
+    match resolve_control_pipe_token() {
+        Some((source, _)) => source,
+        None => "none",
+    }
+}
+
+fn resolve_control_pipe_token() -> Option<(&'static str, String)> {
+    match std::env::var(CONTROL_PIPE_TOKEN_ENV) {
+        Ok(value) if !value.trim().is_empty() => Some(("env", value.trim().to_string())),
+        _ => control_pipe_token_file_contents().map(|token| ("file", token)),
+    }
+}
+
+fn control_pipe_token_file_contents() -> Option<String> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA")?;
+    if local_app_data.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(local_app_data)
         .join("winsmux")
         .join("control-pipe")
         .join("token");
-    std::fs::read_to_string(path)
-        .ok()
-        .is_some_and(|contents| !contents.trim().is_empty())
+    let contents = std::fs::read_to_string(path).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn contract_version_from_pipe_response(response: &[u8]) -> Option<serde_json::Value> {
@@ -228,7 +362,7 @@ fn send_control_pipe_request_windows(payload: &[u8]) -> io::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::contract_version_from_pipe_response;
+    use super::{classify_pairing_response, contract_version_from_pipe_response, PairClassify};
 
     #[test]
     fn contract_liveness_rejects_invalid_json() {
@@ -265,6 +399,42 @@ mod tests {
         assert_eq!(
             contract_version_from_pipe_response(body),
             Some(serde_json::json!(1))
+        );
+    }
+
+    #[test]
+    fn pairing_classifier_accepts_static_confirm() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"result":{"paired":true,"scope":"external_control_pipe","version":1}}"#;
+        assert_eq!(
+            classify_pairing_response(body),
+            PairClassify::Paired
+        );
+    }
+
+    #[test]
+    fn pairing_classifier_rejects_auth_error_naming_token_env() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Control pipe method requires a valid WINSMUX_CONTROL_PIPE_TOKEN value in auth.token"}}"#;
+        assert_eq!(
+            classify_pairing_response(body),
+            PairClassify::AuthRejected
+        );
+    }
+
+    #[test]
+    fn pairing_classifier_rejects_error_without_token_env() {
+        let body = br#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"nope"}}"#;
+        assert_eq!(
+            classify_pairing_response(body),
+            PairClassify::Invalid
+        );
+    }
+
+    #[test]
+    fn pairing_classifier_rejects_mismatched_id() {
+        let body = br#"{"jsonrpc":"2.0","id":99,"result":{"paired":true,"scope":"external_control_pipe","version":1}}"#;
+        assert_eq!(
+            classify_pairing_response(body),
+            PairClassify::Invalid
         );
     }
 }

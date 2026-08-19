@@ -83,7 +83,9 @@ Do not write the token directly in shell history.
 
 If a desktop may already be running, start with `winsmux automation-discover`.
 `desktop_running` is true only while the named pipe answers; a leftover token
-file is not liveness.
+file is not liveness. Pair once with `winsmux automation-pair` before calling
+authenticated methods. That proves the current control-pipe token against the
+live desktop. Do not print the token.
 
 1. Start the desktop app normally, or use a launcher that may still set
    `WINSMUX_CONTROL_PIPE_TOKEN`.
@@ -93,7 +95,13 @@ file is not liveness.
 winsmux control-rpc '{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}'
 ```
 
-3. Capture operator output. The CLI reads the env override if set, otherwise
+3. Pair once:
+
+```powershell
+winsmux automation-pair
+```
+
+4. Capture operator output. The CLI reads the env override if set, otherwise
    the exact token file:
 
 ```powershell
@@ -121,6 +129,7 @@ This page does not introduce a new public error code.
 The named pipe currently exposes these desktop methods:
 
 - `desktop.control_plane.contract`
+- `desktop.pairing.confirm`
 - `desktop.summary.snapshot`
 - `desktop.run.explain`
 - `desktop.run.compare`
