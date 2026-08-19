@@ -260,6 +260,12 @@ fn winsmux_core_script_candidates(
             }
             candidates.push(exe_dir.join("winsmux-core.ps1"));
             candidates.push(exe_dir.join("resources").join("winsmux-core.ps1"));
+            candidates.push(
+                exe_dir
+                    .join("resources")
+                    .join("binaries")
+                    .join("winsmux-core.ps1"),
+            );
         }
     }
 
@@ -580,6 +586,27 @@ mod tests {
         );
         assert_eq!(candidates.first(), Some(&sibling));
         assert!(candidates.contains(&home_bridge));
+        assert!(candidates.contains(&pack.join("resources").join("binaries").join("winsmux-core.ps1")));
+    }
+
+    #[test]
+    fn packaged_sidecar_finds_tauri_array_resource_layout() {
+        let temp = tempfile::tempdir().expect("create tauri array-layout fixture");
+        let root = temp.path();
+        let pack = root.join("pack");
+        let executable = pack.join("winsmux.exe");
+        let nested = pack
+            .join("resources")
+            .join("binaries")
+            .join("winsmux-core.ps1");
+        std::fs::create_dir_all(nested.parent().unwrap()).expect("create tauri array resource dir");
+        std::fs::write(&nested, "").expect("write nested bridge");
+
+        let candidates = winsmux_core_script_candidates(None, Some(executable.as_path()), None);
+        assert!(
+            candidates.contains(&nested),
+            "array-form bundle.resources keeps binaries/ under $RESOURCE"
+        );
     }
 
     #[test]

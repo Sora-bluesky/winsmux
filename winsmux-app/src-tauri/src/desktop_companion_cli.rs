@@ -7,12 +7,15 @@ const WINSMUX_CORE_SCRIPT_ENV: &str = "WINSMUX_CORE_SCRIPT";
 
 pub(crate) fn companion_bridge_script_path(companion: &Path) -> Option<PathBuf> {
     let dir = companion.parent()?;
-    let sibling = dir.join("winsmux-core.ps1");
-    if sibling.is_file() {
-        return Some(sibling);
-    }
-    let bundled = dir.join("resources").join("winsmux-core.ps1");
-    bundled.is_file().then_some(bundled)
+    [
+        dir.join("winsmux-core.ps1"),
+        dir.join("resources").join("winsmux-core.ps1"),
+        dir.join("resources")
+            .join("binaries")
+            .join("winsmux-core.ps1"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
 }
 
 pub(crate) fn build_companion_ledger_command(
@@ -386,14 +389,13 @@ panes:
             before_build.contains("prepare:companion-cli:release"),
             "beforeBuildCommand must stage the companion sidecar, got {before_build}"
         );
-        let resources = conf["bundle"]["resources"]
-            .as_array()
-            .expect("bundle.resources must ship the companion bridge script");
-        assert!(
+        let resources = &conf["bundle"]["resources"];
+        assert_eq!(
             resources
-                .iter()
-                .any(|value| value.as_str() == Some("binaries/winsmux-core.ps1")),
-            "bundle.resources must include binaries/winsmux-core.ps1, got {resources:?}"
+                .get("binaries/winsmux-core.ps1")
+                .and_then(|value| value.as_str()),
+            Some("winsmux-core.ps1"),
+            "map-form resources must land at $RESOURCE/winsmux-core.ps1, not preserve binaries/; got {resources}"
         );
     }
 
@@ -574,6 +576,37 @@ panes:
             .and_then(|(_, value)| value.map(PathBuf::from));
         assert_eq!(pinned.as_deref(), Some(script.as_path()));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn companion_bridge_script_path_finds_tauri_resource_layouts() {
+        let map_dir = make_temp_project_dir("tauri-map-resource");
+        let map_companion = map_dir.join("winsmux.exe");
+        let map_script = map_dir.join("resources").join("winsmux-core.ps1");
+        fs::create_dir_all(map_script.parent().unwrap()).expect("create map resource dir");
+        fs::write(&map_companion, []).expect("write map companion stub");
+        fs::write(&map_script, []).expect("write map resource bridge");
+        assert_eq!(
+            companion_bridge_script_path(&map_companion).as_deref(),
+            Some(map_script.as_path())
+        );
+
+        let array_dir = make_temp_project_dir("tauri-array-resource");
+        let array_companion = array_dir.join("winsmux.exe");
+        let array_script = array_dir
+            .join("resources")
+            .join("binaries")
+            .join("winsmux-core.ps1");
+        fs::create_dir_all(array_script.parent().unwrap()).expect("create array resource dir");
+        fs::write(&array_companion, []).expect("write array companion stub");
+        fs::write(&array_script, []).expect("write array resource bridge");
+        assert_eq!(
+            companion_bridge_script_path(&array_companion).as_deref(),
+            Some(array_script.as_path())
+        );
+
+        let _ = fs::remove_dir_all(&map_dir);
+        let _ = fs::remove_dir_all(&array_dir);
     }
 
     fn expected_desktop_command_argv_head(command: &DesktopCommand) -> &'static str {

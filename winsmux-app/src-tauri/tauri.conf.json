@@ -31,9 +31,9 @@
     "externalBin": [
       "binaries/winsmux"
     ],
-    "resources": [
-      "binaries/winsmux-core.ps1"
-    ],
+    "resources": {
+      "binaries/winsmux-core.ps1": "winsmux-core.ps1"
+    },
     "targets": "all",
     "icon": [
       "icons/32x32.png",
