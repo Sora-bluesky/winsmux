@@ -142,7 +142,8 @@ This page does not introduce a new public error code.
 ## Exposed Methods
 
 The named pipe currently exposes these desktop methods:
-These method lists are CI-gated against `docs/control-plane-contract.v1.json`.
+These method lists are CI-gated against `docs/control-plane-contract.v2.json`.
+v2 adds per-method parameter and result schemas derived from the same serde types the handlers consume.
 
 - `desktop.control_plane.contract`
 - `desktop.pairing.confirm`
@@ -254,7 +255,7 @@ Local automation clients can connect if they run on the same Windows host and
 implement JSON-RPC over the named pipe. They should call
 `desktop.control_plane.contract` first and generate client capabilities from
 the returned `methods` list. A checked-in, CI-gated copy of that same
-document is `docs/control-plane-contract.v1.json`; it is the pretty-printed
+document is `docs/control-plane-contract.v2.json`; it is the pretty-printed
 output of `control_pipe_contract()` and must stay equal to the live pipe
 response.
 

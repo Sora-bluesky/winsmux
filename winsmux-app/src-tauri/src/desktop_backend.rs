@@ -1,5 +1,7 @@
 use crate::desktop_session_restore::json_rpc as session_restore_rpc;
 use crate::desktop_team_profile;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -91,7 +93,7 @@ pub(crate) fn apply_desktop_winsmux_child_env(
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopBoardSummary {
     pub pane_count: usize,
     pub dirty_panes: usize,
@@ -105,19 +107,19 @@ pub struct DesktopBoardSummary {
     pub by_task_state: HashMap<String, usize>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopBoardSnapshot {
     pub summary: DesktopBoardSummary,
     pub panes: Vec<DesktopBoardPane>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopInboxSummary {
     pub item_count: usize,
     pub by_kind: HashMap<String, usize>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopInboxItem {
     pub kind: String,
     pub priority: usize,
@@ -143,13 +145,13 @@ pub struct DesktopInboxItem {
     pub source: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopInboxSnapshot {
     pub summary: DesktopInboxSummary,
     pub items: Vec<DesktopInboxItem>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopDigestSummary {
     pub item_count: usize,
     pub dirty_items: usize,
@@ -158,7 +160,7 @@ pub struct DesktopDigestSummary {
     pub review_failed: usize,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopBoardPane {
     pub label: String,
     pub pane_id: String,
@@ -180,7 +182,7 @@ pub struct DesktopBoardPane {
     pub last_event_at: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopDigestItem {
     pub run_id: String,
     pub task_id: String,
@@ -215,13 +217,13 @@ pub struct DesktopDigestItem {
     pub last_event_at: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopDigestSnapshot {
     pub summary: DesktopDigestSummary,
     pub items: Vec<DesktopDigestItem>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopSummarySnapshot {
     pub generated_at: String,
     pub project_dir: String,
@@ -241,7 +243,7 @@ pub struct DesktopSummaryRefreshSignal {
     pub run_id: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopRunProjection {
     pub run_id: String,
     pub pane_id: String,
@@ -303,7 +305,7 @@ pub struct DesktopExplorerListPayload {
     pub entries: Vec<DesktopExplorerEntry>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopPromoteTacticResult {
     pub generated_at: String,
     pub run_id: String,
@@ -312,7 +314,7 @@ pub struct DesktopPromoteTacticResult {
     pub candidate: DesktopPromoteTacticCandidate,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopPromoteTacticCandidate {
     pub packet_type: String,
     pub kind: String,
@@ -328,7 +330,7 @@ pub struct DesktopPromoteTacticCandidate {
     pub consultation_ref: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopCompareRunsResult {
     pub generated_at: String,
     pub left: DesktopCompareRunSide,
@@ -343,7 +345,7 @@ pub struct DesktopCompareRunsResult {
     pub recommend: DesktopCompareRecommendation,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopCompareRunSide {
     pub run_id: String,
     pub label: String,
@@ -361,21 +363,21 @@ pub struct DesktopCompareRunSide {
     pub recommendable: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopCompareDifference {
     pub field: String,
     pub left: Value,
     pub right: Value,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopCompareRecommendation {
     pub winning_run_id: String,
     pub reconcile_consult: bool,
     pub next_action: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopPickWinnerResult {
     pub run_id: String,
     pub task_id: String,
@@ -393,7 +395,7 @@ pub struct DesktopPickWinnerResult {
     pub generated_at: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainPayload {
     pub generated_at: String,
     pub project_dir: String,
@@ -408,7 +410,7 @@ pub struct DesktopExplainPayload {
     pub recent_events: Vec<DesktopExplainRecentEvent>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainRun {
     pub run_id: String,
     pub task_id: String,
@@ -472,7 +474,7 @@ pub struct DesktopExplainRun {
     pub action_items: Vec<DesktopExplainActionItem>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopDraftPrGate {
     #[serde(default)]
     pub kind: String,
@@ -490,7 +492,7 @@ pub struct DesktopDraftPrGate {
     pub merge_requires_human: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopPhaseGate {
     #[serde(default)]
     pub stage: String,
@@ -508,7 +510,7 @@ pub struct DesktopPhaseGate {
     pub stages: Vec<DesktopPhaseGateStage>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopPhaseGateStage {
     #[serde(default)]
     pub stage: String,
@@ -520,7 +522,7 @@ pub struct DesktopPhaseGateStage {
     pub event: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainExperimentPacket {
     pub hypothesis: String,
     pub test_plan: Vec<String>,
@@ -537,7 +539,7 @@ pub struct DesktopExplainExperimentPacket {
     pub command_hash: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainExplanation {
     pub summary: String,
     #[serde(default)]
@@ -546,7 +548,7 @@ pub struct DesktopExplainExplanation {
     pub current_state: DesktopExplainCurrentState,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainCurrentState {
     pub state: String,
     pub task_state: String,
@@ -560,7 +562,7 @@ pub struct DesktopExplainCurrentState {
     pub last_event: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainConsultationPacket {
     pub run_id: String,
     pub task_id: String,
@@ -576,7 +578,7 @@ pub struct DesktopExplainConsultationPacket {
     pub generated_at: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainObservationPack {
     pub run_id: String,
     pub task_id: String,
@@ -592,7 +594,7 @@ pub struct DesktopExplainObservationPack {
     pub generated_at: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainEvidenceDigest {
     pub next_action: String,
     pub changed_file_count: usize,
@@ -602,7 +604,7 @@ pub struct DesktopExplainEvidenceDigest {
     pub security_blocked: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainActionItem {
     pub kind: String,
     pub message: String,
@@ -611,7 +613,7 @@ pub struct DesktopExplainActionItem {
     pub source: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopExplainRecentEvent {
     pub timestamp: String,
     pub event: String,
@@ -619,7 +621,7 @@ pub struct DesktopExplainRecentEvent {
     pub message: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopReviewStateRecord {
     pub status: String,
     pub branch: String,
@@ -635,7 +637,7 @@ pub struct DesktopReviewStateRecord {
 #[allow(dead_code)]
 pub type DesktopReviewStateSnapshot = BTreeMap<String, DesktopReviewStateRecord>;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopReviewStateRequest {
     #[serde(default)]
     pub id: Option<String>,
@@ -658,7 +660,7 @@ pub struct DesktopReviewStateRequest {
     pub dispatched_at: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopReviewStateReviewer {
     pub pane_id: String,
     pub label: String,
@@ -667,7 +669,7 @@ pub struct DesktopReviewStateReviewer {
     pub agent_name: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopReviewStateEvidence {
     #[serde(default)]
     pub approved_at: Option<String>,
@@ -680,7 +682,7 @@ pub struct DesktopReviewStateEvidence {
     pub review_contract_snapshot: DesktopReviewContract,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopReviewContract {
     pub version: u32,
     pub source_task: String,
@@ -693,7 +695,7 @@ pub struct DesktopReviewContract {
     pub rationale: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopReviewPathspecPolicy {
     pub source_task: String,
     pub issue_ref: String,
@@ -731,7 +733,7 @@ pub enum DesktopJsonRpcResponse {
     },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopVoiceCaptureNativeStatus {
     pub available: bool,
     pub state: String,
@@ -744,19 +746,59 @@ pub struct DesktopVoiceCaptureNativeStatus {
     pub reason: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopVoiceCaptureBrowserFallbackStatus {
     pub expected: bool,
     pub reason: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, JsonSchema)]
 pub struct DesktopVoiceCaptureStatus {
     pub version: u16,
     pub capture_mode: String,
     pub native: DesktopVoiceCaptureNativeStatus,
     pub browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus,
     pub state_contract: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct DesktopSummarySnapshotParams {}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct DesktopVoiceCaptureStatusParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopRunExplainParams {
+    #[serde(rename = "runId", alias = "run_id")]
+    pub run_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopRunCompareParams {
+    #[serde(rename = "leftRunId", alias = "left_run_id")]
+    pub left_run_id: String,
+    #[serde(rename = "rightRunId", alias = "right_run_id")]
+    pub right_run_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopRunPromoteParams {
+    #[serde(rename = "runId", alias = "run_id")]
+    pub run_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DesktopRunPickWinnerParams {
+    #[serde(rename = "runId", alias = "run_id")]
+    pub run_id: String,
+    #[serde(rename = "peerSlot", alias = "peer_slot")]
+    pub peer_slot: String,
+    #[serde(alias = "message")]
+    pub recommendation: String,
+    #[serde(rename = "nextTest", alias = "next_test")]
+    pub next_test: String,
+    #[serde(default, deserialize_with = "optional_json_f64")]
+    pub confidence: Option<f64>,
 }
 
 pub enum DesktopCommand {
@@ -1568,6 +1610,7 @@ pub fn handle_desktop_json_rpc(
 
     match request.method.as_str() {
         "desktop.summary.snapshot" => {
+            let _params = consume_external_params::<DesktopSummarySnapshotParams>(params.as_ref());
             match load_desktop_summary_snapshot(transport, resolved_project_dir) {
                 Ok(snapshot) => match serde_json::to_value(snapshot) {
                     Ok(result) => json_rpc_result(request_id, result),
@@ -1617,6 +1660,7 @@ pub fn handle_desktop_json_rpc(
             }),
         ),
         "desktop.voice.capture_status" => {
+            let _params = consume_external_params::<DesktopVoiceCaptureStatusParams>(params.as_ref());
             match serde_json::to_value(load_desktop_voice_capture_status()) {
                 Ok(result) => json_rpc_result(request_id, result),
                 Err(err) => json_rpc_error(
@@ -1627,7 +1671,14 @@ pub fn handle_desktop_json_rpc(
             }
         }
         "desktop.run.explain" => {
-            let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
+            let parsed = match deserialize_external_params::<DesktopRunExplainParams>(params.as_ref())
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let run_id = match required_trimmed_desktop_string(&parsed.run_id) {
                 Ok(value) => value,
                 Err(err) => {
                     return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
@@ -1647,20 +1698,25 @@ pub fn handle_desktop_json_rpc(
             }
         }
         "desktop.run.compare" => {
-            let left_run_id =
-                match get_required_string_param(params.as_ref(), &["leftRunId", "left_run_id"]) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                    }
-                };
-            let right_run_id =
-                match get_required_string_param(params.as_ref(), &["rightRunId", "right_run_id"]) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                    }
-                };
+            let parsed = match deserialize_external_params::<DesktopRunCompareParams>(params.as_ref())
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let left_run_id = match required_trimmed_desktop_string(&parsed.left_run_id) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let right_run_id = match required_trimmed_desktop_string(&parsed.right_run_id) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
 
             match load_desktop_run_compare(
                 transport,
@@ -1680,7 +1736,14 @@ pub fn handle_desktop_json_rpc(
             }
         }
         "desktop.run.promote" => {
-            let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
+            let parsed = match deserialize_external_params::<DesktopRunPromoteParams>(params.as_ref())
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let run_id = match required_trimmed_desktop_string(&parsed.run_id) {
                 Ok(value) => value,
                 Err(err) => {
                     return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
@@ -1700,34 +1763,38 @@ pub fn handle_desktop_json_rpc(
             }
         }
         "desktop.run.pick_winner" => {
-            let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
+            let parsed =
+                match deserialize_external_params::<DesktopRunPickWinnerParams>(params.as_ref()) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                    }
+                };
+            let run_id = match required_trimmed_desktop_string(&parsed.run_id) {
                 Ok(value) => value,
                 Err(err) => {
                     return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
                 }
             };
-            let peer_slot =
-                match get_required_string_param(params.as_ref(), &["peerSlot", "peer_slot"]) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                    }
-                };
-            let recommendation =
-                match get_required_string_param(params.as_ref(), &["recommendation", "message"]) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                    }
-                };
-            let next_test =
-                match get_required_string_param(params.as_ref(), &["nextTest", "next_test"]) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                    }
-                };
-            let confidence = get_optional_f64_param(params.as_ref(), &["confidence"]);
+            let peer_slot = match required_trimmed_desktop_string(&parsed.peer_slot) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let recommendation = match required_trimmed_desktop_string(&parsed.recommendation) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let next_test = match required_trimmed_desktop_string(&parsed.next_test) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let confidence = parsed.confidence;
 
             match load_desktop_run_pick_winner(
                 transport,
@@ -1969,6 +2036,34 @@ fn resolve_project_dir(project_dir: Option<String>, params: Option<&Value>) -> O
     get_optional_string_param(params, &["projectDir", "project_dir"])
 }
 
+fn optional_json_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|item| item.as_f64()))
+}
+
+fn deserialize_external_params<T: DeserializeOwned>(params: Option<&Value>) -> Result<T, String> {
+    let value = match params {
+        Some(Value::Null) | None => Value::Object(Default::default()),
+        Some(value) => value.clone(),
+    };
+    serde_json::from_value(value).map_err(|err| err.to_string())
+}
+
+fn consume_external_params<T: DeserializeOwned + Default>(params: Option<&Value>) -> T {
+    deserialize_external_params(params).unwrap_or_default()
+}
+
+fn required_trimmed_desktop_string(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Missing required string param".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<String, String> {
     get_optional_string_param(params, keys)
         .ok_or_else(|| format!("Missing required params field: {}", keys.join(" or ")))
@@ -1993,17 +2088,6 @@ fn has_any_param_field(params: Option<&Value>, keys: &[&str]) -> bool {
         return false;
     };
     keys.iter().any(|key| object.contains_key(*key))
-}
-
-fn get_optional_f64_param(params: Option<&Value>, keys: &[&str]) -> Option<f64> {
-    let object = params?.as_object()?;
-    for key in keys {
-        if let Some(value) = object.get(*key).and_then(Value::as_f64) {
-            return Some(value);
-        }
-    }
-
-    None
 }
 
 fn get_optional_bool_param(params: Option<&Value>, keys: &[&str]) -> Result<Option<bool>, String> {
@@ -6060,6 +6144,66 @@ mod tests {
             DesktopJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
         }
         assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_duplicate_run_id_aliases() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-dup"),
+                method: "desktop.run.explain".to_string(),
+                params: Some(serde_json::json!({
+                    "runId": "task:1",
+                    "run_id": "task:1"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+            }
+            DesktopJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
+        }
+        assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_ignores_invalid_optional_pick_winner_confidence() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-conf"),
+                method: "desktop.run.pick_winner".to_string(),
+                params: Some(serde_json::json!({
+                    "runId": "task:1",
+                    "peerSlot": "builder-2",
+                    "recommendation": "pick",
+                    "nextTest": "promote",
+                    "confidence": "high"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                assert_ne!(error.code, JSON_RPC_INVALID_PARAMS);
+            }
+            DesktopJsonRpcResponse::Success { .. } => {}
+        }
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -20,6 +22,90 @@ pub const PTY_CONTROL_PIPE_METHODS: &[&str] = &[
     "pty.respawn",
     "pty.close",
 ];
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PtySpawnParams {
+    #[serde(rename = "paneId", alias = "pane_id")]
+    pub pane_id: String,
+    pub cols: u16,
+    pub rows: u16,
+    #[serde(
+        default,
+        rename = "startupInput",
+        alias = "startup_input",
+        deserialize_with = "optional_json_string"
+    )]
+    pub startup_input: Option<String>,
+    #[serde(default, deserialize_with = "optional_json_string")]
+    pub cwd: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PtyWriteParams {
+    #[serde(rename = "paneId", alias = "pane_id")]
+    pub pane_id: String,
+    pub data: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PtyResizeParams {
+    #[serde(rename = "paneId", alias = "pane_id")]
+    pub pane_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PtyCaptureParams {
+    #[serde(rename = "paneId", alias = "pane_id")]
+    pub pane_id: String,
+    #[serde(default, deserialize_with = "optional_json_u16")]
+    pub lines: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PtyRespawnParams {
+    #[serde(rename = "paneId", alias = "pane_id")]
+    pub pane_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PtyCloseParams {
+    #[serde(rename = "paneId", alias = "pane_id")]
+    pub pane_id: String,
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct OperatorSnapshotParams {
+    #[serde(default, deserialize_with = "optional_json_u16")]
+    pub lines: Option<u16>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct OperatorSubmitParams {
+    #[serde(alias = "message", alias = "data")]
+    pub text: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PtyPaneResult {
+    #[serde(rename = "paneId")]
+    pub pane_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct PtyCaptureResult {
+    #[serde(rename = "paneId")]
+    pub pane_id: String,
+    pub output: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct OperatorSubmitResult {
+    #[serde(rename = "paneId")]
+    pub pane_id: String,
+    pub submitted: bool,
+}
 
 #[derive(Deserialize)]
 pub struct PtyJsonRpcRequest {
@@ -128,48 +214,67 @@ enum ParseError {
 
 fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, ParseError> {
     match method {
-        "pty.spawn" => Ok(PtyCommand::Spawn {
-            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
-            cols: get_required_u16_param(params, &["cols"])?,
-            rows: get_required_u16_param(params, &["rows"])?,
-            startup_input: get_optional_string_param(params, &["startupInput", "startup_input"])?,
-            cwd: get_optional_string_param(params, &["cwd"])?,
-        }),
-        "pty.write" => Ok(PtyCommand::Write {
-            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
-            data: get_required_pty_data_param(params, &["data"])?,
-        }),
-        "pty.resize" => Ok(PtyCommand::Resize {
-            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
-            cols: get_required_u16_param(params, &["cols"])?,
-            rows: get_required_u16_param(params, &["rows"])?,
-        }),
-        "pty.capture" => Ok(PtyCommand::Capture {
-            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
-            lines: get_optional_u16_param(params, &["lines"])?,
-        }),
+        "pty.spawn" => {
+            let parsed = deserialize_params::<PtySpawnParams>(params)?;
+            Ok(PtyCommand::Spawn {
+                pane_id: required_trimmed_string(&parsed.pane_id)?,
+                cols: parsed.cols,
+                rows: parsed.rows,
+                startup_input: optional_untrimmed_string(parsed.startup_input),
+                cwd: optional_untrimmed_string(parsed.cwd),
+            })
+        }
+        "pty.write" => {
+            let parsed = deserialize_params::<PtyWriteParams>(params)?;
+            Ok(PtyCommand::Write {
+                pane_id: required_trimmed_string(&parsed.pane_id)?,
+                data: required_untrimmed_string(&parsed.data)?,
+            })
+        }
+        "pty.resize" => {
+            let parsed = deserialize_params::<PtyResizeParams>(params)?;
+            Ok(PtyCommand::Resize {
+                pane_id: required_trimmed_string(&parsed.pane_id)?,
+                cols: parsed.cols,
+                rows: parsed.rows,
+            })
+        }
+        "pty.capture" => {
+            let parsed = deserialize_params::<PtyCaptureParams>(params)?;
+            Ok(PtyCommand::Capture {
+                pane_id: required_trimmed_string(&parsed.pane_id)?,
+                lines: parsed.lines,
+            })
+        }
         "desktop.operator.snapshot" => {
             reject_operator_pane_override(params)?;
+            let parsed = deserialize_params::<OperatorSnapshotParams>(params)?;
             Ok(PtyCommand::OperatorSnapshot {
-                lines: get_optional_u16_param(params, &["lines"])?,
+                lines: parsed.lines,
             })
         }
         "desktop.operator.submit" => {
             reject_operator_pane_override(params)?;
-            let (text, submit_after_paste) = normalize_operator_submit_text(
-                get_required_pty_data_param(params, &["text", "message", "data"])?,
-            );
+            let parsed = deserialize_params::<OperatorSubmitParams>(params)?;
+            let (text, submit_after_paste) =
+                normalize_operator_submit_text(required_untrimmed_string(&parsed.text)?);
             Ok(PtyCommand::OperatorSubmit {
                 text,
                 submit_after_paste,
             })
         }
-        "pty.respawn" => Ok(PtyCommand::Respawn {
-            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
-        }),
-        "pty.close" => Ok(PtyCommand::Close {
-            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
-        }),
+        "pty.respawn" => {
+            let parsed = deserialize_params::<PtyRespawnParams>(params)?;
+            Ok(PtyCommand::Respawn {
+                pane_id: required_trimmed_string(&parsed.pane_id)?,
+            })
+        }
+        "pty.close" => {
+            let parsed = deserialize_params::<PtyCloseParams>(params)?;
+            Ok(PtyCommand::Close {
+                pane_id: required_trimmed_string(&parsed.pane_id)?,
+            })
+        }
         _ => Err(ParseError::MethodNotFound(format!(
             "Unknown pty JSON-RPC method: {method}"
         ))),
@@ -203,106 +308,60 @@ fn normalize_operator_submit_text(text: String) -> (String, bool) {
     (format!("{text}\r"), false)
 }
 
-fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<String, ParseError> {
-    let object = params
-        .and_then(Value::as_object)
-        .ok_or_else(|| ParseError::InvalidParams(invalid_params(keys)))?;
 
-    for key in keys {
-        if let Some(value) = object.get(*key).and_then(Value::as_str) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Ok(trimmed.to_string());
-            }
-        }
-    }
-
-    Err(ParseError::InvalidParams(invalid_params(keys)))
+fn optional_json_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|item| item.as_str().map(str::to_string)))
 }
 
-fn get_optional_string_param(
-    params: Option<&Value>,
-    keys: &[&str],
-) -> Result<Option<String>, ParseError> {
-    let Some(object) = params.and_then(Value::as_object) else {
+fn optional_json_u16<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
         return Ok(None);
     };
-
-    for key in keys {
-        if let Some(value) = object.get(*key).and_then(Value::as_str) {
-            if !value.is_empty() {
-                return Ok(Some(value.to_string()));
-            }
-        }
-    }
-
-    Ok(None)
-}
-
-fn get_required_pty_data_param(
-    params: Option<&Value>,
-    keys: &[&str],
-) -> Result<String, ParseError> {
-    let object = params
-        .and_then(Value::as_object)
-        .ok_or_else(|| ParseError::InvalidParams(invalid_params(keys)))?;
-
-    for key in keys {
-        if let Some(value) = object.get(*key).and_then(Value::as_str) {
-            if !value.is_empty() {
-                return Ok(value.to_string());
-            }
-        }
-    }
-
-    Err(ParseError::InvalidParams(invalid_params(keys)))
-}
-
-fn get_required_u16_param(params: Option<&Value>, keys: &[&str]) -> Result<u16, ParseError> {
-    let object = params
-        .and_then(Value::as_object)
-        .ok_or_else(|| ParseError::InvalidParams(invalid_params(keys)))?;
-
-    for key in keys {
-        if let Some(raw) = object.get(*key).and_then(Value::as_u64) {
-            let value = u16::try_from(raw).map_err(|_| {
-                ParseError::InvalidParams(format!(
-                    "Invalid params field {}: expected 0-65535",
-                    keys.join(" or ")
-                ))
-            })?;
-            return Ok(value);
-        }
-    }
-
-    Err(ParseError::InvalidParams(invalid_params(keys)))
-}
-
-fn get_optional_u16_param(
-    params: Option<&Value>,
-    keys: &[&str],
-) -> Result<Option<u16>, ParseError> {
-    let Some(object) = params.and_then(Value::as_object) else {
+    let Some(raw) = value.as_u64() else {
         return Ok(None);
     };
-
-    for key in keys {
-        if let Some(raw) = object.get(*key).and_then(Value::as_u64) {
-            let value = u16::try_from(raw).map_err(|_| {
-                ParseError::InvalidParams(format!(
-                    "Invalid params field {}: expected 0-65535",
-                    keys.join(" or ")
-                ))
-            })?;
-            return Ok(Some(value));
-        }
-    }
-
-    Ok(None)
+    u16::try_from(raw).map(Some).map_err(|_| {
+        serde::de::Error::custom("Invalid params field lines: expected 0-65535")
+    })
 }
 
-fn invalid_params(keys: &[&str]) -> String {
-    format!("Missing required params field: {}", keys.join(" or "))
+fn deserialize_params<T: DeserializeOwned>(params: Option<&Value>) -> Result<T, ParseError> {
+    let value = match params {
+        Some(Value::Null) | None => Value::Object(Default::default()),
+        Some(value) => value.clone(),
+    };
+    serde_json::from_value(value).map_err(|err| ParseError::InvalidParams(err.to_string()))
+}
+
+fn required_trimmed_string(value: &str) -> Result<String, ParseError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ParseError::InvalidParams(
+            "Missing required params field: paneId or pane_id".to_string(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn required_untrimmed_string(value: &str) -> Result<String, ParseError> {
+    if value.is_empty() {
+        return Err(ParseError::InvalidParams(
+            "Missing required params field".to_string(),
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn optional_untrimmed_string(value: Option<String>) -> Option<String> {
+    value.filter(|item| !item.is_empty())
 }
 
 fn json_rpc_result(id: Value, result: Value) -> PtyJsonRpcResponse {
@@ -824,6 +883,173 @@ mod tests {
                 assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
             }
             PtyJsonRpcResponse::Success { .. } => panic!("expected method not found error"),
+        }
+
+        assert!(transport.commands.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_rejects_duplicate_pane_id_aliases() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-dup"),
+                method: "pty.close".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1",
+                    "pane_id": "pane-1"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+            }
+            PtyJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
+        }
+
+        assert!(transport.commands.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_ignores_invalid_optional_spawn_fields() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "pane-1" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-optional-types"),
+                method: "pty.spawn".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1",
+                    "cols": 120,
+                    "rows": 40,
+                    "startupInput": 123,
+                    "cwd": true
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { .. } => {}
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Spawn {
+                pane_id: "pane-1".to_string(),
+                cols: 120,
+                rows: 40,
+                startup_input: None,
+                cwd: None
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_ignores_invalid_optional_capture_lines() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "pane-1", "output": "" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-lines"),
+                method: "pty.capture".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1",
+                    "lines": "all"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { .. } => {}
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Capture {
+                pane_id: "pane-1".to_string(),
+                lines: None
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_rejects_out_of_range_optional_capture_lines() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-lines-range"),
+                method: "pty.capture".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1",
+                    "lines": 65536
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+            }
+            PtyJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
+        }
+
+        assert!(transport.commands.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_rejects_out_of_range_optional_snapshot_lines() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-snap-range"),
+                method: "desktop.operator.snapshot".to_string(),
+                params: Some(serde_json::json!({
+                    "lines": 65536
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+            }
+            PtyJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
         }
 
         assert!(transport.commands.borrow().is_empty());
