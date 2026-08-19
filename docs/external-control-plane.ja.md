@@ -107,6 +107,7 @@ winsmux operator-snapshot --lines 80
 ## 公開メソッド
 
 named pipe は、現時点で次のデスクトップメソッドを公開します。
+このページのメソッド一覧は `docs/control-plane-contract.v1.json` と CI で照合されます。
 
 - `desktop.control_plane.contract`
 - `desktop.pairing.confirm`
