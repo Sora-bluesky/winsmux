@@ -212,6 +212,7 @@ $whitelistPatterns = @(
     'winsmux-app/src-tauri/capabilities/*.json',
     'winsmux-app/src-tauri/scripts/*.ps1',
     'winsmux-app/src-tauri/src/control_pipe.rs',
+    'winsmux-app/src-tauri/src/desktop_control_plane_params.rs',
     'winsmux-app/src-tauri/src/desktop_session_restore.rs',
     'winsmux-app/src-tauri/src/desktop_companion_cli.rs',
     'winsmux-app/src-tauri/src/desktop_events.rs',

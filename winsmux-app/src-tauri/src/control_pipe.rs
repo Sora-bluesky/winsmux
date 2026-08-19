@@ -1,10 +1,12 @@
 use crate::desktop_backend::{
     handle_desktop_json_rpc, DesktopCommandTransport, DesktopCompareRunsResult,
     DesktopExplainPayload, DesktopJsonRpcRequest, DesktopPickWinnerResult,
-    DesktopPromoteTacticResult, DesktopRunCompareParams, DesktopRunExplainParams,
-    DesktopRunPickWinnerParams, DesktopRunPromoteParams, DesktopSummarySnapshot,
-    DesktopSummarySnapshotParams, DesktopVoiceCaptureStatus, DesktopVoiceCaptureStatusParams,
+    DesktopPromoteTacticResult, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
     PwshScriptTransport,
+};
+use crate::desktop_control_plane_params::{
+    DesktopRunCompareParams, DesktopRunExplainParams, DesktopRunPickWinnerParams,
+    DesktopRunPromoteParams, DesktopSummarySnapshotParams, DesktopVoiceCaptureStatusParams,
 };
 use crate::pty_backend::{
     handle_pty_json_rpc, OperatorSnapshotParams, OperatorSubmitParams, OperatorSubmitResult,
