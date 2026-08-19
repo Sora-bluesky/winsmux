@@ -138,8 +138,8 @@ mod tests {
     use super::*;
     use crate::desktop_backend::{
         load_desktop_summary_snapshot, resolve_companion_winsmux_cli,
-        spawn_desktop_summary_refresh_stream, DesktopCommand, DesktopCommandTransport,
-        DesktopStreamCommand, DesktopSummarySnapshot, PwshScriptTransport,
+        resolve_effective_project_dir, spawn_desktop_summary_refresh_stream, DesktopCommand,
+        DesktopCommandTransport, DesktopStreamCommand, DesktopSummarySnapshot, PwshScriptTransport,
     };
     use serde_json::Value;
     use std::ffi::OsStr;
@@ -521,5 +521,13 @@ panes:
         assert!(gone, "killed stream child should not keep writing");
         let _ = fs::remove_dir_all(&fixture);
         let _ = fs::remove_dir_all(&mock_dir);
+    }
+
+    #[test]
+    fn effective_project_dir_accepts_supplied_path_without_source_tree() {
+        let path = PathBuf::from(r"C:\not-a-winsmux-source-tree\project");
+        let resolved = resolve_effective_project_dir(Some(path.display().to_string()))
+            .expect("supplied project_dir must not require scripts/winsmux-core.ps1");
+        assert_eq!(resolved, path);
     }
 }

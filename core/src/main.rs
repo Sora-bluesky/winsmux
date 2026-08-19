@@ -231,6 +231,7 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
             | "review-approve"
             | "review-fail"
             | "review-reset"
+            | "runtime-roles"
     )
 }
 
@@ -488,6 +489,11 @@ mod tests {
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
         assert!(is_winsmux_core_bridge_command("workers"));
+    }
+
+    #[test]
+    fn runtime_roles_command_is_forwarded_to_core_bridge() {
+        assert!(is_winsmux_core_bridge_command("runtime-roles"));
     }
 
     #[test]

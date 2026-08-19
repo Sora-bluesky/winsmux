@@ -2069,12 +2069,11 @@ pub(crate) fn resolve_repo_root() -> Result<PathBuf, String> {
     Err("Could not locate winsmux repo root from the Tauri runtime".to_string())
 }
 
-fn resolve_effective_project_dir(project_dir: Option<String>) -> Result<PathBuf, String> {
-    let repo_root = resolve_repo_root()?;
-    Ok(match project_dir {
-        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
-        _ => repo_root,
-    })
+pub(crate) fn resolve_effective_project_dir(project_dir: Option<String>) -> Result<PathBuf, String> {
+    match project_dir {
+        Some(path) if !path.trim().is_empty() => Ok(PathBuf::from(path)),
+        _ => resolve_repo_root(),
+    }
 }
 
 pub fn parse_desktop_summary_stream_signal(
