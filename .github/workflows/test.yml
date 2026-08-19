@@ -496,6 +496,10 @@ jobs:
         working-directory: winsmux-app
         run: npm run build
 
+      - name: Stage companion CLI sidecar
+        working-directory: winsmux-app
+        run: npm run prepare:companion-cli
+
       - name: Test Tauri backend
         run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
 

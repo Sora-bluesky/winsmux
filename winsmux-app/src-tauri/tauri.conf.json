@@ -4,9 +4,9 @@
   "version": "0.36.33",
   "identifier": "io.github.sora-bluesky.winsmux",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "npm run prepare:companion-cli && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run prepare:companion-cli:release && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,6 +28,13 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": [
+      "binaries/winsmux"
+    ],
+    "resources": {
+      "../../scripts/winsmux-core.ps1": "scripts/winsmux-core.ps1",
+      "../../winsmux-core/scripts/*": "winsmux-core/scripts"
+    },
     "targets": "all",
     "icon": [
       "icons/32x32.png",

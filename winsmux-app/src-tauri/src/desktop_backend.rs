@@ -63,6 +63,10 @@ fn resolve_companion_winsmux_cli_from_exe_path(current_exe: &Path) -> Option<Pat
 }
 
 pub(crate) fn resolve_companion_winsmux_cli() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = crate::desktop_companion_cli::companion_cli_override() {
+        return path;
+    }
     std::env::current_exe()
         .ok()
         .and_then(|current_exe| resolve_companion_winsmux_cli_from_exe_path(&current_exe))
@@ -1106,7 +1110,7 @@ impl DesktopStreamCommand {
         }
     }
 
-    fn winsmux_args(&self) -> Vec<String> {
+    pub(crate) fn winsmux_args(&self) -> Vec<String> {
         match self {
             DesktopStreamCommand::Summary { .. } => {
                 vec![
@@ -2065,23 +2069,11 @@ pub(crate) fn resolve_repo_root() -> Result<PathBuf, String> {
     Err("Could not locate winsmux repo root from the Tauri runtime".to_string())
 }
 
-fn resolve_effective_project_dir(project_dir: Option<String>) -> Result<PathBuf, String> {
-    let repo_root = resolve_repo_root()?;
-    Ok(match project_dir {
-        Some(path) if !path.trim().is_empty() => PathBuf::from(path),
-        _ => repo_root,
-    })
-}
-
-fn build_winsmux_command_text(script_path: &Path, args: &[String]) -> String {
-    let script_literal = script_path.to_string_lossy().replace('\'', "''");
-    let args_literal = args
-        .iter()
-        .map(|item| format!("'{}'", item.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    format!("& {{ & '{}' {} }}", script_literal, args_literal)
+pub(crate) fn resolve_effective_project_dir(project_dir: Option<String>) -> Result<PathBuf, String> {
+    match project_dir {
+        Some(path) if !path.trim().is_empty() => Ok(PathBuf::from(path)),
+        _ => resolve_repo_root(),
+    }
 }
 
 pub fn parse_desktop_summary_stream_signal(
@@ -2142,41 +2134,31 @@ pub fn spawn_desktop_summary_refresh_stream<F>(
 where
     F: FnMut(DesktopSummaryRefreshSignal) + Send + 'static,
 {
-    let repo_root = resolve_repo_root()?;
+    let companion = resolve_companion_winsmux_cli()
+        .ok_or_else(|| "companion winsmux CLI was not found".to_string())?;
     let effective_project_dir =
         resolve_effective_project_dir(command.project_dir().map(|value| value.to_string()))?;
-    let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
-    let command_text = build_winsmux_command_text(&script_path, &command.winsmux_args());
     let source = command.source_name().to_string();
-    let companion_cli = resolve_companion_winsmux_cli();
+    let stream_args = command.winsmux_args();
     let app_pid = std::process::id();
 
     thread::spawn(move || {
         let mut quick_failure_count = 0usize;
         while !stop_requested.load(Ordering::Relaxed) {
             let started_at = Instant::now();
-            let mut process = Command::new("pwsh");
-            process
-                .arg("-NoProfile")
-                .arg("-ExecutionPolicy")
-                .arg("Bypass")
-                .arg("-Command")
-                .arg(&command_text)
-                .current_dir(&effective_project_dir)
-                .env("WINSMUX_DESKTOP_SUMMARY_STREAM_POLL_SECONDS", "5")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            apply_desktop_winsmux_child_env(&mut process, companion_cli.as_deref(), app_pid);
-            hide_subprocess_window(&mut process);
-
-            let mut child = match process.spawn() {
+            let mut child = match crate::desktop_companion_cli::spawn_companion_stream_child(
+                &companion,
+                &effective_project_dir,
+                &stream_args,
+                app_pid,
+            ) {
                 Ok(child) => child,
                 Err(err) => {
                     eprintln!("Failed to start {} summary stream: {}", source, err);
                     quick_failure_count += 1;
                     if quick_failure_count >= 3 {
                         eprintln!(
-                            "winsmux {} stream disabled after repeated pwsh start failures",
+                            "winsmux {} stream disabled after repeated companion start failures",
                             source
                         );
                         break;
@@ -2206,7 +2188,7 @@ where
                 Some(stdout) => stdout,
                 None => {
                     eprintln!("winsmux {} stream stdout pipe missing", source);
-                    let _ = child.kill();
+                    crate::desktop_companion_cli::force_terminate_child(&mut child);
                     let _ = child.wait();
                     if stop_requested.load(Ordering::Relaxed) {
                         break;
@@ -2229,7 +2211,7 @@ where
 
             loop {
                 if stop_requested.load(Ordering::Relaxed) {
-                    let _ = child.kill();
+                    crate::desktop_companion_cli::force_terminate_child(&mut child);
                     break;
                 }
                 match line_rx.recv_timeout(Duration::from_millis(250)) {
@@ -2595,37 +2577,28 @@ fn read_desktop_full_file(
 }
 
 fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Value, String> {
-    let repo_root = resolve_repo_root()?;
+    let companion = resolve_companion_winsmux_cli()
+        .ok_or_else(|| "companion winsmux CLI was not found".to_string())?;
     let effective_project_dir = resolve_effective_project_dir(project_dir)?;
-    let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
-    let command_text = build_winsmux_command_text(&script_path, args);
-    let companion_cli = resolve_companion_winsmux_cli();
-
-    let mut command = Command::new("pwsh");
-    command
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-Command")
-        .arg(command_text)
-        .current_dir(&effective_project_dir);
-    apply_desktop_winsmux_child_env(&mut command, companion_cli.as_deref(), std::process::id());
-    hide_subprocess_window(&mut command);
-
-    let output = command
-        .output()
-        .map_err(|err| format!("Failed to start winsmux-core.ps1: {err}"))?;
+    let output = crate::desktop_companion_cli::build_companion_ledger_command(
+        &companion,
+        &effective_project_dir,
+        args,
+        std::process::id(),
+    )
+    .output()
+    .map_err(|err| format!("Failed to start companion winsmux: {err}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let detail = if !stderr.is_empty() { stderr } else { stdout };
-        return Err(format!("winsmux-core.ps1 failed: {}", detail));
+        return Err(format!("companion winsmux failed: {detail}"));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if stdout.is_empty() {
-        return Err("winsmux-core.ps1 returned empty JSON output".to_string());
+        return Err("companion winsmux returned empty JSON output".to_string());
     }
 
     serde_json::from_str(&stdout)
