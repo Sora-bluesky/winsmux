@@ -218,6 +218,8 @@ __pycache__/
 # =========================
 winsmux-app/src-tauri/binaries/*.exe
 winsmux-app/src-tauri/binaries/*.ps1
+winsmux-app/src-tauri/binaries/scripts/
+winsmux-app/src-tauri/binaries/winsmux-core/
 dist/
 build/
 out/

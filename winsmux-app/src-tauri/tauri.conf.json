@@ -32,7 +32,8 @@
       "binaries/winsmux"
     ],
     "resources": {
-      "binaries/winsmux-core.ps1": "winsmux-core.ps1"
+      "../../scripts/winsmux-core.ps1": "scripts/winsmux-core.ps1",
+      "../../winsmux-core/scripts/*": "winsmux-core/scripts"
     },
     "targets": "all",
     "icon": [

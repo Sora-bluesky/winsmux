@@ -8,11 +8,15 @@ const WINSMUX_CORE_SCRIPT_ENV: &str = "WINSMUX_CORE_SCRIPT";
 pub(crate) fn companion_bridge_script_path(companion: &Path) -> Option<PathBuf> {
     let dir = companion.parent()?;
     [
-        dir.join("winsmux-core.ps1"),
+        dir.join("resources")
+            .join("scripts")
+            .join("winsmux-core.ps1"),
+        dir.join("scripts").join("winsmux-core.ps1"),
         dir.join("resources").join("winsmux-core.ps1"),
         dir.join("resources")
             .join("binaries")
             .join("winsmux-core.ps1"),
+        dir.join("winsmux-core.ps1"),
     ]
     .into_iter()
     .find(|path| path.is_file())
@@ -392,10 +396,43 @@ panes:
         let resources = &conf["bundle"]["resources"];
         assert_eq!(
             resources
-                .get("binaries/winsmux-core.ps1")
+                .get("../../scripts/winsmux-core.ps1")
                 .and_then(|value| value.as_str()),
-            Some("winsmux-core.ps1"),
-            "map-form resources must land at $RESOURCE/winsmux-core.ps1, not preserve binaries/; got {resources}"
+            Some("scripts/winsmux-core.ps1"),
+            "map-form resources must land at $RESOURCE/scripts/winsmux-core.ps1 so $PSScriptRoot\\..\\winsmux-core\\scripts resolves; got {resources}"
+        );
+        assert_eq!(
+            resources
+                .get("../../winsmux-core/scripts/*")
+                .and_then(|value| value.as_str()),
+            Some("winsmux-core/scripts"),
+            "map-form resources must also stage the bridge module tree; got {resources}"
+        );
+        assert!(
+            resources.get("binaries/winsmux-core.ps1").is_none(),
+            "do not ship a flat $RESOURCE/winsmux-core.ps1 that cannot see ../winsmux-core/scripts; got {resources}"
+        );
+        let prepare = include_str!("../scripts/prepare-companion-cli.ps1");
+        assert!(
+            prepare.contains("tauri.conf.json") && prepare.contains("legacyFlat"),
+            "prepare-companion-cli.ps1 must leave the bridge tree to tauri resources, not a sidecar sibling"
+        );
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        assert!(
+            manifest.join("../../scripts/winsmux-core.ps1").is_file(),
+            "tauri resource source ../../scripts/winsmux-core.ps1 must exist"
+        );
+        assert!(
+            manifest
+                .join("../../winsmux-core/scripts/json-compat.ps1")
+                .is_file(),
+            "tauri resource source ../../winsmux-core/scripts/json-compat.ps1 must exist"
+        );
+        assert!(
+            manifest
+                .join("../../winsmux-core/scripts/settings.ps1")
+                .is_file(),
+            "tauri resource source ../../winsmux-core/scripts/settings.ps1 must exist"
         );
     }
 
@@ -580,6 +617,41 @@ panes:
 
     #[test]
     fn companion_bridge_script_path_finds_tauri_resource_layouts() {
+        let tree_dir = make_temp_project_dir("tauri-tree-resource");
+        let tree_companion = tree_dir.join("winsmux.exe");
+        let tree_script = tree_dir
+            .join("resources")
+            .join("scripts")
+            .join("winsmux-core.ps1");
+        let tree_module = tree_dir
+            .join("resources")
+            .join("winsmux-core")
+            .join("scripts")
+            .join("json-compat.ps1");
+        let tree_trap = tree_dir.join("resources").join("winsmux-core.ps1");
+        fs::create_dir_all(tree_script.parent().unwrap()).expect("create tree resource dir");
+        fs::create_dir_all(tree_module.parent().unwrap()).expect("create tree module dir");
+        fs::write(&tree_companion, []).expect("write tree companion stub");
+        fs::write(&tree_script, []).expect("write tree resource bridge");
+        fs::write(&tree_module, []).expect("write tree module");
+        fs::write(&tree_trap, []).expect("write flat trap");
+        assert_eq!(
+            companion_bridge_script_path(&tree_companion).as_deref(),
+            Some(tree_script.as_path())
+        );
+        let resolved_module = tree_script
+            .parent()
+            .unwrap()
+            .join("..")
+            .join("winsmux-core")
+            .join("scripts")
+            .join("json-compat.ps1");
+        assert!(
+            resolved_module.is_file(),
+            "packaged entry $PSScriptRoot\\..\\winsmux-core\\scripts\\json-compat.ps1 must exist, got {}",
+            resolved_module.display()
+        );
+
         let map_dir = make_temp_project_dir("tauri-map-resource");
         let map_companion = map_dir.join("winsmux.exe");
         let map_script = map_dir.join("resources").join("winsmux-core.ps1");
@@ -605,6 +677,7 @@ panes:
             Some(array_script.as_path())
         );
 
+        let _ = fs::remove_dir_all(&tree_dir);
         let _ = fs::remove_dir_all(&map_dir);
         let _ = fs::remove_dir_all(&array_dir);
     }

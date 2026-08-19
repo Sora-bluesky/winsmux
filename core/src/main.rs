@@ -258,6 +258,13 @@ fn winsmux_core_script_candidates(
                     candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
                 }
             }
+            candidates.push(
+                exe_dir
+                    .join("resources")
+                    .join("scripts")
+                    .join("winsmux-core.ps1"),
+            );
+            candidates.push(exe_dir.join("scripts").join("winsmux-core.ps1"));
             candidates.push(exe_dir.join("winsmux-core.ps1"));
             candidates.push(exe_dir.join("resources").join("winsmux-core.ps1"));
             candidates.push(
@@ -559,7 +566,21 @@ mod tests {
             Some(installed_executable.as_path()),
             Some(home.as_path()),
         );
-        assert_eq!(installed_candidates.first(), Some(&installed_sibling));
+        let installed_tree = installed_executable
+            .parent()
+            .unwrap()
+            .join("resources")
+            .join("scripts")
+            .join("winsmux-core.ps1");
+        let sibling_pos = installed_candidates
+            .iter()
+            .position(|path| path == &installed_sibling)
+            .expect("installed sibling candidate");
+        let tree_pos = installed_candidates
+            .iter()
+            .position(|path| path == &installed_tree)
+            .expect("installed tree candidate");
+        assert!(tree_pos < sibling_pos);
         assert!(installed_candidates.contains(&installed_bridge));
         assert!(!installed_candidates.contains(&source_bridge));
         assert!(!installed_candidates.contains(&hostile_bridge));
@@ -584,8 +605,24 @@ mod tests {
             Some(executable.as_path()),
             Some(home.as_path()),
         );
-        assert_eq!(candidates.first(), Some(&sibling));
-        assert!(candidates.contains(&home_bridge));
+        let tree = pack
+            .join("resources")
+            .join("scripts")
+            .join("winsmux-core.ps1");
+        let sibling_pos = candidates
+            .iter()
+            .position(|path| path == &sibling)
+            .expect("sibling candidate");
+        let tree_pos = candidates
+            .iter()
+            .position(|path| path == &tree)
+            .expect("source-tree-shaped resource candidate");
+        let home_pos = candidates
+            .iter()
+            .position(|path| path == &home_bridge)
+            .expect("home candidate");
+        assert!(tree_pos < sibling_pos, "complete packaged tree must win over a flat sibling");
+        assert!(sibling_pos < home_pos, "packaged sibling must still beat a separate home install");
         assert!(candidates.contains(&pack.join("resources").join("binaries").join("winsmux-core.ps1")));
     }
 
@@ -607,6 +644,47 @@ mod tests {
             candidates.contains(&nested),
             "array-form bundle.resources keeps binaries/ under $RESOURCE"
         );
+    }
+
+    #[test]
+    fn packaged_sidecar_prefers_source_tree_shaped_resource_over_flat_entry() {
+        let temp = tempfile::tempdir().expect("create tauri tree-layout fixture");
+        let pack = temp.path().join("pack");
+        let executable = pack.join("winsmux.exe");
+        let tree = pack
+            .join("resources")
+            .join("scripts")
+            .join("winsmux-core.ps1");
+        let module = pack
+            .join("resources")
+            .join("winsmux-core")
+            .join("scripts")
+            .join("json-compat.ps1");
+        let flat = pack.join("resources").join("winsmux-core.ps1");
+        std::fs::create_dir_all(tree.parent().unwrap()).expect("create tree resource dir");
+        std::fs::create_dir_all(module.parent().unwrap()).expect("create tree module dir");
+        std::fs::write(&tree, "").expect("write tree entry");
+        std::fs::write(&module, "").expect("write tree module");
+        std::fs::write(&flat, "").expect("write flat trap");
+
+        let candidates = winsmux_core_script_candidates(None, Some(executable.as_path()), None);
+        let tree_pos = candidates
+            .iter()
+            .position(|path| path == &tree)
+            .expect("tree candidate");
+        let flat_pos = candidates
+            .iter()
+            .position(|path| path == &flat)
+            .expect("flat candidate");
+        assert!(tree_pos < flat_pos);
+        let resolved_module = tree
+            .parent()
+            .unwrap()
+            .join("..")
+            .join("winsmux-core")
+            .join("scripts")
+            .join("json-compat.ps1");
+        assert!(resolved_module.is_file());
     }
 
     #[test]
