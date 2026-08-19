@@ -1397,6 +1397,53 @@ mod tests {
         assert_automation_contract_result(&value["result"]);
     }
 
+    fn checked_in_control_pipe_contract_artifact_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/control-plane-contract.v1.json")
+    }
+
+    #[test]
+    fn control_pipe_contract_matches_checked_in_artifact() {
+        let artifact_path = checked_in_control_pipe_contract_artifact_path();
+        let raw = fs::read_to_string(&artifact_path).unwrap_or_else(|err| {
+            panic!("read {}: {err}", artifact_path.display());
+        });
+        let artifact: Value =
+            serde_json::from_str(&raw).expect("checked-in contract artifact should parse");
+        let live = control_pipe_contract();
+        if artifact != live {
+            panic!(
+                "docs/control-plane-contract.v1.json drifted from control_pipe_contract(); replace the file with this pretty JSON:\n{}",
+                serde_json::to_string_pretty(&live).expect("serialize live contract")
+            );
+        }
+    }
+
+    #[test]
+    fn control_pipe_contract_artifact_embeds_no_expanded_paths() {
+        let artifact_path = checked_in_control_pipe_contract_artifact_path();
+        let raw = fs::read_to_string(&artifact_path).unwrap_or_else(|err| {
+            panic!("read {}: {err}", artifact_path.display());
+        });
+        let artifact: Value =
+            serde_json::from_str(&raw).expect("checked-in contract artifact should parse");
+        assert_eq!(
+            artifact["auth"]["token_file"],
+            WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE
+        );
+        assert!(
+            !raw.contains(r"C:\Users") && !raw.contains(r"Users\"),
+            "artifact must not embed expanded user paths"
+        );
+        assert!(
+            raw.contains("%LOCALAPPDATA%"),
+            "artifact must keep the literal LOCALAPPDATA token"
+        );
+        assert!(
+            !raw.contains(r"AppData\Local") && !raw.contains("AppData/Local"),
+            "artifact must not expand LOCALAPPDATA"
+        );
+    }
+
     #[test]
     fn automation_contract_matches_pipe_allowlist() {
         // Native CLI `automation-contract` prints this JSON-RPC `result` object.

@@ -57,6 +57,7 @@ $whitelistPatterns = @(
     'docs/provider-and-model-support.ja.md',
     'docs/external-control-plane.md',
     'docs/external-control-plane.ja.md',
+    'docs/control-plane-contract.v1.json',
     'docs/repo-surface-policy.md',
     'docs/incidents/**',
     'docs/project/ARCHITECTURE.md',

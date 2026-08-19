@@ -252,7 +252,10 @@ and returns the JSON. They do not go through PowerShell.
 Local automation clients can connect if they run on the same Windows host and
 implement JSON-RPC over the named pipe. They should call
 `desktop.control_plane.contract` first and generate client capabilities from
-the returned `methods` list.
+the returned `methods` list. A checked-in, CI-gated copy of that same
+document is `docs/control-plane-contract.v1.json`; it is the pretty-printed
+output of `control_pipe_contract()` and must stay equal to the live pipe
+response.
 
 Non-contract calls fail closed when neither a non-empty
 `WINSMUX_CONTROL_PIPE_TOKEN` nor the exact token file can authenticate the
