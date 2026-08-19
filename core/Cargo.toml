@@ -55,6 +55,10 @@ name = "automation_contract"
 path = "tests-rs/automation_contract.rs"
 
 [[test]]
+name = "automation_discover"
+path = "tests-rs/automation_discover.rs"
+
+[[test]]
 name = "condensed_events"
 path = "tests-rs/condensed_events.rs"
 

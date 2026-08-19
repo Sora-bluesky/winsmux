@@ -81,6 +81,10 @@ Do not write the token directly in shell history.
 
 ## Connect from zero to operator-snapshot
 
+If a desktop may already be running, start with `winsmux automation-discover`.
+`desktop_running` is true only while the named pipe answers; a leftover token
+file is not liveness.
+
 1. Start the desktop app normally, or use a launcher that may still set
    `WINSMUX_CONTROL_PIPE_TOKEN`.
 2. Confirm the contract (no token):
