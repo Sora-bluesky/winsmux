@@ -6423,6 +6423,7 @@ version = "0.36.33"
 dependencies = [
  "chrono",
  "portable-pty",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha2",

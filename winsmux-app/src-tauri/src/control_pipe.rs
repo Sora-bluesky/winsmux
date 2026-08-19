@@ -1,10 +1,21 @@
 use crate::desktop_backend::{
-    handle_desktop_json_rpc, DesktopCommandTransport, DesktopJsonRpcRequest, PwshScriptTransport,
+    handle_desktop_json_rpc, DesktopCommandTransport, DesktopCompareRunsResult,
+    DesktopExplainPayload, DesktopJsonRpcRequest, DesktopPickWinnerResult,
+    DesktopPromoteTacticResult, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
+    PwshScriptTransport,
+};
+use crate::desktop_control_plane_params::{
+    DesktopRunCompareParams, DesktopRunExplainParams, DesktopRunPickWinnerParams,
+    DesktopRunPromoteParams, DesktopSummarySnapshotParams, DesktopVoiceCaptureStatusParams,
 };
 use crate::pty_backend::{
-    handle_pty_json_rpc, PtyCommandTransport, PtyJsonRpcRequest, OPERATOR_CONTROL_PIPE_METHODS,
-    PTY_CONTROL_PIPE_METHODS,
+    handle_pty_json_rpc, OperatorSnapshotParams, OperatorSubmitParams, OperatorSubmitResult,
+    PtyCaptureParams, PtyCaptureResult, PtyCloseParams, PtyCommandTransport, PtyJsonRpcRequest,
+    PtyPaneResult, PtyResizeParams, PtyRespawnParams, PtySpawnParams, PtyWriteParams,
+    OPERATOR_CONTROL_PIPE_METHODS, PTY_CONTROL_PIPE_METHODS,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -809,14 +820,19 @@ pub fn handle_control_pipe_payload(
                 "desktop_json_rpc expects jsonrpc=\"2.0\"".to_string(),
             );
         }
-        return serialize_control_pipe_result(
-            request.id,
-            json!({
-                "paired": true,
-                "scope": "external_control_pipe",
-                "version": 1,
-            }),
-        );
+        let _params = consume_pairing_params(request.params.as_ref());
+        return match serde_json::to_value(PairingConfirmResult {
+            paired: true,
+            scope: "external_control_pipe".to_string(),
+            version: 1,
+        }) {
+            Ok(result) => serialize_control_pipe_result(request.id, result),
+            Err(err) => serialize_control_pipe_error(
+                request.id,
+                JSON_RPC_INTERNAL_ERROR,
+                format!("Failed to serialize pairing confirm payload: {err}"),
+            ),
+        };
     }
 
     if DESKTOP_CONTROL_PIPE_METHODS.contains(&method) {
@@ -888,9 +904,58 @@ fn control_pipe_methods() -> Vec<&'static str> {
         .collect()
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+struct PairingConfirmParams {}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct PairingConfirmResult {
+    paired: bool,
+    scope: String,
+    version: u32,
+}
+
+fn consume_pairing_params(params: Option<&Value>) -> PairingConfirmParams {
+    let value = match params {
+        Some(Value::Null) | None => Value::Object(Default::default()),
+        Some(value) => value.clone(),
+    };
+    serde_json::from_value(value).unwrap_or_default()
+}
+
+fn schema_value<T: JsonSchema>() -> Value {
+    serde_json::to_value(schemars::schema_for!(T)).expect("json schema must serialize")
+}
+
+fn method_schema<P: JsonSchema, R: JsonSchema>() -> Value {
+    json!({
+        "params": schema_value::<P>(),
+        "result": schema_value::<R>(),
+    })
+}
+
+fn control_pipe_method_schemas() -> Value {
+    json!({
+        "desktop.summary.snapshot": method_schema::<DesktopSummarySnapshotParams, DesktopSummarySnapshot>(),
+        "desktop.run.explain": method_schema::<DesktopRunExplainParams, DesktopExplainPayload>(),
+        "desktop.run.compare": method_schema::<DesktopRunCompareParams, DesktopCompareRunsResult>(),
+        "desktop.run.promote": method_schema::<DesktopRunPromoteParams, DesktopPromoteTacticResult>(),
+        "desktop.run.pick_winner": method_schema::<DesktopRunPickWinnerParams, DesktopPickWinnerResult>(),
+        "desktop.voice.capture_status": method_schema::<DesktopVoiceCaptureStatusParams, DesktopVoiceCaptureStatus>(),
+        "pty.spawn": method_schema::<PtySpawnParams, PtyPaneResult>(),
+        "pty.write": method_schema::<PtyWriteParams, PtyPaneResult>(),
+        "pty.resize": method_schema::<PtyResizeParams, PtyPaneResult>(),
+        "pty.capture": method_schema::<PtyCaptureParams, PtyCaptureResult>(),
+        "pty.respawn": method_schema::<PtyRespawnParams, PtyPaneResult>(),
+        "pty.close": method_schema::<PtyCloseParams, PtyPaneResult>(),
+        "desktop.operator.snapshot": method_schema::<OperatorSnapshotParams, PtyCaptureResult>(),
+        "desktop.operator.submit": method_schema::<OperatorSubmitParams, OperatorSubmitResult>(),
+        "desktop.pairing.confirm": method_schema::<PairingConfirmParams, PairingConfirmResult>(),
+    })
+}
+
 fn control_pipe_contract() -> Value {
     json!({
-    "version": 1,
+    "version": 2,
     "scope": "external_control_pipe",
     "transport": "named_pipe_json_rpc",
     "pipe": WINSMUX_CONTROL_PIPE_NAME,
@@ -909,6 +974,7 @@ fn control_pipe_contract() -> Value {
     "operator_methods": OPERATOR_CONTROL_PIPE_METHODS,
     "pairing_methods": PAIRING_CONTROL_PIPE_METHODS,
     "internal_desktop_methods_excluded": CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS,
+    "schemas": control_pipe_method_schemas(),
     })
 }
 
@@ -1339,7 +1405,7 @@ mod tests {
     }
 
     fn assert_automation_contract_result(result: &Value) {
-        assert_eq!(result["version"], 1);
+        assert_eq!(result["version"], 2);
         assert_eq!(result["scope"], "external_control_pipe");
         assert_eq!(result["transport"], "named_pipe_json_rpc");
         assert_eq!(result["pipe"], WINSMUX_CONTROL_PIPE_NAME);
@@ -1398,7 +1464,7 @@ mod tests {
     }
 
     fn checked_in_control_pipe_contract_artifact_path() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/control-plane-contract.v1.json")
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/control-plane-contract.v2.json")
     }
 
     fn repo_docs_path(name: &str) -> PathBuf {
@@ -1471,7 +1537,7 @@ mod tests {
         }
         let missing: Vec<_> = contract.difference(doc).cloned().collect();
         let extra: Vec<_> = doc.difference(contract).cloned().collect();
-        panic!("{file} {list} drifted from docs/control-plane-contract.v1.json; missing {missing:?} extra {extra:?}");
+        panic!("{file} {list} drifted from docs/control-plane-contract.v2.json; missing {missing:?} extra {extra:?}");
     }
 
     fn assert_doc_method_lists_match_artifact(doc_name: &str) {
@@ -1533,8 +1599,47 @@ mod tests {
         let live = control_pipe_contract();
         if artifact != live {
             panic!(
-                "docs/control-plane-contract.v1.json drifted from control_pipe_contract(); replace the file with this pretty JSON:\n{}",
+                "docs/control-plane-contract.v2.json drifted from control_pipe_contract(); replace the file with this pretty JSON:\n{}",
                 serde_json::to_string_pretty(&live).expect("serialize live contract")
+            );
+        }
+    }
+
+    #[test]
+    fn control_pipe_contract_schemas_cover_every_method() {
+        let contract = control_pipe_contract();
+        let schemas = contract["schemas"]
+            .as_object()
+            .expect("schemas must be an object");
+        let mut expected: Vec<&str> = control_pipe_methods()
+            .into_iter()
+            .filter(|method| *method != "desktop.control_plane.contract")
+            .collect();
+        let mut actual: Vec<&str> = schemas.keys().map(String::as_str).collect();
+        expected.sort_unstable();
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+
+        for method in expected {
+            let entry = schemas
+                .get(method)
+                .and_then(Value::as_object)
+                .unwrap_or_else(|| panic!("{method} schema entry must be an object"));
+            let params = entry
+                .get("params")
+                .and_then(Value::as_object)
+                .unwrap_or_else(|| panic!("{method} params schema must be a non-empty object"));
+            let result = entry
+                .get("result")
+                .and_then(Value::as_object)
+                .unwrap_or_else(|| panic!("{method} result schema must be a non-empty object"));
+            assert!(
+                !params.is_empty(),
+                "{method} params schema must be a non-empty object"
+            );
+            assert!(
+                !result.is_empty(),
+                "{method} result schema must be a non-empty object"
             );
         }
     }

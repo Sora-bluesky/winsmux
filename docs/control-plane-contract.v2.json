@@ -1,0 +1,2500 @@
+{
+  "auth": {
+    "request_field": "auth.token",
+    "required_for_methods": true,
+    "token_env": "WINSMUX_CONTROL_PIPE_TOKEN",
+    "token_file": "%LOCALAPPDATA%\\winsmux\\control-pipe\\token"
+  },
+  "desktop_methods": [
+    "desktop.control_plane.contract",
+    "desktop.summary.snapshot",
+    "desktop.run.explain",
+    "desktop.run.compare",
+    "desktop.run.promote",
+    "desktop.run.pick_winner",
+    "desktop.voice.capture_status"
+  ],
+  "internal_desktop_methods_excluded": [
+    "desktop.workers.status",
+    "desktop.workers.start",
+    "desktop.runtime.roles.apply",
+    "desktop.dogfood.event",
+    "desktop.explorer.list",
+    "desktop.editor.read"
+  ],
+  "jsonrpc": "2.0",
+  "localhost_http": false,
+  "methods": [
+    "desktop.control_plane.contract",
+    "desktop.summary.snapshot",
+    "desktop.run.explain",
+    "desktop.run.compare",
+    "desktop.run.promote",
+    "desktop.run.pick_winner",
+    "desktop.voice.capture_status",
+    "pty.spawn",
+    "pty.write",
+    "pty.resize",
+    "pty.capture",
+    "pty.respawn",
+    "pty.close",
+    "desktop.operator.snapshot",
+    "desktop.operator.submit",
+    "desktop.pairing.confirm"
+  ],
+  "operator_methods": [
+    "desktop.operator.snapshot",
+    "desktop.operator.submit"
+  ],
+  "pairing_methods": [
+    "desktop.pairing.confirm"
+  ],
+  "pipe": "\\\\.\\pipe\\winsmux-control",
+  "pty_methods": [
+    "pty.spawn",
+    "pty.write",
+    "pty.resize",
+    "pty.capture",
+    "pty.respawn",
+    "pty.close"
+  ],
+  "schemas": {
+    "desktop.operator.snapshot": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "lines": {
+            "default": null,
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "OperatorSnapshotParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "output": {
+            "type": "string"
+          },
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "output",
+          "paneId"
+        ],
+        "title": "PtyCaptureResult",
+        "type": "object"
+      }
+    },
+    "desktop.operator.submit": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "OperatorSubmitParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          },
+          "submitted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "paneId",
+          "submitted"
+        ],
+        "title": "OperatorSubmitResult",
+        "type": "object"
+      }
+    },
+    "desktop.pairing.confirm": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "PairingConfirmParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paired": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "paired",
+          "scope",
+          "version"
+        ],
+        "title": "PairingConfirmResult",
+        "type": "object"
+      }
+    },
+    "desktop.run.compare": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "leftRunId": {
+            "type": "string"
+          },
+          "rightRunId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "leftRunId",
+          "rightRunId"
+        ],
+        "title": "DesktopRunCompareParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "DesktopCompareDifference": {
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "left": true,
+              "right": true
+            },
+            "required": [
+              "field",
+              "left",
+              "right"
+            ],
+            "type": "object"
+          },
+          "DesktopCompareRecommendation": {
+            "properties": {
+              "next_action": {
+                "type": "string"
+              },
+              "reconcile_consult": {
+                "type": "boolean"
+              },
+              "winning_run_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "next_action",
+              "reconcile_consult",
+              "winning_run_id"
+            ],
+            "type": "object"
+          },
+          "DesktopCompareRunSide": {
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "changed_files": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "confidence": {
+                "default": null,
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "consultation_ref": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "observation_pack_ref": {
+                "type": "string"
+              },
+              "recommendable": {
+                "type": "boolean"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "consultation_ref",
+              "label",
+              "next_action",
+              "observation_pack_ref",
+              "recommendable",
+              "review_state",
+              "run_id",
+              "state",
+              "task_state"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "confidence_delta": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "differences": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/DesktopCompareDifference"
+            },
+            "type": "array"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "left": {
+            "$ref": "#/definitions/DesktopCompareRunSide"
+          },
+          "left_only_changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "recommend": {
+            "$ref": "#/definitions/DesktopCompareRecommendation"
+          },
+          "right": {
+            "$ref": "#/definitions/DesktopCompareRunSide"
+          },
+          "right_only_changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "shared_changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "generated_at",
+          "left",
+          "left_only_changed_files",
+          "recommend",
+          "right",
+          "right_only_changed_files",
+          "shared_changed_files"
+        ],
+        "title": "DesktopCompareRunsResult",
+        "type": "object"
+      }
+    },
+    "desktop.run.explain": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "DesktopRunExplainParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "DesktopDraftPrGate": {
+            "properties": {
+              "auto_merge_allowed": {
+                "default": false,
+                "type": "boolean"
+              },
+              "draft_pr_url": {
+                "default": "",
+                "type": "string"
+              },
+              "kind": {
+                "default": "",
+                "type": "string"
+              },
+              "merge_requires_human": {
+                "default": false,
+                "type": "boolean"
+              },
+              "state": {
+                "default": "",
+                "type": "string"
+              },
+              "target": {
+                "default": "",
+                "type": "string"
+              },
+              "trigger": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "DesktopExplainActionItem": {
+            "properties": {
+              "event": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "event",
+              "kind",
+              "message",
+              "source",
+              "timestamp"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainConsultationPacket": {
+            "properties": {
+              "confidence": {
+                "format": "double",
+                "type": "number"
+              },
+              "generated_at": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "mode": {
+                "type": "string"
+              },
+              "next_test": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "recommendation": {
+                "type": "string"
+              },
+              "risks": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "slot": {
+                "type": "string"
+              },
+              "target_slot": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "confidence",
+              "generated_at",
+              "kind",
+              "mode",
+              "next_test",
+              "pane_id",
+              "recommendation",
+              "risks",
+              "run_id",
+              "slot",
+              "target_slot",
+              "task_id"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainCurrentState": {
+            "properties": {
+              "activity": {
+                "default": "",
+                "type": "string"
+              },
+              "detail": {
+                "default": "",
+                "type": "string"
+              },
+              "last_event": {
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "last_event",
+              "review_state",
+              "state",
+              "task_state"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainEvidenceDigest": {
+            "properties": {
+              "changed_file_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "changed_files": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "security_blocked": {
+                "type": "string"
+              },
+              "verification_outcome": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "changed_file_count",
+              "next_action",
+              "security_blocked",
+              "verification_outcome"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainExperimentPacket": {
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "command_hash": {
+                "type": "string"
+              },
+              "confidence": {
+                "format": "double",
+                "type": "number"
+              },
+              "consultation_ref": {
+                "type": "string"
+              },
+              "env_fingerprint": {
+                "type": "string"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "observation_pack_ref": {
+                "type": "string"
+              },
+              "result": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "slot": {
+                "type": "string"
+              },
+              "test_plan": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "worktree": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "command_hash",
+              "confidence",
+              "consultation_ref",
+              "env_fingerprint",
+              "hypothesis",
+              "next_action",
+              "observation_pack_ref",
+              "result",
+              "run_id",
+              "slot",
+              "test_plan",
+              "worktree"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainExplanation": {
+            "properties": {
+              "current_state": {
+                "$ref": "#/definitions/DesktopExplainCurrentState"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "reasons": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "current_state",
+              "next_action",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainObservationPack": {
+            "properties": {
+              "changed_files": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "command_hash": {
+                "type": "string"
+              },
+              "env_fingerprint": {
+                "type": "string"
+              },
+              "failing_command": {
+                "type": "string"
+              },
+              "generated_at": {
+                "type": "string"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "slot": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "test_plan": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "working_tree_summary": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "changed_files",
+              "command_hash",
+              "env_fingerprint",
+              "failing_command",
+              "generated_at",
+              "hypothesis",
+              "pane_id",
+              "run_id",
+              "slot",
+              "task_id",
+              "test_plan",
+              "working_tree_summary"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainRecentEvent": {
+            "properties": {
+              "event": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "event",
+              "label",
+              "message",
+              "timestamp"
+            ],
+            "type": "object"
+          },
+          "DesktopExplainRun": {
+            "properties": {
+              "action_items": {
+                "default": [],
+                "items": {
+                  "$ref": "#/definitions/DesktopExplainActionItem"
+                },
+                "type": "array"
+              },
+              "activity": {
+                "default": "",
+                "type": "string"
+              },
+              "agent_role": {
+                "type": "string"
+              },
+              "audit_chain": {
+                "default": null
+              },
+              "blocking": {
+                "type": "boolean"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "changed_file_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "changed_files": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "constraints": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "detail": {
+                "default": "",
+                "type": "string"
+              },
+              "draft_pr_gate": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/DesktopDraftPrGate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "expected_output": {
+                "type": "string"
+              },
+              "experiment_packet": {
+                "$ref": "#/definitions/DesktopExplainExperimentPacket"
+              },
+              "goal": {
+                "type": "string"
+              },
+              "handoff_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "labels": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "last_event": {
+                "type": "string"
+              },
+              "last_event_at": {
+                "type": "string"
+              },
+              "pane_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "pane_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "parent_run_id": {
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "phase_gate": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/DesktopPhaseGate"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "primary_label": {
+                "type": "string"
+              },
+              "primary_pane_id": {
+                "type": "string"
+              },
+              "primary_role": {
+                "type": "string"
+              },
+              "priority": {
+                "type": "string"
+              },
+              "provider_target": {
+                "type": "string"
+              },
+              "read_scope": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "review_required": {
+                "type": "boolean"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "roles": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "safe_trace_refs": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "security_policy": true,
+              "security_verdict": true,
+              "state": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              },
+              "task_type": {
+                "type": "string"
+              },
+              "timeout_policy": {
+                "type": "string"
+              },
+              "tokens_remaining": {
+                "type": "string"
+              },
+              "verification_contract": true,
+              "verification_envelope": {
+                "default": null
+              },
+              "verification_plan": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "verification_result": true,
+              "worktree": {
+                "type": "string"
+              },
+              "write_scope": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "agent_role",
+              "blocking",
+              "branch",
+              "changed_file_count",
+              "constraints",
+              "expected_output",
+              "experiment_packet",
+              "goal",
+              "handoff_refs",
+              "head_sha",
+              "labels",
+              "last_event",
+              "last_event_at",
+              "pane_count",
+              "pane_ids",
+              "parent_run_id",
+              "primary_label",
+              "primary_pane_id",
+              "primary_role",
+              "priority",
+              "provider_target",
+              "read_scope",
+              "review_required",
+              "review_state",
+              "roles",
+              "run_id",
+              "security_policy",
+              "security_verdict",
+              "state",
+              "task",
+              "task_id",
+              "task_state",
+              "task_type",
+              "timeout_policy",
+              "tokens_remaining",
+              "verification_contract",
+              "verification_plan",
+              "verification_result",
+              "worktree",
+              "write_scope"
+            ],
+            "type": "object"
+          },
+          "DesktopPhaseGate": {
+            "properties": {
+              "current_stage": {
+                "default": "",
+                "type": "string"
+              },
+              "order": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "stage": {
+                "default": "",
+                "type": "string"
+              },
+              "stages": {
+                "default": [],
+                "items": {
+                  "$ref": "#/definitions/DesktopPhaseGateStage"
+                },
+                "type": "array"
+              },
+              "status": {
+                "default": "",
+                "type": "string"
+              },
+              "stop_reason": {
+                "default": "",
+                "type": "string"
+              },
+              "stop_required": {
+                "default": false,
+                "type": "boolean"
+              }
+            },
+            "type": "object"
+          },
+          "DesktopPhaseGateStage": {
+            "properties": {
+              "event": {
+                "default": "",
+                "type": "string"
+              },
+              "reason": {
+                "default": "",
+                "type": "string"
+              },
+              "stage": {
+                "default": "",
+                "type": "string"
+              },
+              "status": {
+                "default": "",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "DesktopReviewContract": {
+            "properties": {
+              "checklist_labels": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "issue_ref": {
+                "type": "string"
+              },
+              "pathspec_policy": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/DesktopReviewPathspecPolicy"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "rationale": {
+                "type": "string"
+              },
+              "required_scope": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "source_task": {
+                "type": "string"
+              },
+              "style": {
+                "type": "string"
+              },
+              "version": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "checklist_labels",
+              "issue_ref",
+              "rationale",
+              "required_scope",
+              "source_task",
+              "style",
+              "version"
+            ],
+            "type": "object"
+          },
+          "DesktopReviewPathspecPolicy": {
+            "properties": {
+              "include_definition_hosts": {
+                "type": "boolean"
+              },
+              "incomplete_scope_is_review_gap": {
+                "type": "boolean"
+              },
+              "issue_ref": {
+                "type": "string"
+              },
+              "source_task": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "include_definition_hosts",
+              "incomplete_scope_is_review_gap",
+              "issue_ref",
+              "source_task"
+            ],
+            "type": "object"
+          },
+          "DesktopReviewStateEvidence": {
+            "properties": {
+              "approved_at": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "approved_via": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "failed_at": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "failed_via": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "review_contract_snapshot": {
+                "$ref": "#/definitions/DesktopReviewContract"
+              }
+            },
+            "required": [
+              "review_contract_snapshot"
+            ],
+            "type": "object"
+          },
+          "DesktopReviewStateRecord": {
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "evidence": {
+                "anyOf": [
+                  {
+                    "$ref": "#/definitions/DesktopReviewStateEvidence"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "request": {
+                "$ref": "#/definitions/DesktopReviewStateRequest"
+              },
+              "reviewer": {
+                "$ref": "#/definitions/DesktopReviewStateReviewer"
+              },
+              "status": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "head_sha",
+              "request",
+              "reviewer",
+              "status",
+              "updatedAt"
+            ],
+            "type": "object"
+          },
+          "DesktopReviewStateRequest": {
+            "properties": {
+              "branch": {
+                "type": "string"
+              },
+              "dispatched_at": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "review_contract": {
+                "$ref": "#/definitions/DesktopReviewContract"
+              },
+              "target_review_label": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_review_pane_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_review_role": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_reviewer_label": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_reviewer_pane_id": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "target_reviewer_role": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "branch",
+              "head_sha",
+              "review_contract"
+            ],
+            "type": "object"
+          },
+          "DesktopReviewStateReviewer": {
+            "properties": {
+              "agent_name": {
+                "default": null,
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "pane_id",
+              "role"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "consultation_packet": {
+            "$ref": "#/definitions/DesktopExplainConsultationPacket"
+          },
+          "evidence_digest": {
+            "$ref": "#/definitions/DesktopExplainEvidenceDigest"
+          },
+          "explanation": {
+            "$ref": "#/definitions/DesktopExplainExplanation"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "observation_pack": {
+            "$ref": "#/definitions/DesktopExplainObservationPack"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "recent_events": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/DesktopExplainRecentEvent"
+            },
+            "type": "array"
+          },
+          "review_state": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/DesktopReviewStateRecord"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "run": {
+            "$ref": "#/definitions/DesktopExplainRun"
+          }
+        },
+        "required": [
+          "consultation_packet",
+          "evidence_digest",
+          "explanation",
+          "generated_at",
+          "observation_pack",
+          "project_dir",
+          "run"
+        ],
+        "title": "DesktopExplainPayload",
+        "type": "object"
+      }
+    },
+    "desktop.run.pick_winner": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "confidence": {
+            "default": null,
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "nextTest": {
+            "type": "string"
+          },
+          "peerSlot": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "nextTest",
+          "peerSlot",
+          "recommendation",
+          "runId"
+        ],
+        "title": "DesktopRunPickWinnerParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "confidence": {
+            "format": "double",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "consultation_ref": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "next_test": {
+            "type": "string"
+          },
+          "pane_id": {
+            "type": "string"
+          },
+          "recommendation": {
+            "type": "string"
+          },
+          "risks": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "slot": {
+            "type": "string"
+          },
+          "target_slot": {
+            "type": "string"
+          },
+          "task_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "consultation_ref",
+          "generated_at",
+          "kind",
+          "mode",
+          "next_test",
+          "pane_id",
+          "recommendation",
+          "run_id",
+          "slot",
+          "target_slot",
+          "task_id"
+        ],
+        "title": "DesktopPickWinnerResult",
+        "type": "object"
+      }
+    },
+    "desktop.run.promote": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId"
+        ],
+        "title": "DesktopRunPromoteParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "DesktopPromoteTacticCandidate": {
+            "properties": {
+              "changed_files": {
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "confidence": {
+                "default": null,
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "consultation_ref": {
+                "type": "string"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "observation_pack_ref": {
+                "type": "string"
+              },
+              "packet_type": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "consultation_ref",
+              "hypothesis",
+              "kind",
+              "next_action",
+              "observation_pack_ref",
+              "packet_type",
+              "summary",
+              "title"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "candidate": {
+            "$ref": "#/definitions/DesktopPromoteTacticCandidate"
+          },
+          "candidate_path": {
+            "type": "string"
+          },
+          "candidate_ref": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "candidate",
+          "candidate_path",
+          "candidate_ref",
+          "generated_at",
+          "run_id"
+        ],
+        "title": "DesktopPromoteTacticResult",
+        "type": "object"
+      }
+    },
+    "desktop.summary.snapshot": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "DesktopSummarySnapshotParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "DesktopBoardPane": {
+            "properties": {
+              "activity": {
+                "default": "",
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "changed_file_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "detail": {
+                "default": "",
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "last_event_at": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              },
+              "worktree": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "changed_file_count",
+              "head_sha",
+              "label",
+              "last_event_at",
+              "pane_id",
+              "review_state",
+              "role",
+              "state",
+              "task",
+              "task_state",
+              "worktree"
+            ],
+            "type": "object"
+          },
+          "DesktopBoardSnapshot": {
+            "properties": {
+              "panes": {
+                "items": {
+                  "$ref": "#/definitions/DesktopBoardPane"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "$ref": "#/definitions/DesktopBoardSummary"
+              }
+            },
+            "required": [
+              "panes",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "DesktopBoardSummary": {
+            "properties": {
+              "by_review": {
+                "additionalProperties": {
+                  "format": "uint",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "by_state": {
+                "additionalProperties": {
+                  "format": "uint",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "by_task_state": {
+                "additionalProperties": {
+                  "format": "uint",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "dirty_panes": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "pane_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "review_failed": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "review_passed": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "review_pending": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "tasks_blocked": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "tasks_in_progress": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "by_review",
+              "by_state",
+              "by_task_state",
+              "dirty_panes",
+              "pane_count",
+              "review_failed",
+              "review_passed",
+              "review_pending",
+              "tasks_blocked",
+              "tasks_in_progress"
+            ],
+            "type": "object"
+          },
+          "DesktopDigestItem": {
+            "properties": {
+              "action_item_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "activity": {
+                "default": "",
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "changed_file_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "changed_files": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "confidence": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "consultation_ref": {
+                "type": "string"
+              },
+              "detail": {
+                "default": "",
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "head_short": {
+                "type": "string"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "last_event": {
+                "type": "string"
+              },
+              "last_event_at": {
+                "type": "string"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "observation_pack_ref": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "provider_target": {
+                "type": "string"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "security_blocked": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              },
+              "verification_outcome": {
+                "type": "string"
+              },
+              "worktree": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action_item_count",
+              "branch",
+              "changed_file_count",
+              "changed_files",
+              "consultation_ref",
+              "head_sha",
+              "head_short",
+              "hypothesis",
+              "label",
+              "last_event",
+              "last_event_at",
+              "next_action",
+              "observation_pack_ref",
+              "pane_id",
+              "provider_target",
+              "review_state",
+              "role",
+              "run_id",
+              "security_blocked",
+              "task",
+              "task_id",
+              "task_state",
+              "verification_outcome",
+              "worktree"
+            ],
+            "type": "object"
+          },
+          "DesktopDigestSnapshot": {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/definitions/DesktopDigestItem"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "$ref": "#/definitions/DesktopDigestSummary"
+              }
+            },
+            "required": [
+              "items",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "DesktopDigestSummary": {
+            "properties": {
+              "actionable_items": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "dirty_items": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "item_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "review_failed": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "review_pending": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "actionable_items",
+              "dirty_items",
+              "item_count",
+              "review_failed",
+              "review_pending"
+            ],
+            "type": "object"
+          },
+          "DesktopInboxItem": {
+            "properties": {
+              "activity": {
+                "default": "",
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "changed_file_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "detail": {
+                "default": "",
+                "type": "string"
+              },
+              "event": {
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "priority": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "source": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              },
+              "task_id": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "changed_file_count",
+              "event",
+              "head_sha",
+              "kind",
+              "label",
+              "message",
+              "pane_id",
+              "priority",
+              "review_state",
+              "role",
+              "source",
+              "task",
+              "task_id",
+              "task_state",
+              "timestamp"
+            ],
+            "type": "object"
+          },
+          "DesktopInboxSnapshot": {
+            "properties": {
+              "items": {
+                "items": {
+                  "$ref": "#/definitions/DesktopInboxItem"
+                },
+                "type": "array"
+              },
+              "summary": {
+                "$ref": "#/definitions/DesktopInboxSummary"
+              }
+            },
+            "required": [
+              "items",
+              "summary"
+            ],
+            "type": "object"
+          },
+          "DesktopInboxSummary": {
+            "properties": {
+              "by_kind": {
+                "additionalProperties": {
+                  "format": "uint",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              "item_count": {
+                "format": "uint",
+                "minimum": 0.0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "by_kind",
+              "item_count"
+            ],
+            "type": "object"
+          },
+          "DesktopRunProjection": {
+            "properties": {
+              "activity": {
+                "default": "",
+                "type": "string"
+              },
+              "branch": {
+                "type": "string"
+              },
+              "changed_files": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "confidence": {
+                "format": "double",
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "consultation_ref": {
+                "type": "string"
+              },
+              "detail": {
+                "default": "",
+                "type": "string"
+              },
+              "head_sha": {
+                "type": "string"
+              },
+              "head_short": {
+                "type": "string"
+              },
+              "hypothesis": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "next_action": {
+                "type": "string"
+              },
+              "observation_pack_ref": {
+                "type": "string"
+              },
+              "pane_id": {
+                "type": "string"
+              },
+              "phase": {
+                "default": "",
+                "type": "string"
+              },
+              "provider_target": {
+                "type": "string"
+              },
+              "reasons": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "review_state": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "security_blocked": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              },
+              "task_state": {
+                "type": "string"
+              },
+              "verification_outcome": {
+                "type": "string"
+              },
+              "worktree": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "branch",
+              "changed_files",
+              "consultation_ref",
+              "head_sha",
+              "head_short",
+              "hypothesis",
+              "label",
+              "next_action",
+              "observation_pack_ref",
+              "pane_id",
+              "provider_target",
+              "reasons",
+              "review_state",
+              "run_id",
+              "security_blocked",
+              "summary",
+              "task",
+              "task_state",
+              "verification_outcome",
+              "worktree"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "board": {
+            "$ref": "#/definitions/DesktopBoardSnapshot"
+          },
+          "digest": {
+            "$ref": "#/definitions/DesktopDigestSnapshot"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "inbox": {
+            "$ref": "#/definitions/DesktopInboxSnapshot"
+          },
+          "project_dir": {
+            "type": "string"
+          },
+          "run_projections": {
+            "items": {
+              "$ref": "#/definitions/DesktopRunProjection"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "board",
+          "digest",
+          "generated_at",
+          "inbox",
+          "project_dir",
+          "run_projections"
+        ],
+        "title": "DesktopSummarySnapshot",
+        "type": "object"
+      }
+    },
+    "desktop.voice.capture_status": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "DesktopVoiceCaptureStatusParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "definitions": {
+          "DesktopVoiceCaptureBrowserFallbackStatus": {
+            "properties": {
+              "expected": {
+                "type": "boolean"
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "expected",
+              "reason"
+            ],
+            "type": "object"
+          },
+          "DesktopVoiceCaptureNativeStatus": {
+            "properties": {
+              "available": {
+                "type": "boolean"
+              },
+              "device": {
+                "type": "string"
+              },
+              "device_count": {
+                "format": "uint32",
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              "meter_level": {
+                "format": "double",
+                "type": "number"
+              },
+              "meter_supported": {
+                "type": "boolean"
+              },
+              "permission": {
+                "type": "string"
+              },
+              "reason": {
+                "type": "string"
+              },
+              "restart_supported": {
+                "type": "boolean"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "available",
+              "device",
+              "device_count",
+              "meter_level",
+              "meter_supported",
+              "permission",
+              "reason",
+              "restart_supported",
+              "state"
+            ],
+            "type": "object"
+          }
+        },
+        "properties": {
+          "browser_fallback": {
+            "$ref": "#/definitions/DesktopVoiceCaptureBrowserFallbackStatus"
+          },
+          "capture_mode": {
+            "type": "string"
+          },
+          "native": {
+            "$ref": "#/definitions/DesktopVoiceCaptureNativeStatus"
+          },
+          "state_contract": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "browser_fallback",
+          "capture_mode",
+          "native",
+          "state_contract",
+          "version"
+        ],
+        "title": "DesktopVoiceCaptureStatus",
+        "type": "object"
+      }
+    },
+    "pty.capture": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "lines": {
+            "default": null,
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyCaptureParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "output": {
+            "type": "string"
+          },
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "output",
+          "paneId"
+        ],
+        "title": "PtyCaptureResult",
+        "type": "object"
+      }
+    },
+    "pty.close": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyCloseParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyPaneResult",
+        "type": "object"
+      }
+    },
+    "pty.resize": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cols": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "paneId": {
+            "type": "string"
+          },
+          "rows": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "cols",
+          "paneId",
+          "rows"
+        ],
+        "title": "PtyResizeParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyPaneResult",
+        "type": "object"
+      }
+    },
+    "pty.respawn": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyRespawnParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyPaneResult",
+        "type": "object"
+      }
+    },
+    "pty.spawn": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "cols": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "cwd": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "paneId": {
+            "type": "string"
+          },
+          "rows": {
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "startupInput": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "cols",
+          "paneId",
+          "rows"
+        ],
+        "title": "PtySpawnParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyPaneResult",
+        "type": "object"
+      }
+    },
+    "pty.write": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "data",
+          "paneId"
+        ],
+        "title": "PtyWriteParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "paneId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paneId"
+        ],
+        "title": "PtyPaneResult",
+        "type": "object"
+      }
+    }
+  },
+  "scope": "external_control_pipe",
+  "transport": "named_pipe_json_rpc",
+  "version": 2,
+  "websocket": false
+}

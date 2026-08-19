@@ -1,5 +1,6 @@
 mod control_pipe;
 mod desktop_backend;
+mod desktop_control_plane_params;
 mod desktop_companion_cli;
 mod desktop_events;
 mod desktop_session_restore;
@@ -1767,10 +1768,11 @@ fn capture_pty(
         .map_err(|e| e.to_string())?
         .clone();
     let output = limit_pty_capture_output(&output, lines);
-    Ok(serde_json::json!({
-        "paneId": pane_id,
-        "output": output
-    }))
+    serde_json::to_value(pty_backend::PtyCaptureResult {
+        pane_id: pane_id.to_string(),
+        output,
+    })
+    .map_err(|err| err.to_string())
 }
 
 fn submit_operator_text_with(
@@ -1989,11 +1991,17 @@ impl PtyCommandTransport for TauriPtyTransport {
                     cwd.clone(),
                     "pty.spawn",
                 )?;
-                Ok(serde_json::json!({ "paneId": pane_id }))
+                serde_json::to_value(pty_backend::PtyPaneResult {
+                    pane_id: pane_id.clone(),
+                })
+                .map_err(|err| err.to_string())
             }
             PtyCommand::Write { pane_id, data } => {
                 write_pty(&self.app, pane_id, data)?;
-                Ok(serde_json::json!({ "paneId": pane_id }))
+                serde_json::to_value(pty_backend::PtyPaneResult {
+                    pane_id: pane_id.clone(),
+                })
+                .map_err(|err| err.to_string())
             }
             PtyCommand::Resize {
                 pane_id,
@@ -2001,7 +2009,10 @@ impl PtyCommandTransport for TauriPtyTransport {
                 rows,
             } => {
                 resize_pty(&self.app, pane_id, *cols, *rows)?;
-                Ok(serde_json::json!({ "paneId": pane_id }))
+                serde_json::to_value(pty_backend::PtyPaneResult {
+                    pane_id: pane_id.clone(),
+                })
+                .map_err(|err| err.to_string())
             }
             PtyCommand::Capture { pane_id, lines } => capture_pty(&self.app, pane_id, *lines),
             PtyCommand::OperatorSnapshot { lines } => {
@@ -2012,18 +2023,25 @@ impl PtyCommandTransport for TauriPtyTransport {
                 submit_after_paste,
             } => {
                 submit_operator_text(&self.app, text, *submit_after_paste)?;
-                Ok(serde_json::json!({
-                    "paneId": pty_backend::OPERATOR_PANE_ID,
-                    "submitted": true
-                }))
+                serde_json::to_value(pty_backend::OperatorSubmitResult {
+                    pane_id: pty_backend::OPERATOR_PANE_ID.to_string(),
+                    submitted: true,
+                })
+                .map_err(|err| err.to_string())
             }
             PtyCommand::Respawn { pane_id } => {
                 respawn_pty(&self.app, pane_id)?;
-                Ok(serde_json::json!({ "paneId": pane_id }))
+                serde_json::to_value(pty_backend::PtyPaneResult {
+                    pane_id: pane_id.clone(),
+                })
+                .map_err(|err| err.to_string())
             }
             PtyCommand::Close { pane_id } => {
                 close_pty(&self.app, pane_id)?;
-                Ok(serde_json::json!({ "paneId": pane_id }))
+                serde_json::to_value(pty_backend::PtyPaneResult {
+                    pane_id: pane_id.clone(),
+                })
+                .map_err(|err| err.to_string())
             }
         }
     }

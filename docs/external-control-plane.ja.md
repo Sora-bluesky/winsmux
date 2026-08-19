@@ -107,7 +107,8 @@ winsmux operator-snapshot --lines 80
 ## 公開メソッド
 
 named pipe は、現時点で次のデスクトップメソッドを公開します。
-このページのメソッド一覧は `docs/control-plane-contract.v1.json` と CI で照合されます。
+このページのメソッド一覧は `docs/control-plane-contract.v2.json` と CI で照合されます。
+v2 は、ハンドラが消費する同じ serde 型から導出したメソッドごとのパラメータ／結果スキーマを追加します。
 
 - `desktop.control_plane.contract`
 - `desktop.pairing.confirm`
@@ -186,7 +187,7 @@ MCP クライアントは `winsmux_automation_contract`、`winsmux_automation_di
 
 ## クライアント互換性
 
-ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。同じ文書の CI 検査済みコピーが `docs/control-plane-contract.v1.json` にあります。`control_pipe_contract()` の pretty-print で、ライブの pipe 応答と一致し続けます。
+ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。同じ文書の CI 検査済みコピーが `docs/control-plane-contract.v2.json` にあります。`control_pipe_contract()` の pretty-print で、ライブの pipe 応答と一致し続けます。
 
 空でない `WINSMUX_CONTROL_PIPE_TOKEN` も正確なトークンファイルも認証に使えない場合、または要求に `auth.token` がない場合、契約取得以外の呼び出しは安全側で失敗します。
 
