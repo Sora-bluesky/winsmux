@@ -38,6 +38,8 @@
     "test:worker-readiness-prompt": "node ./scripts/worker-readiness-prompt-check.mjs",
     "generate:common-contract-bindings": "node ./scripts/generate-common-contract-bindings.mjs",
     "test:common-contract-package": "node ./scripts/generate-common-contract-bindings.mjs --check && node ./scripts/common-contract-package-check.mjs",
+    "generate:control-plane-bindings": "node ./scripts/generate-control-plane-bindings.mjs",
+    "test:control-plane-bindings": "node ./scripts/generate-control-plane-bindings.mjs --check",
     "test:bakeoff-runner": "node ./scripts/bakeoff-runner-check.mjs",
     "test:worker-start-planning": "node ./scripts/worker-start-planning-check.mjs",
     "test:first-run-onboarding": "node ./scripts/first-run-onboarding-check.mjs",
