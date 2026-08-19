@@ -3,9 +3,10 @@
 winsmux exposes a local Windows named-pipe JSON-RPC endpoint for external
 automation clients that run on the same machine as the desktop app.
 
-A new external agent can follow this page from a already-running desktop (no
-`WINSMUX_CONTROL_PIPE_TOKEN` set before launch) to a successful
-`desktop.operator.snapshot` without reading source.
+A new external agent can follow this page from a fresh install (start the
+desktop normally, with no `WINSMUX_CONTROL_PIPE_TOKEN` set before launch) or
+from an already-running desktop to a successful `desktop.operator.snapshot`
+without reading source.
 
 ## Transport
 
@@ -81,19 +82,20 @@ Do not write the token directly in shell history.
 
 ## Connect from zero to operator-snapshot
 
-If a desktop may already be running, start with `winsmux automation-discover`.
-`desktop_running` is true only while the named pipe answers; a leftover token
-file is not liveness. Pair once with `winsmux automation-pair` before calling
-authenticated methods. That proves the current control-pipe token against the
-live desktop. Do not print the token.
+A leftover token file is not liveness. Pair once with `winsmux automation-pair`
+before calling authenticated methods. Do not print the token.
 
-1. Start the desktop app normally, or use a launcher that may still set
-   `WINSMUX_CONTROL_PIPE_TOKEN`.
-2. Confirm the contract (no token):
+### Fresh install
+
+1. Install winsmux, then start the desktop app normally. Do not set
+   `WINSMUX_CONTROL_PIPE_TOKEN` before launch.
+2. Discover:
 
 ```powershell
-winsmux control-rpc '{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}'
+winsmux automation-discover
 ```
+
+Expect `desktop_running` true, `auth_source` `"file"`, and `connect_ready` true.
 
 3. Pair once:
 
@@ -101,12 +103,25 @@ winsmux control-rpc '{"jsonrpc":"2.0","id":"contract","method":"desktop.control_
 winsmux automation-pair
 ```
 
-4. Capture operator output. The CLI reads the env override if set, otherwise
-   the exact token file:
+Expect `paired` true.
+
+4. Capture operator output. The CLI reads the exact token file:
 
 ```powershell
 winsmux operator-snapshot --lines 80
 ```
+
+### Already-running desktop
+
+If a desktop may already be running, start with `winsmux automation-discover`.
+`desktop_running` is true only while the named pipe answers.
+
+1. Discover (same command as above).
+2. Pair once (`winsmux automation-pair`).
+3. Capture operator output (`winsmux operator-snapshot --lines 80`).
+
+Some launchers still set `WINSMUX_CONTROL_PIPE_TOKEN`. That env remains
+supported and wins over the token file.
 
 Equivalent raw JSON-RPC:
 

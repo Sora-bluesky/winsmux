@@ -2,7 +2,7 @@
 
 winsmux は、デスクトップアプリと同じ Windows マシンで動く外部自動化クライアント向けに、ローカルの named pipe JSON-RPC エンドポイントを公開します。
 
-すでに起動しているデスクトップ（起動前に `WINSMUX_CONTROL_PIPE_TOKEN` をセットしていない通常起動）から、ソースを読まずに `desktop.operator.snapshot` まで到達できます。
+すでに起動しているデスクトップ、または通常起動の新規インストール（起動前に `WINSMUX_CONTROL_PIPE_TOKEN` をセットしない）から、ソースを読まずに `desktop.operator.snapshot` まで到達できます。
 
 ## 伝送方式
 
@@ -57,18 +57,42 @@ winsmux は、デスクトップアプリと同じ Windows マシンで動く外
 
 ## ゼロから operator-snapshot まで
 
-1. デスクトップアプリを通常起動するか、まだ env をセットするランチャーを使います。
-2. 契約をトークンなしで確認します。
+残っているトークンファイルは生存証明ではありません。認証が必要なメソッドの前に、一度 `winsmux automation-pair` で所持証明してください。トークン値は印刷しないでください。
+
+### 新規インストール
+
+1. winsmux を入れ、デスクトップアプリを通常起動します。起動前に `WINSMUX_CONTROL_PIPE_TOKEN` をセットしないでください。
+2. 発見します。
 
 ```powershell
-winsmux control-rpc '{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}'
+winsmux automation-discover
 ```
 
-3. operator 出力を取得します。CLI は env 上書きがあればそれを、無ければ正確なトークンファイルを使います。
+`desktop_running` が true、`auth_source` が `"file"`、`connect_ready` が true であることを期待します。
+
+3. 一度 pairing します。
+
+```powershell
+winsmux automation-pair
+```
+
+`paired` が true であることを期待します。
+
+4. operator 出力を取得します。CLI は正確なトークンファイルを使います。
 
 ```powershell
 winsmux operator-snapshot --lines 80
 ```
+
+### すでに起動しているデスクトップ
+
+デスクトップがすでに動いているかもしれないときは、まず `winsmux automation-discover` から始めます。`desktop_running` は named pipe が応答しているときだけ true です。
+
+1. 発見します（上と同じコマンド）。
+2. 一度 pairing します（`winsmux automation-pair`）。
+3. operator 出力を取得します（`winsmux operator-snapshot --lines 80`）。
+
+一部のランチャーは、いまも `WINSMUX_CONTROL_PIPE_TOKEN` をセットします。その env は引き続き有効で、トークンファイルより優先します。
 
 同等の生 JSON-RPC:
 
@@ -85,6 +109,7 @@ winsmux operator-snapshot --lines 80
 named pipe は、現時点で次のデスクトップメソッドを公開します。
 
 - `desktop.control_plane.contract`
+- `desktop.pairing.confirm`
 - `desktop.summary.snapshot`
 - `desktop.run.explain`
 - `desktop.run.compare`
