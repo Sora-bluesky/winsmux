@@ -213,6 +213,11 @@ argument-array command invocation, input validation, and local safety policy.
 If an upstream protocol client or official transport behavior can handle a
 case, winsmux should prefer that path before adding local compatibility code.
 
+MCP clients reach that same named-pipe contract through the
+`winsmux_automation_contract` tool, which runs native
+`winsmux automation-contract` and returns the JSON. It does not go through
+PowerShell.
+
 ## Client Compatibility
 
 Local automation clients can connect if they run on the same Windows host and

@@ -87,6 +87,12 @@ const TOOLS = [
       required: ["task"],
     },
   },
+  {
+    name: "winsmux_automation_contract",
+    description:
+      "Return desktop.control_plane.contract, the same JSON as the named pipe and `winsmux automation-contract`",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
 ];
 
 // --- Bridge Invocation ---
@@ -113,6 +119,31 @@ function invokeBridge(args) {
   const bridgeArgs = ["-NoProfile", "-File", BRIDGE_SCRIPT, ...args.map((a) => String(a))];
   try {
     const stdout = execFileSync("pwsh", bridgeArgs, {
+      encoding: "utf8",
+      timeout: 30000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return { success: true, output: stdout.trimEnd() };
+  } catch (err) {
+    const stderr = err.stderr ? err.stderr.trimEnd() : "";
+    const stdout = err.stdout ? err.stdout.trimEnd() : "";
+    return { success: false, output: stderr || stdout || err.message };
+  }
+}
+
+function resolveNativeCli() {
+  const override = process.env.WINSMUX_CLI;
+  if (typeof override === "string" && override.trim() !== "") {
+    return override.trim();
+  }
+  return "winsmux";
+}
+
+function invokeNativeCli(args) {
+  const bin = resolveNativeCli();
+  try {
+    const stdout = execFileSync(bin, args.map((a) => String(a)), {
       encoding: "utf8",
       timeout: 30000,
       windowsHide: true,
@@ -157,6 +188,9 @@ function handleToolCall(name, args) {
 
     case "winsmux_pipeline":
       return invokeBridge(["pipeline", args.task]);
+
+    case "winsmux_automation_contract":
+      return invokeNativeCli(["automation-contract"]);
 
     default:
       return { success: false, output: `Unknown tool: ${name}` };
