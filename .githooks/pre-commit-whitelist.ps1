@@ -179,6 +179,8 @@ $whitelistPatterns = @(
     'tests/fixtures/workspace-recipes/valid-v1.yaml',
     'tests/test_support/rust_parity.rs',
     'packages/winsmux/**',
+    'sdk/python/control_plane_contract.py',
+    'sdk/typescript/control-plane-contract.ts',
     'winsmux-app/scripts/*.mjs',
     'winsmux-app/scripts/*.ps1',
     'winsmux-app/public/**',

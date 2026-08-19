@@ -133,6 +133,10 @@ jobs:
         working-directory: winsmux-app
         run: npm run test:automation-driver-pool
 
+      - name: Check control plane bindings drift
+        working-directory: winsmux-app
+        run: npm run test:control-plane-bindings
+
   pester:
     name: Pester Tests (${{ matrix.name }})
     runs-on: windows-latest
