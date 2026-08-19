@@ -1267,70 +1267,73 @@ mod tests {
         }
     }
 
-    #[test]
-    fn control_pipe_returns_external_contract_matching_allowlist() {
+    fn automation_contract_jsonrpc_response() -> Value {
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#;
         let pty_transport = StubPtyTransport::new();
         let response =
             handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
-        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+        serde_json::from_slice(&response).expect("response should be JSON")
+    }
+
+    fn assert_automation_contract_result(result: &Value) {
+        assert_eq!(result["version"], 1);
+        assert_eq!(result["scope"], "external_control_pipe");
+        assert_eq!(result["transport"], "named_pipe_json_rpc");
+        assert_eq!(result["pipe"], WINSMUX_CONTROL_PIPE_NAME);
+        assert_eq!(result["localhost_http"], false);
+        assert_eq!(result["websocket"], false);
+        assert_eq!(result["auth"]["required_for_methods"], true);
+        assert_eq!(result["auth"]["token_env"], WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+        assert_eq!(
+            result["auth"]["token_file"],
+            WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE
+        );
+        assert_eq!(result["auth"]["request_field"], "auth.token");
+        assert_eq!(result["desktop_methods"], json!(DESKTOP_CONTROL_PIPE_METHODS));
+        assert_eq!(result["pty_methods"], json!(PTY_CONTROL_PIPE_METHODS));
+        assert_eq!(
+            result["operator_methods"],
+            json!(OPERATOR_CONTROL_PIPE_METHODS)
+        );
+        assert_eq!(result["methods"], json!(control_pipe_methods()));
+        assert_eq!(
+            result["internal_desktop_methods_excluded"],
+            json!(CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS)
+        );
+        let methods = result["methods"].as_array().expect("methods");
+        for excluded in CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS {
+            assert!(
+                !methods.iter().any(|method| method.as_str() == Some(*excluded)),
+                "excluded internal method leaked: {excluded}"
+            );
+        }
+        assert!(methods
+            .iter()
+            .any(|method| method.as_str() == Some("pty.capture")));
+        assert!(methods
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.operator.snapshot")));
+        assert!(methods
+            .iter()
+            .any(|method| method.as_str() == Some("desktop.operator.submit")));
+    }
+
+    #[test]
+    fn control_pipe_returns_external_contract_matching_allowlist() {
+        let value = automation_contract_jsonrpc_response();
 
         assert_eq!(value["jsonrpc"], "2.0");
         assert_eq!(value["id"], 1);
-        assert_eq!(value["result"]["version"], 1);
-        assert_eq!(value["result"]["scope"], "external_control_pipe");
-        assert_eq!(value["result"]["transport"], "named_pipe_json_rpc");
-        assert_eq!(value["result"]["pipe"], WINSMUX_CONTROL_PIPE_NAME);
-        assert_eq!(value["result"]["localhost_http"], false);
-        assert_eq!(value["result"]["websocket"], false);
-        assert_eq!(value["result"]["auth"]["required_for_methods"], true);
-        assert_eq!(
-            value["result"]["auth"]["token_env"],
-            WINSMUX_CONTROL_PIPE_TOKEN_ENV
-        );
-        assert_eq!(
-            value["result"]["auth"]["token_file"],
-            WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE
-        );
-        assert_eq!(value["result"]["auth"]["request_field"], "auth.token");
-        assert_eq!(
-            value["result"]["desktop_methods"],
-            json!(DESKTOP_CONTROL_PIPE_METHODS)
-        );
-        assert_eq!(
-            value["result"]["pty_methods"],
-            json!(PTY_CONTROL_PIPE_METHODS)
-        );
-        assert_eq!(
-            value["result"]["operator_methods"],
-            json!(OPERATOR_CONTROL_PIPE_METHODS)
-        );
-        assert_eq!(value["result"]["methods"], json!(control_pipe_methods()));
-        assert!(!value["result"]["methods"]
-            .as_array()
-            .expect("methods")
-            .iter()
-            .any(|method| method.as_str() == Some("desktop.editor.read")));
-        assert!(!value["result"]["methods"]
-            .as_array()
-            .expect("methods")
-            .iter()
-            .any(|method| method.as_str() == Some("desktop.explorer.list")));
-        assert!(value["result"]["methods"]
-            .as_array()
-            .expect("methods")
-            .iter()
-            .any(|method| method.as_str() == Some("pty.capture")));
-        assert!(value["result"]["methods"]
-            .as_array()
-            .expect("methods")
-            .iter()
-            .any(|method| method.as_str() == Some("desktop.operator.snapshot")));
-        assert!(value["result"]["methods"]
-            .as_array()
-            .expect("methods")
-            .iter()
-            .any(|method| method.as_str() == Some("desktop.operator.submit")));
+        assert_automation_contract_result(&value["result"]);
+    }
+
+    #[test]
+    fn automation_contract_matches_pipe_allowlist() {
+        // Native CLI `automation-contract` prints this JSON-RPC `result` object.
+        // Pipe-name override is forbidden, so CI cannot E2E the live named pipe;
+        // this Desktop test is the frozen allowlist proof (source of truth stays here).
+        let value = automation_contract_jsonrpc_response();
+        assert_automation_contract_result(&value["result"]);
     }
 
     #[test]

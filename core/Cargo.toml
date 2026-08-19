@@ -51,6 +51,10 @@ name = "operator_cli"
 path = "tests-rs/operator_cli.rs"
 
 [[test]]
+name = "automation_contract"
+path = "tests-rs/automation_contract.rs"
+
+[[test]]
 name = "condensed_events"
 path = "tests-rs/condensed_events.rs"
 
@@ -111,6 +115,8 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Memory",
     "Win32_System_DataExchange",
     "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_Security",
 ] }
 
 [[bin]]

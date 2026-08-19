@@ -26,6 +26,7 @@ use pty_backend::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -79,20 +80,26 @@ fn normalize_existing_launch_project_dir(value: &str) -> Option<String> {
 
 fn resolve_initial_project_dir_from_args<I>(args: I) -> Option<String>
 where
-    I: IntoIterator<Item = String>,
+    I: IntoIterator,
+    I::Item: AsRef<OsStr>,
 {
     let mut args = args.into_iter();
     let _ = args.next();
 
     while let Some(arg) = args.next() {
-        let trimmed = arg.trim();
+        let Some(trimmed) = arg.as_ref().to_str().map(str::trim) else {
+            continue;
+        };
         if trimmed.is_empty() || trimmed == "--" {
             continue;
         }
 
         if trimmed == "--project-dir" || trimmed == "--workspace" {
             if let Some(value) = args.next() {
-                if let Some(path) = normalize_existing_launch_project_dir(&value) {
+                let Some(value) = value.as_ref().to_str() else {
+                    continue;
+                };
+                if let Some(path) = normalize_existing_launch_project_dir(value) {
                     return Some(path);
                 }
             }
@@ -127,7 +134,7 @@ where
 
 #[tauri::command]
 fn desktop_initial_project_dir() -> Option<String> {
-    resolve_initial_project_dir_from_args(std::env::args())
+    resolve_initial_project_dir_from_args(std::env::args_os())
 }
 
 const ORCHESTRA_MODE_RELATIVE_PATH: &str = ".winsmux/orchestra-mode.json";
@@ -2190,6 +2197,24 @@ mod tests {
         ]);
 
         assert!(resolved.is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn desktop_initial_project_dir_skips_undecodable_argv() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+
+        let project_dir = make_temp_launch_project("undecodable");
+        let project_arg = project_dir.to_string_lossy().to_string();
+        let resolved = resolve_initial_project_dir_from_args([
+            OsString::from("winsmux-app.exe"),
+            OsString::from_wide(&[0xD800]),
+            OsString::from("--project-dir"),
+            OsString::from(project_arg.as_str()),
+        ]);
+        assert_eq!(resolved.as_deref(), Some(project_arg.as_str()));
+        let _ = std::fs::remove_dir_all(project_dir);
     }
 
     #[test]

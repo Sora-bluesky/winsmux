@@ -42,6 +42,7 @@ mod instruction_pack;
 mod prompt_bundle;
 mod worker_artifact;
 mod project_settings_render;
+mod control_pipe_client;
 mod client;
 mod app;
 mod ssh_input;
@@ -921,8 +922,24 @@ mod tests {
     }
 }
 
+fn decode_cli_args() -> io::Result<Vec<String>> {
+    let mut decoded = Vec::new();
+    for (index, arg) in env::args_os().enumerate() {
+        match arg.into_string() {
+            Ok(value) => decoded.push(value),
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("argument {index} is not valid Unicode"),
+                ));
+            }
+        }
+    }
+    Ok(decoded)
+}
+
 fn run_main() -> io::Result<()> {
-    let args: Vec<String> = env::args().collect();
+    let args = decode_cli_args()?;
 
     // Private, side-effect-free bridge used by the PowerShell settings writer.
     // Handle it before runtime cleanup so rendering cannot mutate session state.
@@ -1088,6 +1105,10 @@ fn run_main() -> io::Result<()> {
             return Ok(());
         }
         _ => {}
+    }
+
+    if cmd == control_pipe_client::AUTOMATION_CONTRACT_COMMAND {
+        return control_pipe_client::run_automation_contract_command();
     }
 
     if is_winsmux_core_bridge_command(cmd) {
