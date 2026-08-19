@@ -1588,6 +1588,253 @@ mod tests {
         );
     }
 
+    fn repo_root_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn surface_matrix_sentinel(doc_name: &str) -> &'static str {
+        if doc_name.ends_with(".ja.md") {
+            "この surface 互換マトリクスは、チェックイン済み v2 契約成果物に対して CI でゲートします。"
+        } else {
+            "This surface compatibility matrix is CI-gated against the checked-in v2 contract artifact."
+        }
+    }
+
+    fn frozen_surface_matrix_cells() -> Vec<(&'static str, &'static str, &'static str, &'static str)>
+    {
+        vec![
+            (
+                "desktop.control_plane.contract",
+                "yes",
+                "automation-contract",
+                "winsmux_automation_contract",
+            ),
+            (
+                "desktop.summary.snapshot",
+                "yes",
+                "control-rpc only",
+                "—",
+            ),
+            ("desktop.run.explain", "yes", "control-rpc only", "—"),
+            ("desktop.run.compare", "yes", "control-rpc only", "—"),
+            ("desktop.run.promote", "yes", "control-rpc only", "—"),
+            (
+                "desktop.run.pick_winner",
+                "yes",
+                "control-rpc only",
+                "—",
+            ),
+            (
+                "desktop.voice.capture_status",
+                "yes",
+                "control-rpc only",
+                "—",
+            ),
+            ("pty.spawn", "yes", "control-rpc only", "—"),
+            ("pty.write", "yes", "control-rpc only", "—"),
+            ("pty.resize", "yes", "control-rpc only", "—"),
+            ("pty.capture", "yes", "control-rpc only", "—"),
+            ("pty.respawn", "yes", "control-rpc only", "—"),
+            ("pty.close", "yes", "control-rpc only", "—"),
+            (
+                "desktop.operator.snapshot",
+                "yes",
+                "operator-snapshot (ps1)",
+                "—",
+            ),
+            (
+                "desktop.operator.submit",
+                "yes",
+                "operator-submit (ps1)",
+                "—",
+            ),
+            (
+                "desktop.pairing.confirm",
+                "yes",
+                "automation-pair",
+                "winsmux_automation_pair",
+            ),
+        ]
+    }
+
+    fn extract_surface_matrix_rows(
+        markdown: &str,
+        sentinel: &str,
+    ) -> Vec<(String, String, String, String)> {
+        let occurrences = markdown.matches(sentinel).count();
+        assert_eq!(
+            occurrences, 1,
+            "surface matrix sentinel must occur exactly once: {sentinel}"
+        );
+        let after = markdown.split_once(sentinel).expect("sentinel present").1;
+        let mut rows = Vec::new();
+        let mut seen_header = false;
+        for line in after.lines() {
+            let trimmed = line.trim();
+            if !trimmed.starts_with('|') {
+                if seen_header && !rows.is_empty() {
+                    break;
+                }
+                continue;
+            }
+            let cells: Vec<&str> = trimmed
+                .trim_matches('|')
+                .split('|')
+                .map(str::trim)
+                .collect();
+            if cells.len() != 4 {
+                continue;
+            }
+            if cells[0].eq_ignore_ascii_case("Method") {
+                seen_header = true;
+                continue;
+            }
+            if cells.iter().all(|cell| {
+                cell.chars()
+                    .all(|ch| ch == '-' || ch == ':' || ch.is_whitespace())
+            }) {
+                continue;
+            }
+            rows.push((
+                cells[0].to_string(),
+                cells[1].to_string(),
+                cells[2].to_string(),
+                cells[3].to_string(),
+            ));
+        }
+        assert!(
+            seen_header && !rows.is_empty(),
+            "surface matrix table missing after sentinel: {sentinel}"
+        );
+        rows
+    }
+
+    fn assert_surface_matrix_first_source_pins() {
+        let root = repo_root_path();
+        let ps1 = fs::read_to_string(root.join("scripts/winsmux-core.ps1")).unwrap_or_else(|err| {
+            panic!("read winsmux-core.ps1: {err}");
+        });
+        assert!(
+            ps1.contains("-Method 'desktop.operator.snapshot'"),
+            "ps1 must still send desktop.operator.snapshot"
+        );
+        assert!(
+            ps1.contains("-Method 'desktop.operator.submit'"),
+            "ps1 must still send desktop.operator.submit"
+        );
+
+        let rust = fs::read_to_string(root.join("core/src/control_pipe_client.rs")).unwrap_or_else(
+            |err| panic!("read control_pipe_client.rs: {err}"),
+        );
+        assert!(
+            rust.contains("pub const AUTOMATION_CONTRACT_COMMAND: &str = \"automation-contract\""),
+            "native automation-contract constant missing"
+        );
+        assert!(
+            rust.contains("pub const AUTOMATION_PAIR_COMMAND: &str = \"automation-pair\""),
+            "native automation-pair constant missing"
+        );
+        assert!(
+            rust.contains("\"method\": \"desktop.pairing.confirm\""),
+            "native pairing request must still name desktop.pairing.confirm"
+        );
+
+        let mcp = fs::read_to_string(root.join("winsmux-core/mcp-server.js")).unwrap_or_else(|err| {
+            panic!("read mcp-server.js: {err}");
+        });
+        assert!(
+            mcp.contains("invokeNativeCli([\"automation-contract\"])"),
+            "MCP contract tool must still invoke native automation-contract"
+        );
+        assert!(
+            mcp.contains("invokeNativeCli([\"automation-pair\"])"),
+            "MCP pair tool must still invoke native automation-pair"
+        );
+    }
+
+    fn assert_doc_surface_matrix_matches_artifact(doc_name: &str) {
+        let markdown = fs::read_to_string(repo_docs_path(doc_name)).unwrap_or_else(|err| {
+            panic!("read {doc_name}: {err}");
+        });
+        let artifact_raw =
+            fs::read_to_string(checked_in_control_pipe_contract_artifact_path()).unwrap_or_else(
+                |err| panic!("read contract artifact: {err}"),
+            );
+        let artifact: Value =
+            serde_json::from_str(&artifact_raw).expect("checked-in contract artifact should parse");
+        let expected_methods = json_string_set(&artifact["methods"]);
+        let frozen = frozen_surface_matrix_cells();
+        let frozen_methods: std::collections::HashSet<String> =
+            frozen.iter().map(|(method, _, _, _)| (*method).to_string()).collect();
+        assert_eq!(
+            frozen.len(),
+            frozen_methods.len(),
+            "frozen surface matrix mapping has duplicate methods"
+        );
+        assert_eq!(
+            frozen_methods, expected_methods,
+            "{doc_name} frozen mapping methods must equal artifact methods"
+        );
+
+        let cli_vocab: std::collections::HashSet<&str> = [
+            "automation-contract",
+            "automation-pair",
+            "operator-snapshot (ps1)",
+            "operator-submit (ps1)",
+            "control-rpc only",
+        ]
+        .into_iter()
+        .collect();
+        let mcp_vocab: std::collections::HashSet<&str> = [
+            "winsmux_automation_contract",
+            "winsmux_automation_pair",
+            "—",
+        ]
+        .into_iter()
+        .collect();
+
+        let expected_rows: std::collections::HashMap<&str, (&str, &str, &str)> = frozen
+            .iter()
+            .map(|(method, pipe, cli, mcp)| (*method, (*pipe, *cli, *mcp)))
+            .collect();
+        for (method, pipe, cli, mcp) in &frozen {
+            assert_eq!(*pipe, "yes", "{method} pipe cell must be constant yes");
+            assert!(
+                cli_vocab.contains(cli),
+                "{method} CLI cell {cli:?} is outside the frozen vocabulary"
+            );
+            assert!(
+                mcp_vocab.contains(mcp),
+                "{method} MCP cell {mcp:?} is outside the frozen vocabulary"
+            );
+        }
+
+        let rows = extract_surface_matrix_rows(&markdown, surface_matrix_sentinel(doc_name));
+        let row_methods: std::collections::HashSet<String> =
+            rows.iter().map(|(method, _, _, _)| method.clone()).collect();
+        assert_eq!(
+            row_methods.len(),
+            rows.len(),
+            "{doc_name} surface matrix has duplicate methods"
+        );
+        assert_method_sets_equal(
+            doc_name,
+            "surface-matrix",
+            &row_methods,
+            &expected_methods,
+        );
+        for (method, pipe, cli, mcp) in &rows {
+            let Some(expected) = expected_rows.get(method.as_str()) else {
+                panic!("{doc_name} surface matrix has unexpected method {method}");
+            };
+            assert_eq!(pipe, expected.0, "{doc_name} {method} pipe cell drifted");
+            assert_eq!(cli, expected.1, "{doc_name} {method} CLI cell drifted");
+            assert_eq!(mcp, expected.2, "{doc_name} {method} MCP cell drifted");
+        }
+
+        assert_surface_matrix_first_source_pins();
+    }
+
     #[test]
     fn control_pipe_contract_matches_checked_in_artifact() {
         let artifact_path = checked_in_control_pipe_contract_artifact_path();
@@ -1678,6 +1925,16 @@ mod tests {
     #[test]
     fn external_control_plane_ja_doc_method_lists_match_contract_artifact() {
         assert_doc_method_lists_match_artifact("external-control-plane.ja.md");
+    }
+
+    #[test]
+    fn external_control_plane_doc_surface_matrix_matches_contract_artifact() {
+        assert_doc_surface_matrix_matches_artifact("external-control-plane.md");
+    }
+
+    #[test]
+    fn external_control_plane_ja_doc_surface_matrix_matches_contract_artifact() {
+        assert_doc_surface_matrix_matches_artifact("external-control-plane.ja.md");
     }
 
     #[test]

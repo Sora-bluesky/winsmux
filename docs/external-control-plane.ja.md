@@ -154,6 +154,30 @@ worker ペインの指定は受け付けません。独自の named pipe クラ�
 - `pty.respawn`
 - `pty.close`
 
+## Surface 互換マトリクス
+
+この surface 互換マトリクスは、チェックイン済み v2 契約成果物に対して CI でゲートします。
+契約行はトークンなしで発見できます。どの行も汎用 CLI JSON-RPC ヘルパーから到達できます。discover コマンドは生存確認であり、行ではありません。
+
+| Method | Pipe | CLI | MCP |
+| --- | --- | --- | --- |
+| desktop.control_plane.contract | yes | automation-contract | winsmux_automation_contract |
+| desktop.summary.snapshot | yes | control-rpc only | — |
+| desktop.run.explain | yes | control-rpc only | — |
+| desktop.run.compare | yes | control-rpc only | — |
+| desktop.run.promote | yes | control-rpc only | — |
+| desktop.run.pick_winner | yes | control-rpc only | — |
+| desktop.voice.capture_status | yes | control-rpc only | — |
+| pty.spawn | yes | control-rpc only | — |
+| pty.write | yes | control-rpc only | — |
+| pty.resize | yes | control-rpc only | — |
+| pty.capture | yes | control-rpc only | — |
+| pty.respawn | yes | control-rpc only | — |
+| pty.close | yes | control-rpc only | — |
+| desktop.operator.snapshot | yes | operator-snapshot (ps1) | — |
+| desktop.operator.submit | yes | operator-submit (ps1) | — |
+| desktop.pairing.confirm | yes | automation-pair | winsmux_automation_pair |
+
 ## 内部専用メソッド
 
 Tauri アプリは、より広い内部 `desktop_json_rpc` 面を使います。この内部面は Tauri `invoke` 経由でデスクトップ WebView から利用できますが、そのまま外部 pipe 契約になるわけではありません。

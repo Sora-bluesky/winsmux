@@ -194,6 +194,30 @@ The same pipe also exposes these PTY methods for local pane control:
 - `pty.respawn`
 - `pty.close`
 
+## Surface compatibility matrix
+
+This surface compatibility matrix is CI-gated against the checked-in v2 contract artifact.
+The contract row is discoverable without a token. Every row is also reachable through the generic CLI JSON-RPC helper. Discover commands are liveness probes, not extra rows.
+
+| Method | Pipe | CLI | MCP |
+| --- | --- | --- | --- |
+| desktop.control_plane.contract | yes | automation-contract | winsmux_automation_contract |
+| desktop.summary.snapshot | yes | control-rpc only | — |
+| desktop.run.explain | yes | control-rpc only | — |
+| desktop.run.compare | yes | control-rpc only | — |
+| desktop.run.promote | yes | control-rpc only | — |
+| desktop.run.pick_winner | yes | control-rpc only | — |
+| desktop.voice.capture_status | yes | control-rpc only | — |
+| pty.spawn | yes | control-rpc only | — |
+| pty.write | yes | control-rpc only | — |
+| pty.resize | yes | control-rpc only | — |
+| pty.capture | yes | control-rpc only | — |
+| pty.respawn | yes | control-rpc only | — |
+| pty.close | yes | control-rpc only | — |
+| desktop.operator.snapshot | yes | operator-snapshot (ps1) | — |
+| desktop.operator.submit | yes | operator-submit (ps1) | — |
+| desktop.pairing.confirm | yes | automation-pair | winsmux_automation_pair |
+
 ## Internal-Only Methods
 
 The Tauri app uses a wider internal `desktop_json_rpc` surface. That internal
