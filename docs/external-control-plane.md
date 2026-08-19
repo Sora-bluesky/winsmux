@@ -142,6 +142,7 @@ This page does not introduce a new public error code.
 ## Exposed Methods
 
 The named pipe currently exposes these desktop methods:
+These method lists are CI-gated against `docs/control-plane-contract.v1.json`.
 
 - `desktop.control_plane.contract`
 - `desktop.pairing.confirm`

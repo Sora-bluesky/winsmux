@@ -1401,6 +1401,127 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/control-plane-contract.v1.json")
     }
 
+    fn repo_docs_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs").join(name)
+    }
+
+    fn method_bullet_name(line: &str) -> Option<&str> {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("- `")?;
+        let name = rest.strip_suffix('`')?;
+        if name.is_empty() || name.contains('`') || name.contains(' ') {
+            return None;
+        }
+        Some(name)
+    }
+
+    fn extract_method_list(markdown: &str, sentinel: &str) -> Vec<String> {
+        let occurrences = markdown.matches(sentinel).count();
+        assert_eq!(
+            occurrences, 1,
+            "sentinel must occur exactly once: {sentinel}"
+        );
+        let after = markdown.split_once(sentinel).expect("sentinel present").1;
+        let mut methods = Vec::new();
+        let mut in_list = false;
+        for line in after.lines() {
+            if let Some(name) = method_bullet_name(line) {
+                methods.push(name.to_string());
+                in_list = true;
+                continue;
+            }
+            if in_list {
+                break;
+            }
+        }
+        methods
+    }
+
+    fn json_string_set(value: &Value) -> std::collections::HashSet<String> {
+        value
+            .as_array()
+            .expect("contract list should be an array")
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .expect("contract list entry should be a string")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn set_from_names(names: &[String]) -> std::collections::HashSet<String> {
+        let set: std::collections::HashSet<String> = names.iter().cloned().collect();
+        assert_eq!(
+            set.len(),
+            names.len(),
+            "method list contains duplicates: {names:?}"
+        );
+        set
+    }
+
+    fn assert_method_sets_equal(
+        file: &str,
+        list: &str,
+        doc: &std::collections::HashSet<String>,
+        contract: &std::collections::HashSet<String>,
+    ) {
+        if doc == contract {
+            return;
+        }
+        let missing: Vec<_> = contract.difference(doc).cloned().collect();
+        let extra: Vec<_> = doc.difference(contract).cloned().collect();
+        panic!("{file} {list} drifted from docs/control-plane-contract.v1.json; missing {missing:?} extra {extra:?}");
+    }
+
+    fn assert_doc_method_lists_match_artifact(doc_name: &str) {
+        let markdown = fs::read_to_string(repo_docs_path(doc_name)).unwrap_or_else(|err| {
+            panic!("read {doc_name}: {err}");
+        });
+        let artifact_raw =
+            fs::read_to_string(checked_in_control_pipe_contract_artifact_path()).unwrap_or_else(
+                |err| panic!("read contract artifact: {err}"),
+            );
+        let artifact: Value =
+            serde_json::from_str(&artifact_raw).expect("checked-in contract artifact should parse");
+
+        let (desktop_sentinel, pty_sentinel, excluded_sentinel) =
+            if doc_name.ends_with(".ja.md") {
+                (
+                    "named pipe は、現時点で次のデスクトップメソッドを公開します。",
+                    "同じ pipe は、ローカルペイン制御用に次の PTY メソッドも公開します。",
+                    "次のメソッドは、現時点では named pipe から公開しません。",
+                )
+            } else {
+                (
+                    "The named pipe currently exposes these desktop methods:",
+                    "The same pipe also exposes these PTY methods for local pane control:",
+                    "These methods are intentionally not exposed through the named pipe today:",
+                )
+            };
+
+        let desktop = set_from_names(&extract_method_list(&markdown, desktop_sentinel));
+        let pty = set_from_names(&extract_method_list(&markdown, pty_sentinel));
+        let excluded = set_from_names(&extract_method_list(&markdown, excluded_sentinel));
+
+        let mut expected_desktop = json_string_set(&artifact["desktop_methods"]);
+        expected_desktop.extend(json_string_set(&artifact["pairing_methods"]));
+        expected_desktop.extend(json_string_set(&artifact["operator_methods"]));
+        let expected_pty = json_string_set(&artifact["pty_methods"]);
+        let expected_excluded = json_string_set(&artifact["internal_desktop_methods_excluded"]);
+
+        assert_method_sets_equal(doc_name, "desktop", &desktop, &expected_desktop);
+        assert_method_sets_equal(doc_name, "pty", &pty, &expected_pty);
+        assert_method_sets_equal(doc_name, "internal-excluded", &excluded, &expected_excluded);
+
+        let exposed: std::collections::HashSet<_> = desktop.union(&pty).cloned().collect();
+        let overlap: Vec<_> = exposed.intersection(&excluded).cloned().collect();
+        assert!(
+            overlap.is_empty(),
+            "{doc_name} exposed methods overlap excluded methods: {overlap:?}"
+        );
+    }
+
     #[test]
     fn control_pipe_contract_matches_checked_in_artifact() {
         let artifact_path = checked_in_control_pipe_contract_artifact_path();
@@ -1442,6 +1563,16 @@ mod tests {
             !raw.contains(r"AppData\Local") && !raw.contains("AppData/Local"),
             "artifact must not expand LOCALAPPDATA"
         );
+    }
+
+    #[test]
+    fn external_control_plane_doc_method_lists_match_contract_artifact() {
+        assert_doc_method_lists_match_artifact("external-control-plane.md");
+    }
+
+    #[test]
+    fn external_control_plane_ja_doc_method_lists_match_contract_artifact() {
+        assert_doc_method_lists_match_artifact("external-control-plane.ja.md");
     }
 
     #[test]
