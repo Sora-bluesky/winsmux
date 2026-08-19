@@ -93,6 +93,18 @@ const TOOLS = [
       "Return desktop.control_plane.contract, the same JSON as the named pipe and `winsmux automation-contract`",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "winsmux_automation_discover",
+    description:
+      "Return whether the desktop control pipe is running, the same JSON as `winsmux automation-discover`",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "winsmux_automation_pair",
+    description:
+      "Prove possession of the control-pipe token against the live desktop, the same JSON as `winsmux automation-pair`",
+    inputSchema: { type: "object", properties: {}, required: [] },
+  },
 ];
 
 // --- Bridge Invocation ---
@@ -191,6 +203,12 @@ function handleToolCall(name, args) {
 
     case "winsmux_automation_contract":
       return invokeNativeCli(["automation-contract"]);
+
+    case "winsmux_automation_discover":
+      return invokeNativeCli(["automation-discover"]);
+
+    case "winsmux_automation_pair":
+      return invokeNativeCli(["automation-pair"]);
 
     default:
       return { success: false, output: `Unknown tool: ${name}` };

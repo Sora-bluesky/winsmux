@@ -181,6 +181,8 @@ Tauri アプリは、より広い内部 `desktop_json_rpc` 面を使います。
 
 同梱の MCP サーバーは、上流の MCP JSON-RPC 形状と stdio 伝送に薄く重ねるローカルアダプターです。winsmux 固有のコードは、引数配列でのコマンド実行、入力検証、ローカル安全方針に限定します。上流プロトコルクライアントや公式伝送の動作で扱える場合は、ローカル互換コードを増やす前にそちらを優先します。
 
+MCP クライアントは `winsmux_automation_contract`、`winsmux_automation_discover`、`winsmux_automation_pair` で同じ named-pipe 契約に届きます。各ツールは対応するネイティブサブコマンド（`winsmux automation-contract` / `automation-discover` / `automation-pair`）を実行し、JSON を返します。PowerShell は通しません。
+
 ## クライアント互換性
 
 ローカル自動化クライアントは、同じ Windows ホスト上で動き、named pipe 上の JSON-RPC を実装していれば接続できます。最初に `desktop.control_plane.contract` を呼び、返された `methods` からクライアント機能を構成してください。

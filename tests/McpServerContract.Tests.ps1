@@ -234,4 +234,196 @@ print(WinsmuxClient._resolve_default_server_path())
         @($contract.pty_methods).Count | Should -BeGreaterThan 0
         @($contract.operator_methods).Count | Should -BeGreaterThan 0
     }
+
+    It 'exposes winsmux_automation_discover and winsmux_automation_pair through the MCP tool list' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $names = @($responses[1].result.tools.name)
+        $names | Should -Contain 'winsmux_assign'
+        $names | Should -Contain 'winsmux_automation_contract'
+        $names | Should -Contain 'winsmux_automation_discover'
+        $names | Should -Contain 'winsmux_automation_pair'
+
+        $discover = $responses[1].result.tools | Where-Object { $_.name -eq 'winsmux_automation_discover' }
+        $pair = $responses[1].result.tools | Where-Object { $_.name -eq 'winsmux_automation_pair' }
+        @($discover.inputSchema.required).Count | Should -Be 0
+        @($pair.inputSchema.required).Count | Should -Be 0
+    }
+
+    It 'automation discover and pair tools invoke the native winsmux CLI without pwsh' {
+        $content = Get-Content -LiteralPath $script:McpServerPath -Raw -Encoding UTF8
+
+        $discoverCase = [Regex]::Match(
+            $content,
+            'case "winsmux_automation_discover":[\s\S]*?return invokeNativeCli\(\["automation-discover"\]\);'
+        )
+        $pairCase = [Regex]::Match(
+            $content,
+            'case "winsmux_automation_pair":[\s\S]*?return invokeNativeCli\(\["automation-pair"\]\);'
+        )
+        $discoverCase.Success | Should -BeTrue
+        $pairCase.Success | Should -BeTrue
+        foreach ($case in @($discoverCase.Value, $pairCase.Value)) {
+            $case | Should -Not -Match 'invokeBridge'
+            $case | Should -Not -Match 'pwsh'
+            $case | Should -Not -Match 'winsmux-core\.ps1'
+        }
+    }
+
+    It 'automation discover tool fails closed when the desktop pipe is absent' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_discover","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $call = $responses[1].result
+        if ($call.isError -ne $true) {
+            return
+        }
+        $text = [string]$call.content[0].text
+        $text | Should -Not -Match 'pwsh'
+        $text | Should -Not -Match 'unknown command'
+        (
+            $text -match 'desktop control pipe is not available' -or
+            $text -match 'ENOENT' -or
+            $text -match 'spawn'
+        ) | Should -BeTrue
+    }
+
+    It 'automation pair tool fails closed when the desktop pipe is absent or no token exists' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_pair","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $call = $responses[1].result
+        if ($call.isError -ne $true) {
+            return
+        }
+        $text = [string]$call.content[0].text
+        $text | Should -Not -Match 'pwsh'
+        $text | Should -Not -Match '"paired":true'
+        (
+            $text -match 'desktop control pipe is not available' -or
+            $text -match 'WINSMUX_CONTROL_PIPE_TOKEN or a non-empty token file is required' -or
+            $text -match 'ENOENT' -or
+            $text -match 'spawn'
+        ) | Should -BeTrue
+    }
+
+    It 'automation discover tool reports the live desktop document when the pipe answers' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_discover","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $call = $responses[1].result
+        if ($call.isError -eq $true) {
+            return
+        }
+
+        $document = $call.content[0].text | ConvertFrom-Json
+        $document.desktop_running | Should -BeTrue
+        $document.pipe | Should -Be '\\.\pipe\winsmux-control'
+        $document.contract_version | Should -BeOfType [int]
+        $document.auth_source | Should -BeIn @('env', 'file')
+        $document.connect_ready | Should -BeOfType [bool]
+    }
+
+    It 'automation pair tool pairs against the running desktop' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_pair","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 2
+        $call = $responses[1].result
+        if ($call.isError -eq $true) {
+            return
+        }
+
+        $document = $call.content[0].text | ConvertFrom-Json
+        $document.paired | Should -BeTrue
+        $document.auth_source | Should -BeIn @('env', 'file')
+        $null -eq $document.reason | Should -BeTrue
+    }
+
+    It 'automation discover and pair tools never print token bytes' {
+        $sentinel = 'task802-mcp-env-token-value'
+        $previous = $env:WINSMUX_CONTROL_PIPE_TOKEN
+        $env:WINSMUX_CONTROL_PIPE_TOKEN = $sentinel
+        try {
+            $requests = @(
+                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+                '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_automation_discover","arguments":{}}}'
+                '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"winsmux_automation_pair","arguments":{}}}'
+            ) -join [Environment]::NewLine
+
+            $output = $requests | & node $script:McpServerPath
+            $LASTEXITCODE | Should -Be 0
+            $raw = [string]$output
+            $raw | Should -Not -Match [Regex]::Escape($sentinel)
+            $raw | Should -Not -Match 'control-pipe\\token'
+        }
+        finally {
+            if ($null -eq $previous) {
+                Remove-Item Env:WINSMUX_CONTROL_PIPE_TOKEN -ErrorAction SilentlyContinue
+            }
+            else {
+                $env:WINSMUX_CONTROL_PIPE_TOKEN = $previous
+            }
+        }
+    }
 }
