@@ -13,6 +13,7 @@ export const CONTROL_PIPE_METHODS = [
   "desktop.run.promote",
   "desktop.run.pick_winner",
   "desktop.voice.capture_status",
+  "desktop.provider.capabilities",
   "pty.spawn",
   "pty.write",
   "pty.resize",
@@ -32,6 +33,7 @@ export const DESKTOP_METHODS = [
   "desktop.run.promote",
   "desktop.run.pick_winner",
   "desktop.voice.capture_status",
+  "desktop.provider.capabilities",
 ] as const;
 
 export const PTY_METHODS = [
@@ -87,6 +89,14 @@ export interface PairingConfirmParams {
 export interface PairingConfirmResult {
   paired: boolean;
   scope: string;
+  version: number;
+}
+
+export interface DesktopProviderCapabilitiesParams {
+}
+
+export interface DesktopProviderCapabilitiesSnapshot {
+  providers: Record<string, unknown>;
   version: number;
 }
 
@@ -649,6 +659,10 @@ export interface ControlPlaneSchemas {
   "desktop.pairing.confirm": {
     params: PairingConfirmParams;
     result: PairingConfirmResult;
+  };
+  "desktop.provider.capabilities": {
+    params: DesktopProviderCapabilitiesParams;
+    result: DesktopProviderCapabilitiesSnapshot;
   };
   "desktop.run.compare": {
     params: DesktopRunCompareParams;

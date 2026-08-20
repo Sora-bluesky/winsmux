@@ -1,12 +1,13 @@
 use crate::desktop_backend::{
     handle_desktop_json_rpc, DesktopCommandTransport, DesktopCompareRunsResult,
     DesktopExplainPayload, DesktopJsonRpcRequest, DesktopPickWinnerResult,
-    DesktopPromoteTacticResult, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
-    PwshScriptTransport,
+    DesktopPromoteTacticResult, DesktopProviderCapabilitiesSnapshot, DesktopSummarySnapshot,
+    DesktopVoiceCaptureStatus, PwshScriptTransport,
 };
 use crate::desktop_control_plane_params::{
-    DesktopRunCompareParams, DesktopRunExplainParams, DesktopRunPickWinnerParams,
-    DesktopRunPromoteParams, DesktopSummarySnapshotParams, DesktopVoiceCaptureStatusParams,
+    DesktopProviderCapabilitiesParams, DesktopRunCompareParams, DesktopRunExplainParams,
+    DesktopRunPickWinnerParams, DesktopRunPromoteParams, DesktopSummarySnapshotParams,
+    DesktopVoiceCaptureStatusParams,
 };
 use crate::pty_backend::{
     handle_pty_json_rpc, OperatorSnapshotParams, OperatorSubmitParams, OperatorSubmitResult,
@@ -722,6 +723,7 @@ pub const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.run.promote",
     "desktop.run.pick_winner",
     "desktop.voice.capture_status",
+    "desktop.provider.capabilities",
 ];
 
 const PAIRING_CONTROL_PIPE_METHODS: &[&str] = &["desktop.pairing.confirm"];
@@ -941,6 +943,7 @@ fn control_pipe_method_schemas() -> Value {
         "desktop.run.promote": method_schema::<DesktopRunPromoteParams, DesktopPromoteTacticResult>(),
         "desktop.run.pick_winner": method_schema::<DesktopRunPickWinnerParams, DesktopPickWinnerResult>(),
         "desktop.voice.capture_status": method_schema::<DesktopVoiceCaptureStatusParams, DesktopVoiceCaptureStatus>(),
+        "desktop.provider.capabilities": method_schema::<DesktopProviderCapabilitiesParams, DesktopProviderCapabilitiesSnapshot>(),
         "pty.spawn": method_schema::<PtySpawnParams, PtyPaneResult>(),
         "pty.write": method_schema::<PtyWriteParams, PtyPaneResult>(),
         "pty.resize": method_schema::<PtyResizeParams, PtyPaneResult>(),
@@ -1626,6 +1629,12 @@ mod tests {
             ),
             (
                 "desktop.voice.capture_status",
+                "yes",
+                "control-rpc only",
+                "—",
+            ),
+            (
+                "desktop.provider.capabilities",
                 "yes",
                 "control-rpc only",
                 "—",

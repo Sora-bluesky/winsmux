@@ -155,6 +155,7 @@ v2 adds per-method parameter and result schemas derived from the same serde type
 - `desktop.operator.snapshot`
 - `desktop.operator.submit`
 - `desktop.voice.capture_status`
+- `desktop.provider.capabilities`
 
 The operator methods are the only external methods intended for agent-to-operator
 conversation:
@@ -208,6 +209,7 @@ The contract row is discoverable without a token. Every row is also reachable th
 | desktop.run.promote | yes | control-rpc only | — |
 | desktop.run.pick_winner | yes | control-rpc only | — |
 | desktop.voice.capture_status | yes | control-rpc only | — |
+| desktop.provider.capabilities | yes | control-rpc only | — |
 | pty.spawn | yes | control-rpc only | — |
 | pty.write | yes | control-rpc only | — |
 | pty.resize | yes | control-rpc only | — |

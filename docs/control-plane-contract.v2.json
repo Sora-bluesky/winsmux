@@ -12,7 +12,8 @@
     "desktop.run.compare",
     "desktop.run.promote",
     "desktop.run.pick_winner",
-    "desktop.voice.capture_status"
+    "desktop.voice.capture_status",
+    "desktop.provider.capabilities"
   ],
   "internal_desktop_methods_excluded": [
     "desktop.workers.status",
@@ -32,6 +33,7 @@
     "desktop.run.promote",
     "desktop.run.pick_winner",
     "desktop.voice.capture_status",
+    "desktop.provider.capabilities",
     "pty.spawn",
     "pty.write",
     "pty.resize",
@@ -153,6 +155,33 @@
           "version"
         ],
         "title": "PairingConfirmResult",
+        "type": "object"
+      }
+    },
+    "desktop.provider.capabilities": {
+      "params": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "title": "DesktopProviderCapabilitiesParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "providers": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "version": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "providers",
+          "version"
+        ],
+        "title": "DesktopProviderCapabilitiesSnapshot",
         "type": "object"
       }
     },

@@ -691,6 +691,7 @@ panes:
             DesktopCommand::RunPickWinner { .. } => "consult-result",
             DesktopCommand::WorkersStatus { .. } | DesktopCommand::WorkersStart { .. } => "workers",
             DesktopCommand::ProviderSwitch { .. } => "provider-switch",
+            DesktopCommand::ProviderCapabilities { .. } => "provider-capabilities",
             DesktopCommand::RuntimeRolesApply { .. } => "runtime-roles",
             DesktopCommand::DogfoodEvent { .. } => "dogfood",
             DesktopCommand::TeamProfileSettingsView { .. }
@@ -744,6 +745,9 @@ panes:
                 auth_mode: None,
                 reason: None,
                 clear: true,
+                project_dir: none.clone(),
+            },
+            DesktopCommand::ProviderCapabilities {
                 project_dir: none.clone(),
             },
             DesktopCommand::RuntimeRolesApply {

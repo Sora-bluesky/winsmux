@@ -698,6 +698,7 @@ mod tests {
             "consult-result",
             "workers",
             "provider-switch",
+            "provider-capabilities",
             "runtime-roles",
             "dogfood",
             "team-profile",
@@ -712,6 +713,7 @@ mod tests {
                             | "promote-tactic"
                             | "consult-result"
                             | "provider-switch"
+                            | "provider-capabilities"
                             | "dogfood"
                             | "team-profile"
                     ),
