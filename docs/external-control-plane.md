@@ -66,6 +66,12 @@ Clients can discover the external contract by calling:
 {"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}
 ```
 
+Optional `params.version` is additive: omit it, pass `{}`, or pass `{"version": 2}` to receive the v2 document. Any other version fails closed with JSON-RPC `-32602` (`Unsupported control-plane contract version (supported: 2)`). There is no v3 document.
+
+```json
+{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract","params":{"version":2}}
+```
+
 When that request is sent through the named pipe, `methods` contains only the
 methods that the pipe allowlist accepts. The contract advertises
 `auth.token_env` as `WINSMUX_CONTROL_PIPE_TOKEN` and `auth.token_file` as
