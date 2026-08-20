@@ -135,6 +135,14 @@ winsmux workers policy baseline w2 --run-id run-123 --network broker-only --writ
 
 デスクトップのピルバーは、実行状態を `exec:local`、`exec:isolated`、`exec:offline` にまとめます。フォーカス中の詳細行では、ワークスペース、資格情報投影、ポリシーの状態、生存確認、復旧アクションを表示します。資格情報更新待ちは復旧アクションとして表示し、資格情報の値は表示しません。
 
+## 拡張マニフェスト
+
+`winsmux extension-manifest --json` は core が `.winsmux/extension-manifest.json` を読みます。ファイルは version 1 の宣言ストアです。未知フィールド、未知の `surface`、未知の permission grant、`version != 1` は拒否します。ファイルが無い、または空なら、空のレジストリを返します。
+
+payload は常に `enforcement: "declaration_only"` と `hookable_surfaces: []` を出します。`surface` が `layout` / `workflow` / `status` でも、いまフックできる面ではありません。permission は `read:summary`、`read:provider-capabilities`、`read:skills` だけです。write grant と `read:runs` はありません。registry path は出しません。
+
+これはプラグイン実行系ではありません。`execution-policy.json` でもなく、`desktop.provider.capabilities` の焼き直しでもありません。検証に成功しても、署名のない任意コードを「対応済み」にはしません。
+
 ## 起動プリセット
 
 比較を目的とした実行を始める前に、プリセットを確認できます。

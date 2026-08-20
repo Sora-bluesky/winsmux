@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "extensions": {
+    "sample-layout": {
+      "display_name": "Sample layout declaration",
+      "surface": "layout",
+      "permissions": ["read:summary"]
+    }
+  }
+}

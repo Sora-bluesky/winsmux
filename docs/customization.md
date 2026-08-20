@@ -196,6 +196,14 @@ waits are shown as a recovery action without exposing secret values.
 
 The desktop View menu can hide or show the worker status strip. Hiding the strip changes only the local UI layout; the underlying status contract remains `winsmux workers status --json`. Feed and notifications are linked to worker state, including blocked, offline, and approval-waiting conditions.
 
+## Extension manifest
+
+`winsmux extension-manifest --json` reads `.winsmux/extension-manifest.json` in core. The file is a version-1 declaration store. Validation is fail-closed: unknown fields, unknown `surface` values, unknown permission grants, and `version != 1` are rejected. A missing or empty file is a deterministic empty registry.
+
+The payload always reports `enforcement: "declaration_only"` and `hookable_surfaces: []`. A valid `surface` of `layout`, `workflow`, or `status` is future vocabulary only. It does not mean winsmux loads, runs, or extends that surface. Permission grants are `read:summary`, `read:provider-capabilities`, and `read:skills`. There is no write grant and no `read:runs`. The payload does not include a registry path.
+
+This is not a plugin runtime. It is not `execution-policy.json`, and it does not restyle `desktop.provider.capabilities`. Unsigned arbitrary code is never "supported" by a successful parse.
+
 ## Launcher presets
 
 Inspect the presets before launching a compare-oriented run:

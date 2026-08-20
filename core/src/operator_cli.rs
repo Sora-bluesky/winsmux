@@ -6993,6 +6993,7 @@ fn usage_for(command: &str) -> &'static str {
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
+        "extension-manifest" => crate::extension_manifest::USAGE,
         "skills" => "usage: winsmux skills [--json]",
         "operator-jobs" => {
             "usage: winsmux operator-jobs <catalog|list|create|run|pause|update|delete> [job_id] [--kind <dependency-check|issue-triage|documentation-refresh|repository-hygiene>] [--schedule <one-time|recurring>] [--every <daily|weekly|monthly>] [--title <text>] [--evidence <text>] [--destructive] [--reason <text>] [--json] [--project-dir <path>]"

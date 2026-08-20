@@ -327,6 +327,7 @@ const CLI_COMMANDS: &[(&str, &str, &str)] = &[
     ("workspace-plan",    "",         "Validate and print a declarative workspace plan"),
     ("workflow-gate",     "",         "Aggregate workflow and Team Profile pre-release sub-gates"),
     ("skills",            "",         "Print agent-readable command skill contracts"),
+    ("extension-manifest","",         "Inspect the declaration-only extension-manifest registry"),
     // Misc
     ("confirm-before",    "confirm",  "Confirm before running command"),
     ("if-shell",          "if",       "Conditional command execution"),
