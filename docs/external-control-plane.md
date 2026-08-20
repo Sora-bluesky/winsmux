@@ -145,6 +145,8 @@ Spine, in order: `desktop.provider.capabilities` → `pty.spawn` → `pty.captur
 
 Worker start, status, and stop stay PowerShell-owned. This walkthrough does not call them.
 
+Worker completion evidence is a local Rust CLI, not a pipe method: `winsmux worker-artifact --action judge --json` over `.winsmux/runs/<slot-id>/result.md` plus the worker exit code. It does not hop through PowerShell. It stays off the named pipe because worker start, status, and stop stay PowerShell-owned.
+
 Token slots stay `<token-file>`. Precedence is env `WINSMUX_CONTROL_PIPE_TOKEN`, else `%LOCALAPPDATA%\winsmux\control-pipe\token`. Do not print the token.
 
 ```json

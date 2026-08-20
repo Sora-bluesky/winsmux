@@ -116,6 +116,8 @@ winsmux operator-snapshot --lines 80
 
 worker の start / status / stop は PowerShell の所有のままです。このウォークスルーからは呼びません。
 
+ワーカー完了の証跡はパイプのメソッドではなく、ローカルの Rust CLI です。`winsmux worker-artifact --action judge --json` が `.winsmux/runs/<slot-id>/result.md` とワーカーの終了コードを判定します。PowerShell へは通しません。worker の start / status / stop は PowerShell の所有のままなので、named pipe には載せません。
+
 秘密スロットは `<token-file>` のままです。優先順は環境変数 `WINSMUX_CONTROL_PIPE_TOKEN`、なければ `%LOCALAPPDATA%\winsmux\control-pipe\token` です。トークン値は印刷しないでください。
 
 ```json
