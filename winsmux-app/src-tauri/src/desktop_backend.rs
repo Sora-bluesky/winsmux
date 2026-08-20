@@ -1,8 +1,7 @@
 use crate::desktop_control_plane_params::{
     consume_external_params, deserialize_external_params, required_trimmed_desktop_string,
-    DesktopProviderCapabilitiesParams, DesktopRunCompareParams, DesktopRunExplainParams,
-    DesktopRunPickWinnerParams, DesktopRunPromoteParams, DesktopSummarySnapshotParams,
-    DesktopVoiceCaptureStatusParams,
+    DesktopRunCompareParams, DesktopRunExplainParams, DesktopRunPickWinnerParams,
+    DesktopRunPromoteParams, DesktopSummarySnapshotParams, DesktopVoiceCaptureStatusParams,
 };
 use crate::desktop_session_restore::json_rpc as session_restore_rpc;
 use crate::desktop_team_profile;
@@ -766,12 +765,6 @@ pub struct DesktopVoiceCaptureStatus {
     pub state_contract: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
-pub struct DesktopProviderCapabilitiesSnapshot {
-    pub version: u64,
-    pub providers: HashMap<String, Value>,
-}
-
 pub enum DesktopCommand {
     SummarySnapshot {
         project_dir: Option<String>,
@@ -817,9 +810,7 @@ pub enum DesktopCommand {
         clear: bool,
         project_dir: Option<String>,
     },
-    ProviderCapabilities {
-        project_dir: Option<String>,
-    },
+    ProviderCapabilities { project_dir: Option<String> },
     RuntimeRolesApply {
         roles_json: String,
         project_dir: Option<String>,
@@ -1086,9 +1077,7 @@ impl DesktopCommand {
                 args.push("--json".to_string());
                 args
             }
-            DesktopCommand::ProviderCapabilities { .. } => {
-                vec!["provider-capabilities".to_string(), "--json".to_string()]
-            }
+            DesktopCommand::ProviderCapabilities { .. } => vec!["provider-capabilities".to_string(), "--json".to_string()],
             DesktopCommand::RuntimeRolesApply { roles_json, .. } => vec![
                 "runtime-roles".to_string(),
                 "apply".to_string(),
@@ -1171,17 +1160,6 @@ pub fn load_desktop_summary_snapshot(
     let snapshot = transport.request_json(&DesktopCommand::SummarySnapshot { project_dir })?;
     serde_json::from_value(snapshot)
         .map_err(|err| format!("Failed to parse desktop summary payload: {err}"))
-}
-
-pub fn load_desktop_provider_capabilities(
-    transport: &dyn DesktopCommandTransport,
-    project_dir: Option<String>,
-) -> Result<DesktopProviderCapabilitiesSnapshot, String> {
-    let snapshot =
-        transport.request_json(&DesktopCommand::ProviderCapabilities { project_dir })?;
-    serde_json::from_value(snapshot).map_err(|err| {
-        format!("Failed to parse desktop provider capabilities payload: {err}")
-    })
 }
 
 pub fn record_desktop_dogfood_event(
@@ -1841,21 +1819,7 @@ pub fn handle_desktop_json_rpc(
                 params,
             );
         }
-        "desktop.provider.capabilities" => {
-            let _params =
-                consume_external_params::<DesktopProviderCapabilitiesParams>(params.as_ref());
-            match load_desktop_provider_capabilities(transport, resolved_project_dir) {
-                Ok(snapshot) => match serde_json::to_value(snapshot) {
-                    Ok(result) => json_rpc_result(request_id, result),
-                    Err(err) => json_rpc_error(
-                        request_id,
-                        JSON_RPC_INTERNAL_ERROR,
-                        format!("Failed to serialize desktop provider capabilities payload: {err}"),
-                    ),
-                },
-                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
-            }
-        }
+        "desktop.provider.capabilities" => return crate::desktop_provider_capabilities::json_rpc(transport, request_id, resolved_project_dir, params),
         "desktop.provider.switch" => {
             let slot = match get_required_string_param(params.as_ref(), &["slot", "target"]) {
                 Ok(value) => value,
@@ -5500,104 +5464,6 @@ mod tests {
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["desktop-summary --json"]
-        );
-    }
-
-    fn serialized_result_has_no_registry_path_or_absolute_path(result: &Value) {
-        let serialized = serde_json::to_string(result).expect("serialize provider capabilities result");
-        assert!(
-            !serialized.contains("registry_path"),
-            "serialized result must drop registry_path: {serialized}"
-        );
-        assert!(
-            !serialized.contains(r"C:\") && !serialized.contains("C:/"),
-            "serialized result must not contain a drive-letter path: {serialized}"
-        );
-        assert!(
-            result.get("registry_path").is_none(),
-            "typed result must not expose registry_path"
-        );
-    }
-
-    #[test]
-    fn handle_desktop_json_rpc_routes_provider_capabilities() {
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "version": 1,
-                "registry_path": r"C:\Users\example\project\.winsmux\provider-capabilities.json",
-                "providers": {
-                    "codex": {
-                        "adapter": "codex",
-                        "display_name": "Codex"
-                    }
-                }
-            }),
-        };
-        let response = handle_desktop_json_rpc(
-            &transport,
-            DesktopJsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: serde_json::json!("req-provider-capabilities"),
-                method: "desktop.provider.capabilities".to_string(),
-                params: None,
-            },
-            None,
-        );
-
-        match response {
-            DesktopJsonRpcResponse::Success { id, result, .. } => {
-                assert_eq!(id, serde_json::json!("req-provider-capabilities"));
-                assert_eq!(result["version"], 1);
-                assert_eq!(result["providers"]["codex"]["adapter"], "codex");
-                assert_eq!(result["providers"]["codex"]["display_name"], "Codex");
-                serialized_result_has_no_registry_path_or_absolute_path(&result);
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
-            }
-        }
-        assert_eq!(
-            transport.requests.borrow().as_slice(),
-            ["provider-capabilities --json"]
-        );
-    }
-
-    #[test]
-    fn handle_desktop_json_rpc_routes_provider_capabilities_empty_registry() {
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "version": 1,
-                "providers": {},
-                "registry_path": r"C:\Users\example\project\.winsmux\provider-capabilities.json"
-            }),
-        };
-        let response = handle_desktop_json_rpc(
-            &transport,
-            DesktopJsonRpcRequest {
-                jsonrpc: "2.0".to_string(),
-                id: serde_json::json!("req-provider-capabilities-empty"),
-                method: "desktop.provider.capabilities".to_string(),
-                params: None,
-            },
-            None,
-        );
-
-        match response {
-            DesktopJsonRpcResponse::Success { id, result, .. } => {
-                assert_eq!(id, serde_json::json!("req-provider-capabilities-empty"));
-                assert_eq!(result["version"], 1);
-                assert_eq!(result["providers"], serde_json::json!({}));
-                serialized_result_has_no_registry_path_or_absolute_path(&result);
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
-            }
-        }
-        assert_eq!(
-            transport.requests.borrow().as_slice(),
-            ["provider-capabilities --json"]
         );
     }
 

@@ -7,9 +7,6 @@ use serde_json::Value;
 pub struct DesktopSummarySnapshotParams {}
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
-pub struct DesktopProviderCapabilitiesParams {}
-
-#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct DesktopVoiceCaptureStatusParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
