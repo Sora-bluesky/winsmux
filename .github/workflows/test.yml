@@ -147,6 +147,7 @@ jobs:
           if [ ! -f "$py_path" ]; then echo "missing $py_path" >&2; exit 1; fi
           node --experimental-strip-types --input-type=module -e "await import('../sdk/typescript/control-plane-contract.ts')"
           python3 -c "import importlib.util, pathlib, sys; p=pathlib.Path(r'$py_path'); spec=importlib.util.spec_from_file_location('control_plane_contract', p); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)"
+          python3 -c "import importlib.util, pathlib; p=pathlib.Path('../sdk/examples/adapter-walkthrough.py'); spec=importlib.util.spec_from_file_location('adapter_walkthrough', p); mod=importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)"
 
   pester:
     name: Pester Tests (${{ matrix.name }})

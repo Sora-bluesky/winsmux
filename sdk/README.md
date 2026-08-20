@@ -27,6 +27,8 @@ import { CONTROL_PIPE_METHODS, type ControlPlaneSchemas } from "./typescript/con
 from python.control_plane_contract import CONTROL_PIPE_METHODS
 ```
 
+A worked named-pipe sequence on those bindings is `examples/adapter-walkthrough.py`. The walkthrough section lives in `docs/external-control-plane.md`.
+
 ## TypeScript
 
 ```typescript

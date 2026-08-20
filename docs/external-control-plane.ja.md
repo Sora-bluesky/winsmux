@@ -100,6 +100,39 @@ winsmux operator-snapshot --lines 80
 {"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<token-file>"}}
 ```
 
+## アダプターウォークスルー: capabilities から run 証跡まで
+
+前提: [ゼロから operator-snapshot まで](#ゼロから-operator-snapshot-まで)。pairing とトークンファイルはその節のままです。ここでは繰り返しません。
+
+`sdk/examples/adapter-walkthrough.py` は stdlib だけの Python クライアントです。メソッド名とパラメータ型は `sdk/python/control_plane_contract.py` から import し、named-pipe JSON-RPC の送受信（呼び出しごとに接続、バッファなしの 1 回書き込み）は例の中だけに閉じます。`winsmux control-rpc` へは通しません。第二の SDK ではありません。
+
+背骨はこの順です。`desktop.provider.capabilities` → `pty.spawn` → `pty.capture` → `desktop.run.explain`。`pty.close` は最後の後始末であり、5 本目の動詞ではありません。`desktop.run.explain` には `runId` が要ります。`--run-id` を渡すか、例が `desktop.summary.snapshot` を呼び、最初の `run_projections[].run_id` を使います。その snapshot は発見用です。いま spawn したペインから run を作るわけではなく、先頭の projection は任意です。run が無いときは `no runs to explain -- capabilities and pty legs completed` を出して終了コード 0 です。
+
+worker の start / status / stop は PowerShell の所有のままです。このウォークスルーからは呼びません。
+
+秘密スロットは `<token-file>` のままです。優先順は環境変数 `WINSMUX_CONTROL_PIPE_TOKEN`、なければ `%LOCALAPPDATA%\winsmux\control-pipe\token` です。トークン値は印刷しないでください。
+
+```json
+{"jsonrpc":"2.0","id":"capabilities","method":"desktop.provider.capabilities","params":{},"auth":{"token":"<token-file>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"spawn","method":"pty.spawn","params":{"paneId":"adapter-walkthrough","cols":80,"rows":24,"startupInput":"echo adapter-walkthrough\r"},"auth":{"token":"<token-file>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"adapter-walkthrough","lines":40},"auth":{"token":"<token-file>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"explain","method":"desktop.run.explain","params":{"runId":"<run-id>"},"auth":{"token":"<token-file>"}}
+```
+
+```powershell
+python sdk/examples/adapter-walkthrough.py
+python sdk/examples/adapter-walkthrough.py --run-id <run-id>
+```
+
 ## エラー意味論
 
 非契約呼び出しは、使えるトークンが無い（env が空で正確なファイルも無い／空）、`auth.token` が無い、またはトークンが一致しないときに安全側で失敗します。pipe は既存の JSON-RPC 失敗閉のままです。エラーコードは `-32600`（Invalid Request）で、メッセージは `WINSMUX_CONTROL_PIPE_TOKEN` を名前で示します。CLI ヘルパーは `control-rpc requires WINSMUX_CONTROL_PIPE_TOKEN for non-contract methods` で失敗します。新しい公開エラーコードは追加しません。
