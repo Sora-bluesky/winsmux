@@ -716,6 +716,9 @@ const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
+const CONTROL_PIPE_CONTRACT_VERSION: u64 = 2;
+const UNSUPPORTED_CONTROL_PIPE_CONTRACT_VERSION: &str =
+    "Unsupported control-plane contract version (supported: 2)";
 
 pub const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.control_plane.contract",
@@ -775,6 +778,7 @@ pub fn handle_control_pipe_payload(
     }
 
     if method == "desktop.control_plane.contract" {
+        let supported = control_pipe_contract_request_is_supported(&request_value);
         let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
             Ok(value) => value,
             Err(err) => {
@@ -790,6 +794,13 @@ pub fn handle_control_pipe_payload(
                 request.id,
                 JSON_RPC_INVALID_REQUEST,
                 "desktop_json_rpc expects jsonrpc=\"2.0\"".to_string(),
+            );
+        }
+        if !supported {
+            return serialize_control_pipe_error(
+                request.id,
+                JSON_RPC_INVALID_PARAMS,
+                UNSUPPORTED_CONTROL_PIPE_CONTRACT_VERSION.to_string(),
             );
         }
         return serialize_control_pipe_result(request.id, control_pipe_contract());
@@ -956,6 +967,25 @@ fn control_pipe_method_schemas() -> Value {
         "desktop.operator.submit": method_schema::<OperatorSubmitParams, OperatorSubmitResult>(),
         "desktop.pairing.confirm": method_schema::<PairingConfirmParams, PairingConfirmResult>(),
     })
+}
+
+fn control_pipe_contract_request_is_supported(request_value: &Value) -> bool {
+    match request_value.get("params") {
+        None => true,
+        Some(Value::Object(map)) => {
+            if map.keys().any(|key| key.as_str() != "version") {
+                return false;
+            }
+            match map.get("version") {
+                None => true,
+                Some(Value::Number(number)) => {
+                    number.as_u64() == Some(CONTROL_PIPE_CONTRACT_VERSION)
+                }
+                Some(_) => false,
+            }
+        }
+        Some(_) => false,
+    }
 }
 
 fn control_pipe_contract() -> Value {
@@ -2321,6 +2351,101 @@ mod tests {
 
         assert_eq!(value["id"], 1);
         assert_eq!(value["error"]["code"], JSON_RPC_METHOD_NOT_FOUND);
+    }
+
+    #[test]
+    fn control_pipe_contract_omitted_params_returns_v2() {
+        let empty_params =
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{}}"#;
+        assert_tokenless_contract_result_is_live_document(
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#,
+        );
+        assert_tokenless_contract_result_is_live_document(empty_params);
+    }
+
+    #[test]
+    fn control_pipe_contract_supported_version_returns_v2() {
+        assert_tokenless_contract_result_is_live_document(
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":2}}"#,
+        );
+    }
+
+    #[test]
+    fn control_pipe_contract_rejects_unsupported_version() {
+        let cases: &[&[u8]] = &[
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":3}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":1}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":0}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":"2"}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":null}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":[]}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":null}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":2,"extra":true}}"#,
+        ];
+        for payload in cases {
+            assert_tokenless_contract_rejects_unsupported(payload);
+        }
+    }
+
+    fn assert_tokenless_contract_result_is_live_document(payload: &[u8]) {
+        let desktop_transport = RecordingDesktopTransport::new();
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&desktop_transport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["id"], 1);
+        assert!(
+            value.get("error").is_none(),
+            "supported contract request must not error: {value}"
+        );
+        assert_eq!(value["result"], control_pipe_contract());
+        assert_eq!(
+            *desktop_transport.calls.lock().expect("calls lock"),
+            0,
+            "contract discovery must not reach the desktop transport"
+        );
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    fn assert_tokenless_contract_rejects_unsupported(payload: &[u8]) {
+        let desktop_transport = RecordingDesktopTransport::new();
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&desktop_transport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["id"], 1, "{}", String::from_utf8_lossy(payload));
+        assert_eq!(
+            value["error"]["code"],
+            JSON_RPC_INVALID_PARAMS,
+            "{}",
+            String::from_utf8_lossy(payload)
+        );
+        assert_eq!(
+            value["error"]["message"],
+            UNSUPPORTED_CONTROL_PIPE_CONTRACT_VERSION,
+            "{}",
+            String::from_utf8_lossy(payload)
+        );
+        assert!(
+            value.get("result").is_none(),
+            "unsupported version must not return a document: {value}"
+        );
+        assert_eq!(
+            *desktop_transport.calls.lock().expect("calls lock"),
+            0,
+            "unsupported contract version must not reach the desktop transport"
+        );
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
     }
 
     #[test]

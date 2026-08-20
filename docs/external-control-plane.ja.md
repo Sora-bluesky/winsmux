@@ -45,6 +45,12 @@ winsmux は、デスクトップアプリと同じ Windows マシンで動く外
 {"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract"}
 ```
 
+任意の `params.version` は加算です。省略、`{}`、または `{"version": 2}` は v2 文書を返します。それ以外の版は JSON-RPC `-32602`（`Unsupported control-plane contract version (supported: 2)`）で fail-closed します。v3 文書はありません。
+
+```json
+{"jsonrpc":"2.0","id":"contract","method":"desktop.control_plane.contract","params":{"version":2}}
+```
+
 この要求を named pipe 経由で送ると、`methods` には pipe の許可リストが受け付けるメソッドだけが入ります。契約の `auth.token_env` は `WINSMUX_CONTROL_PIPE_TOKEN`、`auth.token_file` は `%LOCALAPPDATA%\winsmux\control-pipe\token` です。
 
 `desktop.control_plane.contract` 以外のメソッドでは、`params` の外側にローカル制御トークンを含めます。
