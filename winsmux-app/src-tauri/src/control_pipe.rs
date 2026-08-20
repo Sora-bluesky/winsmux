@@ -188,10 +188,43 @@ fn existing_token_file_is_trusted(path: &Path) -> bool {
 
 fn read_trusted_previous_control_pipe_token() -> Option<String> {
     let path = control_pipe_token_file_path()?;
-    if !existing_token_file_is_trusted(&path) {
+    read_trusted_previous_token_at_path(&path)
+}
+
+fn read_trusted_previous_token_at_path(path: &Path) -> Option<String> {
+    #[cfg(windows)]
+    {
+        read_trusted_previous_token_windows(path)
+    }
+    #[cfg(unix)]
+    {
+        read_trusted_previous_token_unix(path)
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn read_trusted_previous_token_unix(path: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut file = fs::File::open(path).ok()?;
+    let mode = file.metadata().ok()?.permissions().mode() & 0o777;
+    if mode != 0o600 {
         return None;
     }
-    read_control_pipe_token_file()
+    let mut contents = String::new();
+    file.read_to_string(&mut contents).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 fn bootstrap_control_pipe_token() -> Result<(), String> {
@@ -261,6 +294,88 @@ fn local_free_ptr(ptr: *mut core::ffi::c_void) {
             LocalFree(ptr);
         }
     }
+}
+
+#[cfg(windows)]
+fn open_control_pipe_token_read_handle(
+    path: &Path,
+) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
+    use windows_sys::Win32::Foundation::{GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        OPEN_EXISTING,
+    };
+
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const READ_CONTROL: u32 = 0x0002_0000;
+
+    let path_wide = path_to_wide(path);
+    let handle: HANDLE = unsafe {
+        CreateFileW(
+            path_wide.as_ptr(),
+            GENERIC_READ | READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            core::ptr::null_mut(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            core::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        Err(format!(
+            "control-pipe token rotate failed ({})",
+            unsafe { GetLastError() }
+        ))
+    } else {
+        Ok(handle)
+    }
+}
+
+#[cfg(windows)]
+fn read_control_pipe_token_from_handle(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Option<String> {
+    use windows_sys::Win32::Storage::FileSystem::ReadFile;
+
+    let mut buffer = vec![0u8; 4096];
+    let mut bytes_read = 0u32;
+    let ok = unsafe {
+        ReadFile(
+            handle,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+            &mut bytes_read,
+            core::ptr::null_mut(),
+        )
+    };
+    if ok == 0 {
+        return None;
+    }
+    buffer.truncate(bytes_read as usize);
+    let contents = std::str::from_utf8(&buffer).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn read_trusted_previous_token_windows(path: &Path) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+
+    let handle = open_control_pipe_token_read_handle(path).ok()?;
+    let trusted = control_pipe_token_handle_dacl_is_user_only(handle).unwrap_or(false);
+    let token = if trusted {
+        read_control_pipe_token_from_handle(handle)
+    } else {
+        None
+    };
+    unsafe {
+        CloseHandle(handle);
+    }
+    token
 }
 
 #[cfg(windows)]
@@ -611,18 +726,184 @@ fn sid_to_string_for_test(sid: windows_sys::Win32::Security::PSID) -> String {
 }
 
 #[cfg(windows)]
-fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE};
+fn control_pipe_token_handle_dacl_is_user_only(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
+
+    unsafe {
+        let mut owner: PSID = core::ptr::null_mut();
+        let mut group: PSID = core::ptr::null_mut();
+        let mut dacl: *mut ACL = core::ptr::null_mut();
+        let mut sacl: *mut ACL = core::ptr::null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
+        let status = GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            &mut group,
+            &mut dacl,
+            &mut sacl,
+            &mut sd,
+        );
+        if status != ERROR_SUCCESS || dacl.is_null() {
+            local_free_ptr(sd);
+            return Err("control-pipe token rotate failed".to_string());
+        }
+        control_pipe_owner_and_dacl_are_user_only(owner, dacl, sd)
+    }
+}
+
+#[cfg(windows)]
+unsafe fn control_pipe_owner_and_dacl_are_user_only(
+    owner: windows_sys::Win32::Security::PSID,
+    dacl: *mut windows_sys::Win32::Security::ACL,
+    sd: windows_sys::Win32::Security::PSECURITY_DESCRIPTOR,
+) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
     #[cfg(test)]
     use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
-    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         AclSizeInformation, EqualSid, GetAce, GetAclInformation, GetTokenInformation, TokenOwner,
-        TokenUser, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
-        OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_OWNER, TOKEN_QUERY,
-        TOKEN_USER,
+        TokenUser, ACE_HEADER, ACL_SIZE_INFORMATION, PSID, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    if owner.is_null() {
+        local_free_ptr(sd);
+        return Ok(false);
+    }
+
+    let mut token: HANDLE = core::ptr::null_mut();
+    if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+        local_free_ptr(sd);
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    let mut required = 0u32;
+    GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut required);
+    if required == 0 {
+        CloseHandle(token);
+        local_free_ptr(sd);
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    let mut buffer = vec![0u8; required as usize];
+    if GetTokenInformation(
+        token,
+        TokenUser,
+        buffer.as_mut_ptr().cast(),
+        required,
+        &mut required,
+    ) == 0
+    {
+        CloseHandle(token);
+        local_free_ptr(sd);
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+    let mut token_owner_required = 0u32;
+    GetTokenInformation(
+        token,
+        TokenOwner,
+        core::ptr::null_mut(),
+        0,
+        &mut token_owner_required,
+    );
+    let mut token_owner_buffer = vec![0u8; token_owner_required as usize];
+    let token_owner_sid = if token_owner_required > 0
+        && GetTokenInformation(
+            token,
+            TokenOwner,
+            token_owner_buffer.as_mut_ptr().cast(),
+            token_owner_required,
+            &mut token_owner_required,
+        ) != 0
+    {
+        (*(token_owner_buffer.as_ptr() as *const TOKEN_OWNER)).Owner
+    } else {
+        core::ptr::null_mut()
+    };
+    let mut owner_matches =
+        owner_sid_matches_current_principal(owner, token_user.User.Sid, token_owner_sid);
+    #[cfg(test)]
+    {
+        if FORCE_CONTROL_PIPE_OWNER_MISMATCH.load(std::sync::atomic::Ordering::SeqCst) {
+            let everyone: Vec<u16> = "S-1-1-0".encode_utf16().chain(Some(0)).collect();
+            let mut everyone_sid: PSID = core::ptr::null_mut();
+            if ConvertStringSidToSidW(everyone.as_ptr(), &mut everyone_sid) == 0
+                || everyone_sid.is_null()
+            {
+                CloseHandle(token);
+                local_free_ptr(sd);
+                return Err("control-pipe token rotate failed".to_string());
+            }
+            owner_matches = EqualSid(owner, everyone_sid) != 0;
+            local_free_ptr(everyone_sid);
+        }
+    }
+    CloseHandle(token);
+    if !owner_matches {
+        #[cfg(test)]
+        eprintln!(
+            "control-pipe owner rejected file={} user={} token_owner={}",
+            sid_to_string_for_test(owner),
+            sid_to_string_for_test(token_user.User.Sid),
+            sid_to_string_for_test(token_owner_sid)
+        );
+        local_free_ptr(sd);
+        return Ok(false);
+    }
+
+    let mut size_info = ACL_SIZE_INFORMATION {
+        AceCount: 0,
+        AclBytesInUse: 0,
+        AclBytesFree: 0,
+    };
+    if GetAclInformation(
+        dacl,
+        std::ptr::addr_of_mut!(size_info).cast(),
+        std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+        AclSizeInformation,
+    ) == 0
+    {
+        local_free_ptr(sd);
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    if size_info.AceCount != 1 {
+        #[cfg(test)]
+        eprintln!("control-pipe DACL AceCount={}", size_info.AceCount);
+        local_free_ptr(sd);
+        return Ok(false);
+    }
+
+    let mut ace_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
+    if GetAce(dacl, 0, &mut ace_ptr) == 0 {
+        local_free_ptr(sd);
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    let header = &*(ace_ptr as *const ACE_HEADER);
+    // ACCESS_ALLOWED_ACE_TYPE is 0; avoid extra SystemServices feature.
+    if header.AceType != 0 {
+        local_free_ptr(sd);
+        return Ok(false);
+    }
+    let sid: PSID = ace_ptr.cast::<u8>().add(8).cast();
+    let equal = EqualSid(sid, token_user.User.Sid) != 0;
+    local_free_ptr(sd);
+    Ok(equal)
+}
+
+#[cfg(windows)]
+fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String> {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    };
 
     let path_wide = path_to_wide(path);
     unsafe {
@@ -645,127 +926,7 @@ fn control_pipe_token_file_dacl_is_user_only(path: &Path) -> Result<bool, String
             local_free_ptr(sd);
             return Err("control-pipe token rotate failed".to_string());
         }
-        if owner.is_null() {
-            local_free_ptr(sd);
-            return Ok(false);
-        }
-
-        let mut token: HANDLE = core::ptr::null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        let mut required = 0u32;
-        GetTokenInformation(token, TokenUser, core::ptr::null_mut(), 0, &mut required);
-        if required == 0 {
-            CloseHandle(token);
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        let mut buffer = vec![0u8; required as usize];
-        if GetTokenInformation(
-            token,
-            TokenUser,
-            buffer.as_mut_ptr().cast(),
-            required,
-            &mut required,
-        ) == 0
-        {
-            CloseHandle(token);
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
-        let mut token_owner_required = 0u32;
-        GetTokenInformation(
-            token,
-            TokenOwner,
-            core::ptr::null_mut(),
-            0,
-            &mut token_owner_required,
-        );
-        let mut token_owner_buffer = vec![0u8; token_owner_required as usize];
-        let token_owner_sid = if token_owner_required > 0
-            && GetTokenInformation(
-                token,
-                TokenOwner,
-                token_owner_buffer.as_mut_ptr().cast(),
-                token_owner_required,
-                &mut token_owner_required,
-            ) != 0
-        {
-            (*(token_owner_buffer.as_ptr() as *const TOKEN_OWNER)).Owner
-        } else {
-            core::ptr::null_mut()
-        };
-        let mut owner_matches =
-            owner_sid_matches_current_principal(owner, token_user.User.Sid, token_owner_sid);
-        #[cfg(test)]
-        {
-            if FORCE_CONTROL_PIPE_OWNER_MISMATCH.load(std::sync::atomic::Ordering::SeqCst) {
-                let everyone: Vec<u16> = "S-1-1-0".encode_utf16().chain(Some(0)).collect();
-                let mut everyone_sid: PSID = core::ptr::null_mut();
-                if ConvertStringSidToSidW(everyone.as_ptr(), &mut everyone_sid) == 0
-                    || everyone_sid.is_null()
-                {
-                    CloseHandle(token);
-                    local_free_ptr(sd);
-                    return Err("control-pipe token rotate failed".to_string());
-                }
-                owner_matches = EqualSid(owner, everyone_sid) != 0;
-                local_free_ptr(everyone_sid);
-            }
-        }
-        CloseHandle(token);
-        if !owner_matches {
-            #[cfg(test)]
-            eprintln!(
-                "control-pipe owner rejected file={} user={} token_owner={}",
-                sid_to_string_for_test(owner),
-                sid_to_string_for_test(token_user.User.Sid),
-                sid_to_string_for_test(token_owner_sid)
-            );
-            local_free_ptr(sd);
-            return Ok(false);
-        }
-
-        let mut size_info = ACL_SIZE_INFORMATION {
-            AceCount: 0,
-            AclBytesInUse: 0,
-            AclBytesFree: 0,
-        };
-        if GetAclInformation(
-            dacl,
-            std::ptr::addr_of_mut!(size_info).cast(),
-            std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
-            AclSizeInformation,
-        ) == 0
-        {
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        if size_info.AceCount != 1 {
-            #[cfg(test)]
-            eprintln!("control-pipe DACL AceCount={}", size_info.AceCount);
-            local_free_ptr(sd);
-            return Ok(false);
-        }
-
-        let mut ace_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
-        if GetAce(dacl, 0, &mut ace_ptr) == 0 {
-            local_free_ptr(sd);
-            return Err("control-pipe token rotate failed".to_string());
-        }
-        let header = &*(ace_ptr as *const ACE_HEADER);
-        // ACCESS_ALLOWED_ACE_TYPE is 0; avoid extra SystemServices feature.
-        if header.AceType != 0 {
-            local_free_ptr(sd);
-            return Ok(false);
-        }
-        let sid: PSID = ace_ptr.cast::<u8>().add(8).cast();
-        let equal = EqualSid(sid, token_user.User.Sid) != 0;
-        local_free_ptr(sd);
-        Ok(equal)
+        control_pipe_owner_and_dacl_are_user_only(owner, dacl, sd)
     }
 }
 
@@ -2583,6 +2744,55 @@ mod tests {
             control_pipe_token_file_dacl_is_user_only(dir).expect("dir dacl query"),
             "token directory DACL must be user-only"
         );
+    }
+
+    #[test]
+    fn control_pipe_trusted_previous_token_is_captured() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "trusted-previous-token").expect("token a");
+        harden_existing_token_file_for_test(&path);
+        assert_eq!(
+            read_trusted_previous_control_pipe_token().as_deref(),
+            Some("trusted-previous-token")
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_trusted_previous_survives_path_replace() {
+        use windows_sys::Win32::Foundation::CloseHandle;
+
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "token-a-held-handle").expect("token a");
+        harden_existing_token_file_for_test(&path);
+
+        let handle = open_control_pipe_token_read_handle(&path).expect("production open");
+
+        // MOVEFILE_REPLACE_EXISTING on an open dest returns ERROR_ACCESS_DENIED (5)
+        // even with FILE_SHARE_DELETE. Steal the name, then plant B at the same path.
+        let stolen = path.with_extension("stolen");
+        fs::rename(&path, &stolen).expect("steal name while handle held");
+        fs::write(&path, "token-b-replaced-path").expect("token b at stolen name");
+        assert_eq!(
+            fs::read_to_string(&path).expect("path after replace").trim(),
+            "token-b-replaced-path"
+        );
+        assert!(
+            control_pipe_token_handle_dacl_is_user_only(handle).expect("handle dacl"),
+            "held handle DACL must stay the opened file"
+        );
+        assert_eq!(
+            read_control_pipe_token_from_handle(handle).as_deref(),
+            Some("token-a-held-handle"),
+            "handle must not follow the replaced path"
+        );
+        unsafe {
+            CloseHandle(handle);
+        }
     }
 
     #[test]
