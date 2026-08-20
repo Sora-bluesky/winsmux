@@ -778,6 +778,7 @@ pub fn handle_control_pipe_payload(
     }
 
     if method == "desktop.control_plane.contract" {
+        let supported = control_pipe_contract_request_is_supported(&request_value);
         let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
             Ok(value) => value,
             Err(err) => {
@@ -795,7 +796,7 @@ pub fn handle_control_pipe_payload(
                 "desktop_json_rpc expects jsonrpc=\"2.0\"".to_string(),
             );
         }
-        if !control_pipe_contract_request_is_supported(&request.params) {
+        if !supported {
             return serialize_control_pipe_error(
                 request.id,
                 JSON_RPC_INVALID_PARAMS,
@@ -968,10 +969,9 @@ fn control_pipe_method_schemas() -> Value {
     })
 }
 
-fn control_pipe_contract_request_is_supported(params: &Option<Value>) -> bool {
-    match params {
+fn control_pipe_contract_request_is_supported(request_value: &Value) -> bool {
+    match request_value.get("params") {
         None => true,
-        Some(Value::Null) => true,
         Some(Value::Object(map)) => {
             if map.keys().any(|key| key.as_str() != "version") {
                 return false;
@@ -2377,7 +2377,9 @@ mod tests {
             br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":1}}"#,
             br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":0}}"#,
             br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":"2"}}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":null}}"#,
             br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":[]}"#,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":null}"#,
             br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract","params":{"version":2,"extra":true}}"#,
         ];
         for payload in cases {
