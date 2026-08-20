@@ -54,7 +54,7 @@ function Resolve-WinsmuxRawCommand {
 $script:WinsmuxRawCommand = $null
 
 # --- Config ---
-$VERSION = "0.36.33"
+$VERSION = "0.36.34"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
