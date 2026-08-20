@@ -952,6 +952,18 @@ pub const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
 
 const PAIRING_CONTROL_PIPE_METHODS: &[&str] = &["desktop.pairing.confirm"];
 
+const CONTROL_PIPE_READ_SCOPE_METHODS: &[&str] = &[
+    "desktop.summary.snapshot",
+    "desktop.run.explain",
+    "desktop.run.compare",
+    "desktop.voice.capture_status",
+    "desktop.provider.capabilities",
+    "pty.capture",
+    "desktop.operator.snapshot",
+];
+
+const CONTROL_PIPE_SCOPE_DENIED: &str = "Control pipe method is not allowed for auth.scope";
+
 const CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS: &[&str] = &[
     "desktop.workers.status",
     "desktop.workers.start",
@@ -1025,15 +1037,25 @@ pub fn handle_control_pipe_payload(
         return serialize_control_pipe_result(request.id, control_pipe_contract());
     }
 
-    if !is_authorized_control_pipe_request(&request_value) {
-        return serialize_control_pipe_error(
-            request_id,
-            JSON_RPC_INVALID_REQUEST,
-            format!(
-                "Control pipe method requires a valid {} value in auth.token",
-                WINSMUX_CONTROL_PIPE_TOKEN_ENV
-            ),
-        );
+    match authorize_control_pipe_request(&request_value, method) {
+        ControlPipeRequestAuthz::Allowed => {}
+        ControlPipeRequestAuthz::InvalidToken => {
+            return serialize_control_pipe_error(
+                request_id,
+                JSON_RPC_INVALID_REQUEST,
+                format!(
+                    "Control pipe method requires a valid {} value in auth.token",
+                    WINSMUX_CONTROL_PIPE_TOKEN_ENV
+                ),
+            );
+        }
+        ControlPipeRequestAuthz::InvalidScope => {
+            return serialize_control_pipe_error(
+                request_id,
+                JSON_RPC_INVALID_REQUEST,
+                CONTROL_PIPE_SCOPE_DENIED.to_string(),
+            );
+        }
     }
 
     if PAIRING_CONTROL_PIPE_METHODS.contains(&method) {
@@ -1221,6 +1243,8 @@ fn control_pipe_contract() -> Value {
         "token_env": WINSMUX_CONTROL_PIPE_TOKEN_ENV,
         "token_file": WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE,
         "request_field": "auth.token",
+        "scope_field": "auth.scope",
+        "scopes": ["read", "write"],
     },
     "methods": control_pipe_methods(),
     "desktop_methods": DESKTOP_CONTROL_PIPE_METHODS,
@@ -1232,7 +1256,13 @@ fn control_pipe_contract() -> Value {
     })
 }
 
-fn is_authorized_control_pipe_request(request_value: &Value) -> bool {
+enum ControlPipeRequestAuthz {
+    Allowed,
+    InvalidToken,
+    InvalidScope,
+}
+
+fn control_pipe_token_matches(request_value: &Value) -> bool {
     let provided_token = match request_value
         .get("auth")
         .and_then(|auth| auth.get("token"))
@@ -1247,6 +1277,32 @@ fn is_authorized_control_pipe_request(request_value: &Value) -> bool {
     }
 
     authorize_rotated_or_file_token(provided_token)
+}
+
+fn control_pipe_scope_allows_method(request_value: &Value, method: &str) -> bool {
+    let Some(auth) = request_value.get("auth") else {
+        return true;
+    };
+    match auth.get("scope") {
+        None => true,
+        Some(Value::Null) => false,
+        Some(Value::String(scope)) => match scope.as_str() {
+            "write" => true,
+            "read" => CONTROL_PIPE_READ_SCOPE_METHODS.contains(&method),
+            _ => false,
+        },
+        Some(_) => false,
+    }
+}
+
+fn authorize_control_pipe_request(request_value: &Value, method: &str) -> ControlPipeRequestAuthz {
+    if !control_pipe_token_matches(request_value) {
+        return ControlPipeRequestAuthz::InvalidToken;
+    }
+    if !control_pipe_scope_allows_method(request_value, method) {
+        return ControlPipeRequestAuthz::InvalidScope;
+    }
+    ControlPipeRequestAuthz::Allowed
 }
 
 fn constant_time_string_eq(left: &[u8], right: &[u8]) -> bool {
@@ -1520,6 +1576,17 @@ mod tests {
         .into_bytes()
     }
 
+    fn control_pipe_payload_with_auth(method: &str, params: Value, auth: Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+            "auth": auth,
+        }))
+        .expect("payload")
+    }
+
     fn pairing_payload_with_token(token: Option<&str>) -> Vec<u8> {
         let mut request = json!({
             "jsonrpc": "2.0",
@@ -1644,6 +1711,8 @@ mod tests {
             WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE
         );
         assert_eq!(result["auth"]["request_field"], "auth.token");
+        assert_eq!(result["auth"]["scope_field"], "auth.scope");
+        assert_eq!(result["auth"]["scopes"], json!(["read", "write"]));
         assert_eq!(result["desktop_methods"], json!(DESKTOP_CONTROL_PIPE_METHODS));
         assert_eq!(result["pty_methods"], json!(PTY_CONTROL_PIPE_METHODS));
         assert_eq!(
@@ -2195,6 +2264,12 @@ mod tests {
                 .as_str()
                 .expect("error message")
                 .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+            assert!(
+                !missing_value["error"]["message"]
+                    .as_str()
+                    .expect("error message")
+                    .contains("auth.scope")
+            );
         }
 
         let _guard = set_control_pipe_token_for_test(Some("expected-token"));
@@ -2215,6 +2290,162 @@ mod tests {
             .lock()
             .expect("commands lock")
             .is_empty());
+    }
+
+    #[test]
+    fn control_pipe_omitted_scope_still_allows_write() {
+        let _guard = set_control_pipe_token_for_test(Some("scope-token"));
+        let pty_transport = StubPtyTransport::new();
+        let response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &control_pipe_payload_with_auth(
+                "pty.write",
+                json!({"paneId":"pane-1","data":"x"}),
+                json!({"token":"scope-token"}),
+            ),
+            None,
+        );
+        let value: Value = serde_json::from_slice(&response).expect("response json");
+        assert!(
+            value.get("error").is_none(),
+            "omit auth.scope must keep full grant: {value}"
+        );
+        assert_eq!(value["result"]["ok"], true);
+    }
+
+    #[test]
+    fn control_pipe_read_scope_cannot_write() {
+        let _guard = set_control_pipe_token_for_test(Some("scope-token"));
+        let pty_transport = StubPtyTransport::new();
+        let denied = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &control_pipe_payload_with_auth(
+                "pty.write",
+                json!({"paneId":"pane-1","data":"x"}),
+                json!({"token":"scope-token","scope":"read"}),
+            ),
+            None,
+        );
+        let denied_value: Value = serde_json::from_slice(&denied).expect("denied json");
+        assert_eq!(denied_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        let message = denied_value["error"]["message"]
+            .as_str()
+            .expect("error message");
+        assert!(
+            message.contains("auth.scope"),
+            "scope deny must name auth.scope: {message}"
+        );
+        assert!(
+            !message.contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV),
+            "scope deny must not look like a missing token"
+        );
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+
+        let captured = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &control_pipe_payload_with_auth(
+                "pty.capture",
+                json!({"paneId":"pane-1"}),
+                json!({"token":"scope-token","scope":"read"}),
+            ),
+            None,
+        );
+        let captured_value: Value = serde_json::from_slice(&captured).expect("capture json");
+        assert!(
+            captured_value.get("error").is_none(),
+            "read scope must still capture: {captured_value}"
+        );
+        assert_eq!(captured_value["result"]["output"], "ready");
+    }
+
+    #[test]
+    fn control_pipe_unknown_scope_is_denied() {
+        let _guard = set_control_pipe_token_for_test(Some("scope-token"));
+        let pty_transport = StubPtyTransport::new();
+        for scope in [
+            json!("admin"),
+            json!(""),
+            json!(null),
+            json!(1),
+            json!(true),
+            json!(["read"]),
+        ] {
+            let denied = handle_control_pipe_payload(
+                &StubDesktopTransport,
+                &pty_transport,
+                &control_pipe_payload_with_auth(
+                    "pty.capture",
+                    json!({"paneId":"pane-1"}),
+                    json!({"token":"scope-token","scope":scope}),
+                ),
+                None,
+            );
+            let denied_value: Value = serde_json::from_slice(&denied).expect("denied json");
+            assert_eq!(denied_value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+            assert!(
+                denied_value["error"]["message"]
+                    .as_str()
+                    .expect("error message")
+                    .contains("auth.scope"),
+                "unknown scope {scope} must deny"
+            );
+        }
+
+        let contract = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#,
+            None,
+        );
+        let contract_value: Value = serde_json::from_slice(&contract).expect("contract json");
+        assert_eq!(contract_value["result"]["version"], 2);
+        assert!(contract_value.get("error").is_none());
+    }
+
+    #[test]
+    fn control_pipe_invalid_token_wins_over_scope() {
+        let _guard = set_control_pipe_token_for_test(Some("expected-token"));
+        let pty_transport = StubPtyTransport::new();
+        let response = handle_control_pipe_payload(
+            &StubDesktopTransport,
+            &pty_transport,
+            &control_pipe_payload_with_auth(
+                "pty.capture",
+                json!({"paneId":"pane-1"}),
+                json!({"token":"wrong-token","scope":"read"}),
+            ),
+            None,
+        );
+        let value: Value = serde_json::from_slice(&response).expect("response json");
+        let message = value["error"]["message"].as_str().expect("error message");
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(message.contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        assert!(!message.contains("auth.scope"));
+    }
+
+    #[test]
+    fn control_pipe_read_scope_union_covers_allowlist() {
+        let allowlist: std::collections::HashSet<&str> = control_pipe_methods().into_iter().collect();
+        let read: std::collections::HashSet<&str> =
+            CONTROL_PIPE_READ_SCOPE_METHODS.iter().copied().collect();
+        assert!(
+            read.is_subset(&allowlist),
+            "read grant leaked a method not on the allowlist"
+        );
+        let mutate: std::collections::HashSet<&str> =
+            allowlist.difference(&read).copied().collect();
+        let union: std::collections::HashSet<&str> = read.union(&mutate).copied().collect();
+        assert_eq!(union, allowlist);
+        assert!(mutate.contains("pty.write"));
+        assert!(mutate.contains("desktop.control_plane.contract"));
+        assert!(read.contains("pty.capture"));
     }
 
     #[test]
@@ -2373,6 +2604,12 @@ mod tests {
             .as_str()
             .expect("error message")
             .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        assert!(
+            !value["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains("auth.scope")
+        );
         assert!(pty_transport
             .commands
             .lock()
@@ -2391,6 +2628,16 @@ mod tests {
 
         assert_eq!(value["id"], 1);
         assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        assert!(
+            !value["error"]["message"]
+                .as_str()
+                .expect("error message")
+                .contains("auth.scope")
+        );
         assert!(pty_transport
             .commands
             .lock()
