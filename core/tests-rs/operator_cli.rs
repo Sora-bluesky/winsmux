@@ -3609,6 +3609,118 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
 }
 
 #[test]
+fn operator_cli_extension_manifest_json_reads_registry() {
+    let project_dir = make_temp_project_dir("extension-manifest-json");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("tests/fixtures/workspace-recipes/valid-v1.extension-manifest.json");
+    fs::copy(&fixture, winsmux_dir.join("extension-manifest.json"))
+        .expect("test should copy extension-manifest fixture");
+
+    let payload = run_json(&project_dir, &["extension-manifest", "--json"]);
+
+    assert_eq!(payload["version"], 1);
+    assert_eq!(payload["enforcement"], "declaration_only");
+    assert_eq!(payload["hookable_surfaces"], serde_json::json!([]));
+    assert_eq!(
+        payload["surface_vocabulary"],
+        serde_json::json!(["layout", "workflow", "status"])
+    );
+    assert_eq!(
+        payload["extensions"]["sample-layout"]["surface"],
+        "layout"
+    );
+    assert!(payload.get("registry_path").is_none());
+    let encoded = serde_json::to_string(&payload).expect("payload should serialize");
+    assert!(
+        !encoded.contains(":\\\\") && !encoded.contains("C:") && !encoded.contains("registry_path"),
+        "payload leaked a path: {encoded}"
+    );
+}
+
+#[test]
+fn operator_cli_extension_manifest_missing_file_is_empty() {
+    let project_dir = make_temp_project_dir("extension-manifest-missing");
+    let payload = run_json(&project_dir, &["extension-manifest", "--json"]);
+    assert_eq!(payload["version"], 1);
+    assert_eq!(payload["extensions"], serde_json::json!({}));
+    assert_eq!(payload["hookable_surfaces"], serde_json::json!([]));
+    assert_eq!(payload["enforcement"], "declaration_only");
+}
+
+#[test]
+fn operator_cli_extension_manifest_rejects_unknown_surface_grant_field_and_version() {
+    let project_dir = make_temp_project_dir("extension-manifest-reject");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "unknown-surface.json",
+            r#"{"version":1,"extensions":{"x":{"display_name":"X","surface":"pane","permissions":["read:summary"]}}}"#,
+            "Invalid extension-manifest surface 'pane'.",
+        ),
+        (
+            "unknown-grant.json",
+            r#"{"version":1,"extensions":{"x":{"display_name":"X","surface":"layout","permissions":["read:runs"]}}}"#,
+            "Invalid extension-manifest permission 'read:runs'.",
+        ),
+        (
+            "unknown-field.json",
+            r#"{"version":1,"extensions":{},"marketplace":true}"#,
+            "Invalid extension-manifest field 'marketplace'.",
+        ),
+        (
+            "bad-version.json",
+            r#"{"version":2,"extensions":{}}"#,
+            "Unsupported extension-manifest version '2'.",
+        ),
+    ];
+
+    for (name, body, needle) in cases {
+        fs::write(winsmux_dir.join("extension-manifest.json"), body)
+            .expect("test should write invalid manifest");
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["extension-manifest", "--json"])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run");
+        assert!(
+            !output.status.success(),
+            "{name} should fail closed"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(needle),
+            "{name} stderr {stderr} should contain {needle}"
+        );
+    }
+}
+
+#[test]
+fn operator_cli_extension_manifest_help_is_discoverable() {
+    let project_dir = make_temp_project_dir("extension-manifest-help");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["extension-manifest", "--help"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("usage: winsmux extension-manifest"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("--help")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("extension-manifest"));
+}
+
+#[test]
 fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
     let project_dir = make_temp_project_dir("machine-contract");
 

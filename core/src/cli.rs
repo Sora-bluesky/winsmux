@@ -140,6 +140,7 @@ OPERATOR COMMANDS:
     team-profile            Validate, resolve, save, classify, or gate Team Profile slot assignments as JSON
     worker-artifact          Judge worker completion from a dispatch output file and exit code as JSON
     provider-capabilities   Inspect the provider capability registry contract
+    extension-manifest      Inspect the declaration-only extension-manifest registry
     skills                  Print agent-readable command skill contracts
     machine-contract        Print the hook and agent machine contract JSON
     rust-canary             Print the Rust default-on canary gate JSON
@@ -464,6 +465,7 @@ fn commands_text() -> &'static str {
   workflow-gate             - Aggregate workflow and Team Profile pre-release sub-gates as JSON
   team-profile              - Validate, resolve, save, classify, or gate Team Profile slot assignments as JSON
   worker-artifact            - Judge worker completion from a dispatch output file and exit code as JSON
+  extension-manifest        - Inspect the declaration-only extension-manifest registry
   rust-canary               - Print the Rust default-on canary gate JSON
   manual-checklist          - Print the versioned manual validation checklist gate
   legacy-compat-gate        - Print the legacy compatibility removal inventory gate

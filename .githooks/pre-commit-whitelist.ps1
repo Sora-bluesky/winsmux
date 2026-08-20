@@ -176,6 +176,7 @@ $whitelistPatterns = @(
     'tests/fixtures/rust-parity/*.yaml',
     'tests/fixtures/workspace-recipes/valid-v1.normalized.json',
     'tests/fixtures/workspace-recipes/valid-v1.provider-capabilities.json',
+    'tests/fixtures/workspace-recipes/valid-v1.extension-manifest.json',
     'tests/fixtures/workspace-recipes/valid-v1.yaml',
     'tests/test_support/rust_parity.rs',
     'packages/winsmux/**',
