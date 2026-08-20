@@ -2294,7 +2294,10 @@ mod tests {
 
     #[test]
     fn control_pipe_omitted_scope_still_allows_write() {
-        let _guard = set_control_pipe_token_for_test(Some("scope-token"));
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "scope-file-token").expect("file token");
         let pty_transport = StubPtyTransport::new();
         let response = handle_control_pipe_payload(
             &StubDesktopTransport,
@@ -2302,7 +2305,7 @@ mod tests {
             &control_pipe_payload_with_auth(
                 "pty.write",
                 json!({"paneId":"pane-1","data":"x"}),
-                json!({"token":"scope-token"}),
+                json!({"token":"scope-file-token"}),
             ),
             None,
         );
