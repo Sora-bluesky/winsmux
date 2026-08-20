@@ -71,3 +71,108 @@ fn classify_dispatchable_names_result_md_artifact_path() {
     assert!(stdout.contains(".winsmux/runs/worker-2/result.md"));
     assert!(stdout.contains("pty_capture_is_auxiliary"));
 }
+
+fn assert_judge_rejects(args: &[&str], exact_stderr: &str) {
+    let result = bin().args(args).output().expect("judge reject");
+    let stdout = String::from_utf8(result.stdout.clone()).expect("stdout utf-8");
+    let stderr = String::from_utf8(result.stderr.clone()).expect("stderr utf-8");
+    assert!(
+        !result.status.success(),
+        "expected process failure; stdout={stdout} stderr={stderr}"
+    );
+    assert_eq!(stderr, format!("winsmux: {exact_stderr}\n"));
+    assert_eq!(stdout, "");
+}
+
+#[test]
+fn judge_rejects_bad_arguments_fail_closed() {
+    assert_judge_rejects(
+        &[
+            "worker-artifact",
+            "--action",
+            "judge",
+            "--json",
+            "--output",
+            "result.md",
+            "--exit-code",
+            "0",
+            "--nope",
+        ],
+        "unknown worker-artifact argument.",
+    );
+    assert_judge_rejects(
+        &[
+            "worker-artifact",
+            "--action",
+            "judge",
+            "--output",
+            "result.md",
+            "--exit-code",
+            "0",
+        ],
+        "worker-artifact requires --json.",
+    );
+    assert_judge_rejects(
+        &[
+            "worker-artifact",
+            "--action",
+            "inspect",
+            "--json",
+            "--output",
+            "result.md",
+            "--exit-code",
+            "0",
+        ],
+        "worker-artifact --action must be judge.",
+    );
+    assert_judge_rejects(
+        &[
+            "worker-artifact",
+            "--action",
+            "judge",
+            "--json",
+            "--exit-code",
+            "0",
+        ],
+        "worker-artifact requires --output.",
+    );
+    assert_judge_rejects(
+        &[
+            "worker-artifact",
+            "--action",
+            "judge",
+            "--json",
+            "--output",
+            "result.md",
+            "--exit-code",
+            "abc",
+        ],
+        "worker-artifact --exit-code must be an integer.",
+    );
+}
+
+#[test]
+fn judge_present_artifact_nonzero_exit_is_failed_and_process_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("result.md");
+    fs::write(&output, "partial\n").unwrap();
+    let result = bin()
+        .args(["worker-artifact", "--action", "judge", "--json", "--output"])
+        .arg(&output)
+        .args(["--exit-code", "2"])
+        .output()
+        .expect("judge failed");
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        !result.status.success(),
+        "expected process failure; stdout={stdout} stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(
+        stdout.contains("\"status\":\"failed\"") || stdout.contains("\"status\": \"failed\"")
+    );
+    assert!(
+        stdout.contains("\"completion_authority\":\"output-file-and-exit-code\"")
+            || stdout.contains("\"completion_authority\": \"output-file-and-exit-code\"")
+    );
+}
