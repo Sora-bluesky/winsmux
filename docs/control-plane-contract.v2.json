@@ -2,6 +2,11 @@
   "auth": {
     "request_field": "auth.token",
     "required_for_methods": true,
+    "scope_field": "auth.scope",
+    "scopes": [
+      "read",
+      "write"
+    ],
     "token_env": "WINSMUX_CONTROL_PIPE_TOKEN",
     "token_file": "%LOCALAPPDATA%\\winsmux\\control-pipe\\token"
   },
