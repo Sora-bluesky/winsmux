@@ -74,23 +74,14 @@ fn classify_dispatchable_names_result_md_artifact_path() {
 
 fn assert_judge_rejects(args: &[&str], exact_stderr: &str) {
     let result = bin().args(args).output().expect("judge reject");
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    let stderr = String::from_utf8_lossy(&result.stderr);
+    let stdout = String::from_utf8(result.stdout.clone()).expect("stdout utf-8");
+    let stderr = String::from_utf8(result.stderr.clone()).expect("stderr utf-8");
     assert!(
         !result.status.success(),
         "expected process failure; stdout={stdout} stderr={stderr}"
     );
-    let expected = format!("winsmux: {exact_stderr}");
-    assert!(
-        stderr.contains(&expected),
-        "expected {expected:?} in stderr={stderr:?}"
-    );
-    assert!(
-        !stdout.contains("completion_authority")
-            && !stdout.contains("schema_version")
-            && !stdout.contains("worker-artifact-judge"),
-        "stdout leaked verdict JSON: {stdout}"
-    );
+    assert_eq!(stderr, format!("winsmux: {exact_stderr}\n"));
+    assert_eq!(stdout, "");
 }
 
 #[test]
