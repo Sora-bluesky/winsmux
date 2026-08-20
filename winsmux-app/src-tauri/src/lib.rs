@@ -10,7 +10,8 @@ mod pty_backend;
 mod remote_debug_gate;
 
 use control_pipe::{
-    control_pipe_ui_is_enabled, start_control_pipe_server, WINSMUX_CONTROL_PIPE_TOKEN_ENV,
+    control_pipe_ui_is_enabled, revoke_control_pipe_token_on_exit, start_control_pipe_server,
+    WINSMUX_CONTROL_PIPE_TOKEN_ENV,
 };
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain,
@@ -1916,6 +1917,10 @@ fn request_desktop_runtime_shutdown(
     summary.stop_requested.store(true, Ordering::SeqCst);
     let voice_cleanup_completed = request_voice_capture_shutdown(voice, voice_timeout);
     let (pty_count, pty_exited_count) = drain_all_ptys(pty, pty_timeout);
+    // Exclusive pipe stays with the control-pipe server thread until process
+    // death, so unlink here cannot race a successor rotate. updater `app.exit(0)`
+    // reaches this function via RunEvent ExitRequested/Exit.
+    revoke_control_pipe_token_on_exit();
     Some(DesktopShutdownReport {
         voice_stop_requested: voice_cleanup_completed.is_some(),
         voice_cleanup_completed,

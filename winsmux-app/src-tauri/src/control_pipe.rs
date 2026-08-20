@@ -31,6 +31,8 @@ pub const WINSMUX_CONTROL_PIPE_TOKEN_ENV: &str = "WINSMUX_CONTROL_PIPE_TOKEN";
 pub const WINSMUX_CONTROL_PIPE_TOKEN_FILE_TEMPLATE: &str =
     r"%LOCALAPPDATA%\winsmux\control-pipe\token";
 const CONTROL_PIPE_TOKEN_ROTATED_MARKER: &str = "control-pipe token: rotated";
+const CONTROL_PIPE_TOKEN_REVOKED_MARKER: &str = "control-pipe token: revoked";
+const CONTROL_PIPE_TOKEN_REVOKE_FAILED_MARKER: &str = "control-pipe token: revoke failed";
 const PREVIOUS_TOKEN_TTL: Duration = Duration::from_secs(60);
 const CONTROL_PIPE_TOKEN_RANDOM_BYTES: usize = 32;
 
@@ -240,6 +242,29 @@ fn bootstrap_control_pipe_token() -> Result<(), String> {
     });
     eprintln!("{CONTROL_PIPE_TOKEN_ROTATED_MARKER}");
     Ok(())
+}
+
+pub fn revoke_control_pipe_token_on_exit() {
+    let mut guard = control_pipe_auth_state_lock();
+    if guard.is_none() {
+        return;
+    }
+    // Unlink first while this process still owns Some-state. Clearing the lock
+    // before remove_file would fall through to the untrusted file-token read.
+    let unlink_ok = match control_pipe_token_file_path() {
+        Some(path) => match fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        },
+        None => false,
+    };
+    *guard = None;
+    if unlink_ok {
+        eprintln!("{CONTROL_PIPE_TOKEN_REVOKED_MARKER}");
+    } else {
+        eprintln!("{CONTROL_PIPE_TOKEN_REVOKE_FAILED_MARKER}");
+    }
 }
 
 fn bootstrap_control_pipe_token_after_exclusive_pipe(
@@ -3512,5 +3537,77 @@ mod tests {
         let value: Value = serde_json::from_slice(&response).expect("json");
         assert_eq!(value["id"], 1);
         assert!(value.get("error").is_none() || value["error"].is_null());
+    }
+
+    #[test]
+    fn control_pipe_revoke_on_exit_deletes_owned_token_file() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let path = control_pipe_token_file_path().expect("token path");
+        let current = fs::read_to_string(&path).expect("owned token");
+        assert!(control_pipe_auth_state_lock().is_some());
+
+        revoke_control_pipe_token_on_exit();
+
+        assert!(!path.exists(), "owned token file must be deleted");
+        assert!(control_pipe_auth_state_lock().is_none());
+        assert!(!authorize_rotated_or_file_token(&current));
+    }
+
+    #[test]
+    fn control_pipe_revoke_on_exit_leaves_unowned_file() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "planted-token").expect("planted file");
+        assert!(control_pipe_auth_state_lock().is_none());
+
+        revoke_control_pipe_token_on_exit();
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("planted file remains"),
+            "planted-token"
+        );
+        assert!(control_pipe_auth_state_lock().is_none());
+    }
+
+    #[test]
+    fn control_pipe_revoke_on_exit_leaves_env_skip_planted_file() {
+        let _guard = set_control_pipe_token_for_test(Some("env-token-value"));
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "keep-file-token").expect("file token");
+        let mut bootstrapped = false;
+        bootstrap_control_pipe_token_after_exclusive_pipe(&mut bootstrapped)
+            .expect("env skip");
+        assert!(bootstrapped);
+        assert!(control_pipe_auth_state_lock().is_none());
+
+        revoke_control_pipe_token_on_exit();
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("env-skip planted file remains"),
+            "keep-file-token"
+        );
+    }
+
+    #[test]
+    fn control_pipe_bootstrap_recovers_after_revoke() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        bootstrap_control_pipe_token().expect("bootstrap");
+        let path = control_pipe_token_file_path().expect("token path");
+        let first = fs::read_to_string(&path).expect("first token");
+        revoke_control_pipe_token_on_exit();
+        assert!(!path.exists());
+
+        bootstrap_control_pipe_token().expect("bootstrap after revoke");
+        let second = fs::read_to_string(&path).expect("new token");
+        assert_ne!(second, first);
+        assert!(authorize_rotated_or_file_token(&second));
+        #[cfg(windows)]
+        assert!(
+            existing_token_file_is_trusted(&path),
+            "restart after revoke must recreate a user-only token file"
+        );
     }
 }
