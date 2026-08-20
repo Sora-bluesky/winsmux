@@ -146,7 +146,7 @@ Token slots stay `<token-file>`. Precedence is env `WINSMUX_CONTROL_PIPE_TOKEN`,
 ```
 
 ```json
-{"jsonrpc":"2.0","id":"spawn","method":"pty.spawn","params":{"paneId":"adapter-walkthrough","cols":80,"rows":24,"startupInput":"echo adapter-walkthrough"},"auth":{"token":"<token-file>"}}
+{"jsonrpc":"2.0","id":"spawn","method":"pty.spawn","params":{"paneId":"adapter-walkthrough","cols":80,"rows":24,"startupInput":"echo adapter-walkthrough\r"},"auth":{"token":"<token-file>"}}
 ```
 
 ```json

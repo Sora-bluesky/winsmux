@@ -117,7 +117,7 @@ worker の start / status / stop は PowerShell の所有のままです。こ�
 ```
 
 ```json
-{"jsonrpc":"2.0","id":"spawn","method":"pty.spawn","params":{"paneId":"adapter-walkthrough","cols":80,"rows":24,"startupInput":"echo adapter-walkthrough"},"auth":{"token":"<token-file>"}}
+{"jsonrpc":"2.0","id":"spawn","method":"pty.spawn","params":{"paneId":"adapter-walkthrough","cols":80,"rows":24,"startupInput":"echo adapter-walkthrough\r"},"auth":{"token":"<token-file>"}}
 ```
 
 ```json

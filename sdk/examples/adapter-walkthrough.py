@@ -1,6 +1,9 @@
 """Worked named-pipe client on generated control-plane bindings. Import is side-effect-free."""
 
-import argparse, json, os, sys
+import argparse
+import json
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +36,10 @@ def _token() -> str:
     env = os.environ.get("WINSMUX_CONTROL_PIPE_TOKEN", "").strip()
     if env:
         return env
-    path = Path(os.environ.get("LOCALAPPDATA", "")) / "winsmux" / "control-pipe" / "token"
+    local = os.environ.get("LOCALAPPDATA", "").strip()
+    if not local:
+        raise SystemExit("no usable control-pipe token")
+    path = Path(local) / "winsmux" / "control-pipe" / "token"
     try:
         value = path.read_text(encoding="utf-8").strip()
     except OSError:
@@ -43,7 +49,9 @@ def _token() -> str:
     return value
 
 
-def _rpc(method: str, params: dict[str, Any] | None, token: str | None, req_id: str) -> Any:
+def _rpc(
+    method: str, params: dict[str, Any] | None, token: str | None, req_id: str
+) -> Any:
     payload: dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "method": method}
     if params is not None:
         payload["params"] = params
@@ -67,15 +75,32 @@ def main() -> int:
     args = parser.parse_args()
     token = _token()
     cap_params: DesktopProviderCapabilitiesParams = {}
-    caps = _rpc(_method("desktop.provider.capabilities"), dict(cap_params), token, "capabilities")
+    caps = _rpc(
+        _method("desktop.provider.capabilities"),
+        dict(cap_params),
+        token,
+        "capabilities",
+    )
     providers = caps.get("providers") if isinstance(caps, dict) else {}
-    print("capabilities version", caps.get("version") if isinstance(caps, dict) else None)
-    print("capabilities providers", sorted(providers) if isinstance(providers, dict) else [])
-    spawn_params: PtySpawnParams = {"paneId": PANE_ID, "cols": 80, "rows": 24, "startupInput": "echo adapter-walkthrough"}
+    print(
+        "capabilities version", caps.get("version") if isinstance(caps, dict) else None
+    )
+    print(
+        "capabilities providers",
+        sorted(providers) if isinstance(providers, dict) else [],
+    )
+    spawn_params: PtySpawnParams = {
+        "paneId": PANE_ID,
+        "cols": 80,
+        "rows": 24,
+        "startupInput": "echo adapter-walkthrough\r",
+    }
     spawned = False
     try:
         spawn_result = _rpc(_method("pty.spawn"), dict(spawn_params), token, "spawn")
-        pane_id = spawn_result.get("paneId") if isinstance(spawn_result, dict) else PANE_ID
+        pane_id = (
+            spawn_result.get("paneId") if isinstance(spawn_result, dict) else PANE_ID
+        )
         spawned = True
         capture_params: PtyCaptureParams = {"paneId": str(pane_id), "lines": 40}
         captured = _rpc(_method("pty.capture"), dict(capture_params), token, "capture")
@@ -86,18 +111,35 @@ def main() -> int:
         run_id = args.run_id
         if not run_id:
             snapshot_params: DesktopSummarySnapshotParams = {}
-            snapshot = _rpc(_method("desktop.summary.snapshot"), dict(snapshot_params), token, "snapshot")
-            projections = snapshot.get("run_projections") if isinstance(snapshot, dict) else None
-            first = projections[0] if isinstance(projections, list) and projections else {}
+            snapshot = _rpc(
+                _method("desktop.summary.snapshot"),
+                dict(snapshot_params),
+                token,
+                "snapshot",
+            )
+            projections = (
+                snapshot.get("run_projections") if isinstance(snapshot, dict) else None
+            )
+            first = (
+                projections[0] if isinstance(projections, list) and projections else {}
+            )
             candidate = first.get("run_id") if isinstance(first, dict) else None
-            run_id = candidate if isinstance(candidate, str) and candidate.strip() else None
+            run_id = (
+                candidate if isinstance(candidate, str) and candidate.strip() else None
+            )
         if not run_id:
             print(NO_RUNS)
         else:
             explain_params: DesktopRunExplainParams = {"runId": run_id}
-            explained = _rpc(_method("desktop.run.explain"), dict(explain_params), token, "explain")
-            explanation = explained.get("explanation") if isinstance(explained, dict) else {}
-            summary = explanation.get("summary") if isinstance(explanation, dict) else ""
+            explained = _rpc(
+                _method("desktop.run.explain"), dict(explain_params), token, "explain"
+            )
+            explanation = (
+                explained.get("explanation") if isinstance(explained, dict) else {}
+            )
+            summary = (
+                explanation.get("summary") if isinstance(explanation, dict) else ""
+            )
             print("desktop.run.explain runId", run_id)
             if summary:
                 print("desktop.run.explain summary", str(summary)[:200])
