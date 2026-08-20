@@ -8,6 +8,7 @@ pub const DESKTOP_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
 const AUTOMATION_CONTRACT_REQUEST: &[u8] =
     br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#;
 const PIPE_UNAVAILABLE: &str = "desktop control pipe is not available";
+const PIPE_ACCESS_DENIED: &str = "desktop control pipe access denied";
 const CONTROL_PIPE_TOKEN_ENV: &str = "WINSMUX_CONTROL_PIPE_TOKEN";
 
 pub fn run_automation_contract_command() -> io::Result<()> {
@@ -43,25 +44,8 @@ pub fn run_automation_contract_command() -> io::Result<()> {
 
 pub fn run_automation_discover_command() -> io::Result<()> {
     let auth_source = discover_auth_source();
-    let mut desktop_running = false;
-    let mut contract_version = serde_json::Value::Null;
-    match send_control_pipe_request(AUTOMATION_CONTRACT_REQUEST) {
-        Ok(response) => {
-            if let Some(version) = contract_version_from_pipe_response(&response) {
-                desktop_running = true;
-                contract_version = version;
-            }
-        }
-        Err(_) => {}
-    }
-    let connect_ready = desktop_running && auth_source != "none";
-    let document = serde_json::json!({
-        "desktop_running": desktop_running,
-        "pipe": DESKTOP_CONTROL_PIPE_NAME,
-        "contract_version": contract_version,
-        "auth_source": auth_source,
-        "connect_ready": connect_ready,
-    });
+    let send_result = send_control_pipe_request(AUTOMATION_CONTRACT_REQUEST);
+    let (document, status) = discover_outcome(send_result, auth_source);
     println!(
         "{}",
         serde_json::to_string(&document).map_err(|err| io::Error::new(
@@ -69,11 +53,7 @@ pub fn run_automation_discover_command() -> io::Result<()> {
             format!("automation discover result could not be serialized: {err}"),
         ))?
     );
-    if desktop_running {
-        Ok(())
-    } else {
-        Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE))
-    }
+    status
 }
 
 pub fn run_automation_pair_command() -> io::Result<()> {
@@ -114,9 +94,14 @@ pub fn run_automation_pair_command() -> io::Result<()> {
                 ))
             }
         },
-        Err(_) => {
-            print_pair_document(false, auth_source, Some("pipe_unavailable"))?;
-            Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE))
+        Err(err) => {
+            let reason = pair_pipe_error_reason(&err);
+            print_pair_document(false, auth_source, Some(reason))?;
+            if err.kind() == io::ErrorKind::PermissionDenied {
+                Err(err)
+            } else {
+                Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE))
+            }
         }
     }
 }
@@ -207,6 +192,51 @@ fn discover_auth_source() -> &'static str {
     }
 }
 
+fn discover_outcome(
+    send_result: io::Result<Vec<u8>>,
+    auth_source: &str,
+) -> (serde_json::Value, io::Result<()>) {
+    let access_denied = matches!(
+        &send_result,
+        Err(err) if err.kind() == io::ErrorKind::PermissionDenied
+    );
+    let mut desktop_running = false;
+    let mut contract_version = serde_json::Value::Null;
+    if let Ok(response) = send_result {
+        if let Some(version) = contract_version_from_pipe_response(&response) {
+            desktop_running = true;
+            contract_version = version;
+        }
+    }
+    let connect_ready = desktop_running && auth_source != "none";
+    let document = serde_json::json!({
+        "desktop_running": desktop_running,
+        "pipe": DESKTOP_CONTROL_PIPE_NAME,
+        "contract_version": contract_version,
+        "auth_source": auth_source,
+        "connect_ready": connect_ready,
+    });
+    let status = if desktop_running {
+        Ok(())
+    } else if access_denied {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            PIPE_ACCESS_DENIED,
+        ))
+    } else {
+        Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE))
+    };
+    (document, status)
+}
+
+fn pair_pipe_error_reason(err: &io::Error) -> &'static str {
+    if err.kind() == io::ErrorKind::PermissionDenied {
+        "access_denied"
+    } else {
+        "pipe_unavailable"
+    }
+}
+
 fn resolve_control_pipe_token() -> Option<(&'static str, String)> {
     match std::env::var(CONTROL_PIPE_TOKEN_ENV) {
         Ok(value) if !value.trim().is_empty() => Some(("env", value.trim().to_string())),
@@ -272,8 +302,8 @@ fn send_control_pipe_request_windows(payload: &[u8]) -> io::Result<Vec<u8>> {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY, GENERIC_READ,
-        GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
+        GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
@@ -312,10 +342,13 @@ fn send_control_pipe_request_windows(payload: &[u8]) -> io::Result<Vec<u8>> {
             }
             let error = GetLastError();
             if error == ERROR_FILE_NOT_FOUND {
-                return Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE));
+                return Err(map_control_pipe_createfile_error(error));
+            }
+            if error == ERROR_ACCESS_DENIED {
+                return Err(map_control_pipe_createfile_error(error));
             }
             if error != ERROR_PIPE_BUSY || attempt >= 20 {
-                return Err(io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE));
+                return Err(map_control_pipe_createfile_error(error));
             }
             WaitNamedPipeW(pipe_name.as_ptr(), 250);
             attempt += 1;
@@ -360,9 +393,25 @@ fn send_control_pipe_request_windows(payload: &[u8]) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
+#[cfg(windows)]
+fn map_control_pipe_createfile_error(error: u32) -> io::Error {
+    use windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED;
+    if error == ERROR_ACCESS_DENIED {
+        io::Error::new(io::ErrorKind::PermissionDenied, PIPE_ACCESS_DENIED)
+    } else {
+        io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{classify_pairing_response, contract_version_from_pipe_response, PairClassify};
+    use super::{
+        classify_pairing_response, contract_version_from_pipe_response, discover_outcome,
+        pair_pipe_error_reason, PairClassify, PIPE_ACCESS_DENIED, PIPE_UNAVAILABLE,
+    };
+    #[cfg(windows)]
+    use super::map_control_pipe_createfile_error;
+    use std::io;
 
     #[test]
     fn contract_liveness_rejects_invalid_json() {
@@ -436,5 +485,55 @@ mod tests {
             classify_pairing_response(body),
             PairClassify::Invalid
         );
+    }
+
+    #[test]
+    fn discover_access_denied_does_not_claim_running_or_unavailable() {
+        let err = io::Error::new(io::ErrorKind::PermissionDenied, PIPE_ACCESS_DENIED);
+        let (document, status) = discover_outcome(Err(err), "file");
+        assert_eq!(document["desktop_running"], false);
+        assert_eq!(document["connect_ready"], false);
+        assert!(document.get("reason").is_none());
+        let status = status.expect_err("denied discover must fail");
+        assert_eq!(status.kind(), io::ErrorKind::PermissionDenied);
+        let msg = status.to_string();
+        assert!(msg.contains("access denied"), "{msg}");
+        assert!(!msg.contains(PIPE_UNAVAILABLE), "{msg}");
+    }
+
+    #[test]
+    fn discover_unavailable_stays_not_found() {
+        let err = io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE);
+        let (document, status) = discover_outcome(Err(err), "none");
+        assert_eq!(document["desktop_running"], false);
+        let status = status.expect_err("absent pipe");
+        assert_eq!(status.kind(), io::ErrorKind::NotFound);
+        assert!(status.to_string().contains(PIPE_UNAVAILABLE));
+    }
+
+    #[test]
+    fn pair_pipe_error_splits_denied_from_unavailable() {
+        let denied = io::Error::new(io::ErrorKind::PermissionDenied, PIPE_ACCESS_DENIED);
+        assert_eq!(pair_pipe_error_reason(&denied), "access_denied");
+        let missing = io::Error::new(io::ErrorKind::NotFound, PIPE_UNAVAILABLE);
+        assert_eq!(pair_pipe_error_reason(&missing), "pipe_unavailable");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn map_createfile_access_denied_is_typed_deny() {
+        use windows_sys::Win32::Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_PIPE_BUSY,
+        };
+        let denied = map_control_pipe_createfile_error(ERROR_ACCESS_DENIED);
+        assert_eq!(denied.kind(), io::ErrorKind::PermissionDenied);
+        assert!(denied.to_string().contains("access denied"));
+        assert!(!denied.to_string().contains(PIPE_UNAVAILABLE));
+        let missing = map_control_pipe_createfile_error(ERROR_FILE_NOT_FOUND);
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        assert!(missing.to_string().contains(PIPE_UNAVAILABLE));
+        let busy = map_control_pipe_createfile_error(ERROR_PIPE_BUSY);
+        assert_eq!(busy.kind(), io::ErrorKind::NotFound);
+        assert!(busy.to_string().contains(PIPE_UNAVAILABLE));
     }
 }
