@@ -182,6 +182,7 @@ $whitelistPatterns = @(
     'packages/winsmux/**',
     'sdk/python/control_plane_contract.py',
     'sdk/typescript/control-plane-contract.ts',
+    'sdk/examples/adapter-walkthrough.py',
     'winsmux-app/scripts/*.mjs',
     'winsmux-app/scripts/*.ps1',
     'winsmux-app/public/**',

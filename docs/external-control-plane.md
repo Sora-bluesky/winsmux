@@ -129,6 +129,39 @@ Equivalent raw JSON-RPC:
 {"jsonrpc":"2.0","id":"operator-snapshot","method":"desktop.operator.snapshot","params":{"lines":80},"auth":{"token":"<token-file>"}}
 ```
 
+## Adapter walkthrough: capabilities to run evidence
+
+Prerequisite: [Connect from zero to operator-snapshot](#connect-from-zero-to-operator-snapshot). Pairing and the token file stay there; this section does not repeat them.
+
+`sdk/examples/adapter-walkthrough.py` is a stdlib-only Python client. It imports method names and param types from `sdk/python/control_plane_contract.py` and owns a private named-pipe JSON-RPC exchange (one connection per call, one unbuffered write). It does not shell out to `winsmux control-rpc`, and it is not a second SDK.
+
+Spine, in order: `desktop.provider.capabilities` → `pty.spawn` → `pty.capture` → `desktop.run.explain`. `pty.close` is hygiene at the end, not a fifth walkthrough verb. `desktop.run.explain` needs a `runId`. Pass `--run-id`, or let the example call `desktop.summary.snapshot` and take the first `run_projections[].run_id`. That snapshot is discovery plumbing. It does not mint a run from the pane just spawned, and the first projection is arbitrary. When no runs exist, the example prints `no runs to explain -- capabilities and pty legs completed` and exits 0.
+
+Worker start, status, and stop stay PowerShell-owned. This walkthrough does not call them.
+
+Token slots stay `<token-file>`. Precedence is env `WINSMUX_CONTROL_PIPE_TOKEN`, else `%LOCALAPPDATA%\winsmux\control-pipe\token`. Do not print the token.
+
+```json
+{"jsonrpc":"2.0","id":"capabilities","method":"desktop.provider.capabilities","params":{},"auth":{"token":"<token-file>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"spawn","method":"pty.spawn","params":{"paneId":"adapter-walkthrough","cols":80,"rows":24,"startupInput":"echo adapter-walkthrough"},"auth":{"token":"<token-file>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"capture","method":"pty.capture","params":{"paneId":"adapter-walkthrough","lines":40},"auth":{"token":"<token-file>"}}
+```
+
+```json
+{"jsonrpc":"2.0","id":"explain","method":"desktop.run.explain","params":{"runId":"<run-id>"},"auth":{"token":"<token-file>"}}
+```
+
+```powershell
+python sdk/examples/adapter-walkthrough.py
+python sdk/examples/adapter-walkthrough.py --run-id <run-id>
+```
+
 ## Error semantics
 
 Non-contract calls fail closed when no usable token exists (env unset and the
