@@ -2324,6 +2324,80 @@ mod tests {
     }
 
     #[test]
+    fn control_pipe_rejects_unknown_method() {
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.does.not.exist","auth":{"token":"test-control-token"}}"#;
+        let desktop_transport = RecordingDesktopTransport::new();
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&desktop_transport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["error"]["code"], JSON_RPC_METHOD_NOT_FOUND);
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("Control pipe method is not exposed"));
+        assert_eq!(
+            *desktop_transport.calls.lock().expect("calls lock"),
+            0,
+            "unknown methods must not reach the desktop transport"
+        );
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    #[test]
+    fn control_pipe_rejects_every_excluded_internal_method() {
+        let _guard = set_control_pipe_token_for_test(Some("test-control-token"));
+        for method in CONTROL_PIPE_EXCLUDED_INTERNAL_DESKTOP_METHODS {
+            let payload = serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": method,
+                "auth": { "token": "test-control-token" },
+            }))
+            .expect("excluded method payload");
+            let desktop_transport = RecordingDesktopTransport::new();
+            let pty_transport = StubPtyTransport::new();
+            let response =
+                handle_control_pipe_payload(&desktop_transport, &pty_transport, &payload, None);
+            let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+            assert_eq!(value["id"], 1, "{method}");
+            assert_eq!(
+                value["error"]["code"],
+                JSON_RPC_METHOD_NOT_FOUND,
+                "{method}"
+            );
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .expect("error message")
+                    .contains("Control pipe method is not exposed"),
+                "{method}"
+            );
+            assert_eq!(
+                *desktop_transport.calls.lock().expect("calls lock"),
+                0,
+                "{method} must not reach the desktop transport"
+            );
+            assert!(
+                pty_transport
+                    .commands
+                    .lock()
+                    .expect("commands lock")
+                    .is_empty(),
+                "{method} must not reach the pty transport"
+            );
+        }
+    }
+
+    #[test]
     fn control_pipe_bootstrap_creates_token_file() {
         let _guard = isolate_control_pipe_paths_for_test();
         let path = control_pipe_token_file_path().expect("token path");

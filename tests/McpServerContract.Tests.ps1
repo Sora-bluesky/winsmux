@@ -426,4 +426,54 @@ print(WinsmuxClient._resolve_default_server_path())
             }
         }
     }
+
+    It 'rejects an unknown tool name over real stdio' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"winsmux_does_not_exist","arguments":{}}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+        $raw = [string]$output
+        $raw | Should -Not -Match 'pwsh'
+        $raw | Should -Not -Match 'winsmux-core\.ps1'
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $call = $responses | Where-Object { $_.id -eq 2 }
+        $null -eq $call.error | Should -BeFalse
+        $call.error.code | Should -Be -32602
+        [string]$call.error.message | Should -Match 'Unknown tool'
+        $null -eq $call.result | Should -BeTrue
+    }
+
+    It 'rejects an unknown JSON-RPC method with -32601' {
+        $requests = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+            '{"jsonrpc":"2.0","id":2,"method":"bogus/method","params":{}}'
+            '{"jsonrpc":"2.0","id":3,"method":"ping","params":{}}'
+        ) -join [Environment]::NewLine
+
+        $output = $requests | & node $script:McpServerPath
+        $LASTEXITCODE | Should -Be 0
+
+        $responses = @($output | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | ForEach-Object {
+            $_ | ConvertFrom-Json
+        })
+
+        $responses.Count | Should -Be 3
+        $unknown = $responses | Where-Object { $_.id -eq 2 }
+        $unknown.error.code | Should -Be -32601
+        [string]$unknown.error.message | Should -Match 'Method not found'
+        $ping = $responses | Where-Object { $_.id -eq 3 }
+        $null -eq $ping.error | Should -BeTrue
+        $null -eq $ping.result | Should -BeFalse
+    }
 }
