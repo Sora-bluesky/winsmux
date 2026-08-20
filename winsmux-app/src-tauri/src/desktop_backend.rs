@@ -810,6 +810,7 @@ pub enum DesktopCommand {
         clear: bool,
         project_dir: Option<String>,
     },
+    ProviderCapabilities { project_dir: Option<String> },
     RuntimeRolesApply {
         roles_json: String,
         project_dir: Option<String>,
@@ -954,6 +955,7 @@ impl DesktopCommand {
             DesktopCommand::WorkersStatus { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::WorkersStart { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::ProviderSwitch { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::ProviderCapabilities { project_dir } => project_dir.as_deref(),
             DesktopCommand::RuntimeRolesApply { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::DogfoodEvent { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::TeamProfileSettingsView { project_dir } => project_dir.as_deref(),
@@ -1075,6 +1077,7 @@ impl DesktopCommand {
                 args.push("--json".to_string());
                 args
             }
+            DesktopCommand::ProviderCapabilities { .. } => vec!["provider-capabilities".to_string(), "--json".to_string()],
             DesktopCommand::RuntimeRolesApply { roles_json, .. } => vec![
                 "runtime-roles".to_string(),
                 "apply".to_string(),
@@ -1611,6 +1614,7 @@ pub fn handle_desktop_json_rpc(
                     "desktop.workers.status",
                     "desktop.workers.start",
                     "desktop.provider.switch",
+                    "desktop.provider.capabilities",
                     "desktop.runtime.roles.apply",
                     "desktop.voice.capture_status",
                     "desktop.dogfood.event",
@@ -1815,6 +1819,7 @@ pub fn handle_desktop_json_rpc(
                 params,
             );
         }
+        "desktop.provider.capabilities" => return crate::desktop_provider_capabilities::json_rpc(transport, request_id, resolved_project_dir, params),
         "desktop.provider.switch" => {
             let slot = match get_required_string_param(params.as_ref(), &["slot", "target"]) {
                 Ok(value) => value,
@@ -5491,6 +5496,7 @@ mod tests {
                     "desktop.workers.status",
                     "desktop.workers.start",
                     "desktop.provider.switch",
+                    "desktop.provider.capabilities",
                     "desktop.dogfood.event",
                     "desktop.voice.capture_status",
                     "desktop.session.restore_candidates",

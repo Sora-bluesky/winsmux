@@ -13,6 +13,7 @@ CONTROL_PIPE_METHODS = (
     "desktop.run.promote",
     "desktop.run.pick_winner",
     "desktop.voice.capture_status",
+    "desktop.provider.capabilities",
     "pty.spawn",
     "pty.write",
     "pty.resize",
@@ -32,6 +33,7 @@ DESKTOP_METHODS = (
     "desktop.run.promote",
     "desktop.run.pick_winner",
     "desktop.voice.capture_status",
+    "desktop.provider.capabilities",
 )
 
 PTY_METHODS = (
@@ -86,6 +88,13 @@ class PairingConfirmParams(TypedDict):
 class PairingConfirmResult(TypedDict):
     paired: bool
     scope: str
+    version: int
+
+class DesktopProviderCapabilitiesParams(TypedDict):
+    pass
+
+class DesktopProviderCapabilitiesSnapshot(TypedDict):
+    providers: dict[str, Any]
     version: int
 
 class DesktopRunCompareParams(TypedDict):

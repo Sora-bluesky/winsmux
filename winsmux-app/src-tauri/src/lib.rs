@@ -1,6 +1,7 @@
 mod control_pipe;
 mod desktop_backend;
 mod desktop_control_plane_params;
+mod desktop_provider_capabilities;
 mod desktop_companion_cli;
 mod desktop_events;
 mod desktop_session_restore;

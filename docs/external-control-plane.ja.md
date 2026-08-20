@@ -120,6 +120,7 @@ v2 は、ハンドラが消費する同じ serde 型から導出したメソッ�
 - `desktop.operator.snapshot`
 - `desktop.operator.submit`
 - `desktop.voice.capture_status`
+- `desktop.provider.capabilities`
 
 operator メソッドは、外部エージェントが operator と会話するための専用経路です。
 
@@ -168,6 +169,7 @@ worker ペインの指定は受け付けません。独自の named pipe クラ�
 | desktop.run.promote | yes | control-rpc only | — |
 | desktop.run.pick_winner | yes | control-rpc only | — |
 | desktop.voice.capture_status | yes | control-rpc only | — |
+| desktop.provider.capabilities | yes | control-rpc only | — |
 | pty.spawn | yes | control-rpc only | — |
 | pty.write | yes | control-rpc only | — |
 | pty.resize | yes | control-rpc only | — |
