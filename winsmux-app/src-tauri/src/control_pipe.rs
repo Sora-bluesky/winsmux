@@ -317,28 +317,23 @@ static FORCE_CONTROL_PIPE_DACL_FAILURE: std::sync::atomic::AtomicBool =
 static FORCE_CONTROL_PIPE_OWNER_MISMATCH: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(all(windows, test))]
+static FORCE_CONTROL_PIPE_OBJECT_SD_FAILURE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(windows)]
-fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
-    #[cfg(test)]
-    if FORCE_CONTROL_PIPE_DACL_FAILURE.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("control-pipe token rotate failed".to_string());
-    }
-    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+fn user_only_security_descriptor(
+) -> Result<windows_sys::Win32::Security::PSECURITY_DESCRIPTOR, String> {
     use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    use windows_sys::Win32::Security::{
-        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    };
+    use windows_sys::Win32::Security::PSECURITY_DESCRIPTOR;
 
     let sid = current_user_sid_string()?;
     // GENERIC_ALL maps for both files and directories. FILE_ALL_ACCESS (FA) on a
     // directory can fail SetNamedSecurityInfoW on GitHub-hosted Windows images.
     let sddl = format!("D:P(A;;GA;;;{sid})");
     let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
-    let mut path_wide = path_to_wide(path);
     unsafe {
         let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
         if ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -347,9 +342,30 @@ fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
             &mut sd,
             core::ptr::null_mut(),
         ) == 0
+            || sd.is_null()
         {
             return Err("control-pipe token rotate failed".to_string());
         }
+        Ok(sd)
+    }
+}
+
+#[cfg(windows)]
+fn apply_user_only_dacl(path: &Path) -> Result<(), String> {
+    #[cfg(test)]
+    if FORCE_CONTROL_PIPE_DACL_FAILURE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("control-pipe token rotate failed".to_string());
+    }
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION,
+    };
+
+    let sd = user_only_security_descriptor()?;
+    let mut path_wide = path_to_wide(path);
+    unsafe {
         let mut present: windows_sys::core::BOOL = 0;
         let mut defaulted: windows_sys::core::BOOL = 0;
         let mut dacl: *mut ACL = core::ptr::null_mut();
@@ -420,10 +436,7 @@ fn create_user_only_file_with_bytes(path: &Path, bytes: &[u8]) -> Result<(), Str
         CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS, HANDLE,
         INVALID_HANDLE_VALUE,
     };
-    use windows_sys::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-    };
-    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FlushFileBuffers, WriteFile, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
         FILE_FLAG_WRITE_THROUGH,
@@ -431,21 +444,9 @@ fn create_user_only_file_with_bytes(path: &Path, bytes: &[u8]) -> Result<(), Str
 
     const GENERIC_WRITE: u32 = 0x4000_0000;
 
-    let sid = current_user_sid_string()?;
-    let sddl = format!("D:P(A;;GA;;;{sid})");
-    let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+    let sd = user_only_security_descriptor()?;
     let path_wide = path_to_wide(path);
     unsafe {
-        let mut sd: PSECURITY_DESCRIPTOR = core::ptr::null_mut();
-        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl_wide.as_ptr(),
-            SDDL_REVISION_1,
-            &mut sd,
-            core::ptr::null_mut(),
-        ) == 0
-        {
-            return Err("control-pipe token rotate failed".to_string());
-        }
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: sd,
@@ -483,6 +484,63 @@ fn create_user_only_file_with_bytes(path: &Path, bytes: &[u8]) -> Result<(), Str
         FlushFileBuffers(handle);
         CloseHandle(handle);
         Ok(())
+    }
+}
+
+#[cfg(windows)]
+fn create_user_only_named_pipe(
+    pipe_name: &str,
+) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{GetLastError, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+    use windows_sys::Win32::System::Pipes::{
+        CreateNamedPipeW, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+
+    #[cfg(test)]
+    if FORCE_CONTROL_PIPE_OBJECT_SD_FAILURE.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("control-pipe object SD failed".to_string());
+    }
+
+    let sd = user_only_security_descriptor()
+        .map_err(|_| "control-pipe object SD failed".to_string())?;
+    if sd.is_null() {
+        return Err("control-pipe object SD failed".to_string());
+    }
+
+    let name_wide: Vec<u16> = OsStr::new(pipe_name).encode_wide().chain(Some(0)).collect();
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: sd,
+        bInheritHandle: 0,
+    };
+    if sa.lpSecurityDescriptor.is_null() {
+        local_free_ptr(sd);
+        return Err("control-pipe object SD failed".to_string());
+    }
+
+    let handle: HANDLE = unsafe {
+        CreateNamedPipeW(
+            name_wide.as_ptr(),
+            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES,
+            1024 * 1024,
+            1024 * 1024,
+            0,
+            &sa,
+        )
+    };
+    let create_error = unsafe { GetLastError() };
+    local_free_ptr(sd);
+    if handle == INVALID_HANDLE_VALUE {
+        Err(format!("CreateNamedPipeW failed with {create_error}"))
+    } else {
+        Ok(handle)
     }
 }
 
@@ -1104,19 +1162,12 @@ fn serve_one_control_pipe_client(
     pty_transport: &dyn PtyCommandTransport,
     token_bootstrapped: &mut bool,
 ) -> Result<(), String> {
-    use std::ffi::OsStr;
-    use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+        CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, HANDLE,
     };
-    use windows_sys::Win32::Storage::FileSystem::{
-        FlushFileBuffers, ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
-    };
-    use windows_sys::Win32::System::Pipes::{
-        ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_MESSAGE,
-        PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
-    };
+    use windows_sys::Win32::Storage::FileSystem::{FlushFileBuffers, ReadFile, WriteFile};
+    use windows_sys::Win32::System::Pipes::{ConnectNamedPipe, DisconnectNamedPipe};
 
     struct PipeHandle(HANDLE);
 
@@ -1128,29 +1179,7 @@ fn serve_one_control_pipe_client(
         }
     }
 
-    let pipe_name: Vec<u16> = OsStr::new(WINSMUX_CONTROL_PIPE_NAME)
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-
-    let handle = unsafe {
-        CreateNamedPipeW(
-            pipe_name.as_ptr(),
-            PIPE_ACCESS_DUPLEX | FILE_FLAG_FIRST_PIPE_INSTANCE,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_UNLIMITED_INSTANCES,
-            1024 * 1024,
-            1024 * 1024,
-            0,
-            null_mut(),
-        )
-    };
-
-    if handle == INVALID_HANDLE_VALUE {
-        return Err(format!("CreateNamedPipeW failed with {}", unsafe {
-            GetLastError()
-        }));
-    }
+    let handle = create_user_only_named_pipe(WINSMUX_CONTROL_PIPE_NAME)?;
     let pipe = PipeHandle(handle);
     bootstrap_control_pipe_token_after_exclusive_pipe(token_bootstrapped)?;
 
@@ -1215,6 +1244,7 @@ fn serve_one_control_pipe_client(
 fn is_control_pipe_startup_error(message: &str) -> bool {
     message.starts_with("CreateNamedPipeW failed")
         || message.starts_with("control-pipe token rotate failed")
+        || message.starts_with("control-pipe object SD failed")
 }
 
 #[cfg(test)]
@@ -2233,6 +2263,9 @@ mod tests {
         assert!(is_control_pipe_startup_error(
             "CreateNamedPipeW failed with 5"
         ));
+        assert!(is_control_pipe_startup_error(
+            "control-pipe object SD failed"
+        ));
         assert!(!is_control_pipe_startup_error("ReadFile failed with 109"));
     }
 
@@ -2550,6 +2583,88 @@ mod tests {
             control_pipe_token_file_dacl_is_user_only(dir).expect("dir dacl query"),
             "token directory DACL must be user-only"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_object_uses_user_only_dacl() {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+
+        let name = format!(
+            r"\\.\pipe\winsmux-control-dacl-{}-{}",
+            std::process::id(),
+            CONTROL_PIPE_TEST_ISOLATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let server = create_user_only_named_pipe(&name).expect("create user-only pipe");
+        assert_ne!(server, INVALID_HANDLE_VALUE);
+        let dacl_ok = control_pipe_token_file_dacl_is_user_only(Path::new(&name))
+            .expect("pipe dacl query");
+        assert!(dacl_ok, "named-pipe object DACL must be user-only");
+        unsafe {
+            CloseHandle(server);
+        }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_create_fails_closed_without_user_only_sd() {
+        struct ResetObjectSd;
+        impl Drop for ResetObjectSd {
+            fn drop(&mut self) {
+                FORCE_CONTROL_PIPE_OBJECT_SD_FAILURE
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _reset = ResetObjectSd;
+        FORCE_CONTROL_PIPE_OBJECT_SD_FAILURE.store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = create_user_only_named_pipe(r"\\.\pipe\winsmux-control-dacl-force-sd")
+            .expect_err("object SD failure must not listen");
+        assert!(
+            err.starts_with("control-pipe object SD failed"),
+            "got {err}"
+        );
+        assert!(is_control_pipe_startup_error(&err));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn control_pipe_same_user_client_still_opens() {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::CreateFileW;
+
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const OPEN_EXISTING: u32 = 3;
+
+        let name = format!(
+            r"\\.\pipe\winsmux-control-dacl-client-{}-{}",
+            std::process::id(),
+            CONTROL_PIPE_TEST_ISOLATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let server = create_user_only_named_pipe(&name).expect("create user-only pipe");
+        let name_wide: Vec<u16> = OsStr::new(&name).encode_wide().chain(Some(0)).collect();
+        let client = unsafe {
+            CreateFileW(
+                name_wide.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                0,
+                core::ptr::null_mut(),
+                OPEN_EXISTING,
+                0,
+                core::ptr::null_mut(),
+            )
+        };
+        let client_err = unsafe { GetLastError() };
+        assert_ne!(
+            client, INVALID_HANDLE_VALUE,
+            "same-user CreateFileW must open the user-only pipe (GetLastError={client_err})"
+        );
+        unsafe {
+            CloseHandle(client);
+            CloseHandle(server);
+        }
     }
 
     #[test]
