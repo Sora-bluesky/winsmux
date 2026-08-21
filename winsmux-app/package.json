@@ -1,7 +1,7 @@
 {
   "name": "winsmux-app",
   "private": true,
-  "version": "0.36.34",
+  "version": "0.36.35",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -819,9 +819,6 @@ jobs:
 
           $stage = 'candidate_artifact'
           try {
-            if ($version -cne '0.36.34') {
-              throw "TASK-679 is frozen to candidate VERSION 0.36.34; observed '$version'."
-            }
             $candidateSource = Join-Path $env:GITHUB_WORKSPACE "target/release/bundle/nsis/$candidateAsset"
             if (-not (Test-Path -LiteralPath $candidateSource -PathType Leaf)) {
               throw "Candidate NSIS installer was not found at its version-derived bundle path."
