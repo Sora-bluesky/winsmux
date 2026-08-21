@@ -217,8 +217,13 @@ public static class WinCredDeleteNative {
 
     It 'source-file wait does not treat a stale NAME= as applied' {
         $script:ShowNames = [System.Collections.Generic.List[string]]::new()
+        $script:UnsetNames = [System.Collections.Generic.List[string]]::new()
         $script:AckPolls = 0
         $script:ConfText = ''
+        $script:GeneratedAckName = ''
+        $script:GeneratedAckValue = ''
+        $script:CredentialNames = @('WINSMUX_VAULT_INJECT_ACK', 'ROTATE_ME')
+        $script:SimulatedEnvironment = @{}
         Mock Invoke-WinsmuxCommand {
             if ($Arguments[0] -eq 'source-file') {
                 $script:ConfText = [System.IO.File]::ReadAllText($Arguments[1])
@@ -231,27 +236,44 @@ public static class WinCredDeleteNative {
                 [string]$rules[0].IdentityReference | Should -Be ([string]$sid)
                 $rules[0].AccessControlType | Should -Be ([System.Security.AccessControl.AccessControlType]::Allow)
                 $rules[0].FileSystemRights | Should -Be ([System.Security.AccessControl.FileSystemRights]::FullControl)
+
+                $commandLines = @($script:ConfText -split "`r?`n" | Where-Object { $_ -ne '' })
+                foreach ($line in $commandLines) {
+                    if ($line -notmatch '^set-environment ([A-Za-z0-9_]+) (.+)$') {
+                        throw ('unexpected source-file command: {0}' -f $line)
+                    }
+                    $script:SimulatedEnvironment[$Matches[1]] = $Matches[2]
+                }
+                $ackMatches = [regex]::Matches(
+                    $script:ConfText,
+                    '(?m)^set-environment (WINSMUX_VAULT_INJECT_ACK_[0-9a-f]{32}) ([0-9a-f]{32})\r?$'
+                )
+                $ackMatches.Count | Should -Be 1
+                $script:GeneratedAckName = $ackMatches[0].Groups[1].Value
+                $script:GeneratedAckValue = $ackMatches[0].Groups[2].Value
+                @($script:CredentialNames) -ccontains $script:GeneratedAckName | Should -BeFalse
+                $commandLines[-1] | Should -Be ('set-environment {0} {1}' -f $script:GeneratedAckName, $script:GeneratedAckValue)
                 return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
             }
             if ($Arguments[0] -eq 'show-environment') {
                 $asked = [string]$Arguments[1]
                 $script:ShowNames.Add($asked) | Out-Null
-                if ($asked -eq 'ROTATE_ME') {
-                    return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = 'ROTATE_ME=old-secret' }
+                if ($asked -ceq 'WINSMUX_VAULT_INJECT_ACK') {
+                    return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = 'WINSMUX_VAULT_INJECT_ACK=staleack' }
                 }
-                if ($asked -eq 'WINSMUX_VAULT_INJECT_ACK') {
+                if ($asked -ceq $script:GeneratedAckName) {
                     $script:AckPolls++
                     if ($script:AckPolls -lt 2) {
-                        return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = 'WINSMUX_VAULT_INJECT_ACK=staleack' }
+                        return [PSCustomObject]@{
+                            Success  = $true
+                            ExitCode = 0
+                            Output   = ('{0}=staleack' -f $asked)
+                        }
                     }
-                    if ($script:ConfText -notmatch 'set-environment WINSMUX_VAULT_INJECT_ACK ([0-9a-f]{32})') {
-                        throw 'source-file conf missing inject ack'
-                    }
-                    $ack = $Matches[1]
                     return [PSCustomObject]@{
                         Success  = $true
                         ExitCode = 0
-                        Output   = ('WINSMUX_VAULT_INJECT_ACK={0}' -f $ack)
+                        Output   = ('{0}={1}' -f $script:GeneratedAckName, $script:GeneratedAckValue)
                     }
                 }
                 return [PSCustomObject]@{
@@ -260,15 +282,114 @@ public static class WinCredDeleteNative {
                     Output   = ('unknown variable: {0}' -f $asked)
                 }
             }
+            if ($Arguments[0] -eq 'set-environment' -and $Arguments[1] -eq '-u') {
+                $unsetName = [string]$Arguments[2]
+                if ($unsetName -ceq 'WINSMUX_VAULT_INJECT_ACK') {
+                    throw 'legacy fixed credential must not be unset as an ACK marker'
+                }
+                if ($unsetName -cne $script:GeneratedAckName) {
+                    throw ('unexpected ACK cleanup target: {0}' -f $unsetName)
+                }
+                $script:UnsetNames.Add($unsetName) | Out-Null
+                $script:SimulatedEnvironment.Remove($unsetName)
+                return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
+            }
             throw ('unexpected winsmux {0}' -f ($Arguments -join ' '))
         }
 
-        $result = Invoke-WinsmuxSourceFile -Commands @('set-environment ROTATE_ME new-secret')
+        $result = Invoke-WinsmuxSourceFile -Commands @(
+            'set-environment WINSMUX_VAULT_INJECT_ACK requested-fixed-secret'
+            'set-environment ROTATE_ME new-secret'
+        ) -CredentialNames $script:CredentialNames
+
         $result.Success | Should -BeTrue
         $script:AckPolls | Should -BeGreaterOrEqual 2
-        $script:ShowNames | Should -Contain 'WINSMUX_VAULT_INJECT_ACK'
+        $script:GeneratedAckName | Should -Match '^WINSMUX_VAULT_INJECT_ACK_[0-9a-f]{32}$'
+        @($script:CredentialNames) -ccontains $script:GeneratedAckName | Should -BeFalse
+        $script:ShowNames | Should -Contain $script:GeneratedAckName
+        $script:ShowNames | Should -Not -Contain 'WINSMUX_VAULT_INJECT_ACK'
         $script:ShowNames | Should -Not -Contain 'ROTATE_ME'
+        @($script:UnsetNames) | Should -Be @($script:GeneratedAckName)
+        $script:SimulatedEnvironment['WINSMUX_VAULT_INJECT_ACK'] | Should -Be 'requested-fixed-secret'
+        $script:SimulatedEnvironment.ContainsKey($script:GeneratedAckName) | Should -BeFalse
+        $script:ConfText | Should -Match 'set-environment WINSMUX_VAULT_INJECT_ACK requested-fixed-secret'
         $script:ConfText | Should -Match 'set-environment ROTATE_ME new-secret'
-        $script:ConfText | Should -Match 'set-environment WINSMUX_VAULT_INJECT_ACK '
+        $script:ConfText | Should -Match 'set-environment WINSMUX_VAULT_INJECT_ACK_[0-9a-f]{32} [0-9a-f]{32}'
+    }
+
+    It 'source-file cleanup does not unset ACK after ownership is lost' {
+        $script:UnsetNames = [System.Collections.Generic.List[string]]::new()
+        $script:AckPolls = 0
+        $script:ConfText = ''
+        $script:GeneratedAckName = ''
+        $script:GeneratedAckValue = ''
+        $script:CredentialNames = @('WINSMUX_VAULT_INJECT_ACK', 'ROTATE_ME')
+        $script:SimulatedEnvironment = @{}
+        Mock Invoke-WinsmuxCommand {
+            if ($Arguments[0] -eq 'source-file') {
+                $script:ConfText = [System.IO.File]::ReadAllText($Arguments[1])
+                $commandLines = @($script:ConfText -split "`r?`n" | Where-Object { $_ -ne '' })
+                foreach ($line in $commandLines) {
+                    if ($line -notmatch '^set-environment ([A-Za-z0-9_]+) (.+)$') {
+                        throw ('unexpected source-file command: {0}' -f $line)
+                    }
+                    $script:SimulatedEnvironment[$Matches[1]] = $Matches[2]
+                }
+                $ackMatches = [regex]::Matches(
+                    $script:ConfText,
+                    '(?m)^set-environment (WINSMUX_VAULT_INJECT_ACK_[0-9a-f]{32}) ([0-9a-f]{32})\r?$'
+                )
+                $ackMatches.Count | Should -Be 1
+                $script:GeneratedAckName = $ackMatches[0].Groups[1].Value
+                $script:GeneratedAckValue = $ackMatches[0].Groups[2].Value
+                return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
+            }
+            if ($Arguments[0] -eq 'show-environment') {
+                $asked = [string]$Arguments[1]
+                if ($asked -ceq $script:GeneratedAckName) {
+                    $script:AckPolls++
+                    if ($script:AckPolls -lt 2) {
+                        return [PSCustomObject]@{
+                            Success  = $true
+                            ExitCode = 0
+                            Output   = ('{0}=staleack' -f $asked)
+                        }
+                    }
+                    if ($script:AckPolls -ge 3) {
+                        $script:SimulatedEnvironment[$asked] = 'stolen-value'
+                        return [PSCustomObject]@{
+                            Success  = $true
+                            ExitCode = 0
+                            Output   = ('{0}=stolen-value' -f $asked)
+                        }
+                    }
+                    return [PSCustomObject]@{
+                        Success  = $true
+                        ExitCode = 0
+                        Output   = ('{0}={1}' -f $script:GeneratedAckName, $script:GeneratedAckValue)
+                    }
+                }
+                return [PSCustomObject]@{
+                    Success  = $false
+                    ExitCode = 1
+                    Output   = ('unknown variable: {0}' -f $asked)
+                }
+            }
+            if ($Arguments[0] -eq 'set-environment' -and $Arguments[1] -eq '-u') {
+                $script:UnsetNames.Add([string]$Arguments[2]) | Out-Null
+                throw 'ACK must not be unset after ownership is lost'
+            }
+            throw ('unexpected winsmux {0}' -f ($Arguments -join ' '))
+        }
+
+        $result = Invoke-WinsmuxSourceFile -Commands @(
+            'set-environment WINSMUX_VAULT_INJECT_ACK requested-fixed-secret'
+            'set-environment ROTATE_ME new-secret'
+        ) -CredentialNames $script:CredentialNames
+
+        $result.Success | Should -BeFalse
+        @($script:UnsetNames) | Should -Be @()
+        $script:SimulatedEnvironment['WINSMUX_VAULT_INJECT_ACK'] | Should -Be 'requested-fixed-secret'
+        $script:SimulatedEnvironment[$script:GeneratedAckName] | Should -Be 'stolen-value'
     }
 }

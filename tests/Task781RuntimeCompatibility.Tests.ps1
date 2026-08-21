@@ -712,6 +712,7 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $vaultInject.Extent.Text | Should -Match '(?s)foreach.*credentialNames'
         $vaultInject.Extent.Text | Should -Match 'Get-WinsmuxVaultCredentialValue'
         $vaultInject.Extent.Text | Should -Match 'Invoke-WinsmuxSourceFile'
+        $vaultInject.Extent.Text | Should -Match '(?s)Invoke-WinsmuxSourceFile\s+-Commands\s+@\(\$command\)\s+-CredentialNames\s+\$credentialNames'
         $vaultInject.Extent.Text | Should -Not -Match 'send-keys'
 
         $prodInject = $bridgeAst.Find({
@@ -720,6 +721,7 @@ $afterDelete = Test-VaultKeyExists -Key $key
                 $node.Name -ceq 'Invoke-VaultInject'
         }, $true)
         $prodInject.Extent.Text | Should -Match 'Invoke-WinsmuxSourceFile'
+        $prodInject.Extent.Text | Should -Match '(?s)Invoke-WinsmuxSourceFile\s+-Commands\s+@\(\$command\)\s+-CredentialNames\s+\$credentialNames'
         $prodInject.Extent.Text | Should -Match 'set-environment'
         $prodInject.Extent.Text | Should -Not -Match 'send-keys'
         $prodInject.Extent.Text | Should -Not -Match 'set-environment -t'
@@ -732,12 +734,22 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $prodSource.Extent.Text | Should -Match 'show-environment'
         $prodSource.Extent.Text | Should -Match 'UTF8Encoding'
         $prodSource.Extent.Text | Should -Match 'WINSMUX_VAULT_INJECT_ACK'
+        $prodSource.Extent.Text | Should -Match '\[string\[\]\]\$CredentialNames'
+        $prodSource.Extent.Text | Should -Not -Match '(?m)^\s*\$ackName\s*=\s*''WINSMUX_VAULT_INJECT_ACK''\s*$'
+        $prodSource.Extent.Text | Should -Match ([regex]::Escape('''WINSMUX_VAULT_INJECT_ACK_'' + [guid]::NewGuid().ToString(''N'')'))
+        $prodSource.Extent.Text | Should -Match '(?s)foreach\s*\(\$credentialName\s+in\s+@\(\$CredentialNames\)\).*?\[string\]\$credentialName\s+-ceq\s+\$candidate'
+        $prodSource.Extent.Text | Should -Match ([regex]::Escape('''set-environment '' + $ackName + '' '' + $ackValue'))
+        $prodSource.Extent.Text | Should -Match ([regex]::Escape('$expectedAck = $ackName + ''='' + $ackValue'))
+        $prodSource.Extent.Text | Should -Match ([regex]::Escape('@(''show-environment'', $ackName)'))
+        $prodSource.Extent.Text | Should -Match ([regex]::Escape('@(''set-environment'', ''-u'', $ackName)'))
+        $prodSource.Extent.Text | Should -Match ([regex]::Escape('@(''source-file'', $tempConf)'))
         $prodSource.Extent.Text | Should -Match '(?s)(FileStream|FileSystemAclExtensions).{0,500}CreateNew.{0,500}FileSecurity'
         $prodSource.Extent.Text | Should -Not -Match 'Set-Content'
         $prodSource.Extent.Text | Should -Not -Match 'GetTempFileName'
         $prodSource.Extent.Text | Should -Not -Match 'WriteAllText'
         $prodSource.Extent.Text | Should -Not -Match 'Set-Acl'
         $prodSource.Extent.Text | Should -Not -Match 'SetAccessControl'
+        $prodSource.Extent.Text | Should -Not -Match '(?i)\bshred\b'
 
         $vaultSource = $vaultAst.Find({
             param($node)
@@ -746,11 +758,21 @@ $afterDelete = Test-VaultKeyExists -Key $key
         }, $true)
         $vaultSource.Extent.Text | Should -Match 'WINSMUX_VAULT_INJECT_ACK'
         $vaultSource.Extent.Text | Should -Match 'show-environment'
+        $vaultSource.Extent.Text | Should -Match '\[string\[\]\]\$CredentialNames'
+        $vaultSource.Extent.Text | Should -Not -Match '(?m)^\s*\$ackName\s*=\s*''WINSMUX_VAULT_INJECT_ACK''\s*$'
+        $vaultSource.Extent.Text | Should -Match ([regex]::Escape('''WINSMUX_VAULT_INJECT_ACK_'' + [guid]::NewGuid().ToString(''N'')'))
+        $vaultSource.Extent.Text | Should -Match '(?s)foreach\s*\(\$credentialName\s+in\s+@\(\$CredentialNames\)\).*?\[string\]\$credentialName\s+-ceq\s+\$candidate'
+        $vaultSource.Extent.Text | Should -Match ([regex]::Escape('''set-environment '' + $ackName + '' '' + $ackValue'))
+        $vaultSource.Extent.Text | Should -Match ([regex]::Escape('$expectedAck = $ackName + ''='' + $ackValue'))
+        $vaultSource.Extent.Text | Should -Match ([regex]::Escape('@(''show-environment'', $ackName)'))
+        $vaultSource.Extent.Text | Should -Match ([regex]::Escape('@(''set-environment'', ''-u'', $ackName)'))
+        $vaultSource.Extent.Text | Should -Match ([regex]::Escape('@(''source-file'', $tempConf)'))
         $vaultSource.Extent.Text | Should -Match '(?s)(FileStream|FileSystemAclExtensions).{0,500}CreateNew.{0,500}FileSecurity'
         $vaultSource.Extent.Text | Should -Not -Match 'GetTempFileName'
         $vaultSource.Extent.Text | Should -Not -Match 'WriteAllText'
         $vaultSource.Extent.Text | Should -Not -Match 'Set-Acl'
         $vaultSource.Extent.Text | Should -Not -Match 'SetAccessControl'
+        $vaultSource.Extent.Text | Should -Not -Match '(?i)\bshred\b'
     }
 }
 

@@ -17881,76 +17881,130 @@ function Get-WinsmuxSessionNameForPane {
 }
 
 function Invoke-WinsmuxSourceFile {
-    param([Parameter(Mandatory = $true)][string[]]$Commands)
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Commands,
+        [Parameter(Mandatory = $true)][string[]]$CredentialNames
+    )
 
-    $ackName = 'WINSMUX_VAULT_INJECT_ACK'
-    $ackValue = [guid]::NewGuid().ToString('N')
-    $tempConf = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-src-' + [guid]::NewGuid().ToString('N') + '.conf')
-    $stream = $null
-    $ownedTemp = $false
-    try {
-        $FileSecurity = New-Object System.Security.AccessControl.FileSecurity
-        $FileSecurity.SetAccessRuleProtection($true, $false)
-        $FileSecurity.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
-            [Security.Principal.WindowsIdentity]::GetCurrent().User,
-            [System.Security.AccessControl.FileSystemRights]::FullControl,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )))
-        try {
-            $stream = New-Object System.IO.FileStream($tempConf, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $FileSecurity)
-            $ownedTemp = $true
-        } catch {
-            if (Test-Path -LiteralPath $tempConf) {
-                throw
-            }
-            $stream = [System.IO.FileSystemAclExtensions]::Create((New-Object System.IO.FileInfo($tempConf)), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $FileSecurity)
-            $ownedTemp = $true
-        }
-        $utf8 = New-Object System.Text.UTF8Encoding $false
-        $sourced = @($Commands) + @('set-environment ' + $ackName + ' ' + $ackValue)
-        $bytes = $utf8.GetBytes(($sourced -join [Environment]::NewLine))
-        $stream.Write($bytes, 0, $bytes.Length)
-        $stream.Dispose()
-        $stream = $null
-        Invoke-WinsmuxRaw -Arguments @('source-file', $tempConf)
-        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
-        if ($exitCode -eq 0) {
-            $expected = $ackName + '=' + $ackValue
-            $deadline = [datetime]::UtcNow.AddSeconds(5)
-            $applied = $false
-            while ([datetime]::UtcNow -lt $deadline) {
-                $shown = Invoke-WinsmuxRaw -Arguments @('show-environment', $ackName) 2>$null
-                $text = ((@($shown) | ForEach-Object { [string]$_ }) -join "`n").Trim()
-                if ($text -ceq $expected) {
-                    $applied = $true
-                    break
-                }
-                Start-Sleep -Milliseconds 50
-            }
-            $shown = $null
-            $text = $null
-            $expected = $null
-            if (-not $applied) {
-                return [PSCustomObject]@{
-                    Success  = $false
-                    ExitCode = 1
-                }
+    $ackName = $null
+    $ackNameAttemptLimit = 8
+    for ($attempt = 0; $attempt -lt $ackNameAttemptLimit; $attempt++) {
+        $candidate = 'WINSMUX_VAULT_INJECT_ACK_' + [guid]::NewGuid().ToString('N')
+        $collides = $false
+        foreach ($credentialName in @($CredentialNames)) {
+            if ([string]$credentialName -ceq $candidate) {
+                $collides = $true
+                break
             }
         }
-        return [PSCustomObject]@{
-            Success  = ($exitCode -eq 0)
-            ExitCode = $exitCode
+        if (-not $collides) {
+            $ackName = $candidate
+            break
         }
-    } catch {
+    }
+    if ([string]::IsNullOrEmpty($ackName)) {
         return [PSCustomObject]@{
             Success  = $false
             ExitCode = 1
+        }
+    }
+
+    $ackValue = [guid]::NewGuid().ToString('N')
+    $expectedAck = $ackName + '=' + $ackValue
+    $tempConf = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-src-' + [guid]::NewGuid().ToString('N') + '.conf')
+    $stream = $null
+    $ownedTemp = $false
+    $sourceExitCode = 1
+    $sourceSucceeded = $false
+    $ackObserved = $false
+    $ackCleanupSucceeded = $false
+    $operationFailed = $false
+    try {
+        try {
+            $FileSecurity = New-Object System.Security.AccessControl.FileSecurity
+            $FileSecurity.SetAccessRuleProtection($true, $false)
+            $FileSecurity.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                [Security.Principal.WindowsIdentity]::GetCurrent().User,
+                [System.Security.AccessControl.FileSystemRights]::FullControl,
+                [System.Security.AccessControl.AccessControlType]::Allow
+            )))
+            try {
+                $stream = New-Object System.IO.FileStream($tempConf, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $FileSecurity)
+                $ownedTemp = $true
+            } catch {
+                if (Test-Path -LiteralPath $tempConf) {
+                    throw
+                }
+                $stream = [System.IO.FileSystemAclExtensions]::Create((New-Object System.IO.FileInfo($tempConf)), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $FileSecurity)
+                $ownedTemp = $true
+            }
+            $utf8 = New-Object System.Text.UTF8Encoding $false
+            $sourced = @($Commands) + @('set-environment ' + $ackName + ' ' + $ackValue)
+            $bytes = $utf8.GetBytes(($sourced -join [Environment]::NewLine))
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Dispose()
+            $stream = $null
+            $sourceOutput = @(Invoke-WinsmuxRaw -Arguments @('source-file', $tempConf))
+            $sourceExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+            $sourceSucceeded = ($sourceExitCode -eq 0)
+
+            $deadline = [datetime]::UtcNow.AddSeconds(5)
+            do {
+                $shown = Invoke-WinsmuxRaw -Arguments @('show-environment', $ackName) 2>$null
+                $showExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+                $text = ((@($shown) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+                if ($showExitCode -eq 0 -and $text -ceq $expectedAck) {
+                    $ackObserved = $true
+                    break
+                }
+                if (-not $sourceSucceeded) {
+                    break
+                }
+                Start-Sleep -Milliseconds 50
+            } while ([datetime]::UtcNow -lt $deadline)
+        } catch {
+            $operationFailed = $true
+            if (-not $ackObserved) {
+                try {
+                    $shown = Invoke-WinsmuxRaw -Arguments @('show-environment', $ackName) 2>$null
+                    $showExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+                    $text = ((@($shown) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+                    if ($showExitCode -eq 0 -and $text -ceq $expectedAck) {
+                        $ackObserved = $true
+                    }
+                } catch { }
+            }
+        }
+
+        try {
+            $shown = Invoke-WinsmuxRaw -Arguments @('show-environment', $ackName) 2>$null
+            $showExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+            $text = ((@($shown) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+            if ($showExitCode -eq 0 -and $text -ceq $expectedAck) {
+                $ackObserved = $true
+                $cleanupOutput = @(Invoke-WinsmuxRaw -Arguments @('set-environment', '-u', $ackName) 2>$null)
+                $cleanupExitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+                $ackCleanupSucceeded = ($cleanupExitCode -eq 0)
+            } else {
+                $ackCleanupSucceeded = $false
+            }
+        } catch {
+            $ackCleanupSucceeded = $false
+        }
+
+        $success = (-not $operationFailed) -and $sourceSucceeded -and $ackObserved -and $ackCleanupSucceeded
+        return [PSCustomObject]@{
+            Success  = $success
+            ExitCode = if ($success) { $sourceExitCode } else { 1 }
         }
     } finally {
         if ($null -ne $stream) {
             try { $stream.Dispose() } catch { }
         }
         $ackValue = $null
+        $expectedAck = $null
+        $sourceOutput = $null
+        $cleanupOutput = $null
         if ($ownedTemp) {
             Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
         }
@@ -17982,7 +18036,7 @@ function Invoke-VaultInject {
                 $command = 'set-environment ' + [string]$envName + ' ' + $value
                 Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
                     -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-                $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command)
+                $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command) -CredentialNames $credentialNames
                 if (-not $sourceResult.Success) {
                     Stop-WithError "winsmux source-file failed while injecting credentials into $paneId (session $sessionName)."
                 }
