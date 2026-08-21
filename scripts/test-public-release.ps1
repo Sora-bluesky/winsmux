@@ -2895,7 +2895,7 @@ function Invoke-SelfTest {
 
             $nsisHookPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis-installer-hooks.nsh'
             Assert-Condition (Test-Path -LiteralPath $nsisHookPath -PathType Leaf) 'Desktop NSIS installer hook source was not found.'
-            $nsisHookSource = [IO.File]::ReadAllText($nsisHookPath)
+            $nsisHookSource = ([IO.File]::ReadAllText($nsisHookPath) -replace "`r`n", "`n" -replace "`r", "`n")
             $postUninstallHooks = [regex]::Matches($nsisHookSource, '(?ms)!macro\s+NSIS_HOOK_POSTUNINSTALL(?<body>.*?)!macroend')
             Assert-Condition ($postUninstallHooks.Count -eq 1) 'Desktop NSIS source must contain exactly one NSIS_HOOK_POSTUNINSTALL macro.'
             $postUninstallBody = $postUninstallHooks[0].Groups['body'].Value
@@ -2906,7 +2906,6 @@ function Invoke-SelfTest {
                 [regex]::IsMatch($_.Groups['body'].Value, $productDeletePattern)
             })
             Assert-Condition ($guardedProductDeletes.Count -eq 1) 'Desktop POSTUNINSTALL product-key deletion must remain inside the silent-uninstall guard.'
-            $caseIds.Add('desktop_nsis_silent_product_key_delete')
 
             Assert-DesktopProductVersion -ActualVersion $Version -ExpectedVersion $Version
             $caseIds.Add('product_version_exact')
