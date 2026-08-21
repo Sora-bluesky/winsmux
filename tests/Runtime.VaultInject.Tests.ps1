@@ -223,6 +223,14 @@ public static class WinCredDeleteNative {
             if ($Arguments[0] -eq 'source-file') {
                 $script:ConfText = [System.IO.File]::ReadAllText($Arguments[1])
                 Test-Path -LiteralPath $Arguments[1] | Should -BeTrue
+                $acl = Get-Acl -LiteralPath $Arguments[1]
+                $acl.AreAccessRulesProtected | Should -BeTrue
+                $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+                $rules = @($acl.GetAccessRules($true, $false, [type][System.Security.Principal.SecurityIdentifier]))
+                $rules.Count | Should -Be 1
+                [string]$rules[0].IdentityReference | Should -Be ([string]$sid)
+                $rules[0].AccessControlType | Should -Be ([System.Security.AccessControl.AccessControlType]::Allow)
+                $rules[0].FileSystemRights | Should -Be ([System.Security.AccessControl.FileSystemRights]::FullControl)
                 return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
             }
             if ($Arguments[0] -eq 'show-environment') {

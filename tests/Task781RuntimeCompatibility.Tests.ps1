@@ -732,7 +732,12 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $prodSource.Extent.Text | Should -Match 'show-environment'
         $prodSource.Extent.Text | Should -Match 'UTF8Encoding'
         $prodSource.Extent.Text | Should -Match 'WINSMUX_VAULT_INJECT_ACK'
+        $prodSource.Extent.Text | Should -Match '(?s)(FileStream|FileSystemAclExtensions).{0,500}CreateNew.{0,500}FileSecurity'
         $prodSource.Extent.Text | Should -Not -Match 'Set-Content'
+        $prodSource.Extent.Text | Should -Not -Match 'GetTempFileName'
+        $prodSource.Extent.Text | Should -Not -Match 'WriteAllText'
+        $prodSource.Extent.Text | Should -Not -Match 'Set-Acl'
+        $prodSource.Extent.Text | Should -Not -Match 'SetAccessControl'
 
         $vaultSource = $vaultAst.Find({
             param($node)
@@ -741,6 +746,11 @@ $afterDelete = Test-VaultKeyExists -Key $key
         }, $true)
         $vaultSource.Extent.Text | Should -Match 'WINSMUX_VAULT_INJECT_ACK'
         $vaultSource.Extent.Text | Should -Match 'show-environment'
+        $vaultSource.Extent.Text | Should -Match '(?s)(FileStream|FileSystemAclExtensions).{0,500}CreateNew.{0,500}FileSecurity'
+        $vaultSource.Extent.Text | Should -Not -Match 'GetTempFileName'
+        $vaultSource.Extent.Text | Should -Not -Match 'WriteAllText'
+        $vaultSource.Extent.Text | Should -Not -Match 'Set-Acl'
+        $vaultSource.Extent.Text | Should -Not -Match 'SetAccessControl'
     }
 }
 
