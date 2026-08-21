@@ -1192,8 +1192,8 @@ EOF
             }
 
             & $script:AssertDenyResult -Result $result
-            $result.OutputObject.systemMessage | Should -Match 'review-request'
-            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request' -Because $command
+            $result.OutputObject.systemMessage | Should -Match 'review-approve' -Because $command
         }
     }
 
@@ -1230,8 +1230,8 @@ EOF
             }
 
             & $script:AssertDenyResult -Result $result
-            $result.OutputObject.systemMessage | Should -Match 'review-approve'
-            $result.OutputObject.systemMessage | Should -Match 'review-request'
+            $result.OutputObject.systemMessage | Should -Match 'review-approve' -Because $command
+            $result.OutputObject.systemMessage | Should -Match 'review-request' -Because $command
         }
     }
 
@@ -6086,7 +6086,7 @@ EOF
                 'git -c alias.x=remote x remove origin'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{ command = $command }
-            & $script:AssertDenyResult -Result $result
+            & $script:AssertDenyResult -Result $result -Because "command-local Git alias must resolve safely or fail closed: $command"
         }
 
         foreach ($readOnly in @(
@@ -9436,5 +9436,497 @@ switch ($Command) {
         }
 
         & $script:AssertDenyResult -Result $result
+    }
+
+    It 'TASK-803 gives Rule 13 one typed selector without legacy boolean authority' {
+        $hookContent = Get-Content -LiteralPath $script:SourceHookPath -Raw -Encoding UTF8
+        $rule13Start = $hookContent.IndexOf('// Rule 13:')
+        $rule13End = $hookContent.IndexOf('  process.exit(0);', $rule13Start)
+
+        ($rule13Start -ge 0) | Should -BeTrue
+        ($rule13End -gt $rule13Start) | Should -BeTrue
+        $rule13Body = $hookContent.Substring($rule13Start, $rule13End - $rule13Start)
+        $rule13Body | Should -Match '\bresolveRule13ReviewGate\b'
+        $rule13Body | Should -Not -Match '\bisReviewGatedCommand\b'
+        $rule13Body | Should -Not -Match '\bhasConfiguredGitReviewLifecycleAlias\b'
+
+        $selectorMatch = [regex]::Match(
+            $hookContent,
+            '(?s)function resolveRule13ReviewGate\([^)]*\)\s*\{.*?\r?\n\}(?=\r?\n\r?\nfunction )'
+        )
+        $selectorMatch.Success | Should -BeTrue
+        foreach ($kind in @('not_review_gated', 'review_gated', 'foreign_target', 'unresolved')) {
+            $selectorMatch.Value | Should -Match ('kind:\s*"{0}"' -f $kind)
+        }
+        $selectorMatch.Value | Should -Match '\boperation\b'
+        $selectorMatch.Value | Should -Match '\bcontexts\b'
+        $selectorMatch.Value | Should -Not -Match '\bisReviewGatedCommand\b'
+        $selectorMatch.Value | Should -Not -Match '\bhasConfiguredGitReviewLifecycleAlias\b'
+
+        $targetResolverMatch = [regex]::Match(
+            $hookContent,
+            '(?s)function getReviewGatedCommandTargets\([^)]*\)\s*\{.*?\r?\n\}(?=\r?\n\r?\nfunction )'
+        )
+        $targetResolverMatch.Success | Should -BeTrue
+        $targetResolverMatch.Value | Should -Not -Match '\bisReviewGatedCommand\b'
+        $targetResolverMatch.Value | Should -Not -Match '\bhasConfiguredGitReviewLifecycleAlias\b'
+
+        $xargsResolverMatch = [regex]::Match(
+            $hookContent,
+            '(?s)function getReviewGatedXargsCommandTargets\([^)]*\)\s*\{.*?\r?\n\}(?=\r?\n\r?\nfunction )'
+        )
+        $xargsResolverMatch.Success | Should -BeTrue
+        $xargsResolverMatch.Value | Should -Not -Match '\bhasXargsLifecycleArgumentHint\b'
+    }
+
+    It 'TASK-803 keeps the whole Rule 13 authority graph off legacy boolean classifiers' {
+        $authorityProbe = @'
+const fs = require("fs");
+const path = require("path");
+const acorn = require(path.resolve(process.argv[2]));
+const source = fs.readFileSync(process.argv[1], "utf8");
+const ast = acorn.parse(source, { ecmaVersion: "latest", sourceType: "script" });
+const definitions = new Map();
+for (const node of ast.body) {
+  if (node.type === "FunctionDeclaration" && node.id) definitions.set(node.id.name, node);
+}
+function walk(node, visitor) {
+  if (!node || typeof node !== "object") return;
+  visitor(node);
+  for (const [key, value] of Object.entries(node)) {
+    if (["id", "loc", "start", "end"].includes(key)) continue;
+    if (Array.isArray(value)) value.forEach((entry) => walk(entry, visitor));
+    else walk(value, visitor);
+  }
+}
+function directCalls(node) {
+  const calls = new Set();
+  walk(node, (candidate) => {
+    if (candidate.type === "CallExpression" && candidate.callee?.type === "Identifier") {
+      calls.add(candidate.callee.name);
+    }
+  });
+  return calls;
+}
+const roots = ["resolveRule13ReviewGate", "getStaticInvokedScriptEvidence"];
+const reachable = new Set();
+const pending = [...roots];
+while (pending.length > 0) {
+  const name = pending.shift();
+  if (reachable.has(name) || !definitions.has(name)) continue;
+  reachable.add(name);
+  for (const called of directCalls(definitions.get(name))) {
+    if (definitions.has(called) && !reachable.has(called)) pending.push(called);
+  }
+}
+const banned = new Set(["isReviewGatedCommand", "hasConfiguredGitReviewLifecycleAlias"]);
+const violations = [];
+for (const name of [...reachable].sort()) {
+  const references = new Set();
+  walk(definitions.get(name).body, (candidate) => {
+    if (candidate.type === "Identifier" && banned.has(candidate.name)) references.add(candidate.name);
+  });
+  if (references.size > 0) violations.push({ function: name, references: [...references].sort() });
+}
+process.stdout.write(JSON.stringify({ roots, reachable: [...reachable].sort(), violations }));
+'@
+        $probeStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $probeStartInfo.FileName = $script:NodePath
+        $probeStartInfo.ArgumentList.Add('-e')
+        $probeStartInfo.ArgumentList.Add($authorityProbe)
+        $probeStartInfo.ArgumentList.Add($script:SourceHookPath)
+        $probeStartInfo.ArgumentList.Add((Join-Path $script:RepoRoot '.claude\hooks\vendor\acorn-8.17.0\acorn.js'))
+        $probeStartInfo.WorkingDirectory = $script:RepoRoot
+        $probeStartInfo.UseShellExecute = $false
+        $probeStartInfo.CreateNoWindow = $true
+        $probeStartInfo.RedirectStandardOutput = $true
+        $probeStartInfo.RedirectStandardError = $true
+        $probeProcess = [System.Diagnostics.Process]::Start($probeStartInfo)
+        try {
+            $probeStdOut = $probeProcess.StandardOutput.ReadToEnd()
+            $probeStdErr = $probeProcess.StandardError.ReadToEnd()
+            $probeProcess.WaitForExit()
+            $probeProcess.ExitCode | Should -Be 0 -Because $probeStdErr
+        } finally {
+            $probeProcess.Dispose()
+        }
+
+        $authorityGraph = $probeStdOut | ConvertFrom-Json -ErrorAction Stop
+        @($authorityGraph.reachable) | Should -Contain 'getStaticScriptProtectedEvidence'
+        @($authorityGraph.reachable) | Should -Contain 'getReviewGatedCommandTargets'
+        @($authorityGraph.reachable) | Should -Contain 'getReviewGatedXargsCommandTargets'
+        @($authorityGraph.violations).Count | Should -Be 0 -Because ($authorityGraph.violations | ConvertTo-Json -Compress -Depth 5)
+    }
+
+    It 'TASK-803 substitutes xargs replacement markers and decodes NUL-delimited argv' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $commands = @(
+            'printf ''commit\n'' | xargs -I{} git {}',
+            'printf ''merge\n'' | xargs -I{} gh pr {} 803',
+            'printf ''commit\0'' | xargs -0 git',
+            'printf ''commit\0'' | xargs --null git'
+        )
+
+        foreach ($command in $commands) {
+            $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $denied -Because "reconstructed xargs argv must require Reviewer PASS: $command"
+            $denied.OutputObject.systemMessage | Should -Match 'Review required' -Because "Rule 13 must own the deny decision: $command"
+        }
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        foreach ($command in $commands) {
+            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            $allowed.OutputObject | Should -BeNullOrEmpty -Because "the reconstructed local argv may use its own valid PASS: $command"
+        }
+    }
+
+    It 'TASK-803 preserves foreign GitHub provenance reconstructed through xargs' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        & git -C $fixture.RepoRoot remote add origin 'https://github.com/example/project.git'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        foreach ($command in @(
+                'printf ''pr merge 803 --repo foreign/project --squash\n'' | xargs gh',
+                'printf ''api -X PUT repos/foreign/project/pulls/803/merge\n'' | xargs gh'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $result -Because "xargs cannot erase foreign-target provenance: $command"
+            $result.OutputObject.systemMessage | Should -Match 'Review required'
+        }
+    }
+
+    It 'TASK-803 denies gh api preview and GraphQL-before-endpoint merge argv without PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        & git -C $fixture.RepoRoot remote add origin 'https://github.com/example/project.git'
+        $commands = @(
+            'gh api --preview nebula -X PUT repos/example/project/pulls/803/merge',
+            'gh api -f ''query=mutation { mergePullRequest(input: {}) { pullRequest { id } } }'' graphql',
+            'gh api graphql -f ''query=mutation { mergePullRequest(input: {}) { pullRequest { id } } }'''
+        )
+
+        foreach ($command in $commands) {
+            $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $denied -Because "not_review_gated would allow this argv without PASS: $command"
+            $denied.OutputObject.systemMessage | Should -Match 'Review required' -Because "Rule 13 must own the deny: $command"
+        }
+    }
+
+    It 'TASK-803 typed gh parser returns gh api merge for preview and GraphQL-before-endpoint argv' {
+        $classifierProbe = @'
+const fs = require("fs");
+const path = require("path");
+const Module = require("module");
+const hookPath = process.argv[1];
+let source = fs.readFileSync(hookPath, "utf8");
+const stripped = source.replace(
+  /try \{\r?\n  const input = fs\.readFileSync\(0, "utf8"\);[\s\S]*?process\.exit\(2\);\r?\n\}/,
+  ""
+);
+if (stripped === source) {
+  process.stderr.write("failed to strip stdin try block\n");
+  process.exit(2);
+}
+source = stripped + "\nmodule.exports = { getRule13GhOperation, tokenizeCommandLine };\n";
+const hookModule = new Module(hookPath);
+hookModule.filename = hookPath;
+hookModule.paths = Module._nodeModulePaths(path.dirname(hookPath));
+try {
+  hookModule._compile(source, hookPath);
+} catch (error) {
+  process.stdout.write(JSON.stringify({ missing: true, results: [], error: String(error) }));
+  process.exit(0);
+}
+const { getRule13GhOperation, tokenizeCommandLine } = hookModule.exports;
+if (typeof getRule13GhOperation !== "function" || typeof tokenizeCommandLine !== "function") {
+  process.stdout.write(JSON.stringify({ missing: true, results: [] }));
+  process.exit(0);
+}
+const commands = JSON.parse(process.argv[2]);
+const results = commands.map((command) => ({
+  command,
+  operation: getRule13GhOperation(tokenizeCommandLine(command)),
+}));
+process.stdout.write(JSON.stringify({ missing: false, results }));
+'@
+        $commandsJson = @(
+            'gh api --preview nebula -X PUT repos/example/project/pulls/803/merge',
+            'gh api -f ''query=mutation { mergePullRequest(input: {}) { pullRequest { id } } }'' graphql',
+            'gh api graphql -f ''query=mutation { mergePullRequest(input: {}) { pullRequest { id } } }'''
+        ) | ConvertTo-Json -Compress
+        $probeStartInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $probeStartInfo.FileName = $script:NodePath
+        $probeStartInfo.ArgumentList.Add('-e')
+        $probeStartInfo.ArgumentList.Add($classifierProbe)
+        $probeStartInfo.ArgumentList.Add($script:SourceHookPath)
+        $probeStartInfo.ArgumentList.Add($commandsJson)
+        $probeStartInfo.WorkingDirectory = $script:RepoRoot
+        $probeStartInfo.UseShellExecute = $false
+        $probeStartInfo.CreateNoWindow = $true
+        $probeStartInfo.RedirectStandardOutput = $true
+        $probeStartInfo.RedirectStandardError = $true
+        $probeProcess = [System.Diagnostics.Process]::Start($probeStartInfo)
+        try {
+            $probeStdOut = $probeProcess.StandardOutput.ReadToEnd()
+            $probeStdErr = $probeProcess.StandardError.ReadToEnd()
+            $probeProcess.WaitForExit()
+            $probeProcess.ExitCode | Should -Be 0 -Because $probeStdErr
+        } finally {
+            $probeProcess.Dispose()
+        }
+
+        $classified = $probeStdOut | ConvertFrom-Json -ErrorAction Stop
+        $classified.missing | Should -BeFalse -Because 'origin/main hook blob 05d2d4d4 has no getRule13GhOperation; this pin must fail there'
+        foreach ($entry in @($classified.results)) {
+            $entry.operation | Should -Be 'gh api merge' -Because ("typed Rule 13 authority must name this argv: {0}" -f $entry.command)
+        }
+    }
+
+    It 'TASK-803 classifies direct wrapped and configured-alias Git lifecycle forms identically' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        & git -C $fixture.RepoRoot config alias.task803-commit commit
+
+        $commands = @(
+            'git commit --allow-empty -m direct',
+            'command git commit --allow-empty -m wrapped',
+            'git task803-commit --allow-empty -m configured-alias'
+        )
+        foreach ($command in $commands) {
+            $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $denied -Because "every exact Git lifecycle form requires Reviewer PASS: $command"
+            $denied.OutputObject.systemMessage | Should -Match 'Review required'
+        }
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        foreach ($command in $commands) {
+            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            $allowed.OutputObject | Should -BeNullOrEmpty -Because "the same typed result accepts the same valid PASS: $command"
+        }
+    }
+
+    It 'TASK-803 requires Reviewer PASS for Git lifecycle gh pr merge and gh api merge' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        & git -C $fixture.RepoRoot remote add origin 'https://github.com/example/project.git'
+
+        $commands = @(
+            'git merge feature/reviewed-topic',
+            'git push origin HEAD',
+            'gh pr merge 803 --squash',
+            'gh api -X PUT repos/example/project/pulls/803/merge'
+        )
+        foreach ($command in $commands) {
+            $denied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $denied -Because "managed lifecycle operation requires Reviewer PASS: $command"
+            $denied.OutputObject.systemMessage | Should -Match 'Review required'
+        }
+
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+        foreach ($command in $commands) {
+            $allowed = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            $allowed.OutputObject | Should -BeNullOrEmpty -Because "valid PASS allows past Rule 13: $command"
+        }
+    }
+
+    It 'TASK-803 gives approval-like words in comments arguments and paths no Rule 13 authority' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'git status --short # Reviewer PASS: git commit -m approved',
+                'git status --short -- review/PASS/git-commit.txt',
+                'Write-Output "Reviewer PASS gh pr merge"',
+                'Write-Output "C:/reviews/PASS/gh/pr/merge"',
+                'gh pr view 803 --json title --jq merge',
+                'gh api repos/example/project/issues/803/comments -f body=PASS -f note=repos/example/project/pulls/803/merge',
+                'printf ''status --short -- review/PASS/commit.txt\n'' | xargs git',
+                'printf ''pr view 803 --json title --jq merge\n'' | xargs gh',
+                'printf ''api repos/example/project/issues/803/comments -f note=repos/example/project/pulls/803/merge\n'' | xargs gh'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            $result.ExitCode | Should -Be 0
+            $result.OutputObject.systemMessage | Should -Not -Match '^Review required' -Because "free-form approval-like text is data, not Rule 13 authority: $command"
+        }
+    }
+
+    It 'TASK-803 denies foreign GitHub targets regardless of valid PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        & git -C $fixture.RepoRoot remote add origin 'https://github.com/example/project.git'
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        foreach ($command in @(
+                'gh pr merge 803 --repo foreign/project --squash',
+                'gh api -X PUT repos/foreign/project/pulls/803/merge'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $result -Because "foreign target cannot borrow local Reviewer PASS: $command"
+            $result.OutputObject.systemMessage | Should -Match 'Review required'
+        }
+    }
+
+    It 'TASK-803 denies unresolved managed lifecycle targets even with valid PASS' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        foreach ($command in @(
+                'git -C "$TASK803_TARGET" commit --allow-empty -m unresolved',
+                'env --chdir="$TASK803_TARGET" git commit --allow-empty -m ambiguous'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $result -Because "unresolved target must fail closed: $command"
+            $result.OutputObject.systemMessage | Should -Match 'Review required'
+        }
+    }
+
+    It 'TASK-803 denies invalid review-state variants for managed gated operations' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
+        $currentHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+        $baseEntry = [ordered]@{
+            status   = 'PASS'
+            head_sha = $currentHeadSha
+            request  = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $currentHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+        }
+        $cases = @(
+            @{ Name = 'missing' },
+            @{ Name = 'malformed'; Content = '{ malformed' },
+            @{ Name = 'stale'; Entry = [ordered]@{
+                status = 'PASS'; head_sha = ('0' * $currentHeadSha.Length)
+                request = $baseEntry.request; reviewer = $baseEntry.reviewer
+            } },
+            @{ Name = 'PENDING'; Entry = [ordered]@{
+                status = 'PENDING'; head_sha = $currentHeadSha
+                request = $baseEntry.request; reviewer = $baseEntry.reviewer
+            } },
+            @{ Name = 'unknown'; Entry = [ordered]@{
+                status = 'APPROVED'; head_sha = $currentHeadSha
+                request = $baseEntry.request; reviewer = $baseEntry.reviewer
+            } }
+        )
+
+        foreach ($case in $cases) {
+            if (Test-Path -LiteralPath $reviewStatePath) {
+                Remove-Item -LiteralPath $reviewStatePath -Force
+            }
+            if ($case.ContainsKey('Content')) {
+                Write-GateTestFile -Path $reviewStatePath -Content $case.Content
+            } elseif ($case.ContainsKey('Entry')) {
+                Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry $case.Entry | Out-Null
+            }
+
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = 'git commit --allow-empty -m state-check'
+                cwd     = $fixture.RepoRoot
+            }
+            & $script:AssertDenyResult -Result $result -Because "review state $($case.Name) must fail closed"
+            $result.OutputObject.systemMessage | Should -Match 'Review required'
+        }
+    }
+
+    It 'TASK-803 preserves normal Git behavior for a verified empty managed-context list' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $unmanaged = New-GateTargetRepo -Root $fixture.Root -Name 'task803-unmanaged'
+        Remove-Item -LiteralPath (Join-Path $unmanaged.RepoRoot '.winsmux') -Recurse -Force
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = ('git -C "{0}" commit --allow-empty -m unmanaged' -f $unmanaged.RepoRoot)
+            cwd     = $fixture.RepoRoot
+        }
+
+        $result.OutputObject | Should -BeNullOrEmpty
+    }
+
+    It 'TASK-803 preserves D02 D13 and D18 as independent deny-only mechanisms' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        Set-GatePass -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch
+
+        $settingsPath = Join-Path $fixture.RepoRoot 'winsmux-core\scripts\settings.ps1'
+        Write-GateTestFile -Path $settingsPath -Content @'
+function Get-BridgeSettings {
+    [ordered]@{ worker_count = 1; external_operator = $false; agent_slots = @() }
+}
+'@
+        $fixtureBin = Join-Path $fixture.RepoRoot '.winsmux-test-bin'
+        Write-GateTestFile -Path (Join-Path $fixtureBin 'winsmux.cmd') -Content @'
+@echo off
+if "%1"=="has-session" exit /b 1
+exit /b 0
+'@
+        $startupDenied = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'gh pr merge 803 --squash'
+            cwd     = $fixture.RepoRoot
+        } -Environment @{
+            WINSMUX_ROLE = 'Operator'
+            WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE = '0'
+            PATH = "$fixtureBin$([System.IO.Path]::PathSeparator)$env:PATH"
+        } -DisableStartupGate:$false
+        & $script:AssertDenyResult -Result $startupDenied -Because 'D02 startup readiness remains an earlier deny-only mechanism'
+        $startupDenied.OutputObject.systemMessage | Should -Match '^Orchestra is needs-startup'
+
+        $missingAssignment = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'git commit --allow-empty -m worker-no-assignment'
+            cwd     = $fixture.RepoRoot
+        } -Environment @{ WINSMUX_ROLE = 'Worker' }
+        & $script:AssertDenyResult -Result $missingAssignment -Because 'D13 denies worker lifecycle without an assigned worktree'
+        $missingAssignment.OutputObject.systemMessage | Should -Match '^Worker-pane Git lifecycle blocked'
+
+        $assignedWorker = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'git commit --allow-empty -m worker-assigned'
+            cwd     = $fixture.RepoRoot
+        } -Environment @{
+            WINSMUX_ROLE = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = $fixture.RepoRoot
+        }
+        & $script:AssertDenyResult -Result $assignedWorker -Because 'D18 denies worker lifecycle even with an assigned worktree'
+        $assignedWorker.OutputObject.systemMessage | Should -Match '^Worker-pane Git lifecycle blocked'
     }
 }
