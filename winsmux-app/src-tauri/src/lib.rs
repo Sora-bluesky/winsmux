@@ -15,8 +15,7 @@ use control_pipe::{
 };
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain,
-    load_desktop_summary_snapshot, resolve_repo_root, scrub_control_pipe_token_from_command,
-    spawn_desktop_summary_refresh_stream,
+    load_desktop_summary_snapshot, resolve_repo_root, spawn_desktop_summary_refresh_stream,
     DesktopExplainPayload,
     DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopStreamCommand,
     DesktopSummaryRefreshSignal, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
@@ -1328,6 +1327,15 @@ fn spawn_pty(
 type PtyReader = Box<dyn Read + Send>;
 type SinglePtyParts = (SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>);
 
+pub(crate) fn scrub_control_pipe_token_from_command(command: &mut Command) {
+    command.env_remove(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
+}
+
+pub(crate) fn hide_non_companion_subprocess_window(command: &mut Command) {
+    desktop_backend::hide_subprocess_window(command);
+    scrub_control_pipe_token_from_command(command);
+}
+
 #[cfg(windows)]
 fn build_update_restart_command(
     restart_script_path: &Path,
@@ -2425,6 +2433,43 @@ mod tests {
         assert!(removed
             .iter()
             .any(|key| key == WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+    }
+
+    #[test]
+    fn companion_child_env_does_not_record_token_removal() {
+        let companion = PathBuf::from(r"C:\repo\target\release\winsmux.exe");
+        let mut command = Command::new("pwsh");
+        desktop_backend::apply_desktop_winsmux_child_env(&mut command, Some(&companion), 4242);
+        let removed: Vec<std::ffi::OsString> = command
+            .get_envs()
+            .filter_map(|(key, value)| value.is_none().then(|| key.to_os_string()))
+            .collect();
+        assert!(
+            !removed
+                .iter()
+                .any(|key| key == WINSMUX_CONTROL_PIPE_TOKEN_ENV),
+            "companion children must keep launcher token inherit; removed={removed:?}"
+        );
+    }
+
+    #[test]
+    fn scrub_control_pipe_token_records_explicit_removal() {
+        let mut command = Command::new("cmd.exe");
+        scrub_control_pipe_token_from_command(&mut command);
+        let removed_keys: Vec<std::ffi::OsString> = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                if value.is_none() {
+                    Some(key.to_os_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert!(
+            removed_keys.contains(&std::ffi::OsString::from(WINSMUX_CONTROL_PIPE_TOKEN_ENV)),
+            "expected env_remove entry for {WINSMUX_CONTROL_PIPE_TOKEN_ENV}, got {removed_keys:?}"
+        );
     }
 
     #[test]

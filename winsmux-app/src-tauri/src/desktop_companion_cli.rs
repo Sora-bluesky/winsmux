@@ -1,9 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::desktop_backend::{
-    apply_desktop_winsmux_child_env, hide_subprocess_window, scrub_control_pipe_token_from_command,
-};
+use crate::desktop_backend::{apply_desktop_winsmux_child_env, hide_subprocess_window};
+use crate::scrub_control_pipe_token_from_command;
 
 const WINSMUX_CORE_SCRIPT_ENV: &str = "WINSMUX_CORE_SCRIPT";
 

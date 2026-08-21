@@ -54,17 +54,12 @@ const WINSMUX_DISABLE_WINDOWS_TERMINAL_ATTACH_ENV: &str =
     "WINSMUX_ORCHESTRA_DISABLE_WINDOWS_TERMINAL_ATTACH";
 const WINSMUX_BIN_ENV: &str = "WINSMUX_BIN";
 const WINSMUX_RAW_EXE_ENV: &str = "WINSMUX_RAW_EXE";
-const WINSMUX_CONTROL_PIPE_TOKEN_ENV: &str = "WINSMUX_CONTROL_PIPE_TOKEN";
 
 pub(crate) fn hide_subprocess_window(command: &mut Command) {
     crate::remote_debug_gate::scrub_gate_env_from_command(command);
     #[cfg(windows)] {
         command.creation_flags(CREATE_NO_WINDOW);
     }
-}
-
-pub(crate) fn scrub_control_pipe_token_from_command(command: &mut Command) {
-    command.env_remove(WINSMUX_CONTROL_PIPE_TOKEN_ENV);
 }
 
 fn resolve_companion_winsmux_cli_from_exe_path(current_exe: &Path) -> Option<PathBuf> {
@@ -2382,8 +2377,7 @@ fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> Hash
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    hide_subprocess_window(&mut command);
-    scrub_control_pipe_token_from_command(&mut command);
+    crate::hide_non_companion_subprocess_window(&mut command);
 
     let Ok(mut child) = command.spawn() else {
         return HashSet::new();
@@ -2770,36 +2764,6 @@ mod tests {
         assert_eq!(
             command_env_value(&command, WINSMUX_RAW_EXE_ENV).as_deref(),
             Some(r"C:\repo\target\release\winsmux.exe")
-        );
-        let removed: Vec<std::ffi::OsString> = command
-            .get_envs()
-            .filter_map(|(key, value)| value.is_none().then(|| key.to_os_string()))
-            .collect();
-        assert!(
-            !removed
-                .iter()
-                .any(|key| key == WINSMUX_CONTROL_PIPE_TOKEN_ENV),
-            "companion children must keep launcher token inherit; removed={removed:?}"
-        );
-    }
-
-    #[test]
-    fn scrub_control_pipe_token_records_explicit_removal() {
-        let mut command = Command::new("cmd.exe");
-        scrub_control_pipe_token_from_command(&mut command);
-        let removed_keys: Vec<std::ffi::OsString> = command
-            .get_envs()
-            .filter_map(|(key, value)| {
-                if value.is_none() {
-                    Some(key.to_os_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert!(
-            removed_keys.contains(&std::ffi::OsString::from(WINSMUX_CONTROL_PIPE_TOKEN_ENV)),
-            "expected env_remove entry for {WINSMUX_CONTROL_PIPE_TOKEN_ENV}, got {removed_keys:?}"
         );
     }
 
