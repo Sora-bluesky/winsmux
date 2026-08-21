@@ -17737,17 +17737,24 @@ function Invoke-Profile {
 
 function Invoke-VaultSet {
     $key = $Target
-    $value = if ($Rest) { $Rest -join ' ' } else { '' }
-    if (-not $key) { Stop-WithError "usage: winsmux vault set <key> [value]" }
-    if (-not $value) {
-        $secure = Read-Host -AsSecureString "Enter value for '$key'"
-        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        try {
-            $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        } finally {
-            if ($bstr -ne [IntPtr]::Zero) {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-            }
+    if (-not $key) { Stop-WithError "usage: winsmux vault set <key>" }
+    $restLen = 0
+    if ($Rest -is [System.Array]) {
+        $restLen = $Rest.Length
+    } elseif ($null -ne $Rest) {
+        $restLen = 1
+    }
+    if ($restLen -gt 0) {
+        Stop-WithError "vault set does not accept the value on the command line"
+    }
+
+    $secure = Read-Host -AsSecureString "Enter value for '$key'"
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
         }
     }
     if ([string]::IsNullOrWhiteSpace($value)) {
@@ -18698,7 +18705,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   harness-check [--json] [--project-dir <path>]  Validate hook/settings/attach contracts before external-operator startup
   shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]  Compare PowerShell/Rust shadow outputs before cutover
   powershell-deescalation [--json]  Print the PowerShell shrink contract for runtime cutover
-  vault set <key> [value]   Store a credential securely (DPAPI)
+  vault set <key>           Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
   vault list                List stored credential keys

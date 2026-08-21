@@ -270,7 +270,7 @@ agent-slots:
 ペインへ渡す必要がある資格情報は Windows DPAPI で保存します。
 
 ```powershell
-winsmux vault set <name> <value>
+winsmux vault set <name>
 winsmux vault inject <name> <pane>
 ```
 

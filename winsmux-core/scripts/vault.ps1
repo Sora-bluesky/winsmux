@@ -64,27 +64,18 @@ public class WinsmuxVaultCredentialNative {
 '@ -ErrorAction SilentlyContinue
 }
 
-function Invoke-VaultSet {
-    $key = $Target
-    $value = if ($Rest) { $Rest -join ' ' } else { '' }
-    if (-not $key) { Stop-WithError "usage: winsmux vault set <key> [value]" }
-    if (-not $value) {
-        $secure = Read-Host -AsSecureString "Enter value for '$key'"
-        $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
-        try {
-            $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-        } finally {
-            if ($bstr -ne [IntPtr]::Zero) {
-                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-            }
-        }
-    }
-    if ([string]::IsNullOrWhiteSpace($value)) {
-        Stop-WithError "vault value for '$key' must not be empty"
+function Write-WinsmuxVaultCredentialInternal {
+    param(
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        Stop-WithError "vault value for '$Key' must not be empty"
     }
 
-    $credTarget = "winsmux:$key"
-    $valueBytes = [System.Text.Encoding]::Unicode.GetBytes($value)
+    $credTarget = "winsmux:$Key"
+    $valueBytes = [System.Text.Encoding]::Unicode.GetBytes($Value)
     $blobPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($valueBytes.Length)
     [Runtime.InteropServices.Marshal]::Copy($valueBytes, 0, $blobPtr, $valueBytes.Length)
 
@@ -102,10 +93,36 @@ function Invoke-VaultSet {
             $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
             Stop-WithError "CredWrite failed (error $errCode)"
         }
-        Write-Host "Stored credential: $key"
+        Write-Host "Stored credential: $Key"
     } finally {
         [Runtime.InteropServices.Marshal]::FreeHGlobal($blobPtr)
     }
+}
+
+function Invoke-VaultSet {
+    $key = $Target
+    if (-not $key) { Stop-WithError "usage: winsmux vault set <key>" }
+    $restLen = 0
+    if ($Rest -is [System.Array]) {
+        $restLen = $Rest.Length
+    } elseif ($null -ne $Rest) {
+        $restLen = 1
+    }
+    if ($restLen -gt 0) {
+        Stop-WithError "vault set does not accept the value on the command line"
+    }
+
+    $secure = Read-Host -AsSecureString "Enter value for '$key'"
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $value = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+    } finally {
+        if ($bstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        }
+    }
+
+    Write-WinsmuxVaultCredentialInternal -Key $key -Value $value
 }
 
 function Invoke-VaultGet {

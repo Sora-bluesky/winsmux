@@ -679,13 +679,8 @@ public static class WinsmuxVaultTestCleanupNative {
     }
 
     It 'stores, retrieves, and lists credentials inside the test prefix only' {
-        $script:Target = 'alpha'
-        $script:Rest = @('one')
-        Invoke-VaultSet | Out-Null
-
-        $script:Target = 'beta'
-        $script:Rest = @('two')
-        Invoke-VaultSet | Out-Null
+        Write-WinsmuxVaultCredentialInternal -Key 'alpha' -Value 'one'
+        Write-WinsmuxVaultCredentialInternal -Key 'beta' -Value 'two'
 
         $script:Target = 'alpha'
         $script:Rest = @()
