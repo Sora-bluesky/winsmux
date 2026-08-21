@@ -299,7 +299,7 @@ fn authorize_rotated_or_file_token(provided: &str) -> bool {
         return false;
     }
     drop(guard);
-    match read_control_pipe_token_file() {
+    match read_trusted_previous_control_pipe_token() {
         Some(file_token) => constant_time_string_eq(provided.as_bytes(), file_token.as_bytes()),
         None => false,
     }
@@ -2323,6 +2323,7 @@ mod tests {
         let path = control_pipe_token_file_path().expect("token path");
         fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
         fs::write(&path, "scope-file-token").expect("file token");
+        harden_existing_token_file_for_test(&path);
         let pty_transport = StubPtyTransport::new();
         let response = handle_control_pipe_payload(
             &StubDesktopTransport,
@@ -3173,6 +3174,7 @@ mod tests {
         let exact = control_pipe_token_file_path().expect("token path");
         fs::create_dir_all(exact.parent().expect("exact parent")).expect("exact dir");
         fs::write(&exact, "exact-file-token").expect("exact token");
+        harden_existing_token_file_for_test(&exact);
 
         let pty_transport = StubPtyTransport::new();
         for planted in [
@@ -3530,6 +3532,7 @@ mod tests {
         let path = control_pipe_token_file_path().expect("token path");
         fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
         fs::write(&path, "operator-file-token").expect("file token");
+        harden_existing_token_file_for_test(&path);
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.operator.snapshot","params":{"lines":40},"auth":{"token":"operator-file-token"}}"#;
         let pty_transport = StubPtyTransport::new();
         let response =
@@ -3537,6 +3540,33 @@ mod tests {
         let value: Value = serde_json::from_slice(&response).expect("json");
         assert_eq!(value["id"], 1);
         assert!(value.get("error").is_none() || value["error"].is_null());
+    }
+
+    #[test]
+    fn control_pipe_operator_snapshot_rejects_untrusted_file_token() {
+        let _guard = isolate_control_pipe_paths_for_test();
+        let path = control_pipe_token_file_path().expect("token path");
+        fs::create_dir_all(path.parent().expect("parent")).expect("token dir");
+        fs::write(&path, "planted-file-token").expect("planted file");
+        assert!(
+            control_pipe_auth_is_available(),
+            "existence is not authorization"
+        );
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.operator.snapshot","params":{"lines":40},"auth":{"token":"planted-file-token"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("json");
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_REQUEST);
+        assert!(value["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains(WINSMUX_CONTROL_PIPE_TOKEN_ENV));
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
     }
 
     #[test]
