@@ -239,20 +239,16 @@ try {
 
   // Rule 13: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
   if (toolName === "Bash") {
-    if (isReviewGatedCommand(reviewDetectionCommand) || hasConfiguredGitReviewLifecycleAlias(reviewDetectionCommand, reviewBaseCwd)) {
-      const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
-      try {
-        if (hasForeignGitHubLifecycleTarget(reviewDetectionCommand, reviewBaseCwd)) {
-          deny(denyMessage);
-        }
-        const reviewContexts = resolveReviewGateContexts(toolInput, reviewDetectionCommand);
-        if (reviewContexts === null) {
-          deny(denyMessage);
-        }
-        // Null means a target existed but could not be verified; it was denied above.
-        // An empty list means no managed target was resolved, so unrelated repositories keep
-        // normal Git lifecycle behavior (design 6.4 item 7; TASK-783 C03). Do not deny here.
-        for (const reviewContext of reviewContexts) {
+    const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
+    try {
+      const reviewGate = resolveRule13ReviewGate(toolInput, reviewDetectionCommand);
+      if (reviewGate.kind === "foreign_target" || reviewGate.kind === "unresolved") {
+        deny(denyMessage);
+      }
+      if (reviewGate.kind === "review_gated") {
+        // An empty managed-context list means the exact operation targets only unrelated
+        // repositories, so normal Git lifecycle behavior remains unchanged (TASK-783 C03).
+        for (const reviewContext of reviewGate.contexts) {
           const reviewStatePath = path.join(reviewContext.stateRoot, ".winsmux", "review-state.json");
           const currentBranch = getCurrentBranch(reviewContext.workRoot);
           const currentHeadSha = getCurrentHeadSha(reviewContext.workRoot);
@@ -266,9 +262,9 @@ try {
             deny(denyMessage);
           }
         }
-      } catch (e) {
-        deny(denyMessage);
       }
+    } catch (e) {
+      deny(denyMessage);
     }
   }
 
@@ -1628,7 +1624,8 @@ function getKnownReadOnlyPowerShellScriptInvocationState(tokens, fileArgument, s
   const body = bodies[0];
   const protectedEvidence = getStaticScriptProtectedEvidence(body, path.dirname(scriptPath));
   if (protectedEvidence.unresolved || protectedEvidence.commands.length > 0) return "unsafe";
-  if (isReviewGatedCommand(body) || isDirectCodexDispatch(body)) return "unsafe";
+  const reviewEvidence = getReviewGatedCommandTargets(body, path.dirname(scriptPath));
+  if ((reviewEvidence.operations || []).length > 0 || reviewEvidence.unresolved || isDirectCodexDispatch(body)) return "unsafe";
   const mutatesState = /(?:^|[;\r\n])\s*(?:&\s*)?(?:git|gh|codex|set-content|add-content|out-file|new-item|remove-item|move-item|copy-item|rename-item|set-itemproperty|new-itemproperty|remove-itemproperty|start-process|saps|invoke-expression|iex|set-alias|new-alias|reg(?:\.exe)?)\b|(?:^|[;\r\n])\s*\.\s+[^\r\n]+|&\s*\$[A-Za-z_]/imu.test(body);
   return mutatesState ? "unsafe" : "safe";
 }
@@ -1679,7 +1676,20 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
   const commands = [];
   const seen = new Set();
   let unresolved = false;
-  if (isReviewGatedCommand(text)) {
+  const scriptReviewEvidence = {
+    targetCwds: [],
+    requiresBaseCwd: false,
+    operations: [],
+    unresolved: false,
+  };
+  for (const reviewSurface of [text, ...getBraceBlockBodies(text)]) {
+    const surfaceEvidence = getReviewGatedCommandTargets(reviewSurface, scriptCwd);
+    scriptReviewEvidence.targetCwds.push(...surfaceEvidence.targetCwds);
+    scriptReviewEvidence.requiresBaseCwd = scriptReviewEvidence.requiresBaseCwd || surfaceEvidence.requiresBaseCwd;
+    scriptReviewEvidence.operations.push(...(surfaceEvidence.operations || []));
+    scriptReviewEvidence.unresolved = scriptReviewEvidence.unresolved || Boolean(surfaceEvidence.unresolved);
+  }
+  if ((scriptReviewEvidence.operations || []).length > 0 || scriptReviewEvidence.unresolved) {
     if (hasStaticShellSourceCommand(text)) {
       unresolved = true;
     }
@@ -1689,10 +1699,9 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
     if (hasShellControlFlowBoundary(text) && hasShellCwdChangeCommand(text)) {
       unresolved = true;
     }
-    const targetEvidence = getReviewGatedCommandTargets(text, scriptCwd);
     const targets = [
-      ...targetEvidence.targetCwds,
-      ...(targetEvidence.requiresBaseCwd ? [scriptCwd] : []),
+      ...scriptReviewEvidence.targetCwds,
+      ...(scriptReviewEvidence.requiresBaseCwd ? [scriptCwd] : []),
     ];
     for (const target of targets.length > 0 ? targets : [scriptCwd]) {
       if (!target || target.includes("\0")) {
@@ -1720,7 +1729,10 @@ function getStaticScriptProtectedEvidence(source, scriptCwd) {
         continue;
       }
       const directCodex = /\bcodex(?:\.exe)?\b/iu.test(candidate) && isDirectCodexDispatch(candidate);
-      const reviewGated = !directCodex && isReviewGatedCommand(candidate);
+      const candidateReviewEvidence = directCodex
+        ? { operations: [], unresolved: false }
+        : getReviewGatedCommandTargets(candidate, scriptCwd);
+      const reviewGated = (candidateReviewEvidence.operations || []).length > 0 || candidateReviewEvidence.unresolved;
       if (directCodex) {
         if (!seen.has("codex exec")) commands.push("codex exec");
         seen.add("codex exec");
@@ -2664,7 +2676,9 @@ function hasXargsGitLifecycleCommand(command, reviewOnly) {
       const normalizedStage = unwrapPowerShellCommandWrapper(stage);
       const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
       if (execution.nestedCommand) {
-        return isReviewGatedCommand(execution.nestedCommand);
+        return reviewOnly
+          ? isRule13DirectReviewGatedCommand(execution.nestedCommand)
+          : isOperatorOnlyGitLifecycleCommand(execution.nestedCommand);
       }
       const tokens = execution.tokens;
       if (tokens.length === 0 || normalizeExecutableName(tokens[0]) !== "xargs") {
@@ -2869,7 +2883,7 @@ function hasInterpreterReviewGatedGitLifecycleCommand(segment, tokens) {
     return true;
   }
   const literalCommands = getInterpreterLiteralGitCommands(segment, tokens);
-  if (literalCommands.some((command) => isReviewGatedCommand(command))) {
+  if (literalCommands.some((command) => isRule13DirectReviewGatedCommand(command))) {
     return true;
   }
 
@@ -2971,19 +2985,23 @@ function hasPowerShellDynamicCallLifecycleCommand(segment) {
   return hasGitLifecycleHint(source);
 }
 
-function hasPowerShellStartProcessLifecycleHint(segment) {
+function hasPowerShellStartProcessLifecycleHint(
+  segment,
+  dynamicLifecycleResolver = getCmdDynamicLifecycleCommand,
+  lifecycleClassifier = isOperatorOnlyGitLifecycleCommand,
+) {
   const source = String(segment || "");
   if (!/^\s*(?:start-process|saps|start)\b/iu.test(source)) {
     return false;
   }
 
   const embeddedSetIndex = source.search(/\bset\s+[A-Za-z_][A-Za-z0-9_]*=/iu);
-  if (embeddedSetIndex >= 0 && getCmdDynamicLifecycleCommand(unescapeCmdCaretEscapes(source.slice(embeddedSetIndex)))) {
+  if (embeddedSetIndex >= 0 && dynamicLifecycleResolver(unescapeCmdCaretEscapes(source.slice(embeddedSetIndex)))) {
     return true;
   }
   const invocation = getPowerShellStartProcessInvocation(tokenizeCommandLine(source));
   if (invocation.command) {
-    return isOperatorOnlyGitLifecycleCommand(invocation.command);
+    return lifecycleClassifier(invocation.command);
   }
   return hasGitLifecycleHint(source) &&
     /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b|['"]g['"]\s*\+\s*['"](?:it|h)['"]|^\s*(?:start-process|saps|start)\s+(?:['"]?git(?:\.exe)?['"]?|['"]?gh(?:\.exe)?['"]?))/iu.test(source);
@@ -3113,6 +3131,9 @@ function hasForeignGitHubLifecycleTarget(command, baseCwd, depth = 0, inheritedG
         continue;
       }
       if (!isGhExecutableToken(tokens[0])) {
+        continue;
+      }
+      if (!getRule13GhOperation(tokens)) {
         continue;
       }
       if (effectiveGhRepo.unresolved || effectiveGhHost.unresolved) {
@@ -4870,7 +4891,7 @@ function hasDynamicInterpreterGitSubcommand(segment) {
     if (normalizeAgentValue(call.method) === "unknown" && argumentExpressions) {
       const resolvedArguments = argumentExpressions.map((expression) => evaluateStaticStringExpression(expression, assignments));
       if (resolvedArguments.every((value) => value !== null) &&
-          isReviewGatedCommand([tool, ...resolvedArguments].join(" "))) {
+          isRule13ReviewGatedTokenCommand([tool, ...resolvedArguments])) {
         return true;
       }
     }
@@ -4924,7 +4945,7 @@ function hasDynamicInterpreterGitSubcommand(segment) {
     if (normalizeAgentValue(call.method) === "unknown") {
       const resolvedArguments = elements.slice(1).map((expression) => evaluateStaticStringExpression(expression, assignments));
       if (resolvedArguments.every((value) => value !== null) &&
-          isReviewGatedCommand([tool, ...resolvedArguments].join(" "))) {
+          isRule13ReviewGatedTokenCommand([tool, ...resolvedArguments])) {
         return true;
       }
     }
@@ -6397,7 +6418,8 @@ function hasUnsupportedDirectProcessBoundary(command) {
            /--config-env(?:=|\s)/iu.test(normalizedStage) ||
            /(?:^|\s)-c(?:=|\s)[^;&\r\n]*\balias\./iu.test(normalizedStage));
         const hasCanonicalCommandLocalAlias = hasInlineAliasConfiguration &&
-          !hasCommandLocalGitAliasConfiguration(normalizedStage);
+          (!hasCommandLocalGitAliasConfiguration(normalizedStage) ||
+           isCanonicalRule13GitInlineAliasCommand(normalizedStage));
         const hasConfiguredReviewAlias = hasConfiguredGitReviewLifecycleAlias(normalizedStage, process.cwd());
         const hasConfiguredReadOnlyAlias = isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, process.cwd());
         const hasCanonicalReviewShellAlias = isCanonicalCommandLocalGitShellReviewAlias(tokens);
@@ -6538,21 +6560,18 @@ function isCanonicalRule13EmptyGitCwdStage(stage) {
 
 function isCanonicalLiteralProducerXargsReviewStage(previousStage, stage, tokens) {
   if (normalizeExecutableName(tokens[0] || "") !== "xargs") return false;
-  const producedArgv = getLiteralPrintfArgv(previousStage);
-  if (!producedArgv) return false;
-  const nestedTokens = getNormalizedXargsCommandTokens(tokens);
-  if (nestedTokens.length === 0) return false;
-  const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+  const input = getRule13XargsInputTokens(`${previousStage} | ${stage}`, tokens);
+  if (!input.resolved) return false;
+  const effectiveTokens = reconstructRule13XargsCommandTokens(tokens, input);
+  if (effectiveTokens.length === 0) return false;
+  const nestedExecutable = normalizeExecutableName(effectiveTokens[0] || "");
   if (nestedExecutable === "git" || nestedExecutable === "gh") {
-    return isCanonicalFlatReviewLifecycleTokens([...nestedTokens, ...producedArgv]);
+    return isCanonicalFlatReviewLifecycleTokens(effectiveTokens);
   }
   if (!isShellCommandExecutable(nestedExecutable)) return false;
-  const normalizedStage = normalizeAgentValue(String(stage || ""));
-  if (!/\bxargs\s+-i\{\}\s+(?:sh|bash|zsh)\s+-c\b/u.test(normalizedStage)) return false;
-  const nestedCommand = getShellCommandArgument(nestedTokens);
+  const nestedCommand = getShellCommandArgument(effectiveTokens);
   if (!nestedCommand || /[$`;&|<>()[\]\r\n]/u.test(nestedCommand)) return false;
-  const materialized = nestedCommand.replace(/\{\}/gu, producedArgv.join(" "));
-  return isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(materialized));
+  return isCanonicalFlatReviewLifecycleTokens(tokenizeCommandLine(nestedCommand));
 }
 
 function isCanonicalRule13CommandSubstitutionStage(stage) {
@@ -6649,7 +6668,7 @@ function isCanonicalPowerShellGhRepoMerge(source) {
   const assignment = /^\$env:GH_REPO\s*=\s*(["'])([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\1$/iu.exec(segments[0].trim());
   if (!assignment) return false;
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(segments[1]));
-  return normalizeExecutableName(tokens[0] || "") === "gh" && isReviewGatedCommand(segments[1]);
+  return normalizeExecutableName(tokens[0] || "") === "gh" && Boolean(getRule13GhOperation(tokens));
 }
 
 function isUnownedPowerShellStage(stage, tokens) {
@@ -7262,7 +7281,7 @@ function tokenizeCommandLine(command) {
   return tokens;
 }
 
-function getCmdShellArgument(tokens, materialize = true) {
+function getCmdShellArgument(tokens, materialize = true, dynamicLifecycleResolver = getCmdDynamicLifecycleCommand) {
   let delayedExpansion = false;
   for (let index = 1; index < tokens.length; index += 1) {
     const token = normalizeAgentValue(tokens[index]);
@@ -7276,20 +7295,20 @@ function getCmdShellArgument(tokens, materialize = true) {
     }
     if (token === "/c" || token === "/k") {
       const nestedCommand = stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes(tokens.slice(index + 1).join(" ")));
-      return materialize ? getCmdDynamicLifecycleCommand(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
+      return materialize ? dynamicLifecycleResolver(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
     }
 
     if (token.startsWith("/c") || token.startsWith("/k")) {
       const inlineCommand = tokens[index].slice(2);
       const nestedCommand = stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ")));
-      return materialize ? getCmdDynamicLifecycleCommand(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
+      return materialize ? dynamicLifecycleResolver(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
     }
 
     const inlineSwitchIndex = Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k"));
     if (inlineSwitchIndex > 0) {
       const inlineCommand = tokens[index].slice(inlineSwitchIndex + 2);
       const nestedCommand = stripLeadingCmdCallBuiltins(unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ")));
-      return materialize ? getCmdDynamicLifecycleCommand(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
+      return materialize ? dynamicLifecycleResolver(nestedCommand, delayedExpansion) || nestedCommand : nestedCommand;
     }
   }
 
@@ -7351,6 +7370,19 @@ function splitCmdConditionalStatements(command) {
 }
 
 function getCmdDynamicLifecycleCommand(command, delayedExpansion = true) {
+  return materializeCmdDynamicLifecycleCommand(
+    command,
+    delayedExpansion,
+    (candidate) => isOperatorOnlyGitLifecycleCommand(candidate) ||
+      isDirectCodexDispatch(candidate) || isGhPrMergeCommandLine(candidate) || isGhApiMergeCommandLine(candidate),
+  );
+}
+
+function getRule13CmdDynamicLifecycleCommand(command, delayedExpansion = true) {
+  return materializeCmdDynamicLifecycleCommand(command, delayedExpansion, isRule13DirectReviewGatedCommand);
+}
+
+function materializeCmdDynamicLifecycleCommand(command, delayedExpansion, isLifecycle) {
   const source = String(command || "");
   for (const match of source.matchAll(/\bfor(?:\s+\/[A-Za-z]+)?\s+%%?([A-Za-z])\s+in\s*\(([^)]*)\)\s+do\s+@?%%?\1(?:\.exe)?\s+([^&|\r\n]+)/giu)) {
     const candidates = tokenizeCommandLine(match[2]).map(normalizeExecutableName);
@@ -7370,8 +7402,6 @@ function getCmdDynamicLifecycleCommand(command, delayedExpansion = true) {
   const assignments = new Map();
   let lastSucceeded = true;
   const gitTargetAssignments = new Map();
-  const isLifecycle = (candidate) => isOperatorOnlyGitLifecycleCommand(candidate) ||
-    isDirectCodexDispatch(candidate) || isGhPrMergeCommandLine(candidate) || isGhApiMergeCommandLine(candidate);
   for (const entry of splitCmdConditionalStatements(source)) {
     const shouldExecute = entry.operator === "&&"
       ? lastSucceeded !== false
@@ -7596,6 +7626,116 @@ function getNormalizedXargsCommandTokens(tokens) {
   return unwrapEnvCommandTokens(getXargsCommandTokens(tokens));
 }
 
+function getRule13XargsReplacementMarker(tokens) {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (rawToken === "-I" || normalizedToken === "--replace" || normalizedToken === "-i") {
+      return {
+        enabled: true,
+        marker: stripOuterQuotes(tokens[index + 1] || "{}"),
+      };
+    }
+    if (rawToken.startsWith("-I") && rawToken.length > 2) {
+      return { enabled: true, marker: rawToken.slice(2) };
+    }
+    if (normalizedToken.startsWith("--replace=")) {
+      return { enabled: true, marker: rawToken.slice(rawToken.indexOf("=") + 1) };
+    }
+    if (normalizedToken.startsWith("-i") && rawToken.length > 2) {
+      return { enabled: true, marker: rawToken.slice(2) };
+    }
+    if (!normalizedToken.startsWith("-")) break;
+  }
+  return { enabled: false, marker: "" };
+}
+
+function reconstructRule13XargsCommandTokens(xargsTokens, input) {
+  const nestedTokens = getNormalizedXargsCommandTokens(xargsTokens);
+  if (!input.resolved) return nestedTokens;
+  const replacement = getRule13XargsReplacementMarker(xargsTokens);
+  if (!replacement.enabled || !replacement.marker) {
+    return [...nestedTokens, ...input.tokens];
+  }
+
+  const replacementText = input.tokens.join(" ");
+  return nestedTokens.flatMap((token) => {
+    const value = stripOuterQuotes(token);
+    if (!value.includes(replacement.marker)) return [token];
+    if (value === replacement.marker) return [...input.tokens];
+    return [value.split(replacement.marker).join(replacementText)];
+  });
+}
+
+function serializeRule13CommandTokens(tokens) {
+  return tokens.map((token) => JSON.stringify(stripOuterQuotes(token))).join(" ");
+}
+
+function getRule13XargsInputTokens(source, xargsTokens) {
+  const pipelineStages = splitCommandPipelineStages(source);
+  const comparableXargsTokens = xargsTokens.map((token) => stripOuterQuotes(token));
+  const xargsStageIndex = pipelineStages.findIndex((stage) => {
+    const stageTokens = tokenizeCommandLine(stage).map((token) => stripOuterQuotes(token));
+    return stageTokens.length === comparableXargsTokens.length &&
+      stageTokens.every((token, index) => token === comparableXargsTokens[index]);
+  });
+  if (xargsStageIndex <= 0) {
+    return { resolved: false, tokens: [] };
+  }
+
+  const producerTokens = tokenizeCommandLine(pipelineStages[xargsStageIndex - 1]);
+  const producer = normalizeExecutableName(producerTokens[0] || "");
+  let output = "";
+  if (producer === "echo") {
+    let valueIndex = 1;
+    while (valueIndex < producerTokens.length && ["-e", "-E", "-n"].includes(stripOuterQuotes(producerTokens[valueIndex]))) {
+      valueIndex += 1;
+    }
+    output = producerTokens.slice(valueIndex).map((token) => stripOuterQuotes(token)).join(" ");
+  } else if (producer === "printf") {
+    let formatIndex = 1;
+    if (stripOuterQuotes(producerTokens[formatIndex] || "") === "--") {
+      formatIndex += 1;
+    }
+    if (formatIndex >= producerTokens.length) {
+      return { resolved: false, tokens: [] };
+    }
+    const format = stripOuterQuotes(producerTokens[formatIndex]);
+    const values = producerTokens.slice(formatIndex + 1).map((token) => stripOuterQuotes(token));
+    let valueIndex = 0;
+    output = format.replace(/%%|%s/gu, (placeholder) => {
+      if (placeholder === "%%") {
+        return "%";
+      }
+      const value = values[valueIndex] || "";
+      valueIndex += 1;
+      return value;
+    });
+    if (format.replace(/%%|%s/gu, "").includes("%")) {
+      return { resolved: false, tokens: [] };
+    }
+  } else {
+    return { resolved: false, tokens: [] };
+  }
+
+  if (/[$\x60]/u.test(output)) {
+    return { resolved: false, tokens: [] };
+  }
+  const decodedOutput = output
+    .replace(/\\r\\n|\\n|\\r/gu, "\n")
+    .replace(/\\t/gu, "\t")
+    .replace(/\\0([0-7]{0,3})/gu, (_match, octal) => String.fromCharCode(octal ? Number.parseInt(octal, 8) : 0))
+    .replace(/\\\\/gu, "\\");
+  const usesNullDelimiter = xargsTokens.slice(1).some((token) => {
+    const option = normalizeAgentValue(stripOuterQuotes(token));
+    return option === "-0" || option === "--null";
+  });
+  const inputTokens = usesNullDelimiter
+    ? decodedOutput.split("\0").filter((value) => value !== "")
+    : tokenizeCommandLine(decodedOutput.trim());
+  return { resolved: true, tokens: inputTokens };
+}
+
 function hasShellWrappedXargsLifecycleCommand(tokens, source, reviewOnly) {
   const executable = normalizeExecutableName(tokens[0] || "");
   if (!isShellCommandExecutable(executable)) {
@@ -7608,47 +7748,91 @@ function hasShellWrappedXargsLifecycleCommand(tokens, source, reviewOnly) {
   }
 
   return reviewOnly
-    ? isReviewGatedCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, true)
+    ? isRule13DirectReviewGatedCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, true)
     : isOperatorOnlyGitLifecycleCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, false);
 }
 
 function getReviewGatedXargsCommandTargets(tokens, source, baseCwd, depth, inheritedGitEnvContext = {}) {
   const nestedTokens = getNormalizedXargsCommandTokens(tokens);
-  const lifecycleHint = hasXargsLifecycleArgumentHint(source, true);
-  const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+  const input = getRule13XargsInputTokens(source, tokens);
+  const effectiveNestedTokens = reconstructRule13XargsCommandTokens(tokens, input);
+  const nestedExecutable = normalizeExecutableName(effectiveNestedTokens[0] || "");
   const fallbackTarget = baseCwd || process.cwd();
 
   if (nestedExecutable === "git") {
-    const subcommandIndex = findGitSubcommandIndex(nestedTokens);
+    const subcommandIndex = findGitSubcommandIndex(effectiveNestedTokens);
     const subcommand = subcommandIndex >= 0
-      ? getGitSubcommandName(nestedTokens, subcommandIndex)
+      ? getGitSubcommandName(effectiveNestedTokens, subcommandIndex)
       : "";
-    if (subcommandIndex < 0 || isReviewGatedGitSubcommand(subcommand, nestedTokens, subcommandIndex) || lifecycleHint) {
-      const targetCwd = getGitGlobalCwdOption(nestedTokens, 0, baseCwd, inheritedGitEnvContext) || fallbackTarget;
-      return { targetCwds: [targetCwd || "\0unresolved-xargs-git-target"], requiresBaseCwd: false, matched: true };
+    const hasExplicitTargetOption = effectiveNestedTokens.slice(1).some((token) => {
+      const rawToken = stripOuterQuotes(token);
+      const normalizedToken = normalizeAgentValue(rawToken);
+      return rawToken === "-C" || (rawToken.startsWith("-C") && rawToken.length > 2) ||
+        normalizedToken === "--git-dir" || normalizedToken.startsWith("--git-dir=") ||
+        normalizedToken === "--work-tree" || normalizedToken.startsWith("--work-tree=");
+    });
+    const hasInheritedTarget = ["gitDir", "workTree", "targetCwd"].some((name) =>
+      typeof inheritedGitEnvContext?.[name] === "string" && inheritedGitEnvContext[name] !== "");
+    const resolvedTargetCwd = getGitGlobalCwdOption(effectiveNestedTokens, 0, baseCwd, inheritedGitEnvContext);
+    const targetCwd = resolvedTargetCwd || (!hasExplicitTargetOption && !hasInheritedTarget ? fallbackTarget : "");
+    if (subcommandIndex >= 0 && isReviewGatedGitSubcommand(subcommand, effectiveNestedTokens, subcommandIndex)) {
+      return {
+        targetCwds: [targetCwd || "\0unresolved-xargs-git-target"],
+        requiresBaseCwd: false,
+        operations: [`git ${normalizeAgentValue(subcommand)}`],
+        unresolved: !targetCwd,
+        reconstructedCommands: [],
+        matched: true,
+      };
+    }
+    if (subcommandIndex < 0 && !input.resolved) {
+      return {
+        targetCwds: ["\0unresolved-xargs-review-target"],
+        requiresBaseCwd: false,
+        operations: [],
+        unresolved: true,
+        reconstructedCommands: [],
+        matched: true,
+      };
     }
   }
 
   if (nestedExecutable === "gh") {
-    if (nestedTokens.length < 2 ||
-        isGhPrMergeTokenCommand(nestedTokens) ||
-        isGhApiMergeCommand(nestedTokens) ||
-        isGhApiRefWriteCommand(nestedTokens) ||
-        hasGhLifecycleArgumentHint(source)) {
-      return { targetCwds: [fallbackTarget], requiresBaseCwd: false, matched: true };
+    const ghOperation = getRule13GhOperation(effectiveNestedTokens);
+    if (ghOperation) {
+      return {
+        targetCwds: [fallbackTarget],
+        requiresBaseCwd: false,
+        operations: [ghOperation],
+        unresolved: false,
+        reconstructedCommands: [serializeRule13CommandTokens(effectiveNestedTokens)],
+        matched: true,
+      };
+    }
+    if (effectiveNestedTokens.length < 2 && !input.resolved) {
+      return {
+        targetCwds: ["\0unresolved-xargs-review-target"],
+        requiresBaseCwd: false,
+        operations: [],
+        unresolved: true,
+        reconstructedCommands: [],
+        matched: true,
+      };
     }
   }
 
   if (isShellCommandExecutable(nestedExecutable)) {
-    const nestedCommand = getShellCommandArgument(nestedTokens);
+    const nestedCommand = getShellCommandArgument(effectiveNestedTokens);
     if (nestedCommand) {
       const nestedTargets = getReviewGatedCommandTargets(nestedCommand, baseCwd, depth + 1, inheritedGitEnvContext);
       if (nestedTargets.targetCwds.length > 0 || nestedTargets.requiresBaseCwd) {
         return { ...nestedTargets, matched: true };
       }
 
-      if (lifecycleHint) {
-        const materializedCommand = materializeXargsLifecyclePlaceholders(nestedCommand);
+      if (input.resolved && /\{\}|\$@/u.test(nestedCommand)) {
+        const replacement = input.tokens.map((token) =>
+          /\s/u.test(token) ? JSON.stringify(token) : token).join(" ");
+        const materializedCommand = materializeXargsLifecyclePlaceholders(nestedCommand, replacement);
         const materializedTargets = getReviewGatedCommandTargets(materializedCommand, baseCwd, depth + 1, inheritedGitEnvContext);
         if (materializedTargets.targetCwds.length > 0 || materializedTargets.requiresBaseCwd) {
           return { ...materializedTargets, matched: true };
@@ -7657,23 +7841,34 @@ function getReviewGatedXargsCommandTargets(tokens, source, baseCwd, depth, inher
     }
   }
 
-  if (isGitTokenLifecycleCommand(nestedTokens, true) ||
-      isGhTokenLifecycleCommand(nestedTokens) ||
-      hasShellWrappedXargsLifecycleCommand(nestedTokens, source, true) ||
-      hasUnresolvedXargsLifecycleCommand(nestedTokens) ||
-      lifecycleHint) {
-    return { targetCwds: ["\0unresolved-xargs-review-target"], requiresBaseCwd: false, matched: true };
+  if (!input.resolved && hasUnresolvedXargsLifecycleCommand(nestedTokens)) {
+    return {
+      targetCwds: ["\0unresolved-xargs-review-target"],
+      requiresBaseCwd: false,
+      operations: [],
+      unresolved: true,
+      reconstructedCommands: [],
+      matched: true,
+    };
   }
 
-  return { targetCwds: [], requiresBaseCwd: false, matched: false };
+  return {
+    targetCwds: [],
+    requiresBaseCwd: false,
+    operations: [],
+    unresolved: false,
+    reconstructedCommands: [],
+    matched: false,
+  };
 }
 
-function materializeXargsLifecyclePlaceholders(command) {
+function materializeXargsLifecyclePlaceholders(command, replacementValue = "commit") {
+  const replacement = String(replacementValue || "");
   return String(command || "")
-    .replace(/(["'])\{\}\1/gu, "commit")
-    .replace(/\{\}/gu, "commit")
-    .replace(/(["'])\$@\1/gu, "commit")
-    .replace(/\$@/gu, "commit");
+    .replace(/(["'])\{\}\1/gu, replacement)
+    .replace(/\{\}/gu, replacement)
+    .replace(/(["'])\$@\1/gu, replacement)
+    .replace(/\$@/gu, replacement);
 }
 
 function hasXargsLifecycleArgumentHint(source, reviewOnly) {
@@ -9973,7 +10168,7 @@ function isCanonicalReadOnlyGitResolvedTokens(tokens, subcommandIndex) {
     (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex));
 }
 
-function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
+function getCanonicalGitInlineAliasResolvedTokens(tokens, subcommandIndex) {
   const invokedAlias = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex] || ""));
   for (let index = 1; index < subcommandIndex; index += 1) {
     const raw = stripOuterQuotes(String(tokens[index] || ""));
@@ -9985,11 +10180,36 @@ function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
     const match = /^alias\.([A-Za-z0-9._-]+)=([\s\S]+)$/iu.exec(String(configuration || "").trim());
     if (!match || normalizeAgentValue(match[1]) !== invokedAlias) continue;
     const aliasTokens = tokenizeCommandLine(String(match[2] || "").trim());
-    if (aliasTokens.length === 0 || String(match[2] || "").trim().startsWith("!")) return false;
-    const resolvedTokens = ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
-    return isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
+    if (aliasTokens.length === 0 || String(match[2] || "").trim().startsWith("!")) return [];
+    return ["git", ...aliasTokens, ...tokens.slice(subcommandIndex + 1)];
   }
-  return false;
+  return [];
+}
+
+function isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex) {
+  const resolvedTokens = getCanonicalGitInlineAliasResolvedTokens(tokens, subcommandIndex);
+  return resolvedTokens.length > 0 && isCanonicalReadOnlyGitResolvedTokens(resolvedTokens, 1);
+}
+
+function isCanonicalReviewGatedGitInlineAliasInvocation(tokens, subcommandIndex) {
+  const resolvedTokens = getCanonicalGitInlineAliasResolvedTokens(tokens, subcommandIndex);
+  if (resolvedTokens.length === 0 || hasGitExternalProcessConfiguration(resolvedTokens)) return false;
+  const resolvedSubcommand = getGitSubcommandName(resolvedTokens, 1);
+  return isReviewGatedGitSubcommand(resolvedSubcommand, resolvedTokens, 1);
+}
+
+function isCanonicalRule13GitInlineAliasCommand(command) {
+  const segments = splitCommandSegments(String(command || ""));
+  if (segments.length !== 1) return false;
+  const stages = splitCommandPipelineStages(segments[0]);
+  if (stages.length !== 1) return false;
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stages[0])));
+  if (!isGitExecutableToken(stripOuterQuotes(tokens[0] || ""))) return false;
+  const subcommandIndex = findGitSubcommandIndex(tokens);
+  if (subcommandIndex < 1) return false;
+  const resolvedTokens = getCanonicalGitInlineAliasResolvedTokens(tokens, subcommandIndex);
+  if (resolvedTokens.length === 0 || hasGitExternalProcessConfiguration(resolvedTokens)) return false;
+  return ["commit", "merge"].includes(getGitSubcommandName(resolvedTokens, 1));
 }
 
 function isCanonicalConfiguredReadOnlyGitAliasInvocation(tokens, baseCwd) {
@@ -10189,7 +10409,8 @@ function classifyStaticProcessInvocation(tool, resolvedArguments, rawBoundary = 
       (subcommand === "tag" && isReadOnlyGitTagCommand(tokens, subcommandIndex)) ||
       (subcommand === "worktree" && isReadOnlyGitWorktreeCommand(tokens, subcommandIndex)) ||
       isCanonicalReadOnlyGitInlineAliasInvocation(tokens, subcommandIndex);
-    const reviewGatedSubcommand = isReviewGatedCommand(tokens.join(" "));
+    const reviewGatedSubcommand = isReviewGatedGitSubcommand(subcommand, tokens, subcommandIndex) ||
+      isCanonicalReviewGatedGitInlineAliasInvocation(tokens, subcommandIndex);
     if (subcommandIndex <= 0 || !hasOnlyCanonicalGitGlobalArguments(tokens, subcommandIndex) || canLaunchExternalProcess) {
       return INTERPRETER_PROCESS_BOUNDARY.DENY_UNOWNED_PROCESS;
     }
@@ -10861,11 +11082,42 @@ function getReviewStateHeadSha(reviewStateEntry) {
   return "";
 }
 
-function resolveReviewGateContexts(toolInput, command) {
+function resolveRule13ReviewGate(toolInput, command) {
+  const toolInputCwd = typeof toolInput?.cwd === "string" ? toolInput.cwd : "";
+  const baseCwd = toolInputCwd || process.cwd();
+  const commandTargets = getReviewGatedCommandTargets(command, baseCwd);
+  const operations = [...new Set(commandTargets.operations || [])].sort();
+
+  if (operations.length === 0 && !commandTargets.unresolved) {
+    return { kind: "not_review_gated", operation: "", contexts: [] };
+  }
+
+  const operation = operations.join(" + ");
+  const foreignTargetCommands = [...new Set([command, ...(commandTargets.reconstructedCommands || [])])];
+  if (operations.length > 0 && foreignTargetCommands.some((candidate) =>
+    hasForeignGitHubLifecycleTarget(candidate, baseCwd))) {
+    return { kind: "foreign_target", operation, contexts: [] };
+  }
+
+  const hasUnresolvedTarget = commandTargets.targetCwds.some((targetCwd) =>
+    typeof targetCwd !== "string" || targetCwd === "" || targetCwd.includes("\0"));
+  if (operations.length === 0 || commandTargets.unresolved || hasUnresolvedTarget) {
+    return { kind: "unresolved", operation, contexts: [] };
+  }
+
+  const contexts = resolveReviewGateContexts(toolInput, command, commandTargets);
+  if (contexts === null) {
+    return { kind: "unresolved", operation, contexts: [] };
+  }
+
+  return { kind: "review_gated", operation, contexts };
+}
+
+function resolveReviewGateContexts(toolInput, command, resolvedCommandTargets = null) {
   const toolInputCwd = typeof toolInput?.cwd === "string" ? toolInput.cwd : "";
   const baseCwd = toolInputCwd || process.cwd();
   const baseRepoRoot = resolveGitTopLevel(baseCwd);
-  const commandTargets = getReviewGatedCommandTargets(command, baseCwd);
+  const commandTargets = resolvedCommandTargets || getReviewGatedCommandTargets(command, baseCwd);
   const candidates = commandTargets.targetCwds.length > 0
     ? [
         ...commandTargets.targetCwds,
@@ -10967,6 +11219,9 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
     return {
       targetCwds: [...(inheritedTarget ? [inheritedTarget] : []), "\0unresolved-review-target-depth"],
       requiresBaseCwd: true,
+      operations: [],
+      unresolved: true,
+      reconstructedCommands: [],
     };
   }
 
@@ -10977,17 +11232,31 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
 
   const targetCwds = [];
   let requiresBaseCwd = false;
+  const operations = [];
+  const reconstructedCommands = [];
+  let unresolved = false;
+  const mergeTargetEvidence = (nestedTargets) => {
+    targetCwds.push(...nestedTargets.targetCwds);
+    requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+    operations.push(...(nestedTargets.operations || []));
+    reconstructedCommands.push(...(nestedTargets.reconstructedCommands || []));
+    unresolved = unresolved || Boolean(nestedTargets.unresolved);
+  };
   if (hasConservativeProtectedCmdBoundary(command)) {
     targetCwds.push("\0conservative-cmd-review-target");
+    unresolved = true;
   }
-  if (hasCommandLocalGitAliasConfiguration(command)) {
+  if (hasCommandLocalGitAliasConfiguration(command) && !isCanonicalRule13GitInlineAliasCommand(command)) {
     targetCwds.push("\0unresolved-command-local-git-alias");
+    unresolved = true;
   }
   if (hasPersistentGitTargetMutation(command)) {
     targetCwds.push("\0unresolved-persistent-git-environment");
+    unresolved = true;
   }
   if (hasUnresolvedChildProcessGitTarget(command)) {
     targetCwds.push("\0unresolved-child-process-git-target");
+    unresolved = true;
   }
   let parsedSeparatedFunctionWrapper = false;
   let parsedXargsWrapper = false;
@@ -10995,26 +11264,17 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
   let effectiveBaseCwd = baseCwd || process.cwd();
   const controlFlowExecutionStack = [];
   const materializedCommand = materializeConstantExecutableSubstitutions(command);
-  if (materializedCommand !== command && isReviewGatedCommand(materializedCommand)) {
+  if (materializedCommand !== command) {
     const materializedTargets = getReviewGatedCommandTargets(materializedCommand, baseCwd, depth + 1, inheritedGitEnvContext);
-    targetCwds.push(...materializedTargets.targetCwds);
-    requiresBaseCwd = requiresBaseCwd || materializedTargets.requiresBaseCwd;
+    mergeTargetEvidence(materializedTargets);
   }
   for (const indirectCommand of getConstantShellStdinCommands(command)) {
-    if (!isReviewGatedCommand(indirectCommand)) {
-      continue;
-    }
     const indirectTargets = getReviewGatedCommandTargets(indirectCommand, baseCwd, depth + 1, inheritedGitEnvContext);
-    targetCwds.push(...indirectTargets.targetCwds);
-    requiresBaseCwd = requiresBaseCwd || indirectTargets.requiresBaseCwd;
+    mergeTargetEvidence(indirectTargets);
   }
   for (const heredocBody of getExecutableHeredocBodies(command)) {
-    if (!isReviewGatedCommand(heredocBody) && !hasConfiguredGitReviewLifecycleAlias(heredocBody, baseCwd)) {
-      continue;
-    }
     const nestedTargets = getReviewGatedCommandTargets(heredocBody, baseCwd, depth + 1, inheritedGitEnvContext);
-    targetCwds.push(...nestedTargets.targetCwds);
-    requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+    mergeTargetEvidence(nestedTargets);
   }
   for (const commandSegment of splitCommandSegmentsWithSeparators(command)) {
     const segment = commandSegment.segment;
@@ -11029,39 +11289,35 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
       const executableStage = unwrapShellExecutableControlFlowPrefix(stage);
       if (executableStage && executableStage !== stage.trim()) {
         const nestedTargets = getReviewGatedCommandTargets(executableStage, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
 
       const powerShellStage = unwrapPowerShellCommandWrapper(stage);
       if (powerShellStage !== stage.trim()) {
         const nestedTargets = getReviewGatedCommandTargets(powerShellStage, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
 
       const groupedStage = unwrapShellGroupingWrapper(powerShellStage);
       if (groupedStage !== powerShellStage.trim()) {
         const nestedTargets = getReviewGatedCommandTargets(groupedStage, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
 
       const normalizedStage = groupedStage;
       for (const substitutionCommand of getShellCommandSubstitutionCommands(normalizedStage)) {
-        if (!isReviewGatedCommand(substitutionCommand)) {
-          continue;
-        }
-
         const substitutionTargets = getReviewGatedCommandTargets(substitutionCommand, segmentBaseCwd, depth + 1, inheritedGitEnvContext);
         if (substitutionTargets.targetCwds.length === 0 && !substitutionTargets.requiresBaseCwd) {
-          targetCwds.push(segmentBaseCwd || process.cwd());
+          if ((substitutionTargets.operations || []).length > 0 || substitutionTargets.unresolved) {
+            targetCwds.push(segmentBaseCwd || process.cwd());
+            operations.push(...(substitutionTargets.operations || []));
+            unresolved = unresolved || Boolean(substitutionTargets.unresolved);
+          }
         } else {
-          targetCwds.push(...substitutionTargets.targetCwds);
-          requiresBaseCwd = requiresBaseCwd || substitutionTargets.requiresBaseCwd;
+          mergeTargetEvidence(substitutionTargets);
         }
       }
 
@@ -11074,8 +11330,7 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
       const unwrappedExecution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(rawTokens));
       if (unwrappedExecution.nestedCommand) {
         const nestedTargets = getReviewGatedCommandTargets(unwrappedExecution.nestedCommand, gitCommandBaseCwd, depth + 1, gitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
       const tokens = unwrappedExecution.tokens;
@@ -11088,25 +11343,26 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
       if (forwardingFunctionCommand) {
         parsedSeparatedFunctionWrapper = true;
         const nestedTargets = getReviewGatedCommandTargets(forwardingFunctionCommand, gitCommandBaseCwd, depth + 1, gitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
 
       if (executable === "cmd" || executable === "cmd.exe") {
-        const nestedCommand = getCmdShellArgument(tokens);
+        const nestedCommand = getCmdShellArgument(tokens, true, getRule13CmdDynamicLifecycleCommand);
         const rawNestedCommand = getCmdShellArgument(tokens, false);
         const hasUnsupportedCmdState = /\bsetlocal\s+(?:Enable|Disable)DelayedExpansion\b/iu.test(rawNestedCommand) ||
           /\bif\s+(?:not\s+)?defined\b/iu.test(rawNestedCommand) ||
           (/&&[\s\S]*\|\||\|\|[\s\S]*&&/u.test(rawNestedCommand) &&
             !/^(?:\s*set\s+[^&|]+\s*(?:&&|\|\|)\s*)+/iu.test(rawNestedCommand));
-        if (hasUnsupportedCmdState && nestedCommand && isReviewGatedCommand(nestedCommand)) {
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1, gitEnvContext);
+        if (hasUnsupportedCmdState &&
+            ((nestedTargets.operations || []).length > 0 || nestedTargets.unresolved)) {
           targetCwds.push("\0unresolved-cmd-review-target");
+          operations.push(...(nestedTargets.operations || []));
+          unresolved = true;
           continue;
         }
-        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1, gitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
 
@@ -11116,18 +11372,23 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
         const powerShellCommandBaseCwd = initialWorkingDirectory
           ? resolveGitCwdOption(gitCommandBaseCwd, "", initialWorkingDirectory)
           : gitCommandBaseCwd;
-        if (initialWorkingDirectory && !powerShellCommandBaseCwd &&
-            (isReviewGatedCommand(nestedCommand) || hasConfiguredGitReviewLifecycleAlias(nestedCommand, gitCommandBaseCwd))) {
+        const nestedBaseCwd = powerShellCommandBaseCwd || gitCommandBaseCwd;
+        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", nestedBaseCwd, depth + 1, gitEnvContext);
+        const powerShellTargets = [nestedTargets];
+        for (const blockBody of getBraceBlockBodies(nestedCommand)) {
+          powerShellTargets.push(getReviewGatedCommandTargets(blockBody, nestedBaseCwd, depth + 1, gitEnvContext));
+        }
+        if (initialWorkingDirectory && !powerShellCommandBaseCwd && powerShellTargets.some((targetEvidence) =>
+          (targetEvidence.operations || []).length > 0 || targetEvidence.unresolved)) {
           targetCwds.push("\0unresolved-powershell-working-directory");
+          for (const targetEvidence of powerShellTargets) {
+            operations.push(...(targetEvidence.operations || []));
+          }
+          unresolved = true;
           continue;
         }
-        const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", powerShellCommandBaseCwd, depth + 1, gitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
-        for (const blockBody of getBraceBlockBodies(nestedCommand)) {
-          const blockTargets = getReviewGatedCommandTargets(blockBody, powerShellCommandBaseCwd, depth + 1, gitEnvContext);
-          targetCwds.push(...blockTargets.targetCwds);
-          requiresBaseCwd = requiresBaseCwd || blockTargets.requiresBaseCwd;
+        for (const targetEvidence of powerShellTargets) {
+          mergeTargetEvidence(targetEvidence);
         }
         continue;
       }
@@ -11135,8 +11396,7 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
       if (isShellCommandExecutable(executable)) {
         const nestedCommand = getShellCommandArgument(tokens);
         const nestedTargets = getReviewGatedCommandTargets(nestedCommand || "", gitCommandBaseCwd, depth + 1, gitEnvContext);
-        targetCwds.push(...nestedTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+        mergeTargetEvidence(nestedTargets);
         continue;
       }
 
@@ -11154,47 +11414,53 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
         );
         if (nestedTargets.targetCwds.length === 0 &&
             !nestedTargets.requiresBaseCwd &&
-            hasPowerShellStartProcessLifecycleHint(normalizedStage)) {
+            (nestedTargets.operations || []).length === 0 &&
+            hasPowerShellStartProcessLifecycleHint(
+              normalizedStage,
+              getRule13CmdDynamicLifecycleCommand,
+              isRule13DirectReviewGatedCommand,
+            )) {
           targetCwds.push(startProcessBaseCwd || "\0unresolved-start-process-working-directory");
+          unresolved = true;
         } else {
-          targetCwds.push(...nestedTargets.targetCwds);
-          requiresBaseCwd = requiresBaseCwd || nestedTargets.requiresBaseCwd;
+          mergeTargetEvidence(nestedTargets);
         }
         continue;
       }
 
       if (hasDynamicInterpreterGitSubcommand(normalizedStage)) {
         targetCwds.push("\0unresolved-interpreter-review-target");
+        unresolved = true;
         continue;
       }
-      const interpreterCommands = getInterpreterLiteralGitCommands(normalizedStage, tokens)
-        .filter((interpreterCommand) => isReviewGatedCommand(interpreterCommand));
+      const interpreterCommands = getInterpreterLiteralGitCommands(normalizedStage, tokens);
       if (interpreterCommands.length > 0) {
         for (const interpreterCommand of interpreterCommands) {
           const interpreterTargets = getReviewGatedCommandTargets(interpreterCommand, gitCommandBaseCwd, depth + 1, gitEnvContext);
-          targetCwds.push(...interpreterTargets.targetCwds);
-          requiresBaseCwd = requiresBaseCwd || interpreterTargets.requiresBaseCwd;
+          mergeTargetEvidence(interpreterTargets);
         }
         continue;
       }
       if (hasInterpreterReviewGatedGitLifecycleCommand(normalizedStage, tokens)) {
         targetCwds.push("\0unresolved-interpreter-review-target");
+        unresolved = true;
         continue;
       }
 
       if (executable === "xargs" || executable === "xargs.exe") {
         const xargsTargets = getReviewGatedXargsCommandTargets(tokens, segment, gitCommandBaseCwd, depth, gitEnvContext);
+        parsedXargsWrapper = true;
         if (xargsTargets.matched) {
-          parsedXargsWrapper = true;
-          targetCwds.push(...xargsTargets.targetCwds);
-          requiresBaseCwd = requiresBaseCwd || xargsTargets.requiresBaseCwd;
+          mergeTargetEvidence(xargsTargets);
         }
         continue;
       }
 
       if (isGhExecutableToken(stripOuterQuotes(tokens[0]))) {
-        if (isGhPrMergeTokenCommand(tokens) || isGhApiMergeCommand(tokens) || isGhApiRefWriteCommand(tokens)) {
+        const ghOperation = getRule13GhOperation(tokens);
+        if (ghOperation) {
           targetCwds.push(gitCommandBaseCwd || process.cwd());
+          operations.push(ghOperation);
         }
         continue;
       }
@@ -11210,21 +11476,28 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
 
       const rawGitSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[gitSubcommandIndex]));
       const gitBaseCwd = getGitGlobalCwdOption(tokens, 0, gitCommandBaseCwd, gitEnvContext) || gitCommandBaseCwd || process.cwd();
+      const inlineAliasTokens = getCanonicalGitInlineAliasResolvedTokens(tokens, gitSubcommandIndex);
       const configuredAliasValue = getConfiguredGitAliasValue(gitBaseCwd, rawGitSubcommand);
       if (configuredAliasValue && configuredAliasValue.trim().startsWith("!")) {
         const aliasTargets = getReviewGatedCommandTargets(configuredAliasValue.trim().slice(1), gitBaseCwd, depth + 1, gitEnvContext);
-        if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
-          targetCwds.push("\0unresolved-configured-git-alias");
-        } else {
-          targetCwds.push(...aliasTargets.targetCwds);
-          requiresBaseCwd = requiresBaseCwd || aliasTargets.requiresBaseCwd;
+        if ((aliasTargets.operations || []).length > 0 || aliasTargets.unresolved) {
+          if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
+            targetCwds.push("\0unresolved-configured-git-alias");
+            operations.push(...(aliasTargets.operations || []));
+            unresolved = true;
+          } else {
+            mergeTargetEvidence(aliasTargets);
+          }
         }
         continue;
       }
 
-      const gitSubcommand = getConfiguredGitAliasSubcommand(configuredAliasValue) ||
-        getGitSubcommandName(tokens, gitSubcommandIndex);
-      if (!isReviewGatedGitSubcommand(gitSubcommand, tokens, gitSubcommandIndex)) {
+      const reviewTokens = inlineAliasTokens.length > 0 ? inlineAliasTokens : tokens;
+      const reviewSubcommandIndex = inlineAliasTokens.length > 0 ? 1 : gitSubcommandIndex;
+      const gitSubcommand = inlineAliasTokens.length > 0
+        ? getGitSubcommandName(reviewTokens, reviewSubcommandIndex)
+        : getConfiguredGitAliasSubcommand(configuredAliasValue) || getGitSubcommandName(tokens, gitSubcommandIndex);
+      if (!isReviewGatedGitSubcommand(gitSubcommand, reviewTokens, reviewSubcommandIndex)) {
         continue;
       }
 
@@ -11233,15 +11506,17 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
         const aliasTargets = getReviewGatedCommandTargets(shellAliasCommand, gitBaseCwd, depth + 1, gitEnvContext);
         if (aliasTargets.targetCwds.length === 0 && !aliasTargets.requiresBaseCwd) {
           targetCwds.push("\0unresolved-git-alias");
+          operations.push(...(aliasTargets.operations || []));
+          unresolved = true;
           continue;
         }
 
-        targetCwds.push(...aliasTargets.targetCwds);
-        requiresBaseCwd = requiresBaseCwd || aliasTargets.requiresBaseCwd;
+        mergeTargetEvidence(aliasTargets);
         continue;
       }
 
       targetCwds.push(gitBaseCwd);
+      operations.push(`git ${normalizeAgentValue(gitSubcommand)}`);
     }
 
     const cwdChange = getShellCwdChange(segment, segmentBaseCwd);
@@ -11266,11 +11541,16 @@ function getReviewGatedCommandTargets(command, baseCwd, depth = 0, inheritedGitE
     updateShellControlFlowDepthExecution(controlFlowExecutionStack, segment, commandSegment.separatorAfter);
   }
 
-  if (targetCwds.length > 0 && hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper, parsedXargsWrapper)) {
-    requiresBaseCwd = true;
+  if (hasUnparsedBaseScopedReviewGatedCommand(command, parsedSeparatedFunctionWrapper, parsedXargsWrapper)) {
+    operations.push("git lifecycle");
+    if (targetCwds.length > 0) {
+      requiresBaseCwd = true;
+    } else {
+      targetCwds.push(baseCwd || process.cwd());
+    }
   }
 
-  return { targetCwds, requiresBaseCwd };
+  return { targetCwds, requiresBaseCwd, operations, unresolved, reconstructedCommands };
 }
 
 function hasCommandLocalGitAliasConfiguration(command) {
@@ -12733,7 +13013,7 @@ function getForwardingFunctionInvocationCommand(tokens, functions) {
 
   const callArguments = tokens.slice(1).join(" ");
   const nestedCommand = body.replace(/["']?\$@["']?/gu, callArguments).trim();
-  return nestedCommand && isReviewGatedCommand(nestedCommand) ? nestedCommand : "";
+  return nestedCommand;
 }
 
 function getShellCommandSubstitutionCommands(stage) {
@@ -12933,7 +13213,7 @@ function getExecutedShellArrayBodies(command) {
 }
 
 function hasShellArrayReviewGatedCommand(command) {
-  return getExecutedShellArrayBodies(command).some((body) => isReviewGatedCommand(body));
+  return getExecutedShellArrayBodies(command).some((body) => isRule13DirectReviewGatedCommand(body));
 }
 
 function hasShellArrayDirectCodexDispatch(command, depth) {
@@ -13055,6 +13335,103 @@ function isGitExecutableToken(token) {
 function isGhExecutableToken(token) {
   const normalized = normalizeAgentValue(token).replace(/\\/g, "/");
   return normalized === "gh" || normalized === "gh.exe" || normalized.endsWith("/gh") || normalized.endsWith("/gh.exe");
+}
+
+function isRule13ReviewGatedTokenCommand(tokens) {
+  const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokens));
+  if (execution.nestedCommand || execution.tokens.length === 0) {
+    return false;
+  }
+
+  const effectiveTokens = execution.tokens;
+  if (isGitExecutableToken(stripOuterQuotes(effectiveTokens[0]))) {
+    const subcommandIndex = findGitSubcommandIndex(effectiveTokens);
+    if (subcommandIndex < 0) return false;
+    const subcommand = getGitSubcommandName(effectiveTokens, subcommandIndex);
+    return isReviewGatedGitSubcommand(subcommand, effectiveTokens, subcommandIndex);
+  }
+
+  return isGhExecutableToken(stripOuterQuotes(effectiveTokens[0])) && Boolean(getRule13GhOperation(effectiveTokens));
+}
+
+function isRule13DirectReviewGatedCommand(command) {
+  return splitCommandSegments(String(command || "")).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) => {
+      const normalizedStage = unwrapPowerShellCommandWrapper(stage);
+      const execution = unwrapReviewGateExecutionTokens(unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage)));
+      return execution.nestedCommand
+        ? isRule13DirectReviewGatedCommand(execution.nestedCommand)
+        : isRule13ReviewGatedTokenCommand(execution.tokens);
+    }));
+}
+
+function findRule13GhPositionalIndex(tokens, startIndex, valueOptions, attachedValuePrefixes = []) {
+  for (let index = startIndex; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(rawToken);
+    if (normalizedToken === "--") {
+      return index + 1 < tokens.length ? index + 1 : -1;
+    }
+    if (!normalizedToken.startsWith("-")) {
+      return index;
+    }
+    if (normalizedToken.includes("=") || attachedValuePrefixes.some((prefix) =>
+      normalizedToken.startsWith(prefix) && normalizedToken.length > prefix.length)) {
+      continue;
+    }
+    if (valueOptions.has(normalizedToken)) {
+      index += 1;
+    }
+  }
+  return -1;
+}
+
+function getRule13GhOperation(tokens) {
+  if (!Array.isArray(tokens) || tokens.length === 0 || !isGhExecutableToken(stripOuterQuotes(tokens[0]))) {
+    return "";
+  }
+
+  const globalValueOptions = new Set(["-r", "--repo", "--hostname", "--config"]);
+  const commandIndex = findRule13GhPositionalIndex(tokens, 1, globalValueOptions, ["-r"]);
+  if (commandIndex < 0) {
+    return "";
+  }
+
+  const command = normalizeAgentValue(stripOuterQuotes(tokens[commandIndex]));
+  if (command === "pr") {
+    const subcommandIndex = findRule13GhPositionalIndex(tokens, commandIndex + 1, globalValueOptions, ["-r"]);
+    return subcommandIndex >= 0 && normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex])) === "merge"
+      ? "gh pr merge"
+      : "";
+  }
+
+  if (command !== "api") {
+    return "";
+  }
+
+  const apiValueOptions = new Set([
+    "-x", "--method", "-h", "--header", "-f", "--field", "--raw-field", "--input",
+    "--hostname", "--cache", "--jq", "--template", "--preview",
+  ]);
+  const endpointIndex = findRule13GhPositionalIndex(tokens, commandIndex + 1, apiValueOptions, ["-x", "-h", "-f"]);
+  if (endpointIndex < 0) {
+    return "";
+  }
+
+  const endpoint = normalizeAgentValue(stripOuterQuotes(tokens[endpointIndex]));
+  const apiArguments = tokens.slice(commandIndex + 1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  if (/(?:^|\/)repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge(?:$|[?#])/u.test(endpoint) ||
+      /(?:^|\/)pulls\/\d+\/merge(?:$|[?#])/u.test(endpoint) ||
+      (endpoint === "graphql" && apiArguments.some((argument) => argument.includes("mergepullrequest")))) {
+    return "gh api merge";
+  }
+
+  if ((isGhApiGitRefEndpoint(endpoint) && (hasGhApiWriteMethod(apiArguments) || hasGhApiWriteField(apiArguments))) ||
+      (endpoint === "graphql" && isGhApiGraphqlRefMutation(apiArguments))) {
+    return "gh api ref-write";
+  }
+
+  return "";
 }
 
 function isGhPrMergeTokenCommand(tokens) {
@@ -13612,6 +13989,7 @@ module.exports = {
   isWriteCapableAgentMode,
   normalizeAgentValue,
   normalizePathValue,
+  resolveRule13ReviewGate,
   resolveReviewGateContexts,
   resolveReviewStateRoot,
   resolveGitDir,
