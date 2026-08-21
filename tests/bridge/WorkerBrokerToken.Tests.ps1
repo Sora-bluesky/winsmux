@@ -582,6 +582,7 @@ Describe 'TASK781 managed target mutation guard' {
         $script:c19VaultMutates.Count | Should -Be 1
         $script:c19VaultMutates[0] | Should -Match 'SYNTH_ONE'
         $script:c19VaultMutates[0] | Should -Not -Match 'SYNTH_TWO'
+        $script:c19VaultMutates[0] | Should -Not -Match '(^|\s)-t(\s|$)'
         $errorText | Should -Match 'invalid_supervisor_identity'
     }
 

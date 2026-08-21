@@ -273,16 +273,13 @@ function Invoke-VaultInject {
                 -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
             $value = [string](Get-WinsmuxVaultCredentialValue -Name ([string]$envName))
             try {
-                $command = 'set-environment -t {0} {1} {2}' -f `
-                    (ConvertTo-WinsmuxConfigString -Value $sessionName), `
-                    (ConvertTo-WinsmuxConfigString -Value ([string]$envName)), `
-                    (ConvertTo-WinsmuxConfigString -Value $value)
+                $command = 'set-environment ' + [string]$envName + ' ' + $value
                 Assert-WinsmuxTargetRuntimeWriteAllowed `
                     -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
                     -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
                 $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command)
                 if (-not $sourceResult.Success) {
-                    Stop-WithError "winsmux source-file failed while injecting credentials into $paneId."
+                    Stop-WithError "winsmux source-file failed while injecting credentials into $paneId (session $sessionName)."
                 }
                 $injected++
             } finally {

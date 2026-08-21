@@ -722,6 +722,7 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $prodInject.Extent.Text | Should -Match 'Invoke-WinsmuxSourceFile'
         $prodInject.Extent.Text | Should -Match 'set-environment'
         $prodInject.Extent.Text | Should -Not -Match 'send-keys'
+        $prodInject.Extent.Text | Should -Not -Match 'set-environment -t'
     }
 }
 
