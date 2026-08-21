@@ -242,8 +242,46 @@ function Invoke-WinsmuxSourceFile {
 
     $tempConf = [System.IO.Path]::GetTempFileName()
     try {
-        Set-Content -Path $tempConf -Value ($Commands -join [Environment]::NewLine) -NoNewline -Encoding utf8
-        return Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        [System.IO.File]::WriteAllText($tempConf, ($Commands -join [Environment]::NewLine), $utf8)
+        $sourceResult = Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
+        if ($sourceResult.Success) {
+            $envName = $null
+            foreach ($command in $Commands) {
+                $parts = @([regex]::Split([string]$command.Trim(), '\s+') | Where-Object { $_ -ne '' })
+                if ($parts.Count -ge 2 -and ($parts[0] -ceq 'set-environment' -or $parts[0] -ceq 'setenv')) {
+                    $i = 1
+                    while ($i -lt $parts.Count -and ([string]$parts[$i]).StartsWith('-')) { $i++ }
+                    if ($i -lt $parts.Count) {
+                        $envName = [string]$parts[$i]
+                        break
+                    }
+                }
+            }
+            if ($envName) {
+                $deadline = [datetime]::UtcNow.AddSeconds(5)
+                $applied = $false
+                while ([datetime]::UtcNow -lt $deadline) {
+                    $shown = Invoke-WinsmuxCommand -Arguments @('show-environment', $envName)
+                    $text = [string]$shown.Output
+                    if ($text.StartsWith(($envName + '='), [System.StringComparison]::Ordinal)) {
+                        $applied = $true
+                        break
+                    }
+                    Start-Sleep -Milliseconds 50
+                }
+                $shown = $null
+                $text = $null
+                if (-not $applied) {
+                    return [PSCustomObject]@{
+                        Success  = $false
+                        ExitCode = 1
+                        Output   = ''
+                    }
+                }
+            }
+        }
+        return $sourceResult
     } finally {
         Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
     }

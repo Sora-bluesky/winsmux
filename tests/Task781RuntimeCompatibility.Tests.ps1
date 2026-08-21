@@ -723,6 +723,15 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $prodInject.Extent.Text | Should -Match 'set-environment'
         $prodInject.Extent.Text | Should -Not -Match 'send-keys'
         $prodInject.Extent.Text | Should -Not -Match 'set-environment -t'
+
+        $prodSource = $bridgeAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-WinsmuxSourceFile'
+        }, $true)
+        $prodSource.Extent.Text | Should -Match 'show-environment'
+        $prodSource.Extent.Text | Should -Match 'UTF8Encoding'
+        $prodSource.Extent.Text | Should -Not -Match 'Set-Content'
     }
 }
 
