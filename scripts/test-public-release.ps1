@@ -15,6 +15,10 @@ param(
 
     [string]$CandidateInstallerPath,
 
+    [string]$PriorInstallerPath,
+
+    [string]$PriorVersion,
+
     [ValidateSet('PortAndMarker', 'MarkerOnly')]
     [string]$DesktopLegacyEnvMode = 'PortAndMarker',
 
@@ -51,10 +55,39 @@ function Assert-Condition {
     }
 }
 
-if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
-    Assert-Condition ($Surface -eq 'Desktop') 'CandidateInstallerPath requires -Surface Desktop; it is only valid for the Desktop surface.'
-    Assert-Condition (Test-Path -LiteralPath $CandidateInstallerPath -PathType Leaf) "Candidate installer path does not exist: $CandidateInstallerPath"
+function Assert-DesktopInstallerRequest {
+    param(
+        [Parameter(Mandatory)][string]$RequestedSurface,
+        [Parameter(Mandatory)][string]$CandidateVersion,
+        [Parameter(Mandatory)][Collections.IDictionary]$Arguments
+    )
+
+    $candidateSpecified = $Arguments.ContainsKey('CandidateInstallerPath') -and
+        -not [string]::IsNullOrEmpty([string]$Arguments['CandidateInstallerPath'])
+    if ($candidateSpecified) {
+        $candidatePath = [string]$Arguments['CandidateInstallerPath']
+        Assert-Condition ($RequestedSurface -eq 'Desktop') 'CandidateInstallerPath requires -Surface Desktop; it is only valid for the Desktop surface.'
+        Assert-Condition (Test-Path -LiteralPath $candidatePath -PathType Leaf) "Candidate installer path does not exist: $candidatePath"
+    }
+
+    $priorInstallerSpecified = $Arguments.ContainsKey('PriorInstallerPath')
+    $priorVersionSpecified = $Arguments.ContainsKey('PriorVersion')
+    if (-not $priorInstallerSpecified -and -not $priorVersionSpecified) {
+        return
+    }
+
+    Assert-Condition ($RequestedSurface -eq 'Desktop') 'PriorInstallerPath and PriorVersion require -Surface Desktop; they are only valid for the Desktop surface.'
+    Assert-Condition ($priorInstallerSpecified -and $priorVersionSpecified) 'PriorInstallerPath and PriorVersion must be supplied together.'
+    Assert-Condition $candidateSpecified 'PriorInstallerPath and PriorVersion require CandidateInstallerPath.'
+
+    $priorPath = [string]$Arguments['PriorInstallerPath']
+    $requestedPriorVersion = [string]$Arguments['PriorVersion']
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace($priorPath)) 'PriorInstallerPath must not be empty.'
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace($requestedPriorVersion)) 'PriorVersion must not be empty.'
+    Assert-Condition (Test-Path -LiteralPath $priorPath -PathType Leaf) "Prior installer path does not exist: $priorPath"
+    Assert-Condition (-not [string]::Equals($requestedPriorVersion, $CandidateVersion, [StringComparison]::Ordinal)) "PriorVersion '$requestedPriorVersion' must not equal candidate Version '$CandidateVersion'."
 }
+Assert-DesktopInstallerRequest -RequestedSurface $Surface -CandidateVersion $Version -Arguments $PSBoundParameters
 if ($PSBoundParameters.ContainsKey('DesktopLegacyEnvMode')) {
     Assert-Condition ($Surface -eq 'Desktop') 'DesktopLegacyEnvMode requires -Surface Desktop; it is only valid for the Desktop surface.'
 }
@@ -839,6 +872,7 @@ function Get-DesktopProtectedState {
         desktop_shortcut_exists = Test-Path -LiteralPath (Get-DesktopShortcutPath)
         start_menu_shortcut_exists = Test-Path -LiteralPath (Get-DesktopStartMenuShortcutPath)
         process_count = @(Get-Process -Name 'winsmux-app' -ErrorAction SilentlyContinue).Count
+        app_payload_exists = -not [string]::IsNullOrWhiteSpace($InstallRoot) -and (Test-Path -LiteralPath (Join-Path $InstallRoot 'winsmux-app.exe'))
         install_root_exists = -not [string]::IsNullOrWhiteSpace($InstallRoot) -and (Test-Path -LiteralPath $InstallRoot)
     }
 }
@@ -856,7 +890,28 @@ function Assert-NoDesktopProtectedState {
     Assert-Condition (-not $State.desktop_shortcut_exists) "$Phase observed an existing winsmux Desktop shortcut."
     Assert-Condition (-not $State.start_menu_shortcut_exists) "$Phase observed an existing winsmux Start Menu shortcut."
     Assert-Condition ($State.process_count -eq 0) "$Phase observed $($State.process_count) winsmux-app process(es)."
+    Assert-Condition (-not $State.app_payload_exists) "$Phase observed a remaining winsmux-app.exe payload."
     Assert-Condition (-not $State.install_root_exists) "$Phase observed a remaining install root."
+}
+
+function Assert-DesktopPreUninstallOwnedState {
+    param([Parameter(Mandatory)]$State)
+
+    Assert-Condition ([bool]$State.product_state_exists) 'Desktop product-state registration was absent immediately before the registered uninstaller.'
+    Assert-Condition ([bool]$State.uninstall_registration_exists) 'Desktop uninstall registration was absent immediately before the registered uninstaller.'
+    Assert-Condition ([bool]$State.app_payload_exists) 'winsmux-app.exe was absent immediately before the registered uninstaller.'
+}
+
+function Assert-DesktopPostUninstallOwnedState {
+    param([Parameter(Mandatory)]$State)
+
+    Assert-Condition (-not $State.folder_context_exists) 'Desktop folder-context registration remained immediately after the normal uninstaller.'
+    Assert-Condition (-not $State.background_context_exists) 'Desktop background-context registration remained immediately after the normal uninstaller.'
+    Assert-Condition (-not $State.product_state_exists) 'Desktop product state remained immediately after the normal uninstaller.'
+    Assert-Condition (-not $State.uninstall_registration_exists) 'Desktop uninstall registration remained immediately after the normal uninstaller.'
+    Assert-Condition (-not $State.desktop_shortcut_exists) 'Desktop shortcut remained immediately after the normal uninstaller.'
+    Assert-Condition (-not $State.start_menu_shortcut_exists) 'Start Menu shortcut remained immediately after the normal uninstaller.'
+    Assert-Condition (-not $State.app_payload_exists) 'winsmux-app.exe remained immediately after the normal uninstaller.'
 }
 
 function New-EmptyDesktopProtectedState {
@@ -868,6 +923,7 @@ function New-EmptyDesktopProtectedState {
         desktop_shortcut_exists = $false
         start_menu_shortcut_exists = $false
         process_count = 0
+        app_payload_exists = $false
         install_root_exists = $false
     }
 }
@@ -962,7 +1018,7 @@ function Invoke-VerifiedDesktopUninstaller {
         [Parameter(Mandatory)]$Context,
         [Parameter(Mandatory)][hashtable]$Environment,
         [scriptblock]$ProcessInvoker,
-        [scriptblock]$UninstallRegistrationProbe
+        [scriptblock]$ProtectedStateProbe
     )
 
     Assert-DesktopLifecyclePhase -Context $Context -ExpectedPhase 'materialized_verified'
@@ -972,6 +1028,13 @@ function Invoke-VerifiedDesktopUninstaller {
     $expectedUninstaller = Join-Path $InstallRoot 'uninstall.exe'
     Assert-Condition (Test-CanonicalPathEqual -ActualPath $UninstallerPath -ExpectedPath $expectedUninstaller) "Desktop uninstall invocation path '$UninstallerPath' does not name the run-owned uninstaller '$expectedUninstaller'."
     Assert-Condition (Test-Path -LiteralPath $expectedUninstaller -PathType Leaf) "Run-owned Desktop uninstaller was not found: $expectedUninstaller"
+
+    $preUninstallState = if ($null -eq $ProtectedStateProbe) {
+        Get-DesktopProtectedState -InstallRoot $InstallRoot
+    } else {
+        & $ProtectedStateProbe $InstallRoot 'pre_uninstall'
+    }
+    Assert-DesktopPreUninstallOwnedState -State $preUninstallState
 
     $arguments = @('/S', "_?=$InstallRoot")
     $uninstall = if ($null -eq $ProcessInvoker) {
@@ -983,54 +1046,51 @@ function Invoke-VerifiedDesktopUninstaller {
         throw (Format-PublicChildProcessDiagnostic -Operation 'desktop_uninstaller' -State 'exit_nonzero' -Result $uninstall)
     }
 
-    $registrationExists = if ($null -eq $UninstallRegistrationProbe) {
-        Test-Path -LiteralPath $script:DesktopUninstallPath
+    $postUninstallState = if ($null -eq $ProtectedStateProbe) {
+        Get-DesktopProtectedState -InstallRoot $InstallRoot
     } else {
-        [bool](& $UninstallRegistrationProbe)
+        & $ProtectedStateProbe $InstallRoot 'post_uninstall'
     }
-    Assert-Condition (-not $registrationExists) 'Desktop uninstall registration remained immediately after the normal uninstaller.'
+    Assert-DesktopPostUninstallOwnedState -State $postUninstallState
     return $uninstall
 }
 
 function Remove-DesktopOwnedResidue {
-    param([Parameter(Mandatory)]$Context)
+    param(
+        [Parameter(Mandatory)]$Context,
+        [scriptblock]$ProtectedStateProbe
+    )
 
     Assert-DesktopLifecyclePhase -Context $Context -ExpectedPhase 'uninstall_verified'
     $installRoot = [string]$Context.install_root
     Assert-DesktopInstallRootOwnership -InstallRoot $InstallRoot
-    Assert-Condition (-not (Test-Path -LiteralPath $script:DesktopUninstallPath)) 'Desktop uninstall registration must be absent before residue cleanup.'
 
-    $removeProductState = Test-Path -LiteralPath $script:DesktopProductPath
-    if ($removeProductState) {
-        $materializedInstallRoot = Get-RegistryDefaultValue -Path $script:DesktopProductPath
-        Assert-DesktopProductStateOwnership -MaterializedInstallRoot $materializedInstallRoot -ExpectedInstallRoot $InstallRoot
+    $postUninstallState = if ($null -eq $ProtectedStateProbe) {
+        Get-DesktopProtectedState -InstallRoot $InstallRoot
+    } else {
+        & $ProtectedStateProbe $InstallRoot 'pre_residue_cleanup'
     }
-
-    $shortcutPathsToRemove = @()
-    foreach ($shortcutPath in @((Get-DesktopShortcutPath), (Get-DesktopStartMenuShortcutPath))) {
-        if (Test-Path -LiteralPath $shortcutPath) {
-            $targetPath = Get-DesktopShortcutTarget -Path $shortcutPath
-            Assert-DesktopShortcutOwnership -TargetPath $targetPath -InstallRoot $InstallRoot -ShortcutPath $shortcutPath
-            $shortcutPathsToRemove += $shortcutPath
-        }
-    }
+    Assert-DesktopPostUninstallOwnedState -State $postUninstallState
 
     $installRootExists = Test-Path -LiteralPath $InstallRoot
     if ($installRootExists) {
         $item = Get-Item -LiteralPath $InstallRoot -Force
         Assert-Condition (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) "Refusing to remove a reparse-point install root: $InstallRoot"
-    }
+        $expectedUninstaller = Join-Path $InstallRoot 'uninstall.exe'
+        $unexpectedEntries = @(Get-ChildItem -LiteralPath $InstallRoot -Force | Where-Object {
+            -not (Test-CanonicalPathEqual -ActualPath $_.FullName -ExpectedPath $expectedUninstaller)
+        })
+        Assert-Condition ($unexpectedEntries.Count -eq 0) 'Desktop uninstaller left unexpected install-root residue; refusing harness cleanup.'
 
-    if ($removeProductState) {
-        Remove-Item -LiteralPath $script:DesktopProductPath -Recurse -Force
-    }
+        if (Test-Path -LiteralPath $expectedUninstaller) {
+            $uninstallerItem = Get-Item -LiteralPath $expectedUninstaller -Force
+            Assert-Condition (-not $uninstallerItem.PSIsContainer) "Leftover Desktop uninstaller path was not a file: $expectedUninstaller"
+            Assert-Condition (($uninstallerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) "Refusing to remove a reparse-point Desktop uninstaller: $expectedUninstaller"
+            Remove-Item -LiteralPath $expectedUninstaller -Force
+        }
 
-    foreach ($shortcutPath in $shortcutPathsToRemove) {
-        Remove-Item -LiteralPath $shortcutPath -Force
-    }
-
-    if ($installRootExists) {
-        Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+        Assert-Condition (@(Get-ChildItem -LiteralPath $InstallRoot -Force).Count -eq 0) 'Desktop install root was not empty after deleting leftover uninstall.exe.'
+        Remove-Item -LiteralPath $InstallRoot -Force
     }
 
     $finalState = Get-DesktopProtectedState -InstallRoot $InstallRoot
@@ -2574,6 +2634,7 @@ function Invoke-DesktopSmoke {
     $baseUrl = "https://github.com/$Repository/releases/download/$ReleaseTag"
     $manifestPath = Join-Path $Root 'SHA256SUMS-desktop'
     $setupPath = Join-Path $Root $assetName
+    $priorSetupPath = Join-Path $Root 'prior-setup.exe'
     $expectedHash = ''
     $childEnvironment = @{}
     $observation = $null
@@ -2586,6 +2647,9 @@ function Invoke-DesktopSmoke {
         if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
             Copy-Item -LiteralPath $CandidateInstallerPath -Destination $setupPath
             $expectedHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            if (-not [string]::IsNullOrEmpty($PriorInstallerPath)) {
+                Copy-Item -LiteralPath $PriorInstallerPath -Destination $priorSetupPath
+            }
         } else {
             Invoke-PublicDownload -Uri "$baseUrl/SHA256SUMS-desktop" -Destination $manifestPath -Root $Root
             Invoke-PublicDownload -Uri "$baseUrl/$assetName" -Destination $setupPath -Root $Root
@@ -2614,12 +2678,36 @@ function Invoke-DesktopSmoke {
         }
 
         Set-DesktopLifecyclePhase -Context $context -NextPhase 'installer_started'
-        $install = Invoke-PublicChildProcess -Operation 'desktop_installer' -FilePath $setupPath -ArgumentList @('/S', "/D=$installRoot") -Environment $childEnvironment -TimeoutSeconds 180
-        if ($install.exit_code -ne 0) {
-            throw (Format-PublicChildProcessDiagnostic -Operation 'desktop_installer' -State 'exit_nonzero' -Result $install)
+        $priorAppHash = ''
+        $installerStages = [Collections.Generic.List[object]]::new()
+        if (-not [string]::IsNullOrEmpty($PriorInstallerPath)) {
+            $priorContext = New-DesktopLifecycleContext -OwnedRoot $Root -InstallRoot $installRoot -ExpectedVersion $PriorVersion
+            Set-DesktopLifecyclePhase -Context $priorContext -NextPhase 'preflight_clean'
+            Set-DesktopLifecyclePhase -Context $priorContext -NextPhase 'installer_started'
+            $installerStages.Add([pscustomobject]@{ role = 'prior'; path = $priorSetupPath; context = $priorContext }) | Out-Null
         }
-        Assert-DesktopMaterializedOwnership -Context $context
-        Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
+        $installerStages.Add([pscustomobject]@{ role = 'candidate'; path = $setupPath; context = $context }) | Out-Null
+        foreach ($stage in $installerStages) {
+            $install = Invoke-PublicChildProcess -Operation 'desktop_installer' -FilePath ([string]$stage.path) -ArgumentList @('/S', "/D=$installRoot") -Environment $childEnvironment -TimeoutSeconds 180
+            if ($install.exit_code -ne 0) {
+                $diagnostic = Format-PublicChildProcessDiagnostic -Operation 'desktop_installer' -State 'exit_nonzero' -Result $install
+                if ([string]$stage.role -ceq 'prior') {
+                    throw "Pinned prior Desktop installer failed: $diagnostic"
+                }
+                throw $diagnostic
+            }
+            Assert-DesktopMaterializedOwnership -Context $stage.context
+            if ([string]$stage.role -ceq 'prior') {
+                Set-DesktopLifecyclePhase -Context $stage.context -NextPhase 'materialized_verified'
+                $priorAppHash = (Get-FileHash -LiteralPath (Join-Path $installRoot 'winsmux-app.exe') -Algorithm SHA256).Hash
+                continue
+            }
+            if (-not [string]::IsNullOrEmpty($PriorInstallerPath)) {
+                $candidateAppHash = (Get-FileHash -LiteralPath (Join-Path $installRoot 'winsmux-app.exe') -Algorithm SHA256).Hash
+                Assert-Condition (-not [string]::Equals($priorAppHash, $candidateAppHash, [StringComparison]::OrdinalIgnoreCase)) 'Candidate over-install did not replace the prior winsmux-app.exe payload.'
+            }
+            Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
+        }
 
         $webViewRoot = Join-Path $childRoot 'WebView2'
         New-Item -ItemType Directory -Path $webViewRoot | Out-Null
@@ -2749,6 +2837,76 @@ function Invoke-SelfTest {
             $appPath = Join-Path $installRoot 'winsmux-app.exe'
             $outsidePath = Join-Path $root 'outside\winsmux-app.exe'
 
+            $candidateInstaller = Join-Path $root 'candidate-installer.exe'
+            $priorInstaller = Join-Path $root 'prior-installer.exe'
+            $missingPriorInstaller = Join-Path $root 'missing-prior-installer.exe'
+            Set-Content -LiteralPath $candidateInstaller -Value 'self-test candidate installer' -Encoding ascii -NoNewline
+            Set-Content -LiteralPath $priorInstaller -Value 'self-test prior installer' -Encoding ascii -NoNewline
+            $priorVersionForSelfTest = if ($Version -cne '0.0.1') { '0.0.1' } else { '0.0.2' }
+
+            Assert-DesktopInstallerRequest -RequestedSurface Desktop -CandidateVersion $Version -Arguments @{
+                CandidateInstallerPath = $candidateInstaller
+                PriorInstallerPath = $priorInstaller
+                PriorVersion = $priorVersionForSelfTest
+            }
+
+            Assert-Condition (Test-Throws {
+                Assert-DesktopInstallerRequest -RequestedSurface Core -CandidateVersion $Version -Arguments @{
+                    CandidateInstallerPath = $candidateInstaller
+                    PriorInstallerPath = $priorInstaller
+                    PriorVersion = $priorVersionForSelfTest
+                }
+            }) 'PriorInstallerPath was accepted outside the Desktop surface.'
+            Assert-Condition (Test-Throws {
+                Assert-DesktopInstallerRequest -RequestedSurface Npm -CandidateVersion $Version -Arguments @{
+                    CandidateInstallerPath = $candidateInstaller
+                    PriorVersion = $priorVersionForSelfTest
+                }
+            }) 'PriorVersion was accepted outside the Desktop surface.'
+
+            Assert-Condition (Test-Throws {
+                Assert-DesktopInstallerRequest -RequestedSurface Desktop -CandidateVersion $Version -Arguments @{
+                    CandidateInstallerPath = $candidateInstaller
+                    PriorInstallerPath = $missingPriorInstaller
+                    PriorVersion = $priorVersionForSelfTest
+                }
+            }) 'A missing prior installer path was accepted.'
+
+            Assert-Condition (Test-Throws {
+                Assert-DesktopInstallerRequest -RequestedSurface Desktop -CandidateVersion $Version -Arguments @{
+                    CandidateInstallerPath = $candidateInstaller
+                    PriorInstallerPath = $priorInstaller
+                    PriorVersion = $Version
+                }
+            }) 'A same-version prior installer was accepted as upgrade evidence.'
+
+            Assert-Condition (Test-Throws {
+                Assert-DesktopInstallerRequest -RequestedSurface Desktop -CandidateVersion $Version -Arguments @{
+                    PriorInstallerPath = $priorInstaller
+                    PriorVersion = $priorVersionForSelfTest
+                }
+            }) 'Prior installer inputs were accepted without CandidateInstallerPath.'
+            Assert-Condition (Test-Throws {
+                Assert-DesktopInstallerRequest -RequestedSurface Desktop -CandidateVersion $Version -Arguments @{
+                    CandidateInstallerPath = $candidateInstaller
+                    PriorInstallerPath = $priorInstaller
+                }
+            }) 'PriorInstallerPath was accepted without PriorVersion.'
+
+            $nsisHookPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis-installer-hooks.nsh'
+            Assert-Condition (Test-Path -LiteralPath $nsisHookPath -PathType Leaf) 'Desktop NSIS installer hook source was not found.'
+            $nsisHookSource = ([IO.File]::ReadAllText($nsisHookPath) -replace "`r`n", "`n" -replace "`r", "`n")
+            $postUninstallHooks = [regex]::Matches($nsisHookSource, '(?ms)!macro\s+NSIS_HOOK_POSTUNINSTALL(?<body>.*?)!macroend')
+            Assert-Condition ($postUninstallHooks.Count -eq 1) 'Desktop NSIS source must contain exactly one NSIS_HOOK_POSTUNINSTALL macro.'
+            $postUninstallBody = $postUninstallHooks[0].Groups['body'].Value
+            $productDeletePattern = '(?m)^[ \t]*DeleteRegKey[ \t]+HKCU[ \t]+"Software\\github\\winsmux"[ \t]*$'
+            Assert-Condition ([regex]::Matches($postUninstallBody, $productDeletePattern).Count -eq 1) 'Desktop POSTUNINSTALL must contain exactly one HKCU Software\github\winsmux DeleteRegKey.'
+            $silentGuards = [regex]::Matches($postUninstallBody, '(?ms)\$\{If\}[ \t]+\$\{Silent\}(?<body>.*?)\$\{EndIf\}')
+            $guardedProductDeletes = @($silentGuards | Where-Object {
+                [regex]::IsMatch($_.Groups['body'].Value, $productDeletePattern)
+            })
+            Assert-Condition ($guardedProductDeletes.Count -eq 1) 'Desktop POSTUNINSTALL product-key deletion must remain inside the silent-uninstall guard.'
+
             Assert-DesktopProductVersion -ActualVersion $Version -ExpectedVersion $Version
             $caseIds.Add('product_version_exact')
 
@@ -2868,6 +3026,47 @@ function Invoke-SelfTest {
             Set-Content -LiteralPath $uninstallPath -Value 'self-test uninstaller' -Encoding ascii -NoNewline
             Set-Content -LiteralPath $appPath -Value 'self-test app' -Encoding ascii -NoNewline
             $emptyState = New-EmptyDesktopProtectedState
+            $presentPreUninstallState = [pscustomobject]@{
+                folder_context_exists = $true
+                background_context_exists = $true
+                product_state_exists = $true
+                uninstall_registration_exists = $true
+                desktop_shortcut_exists = $true
+                start_menu_shortcut_exists = $true
+                process_count = 0
+                app_payload_exists = $true
+                install_root_exists = $true
+            }
+            $cleanPostUninstallState = [pscustomobject]@{
+                folder_context_exists = $false
+                background_context_exists = $false
+                product_state_exists = $false
+                uninstall_registration_exists = $false
+                desktop_shortcut_exists = $false
+                start_menu_shortcut_exists = $false
+                process_count = 0
+                app_payload_exists = $false
+                install_root_exists = $true
+            }
+            $newProtectedStateProbe = {
+                param(
+                    [Parameter(Mandatory)]$PreState,
+                    [Parameter(Mandatory)]$PostState
+                )
+                $record = [pscustomobject]@{ phases = [Collections.Generic.List[string]]::new() }
+                $invoke = {
+                    param($ObservedInstallRoot, $Phase)
+                    Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$ObservedInstallRoot)) 'Desktop protected-state probe observed an empty install root.'
+                    $record.phases.Add([string]$Phase) | Out-Null
+                    switch ([string]$Phase) {
+                        'pre_uninstall' { return $PreState }
+                        'post_uninstall' { return $PostState }
+                        'pre_residue_cleanup' { return $PostState }
+                        default { throw "Unexpected Desktop protected-state probe phase: $Phase" }
+                    }
+                }.GetNewClosure()
+                return [pscustomobject]@{ record = $record; invoke = $invoke }
+            }.GetNewClosure()
             $newMaterializedContext = {
                 $candidateContext = New-DesktopLifecycleContext -OwnedRoot $root -InstallRoot $installRoot -ExpectedVersion $Version
                 Start-DesktopLifecycle -Context $candidateContext -PreflightState $emptyState
@@ -2887,23 +3086,97 @@ function Invoke-SelfTest {
                 $uninstallCapture.arguments = @($Arguments)
                 return [pscustomobject]@{ exit_code = 0; stdout = ''; stderr = '' }
             }.GetNewClosure()
-            $registrationProbe = { return $false }
+            $cleanStateProbe = & $newProtectedStateProbe -PreState $presentPreUninstallState -PostState $cleanPostUninstallState
             $leafContext = & $newMaterializedContext
-            Invoke-VerifiedDesktopUninstaller -Context $leafContext -Environment @{} -ProcessInvoker $processInvoker -UninstallRegistrationProbe $registrationProbe | Out-Null
+            Invoke-VerifiedDesktopUninstaller -Context $leafContext -Environment @{} -ProcessInvoker $processInvoker -ProtectedStateProbe $cleanStateProbe.invoke | Out-Null
             Assert-Condition ($uninstallCapture.call_count -eq 1) 'Desktop uninstaller was not invoked exactly once.'
             Assert-Condition ([string]::Equals($uninstallCapture.file_path, $uninstallPath, [StringComparison]::OrdinalIgnoreCase)) 'Desktop uninstaller invocation did not use the verified run-owned path.'
             Assert-Condition ($uninstallCapture.arguments.Count -eq 2) 'Desktop uninstaller invocation did not contain exactly two arguments.'
             Assert-Condition ($uninstallCapture.arguments[0] -ceq '/S') 'Desktop uninstaller invocation did not put /S first.'
             Assert-Condition ($uninstallCapture.arguments[1] -ceq "_?=$installRoot") 'Desktop uninstaller invocation did not put the run-owned _? argument last.'
+            Assert-Condition ([string]::Join(',', @($cleanStateProbe.record.phases)) -ceq 'pre_uninstall,post_uninstall') 'Desktop uninstaller did not prove owned state immediately before and after invocation.'
             $caseIds.Add('desktop_uninstall_argv_order')
+
+            $preUninstallCases = @(
+                [pscustomobject]@{ property = 'product_state_exists'; message = 'product-state registration was absent' },
+                [pscustomobject]@{ property = 'uninstall_registration_exists'; message = 'uninstall registration was absent' },
+                [pscustomobject]@{ property = 'app_payload_exists'; message = 'winsmux-app.exe was absent' }
+            )
+            foreach ($preUninstallCase in $preUninstallCases) {
+                $preState = $presentPreUninstallState.PSObject.Copy()
+                $preState.($preUninstallCase.property) = $false
+                $preStateProbe = & $newProtectedStateProbe -PreState $preState -PostState $cleanPostUninstallState
+                $preStateContext = & $newMaterializedContext
+                $callCountBefore = $uninstallCapture.call_count
+                $preStateError = $null
+                try {
+                    Invoke-VerifiedDesktopUninstaller -Context $preStateContext -Environment @{} -ProcessInvoker $processInvoker -ProtectedStateProbe $preStateProbe.invoke | Out-Null
+                } catch {
+                    $preStateError = $_
+                }
+                Assert-Condition ($null -ne $preStateError) "Missing pre-uninstall state was accepted: $($preUninstallCase.property)"
+                Assert-Condition ($preStateError.Exception.Message -match [regex]::Escape([string]$preUninstallCase.message)) "Missing pre-uninstall state failed for the wrong reason: $($preUninstallCase.property)"
+                Assert-Condition ($uninstallCapture.call_count -eq $callCountBefore) "Missing pre-uninstall state reached the Desktop uninstaller: $($preUninstallCase.property)"
+                Assert-Condition ([string]::Join(',', @($preStateProbe.record.phases)) -ceq 'pre_uninstall') "Missing pre-uninstall state reached a post-uninstall probe: $($preUninstallCase.property)"
+            }
+            $caseIds.Add('desktop_uninstall_requires_owned_state_present')
+
+            $postUninstallCases = @(
+                [pscustomobject]@{ property = 'folder_context_exists'; message = 'folder-context registration remained' },
+                [pscustomobject]@{ property = 'background_context_exists'; message = 'background-context registration remained' },
+                [pscustomobject]@{ property = 'product_state_exists'; message = 'product state remained' },
+                [pscustomobject]@{ property = 'uninstall_registration_exists'; message = 'uninstall registration remained' },
+                [pscustomobject]@{ property = 'desktop_shortcut_exists'; message = 'Desktop shortcut remained' },
+                [pscustomobject]@{ property = 'start_menu_shortcut_exists'; message = 'Start Menu shortcut remained' },
+                [pscustomobject]@{ property = 'app_payload_exists'; message = 'winsmux-app.exe remained' }
+            )
+            foreach ($postUninstallCase in $postUninstallCases) {
+                $postState = $cleanPostUninstallState.PSObject.Copy()
+                $postState.($postUninstallCase.property) = $true
+                $postStateProbe = & $newProtectedStateProbe -PreState $presentPreUninstallState -PostState $postState
+                $postStateContext = & $newMaterializedContext
+                $callCountBefore = $uninstallCapture.call_count
+                $postStateError = $null
+                try {
+                    Invoke-VerifiedDesktopUninstaller -Context $postStateContext -Environment @{} -ProcessInvoker $processInvoker -ProtectedStateProbe $postStateProbe.invoke | Out-Null
+                } catch {
+                    $postStateError = $_
+                }
+                Assert-Condition ($null -ne $postStateError) "Post-uninstall owned-state residue was accepted: $($postUninstallCase.property)"
+                Assert-Condition ($postStateError.Exception.Message -match [regex]::Escape([string]$postUninstallCase.message)) "Post-uninstall owned-state residue failed for the wrong reason: $($postUninstallCase.property)"
+                Assert-Condition ($uninstallCapture.call_count -eq ($callCountBefore + 1)) "Post-uninstall owned-state residue did not reach exactly one normal uninstaller invocation: $($postUninstallCase.property)"
+                Assert-Condition ([string]::Join(',', @($postStateProbe.record.phases)) -ceq 'pre_uninstall,post_uninstall') "Post-uninstall owned-state residue was not observed immediately around invocation: $($postUninstallCase.property)"
+            }
+            $caseIds.Add('desktop_uninstall_rejects_owned_state_residue')
+
+            $helperParseErrors = $null
+            $helperTokens = $null
+            $helperAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$helperTokens, [ref]$helperParseErrors)
+            Assert-Condition (@($helperParseErrors).Count -eq 0) 'Desktop helper source did not parse for residue-cleanup pinning.'
+            $residueFunctions = @($helperAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Remove-DesktopOwnedResidue'
+            }, $true))
+            Assert-Condition ($residueFunctions.Count -eq 1) 'Desktop helper did not contain exactly one Remove-DesktopOwnedResidue function.'
+            $residueRemoveCommands = @($residueFunctions[0].Body.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Remove-Item'
+            }, $true))
+            Assert-Condition ($residueRemoveCommands.Count -eq 2) 'Desktop residue cleanup must remove only leftover uninstall.exe and the empty install root.'
+            $residueRemoveText = @($residueRemoveCommands | ForEach-Object { $_.Extent.Text })
+            Assert-Condition (@($residueRemoveText | Where-Object { $_ -match '(?i)-LiteralPath\s+\$expectedUninstaller(?:\s|$)' }).Count -eq 1) 'Desktop residue cleanup did not narrowly remove leftover uninstall.exe.'
+            Assert-Condition (@($residueRemoveText | Where-Object { $_ -match '(?i)-LiteralPath\s+\$InstallRoot(?:\s|$)' -and $_ -notmatch '(?i)(?:^|\s)-Recurse(?:\s|$)' }).Count -eq 1) 'Desktop residue cleanup did not remove the empty install root non-recursively.'
+            Assert-Condition (($residueRemoveText -join "`n") -notmatch '(?i)DesktopProductPath|shortcutPath|winsmux-app\.exe') 'Desktop residue cleanup still removes uninstaller-owned product state, shortcuts, or payload.'
+            $caseIds.Add('desktop_residue_cleanup_only_removes_uninstaller_and_empty_root')
 
             $foreignUninstaller = Join-Path $root 'outside\uninstall.exe'
             $foreignContext = & $newMaterializedContext
             $foreignContext.expected_uninstaller = $foreignUninstaller
+            $callCountBeforeForeign = $uninstallCapture.call_count
             Assert-Condition (Test-Throws {
-                Invoke-VerifiedDesktopUninstaller -Context $foreignContext -Environment @{} -ProcessInvoker $processInvoker -UninstallRegistrationProbe $registrationProbe
+                Invoke-VerifiedDesktopUninstaller -Context $foreignContext -Environment @{} -ProcessInvoker $processInvoker -ProtectedStateProbe $cleanStateProbe.invoke
             }) 'A foreign Desktop uninstaller path reached invocation.'
-            Assert-Condition ($uninstallCapture.call_count -eq 1) 'A foreign Desktop uninstaller path reached the process invoker.'
+            Assert-Condition ($uninstallCapture.call_count -eq $callCountBeforeForeign) 'A foreign Desktop uninstaller path reached the process invoker.'
             $caseIds.Add('desktop_uninstall_foreign_path')
 
             $ownershipCalls = [pscustomobject]@{ stop = 0; uninstall = 0; residue = 0; root = 0 }
@@ -2950,11 +3223,12 @@ function Invoke-SelfTest {
                 param($FilePath, $Arguments, $Environment)
                 return [pscustomobject]@{ exit_code = 1; stdout = ''; stderr = 'synthetic uninstall failure' }
             }
+            $uninstallFailureStateProbe = & $newProtectedStateProbe -PreState $presentPreUninstallState -PostState $cleanPostUninstallState
             $uninstallFailureStopInvoker = { $uninstallFailureCalls.stop += 1 }.GetNewClosure()
             $uninstallFailureUninstallInvoker = {
                 param($Context, $Environment)
                 $uninstallFailureCalls.uninstall += 1
-                Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment -ProcessInvoker $nonzeroProcessInvoker -UninstallRegistrationProbe { return $false } | Out-Null
+                Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment -ProcessInvoker $nonzeroProcessInvoker -ProtectedStateProbe $uninstallFailureStateProbe.invoke | Out-Null
             }.GetNewClosure()
             $uninstallFailureResidueInvoker = { $uninstallFailureCalls.residue += 1 }.GetNewClosure()
             $uninstallFailureRootRemover = { $uninstallFailureCalls.root += 1 }.GetNewClosure()
@@ -2972,11 +3246,14 @@ function Invoke-SelfTest {
 
             $registrationCalls = [pscustomobject]@{ stop = 0; uninstall = 0; residue = 0; root = 0 }
             $registrationContext = & $newMaterializedContext
+            $registrationPostState = $cleanPostUninstallState.PSObject.Copy()
+            $registrationPostState.uninstall_registration_exists = $true
+            $registrationStateProbe = & $newProtectedStateProbe -PreState $presentPreUninstallState -PostState $registrationPostState
             $registrationStopInvoker = { $registrationCalls.stop += 1 }.GetNewClosure()
             $registrationUninstallInvoker = {
                 param($Context, $Environment)
                 $registrationCalls.uninstall += 1
-                Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment -ProcessInvoker $processInvoker -UninstallRegistrationProbe { return $true } | Out-Null
+                Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment -ProcessInvoker $processInvoker -ProtectedStateProbe $registrationStateProbe.invoke | Out-Null
             }.GetNewClosure()
             $registrationResidueInvoker = { $registrationCalls.residue += 1 }.GetNewClosure()
             $registrationRootRemover = { $registrationCalls.root += 1 }.GetNewClosure()

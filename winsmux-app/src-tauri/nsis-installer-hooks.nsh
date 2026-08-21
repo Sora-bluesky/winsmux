@@ -34,4 +34,7 @@ LangString WINSMUX_OPEN_WITH_LABEL 1041 "winsmuxで開く"
 !macro NSIS_HOOK_POSTUNINSTALL
   !insertmacro WINSMUX_DELETE_EXPLORER_CONTEXT_MENU "Directory\shell\winsmux"
   !insertmacro WINSMUX_DELETE_EXPLORER_CONTEXT_MENU "Directory\Background\shell\winsmux"
+  ${If} ${Silent}
+    DeleteRegKey HKCU "Software\github\winsmux"
+  ${EndIf}
 !macroend
