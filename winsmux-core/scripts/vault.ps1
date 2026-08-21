@@ -240,13 +240,35 @@ function Get-WinsmuxSessionNameForPane {
 function Invoke-WinsmuxSourceFile {
     param([Parameter(Mandatory = $true)][string[]]$Commands)
 
-    $tempConf = [System.IO.Path]::GetTempFileName()
     $ackName = 'WINSMUX_VAULT_INJECT_ACK'
     $ackValue = [guid]::NewGuid().ToString('N')
+    $tempConf = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-src-' + [guid]::NewGuid().ToString('N') + '.conf')
+    $stream = $null
+    $ownedTemp = $false
     try {
+        $FileSecurity = New-Object System.Security.AccessControl.FileSecurity
+        $FileSecurity.SetAccessRuleProtection($true, $false)
+        $FileSecurity.SetAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+            [Security.Principal.WindowsIdentity]::GetCurrent().User,
+            [System.Security.AccessControl.FileSystemRights]::FullControl,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )))
+        try {
+            $stream = New-Object System.IO.FileStream($tempConf, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $FileSecurity)
+            $ownedTemp = $true
+        } catch {
+            if (Test-Path -LiteralPath $tempConf) {
+                throw
+            }
+            $stream = [System.IO.FileSystemAclExtensions]::Create((New-Object System.IO.FileInfo($tempConf)), [System.IO.FileMode]::CreateNew, [System.Security.AccessControl.FileSystemRights]::FullControl, [System.IO.FileShare]::None, 4096, [System.IO.FileOptions]::None, $FileSecurity)
+            $ownedTemp = $true
+        }
         $utf8 = New-Object System.Text.UTF8Encoding $false
         $sourced = @($Commands) + @('set-environment ' + $ackName + ' ' + $ackValue)
-        [System.IO.File]::WriteAllText($tempConf, ($sourced -join [Environment]::NewLine), $utf8)
+        $bytes = $utf8.GetBytes(($sourced -join [Environment]::NewLine))
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Dispose()
+        $stream = $null
         $sourceResult = Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
         if ($sourceResult.Success) {
             $expected = $ackName + '=' + $ackValue
@@ -273,9 +295,20 @@ function Invoke-WinsmuxSourceFile {
             }
         }
         return $sourceResult
+    } catch {
+        return [PSCustomObject]@{
+            Success  = $false
+            ExitCode = 1
+            Output   = ''
+        }
     } finally {
+        if ($null -ne $stream) {
+            try { $stream.Dispose() } catch { }
+        }
         $ackValue = $null
-        Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
+        if ($ownedTemp) {
+            Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
