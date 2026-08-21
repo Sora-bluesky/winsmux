@@ -2377,7 +2377,7 @@ fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> Hash
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    hide_subprocess_window(&mut command);
+    crate::hide_non_companion_subprocess_window(&mut command);
 
     let Ok(mut child) = command.spawn() else {
         return HashSet::new();
