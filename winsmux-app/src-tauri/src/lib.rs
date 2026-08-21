@@ -15,7 +15,8 @@ use control_pipe::{
 };
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain,
-    load_desktop_summary_snapshot, resolve_repo_root, spawn_desktop_summary_refresh_stream,
+    load_desktop_summary_snapshot, resolve_repo_root, scrub_control_pipe_token_from_command,
+    spawn_desktop_summary_refresh_stream,
     DesktopExplainPayload,
     DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopStreamCommand,
     DesktopSummaryRefreshSignal, DesktopSummarySnapshot, DesktopVoiceCaptureStatus,
@@ -1356,6 +1357,7 @@ fn build_update_restart_command(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     remote_debug_gate::scrub_gate_env_from_command(&mut command);
+    scrub_control_pipe_token_from_command(&mut command);
     command
 }
 
@@ -2420,6 +2422,9 @@ mod tests {
         assert!(removed
             .iter()
             .any(|key| key == remote_debug_gate::WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV));
+        assert!(removed
+            .iter()
+            .any(|key| key == WINSMUX_CONTROL_PIPE_TOKEN_ENV));
     }
 
     #[test]
