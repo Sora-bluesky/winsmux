@@ -196,4 +196,71 @@ public static class WinCredDeleteNative {
             'clear'
         )
     }
+
+    It 'vault inject does not fall back to argv set-environment when source-file fails' {
+        $script:Target = '%2'
+        $script:FallbackCalls = [System.Collections.Generic.List[string]]::new()
+        Mock Get-WinsmuxCredentialTargetNames { @('FIRST') }
+        Mock Get-WinsmuxSessionNameForPane { 'winsmux-orchestra' }
+        Mock Get-WinsmuxVaultCredentialValue { 'secret-value' }
+        Mock Invoke-WinsmuxSourceFile {
+            return [PSCustomObject]@{ Success = $false; ExitCode = 1; Output = 'source failed' }
+        }
+        Mock Invoke-WinsmuxCommand {
+            $script:FallbackCalls.Add(($Arguments -join '|')) | Out-Null
+            return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
+        }
+
+        { Invoke-VaultInject } | Should -Throw '*source-file*'
+        @($script:FallbackCalls) | Should -Be @()
+    }
+
+    It 'source-file wait does not treat a stale NAME= as applied' {
+        $script:ShowNames = [System.Collections.Generic.List[string]]::new()
+        $script:AckPolls = 0
+        $script:ConfText = ''
+        Mock Invoke-WinsmuxCommand {
+            if ($Arguments[0] -eq 'source-file') {
+                $script:ConfText = [System.IO.File]::ReadAllText($Arguments[1])
+                Test-Path -LiteralPath $Arguments[1] | Should -BeTrue
+                return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
+            }
+            if ($Arguments[0] -eq 'show-environment') {
+                $asked = [string]$Arguments[1]
+                $script:ShowNames.Add($asked) | Out-Null
+                if ($asked -eq 'ROTATE_ME') {
+                    return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = 'ROTATE_ME=old-secret' }
+                }
+                if ($asked -eq 'WINSMUX_VAULT_INJECT_ACK') {
+                    $script:AckPolls++
+                    if ($script:AckPolls -lt 2) {
+                        return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = 'WINSMUX_VAULT_INJECT_ACK=staleack' }
+                    }
+                    if ($script:ConfText -notmatch 'set-environment WINSMUX_VAULT_INJECT_ACK ([0-9a-f]{32})') {
+                        throw 'source-file conf missing inject ack'
+                    }
+                    $ack = $Matches[1]
+                    return [PSCustomObject]@{
+                        Success  = $true
+                        ExitCode = 0
+                        Output   = ('WINSMUX_VAULT_INJECT_ACK={0}' -f $ack)
+                    }
+                }
+                return [PSCustomObject]@{
+                    Success  = $false
+                    ExitCode = 1
+                    Output   = ('unknown variable: {0}' -f $asked)
+                }
+            }
+            throw ('unexpected winsmux {0}' -f ($Arguments -join ' '))
+        }
+
+        $result = Invoke-WinsmuxSourceFile -Commands @('set-environment ROTATE_ME new-secret')
+        $result.Success | Should -BeTrue
+        $script:AckPolls | Should -BeGreaterOrEqual 2
+        $script:ShowNames | Should -Contain 'WINSMUX_VAULT_INJECT_ACK'
+        $script:ShowNames | Should -Not -Contain 'ROTATE_ME'
+        $script:ConfText | Should -Match 'set-environment ROTATE_ME new-secret'
+        $script:ConfText | Should -Match 'set-environment WINSMUX_VAULT_INJECT_ACK '
+    }
 }

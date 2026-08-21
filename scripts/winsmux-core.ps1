@@ -17854,6 +17854,77 @@ function Get-WinsmuxVaultCredentialValueInternal {
     }
 }
 
+function ConvertTo-WinsmuxConfigString {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $escaped = $Value.Replace('\', '\\').Replace('"', '\"')
+    return '"' + $escaped + '"'
+}
+
+function Get-WinsmuxSessionNameForPane {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    try {
+        $sessionOutput = Invoke-WinsmuxRaw -Arguments @('display-message', '-t', $PaneId, '-p', '#{session_name}') 2>$null
+        $sessionName = ((@($sessionOutput) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+        if ($sessionName -match "`r?`n") {
+            $sessionName = ($sessionName -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 1).Trim()
+        }
+    } catch {
+        Stop-WithError "Unable to resolve the winsmux session for pane $PaneId."
+    }
+    if ([string]::IsNullOrWhiteSpace($sessionName)) {
+        Stop-WithError "winsmux returned an empty session name for pane $PaneId."
+    }
+
+    return $sessionName
+}
+
+function Invoke-WinsmuxSourceFile {
+    param([Parameter(Mandatory = $true)][string[]]$Commands)
+
+    $tempConf = [System.IO.Path]::GetTempFileName()
+    $ackName = 'WINSMUX_VAULT_INJECT_ACK'
+    $ackValue = [guid]::NewGuid().ToString('N')
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $sourced = @($Commands) + @('set-environment ' + $ackName + ' ' + $ackValue)
+        [System.IO.File]::WriteAllText($tempConf, ($sourced -join [Environment]::NewLine), $utf8)
+        Invoke-WinsmuxRaw -Arguments @('source-file', $tempConf)
+        $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+        if ($exitCode -eq 0) {
+            $expected = $ackName + '=' + $ackValue
+            $deadline = [datetime]::UtcNow.AddSeconds(5)
+            $applied = $false
+            while ([datetime]::UtcNow -lt $deadline) {
+                $shown = Invoke-WinsmuxRaw -Arguments @('show-environment', $ackName) 2>$null
+                $text = ((@($shown) | ForEach-Object { [string]$_ }) -join "`n").Trim()
+                if ($text -ceq $expected) {
+                    $applied = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 50
+            }
+            $shown = $null
+            $text = $null
+            $expected = $null
+            if (-not $applied) {
+                return [PSCustomObject]@{
+                    Success  = $false
+                    ExitCode = 1
+                }
+            }
+        }
+        return [PSCustomObject]@{
+            Success  = ($exitCode -eq 0)
+            ExitCode = $exitCode
+        }
+    } finally {
+        $ackValue = $null
+        Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-VaultInject {
     if (-not $Target) { Stop-WithError "usage: winsmux vault inject <pane>" }
 
@@ -17862,43 +17933,41 @@ function Invoke-VaultInject {
     $projectDir = (Get-Location).Path
     $initialRuntime = Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch
     Assert-ReadMark $paneId
-
-    $credentialNames = @(Get-WinsmuxVaultCredentialNamesInternal)
-    if ($credentialNames.Count -eq 0) {
-        Write-Output "no credentials to inject"
-        return
-    }
-
-    $injected = 0
-    foreach ($envName in $credentialNames) {
-        Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
-            -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-        $value = [string](Get-WinsmuxVaultCredentialValueInternal -Name ([string]$envName))
-
-        try {
-            # Escape single quotes in value for safe injection.
-            $escapedValue = $value -replace "'", "''"
-            $setCmd = "`$env:$envName = '$escapedValue'"
-            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
-                -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-            Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$setCmd")
-        } finally {
-            $value = $null
-            $escapedValue = $null
-            $setCmd = $null
+    try {
+        $credentialNames = @(Get-WinsmuxVaultCredentialNamesInternal)
+        if ($credentialNames.Count -eq 0) {
+            Write-Output "no credentials to inject"
+            return
         }
 
+        $sessionName = Get-WinsmuxSessionNameForPane -PaneId $paneId
+        $injected = 0
+        foreach ($envName in $credentialNames) {
+            Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+                -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+            $value = [string](Get-WinsmuxVaultCredentialValueInternal -Name ([string]$envName))
+            try {
+                $command = 'set-environment ' + [string]$envName + ' ' + $value
+                Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
+                    -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
+                $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command)
+                if (-not $sourceResult.Success) {
+                    Stop-WithError "winsmux source-file failed while injecting credentials into $paneId (session $sessionName)."
+                }
+                $injected++
+            } finally {
+                $value = $null
+                $command = $null
+                $sourceResult = $null
+            }
+        }
+
+        Write-Output "injected $injected credential(s) into $paneId"
+    } finally {
         Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
             -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-        Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, 'Enter')
-        Start-Sleep -Milliseconds 100
-        $injected++
+        Clear-ReadMark $paneId
     }
-
-    Assert-WinsmuxTargetRuntimeWriteAllowed -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
-        -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-    Clear-ReadMark $paneId
-    Write-Output "injected $injected credential(s) into $paneId"
 }
 
 function Invoke-Version {

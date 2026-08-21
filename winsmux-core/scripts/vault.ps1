@@ -241,10 +241,40 @@ function Invoke-WinsmuxSourceFile {
     param([Parameter(Mandatory = $true)][string[]]$Commands)
 
     $tempConf = [System.IO.Path]::GetTempFileName()
+    $ackName = 'WINSMUX_VAULT_INJECT_ACK'
+    $ackValue = [guid]::NewGuid().ToString('N')
     try {
-        Set-Content -Path $tempConf -Value ($Commands -join [Environment]::NewLine) -NoNewline -Encoding utf8
-        return Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
+        $utf8 = New-Object System.Text.UTF8Encoding $false
+        $sourced = @($Commands) + @('set-environment ' + $ackName + ' ' + $ackValue)
+        [System.IO.File]::WriteAllText($tempConf, ($sourced -join [Environment]::NewLine), $utf8)
+        $sourceResult = Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
+        if ($sourceResult.Success) {
+            $expected = $ackName + '=' + $ackValue
+            $deadline = [datetime]::UtcNow.AddSeconds(5)
+            $applied = $false
+            while ([datetime]::UtcNow -lt $deadline) {
+                $shown = Invoke-WinsmuxCommand -Arguments @('show-environment', $ackName)
+                $text = [string]$shown.Output
+                if ($text.Trim() -ceq $expected) {
+                    $applied = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 50
+            }
+            $shown = $null
+            $text = $null
+            $expected = $null
+            if (-not $applied) {
+                return [PSCustomObject]@{
+                    Success  = $false
+                    ExitCode = 1
+                    Output   = ''
+                }
+            }
+        }
+        return $sourceResult
     } finally {
+        $ackValue = $null
         Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
     }
 }
@@ -273,30 +303,19 @@ function Invoke-VaultInject {
                 -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
             $value = [string](Get-WinsmuxVaultCredentialValue -Name ([string]$envName))
             try {
-                $command = 'set-environment -t {0} {1} {2}' -f `
-                    (ConvertTo-WinsmuxConfigString -Value $sessionName), `
-                    (ConvertTo-WinsmuxConfigString -Value ([string]$envName)), `
-                    (ConvertTo-WinsmuxConfigString -Value $value)
+                $command = 'set-environment ' + [string]$envName + ' ' + $value
                 Assert-WinsmuxTargetRuntimeWriteAllowed `
                     -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
                     -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
                 $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command)
                 if (-not $sourceResult.Success) {
-                    # source-file keeps secrets out of argv; direct set-environment remains a last-resort fallback.
-                    Assert-WinsmuxTargetRuntimeWriteAllowed `
-                        -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
-                        -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-                    $setResult = Invoke-WinsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $envName, $value)
-                    if (-not $setResult.Success) {
-                        Stop-WithError "winsmux set-environment failed while injecting credentials into $paneId."
-                    }
+                    Stop-WithError "winsmux source-file failed while injecting credentials into $paneId (session $sessionName)."
                 }
                 $injected++
             } finally {
                 $value = $null
                 $command = $null
                 $sourceResult = $null
-                $setResult = $null
             }
         }
 
