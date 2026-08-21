@@ -749,6 +749,392 @@ jobs:
           path: test-results-desktop-debug-v03630.xml
           if-no-files-found: ignore
 
+  desktop-nsis-lifecycle:
+    name: Desktop NSIS Fresh and Upgrade Lifecycle
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Build candidate NSIS installer from the tested commit
+        working-directory: winsmux-app
+        run: npm run tauri -- build --bundles nsis
+
+      - name: Download, verify, and stage lifecycle installers
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          $artifactRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts/task679-nsis-lifecycle'
+          $evidencePath = Join-Path $artifactRoot 'evidence.json'
+          New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+          $version = (Get-Content -LiteralPath 'VERSION' -Raw -Encoding UTF8).Trim()
+          $priorVersion = '0.36.33'
+          $priorTag = 'v0.36.33'
+          $priorAsset = 'winsmux_0.36.33_x64-setup.exe'
+          $priorExpectedHash = '011df20edc393299172c0e48a4584a0b99d441b7848c493d7f4b7e37339f55e9'
+          $candidateAsset = "winsmux_${version}_x64-setup.exe"
+          $evidence = [ordered]@{
+            schema_version = 'task679-nsis-lifecycle-v1'
+            source_commit = '${{ github.sha }}'
+            outcome = 'pending'
+            failure_stage = ''
+            inputs = [ordered]@{
+              candidate = [ordered]@{ version = $version; asset = $candidateAsset; sha256 = '' }
+              prior = [ordered]@{ version = $priorVersion; tag = $priorTag; asset = $priorAsset; sha256 = ''; expected_sha256 = $priorExpectedHash }
+            }
+            stages = [ordered]@{
+              build = [ordered]@{ exit_code = 0; command = 'npm run tauri -- build --bundles nsis'; artifact_verified = $false }
+              prior_download = [ordered]@{ exit_code = $null; artifact_found = $false; sha256_verified = $false }
+              staging = [ordered]@{ exit_code = $null; candidate_staged = $false; prior_staged = $false }
+              network_isolation = [ordered]@{ exit_code = $null; rule_enabled = $false; positive_control_exit_code = $null; positive_control_blocked = $false }
+              network_restore = [ordered]@{ exit_code = $null; rule_absent = $false }
+            }
+            protected_inventory = [ordered]@{ before = @() }
+            legs = [ordered]@{
+              fresh = [ordered]@{ status = 'pending' }
+              upgrade = [ordered]@{ status = 'pending' }
+            }
+          }
+          function Write-Task679Evidence {
+            $json = $evidence | ConvertTo-Json -Depth 12
+            [IO.File]::WriteAllText($evidencePath, $json, [Text.UTF8Encoding]::new($false))
+          }
+          Write-Task679Evidence
+
+          $stage = 'candidate_artifact'
+          try {
+            if ($version -cne '0.36.34') {
+              throw "TASK-679 is frozen to candidate VERSION 0.36.34; observed '$version'."
+            }
+            $candidateSource = Join-Path $env:GITHUB_WORKSPACE "target/release/bundle/nsis/$candidateAsset"
+            if (-not (Test-Path -LiteralPath $candidateSource -PathType Leaf)) {
+              throw "Candidate NSIS installer was not found at its version-derived bundle path."
+            }
+            $evidence.stages.build.artifact_verified = $true
+
+            $stageRoot = Join-Path $env:RUNNER_TEMP 'winsmux-task679-stage'
+            $protectedRoot = Join-Path $env:RUNNER_TEMP 'winsmux-task679-protected'
+            New-Item -ItemType Directory -Path $stageRoot, $protectedRoot -Force | Out-Null
+            $candidatePath = Join-Path $stageRoot $candidateAsset
+            $priorPath = Join-Path $stageRoot $priorAsset
+            Copy-Item -LiteralPath $candidateSource -Destination $candidatePath
+
+            $stage = 'prior_download'
+            $priorUrl = "https://github.com/${{ github.repository }}/releases/download/$priorTag/$priorAsset"
+            & curl.exe --fail --location --silent --show-error --output $priorPath $priorUrl
+            $priorDownloadExit = [int]$LASTEXITCODE
+            $evidence.stages.prior_download.exit_code = $priorDownloadExit
+            $evidence.stages.prior_download.artifact_found = Test-Path -LiteralPath $priorPath -PathType Leaf
+            Write-Task679Evidence
+            if ($priorDownloadExit -ne 0 -or -not $evidence.stages.prior_download.artifact_found) {
+              throw 'Pinned prior NSIS installer download failed or produced no file.'
+            }
+
+            $stage = 'checksum_verification'
+            $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $priorHash = (Get-FileHash -LiteralPath $priorPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $evidence.inputs.candidate.sha256 = $candidateHash
+            $evidence.inputs.prior.sha256 = $priorHash
+            $evidence.stages.prior_download.sha256_verified = [string]::Equals($priorHash, $priorExpectedHash, [StringComparison]::Ordinal)
+            if (-not $evidence.stages.prior_download.sha256_verified) {
+              Write-Task679Evidence
+              throw 'Pinned prior NSIS installer SHA-256 did not match SHA256SUMS-desktop evidence.'
+            }
+
+            $stage = 'protected_inventory'
+            $protectedDefinitions = @(
+              [pscustomobject]@{ label = 'project_repo'; file = 'project-repo/sentinel.bin'; content = 'task679-project-repo' },
+              [pscustomobject]@{ label = 'agent_cli'; file = 'agent-cli/sentinel.bin'; content = 'task679-agent-cli' },
+              [pscustomobject]@{ label = 'non_owned_state'; file = 'non-owned/sentinel.bin'; content = 'task679-non-owned-state' }
+            )
+            $protectedBefore = [Collections.Generic.List[object]]::new()
+            foreach ($definition in $protectedDefinitions) {
+              $path = Join-Path $protectedRoot $definition.file
+              New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+              [IO.File]::WriteAllText($path, $definition.content, [Text.UTF8Encoding]::new($false))
+              $protectedBefore.Add([ordered]@{
+                label = [string]$definition.label
+                sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+              })
+            }
+            $evidence.protected_inventory.before = @($protectedBefore)
+            $evidence.stages.staging = [ordered]@{ exit_code = 0; candidate_staged = $true; prior_staged = $true }
+            Write-Task679Evidence
+
+            $firewallRule = "winsmux-task679-outbound-${{ github.run_id }}-${{ github.run_attempt }}"
+            $environmentLines = @(
+              "TASK679_CANDIDATE_PATH=$candidatePath",
+              "TASK679_CANDIDATE_HASH=$candidateHash",
+              "TASK679_CANDIDATE_ASSET=$candidateAsset",
+              "TASK679_VERSION=$version",
+              "TASK679_PRIOR_PATH=$priorPath",
+              "TASK679_PRIOR_HASH=$priorHash",
+              "TASK679_PRIOR_VERSION=$priorVersion",
+              "TASK679_PROTECTED_ROOT=$protectedRoot",
+              "TASK679_EVIDENCE_PATH=$evidencePath",
+              "TASK679_FIREWALL_RULE=$firewallRule"
+            )
+            [IO.File]::AppendAllText($env:GITHUB_ENV, (($environmentLines -join [Environment]::NewLine) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+          } catch {
+            $evidence.outcome = 'fail'
+            $evidence.failure_stage = $stage
+            Write-Task679Evidence
+            throw
+          }
+
+      - name: Deny runner outbound network and prove isolation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Get-Content -LiteralPath $env:TASK679_EVIDENCE_PATH -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 12
+          function Write-Task679Evidence {
+            [IO.File]::WriteAllText($env:TASK679_EVIDENCE_PATH, ($evidence | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+          }
+          try {
+            if (Get-NetFirewallRule -Name $env:TASK679_FIREWALL_RULE -ErrorAction SilentlyContinue) {
+              throw 'Run-scoped TASK-679 firewall rule already exists.'
+            }
+            New-NetFirewallRule -Name $env:TASK679_FIREWALL_RULE -DisplayName $env:TASK679_FIREWALL_RULE -Direction Outbound -Action Block -Enabled True -Profile Any -RemoteAddress Any | Out-Null
+            $rule = @(Get-NetFirewallRule -Name $env:TASK679_FIREWALL_RULE -ErrorAction Stop)
+            $ruleEnabled = $rule.Count -eq 1 -and [string]$rule[0].Enabled -ceq 'True' -and [string]$rule[0].Direction -ceq 'Outbound' -and [string]$rule[0].Action -ceq 'Block'
+
+            $curlStdout = Join-Path $env:RUNNER_TEMP 'task679-network-control.stdout'
+            $curlStderr = Join-Path $env:RUNNER_TEMP 'task679-network-control.stderr'
+            $control = Start-Process -FilePath 'curl.exe' -ArgumentList @('--fail', '--silent', '--show-error', 'https://github.com/') -Wait -PassThru -NoNewWindow -RedirectStandardOutput $curlStdout -RedirectStandardError $curlStderr
+            $controlBlocked = $control.ExitCode -ne 0
+            $evidence.stages.network_isolation = [ordered]@{
+              exit_code = if ($ruleEnabled -and $controlBlocked) { 0 } else { 1 }
+              rule_enabled = $ruleEnabled
+              positive_control_exit_code = [int]$control.ExitCode
+              positive_control_blocked = $controlBlocked
+            }
+            Write-Task679Evidence
+            if (-not $ruleEnabled) {
+              throw 'Outbound firewall rule was not observably enabled.'
+            }
+            if (-not $controlBlocked) {
+              throw 'Outbound positive control unexpectedly reached github.com.'
+            }
+          } catch {
+            $evidence.outcome = 'fail'
+            $evidence.failure_stage = 'network_isolation'
+            Write-Task679Evidence
+            throw
+          }
+
+      - name: Run offline fresh and pinned-prior upgrade legs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Get-Content -LiteralPath $env:TASK679_EVIDENCE_PATH -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 12
+          function Write-Task679Evidence {
+            [IO.File]::WriteAllText($env:TASK679_EVIDENCE_PATH, ($evidence | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+          }
+          function Get-Task679ProtectedInventory {
+            $definitions = @(
+              [pscustomobject]@{ label = 'project_repo'; file = 'project-repo/sentinel.bin' },
+              [pscustomobject]@{ label = 'agent_cli'; file = 'agent-cli/sentinel.bin' },
+              [pscustomobject]@{ label = 'non_owned_state'; file = 'non-owned/sentinel.bin' }
+            )
+            foreach ($definition in $definitions) {
+              $path = Join-Path $env:TASK679_PROTECTED_ROOT $definition.file
+              $exists = Test-Path -LiteralPath $path -PathType Leaf
+              [ordered]@{
+                label = [string]$definition.label
+                exists = $exists
+                sha256 = if ($exists) { (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() } else { '' }
+              }
+            }
+          }
+          function Compare-Task679ProtectedInventory {
+            param([Parameter(Mandatory)]$Before)
+            $beforeByLabel = @{}
+            foreach ($item in @($Before)) { $beforeByLabel[[string]$item.label] = [string]$item.sha256 }
+            $records = [Collections.Generic.List[object]]::new()
+            foreach ($item in @(Get-Task679ProtectedInventory)) {
+              $unchanged = [bool]$item.exists -and $beforeByLabel.ContainsKey([string]$item.label) -and [string]::Equals([string]$item.sha256, [string]$beforeByLabel[[string]$item.label], [StringComparison]::Ordinal)
+              $records.Add([ordered]@{ label = [string]$item.label; exists = [bool]$item.exists; unchanged = $unchanged })
+            }
+            return [ordered]@{ all_unchanged = @($records | Where-Object { -not $_.unchanged }).Count -eq 0; items = @($records) }
+          }
+          function Test-Task679NetworkRule {
+            $rule = @(Get-NetFirewallRule -Name $env:TASK679_FIREWALL_RULE -ErrorAction SilentlyContinue)
+            return $rule.Count -eq 1 -and [string]$rule[0].Enabled -ceq 'True' -and [string]$rule[0].Direction -ceq 'Outbound' -and [string]$rule[0].Action -ceq 'Block'
+          }
+          function Invoke-Task679HelperLeg {
+            param(
+              [Parameter(Mandatory)][ValidateSet('fresh', 'upgrade')][string]$Name,
+              [Parameter(Mandatory)]$ProtectedBefore
+            )
+            $stdoutPath = Join-Path $env:RUNNER_TEMP "task679-$Name.stdout"
+            $stderrPath = Join-Path $env:RUNNER_TEMP "task679-$Name.stderr"
+            $arguments = @(
+              '-NoProfile',
+              '-File', 'scripts/test-public-release.ps1',
+              '-Surface', 'Desktop',
+              '-Version', $env:TASK679_VERSION,
+              '-ReleaseTag', "v$env:TASK679_VERSION",
+              '-Repository', '${{ github.repository }}',
+              '-CandidateInstallerPath', $env:TASK679_CANDIDATE_PATH,
+              '-Json'
+            )
+            if ($Name -ceq 'upgrade') {
+              $arguments += @('-PriorInstallerPath', $env:TASK679_PRIOR_PATH, '-PriorVersion', $env:TASK679_PRIOR_VERSION)
+            }
+            $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+            $inventory = Compare-Task679ProtectedInventory -Before $ProtectedBefore
+            $result = [ordered]@{
+              status = 'fail'
+              exit_code = [int]$process.ExitCode
+              receipt_valid = $false
+              candidate_version_verified = $false
+              candidate_hash_verified = $false
+              packaged_page_observed = $false
+              cleanup_verified = $false
+              installer_contract_verified = $false
+              upgrade_payload_replacement_verified = $null
+              network_rule_remained_enabled = $false
+              protected_inventory = $inventory
+              failure = if ($process.ExitCode -eq 0) { 'receipt_invalid' } else { 'helper_exit_nonzero' }
+            }
+            if ($process.ExitCode -ne 0) {
+              return $result
+            }
+            try {
+              $raw = [IO.File]::ReadAllText($stdoutPath) -replace "`r`n", "`n" -replace "`r", "`n"
+              $lines = @($raw.TrimEnd("`n") -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+              if ($lines.Count -ne 1) { throw 'helper stdout shape invalid' }
+              $receipt = $lines[0] | ConvertFrom-Json -Depth 12
+              $versionVerified = [string]$receipt.version -ceq $env:TASK679_VERSION -and [string]$receipt.evidence.version -ceq $env:TASK679_VERSION -and [string]$receipt.release_tag -ceq "v$env:TASK679_VERSION"
+              $hashVerified = [string]$receipt.evidence.sha256 -ceq $env:TASK679_CANDIDATE_HASH -and [string]$receipt.evidence.asset -ceq $env:TASK679_CANDIDATE_ASSET
+              $pageObserved = [string]$receipt.evidence.page_url -match '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)'
+              $cleanupVerified = $receipt.ok -eq $true -and [string]$receipt.surface -ceq 'Desktop' -and [string]$receipt.cleanup -ceq 'clean'
+              $receiptValid = $versionVerified -and $hashVerified -and $pageObserved -and $cleanupVerified
+              $result.receipt_valid = $receiptValid
+              $result.candidate_version_verified = $versionVerified
+              $result.candidate_hash_verified = $hashVerified
+              $result.packaged_page_observed = $pageObserved
+              $result.cleanup_verified = $cleanupVerified
+              $result.installer_contract_verified = $receiptValid
+              if ($Name -ceq 'upgrade') {
+                $result.upgrade_payload_replacement_verified = $receiptValid
+              }
+              if ($receiptValid -and $inventory.all_unchanged) {
+                $result.status = 'pass'
+                $result.failure = ''
+              }
+            } catch {
+              $result.failure = 'receipt_invalid'
+            }
+            return $result
+          }
+
+          $currentStage = 'fresh'
+          try {
+            if (-not (Test-Task679NetworkRule)) {
+              throw 'Outbound network isolation was not active before the fresh leg.'
+            }
+            $candidateHash = (Get-FileHash -LiteralPath $env:TASK679_CANDIDATE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            $priorHash = (Get-FileHash -LiteralPath $env:TASK679_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH) {
+              throw 'Staged installer hash changed before the offline legs.'
+            }
+            $fresh = Invoke-Task679HelperLeg -Name fresh -ProtectedBefore $evidence.protected_inventory.before
+            $fresh.network_rule_remained_enabled = Test-Task679NetworkRule
+            if (-not $fresh.network_rule_remained_enabled) {
+              $fresh.status = 'fail'
+              $fresh.failure = 'network_rule_missing'
+            }
+            $evidence.legs.fresh = $fresh
+            Write-Task679Evidence
+            if ([string]$fresh.status -cne 'pass') {
+              throw 'Offline candidate fresh-install leg did not satisfy its receipt contract.'
+            }
+
+            $currentStage = 'upgrade'
+            if (-not (Test-Task679NetworkRule)) {
+              throw 'Outbound network isolation was not active before the upgrade leg.'
+            }
+            $candidateHash = (Get-FileHash -LiteralPath $env:TASK679_CANDIDATE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            $priorHash = (Get-FileHash -LiteralPath $env:TASK679_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH) {
+              throw 'Staged installer hash changed between the offline legs.'
+            }
+            $upgrade = Invoke-Task679HelperLeg -Name upgrade -ProtectedBefore $evidence.protected_inventory.before
+            $upgrade.network_rule_remained_enabled = Test-Task679NetworkRule
+            if (-not $upgrade.network_rule_remained_enabled) {
+              $upgrade.status = 'fail'
+              $upgrade.failure = 'network_rule_missing'
+            }
+            $evidence.legs.upgrade = $upgrade
+            Write-Task679Evidence
+            if ([string]$upgrade.status -cne 'pass') {
+              throw 'Offline pinned-prior upgrade leg did not satisfy its receipt contract.'
+            }
+
+            $evidence.outcome = 'pass'
+            $evidence.failure_stage = ''
+            Write-Task679Evidence
+          } catch {
+            $evidence.outcome = 'fail'
+            $evidence.failure_stage = $currentStage
+            Write-Task679Evidence
+            throw
+          }
+
+      - name: Restore runner outbound networking
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ruleName = "winsmux-task679-outbound-${{ github.run_id }}-${{ github.run_attempt }}"
+          $evidencePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts/task679-nsis-lifecycle/evidence.json'
+          $restoreExit = 0
+          try {
+            Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction Stop
+            $ruleAbsent = -not [bool](Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue)
+            if (-not $ruleAbsent) { throw 'Run-scoped outbound firewall rule remained after cleanup.' }
+          } catch {
+            $restoreExit = 1
+            $ruleAbsent = $false
+          }
+          if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
+            $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 12
+            $evidence.stages.network_restore = [ordered]@{ exit_code = $restoreExit; rule_absent = $ruleAbsent }
+            if ($restoreExit -ne 0) {
+              $evidence.outcome = 'fail'
+              $evidence.failure_stage = 'network_restore'
+            }
+            [IO.File]::WriteAllText($evidencePath, ($evidence | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+          }
+          if ($restoreExit -ne 0) {
+            throw 'TASK-679 failed to restore runner outbound networking.'
+          }
+
+      - name: Publish non-sensitive lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: task679-nsis-lifecycle-evidence
+          path: artifacts/task679-nsis-lifecycle/evidence.json
+          if-no-files-found: error
+
   task811-operator-infra:
     name: TASK-811 Operator Infrastructure Receipt
     runs-on: windows-latest
@@ -832,6 +1218,7 @@ jobs:
       - pester
       - core-build-test
       - desktop-build-test
+      - desktop-nsis-lifecycle
       - task811-receipt-bind
     if: always()
     steps:
@@ -848,6 +1235,7 @@ jobs:
             "${{ needs.pester.result }}" \
             "${{ needs.core-build-test.result }}" \
             "${{ needs.desktop-build-test.result }}" \
+            "${{ needs.desktop-nsis-lifecycle.result }}" \
             "${{ needs.task811-receipt-bind.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
