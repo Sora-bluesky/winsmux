@@ -113,6 +113,16 @@ public static class WinCredDeleteNative {
         $storedTargets | Should -Not -Contain ('winsmux:{0}' -f $script:Target)
     }
 
+    It 'vault set rejects an empty argv token before prompting' {
+        $script:Target = '{0}:empty-argv' -f $script:RunPrefix
+        $script:Rest = @('')
+
+        { Invoke-VaultSet } | Should -Throw '*command line*'
+
+        $storedTargets = @(Get-StoredCredentialTargets -Filter ("winsmux:{0}:*" -f $script:RunPrefix))
+        $storedTargets | Should -Not -Contain ('winsmux:{0}' -f $script:Target)
+    }
+
     It 'vault get through pwsh -File keeps a single rest token intact' {
         $bridge = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
         $key = 'WINSMUX_BRIDGE_REST_SINGLE_TOKEN'

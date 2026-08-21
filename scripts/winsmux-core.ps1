@@ -17738,7 +17738,13 @@ function Invoke-Profile {
 function Invoke-VaultSet {
     $key = $Target
     if (-not $key) { Stop-WithError "usage: winsmux vault set <key>" }
-    if ($Rest) {
+    $restLen = 0
+    if ($Rest -is [System.Array]) {
+        $restLen = $Rest.Length
+    } elseif ($null -ne $Rest) {
+        $restLen = 1
+    }
+    if ($restLen -gt 0) {
         Stop-WithError "vault set does not accept the value on the command line"
     }
 
