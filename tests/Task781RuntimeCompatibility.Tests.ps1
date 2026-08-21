@@ -711,6 +711,17 @@ $afterDelete = Test-VaultKeyExists -Key $key
         $vaultInject.Extent.Text | Should -Match 'Get-WinsmuxCredentialTargetNames'
         $vaultInject.Extent.Text | Should -Match '(?s)foreach.*credentialNames'
         $vaultInject.Extent.Text | Should -Match 'Get-WinsmuxVaultCredentialValue'
+        $vaultInject.Extent.Text | Should -Match 'Invoke-WinsmuxSourceFile'
+        $vaultInject.Extent.Text | Should -Not -Match 'send-keys'
+
+        $prodInject = $bridgeAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-VaultInject'
+        }, $true)
+        $prodInject.Extent.Text | Should -Match 'Invoke-WinsmuxSourceFile'
+        $prodInject.Extent.Text | Should -Match 'set-environment'
+        $prodInject.Extent.Text | Should -Not -Match 'send-keys'
     }
 }
 

@@ -541,11 +541,12 @@ Describe 'TASK781 managed target mutation guard' {
     It 'TASK781 C40 stops vault injection before reading a second secret when the generation changes' {
         $Target = '%2'
         $script:c19GuardCalls = 0
-        $script:c19VaultSends = [Collections.Generic.List[string]]::new()
+        $script:c19VaultMutates = [Collections.Generic.List[string]]::new()
         $script:c19SecretReads = [Collections.Generic.List[string]]::new()
         Mock Assert-ReadMark { }
         Mock Start-Sleep { }
         Mock Get-WinsmuxVaultCredentialNamesInternal { @('SYNTH_ONE', 'SYNTH_TWO') }
+        Mock Get-WinsmuxSessionNameForPane { 'winsmux-orchestra' }
         Mock Get-WinsmuxVaultCredentialValueInternal {
             param([string]$Name)
             $script:c19SecretReads.Add($Name) | Out-Null
@@ -555,15 +556,21 @@ Describe 'TASK781 managed target mutation guard' {
         Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
             param([string]$PaneId, [string]$CurrentProjectDir, [string]$Operation, [string]$ExpectedGenerationId)
             $script:c19GuardCalls++
-            if ($script:c19GuardCalls -eq 5) {
+            if ($script:c19GuardCalls -eq 4) {
                 throw 'runtime dispatch refused (invalid_supervisor_identity): generation changed before second secret read'
             }
             [pscustomobject]@{ Managed = $true; ProjectDir = $CurrentProjectDir; GenerationId = 'generation-G1' }
         }
+        Mock Invoke-WinsmuxSourceFile {
+            param([string[]]$Commands)
+            $script:c19VaultMutates.Add(($Commands -join '|')) | Out-Null
+            return [PSCustomObject]@{ Success = $true; ExitCode = 0 }
+        }
         Mock Invoke-WinsmuxRaw {
             param([string[]]$Arguments)
-            if ($Arguments[0] -ne 'send-keys') { throw "unexpected vault command: $($Arguments -join ' ')" }
-            $script:c19VaultSends.Add(($Arguments -join '|')) | Out-Null
+            $joined = $Arguments -join '|'
+            if ($Arguments[0] -eq 'send-keys') { throw "unexpected vault command: $joined" }
+            if ($Arguments[0] -eq 'set-environment') { throw "unexpected vault command: $joined" }
         }
         $errorText = ''
 
@@ -572,33 +579,38 @@ Describe 'TASK781 managed target mutation guard' {
 
         $script:c19GuardCalls | Should -Be 5
         @($script:c19SecretReads) | Should -Be @('SYNTH_ONE')
-        $script:c19VaultSends.Count | Should -Be 2
-        $script:c19VaultSends[0] | Should -Match 'SYNTH_ONE'
-        $script:c19VaultSends[0] | Should -Not -Match 'SYNTH_TWO'
-        $script:c19VaultSends[1] | Should -Match 'Enter$'
+        $script:c19VaultMutates.Count | Should -Be 1
+        $script:c19VaultMutates[0] | Should -Match 'SYNTH_ONE'
+        $script:c19VaultMutates[0] | Should -Not -Match 'SYNTH_TWO'
         $errorText | Should -Match 'invalid_supervisor_identity'
     }
 
-    It 'TASK781 C35 revalidates the captured generation immediately before Vault Enter' {
+    It 'TASK781 C35 revalidates the captured generation immediately before vault source-file' {
         $Target = '%2'
         $script:c35GuardCalls = 0
-        $script:c35VaultSends = [Collections.Generic.List[string]]::new()
+        $script:c35VaultMutates = [Collections.Generic.List[string]]::new()
         Mock Assert-ReadMark { }
         Mock Start-Sleep { }
         Mock Get-WinsmuxVaultCredentialNamesInternal { @('SYNTH_ONE') }
+        Mock Get-WinsmuxSessionNameForPane { 'winsmux-orchestra' }
         Mock Get-WinsmuxVaultCredentialValueInternal { 'synthetic-value-one' }
         Mock Assert-WinsmuxTargetRuntimeWriteAllowed {
             param([string]$PaneId, [string]$CurrentProjectDir, [string]$Operation, [string]$ExpectedGenerationId)
             $script:c35GuardCalls++
-            if ($script:c35GuardCalls -eq 4) {
-                throw 'runtime dispatch refused (invalid_supervisor_identity): generation changed before Vault Enter'
+            if ($script:c35GuardCalls -eq 3) {
+                throw 'runtime dispatch refused (invalid_supervisor_identity): generation changed before vault source-file'
             }
             [pscustomobject]@{ Managed = $true; ProjectDir = $CurrentProjectDir; GenerationId = 'generation-G1' }
         }
+        Mock Invoke-WinsmuxSourceFile {
+            $script:c35VaultMutates.Add('ran') | Out-Null
+            throw 'source-file must not run'
+        }
         Mock Invoke-WinsmuxRaw {
             param([string[]]$Arguments)
-            if ($Arguments[0] -ne 'send-keys') { throw "unexpected vault command: $($Arguments -join ' ')" }
-            $script:c35VaultSends.Add(($Arguments -join '|')) | Out-Null
+            $joined = $Arguments -join '|'
+            if ($Arguments[0] -eq 'send-keys') { throw "unexpected vault command: $joined" }
+            if ($Arguments[0] -eq 'set-environment') { throw "unexpected vault command: $joined" }
         }
         $errorText = ''
 
@@ -606,9 +618,7 @@ Describe 'TASK781 managed target mutation guard' {
         try { Invoke-VaultInject } catch { $errorText = [string]$_.Exception.Message } finally { Pop-Location }
 
         $script:c35GuardCalls | Should -Be 4
-        $script:c35VaultSends.Count | Should -Be 1
-        $script:c35VaultSends[0] | Should -Match 'SYNTH_ONE'
-        $script:c35VaultSends | Should -Not -Match 'Enter'
+        $script:c35VaultMutates.Count | Should -Be 0
         $errorText | Should -Match 'invalid_supervisor_identity'
     }
 

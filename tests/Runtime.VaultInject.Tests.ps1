@@ -196,4 +196,22 @@ public static class WinCredDeleteNative {
             'clear'
         )
     }
+
+    It 'vault inject does not fall back to argv set-environment when source-file fails' {
+        $script:Target = '%2'
+        $script:FallbackCalls = [System.Collections.Generic.List[string]]::new()
+        Mock Get-WinsmuxCredentialTargetNames { @('FIRST') }
+        Mock Get-WinsmuxSessionNameForPane { 'winsmux-orchestra' }
+        Mock Get-WinsmuxVaultCredentialValue { 'secret-value' }
+        Mock Invoke-WinsmuxSourceFile {
+            return [PSCustomObject]@{ Success = $false; ExitCode = 1; Output = 'source failed' }
+        }
+        Mock Invoke-WinsmuxCommand {
+            $script:FallbackCalls.Add(($Arguments -join '|')) | Out-Null
+            return [PSCustomObject]@{ Success = $true; ExitCode = 0; Output = '' }
+        }
+
+        { Invoke-VaultInject } | Should -Throw '*source-file*'
+        @($script:FallbackCalls) | Should -Be @()
+    }
 }

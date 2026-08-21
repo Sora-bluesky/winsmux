@@ -282,21 +282,13 @@ function Invoke-VaultInject {
                     -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
                 $sourceResult = Invoke-WinsmuxSourceFile -Commands @($command)
                 if (-not $sourceResult.Success) {
-                    # source-file keeps secrets out of argv; direct set-environment remains a last-resort fallback.
-                    Assert-WinsmuxTargetRuntimeWriteAllowed `
-                        -PaneId $paneId -CurrentProjectDir $projectDir -Operation dispatch `
-                        -ExpectedGenerationId ([string]$initialRuntime.GenerationId) | Out-Null
-                    $setResult = Invoke-WinsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $envName, $value)
-                    if (-not $setResult.Success) {
-                        Stop-WithError "winsmux set-environment failed while injecting credentials into $paneId."
-                    }
+                    Stop-WithError "winsmux source-file failed while injecting credentials into $paneId."
                 }
                 $injected++
             } finally {
                 $value = $null
                 $command = $null
                 $sourceResult = $null
-                $setResult = $null
             }
         }
 
