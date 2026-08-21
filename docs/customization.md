@@ -332,7 +332,7 @@ Use this model when assigning work:
 Store credentials that must be injected into a pane with Windows DPAPI:
 
 ```powershell
-winsmux vault set <name> <value>
+winsmux vault set <name>
 winsmux vault inject <name> <pane>
 ```
 

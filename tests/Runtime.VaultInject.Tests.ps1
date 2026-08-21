@@ -96,12 +96,21 @@ public static class WinCredDeleteNative {
 
     It 'vault set stores a credential under the unique winsmux-test prefix' {
         $script:Target = '{0}:set' -f $script:RunPrefix
-        $script:Rest = @('set-secret')
 
-        Invoke-VaultSet | Out-Null
+        Write-WinsmuxVaultCredentialInternal -Key $script:Target -Value 'set-secret'
 
         $storedTargets = @(Get-StoredCredentialTargets -Filter ("winsmux:{0}:*" -f $script:RunPrefix))
         $storedTargets | Should -Contain ('winsmux:{0}' -f $script:Target)
+    }
+
+    It 'vault set rejects a value passed on the command line' {
+        $script:Target = '{0}:argv' -f $script:RunPrefix
+        $script:Rest = @('argv-secret')
+
+        { Invoke-VaultSet } | Should -Throw '*command line*'
+
+        $storedTargets = @(Get-StoredCredentialTargets -Filter ("winsmux:{0}:*" -f $script:RunPrefix))
+        $storedTargets | Should -Not -Contain ('winsmux:{0}' -f $script:Target)
     }
 
     It 'vault get through pwsh -File keeps a single rest token intact' {
@@ -116,18 +125,14 @@ public static class WinCredDeleteNative {
 
     It 'vault get retrieves a stored credential' {
         $script:Target = '{0}:get' -f $script:RunPrefix
-        $script:Rest = @('get-secret')
-        Invoke-VaultSet | Out-Null
-
-        $script:Rest = @()
+        Write-WinsmuxVaultCredentialInternal -Key $script:Target -Value 'get-secret'
 
         (Invoke-VaultGet) | Should -Be 'get-secret'
     }
 
     It 'vault list includes the stored credential key' {
         $script:Target = '{0}:list' -f $script:RunPrefix
-        $script:Rest = @('list-secret')
-        Invoke-VaultSet | Out-Null
+        Write-WinsmuxVaultCredentialInternal -Key $script:Target -Value 'list-secret'
 
         $listedKeys = @(Invoke-VaultList)
 

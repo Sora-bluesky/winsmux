@@ -150,7 +150,7 @@ Get-Process winsmux-app -ErrorAction SilentlyContinue |
 対処:
 
 ```powershell
-winsmux vault set <name> <value>
+winsmux vault set <name>
 winsmux vault inject <name> <pane>
 ```
 

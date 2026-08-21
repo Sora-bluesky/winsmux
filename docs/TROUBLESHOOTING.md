@@ -168,7 +168,7 @@ Cause: the key is not stored in Windows Credential Manager.
 Fix:
 
 ```powershell
-winsmux vault set <name> <value>
+winsmux vault set <name>
 winsmux vault inject <name> <pane>
 ```
 
