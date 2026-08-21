@@ -241,48 +241,40 @@ function Invoke-WinsmuxSourceFile {
     param([Parameter(Mandatory = $true)][string[]]$Commands)
 
     $tempConf = [System.IO.Path]::GetTempFileName()
+    $ackName = 'WINSMUX_VAULT_INJECT_ACK'
+    $ackValue = [guid]::NewGuid().ToString('N')
     try {
         $utf8 = New-Object System.Text.UTF8Encoding $false
-        [System.IO.File]::WriteAllText($tempConf, ($Commands -join [Environment]::NewLine), $utf8)
+        $sourced = @($Commands) + @('set-environment ' + $ackName + ' ' + $ackValue)
+        [System.IO.File]::WriteAllText($tempConf, ($sourced -join [Environment]::NewLine), $utf8)
         $sourceResult = Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
         if ($sourceResult.Success) {
-            $envName = $null
-            foreach ($command in $Commands) {
-                $parts = @([regex]::Split([string]$command.Trim(), '\s+') | Where-Object { $_ -ne '' })
-                if ($parts.Count -ge 2 -and ($parts[0] -ceq 'set-environment' -or $parts[0] -ceq 'setenv')) {
-                    $i = 1
-                    while ($i -lt $parts.Count -and ([string]$parts[$i]).StartsWith('-')) { $i++ }
-                    if ($i -lt $parts.Count) {
-                        $envName = [string]$parts[$i]
-                        break
-                    }
+            $expected = $ackName + '=' + $ackValue
+            $deadline = [datetime]::UtcNow.AddSeconds(5)
+            $applied = $false
+            while ([datetime]::UtcNow -lt $deadline) {
+                $shown = Invoke-WinsmuxCommand -Arguments @('show-environment', $ackName)
+                $text = [string]$shown.Output
+                if ($text.Trim() -ceq $expected) {
+                    $applied = $true
+                    break
                 }
+                Start-Sleep -Milliseconds 50
             }
-            if ($envName) {
-                $deadline = [datetime]::UtcNow.AddSeconds(5)
-                $applied = $false
-                while ([datetime]::UtcNow -lt $deadline) {
-                    $shown = Invoke-WinsmuxCommand -Arguments @('show-environment', $envName)
-                    $text = [string]$shown.Output
-                    if ($text.StartsWith(($envName + '='), [System.StringComparison]::Ordinal)) {
-                        $applied = $true
-                        break
-                    }
-                    Start-Sleep -Milliseconds 50
-                }
-                $shown = $null
-                $text = $null
-                if (-not $applied) {
-                    return [PSCustomObject]@{
-                        Success  = $false
-                        ExitCode = 1
-                        Output   = ''
-                    }
+            $shown = $null
+            $text = $null
+            $expected = $null
+            if (-not $applied) {
+                return [PSCustomObject]@{
+                    Success  = $false
+                    ExitCode = 1
+                    Output   = ''
                 }
             }
         }
         return $sourceResult
     } finally {
+        $ackValue = $null
         Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
     }
 }

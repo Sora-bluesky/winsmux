@@ -731,7 +731,16 @@ $afterDelete = Test-VaultKeyExists -Key $key
         }, $true)
         $prodSource.Extent.Text | Should -Match 'show-environment'
         $prodSource.Extent.Text | Should -Match 'UTF8Encoding'
+        $prodSource.Extent.Text | Should -Match 'WINSMUX_VAULT_INJECT_ACK'
         $prodSource.Extent.Text | Should -Not -Match 'Set-Content'
+
+        $vaultSource = $vaultAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-WinsmuxSourceFile'
+        }, $true)
+        $vaultSource.Extent.Text | Should -Match 'WINSMUX_VAULT_INJECT_ACK'
+        $vaultSource.Extent.Text | Should -Match 'show-environment'
     }
 }
 
