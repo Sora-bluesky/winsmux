@@ -434,3 +434,150 @@ fn hashed_known_hosts_is_not_a_register_source() {
         "stderr={stderr}"
     );
 }
+
+#[test]
+fn retargeted_alias_does_not_keep_the_old_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = install_fake_ssh(dir.path(), ssh_g_text());
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let known_hosts = write_known_hosts(dir.path(), blob);
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+
+    fs::write(
+        dir.path().join("g-text.txt"),
+        "user ubuntu\r\nhostname 192.0.2.11\r\nport 22\r\n",
+    )
+    .unwrap();
+    fs::write(&known_hosts, "").unwrap();
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(!ok, "stdout={stdout}");
+    assert!(
+        stderr.contains("endpoint changed") || stderr.contains("register is not allowed"),
+        "stderr={stderr}"
+    );
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("lab.json")).unwrap()).unwrap();
+    assert_eq!(record["hostname"], "192.0.2.10");
+    assert_eq!(record["state"], "blocked");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let blocked: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(blocked["state"], "blocked");
+    assert_eq!(blocked["hostname"], "192.0.2.10");
+}
+
+#[test]
+fn revoked_known_hosts_entry_blocks_even_with_plaintext_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = install_fake_ssh(dir.path(), ssh_g_text());
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let known_hosts = write_known_hosts(dir.path(), blob);
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+
+    fs::write(
+        &known_hosts,
+        format!(
+            "@revoked 192.0.2.10 ssh-ed25519 {blob}\n192.0.2.10 ssh-ed25519 {blob}\n"
+        ),
+    )
+    .unwrap();
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let blocked: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(blocked["state"], "blocked");
+    let (ok, _, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains("revoked")
+            || stderr.contains("ambiguous")
+            || stderr.contains("register is not allowed"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn revoked_only_known_hosts_blocks_register_without_plaintext_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = install_fake_ssh(dir.path(), ssh_g_text());
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let known_hosts = write_known_hosts(dir.path(), blob);
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    fs::write(
+        &known_hosts,
+        format!("@revoked 192.0.2.10 ssh-ed25519 {blob}\n"),
+    )
+    .unwrap();
+    let (ok, _, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains("revoked") || stderr.contains("register is not allowed"),
+        "stderr={stderr}"
+    );
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("lab.json")).unwrap()).unwrap();
+    assert_eq!(record["state"], "blocked");
+}

@@ -54,6 +54,7 @@ enum PresentedFingerprint {
     None,
     Unique(String),
     Ambiguous,
+    Revoked,
 }
 
 pub(crate) fn run_host_profile_command(args: &[&String]) -> io::Result<()> {
@@ -134,7 +135,6 @@ fn validate_alias(alias: &str) -> io::Result<()> {
 
 fn check_alias(alias: &str) -> io::Result<serde_json::Value> {
     let resolved = resolve_ssh_g(alias)?;
-    let presented = known_hosts_fingerprint(&resolved)?;
     let path = record_path(alias)?;
     let mut record = load_record(&path)?.unwrap_or_else(|| HostProfileRecord {
         alias: alias.to_string(),
@@ -145,6 +145,25 @@ fn check_alias(alias: &str) -> io::Result<serde_json::Value> {
         confirmed_fingerprint: None,
         state: TrustState::Pending,
     });
+    let presented = known_hosts_fingerprint(&resolved, record.confirmed_fingerprint.as_deref())?;
+    if record.confirmed_fingerprint.is_some()
+        && (record.hostname != resolved.hostname || record.port != resolved.port)
+    {
+        record.state = TrustState::Blocked;
+        save_record(&path, &record)?;
+        return Ok(json!({
+            "ok": true,
+            "action": "check",
+            "alias": alias,
+            "hostname": record.hostname,
+            "port": record.port,
+            "user": record.user,
+            "proxyjump": record.proxyjump,
+            "state": record.state,
+            "presented_fingerprint": json!(null),
+            "confirmed_fingerprint": record.confirmed_fingerprint,
+        }));
+    }
     record.hostname = resolved.hostname.clone();
     record.port = resolved.port;
     record.user = resolved.user.clone();
@@ -153,7 +172,9 @@ fn check_alias(alias: &str) -> io::Result<serde_json::Value> {
     save_record(&path, &record)?;
     let presented_json = match &presented {
         PresentedFingerprint::Unique(fingerprint) => json!(fingerprint),
-        PresentedFingerprint::None | PresentedFingerprint::Ambiguous => json!(null),
+        PresentedFingerprint::None
+        | PresentedFingerprint::Ambiguous
+        | PresentedFingerprint::Revoked => json!(null),
     };
     Ok(json!({
         "ok": true,
@@ -171,19 +192,33 @@ fn check_alias(alias: &str) -> io::Result<serde_json::Value> {
 
 fn register_alias(alias: &str) -> io::Result<serde_json::Value> {
     let resolved = resolve_ssh_g(alias)?;
-    let presented = match known_hosts_fingerprint(&resolved)? {
-        PresentedFingerprint::Unique(fingerprint) => fingerprint,
-        PresentedFingerprint::Ambiguous => {
-            let path = record_path(alias)?;
-            if let Some(mut record) = load_record(&path)? {
-                if record.confirmed_fingerprint.is_some() {
-                    record.state = TrustState::Blocked;
-                    save_record(&path, &record)?;
-                }
+    let path = record_path(alias)?;
+    let mut record = load_record(&path)?.ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::InvalidInput,
+            "host-profile register requires a pending record; run check first",
+        )
+    })?;
+    if record.confirmed_fingerprint.is_some()
+        && (record.hostname != resolved.hostname || record.port != resolved.port)
+    {
+        record.state = TrustState::Blocked;
+        save_record(&path, &record)?;
+        return Err(io::Error::new(
+            ErrorKind::PermissionDenied,
+            "host-profile resolved endpoint changed; register is not allowed",
+        ));
+    }
+    let presented = known_hosts_fingerprint(&resolved, record.confirmed_fingerprint.as_deref())?;
+    match presented {
+        PresentedFingerprint::Ambiguous | PresentedFingerprint::Revoked => {
+            if record.confirmed_fingerprint.is_some() {
+                record.state = TrustState::Blocked;
+                save_record(&path, &record)?;
             }
             return Err(io::Error::new(
                 ErrorKind::PermissionDenied,
-                "host-profile known_hosts is ambiguous; register is not allowed",
+                "host-profile known_hosts is ambiguous or revoked; register is not allowed",
             ));
         }
         PresentedFingerprint::None => {
@@ -192,50 +227,46 @@ fn register_alias(alias: &str) -> io::Result<serde_json::Value> {
                 "host-profile register requires a plaintext known_hosts key; none was found",
             ));
         }
-    };
-    let path = record_path(alias)?;
-    let mut record = load_record(&path)?.ok_or_else(|| {
-        io::Error::new(
-            ErrorKind::InvalidInput,
-            "host-profile register requires a pending record; run check first",
-        )
-    })?;
-    if next_state(&record, &PresentedFingerprint::Unique(presented.clone())) == TrustState::Blocked
-        || (record.confirmed_fingerprint.is_some()
-            && record.confirmed_fingerprint.as_deref() != Some(presented.as_str()))
-    {
-        record.state = TrustState::Blocked;
-        save_record(&path, &record)?;
-        return Err(io::Error::new(
-            ErrorKind::PermissionDenied,
-            "host-profile fingerprint changed; register is not allowed",
-        ));
+        PresentedFingerprint::Unique(presented) => {
+            if next_state(&record, &PresentedFingerprint::Unique(presented.clone()))
+                == TrustState::Blocked
+                || (record.confirmed_fingerprint.is_some()
+                    && record.confirmed_fingerprint.as_deref() != Some(presented.as_str()))
+            {
+                record.state = TrustState::Blocked;
+                save_record(&path, &record)?;
+                return Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "host-profile fingerprint changed; register is not allowed",
+                ));
+            }
+            if record.state == TrustState::Registered
+                && record.confirmed_fingerprint.as_deref() == Some(presented.as_str())
+            {
+                return Ok(json!({
+                    "ok": true,
+                    "action": "register",
+                    "alias": alias,
+                    "state": record.state,
+                    "confirmed_fingerprint": record.confirmed_fingerprint,
+                }));
+            }
+            record.hostname = resolved.hostname;
+            record.port = resolved.port;
+            record.user = resolved.user;
+            record.proxyjump = resolved.proxyjump;
+            record.confirmed_fingerprint = Some(presented);
+            record.state = TrustState::Registered;
+            save_record(&path, &record)?;
+            Ok(json!({
+                "ok": true,
+                "action": "register",
+                "alias": alias,
+                "state": record.state,
+                "confirmed_fingerprint": record.confirmed_fingerprint,
+            }))
+        }
     }
-    if record.state == TrustState::Registered
-        && record.confirmed_fingerprint.as_deref() == Some(presented.as_str())
-    {
-        return Ok(json!({
-            "ok": true,
-            "action": "register",
-            "alias": alias,
-            "state": record.state,
-            "confirmed_fingerprint": record.confirmed_fingerprint,
-        }));
-    }
-    record.hostname = resolved.hostname;
-    record.port = resolved.port;
-    record.user = resolved.user;
-    record.proxyjump = resolved.proxyjump;
-    record.confirmed_fingerprint = Some(presented);
-    record.state = TrustState::Registered;
-    save_record(&path, &record)?;
-    Ok(json!({
-        "ok": true,
-        "action": "register",
-        "alias": alias,
-        "state": record.state,
-        "confirmed_fingerprint": record.confirmed_fingerprint,
-    }))
 }
 
 fn status_alias(alias: &str) -> io::Result<serde_json::Value> {
@@ -265,6 +296,7 @@ fn next_state(record: &HostProfileRecord, presented: &PresentedFingerprint) -> T
         record.confirmed_fingerprint.as_deref(),
         presented,
     ) {
+        (_, _, PresentedFingerprint::Revoked) => TrustState::Blocked,
         (_, Some(_), PresentedFingerprint::Ambiguous) => TrustState::Blocked,
         (_, Some(confirmed), PresentedFingerprint::Unique(presented))
             if confirmed != presented =>
@@ -355,7 +387,10 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
     })
 }
 
-fn known_hosts_fingerprint(host: &ResolvedHost) -> io::Result<PresentedFingerprint> {
+fn known_hosts_fingerprint(
+    host: &ResolvedHost,
+    confirmed: Option<&str>,
+) -> io::Result<PresentedFingerprint> {
     let Some(path) = known_hosts_path()? else {
         return Ok(PresentedFingerprint::None);
     };
@@ -363,14 +398,28 @@ fn known_hosts_fingerprint(host: &ResolvedHost) -> io::Result<PresentedFingerpri
         return Ok(PresentedFingerprint::None);
     }
     let text = fs::read_to_string(&path)?;
+    let mut revoked = Vec::new();
     let mut found: Option<String> = None;
     for raw in text.lines() {
         let line = raw.trim();
-        if line.is_empty()
-            || line.starts_with('#')
-            || line.starts_with("|1|")
-            || line.starts_with("@")
-        {
+        if line.is_empty() || line.starts_with('#') || line.starts_with("|1|") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("@revoked") {
+            let rest = rest.trim();
+            let mut parts = rest.split_whitespace();
+            let names = parts.next().unwrap_or("");
+            let key_type = parts.next().unwrap_or("");
+            let blob = parts.next().unwrap_or("");
+            if key_type.is_empty() || blob.is_empty() {
+                continue;
+            }
+            if names == "*" || host_names_match(names, host) {
+                revoked.push(fingerprint_blob(blob));
+            }
+            continue;
+        }
+        if line.starts_with('@') {
             continue;
         }
         let mut parts = line.split_whitespace();
@@ -386,13 +435,25 @@ fn known_hosts_fingerprint(host: &ResolvedHost) -> io::Result<PresentedFingerpri
         let fingerprint = fingerprint_blob(blob);
         match &found {
             Some(existing) if existing != &fingerprint => {
+                if confirmed.is_some_and(|confirmed| revoked.iter().any(|item| item == confirmed)) {
+                    return Ok(PresentedFingerprint::Revoked);
+                }
                 return Ok(PresentedFingerprint::Ambiguous);
             }
             None => found = Some(fingerprint),
             Some(_) => {}
         }
     }
-    Ok(found.map_or(PresentedFingerprint::None, PresentedFingerprint::Unique))
+    if confirmed.is_some_and(|confirmed| revoked.iter().any(|item| item == confirmed)) {
+        return Ok(PresentedFingerprint::Revoked);
+    }
+    match found {
+        Some(fingerprint) if revoked.iter().any(|item| item == &fingerprint) => {
+            Ok(PresentedFingerprint::Revoked)
+        }
+        Some(fingerprint) => Ok(PresentedFingerprint::Unique(fingerprint)),
+        None => Ok(PresentedFingerprint::None),
+    }
 }
 
 fn host_names_match(names: &str, host: &ResolvedHost) -> bool {
