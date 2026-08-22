@@ -45,9 +45,12 @@ struct HostProfileRecord {
 
 struct ResolvedHost {
     hostname: String,
+    lookup_name: String,
     port: u16,
     user: String,
     proxyjump: Option<String>,
+    user_known_hosts: Vec<PathBuf>,
+    global_known_hosts: Vec<PathBuf>,
 }
 
 enum PresentedFingerprint {
@@ -347,9 +350,12 @@ fn resolve_ssh_g(alias: &str) -> io::Result<ResolvedHost> {
 
 fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
     let mut hostname = None;
+    let mut hostkeyalias = None;
     let mut user = None;
     let mut port = 22u16;
     let mut proxyjump = None;
+    let mut user_known_hosts = Vec::new();
+    let mut global_known_hosts = Vec::new();
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -360,6 +366,11 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
         let value = parts.next().unwrap_or("").trim();
         match key.as_str() {
             "hostname" => hostname = Some(value.to_string()),
+            "hostkeyalias"
+                if !value.is_empty() && !value.eq_ignore_ascii_case("none") =>
+            {
+                hostkeyalias = Some(value.to_string())
+            }
             "user" => user = Some(value.to_string()),
             "port" => {
                 port = value.parse().map_err(|_| {
@@ -367,6 +378,8 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
                 })?;
             }
             "proxyjump" if !value.is_empty() => proxyjump = Some(value.to_string()),
+            "userknownhostsfile" => user_known_hosts.extend(parse_known_hosts_files(value)),
+            "globalknownhostsfile" => global_known_hosts.extend(parse_known_hosts_files(value)),
             _ => {}
         }
     }
@@ -379,27 +392,72 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
             "OpenSSH alias did not resolve a hostname; winsmux will not invent a host",
         ));
     }
+    let lookup_name = hostkeyalias
+        .filter(|alias| !alias.is_empty())
+        .unwrap_or_else(|| hostname.clone());
     Ok(ResolvedHost {
         hostname,
+        lookup_name,
         port,
         user: user.unwrap_or_default(),
         proxyjump,
+        user_known_hosts,
+        global_known_hosts,
     })
+}
+
+fn parse_known_hosts_files(value: &str) -> Vec<PathBuf> {
+    if value.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+    value
+        .split_whitespace()
+        .filter(|path| !path.is_empty() && !path.eq_ignore_ascii_case("none"))
+        .map(PathBuf::from)
+        .collect()
 }
 
 fn known_hosts_fingerprint(
     host: &ResolvedHost,
     confirmed: Option<&str>,
 ) -> io::Result<PresentedFingerprint> {
-    let Some(path) = known_hosts_path()? else {
-        return Ok(PresentedFingerprint::None);
-    };
-    if !path.is_file() {
-        return Ok(PresentedFingerprint::None);
-    }
-    let text = fs::read_to_string(&path)?;
     let mut revoked = Vec::new();
     let mut found: Option<String> = None;
+    let mut ambiguous = false;
+    let mut saw_file = false;
+    for path in known_hosts_files(host)? {
+        if !path.is_file() {
+            continue;
+        }
+        saw_file = true;
+        let text = fs::read_to_string(&path)?;
+        scan_known_hosts_text(host, &text, &mut revoked, &mut found, &mut ambiguous);
+    }
+    if !saw_file {
+        return Ok(PresentedFingerprint::None);
+    }
+    if confirmed.is_some_and(|confirmed| revoked.iter().any(|item| item == confirmed)) {
+        return Ok(PresentedFingerprint::Revoked);
+    }
+    if ambiguous {
+        return Ok(PresentedFingerprint::Ambiguous);
+    }
+    Ok(match found {
+        Some(fingerprint) if revoked.iter().any(|item| item == &fingerprint) => {
+            PresentedFingerprint::Revoked
+        }
+        Some(fingerprint) => PresentedFingerprint::Unique(fingerprint),
+        None => PresentedFingerprint::None,
+    })
+}
+
+fn scan_known_hosts_text(
+    host: &ResolvedHost,
+    text: &str,
+    revoked: &mut Vec<String>,
+    found: &mut Option<String>,
+    ambiguous: &mut bool,
+) {
     for raw in text.lines() {
         let line = raw.trim();
         if line.is_empty() || line.starts_with('#') || line.starts_with("|1|") {
@@ -414,7 +472,7 @@ fn known_hosts_fingerprint(
             if key_type.is_empty() || blob.is_empty() {
                 continue;
             }
-            if names == "*" || host_names_match(names, host) {
+            if host_names_match(names, host) {
                 revoked.push(fingerprint_blob(blob));
             }
             continue;
@@ -433,38 +491,87 @@ fn known_hosts_fingerprint(
             continue;
         }
         let fingerprint = fingerprint_blob(blob);
-        match &found {
-            Some(existing) if existing != &fingerprint => {
-                if confirmed.is_some_and(|confirmed| revoked.iter().any(|item| item == confirmed)) {
-                    return Ok(PresentedFingerprint::Revoked);
-                }
-                return Ok(PresentedFingerprint::Ambiguous);
-            }
-            None => found = Some(fingerprint),
+        match found.as_ref() {
+            Some(existing) if existing != &fingerprint => *ambiguous = true,
+            None => *found = Some(fingerprint),
             Some(_) => {}
         }
-    }
-    if confirmed.is_some_and(|confirmed| revoked.iter().any(|item| item == confirmed)) {
-        return Ok(PresentedFingerprint::Revoked);
-    }
-    match found {
-        Some(fingerprint) if revoked.iter().any(|item| item == &fingerprint) => {
-            Ok(PresentedFingerprint::Revoked)
-        }
-        Some(fingerprint) => Ok(PresentedFingerprint::Unique(fingerprint)),
-        None => Ok(PresentedFingerprint::None),
     }
 }
 
 fn host_names_match(names: &str, host: &ResolvedHost) -> bool {
-    let bracketed = format!("[{}]:{}", host.hostname, host.port);
-    names.split(',').any(|name| {
-        let name = name.trim();
-        if name == bracketed {
-            return true;
+    host_lookup_candidates(host).any(|candidate| pattern_list_matches(names, &candidate))
+}
+
+fn host_lookup_candidates(host: &ResolvedHost) -> impl Iterator<Item = String> {
+    let lookup = host.lookup_name.clone();
+    let bracketed = format!("[{}]:{}", lookup, host.port);
+    let bare = (host.port == 22).then_some(lookup);
+    [Some(bracketed), bare].into_iter().flatten()
+}
+
+fn pattern_list_matches(list: &str, host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let mut positive = false;
+    let mut negated = false;
+    for pattern in list.split(',') {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            continue;
         }
-        host.port == 22 && name == host.hostname
-    })
+        if let Some(rest) = pattern.strip_prefix('!') {
+            if ssh_glob_match(&rest.to_ascii_lowercase(), &host) {
+                negated = true;
+            }
+        } else if ssh_glob_match(&pattern.to_ascii_lowercase(), &host) {
+            positive = true;
+        }
+    }
+    positive && !negated
+}
+
+fn ssh_glob_match(pattern: &str, name: &str) -> bool {
+    ssh_glob_match_bytes(pattern.as_bytes(), name.as_bytes())
+}
+
+fn ssh_glob_match_bytes(pattern: &[u8], name: &[u8]) -> bool {
+    let mut pi = 0;
+    let mut ni = 0;
+    while pi < pattern.len() {
+        match pattern[pi] {
+            b'*' => {
+                pi += 1;
+                if pi == pattern.len() {
+                    return true;
+                }
+                while ni <= name.len() {
+                    if ssh_glob_match_bytes(&pattern[pi..], &name[ni..]) {
+                        return true;
+                    }
+                    if ni == name.len() {
+                        return false;
+                    }
+                    ni += 1;
+                }
+                return false;
+            }
+            b'?' => {
+                if ni >= name.len() {
+                    return false;
+                }
+                pi += 1;
+                ni += 1;
+            }
+            byte => {
+                if ni >= name.len() || name[ni] != byte {
+                    return false;
+                }
+                pi += 1;
+                ni += 1;
+            }
+        }
+    }
+    ni == name.len()
 }
 
 fn fingerprint_blob(blob: &str) -> String {
@@ -484,12 +591,22 @@ fn profile_dir() -> io::Result<PathBuf> {
     Ok(PathBuf::from(local).join("winsmux").join("host-profiles"))
 }
 
-fn known_hosts_path() -> io::Result<Option<PathBuf>> {
+fn known_hosts_files(host: &ResolvedHost) -> io::Result<Vec<PathBuf>> {
     if let Some(path) = env_nonempty("WINSMUX_HOST_PROFILE_KNOWN_HOSTS") {
-        return Ok(Some(PathBuf::from(path)));
+        return Ok(vec![PathBuf::from(path)]);
     }
-    let home = env_nonempty("USERPROFILE").or_else(|| env_nonempty("HOME"));
-    Ok(home.map(|home| Path::new(&home).join(".ssh").join("known_hosts")))
+    let mut files = host.user_known_hosts.clone();
+    if files.is_empty() {
+        if let Some(home) = env_nonempty("USERPROFILE").or_else(|| env_nonempty("HOME")) {
+            files.push(Path::new(&home).join(".ssh").join("known_hosts"));
+        }
+    }
+    for path in &host.global_known_hosts {
+        if !files.iter().any(|existing| existing == path) {
+            files.push(path.clone());
+        }
+    }
+    Ok(files)
 }
 
 fn load_record(path: &Path) -> io::Result<Option<HostProfileRecord>> {

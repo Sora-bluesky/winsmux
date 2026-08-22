@@ -581,3 +581,137 @@ fn revoked_only_known_hosts_blocks_register_without_plaintext_copy() {
         serde_json::from_str(&fs::read_to_string(dir.path().join("lab.json")).unwrap()).unwrap();
     assert_eq!(record["state"], "blocked");
 }
+
+fn run_host_profile_without_known_hosts_env(
+    dir: &Path,
+    ssh: &Path,
+    args: &[&str],
+) -> (bool, String, String) {
+    let output = bin()
+        .args(args)
+        .env("WINSMUX_HOST_PROFILE_DIR", dir)
+        .env_remove("WINSMUX_HOST_PROFILE_KNOWN_HOSTS")
+        .env("WINSMUX_HOST_PROFILE_SSH", ssh)
+        .env_remove("WINSMUX_HOST_PROFILE_SSH_G_TEXT")
+        .output()
+        .expect("run host-profile");
+    (
+        output.status.success(),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn host_key_alias_looks_up_known_hosts_under_alias_not_hostname() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let g_text = "user git\nhostname 203.0.113.10\nport 22\nhostkeyalias github.com\n";
+    let ssh = install_fake_ssh(dir.path(), g_text);
+    let known_hosts = dir.path().join("known_hosts");
+    fs::write(&known_hosts, format!("github.com ssh-ed25519 {blob}\n")).unwrap();
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "gh", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "gh", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("gh.json")).unwrap()).unwrap();
+    assert_eq!(record["state"], "registered");
+    assert_eq!(record["hostname"], "203.0.113.10");
+}
+
+#[test]
+fn host_key_alias_none_looks_up_resolved_hostname() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let g_text = "user ubuntu\nhostname 192.0.2.10\nport 22\nhostkeyalias none\n";
+    let ssh = install_fake_ssh(dir.path(), g_text);
+    let known_hosts = write_known_hosts(dir.path(), blob);
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("lab.json")).unwrap()).unwrap();
+    assert_eq!(record["state"], "registered");
+    assert_eq!(record["hostname"], "192.0.2.10");
+}
+
+#[test]
+fn user_known_hosts_file_from_ssh_g_is_searched() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let custom = dir.path().join("custom_known_hosts");
+    fs::write(&custom, format!("192.0.2.10 ssh-ed25519 {blob}\n")).unwrap();
+    let g_text = format!(
+        "user ubuntu\nhostname 192.0.2.10\nport 22\nuserknownhostsfile {}\n",
+        custom.display()
+    );
+    let ssh = install_fake_ssh(dir.path(), &g_text);
+    let (ok, stdout, stderr) = run_host_profile_without_known_hosts_env(
+        dir.path(),
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile_without_known_hosts_env(
+        dir.path(),
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+}
+
+#[test]
+fn wildcard_revoked_known_hosts_blocks_register() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let g_text = "user ubuntu\nhostname api.example.com\nport 22\n";
+    let ssh = install_fake_ssh(dir.path(), g_text);
+    let known_hosts = dir.path().join("known_hosts");
+    fs::write(
+        &known_hosts,
+        format!("@revoked *.example.com ssh-ed25519 {blob}\napi.example.com ssh-ed25519 {blob}\n"),
+    )
+    .unwrap();
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["state"], "blocked");
+    let (ok, _, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains("revoked") || stderr.contains("register is not allowed"),
+        "stderr={stderr}"
+    );
+}
