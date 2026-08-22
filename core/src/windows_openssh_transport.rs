@@ -7,6 +7,7 @@
 use std::io::{self, ErrorKind, Read, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
+use std::time::Duration;
 
 pub(crate) const USAGE: &str = "usage: winsmux ssh-helper-stdio -- <alias>";
 
@@ -188,11 +189,20 @@ where
     let status = thread::scope(|scope| -> io::Result<ExitStatus> {
         let stdout_thread = scope.spawn(|| copy_and_flush(&mut child_stdout, &mut output));
         let stderr_thread = scope.spawn(|| copy_and_flush(&mut child_stderr, &mut err_out));
-        let status = reaper
+        let child = reaper
             .child
             .as_mut()
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "ssh.exe child missing"))?
-            .wait()?;
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "ssh.exe child missing"))?;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if stdout_thread.is_finished() || stderr_thread.is_finished() {
+                let _ = child.kill();
+                break child.wait()?;
+            }
+            thread::sleep(Duration::from_millis(5));
+        };
         interrupt_stdin_read();
         stdout_thread.join().unwrap()?;
         stderr_thread.join().unwrap()?;
@@ -664,6 +674,39 @@ if ($mode -eq 'helper') {
         relay.join().expect("relay thread").unwrap();
         let spawn_log = fs::read_to_string(dir.path().join("ssh-spawn.txt")).unwrap();
         assert_eq!(spawn_log.lines().count(), 1);
+    }
+
+    struct ClosedStderr;
+
+    impl Write for ClosedStderr {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(ErrorKind::BrokenPipe, "stderr closed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn stderr_write_error_reaps_child_instead_of_deadlock() {
+        let child = StdCommand::new("pwsh")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$buf = New-Object byte[] 8192; $err = [Console]::OpenStandardError(); for ($i = 0; $i -lt 64; $i++) { $err.Write($buf, 0, $buf.Length) }; Start-Sleep -Seconds 30",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        let error = relay_and_reap_io(child, io::empty(), Vec::new(), ClosedStderr).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "relay deadlocked after stderr write error: {error}"
+        );
     }
 
     #[test]
