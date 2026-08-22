@@ -173,6 +173,9 @@ function Get-WinsmuxPesterShardRegistry {
         (New-WinsmuxPesterDesktopRow -Ordinal 26 -ShardId 'desktop-debug-process' -TestPaths @(
             'tests/V03630DesktopDebugGateProcess.Tests.ps1'
         ) -ResultFile 'test-results-desktop-debug-v03630.xml')
+        (New-WinsmuxPesterMatrixRow -Ordinal 27 -ShardId 'planning-model' -TimeoutMinutes 5 -TestPaths @(
+            'tests/planning-model.Tests.ps1'
+        ) -ResultFile 'test-results-planning-model.xml')
     )
 }
 

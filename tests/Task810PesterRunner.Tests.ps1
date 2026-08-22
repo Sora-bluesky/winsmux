@@ -982,7 +982,7 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $exports = @($script:Module.ExportedCommands.Keys | Sort-Object)
             $exports | Should -Be ($script:Task810RequiredExports | Sort-Object)
             $reg = @(Get-WinsmuxPesterShardRegistry)
-            $reg.Count | Should -Be 26
+            $reg.Count | Should -Be 27
         }
 
         It 'arbitrary primitive strings' {
