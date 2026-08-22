@@ -35,6 +35,20 @@ private vulnerability reporting flow described in [SECURITY.md](SECURITY.md).
 
 Keep pull requests narrow and reviewable.
 
+Planning tasks are planning units, not pull-request boundaries. A task may
+split across pull requests. Multiple tasks may share a pull request only when
+they are inseparable within the declared size and coupling budget.
+
+Each pull request delivers one reviewable and independently reversible release
+outcome. A VERSION-only change is not a publication outcome.
+`scripts/bump-version.ps1 -SyncOnly` remains the allowed non-publication way to
+synchronize VERSION files. Tag, GitHub Release, and npm stay a separate
+maintainer publication step.
+
+A planned version with many tasks still uses this budget. It does not require
+one pull request per task, and it does not allow bundling an unrelated product
+change with publication.
+
 1. Classify changed files using [Repository surface policy](docs/repo-surface-policy.md).
 2. Explain the behavior or responsibility being replaced.
 3. Describe the user-visible or maintainer-visible outcome.
