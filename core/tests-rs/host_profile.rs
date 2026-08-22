@@ -715,3 +715,91 @@ fn wildcard_revoked_known_hosts_blocks_register() {
         "stderr={stderr}"
     );
 }
+
+#[test]
+fn user_known_hosts_none_does_not_fall_back_to_default_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let home = dir.path().join("home");
+    fs::create_dir_all(home.join(".ssh")).unwrap();
+    fs::write(
+        home.join(".ssh").join("known_hosts"),
+        format!("192.0.2.10 ssh-ed25519 {blob}\n"),
+    )
+    .unwrap();
+    let g_text = "user ubuntu\nhostname 192.0.2.10\nport 22\nuserknownhostsfile none\n";
+    let ssh = install_fake_ssh(dir.path(), g_text);
+    let output = bin()
+        .args(["host-profile", "check", "lab", "--json"])
+        .env("WINSMUX_HOST_PROFILE_DIR", dir.path())
+        .env_remove("WINSMUX_HOST_PROFILE_KNOWN_HOSTS")
+        .env("WINSMUX_HOST_PROFILE_SSH", &ssh)
+        .env_remove("WINSMUX_HOST_PROFILE_SSH_G_TEXT")
+        .env("USERPROFILE", &home)
+        .env("HOME", &home)
+        .output()
+        .expect("run host-profile");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(output.status.success(), "stderr={stderr} stdout={stdout}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["state"], "pending");
+    assert!(value["presented_fingerprint"].is_null());
+    let output = bin()
+        .args(["host-profile", "register", "lab", "--json"])
+        .env("WINSMUX_HOST_PROFILE_DIR", dir.path())
+        .env_remove("WINSMUX_HOST_PROFILE_KNOWN_HOSTS")
+        .env("WINSMUX_HOST_PROFILE_SSH", &ssh)
+        .env_remove("WINSMUX_HOST_PROFILE_SSH_G_TEXT")
+        .env("USERPROFILE", &home)
+        .env("HOME", &home)
+        .output()
+        .expect("run host-profile");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.contains("plaintext known_hosts"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn hashed_revoked_known_hosts_blocks_registered_fingerprint() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh = install_fake_ssh(dir.path(), ssh_g_text());
+    let blob = "AAAAC3NzaC1lZDI1NTE5AAAAITestKeyBlobForHostProfileOne";
+    let known_hosts = write_known_hosts(dir.path(), blob);
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "check", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    let (ok, stdout, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(ok, "stderr={stderr} stdout={stdout}");
+    fs::write(
+        &known_hosts,
+        format!("@revoked |1|abc|def ssh-ed25519 {blob}\n"),
+    )
+    .unwrap();
+    let (ok, _, stderr) = run_host_profile(
+        dir.path(),
+        &known_hosts,
+        &ssh,
+        &["host-profile", "register", "lab", "--json"],
+    );
+    assert!(!ok);
+    assert!(
+        stderr.contains("revoked") || stderr.contains("register is not allowed"),
+        "stderr={stderr}"
+    );
+    let record: Value =
+        serde_json::from_str(&fs::read_to_string(dir.path().join("lab.json")).unwrap()).unwrap();
+    assert_eq!(record["state"], "blocked");
+}

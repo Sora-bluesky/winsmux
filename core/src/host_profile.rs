@@ -43,13 +43,19 @@ struct HostProfileRecord {
     state: TrustState,
 }
 
+enum UserKnownHosts {
+    Unspecified,
+    Disabled,
+    Files(Vec<PathBuf>),
+}
+
 struct ResolvedHost {
     hostname: String,
     lookup_name: String,
     port: u16,
     user: String,
     proxyjump: Option<String>,
-    user_known_hosts: Vec<PathBuf>,
+    user_known_hosts: UserKnownHosts,
     global_known_hosts: Vec<PathBuf>,
 }
 
@@ -354,7 +360,7 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
     let mut user = None;
     let mut port = 22u16;
     let mut proxyjump = None;
-    let mut user_known_hosts = Vec::new();
+    let mut user_known_hosts = UserKnownHosts::Unspecified;
     let mut global_known_hosts = Vec::new();
     for raw in text.lines() {
         let line = raw.trim();
@@ -378,7 +384,9 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
                 })?;
             }
             "proxyjump" if !value.is_empty() => proxyjump = Some(value.to_string()),
-            "userknownhostsfile" => user_known_hosts.extend(parse_known_hosts_files(value)),
+            "userknownhostsfile" => {
+                user_known_hosts = merge_known_hosts_spec(user_known_hosts, value);
+            }
             "globalknownhostsfile" => global_known_hosts.extend(parse_known_hosts_files(value)),
             _ => {}
         }
@@ -404,6 +412,20 @@ fn parse_ssh_g(text: &str) -> io::Result<ResolvedHost> {
         user_known_hosts,
         global_known_hosts,
     })
+}
+
+fn merge_known_hosts_spec(current: UserKnownHosts, value: &str) -> UserKnownHosts {
+    if value.eq_ignore_ascii_case("none") {
+        return UserKnownHosts::Disabled;
+    }
+    let parsed = parse_known_hosts_files(value);
+    match current {
+        UserKnownHosts::Files(mut files) => {
+            files.extend(parsed);
+            UserKnownHosts::Files(files)
+        }
+        UserKnownHosts::Unspecified | UserKnownHosts::Disabled => UserKnownHosts::Files(parsed),
+    }
 }
 
 fn parse_known_hosts_files(value: &str) -> Vec<PathBuf> {
@@ -472,7 +494,7 @@ fn scan_known_hosts_text(
             if key_type.is_empty() || blob.is_empty() {
                 continue;
             }
-            if host_names_match(names, host) {
+            if names.starts_with("|1|") || host_names_match(names, host) {
                 revoked.push(fingerprint_blob(blob));
             }
             continue;
@@ -595,12 +617,17 @@ fn known_hosts_files(host: &ResolvedHost) -> io::Result<Vec<PathBuf>> {
     if let Some(path) = env_nonempty("WINSMUX_HOST_PROFILE_KNOWN_HOSTS") {
         return Ok(vec![PathBuf::from(path)]);
     }
-    let mut files = host.user_known_hosts.clone();
-    if files.is_empty() {
-        if let Some(home) = env_nonempty("USERPROFILE").or_else(|| env_nonempty("HOME")) {
-            files.push(Path::new(&home).join(".ssh").join("known_hosts"));
+    let mut files = match &host.user_known_hosts {
+        UserKnownHosts::Disabled => Vec::new(),
+        UserKnownHosts::Files(paths) => paths.clone(),
+        UserKnownHosts::Unspecified => {
+            if let Some(home) = env_nonempty("USERPROFILE").or_else(|| env_nonempty("HOME")) {
+                vec![Path::new(&home).join(".ssh").join("known_hosts")]
+            } else {
+                Vec::new()
+            }
         }
-    }
+    };
     for path in &host.global_known_hosts {
         if !files.iter().any(|existing| existing == path) {
             files.push(path.clone());
