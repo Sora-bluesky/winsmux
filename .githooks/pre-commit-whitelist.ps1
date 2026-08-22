@@ -157,6 +157,7 @@ $whitelistPatterns = @(
     'tests/V03618ReleaseHardening.Tests.ps1',
     'tests/V03619RepoAudit.Tests.ps1',
     'tests/Task810PesterRunner.Tests.ps1',
+    'tests/planning-model.Tests.ps1',
     'tests/Task800OperatorShellBoundary.Tests.ps1',
     'tests/PesterGitIsolation.Tests.ps1',
     'tests/Task811OperatorInfraGate.Tests.ps1',

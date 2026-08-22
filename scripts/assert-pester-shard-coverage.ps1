@@ -13,13 +13,13 @@ $modulePath = Join-Path $PSScriptRoot 'winsmux-pester.psm1'
 Import-Module -Name $modulePath -Force -ErrorAction Stop
 
 $registry = @(Get-WinsmuxPesterShardRegistry)
-if ($registry.Count -ne 26) {
-    throw "Expected 26 registry rows, found $($registry.Count)."
+if ($registry.Count -ne 27) {
+    throw "Expected 27 registry rows, found $($registry.Count)."
 }
 
 $matrix = @($registry | Where-Object { [string]$_.job_kind -eq 'matrix' })
 $desktop = @($registry | Where-Object { [string]$_.job_kind -eq 'Desktop' })
-if ($matrix.Count -ne 25) { throw "Expected 25 matrix rows, found $($matrix.Count)." }
+if ($matrix.Count -ne 26) { throw "Expected 26 matrix rows, found $($matrix.Count)." }
 if ($desktop.Count -ne 1) { throw "Expected 1 Desktop row, found $($desktop.Count)." }
 
 $workflowFullPath = if ([IO.Path]::IsPathRooted($WorkflowPath)) { $WorkflowPath } else { Join-Path $repositoryRoot $WorkflowPath }
