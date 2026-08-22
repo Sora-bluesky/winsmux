@@ -533,6 +533,18 @@ Describe 'Public surface policy' {
         $baseline.Trim() | Should -Match '^[0-9a-f]{40}$'
     }
 
+    It 'keeps the Pester integration shard on a 30-minute outer budget' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
+        $registry = Get-Content (Join-Path $repoRoot 'scripts/winsmux-pester.psm1') -Raw
+        $matrix = [regex]::Match($workflow, '(?ms)^          - name: integration\r?\n.*?timeout_minutes:\s*(\d+)')
+        $row = [regex]::Match($registry, "(?ms)New-WinsmuxPesterMatrixRow -Ordinal 14 -ShardId 'integration' -TimeoutMinutes (\d+)")
+
+        $matrix.Success | Should -BeTrue
+        $row.Success | Should -BeTrue
+        $matrix.Groups[1].Value | Should -Be '30'
+        $row.Groups[1].Value | Should -Be '30'
+    }
+
     It 'keeps Tests-workflow candidate identity on the live VERSION file' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
         $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
