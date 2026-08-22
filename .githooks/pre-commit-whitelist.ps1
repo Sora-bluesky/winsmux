@@ -24,6 +24,7 @@ $whitelistPatterns = @(
     'core/src/*.rs',
     'core/src/bin/*.rs',
     'core/tests-rs/*.rs',
+    'core/crates/winsmux-remote-helper/**',
     'git-graph/**',
     '.github/workflows/test.yml',
     '.github/ISSUE_TEMPLATE/**',
