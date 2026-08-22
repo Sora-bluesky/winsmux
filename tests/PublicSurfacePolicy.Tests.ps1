@@ -536,8 +536,8 @@ Describe 'Public surface policy' {
     It 'keeps the Pester integration shard on a 30-minute outer budget' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
         $registry = Get-Content (Join-Path $repoRoot 'scripts/winsmux-pester.psm1') -Raw
-        $matrix = [regex]::Match($workflow, '(?ms)^          - name: integration\r?\n.*?timeout_minutes:\s*(\d+)')
-        $row = [regex]::Match($registry, "(?ms)New-WinsmuxPesterMatrixRow -Ordinal 14 -ShardId 'integration' -TimeoutMinutes (\d+)")
+        $matrix = [regex]::Match($workflow, '(?m)^          - name: integration\r?\n            result: integration\r?\n            timeout_minutes:\s*(\d+)')
+        $row = [regex]::Match($registry, "(?m)^        \(New-WinsmuxPesterMatrixRow -Ordinal 14 -ShardId 'integration' -TimeoutMinutes (\d+)")
 
         $matrix.Success | Should -BeTrue
         $row.Success | Should -BeTrue
