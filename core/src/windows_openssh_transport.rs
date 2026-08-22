@@ -187,8 +187,10 @@ where
         result
     });
     let status = thread::scope(|scope| -> io::Result<ExitStatus> {
-        let stdout_thread = scope.spawn(|| copy_and_flush(&mut child_stdout, &mut output));
-        let stderr_thread = scope.spawn(|| copy_and_flush(&mut child_stderr, &mut err_out));
+        let mut stdout_thread = Some(scope.spawn(|| copy_and_flush(&mut child_stdout, &mut output)));
+        let mut stderr_thread = Some(scope.spawn(|| copy_and_flush(&mut child_stderr, &mut err_out)));
+        let mut stdout_result = None;
+        let mut stderr_result = None;
         let child = reaper
             .child
             .as_mut()
@@ -197,15 +199,37 @@ where
             if let Some(status) = child.try_wait()? {
                 break status;
             }
-            if stdout_thread.is_finished() || stderr_thread.is_finished() {
-                let _ = child.kill();
-                break child.wait()?;
+            if stdout_thread.as_ref().is_some_and(|handle| handle.is_finished()) {
+                let result = stdout_thread.take().unwrap().join().unwrap();
+                let failed = result.is_err();
+                stdout_result = Some(result);
+                if failed {
+                    let _ = child.kill();
+                    break child.wait()?;
+                }
+            }
+            if stderr_thread.as_ref().is_some_and(|handle| handle.is_finished()) {
+                let result = stderr_thread.take().unwrap().join().unwrap();
+                let failed = result.is_err();
+                stderr_result = Some(result);
+                if failed {
+                    let _ = child.kill();
+                    break child.wait()?;
+                }
             }
             thread::sleep(Duration::from_millis(5));
         };
         interrupt_stdin_read();
-        stdout_thread.join().unwrap()?;
-        stderr_thread.join().unwrap()?;
+        let stdout_result = match stdout_result {
+            Some(result) => result,
+            None => stdout_thread.take().unwrap().join().unwrap(),
+        };
+        let stderr_result = match stderr_result {
+            Some(result) => result,
+            None => stderr_thread.take().unwrap().join().unwrap(),
+        };
+        stdout_result?;
+        stderr_result?;
         Ok(status)
     })?;
     drop(stdin_thread);
@@ -706,6 +730,30 @@ if ($mode -eq 'helper') {
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "relay deadlocked after stderr write error: {error}"
+        );
+    }
+
+    #[test]
+    fn stdout_eof_does_not_kill_still_running_child() {
+        let child = StdCommand::new("pwsh")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "$out = [Console]::OpenStandardOutput(); $bytes = [byte[]](0x68, 0x69); $out.Write($bytes, 0, 2); $out.Flush(); $out.Close(); Start-Sleep -Milliseconds 800; exit 0",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        let mut stdout = Vec::new();
+        let status = relay_and_reap_io(child, io::empty(), &mut stdout, Vec::new()).unwrap();
+        assert!(status.success(), "status={status}");
+        assert_eq!(stdout, b"hi");
+        assert!(
+            started.elapsed() >= Duration::from_millis(400),
+            "child was killed at stdout EOF"
         );
     }
 
