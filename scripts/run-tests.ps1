@@ -21,8 +21,8 @@ param(
 
     [Parameter(DontShow = $true)]
     [ValidateRange(1, 7200)]
-    # The integration CI shard owns a 25-minute budget. Keep the local aggregate
-    # runner above that boundary because concurrent bridge workers add contention.
+    # The integration CI shard owns a 30-minute outer budget. The local aggregate
+    # runner stays at 1800 seconds (equal to that budget). Do not raise this watchdog.
     [int]$WorkerTimeoutSeconds = 1800,
 
     [Parameter(DontShow = $true)]
