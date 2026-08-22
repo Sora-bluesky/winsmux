@@ -1376,6 +1376,8 @@ jobs:
           for job in jobs:
               if job.get("name") == JOB_SELF:
                   continue
+              if job.get("conclusion") not in FAILED:
+                  continue
               text = log_for(job)
               if text is None:
                   if job.get("conclusion") in FAILED:
@@ -1392,16 +1394,16 @@ jobs:
           nsis_jobs = [job for job in jobs if job.get("name") == JOB_NSIS]
           if nsis_jobs:
               job = nsis_jobs[0]
-              text = log_for(job)
-              if text is None:
-                  if job.get("conclusion") in FAILED:
+              if job.get("conclusion") in FAILED:
+                  text = log_for(job)
+                  if text is None:
                       matched.append(f"- {CLASS_NSIS} retrieval=unavailable")
-              else:
-                  for line in text.splitlines():
-                      if "CreateArtifact" in line and "ENOTFOUND" in line:
-                          matched.append(f"- {CLASS_NSIS} (job={JOB_NSIS})")
-                          matched_ids.add(job.get("id"))
-                          break
+                  else:
+                      for line in text.splitlines():
+                          if "CreateArtifact" in line and "ENOTFOUND" in line:
+                              matched.append(f"- {CLASS_NSIS} (job={JOB_NSIS})")
+                              matched_ids.add(job.get("id"))
+                              break
 
           def installer_hit(text):
               if "[winsmux] Failed to download" in text:
@@ -1422,6 +1424,8 @@ jobs:
           for job in jobs:
               if job.get("name") == JOB_SELF:
                   continue
+              if job.get("conclusion") not in FAILED:
+                  continue
               text = log_for(job)
               if text is None:
                   if job.get("conclusion") in FAILED:
@@ -1439,6 +1443,8 @@ jobs:
           empty_unavailable = False
           for job in jobs:
               if job.get("name") == JOB_SELF:
+                  continue
+              if job.get("conclusion") not in FAILED:
                   continue
               text = log_for(job)
               if text is None:
@@ -1494,7 +1500,7 @@ jobs:
           ]
           if real_matches:
               lines.extend(real_matches)
-          elif any("retrieval=unavailable" in row for row in matched):
+          elif log_failed or any("retrieval=unavailable" in row for row in matched):
               lines.append("(retrieval unavailable for one or more log-backed classes)")
           else:
               lines.append("no frozen class matched")

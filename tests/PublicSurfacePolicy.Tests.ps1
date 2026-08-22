@@ -563,6 +563,7 @@ Describe 'Public surface policy' {
         $health.Value | Should -Match 'empty-stdout Core'
         $health.Value | Should -Match 'T826-DESKTOP-EX-01'
         $health.Value | Should -Match 'no frozen class matched'
+        $health.Value | Should -Match 'elif log_failed or'
         $health.Value | Should -Match 'retrieval: failed'
 
         $gate.Value | Should -Not -Match 'ci-health-report'
