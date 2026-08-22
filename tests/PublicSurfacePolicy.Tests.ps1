@@ -533,6 +533,42 @@ Describe 'Public surface policy' {
         $baseline.Trim() | Should -Match '^[0-9a-f]{40}$'
     }
 
+    It 'keeps Tests CI health report non-gating and class-closed' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
+        $health = [regex]::Match($workflow, '(?ms)^  ci-health-report:.*?(?=^  merge-gate:)')
+        $gate = [regex]::Match($workflow, '(?ms)^  merge-gate:.*')
+
+        $health.Success | Should -BeTrue
+        $gate.Success | Should -BeTrue
+
+        $health.Value | Should -Match 'if:\s+always\(\)'
+        $health.Value | Should -Match 'continue-on-error:\s+true'
+        $health.Value | Should -Match 'actions:\s+read'
+        $health.Value | Should -Match 'contents:\s+read'
+        $health.Value | Should -Match 'gh api'
+        $health.Value | Should -Match 'github\.run_id'
+        $health.Value | Should -Match 'run_attempt'
+        $health.Value | Should -Match 'install-e2e'
+        $health.Value | Should -Match 'pester'
+        $health.Value | Should -Match 'core-build-test'
+        $health.Value | Should -Match 'desktop-build-test'
+        $health.Value | Should -Match 'desktop-nsis-lifecycle'
+        $health.Value | Should -Not -Match 'github-script'
+        $health.Value | Should -Not -Match 'gh pr comment'
+        $health.Value | Should -Not -Match 'flake-free'
+        $health.Value | Should -Match 'Pester integration timeout_minutes: 25'
+        $health.Value | Should -Match 'TASK810_RUNNER_PROTOCOL_FAILURE'
+        $health.Value | Should -Match 'Desktop NSIS CreateArtifact ENOTFOUND'
+        $health.Value | Should -Match 'installer-download'
+        $health.Value | Should -Match 'empty-stdout Core'
+        $health.Value | Should -Match 'T826-DESKTOP-EX-01'
+        $health.Value | Should -Match 'no frozen class matched'
+        $health.Value | Should -Match 'retrieval: failed'
+
+        $gate.Value | Should -Not -Match 'ci-health-report'
+        $gate.Value | Should -Match 'needs\.task811-receipt-bind\.result'
+    }
+
     It 'keeps Tests-workflow candidate identity on the live VERSION file' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
         $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'VERSION') -Raw -Encoding UTF8).Trim()

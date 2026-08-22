@@ -1202,6 +1202,319 @@ jobs:
           . ./scripts/winsmux-task811-authority.ps1
           Assert-WinsmuxTask811Receipt -ArtifactBindingOnly | Out-Null
 
+  ci-health-report:
+    name: CI Health Report
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: always()
+    continue-on-error: true
+    permissions:
+      actions: read
+      contents: read
+    needs:
+      - install-e2e
+      - pester
+      - core-build-test
+      - desktop-build-test
+      - desktop-nsis-lifecycle
+    steps:
+      - name: Classify frozen flake classes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          # Classify this run attempt with gh api.
+          python3 <<'PY'
+          import gzip
+          import io
+          import json
+          import os
+          import subprocess
+          import zipfile
+          from datetime import datetime
+
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          RUN_ID = os.environ.get("RUN_ID") or os.environ["GITHUB_RUN_ID"]
+          ATTEMPT = os.environ.get("RUN_ATTEMPT") or os.environ["GITHUB_RUN_ATTEMPT"]
+          SUMMARY_PATH = os.environ.get("GITHUB_STEP_SUMMARY", "")
+
+          CLASS_INTEGRATION = "Pester integration timeout_minutes: 25"
+          CLASS_TASK810 = "TASK810_RUNNER_PROTOCOL_FAILURE"
+          CLASS_NSIS = "Desktop NSIS CreateArtifact ENOTFOUND"
+          CLASS_INSTALLER = "installer-download"
+          CLASS_EMPTY = "empty-stdout Core"
+          CLASS_T826 = "T826-DESKTOP-EX-01"
+
+          JOB_INTEGRATION = "Pester Tests (integration)"
+          JOB_NSIS = "Desktop NSIS Fresh and Upgrade Lifecycle"
+          JOB_RELEASE = "Pester Tests (release-public)"
+          JOB_SELF = "CI Health Report"
+
+          FAILED = {"failure", "cancelled", "timed_out"}
+
+
+          def write_summary(text):
+              print(text)
+              if SUMMARY_PATH:
+                  with open(SUMMARY_PATH, "a", encoding="utf-8") as handle:
+                      handle.write(text if text.endswith("\n") else text + "\n")
+
+
+          def gh_api(path):
+              proc = subprocess.run(["gh", "api", path], capture_output=True)
+              if proc.returncode != 0:
+                  return None, proc.stderr.decode("utf-8", "replace")
+              return proc.stdout, None
+
+
+          def parse_ts(value):
+              if not value:
+                  return None
+              return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+          def duration_s(job):
+              started = parse_ts(job.get("started_at"))
+              completed = parse_ts(job.get("completed_at"))
+              if started is None or completed is None:
+                  return None
+              return (completed - started).total_seconds()
+
+
+          def list_jobs():
+              jobs = []
+              page = 1
+              while page <= 10:
+                  path = (
+                      f"repos/{REPO}/actions/runs/{RUN_ID}/attempts/{ATTEMPT}/jobs"
+                      f"?per_page=100&page={page}"
+                  )
+                  raw, err = gh_api(path)
+                  if raw is None:
+                      return None, err
+                  payload = json.loads(raw.decode("utf-8"))
+                  batch = payload.get("jobs") or []
+                  jobs.extend(batch)
+                  if len(batch) < 100:
+                      return jobs, None
+                  page += 1
+              return jobs, None
+
+
+          def job_log(job_id):
+              raw, err = gh_api(f"repos/{REPO}/actions/jobs/{job_id}/logs")
+              if raw is None:
+                  return None
+              if raw.startswith(b"PK"):
+                  try:
+                      with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                          chunks = [
+                              archive.read(name).decode("utf-8", "replace")
+                              for name in archive.namelist()
+                          ]
+                      return "\n".join(chunks)
+                  except zipfile.BadZipFile:
+                      return None
+              if raw.startswith(b"\x1f\x8b"):
+                  try:
+                      raw = gzip.decompress(raw)
+                  except OSError:
+                      return None
+              text = raw.decode("utf-8", "replace")
+              if text.lstrip().startswith("{") and '"message"' in text[:300]:
+                  return None
+              return text
+
+
+          jobs, list_err = list_jobs()
+          if jobs is None:
+              write_summary(
+                  "\n".join(
+                      [
+                          "# CI Health Report",
+                          f"run_id: {RUN_ID}",
+                          f"run_attempt: {ATTEMPT}",
+                          "retrieval: failed",
+                          "matched: not evaluated",
+                          f"reason: {list_err.strip() if list_err else 'job list unavailable'}",
+                          "",
+                      ]
+                  )
+              )
+              raise SystemExit(0)
+
+          logs = {}
+          log_failed = []
+
+          def log_for(job):
+              job_id = job.get("id")
+              if job_id in logs:
+                  return logs[job_id]
+              text = job_log(job_id)
+              logs[job_id] = text
+              if text is None:
+                  log_failed.append(job.get("name") or str(job_id))
+              return text
+
+
+          matched = []
+          matched_ids = set()
+
+          for job in jobs:
+              if job.get("name") != JOB_INTEGRATION:
+                  continue
+              seconds = duration_s(job)
+              if job.get("conclusion") == "cancelled" and seconds is not None and seconds >= 1500:
+                  matched.append(
+                      f"- {CLASS_INTEGRATION} (job={JOB_INTEGRATION}, duration_s={int(seconds)})"
+                  )
+                  matched_ids.add(job.get("id"))
+
+          task810_ok = False
+          task810_unavailable = False
+          for job in jobs:
+              if job.get("name") == JOB_SELF:
+                  continue
+              text = log_for(job)
+              if text is None:
+                  if job.get("conclusion") in FAILED:
+                      task810_unavailable = True
+                  continue
+              if CLASS_TASK810 in text and "Missing option value for: '-source'" in text:
+                  matched.append(f"- {CLASS_TASK810} (job={job.get('name')})")
+                  matched_ids.add(job.get("id"))
+                  task810_ok = True
+                  break
+          if not task810_ok and task810_unavailable:
+              matched.append(f"- {CLASS_TASK810} retrieval=unavailable")
+
+          nsis_jobs = [job for job in jobs if job.get("name") == JOB_NSIS]
+          if nsis_jobs:
+              job = nsis_jobs[0]
+              text = log_for(job)
+              if text is None:
+                  if job.get("conclusion") in FAILED:
+                      matched.append(f"- {CLASS_NSIS} retrieval=unavailable")
+              else:
+                  for line in text.splitlines():
+                      if "CreateArtifact" in line and "ENOTFOUND" in line:
+                          matched.append(f"- {CLASS_NSIS} (job={JOB_NSIS})")
+                          matched_ids.add(job.get("id"))
+                          break
+
+          def installer_hit(text):
+              if "[winsmux] Failed to download" in text:
+                  return True
+              for line in text.splitlines():
+                  lowered = line.lower()
+                  if "installer-download" in line and (
+                      "exception" in lowered
+                      or "failed" in lowered
+                      or "error" in lowered
+                  ):
+                      return True
+              return False
+
+
+          installer_ok = False
+          installer_unavailable = False
+          for job in jobs:
+              if job.get("name") == JOB_SELF:
+                  continue
+              text = log_for(job)
+              if text is None:
+                  if job.get("conclusion") in FAILED:
+                      installer_unavailable = True
+                  continue
+              if installer_hit(text):
+                  matched.append(f"- {CLASS_INSTALLER} (job={job.get('name')})")
+                  matched_ids.add(job.get("id"))
+                  installer_ok = True
+                  break
+          if not installer_ok and installer_unavailable:
+              matched.append(f"- {CLASS_INSTALLER} retrieval=unavailable")
+
+          empty_ok = False
+          empty_unavailable = False
+          for job in jobs:
+              if job.get("name") == JOB_SELF:
+                  continue
+              text = log_for(job)
+              if text is None:
+                  if job.get("conclusion") in FAILED:
+                      empty_unavailable = True
+                  continue
+              for line in text.splitlines():
+                  if (
+                      "core_version" in line
+                      and "content_invalid" in line
+                      and "stdout_present=false" in line
+                      and "stdout_bytes=0" in line
+                  ):
+                      matched.append(f"- {CLASS_EMPTY} (job={job.get('name')})")
+                      matched_ids.add(job.get("id"))
+                      empty_ok = True
+                      break
+              if empty_ok:
+                  break
+          if not empty_ok and empty_unavailable:
+              matched.append(f"- {CLASS_EMPTY} retrieval=unavailable")
+
+          t826_jobs = [job for job in jobs if job.get("name") == JOB_RELEASE]
+          if t826_jobs:
+              job = t826_jobs[0]
+              if job.get("conclusion") in FAILED:
+                  text = log_for(job)
+                  if text is None:
+                      matched.append(f"- {CLASS_T826} retrieval=unavailable")
+                  elif CLASS_T826 in text:
+                      matched.append(f"- {CLASS_T826} (job={JOB_RELEASE})")
+                      matched_ids.add(job.get("id"))
+
+          unclassified = []
+          for job in jobs:
+              name = job.get("name") or ""
+              if name == JOB_SELF:
+                  continue
+              if job.get("conclusion") not in FAILED:
+                  continue
+              if job.get("id") in matched_ids:
+                  continue
+              unclassified.append(f"- {name} conclusion={job.get('conclusion')}")
+
+          real_matches = [row for row in matched if "retrieval=unavailable" not in row]
+          lines = [
+              "# CI Health Report",
+              f"run_id: {RUN_ID}",
+              f"run_attempt: {ATTEMPT}",
+              "retrieval: ok" if not log_failed else "retrieval: partial",
+              "",
+              "## Matched frozen classes",
+          ]
+          if real_matches:
+              lines.extend(real_matches)
+          elif any("retrieval=unavailable" in row for row in matched):
+              lines.append("(retrieval unavailable for one or more log-backed classes)")
+          else:
+              lines.append("no frozen class matched")
+          unavailable = [row for row in matched if "retrieval=unavailable" in row]
+          if unavailable:
+              lines.extend(["", "## Unavailable class checks"])
+              lines.extend(unavailable)
+          lines.extend(["", "## Unclassified failed jobs"])
+          if unclassified:
+              lines.extend(unclassified)
+          else:
+              lines.append("(none)")
+          if log_failed:
+              lines.extend(["", "## Log retrieval failures"])
+              for name in log_failed:
+                  lines.append(f"- {name}")
+          lines.append("")
+          write_summary("\n".join(lines))
+          PY
+
   merge-gate:
     name: Merge Gate
     runs-on: ubuntu-latest
