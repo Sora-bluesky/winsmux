@@ -186,8 +186,8 @@ where
         result
     });
     let status = thread::scope(|scope| -> io::Result<ExitStatus> {
-        let stdout_thread = scope.spawn(|| io::copy(&mut child_stdout, &mut output));
-        let stderr_thread = scope.spawn(|| io::copy(&mut child_stderr, &mut err_out));
+        let stdout_thread = scope.spawn(|| copy_and_flush(&mut child_stdout, &mut output));
+        let stderr_thread = scope.spawn(|| copy_and_flush(&mut child_stderr, &mut err_out));
         let status = reaper
             .child
             .as_mut()
@@ -228,6 +228,23 @@ mod stdin_interrupt {
     }
 }
 
+fn copy_and_flush<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
+    let mut buf = [0u8; 8 * 1024];
+    let mut written = 0u64;
+    loop {
+        let n = match reader.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        writer.write_all(&buf[..n])?;
+        writer.flush()?;
+        written += n as u64;
+    }
+    Ok(written)
+}
+
 fn copy_ignore_pipe_close<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> io::Result<u64> {
     match io::copy(reader, writer) {
         Err(error) if is_benign_pipe_close(&error) => Ok(0),
@@ -250,7 +267,28 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command as StdCommand;
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
+
+    struct FlushVisible {
+        pending: Vec<u8>,
+        visible: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for FlushVisible {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.pending.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.visible
+                .lock()
+                .expect("flush visible mutex")
+                .append(&mut self.pending);
+            Ok(())
+        }
+    }
 
     fn reset_spawn_count() {
         SPAWN_COUNT.with(|count| count.set(0));
@@ -289,6 +327,14 @@ if ($mode -eq 'fail') {
 }
 if ($mode -eq 'hang') {
     Start-Sleep -Seconds 30
+    exit 0
+}
+if ($mode -eq 'frame-then-block') {
+    $bytes = [byte[]](0x57, 0x45, 0x4c, 0x43)
+    $stdout = [Console]::OpenStandardOutput()
+    $stdout.Write($bytes, 0, $bytes.Length)
+    $stdout.Flush()
+    [void][Console]::OpenStandardInput().ReadByte()
     exit 0
 }
 if ($mode -eq 'helper') {
@@ -579,6 +625,45 @@ if ($mode -eq 'helper') {
         );
         assert_eq!(spawn_count(), 1);
         drop(writer);
+    }
+
+    #[test]
+    fn stdout_bytes_are_visible_before_child_exit() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        write_record(dir.path(), "lab", "registered");
+        let ssh = install_fake_ssh(dir.path());
+        std::env::set_var("WINSMUX_HOST_PROFILE_DIR", dir.path());
+        std::env::set_var("WINSMUX_SSH_HELPER_STDIO_SSH", &ssh);
+        std::env::set_var("WINSMUX_SSH_FAKE_MODE", "frame-then-block");
+        reset_spawn_count();
+
+        let visible = Arc::new(Mutex::new(Vec::new()));
+        let output = FlushVisible {
+            pending: Vec::new(),
+            visible: Arc::clone(&visible),
+        };
+        let (reader, writer) = io::pipe().unwrap();
+        let relay = std::thread::spawn(move || run_registered_stdio("lab", reader, output, Vec::new()));
+        let expected = b"WELC";
+        let started = Instant::now();
+        loop {
+            {
+                let got = visible.lock().expect("flush visible mutex");
+                if got.as_slice() == expected {
+                    break;
+                }
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "stdout stayed buffered while the child was still running"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(writer);
+        relay.join().expect("relay thread").unwrap();
+        let spawn_log = fs::read_to_string(dir.path().join("ssh-spawn.txt")).unwrap();
+        assert_eq!(spawn_log.lines().count(), 1);
     }
 
     #[test]
