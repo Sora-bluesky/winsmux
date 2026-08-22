@@ -118,6 +118,10 @@ path = "tests-rs/team_profile_settings_contract.rs"
 name = "workflow_gate_contract"
 path = "tests-rs/workflow_gate_contract.rs"
 
+[[test]]
+name = "host_profile"
+path = "tests-rs/host_profile.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
