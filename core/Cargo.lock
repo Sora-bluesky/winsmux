@@ -1902,6 +1902,15 @@ dependencies = [
  "vt100-winsmux",
  "which",
  "windows-sys",
+ "winsmux-remote-helper",
+]
+
+[[package]]
+name = "winsmux-remote-helper"
+version = "0.36.36"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -135,6 +135,14 @@ windows-sys = { version = "0.61", features = [
 name = "winsmux"
 path = "src/bin/winsmux.rs"
 
+[[bin]]
+name = "winsmux-remote-helper"
+path = "crates/winsmux-remote-helper/src/main.rs"
+
+[[test]]
+name = "remote_helper_protocol"
+path = "crates/winsmux-remote-helper/tests/protocol.rs"
+
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
@@ -152,6 +160,7 @@ sha2 = "0.10"
 regex = "1"
 glob = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
+winsmux-remote-helper = { path = "crates/winsmux-remote-helper" }
 
 [dev-dependencies]
 tempfile = "3"
