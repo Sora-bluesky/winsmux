@@ -67,6 +67,7 @@ $whitelistPatterns = @(
     'docs/project/THREAT_MODEL_AUDIT.md',
     'docs/project/pester-suite-inventory.json',
     'docs/project/pester-suite-reduction-plan.md',
+    'docs/project/test-architecture.md',
     'docs/project/legacy-compat-surface-inventory.json',
     'docs/project/legacy-compat-surface-inventory.md',
     'docs/project/powershell-adapter-inventory.md',
