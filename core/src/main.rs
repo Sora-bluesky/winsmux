@@ -38,6 +38,7 @@ mod extension_manifest;
 mod condensed_events;
 mod workspace_migrate;
 mod team_profile;
+mod host_profile;
 mod team_profile_settings;
 mod instruction_pack;
 mod prompt_bundle;
@@ -1179,6 +1180,7 @@ fn run_main() -> io::Result<()> {
         "team-profile" => return team_profile::run_team_profile_command(&cmd_args[1..]),
         "worker-artifact" => return worker_artifact::run_worker_artifact_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
+        "host-profile" => return host_profile::run_host_profile_command(&cmd_args[1..]),
         "extension-manifest" => return extension_manifest::run_extension_manifest_command(&cmd_args[1..]),
         "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),
