@@ -556,7 +556,7 @@ Describe 'Public surface policy' {
         $health.Value | Should -Not -Match 'github-script'
         $health.Value | Should -Not -Match 'gh pr comment'
         $health.Value | Should -Not -Match 'flake-free'
-        $health.Value | Should -Match 'Pester integration timeout_minutes: 25'
+        $health.Value | Should -Match 'Pester integration timeout_minutes: 30'
         $health.Value | Should -Match 'TASK810_RUNNER_PROTOCOL_FAILURE'
         $health.Value | Should -Match 'Desktop NSIS CreateArtifact ENOTFOUND'
         $health.Value | Should -Match 'installer-download'
@@ -568,6 +568,18 @@ Describe 'Public surface policy' {
 
         $gate.Value | Should -Not -Match 'ci-health-report'
         $gate.Value | Should -Match 'needs\.task811-receipt-bind\.result'
+    }
+
+    It 'keeps the Pester integration shard on a 30-minute outer budget' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
+        $registry = Get-Content (Join-Path $repoRoot 'scripts/winsmux-pester.psm1') -Raw
+        $matrix = [regex]::Match($workflow, '(?m)^          - name: integration\r?\n            result: integration\r?\n            timeout_minutes:\s*(\d+)')
+        $row = [regex]::Match($registry, "(?m)^        \(New-WinsmuxPesterMatrixRow -Ordinal 14 -ShardId 'integration' -TimeoutMinutes (\d+)")
+
+        $matrix.Success | Should -BeTrue
+        $row.Success | Should -BeTrue
+        $matrix.Groups[1].Value | Should -Be '30'
+        $row.Groups[1].Value | Should -Be '30'
     }
 
     It 'keeps Tests-workflow candidate identity on the live VERSION file' {

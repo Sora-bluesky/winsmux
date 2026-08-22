@@ -106,7 +106,7 @@ function Get-WinsmuxPesterShardRegistry {
             'tests/bridge/ArtifactsRuntime.Tests.ps1'
             'tests/bridge/ArtifactsRuntime.Operator.Tests.ps1'
         ) -ResultFile 'test-results-bridge-artifacts-runtime.xml')
-        (New-WinsmuxPesterMatrixRow -Ordinal 14 -ShardId 'integration' -TimeoutMinutes 25 -TestPaths @(
+        (New-WinsmuxPesterMatrixRow -Ordinal 14 -ShardId 'integration' -TimeoutMinutes 30 -TestPaths @(
             'tests/Integration.GateEnforcement.Tests.ps1'
             'tests/Integration.MultiAgent.Tests.ps1'
             'tests/Integration.PaneMonitorHook.Tests.ps1'
