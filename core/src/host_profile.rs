@@ -114,6 +114,15 @@ pub(crate) fn run_host_profile_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn is_registered_alias(alias: &str) -> io::Result<bool> {
+    validate_alias(alias)?;
+    let path = record_path(alias)?;
+    Ok(matches!(
+        load_record(&path)?,
+        Some(record) if record.state == TrustState::Registered
+    ))
+}
+
 fn should_print_help(args: &[&String]) -> bool {
     args.iter()
         .any(|arg| matches!(arg.as_str(), "-h" | "--help" | "help"))
@@ -681,5 +690,64 @@ fn env_nonempty(name: &str) -> Option<String> {
     match std::env::var(name) {
         Ok(value) if !value.trim().is_empty() => Some(value),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn lock_test_env() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod registered_alias_query {
+    use super::*;
+    use serde_json::json;
+    use std::fs;
+
+    fn write_record(dir: &std::path::Path, alias: &str, state: &str) {
+        let payload = json!({
+            "alias": alias,
+            "hostname": "192.0.2.10",
+            "port": 22,
+            "user": "ubuntu",
+            "state": state,
+        });
+        fs::write(
+            dir.join(format!("{alias}.json")),
+            serde_json::to_vec_pretty(&payload).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn missing_pending_blocked_are_false_registered_is_true() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WINSMUX_HOST_PROFILE_DIR", dir.path());
+
+        assert_eq!(is_registered_alias("lab").unwrap(), false);
+
+        write_record(dir.path(), "lab", "pending");
+        assert_eq!(is_registered_alias("lab").unwrap(), false);
+
+        write_record(dir.path(), "lab", "blocked");
+        assert_eq!(is_registered_alias("lab").unwrap(), false);
+
+        write_record(dir.path(), "lab", "registered");
+        assert_eq!(is_registered_alias("lab").unwrap(), true);
+    }
+
+    #[test]
+    fn invalid_alias_and_unreadable_record_are_errors() {
+        let _guard = lock_test_env();
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("WINSMUX_HOST_PROFILE_DIR", dir.path());
+
+        assert!(is_registered_alias("-oProxyJump=evil").is_err());
+        assert!(is_registered_alias("").is_err());
+
+        fs::write(dir.path().join("lab.json"), "{").unwrap();
+        assert!(is_registered_alias("lab").is_err());
     }
 }
