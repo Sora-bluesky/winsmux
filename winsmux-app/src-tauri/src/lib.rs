@@ -8,6 +8,7 @@ mod desktop_session_restore;
 mod desktop_team_profile;
 mod pty_backend;
 mod remote_debug_gate;
+mod ssh_connect_review;
 
 use control_pipe::{
     control_pipe_ui_is_enabled, revoke_control_pipe_token_on_exit, start_control_pipe_server,
@@ -2133,6 +2134,7 @@ pub fn run() {
             desktop_update_check,
             desktop_update_download_installer,
             desktop_update_launch_installer,
+            ssh_connect_review::ssh_connect_review,
             pty_json_rpc,
             pty_spawn,
             pty_write,

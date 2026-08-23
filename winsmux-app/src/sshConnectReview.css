@@ -1,0 +1,87 @@
+.ssh-connect-review {
+  gap: 14px;
+}
+
+.ssh-connect-review-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.ssh-connect-review-step {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--border-subtle, rgba(148, 163, 184, 0.2));
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.28);
+}
+
+.ssh-connect-review-heading {
+  margin: 0;
+  color: var(--text-primary, #e5e7eb);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.ssh-connect-review-description,
+.ssh-connect-review-status,
+.ssh-connect-review-proposal {
+  margin: 0;
+  color: var(--text-secondary, #a9b1bd);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ssh-connect-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ssh-connect-review-fingerprints {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.45fr) minmax(0, 1fr);
+  gap: 6px 10px;
+  margin: 0;
+}
+
+.ssh-connect-review-term,
+.ssh-connect-review-fingerprint {
+  margin: 0;
+  font-size: 12px;
+}
+
+.ssh-connect-review-term {
+  color: var(--text-secondary, #a9b1bd);
+}
+
+.ssh-connect-review-fingerprint {
+  overflow-wrap: anywhere;
+  color: var(--text-primary, #e5e7eb);
+  font-family: var(--font-mono, "Cascadia Mono", Consolas, monospace);
+}
+
+.ssh-connect-review-preview {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 22px;
+  color: var(--text-primary, #e5e7eb);
+  font-family: var(--font-mono, "Cascadia Mono", Consolas, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.ssh-connect-review-proposal {
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent, #60a5fa);
+  background: rgba(96, 165, 250, 0.08);
+}
+
+@media (max-width: 720px) {
+  .ssh-connect-review-fingerprints {
+    grid-template-columns: 1fr;
+  }
+}
