@@ -27,6 +27,7 @@ const BROKER_SOCKET_NAME: &str = "broker.sock";
 const BROKER_LOCK_NAME: &str = "broker.lock";
 const TEST_BROKER_EVENT_FD: &str = "WINSMUX_TEST_BROKER_EVENT_FD";
 const TEST_FRONTEND_GATE_FD: &str = "WINSMUX_TEST_FRONTEND_GATE_FD";
+const TEST_PTY_STARTED_GATE_FD: &str = "WINSMUX_TEST_PTY_STARTED_GATE_FD";
 
 /// Keep the public process invocation as `serve --stdio`; on Linux this process is
 /// a transparent frontend for the per-euid broker.
@@ -587,8 +588,9 @@ fn broker_main(paths: &RuntimePaths, initial: UnixStream, ack_fd: RawFd) -> io::
         let _ = fs::remove_file(&paths.socket_path);
         return Err(error);
     }
-    let state = Arc::new(BrokerState::new(wake[1]));
     let hooks = TestHooks::from_environment();
+    let pty_started_gate = PtyStartedTestGate::from_environment();
+    let state = Arc::new(BrokerState::new(wake[1], hooks, pty_started_gate));
     hooks.emit(b'R');
     write_ack(ack_fd, 0)?;
     close_fd(ack_fd);
@@ -628,6 +630,11 @@ fn broker_main(paths: &RuntimePaths, initial: UnixStream, ack_fd: RawFd) -> io::
 
 #[derive(Clone, Copy)]
 struct TestHooks {
+    fd: Option<RawFd>,
+}
+
+#[derive(Clone, Copy)]
+struct PtyStartedTestGate {
     fd: Option<RawFd>,
 }
 
@@ -698,18 +705,59 @@ impl TestHooks {
     }
 
     fn emit(self, code: u8) {
+        self.emit_subject(code, unsafe { libc::getpid() });
+    }
+
+    fn emit_agent(self, code: u8, agent_pgid: libc::pid_t) {
+        self.emit_subject(code, agent_pgid);
+    }
+
+    fn emit_subject(self, code: u8, subject: libc::pid_t) {
         if let Some(fd) = self.fd {
             let mut record = [0u8; 5];
             record[0] = code;
-            record[1..].copy_from_slice(&unsafe { libc::getpid() }.to_ne_bytes());
+            record[1..].copy_from_slice(&subject.to_le_bytes());
             let _ = write_all_fd(fd, &record);
+        }
+    }
+}
+
+impl PtyStartedTestGate {
+    fn from_environment() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            let fd = env::var(TEST_PTY_STARTED_GATE_FD)
+                .ok()
+                .and_then(|value| value.parse::<RawFd>().ok())
+                .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } >= 0);
+            if let Some(fd) = fd {
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                if flags >= 0 {
+                    unsafe {
+                        libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                    }
+                }
+            }
+            return Self { fd };
+        }
+        #[cfg(not(debug_assertions))]
+        Self { fd: None }
+    }
+
+    fn wait(self) -> io::Result<()> {
+        match self.fd {
+            Some(fd) => read_one_byte(fd).map(|_| ()),
+            None => Ok(()),
         }
     }
 }
 
 struct BrokerState {
     inner: Mutex<BrokerInner>,
+    write_phase_changed: Condvar,
     wake_write: RawFd,
+    hooks: TestHooks,
+    pty_started_gate: PtyStartedTestGate,
 }
 
 struct BrokerInner {
@@ -725,8 +773,19 @@ struct Session {
     master: Arc<Mutex<File>>,
     controller: Option<Controller>,
     agent_exited: bool,
+    write_phase: WritePhase,
+    start_confirmed: bool,
+    stop_in_flight: bool,
     _guardian: Arc<ProcessGroupGuardian>,
     completion: Arc<Completion>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WritePhase {
+    Pending,
+    Writing,
+    Written,
+    Abandoned,
 }
 
 struct ProcessGroupGuardian {
@@ -741,10 +800,21 @@ struct Controller {
     writer: Arc<Mutex<UnixStream>>,
     active: bool,
     peer_frame_limit: u32,
+    lifecycle_enabled: bool,
+}
+
+struct SessionReap {
+    pgid: libc::pid_t,
+    completion: Arc<Completion>,
+}
+
+struct ExitNotification {
+    writer: Arc<Mutex<UnixStream>>,
+    session_id: String,
 }
 
 impl BrokerState {
-    fn new(wake_write: RawFd) -> Self {
+    fn new(wake_write: RawFd, hooks: TestHooks, pty_started_gate: PtyStartedTestGate) -> Self {
         Self {
             inner: Mutex::new(BrokerInner {
                 frontends: 1,
@@ -752,7 +822,10 @@ impl BrokerState {
                 sessions: HashMap::new(),
                 shutdown_lock_waiter: false,
             }),
+            write_phase_changed: Condvar::new(),
             wake_write,
+            hooks,
+            pty_started_gate,
         }
     }
 
@@ -769,29 +842,68 @@ impl BrokerState {
     }
 
     fn disconnect_frontend(&self, frontend_id: u64) {
-        let mut inner = lock_mutex(&self.inner);
-        inner.frontends = inner.frontends.saturating_sub(1);
-        for session in inner.sessions.values_mut() {
-            if session
-                .controller
-                .as_ref()
-                .is_some_and(|controller| controller.frontend_id == frontend_id)
-            {
-                session.controller = None;
+        let reaps = {
+            let mut inner = lock_mutex(&self.inner);
+            inner.frontends = inner.frontends.saturating_sub(1);
+            let mut unconfirmed = Vec::new();
+            for (session_id, session) in &mut inner.sessions {
+                let Some(controller) = session
+                    .controller
+                    .as_ref()
+                    .filter(|controller| controller.frontend_id == frontend_id)
+                else {
+                    continue;
+                };
+                if session.write_phase == WritePhase::Written
+                    && controller.lifecycle_enabled
+                    && !session.start_confirmed
+                {
+                    unconfirmed.push(session_id.clone());
+                } else {
+                    session.controller = None;
+                }
             }
+            unconfirmed
+                .into_iter()
+                .filter_map(|session_id| inner.sessions.remove(&session_id))
+                .map(|session| SessionReap {
+                    pgid: session.pgid,
+                    completion: session.completion,
+                })
+                .collect::<Vec<_>>()
+        };
+        self.write_phase_changed.notify_all();
+        for reap in reaps {
+            let _ = reap_registered_session(reap);
         }
-        drop(inner);
         self.wake();
     }
 
-    fn mark_agent_exited(&self, session_id: &str) {
+    fn remove_after_agent_exit(&self, session_id: &str) -> Option<ExitNotification> {
         let mut inner = lock_mutex(&self.inner);
-        if let Some(session) = inner.sessions.get_mut(session_id) {
-            session.agent_exited = true;
-            session.controller = None;
+        loop {
+            match inner.sessions.get(session_id) {
+                Some(session) if session.write_phase == WritePhase::Writing => {
+                    inner = match self.write_phase_changed.wait(inner) {
+                        Ok(guard) => guard,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                }
+                _ => break,
+            }
         }
+        let mut session = inner.sessions.remove(session_id)?;
+        session.agent_exited = true;
+        let notification = (session.write_phase == WritePhase::Written && !session.stop_in_flight)
+            .then(|| session.controller.as_ref())
+            .flatten()
+            .filter(|controller| controller.lifecycle_enabled)
+            .map(|controller| ExitNotification {
+                writer: controller.writer.clone(),
+                session_id: session_id.to_string(),
+            });
         drop(inner);
-        self.wake();
+        notification
     }
 
     fn is_idle(&self) -> bool {
@@ -1019,6 +1131,13 @@ fn handle_frontend(
         Message::Welcome { capabilities, .. }
             if capabilities.iter().any(|capability| capability == "agent-path-v1")
     );
+    let lifecycle_enabled = matches!(
+        &reply,
+        Message::Welcome { capabilities, .. }
+            if capabilities
+                .iter()
+                .any(|capability| capability == "session-lifecycle-v1")
+    );
     send_message(&writer, &reply)?;
     if !matches!(reply, Message::Welcome { .. }) {
         return Ok(());
@@ -1058,6 +1177,7 @@ fn handle_frontend(
             &writer,
             peer_frame_limit,
             agent_path_enabled,
+            lifecycle_enabled,
             &mut controlled_session,
         )?;
     }
@@ -1070,6 +1190,7 @@ fn dispatch_message(
     writer: &Arc<Mutex<UnixStream>>,
     peer_frame_limit: u32,
     agent_path_enabled: bool,
+    lifecycle_enabled: bool,
     controlled_session: &mut Option<String>,
 ) -> io::Result<()> {
     match message {
@@ -1080,6 +1201,13 @@ fn dispatch_message(
             cols,
             rows,
         } => {
+            if lifecycle_enabled
+                && controlled_session.as_ref().is_some_and(|session_id| {
+                    !lock_mutex(&state.inner).sessions.contains_key(session_id)
+                })
+            {
+                *controlled_session = None;
+            }
             if controlled_session.is_some() {
                 return send_reject(
                     writer,
@@ -1112,6 +1240,7 @@ fn dispatch_message(
                 frontend_id,
                 writer,
                 peer_frame_limit,
+                lifecycle_enabled,
                 controlled_session,
                 executable,
                 resolved_executable,
@@ -1119,6 +1248,46 @@ fn dispatch_message(
                 cols,
                 rows,
             )
+        }
+        Message::PtyStartAck { session_id } => {
+            if !lifecycle_enabled {
+                return send_reject(
+                    writer,
+                    RejectCode::Unsupported,
+                    "session-lifecycle-v1 was not negotiated",
+                );
+            }
+            let ack_result = {
+                let mut inner = lock_mutex(&state.inner);
+                match inner.sessions.get_mut(&session_id) {
+                    None => Err((RejectCode::SessionNotFound, "session does not exist")),
+                    Some(session)
+                        if session.agent_exited || session.write_phase != WritePhase::Written =>
+                    {
+                        Err((RejectCode::SessionNotFound, "Agent has exited"))
+                    }
+                    Some(session)
+                        if controlled_session.as_deref() != Some(session_id.as_str())
+                            || !session.controller.as_ref().is_some_and(|controller| {
+                                controller.frontend_id == frontend_id
+                                    && controller.lifecycle_enabled
+                            }) =>
+                    {
+                        Err((
+                            RejectCode::NotController,
+                            "frontend does not own the controller lease",
+                        ))
+                    }
+                    Some(session) => {
+                        session.start_confirmed = true;
+                        Ok(())
+                    }
+                }
+            };
+            match ack_result {
+                Ok(()) => Ok(()),
+                Err((code, detail)) => send_reject(writer, code, detail),
+            }
         }
         Message::PtyAttach { session_id } => {
             if controlled_session.is_some() {
@@ -1145,6 +1314,7 @@ fn dispatch_message(
                             writer: writer.clone(),
                             active: false,
                             peer_frame_limit,
+                            lifecycle_enabled,
                         });
                         Ok(session.child_pid)
                     }
@@ -1173,17 +1343,40 @@ fn dispatch_message(
                     "frontend has no controller lease",
                 );
             };
-            let mut inner = lock_mutex(&state.inner);
-            if let Some(session) = inner.sessions.get_mut(&session_id) {
-                if session
-                    .controller
-                    .as_ref()
-                    .is_some_and(|controller| controller.frontend_id == frontend_id)
-                {
-                    session.controller = None;
+            let reap = {
+                let mut inner = lock_mutex(&state.inner);
+                let should_reap = inner.sessions.get(&session_id).is_some_and(|session| {
+                    session.write_phase == WritePhase::Written
+                        && !session.start_confirmed
+                        && session.controller.as_ref().is_some_and(|controller| {
+                            controller.frontend_id == frontend_id && controller.lifecycle_enabled
+                        })
+                });
+                if should_reap {
+                    inner
+                        .sessions
+                        .remove(&session_id)
+                        .map(|session| SessionReap {
+                            pgid: session.pgid,
+                            completion: session.completion,
+                        })
+                } else {
+                    if let Some(session) = inner.sessions.get_mut(&session_id) {
+                        if session
+                            .controller
+                            .as_ref()
+                            .is_some_and(|controller| controller.frontend_id == frontend_id)
+                        {
+                            session.controller = None;
+                        }
+                    }
+                    None
                 }
+            };
+            state.write_phase_changed.notify_all();
+            if let Some(reap) = reap {
+                reap_registered_session(reap)?;
             }
-            drop(inner);
             send_message(writer, &Message::PtyDetached)
         }
         Message::PtyStop { session_id } => {
@@ -1216,6 +1409,7 @@ fn dispatch_message(
                         if let Some(controller) = session.controller.as_mut() {
                             controller.active = false;
                         }
+                        session.stop_in_flight = true;
                         Ok((session.pgid, session.completion.clone()))
                     }
                 }
@@ -1270,6 +1464,7 @@ fn dispatch_message(
             "handshake message is not accepted after Welcome",
         ),
         Message::PtyStarted { .. }
+        | Message::PtyExited { .. }
         | Message::PtyAttached { .. }
         | Message::PtyDetached
         | Message::PtyStopped
@@ -1287,6 +1482,7 @@ fn start_session(
     frontend_id: u64,
     writer: &Arc<Mutex<UnixStream>>,
     peer_frame_limit: u32,
+    lifecycle_enabled: bool,
     controlled_session: &mut Option<String>,
     executable: String,
     resolved_executable: Option<String>,
@@ -1354,8 +1550,12 @@ fn start_session(
                     writer: writer.clone(),
                     active: false,
                     peer_frame_limit,
+                    lifecycle_enabled,
                 }),
                 agent_exited: false,
+                write_phase: WritePhase::Pending,
+                start_confirmed: false,
+                stop_in_flight: false,
                 _guardian: guardian.clone(),
                 completion: completion.clone(),
             },
@@ -1387,16 +1587,114 @@ fn start_session(
         return send_reject(writer, RejectCode::SpawnFailed, error.to_string());
     }
 
-    *controlled_session = Some(session_id.clone());
-    let response = send_message(writer, &started);
-    {
-        let (open, ready) = &*gate;
-        *lock_mutex(open) = true;
-        ready.notify_all();
+    let startable = {
+        let inner = lock_mutex(&state.inner);
+        inner.sessions.get(&session_id).is_some_and(|session| {
+            session.write_phase == WritePhase::Pending && !session.agent_exited
+        })
+    };
+    if !startable {
+        open_output_gate(&gate);
+        return send_reject(
+            writer,
+            RejectCode::SpawnFailed,
+            "Agent exited before PtyStarted",
+        );
     }
-    response?;
-    activate_controller(state, &session_id, frontend_id);
-    Ok(())
+
+    state.hooks.emit_agent(b'P', pgid);
+    if let Err(error) = state.pty_started_gate.wait() {
+        abandon_and_reap_session(state, &session_id)?;
+        open_output_gate(&gate);
+        return Err(error);
+    }
+
+    let claimed = {
+        let mut inner = lock_mutex(&state.inner);
+        inner.sessions.get_mut(&session_id).is_some_and(|session| {
+            if session.write_phase != WritePhase::Pending || session.agent_exited {
+                return false;
+            }
+            session.write_phase = WritePhase::Writing;
+            true
+        })
+    };
+    if !claimed {
+        open_output_gate(&gate);
+        return send_reject(
+            writer,
+            RejectCode::SpawnFailed,
+            "Agent exited before PtyStarted",
+        );
+    }
+
+    state.hooks.emit_agent(b'G', pgid);
+    if let Err(error) = state.pty_started_gate.wait() {
+        abandon_and_reap_session(state, &session_id)?;
+        open_output_gate(&gate);
+        return Err(error);
+    }
+
+    let response = send_message(writer, &started);
+    if response.is_ok() {
+        *controlled_session = Some(session_id.clone());
+    }
+    let reap = {
+        let mut inner = lock_mutex(&state.inner);
+        inner.sessions.get_mut(&session_id).and_then(|session| {
+            if response.is_ok() {
+                session.write_phase = WritePhase::Written;
+                session.start_confirmed = !lifecycle_enabled;
+                if let Some(controller) = session
+                    .controller
+                    .as_mut()
+                    .filter(|controller| controller.frontend_id == frontend_id)
+                {
+                    controller.active = true;
+                }
+                None
+            } else {
+                session.write_phase = WritePhase::Abandoned;
+                if let Some(controller) = session.controller.as_mut() {
+                    controller.active = false;
+                }
+                Some(SessionReap {
+                    pgid: session.pgid,
+                    completion: session.completion.clone(),
+                })
+            }
+        })
+    };
+    state.write_phase_changed.notify_all();
+    open_output_gate(&gate);
+    if let Some(reap) = reap {
+        reap_registered_session(reap)?;
+    }
+    response
+}
+
+fn open_output_gate(gate: &Arc<(Mutex<bool>, Condvar)>) {
+    let (open, ready) = &**gate;
+    *lock_mutex(open) = true;
+    ready.notify_all();
+}
+
+fn abandon_and_reap_session(state: &BrokerState, session_id: &str) -> io::Result<()> {
+    let reap = {
+        let mut inner = lock_mutex(&state.inner);
+        inner.sessions.get_mut(session_id).map(|session| {
+            session.write_phase = WritePhase::Abandoned;
+            SessionReap {
+                pgid: session.pgid,
+                completion: session.completion.clone(),
+            }
+        })
+    };
+    state.write_phase_changed.notify_all();
+    match reap {
+        Some(reap) => reap_registered_session(reap),
+        None => Ok(()),
+    }
 }
 
 fn pty_started_response(
@@ -1827,13 +2125,20 @@ fn spawn_agent_watcher(
     thread::Builder::new()
         .name(format!("winsmux-agent-wait-{pid}"))
         .spawn(move || {
-            let exited_state = state.clone();
-            let exited_session_id = session_id.clone();
-            let result = wait_for_agent_group(pid, pgid, move || {
-                exited_state.mark_agent_exited(&exited_session_id);
+            let mut notification = None;
+            let mut classified = false;
+            let result = wait_for_agent_group(pid, pgid, || {
+                notification = state.remove_after_agent_exit(&session_id);
+                classified = true;
             })
             .map_err(|error| error.to_string());
-            lock_mutex(&state.inner).sessions.remove(&session_id);
+            if !classified {
+                notification = state.remove_after_agent_exit(&session_id);
+            }
+            if let Some(ExitNotification { writer, session_id }) = notification {
+                let _ = send_message(&writer, &Message::PtyExited { session_id });
+            }
+            state.hooks.emit_agent(b'W', pgid);
             let guardian_pid = guardian.pid;
             drop(guardian);
             let guardian_result = wait_pid(guardian_pid).map_err(|error| error.to_string());
@@ -1922,6 +2227,13 @@ fn spawn_output_reader(
 fn request_process_group_stop(pgid: libc::pid_t) -> io::Result<()> {
     signal_process_group(pgid, libc::SIGTERM)?;
     signal_process_group(pgid, libc::SIGKILL)
+}
+
+fn reap_registered_session(reap: SessionReap) -> io::Result<()> {
+    request_process_group_stop(reap.pgid)?;
+    reap.completion
+        .wait()
+        .map_err(|detail| io::Error::new(io::ErrorKind::Other, detail))
 }
 
 fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> io::Result<()> {
