@@ -26,7 +26,12 @@ pub const MAX_SESSION_ID_HEX: usize = 32;
 pub const MAX_PTY_IO_CHUNK: usize = 256;
 pub const MAX_PTY_COLS: u16 = 512;
 pub const MAX_PTY_ROWS: u16 = 512;
-pub const SUPPORTED_CAPABILITIES: [&str; 3] = ["frame-v1", "pty-v1", "agent-path-v1"];
+pub const SUPPORTED_CAPABILITIES: [&str; 4] = [
+    "frame-v1",
+    "pty-v1",
+    "agent-path-v1",
+    "session-lifecycle-v1",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +76,14 @@ pub enum Message {
         child_pid: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resolved_executable: Option<String>,
+    },
+    #[serde(rename = "pty-start-ack")]
+    PtyStartAck {
+        session_id: String,
+    },
+    #[serde(rename = "pty-exited")]
+    PtyExited {
+        session_id: String,
     },
     #[serde(rename = "pty-attach")]
     PtyAttach {
@@ -203,9 +216,9 @@ pub fn decode_payload(payload: &[u8]) -> Result<Message, Message> {
         ));
     };
     match kind {
-        "hello" | "welcome" | "reject" | "pty-start" | "pty-started" | "pty-attach"
-        | "pty-attached" | "pty-detach" | "pty-detached" | "pty-stop" | "pty-stopped"
-        | "pty-input" | "pty-output" | "pty-resize" => {}
+        "hello" | "welcome" | "reject" | "pty-start" | "pty-started" | "pty-start-ack"
+        | "pty-exited" | "pty-attach" | "pty-attached" | "pty-detach" | "pty-detached"
+        | "pty-stop" | "pty-stopped" | "pty-input" | "pty-output" | "pty-resize" => {}
         _ => {
             return Err(Message::reject(
                 RejectCode::UnknownType,
@@ -288,6 +301,7 @@ pub fn respond_after_negotiation(payload: &[u8]) -> Message {
         ),
         Ok(
             Message::PtyStart { .. }
+            | Message::PtyStartAck { .. }
             | Message::PtyAttach { .. }
             | Message::PtyDetach
             | Message::PtyStop { .. }
@@ -299,6 +313,7 @@ pub fn respond_after_negotiation(payload: &[u8]) -> Message {
         ),
         Ok(
             Message::PtyStarted { .. }
+            | Message::PtyExited { .. }
             | Message::PtyAttached { .. }
             | Message::PtyDetached
             | Message::PtyStopped
@@ -525,7 +540,10 @@ fn validate_message(message: &Message) -> Result<(), &'static str> {
                 return Err("child_pid is illegal");
             }
         }
-        Message::PtyAttach { session_id } | Message::PtyStop { session_id } => {
+        Message::PtyStartAck { session_id }
+        | Message::PtyExited { session_id }
+        | Message::PtyAttach { session_id }
+        | Message::PtyStop { session_id } => {
             session_id_is_legal(session_id)?;
         }
         Message::PtyInput { data_b64 } | Message::PtyOutput { data_b64 } => {
@@ -643,6 +661,12 @@ mod measure {
                 session_id: session_id.clone(),
                 child_pid: u32::MAX,
                 resolved_executable: Some(escaped_path),
+            },
+            Message::PtyStartAck {
+                session_id: session_id.clone(),
+            },
+            Message::PtyExited {
+                session_id: session_id.clone(),
             },
             Message::PtyAttach {
                 session_id: session_id.clone(),

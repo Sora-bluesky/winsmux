@@ -5,8 +5,8 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::Read;
-use std::os::fd::{FromRawFd, RawFd};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -78,6 +78,14 @@ impl FrontendOptions {
         options.capabilities.push("agent-path-v1".to_string());
         options
     }
+
+    fn lifecycle() -> Self {
+        let mut options = Self::legacy();
+        options
+            .capabilities
+            .push("session-lifecycle-v1".to_string());
+        options
+    }
 }
 
 impl Frontend {
@@ -92,6 +100,15 @@ impl Frontend {
     fn connect_with_options(
         runtime: &Path,
         event_fd: Option<RawFd>,
+        options: FrontendOptions,
+    ) -> Self {
+        Self::connect_with_options_and_gate(runtime, event_fd, None, options)
+    }
+
+    fn connect_with_options_and_gate(
+        runtime: &Path,
+        event_fd: Option<RawFd>,
+        pty_started_gate_fd: Option<RawFd>,
         options: FrontendOptions,
     ) -> Self {
         let FrontendOptions {
@@ -120,6 +137,9 @@ impl Frontend {
         if let Some(event_fd) = event_fd {
             command.env("WINSMUX_TEST_BROKER_EVENT_FD", event_fd.to_string());
         }
+        if let Some(gate_fd) = pty_started_gate_fd {
+            command.env("WINSMUX_TEST_PTY_STARTED_GATE_FD", gate_fd.to_string());
+        }
         let mut child = command.spawn().unwrap();
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
@@ -140,7 +160,6 @@ impl Frontend {
     }
 
     fn send(&mut self, message: &Message) {
-        use std::io::Write;
         self.input
             .write_all(&encode_frame(message).unwrap())
             .unwrap();
@@ -165,6 +184,17 @@ impl Frontend {
         }
     }
 
+    fn try_recv(&mut self) -> Option<Message> {
+        let mut poll_fd = libc::pollfd {
+            fd: self.output.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+        assert!(result >= 0, "poll frontend output failed");
+        (result > 0 && poll_fd.revents & libc::POLLIN != 0).then(|| self.recv())
+    }
+
     fn close(mut self) {
         drop(self.input);
         let status = self.child.wait().unwrap();
@@ -183,6 +213,13 @@ impl Frontend {
             .read_to_end(&mut stderr)
             .unwrap();
         stderr
+    }
+
+    fn kill(mut self) {
+        self.child.kill().unwrap();
+        drop(self.input);
+        drop(self.output);
+        assert!(!self.child.wait().unwrap().success());
     }
 }
 
@@ -208,6 +245,33 @@ impl Drop for EventPipe {
     }
 }
 
+struct GatePipe {
+    reader: RawFd,
+    writer: fs::File,
+}
+
+impl GatePipe {
+    fn new() -> Self {
+        let mut pipe = [0; 2];
+        assert_eq!(unsafe { libc::pipe(pipe.as_mut_ptr()) }, 0);
+        Self {
+            reader: pipe[0],
+            writer: unsafe { fs::File::from_raw_fd(pipe[1]) },
+        }
+    }
+
+    fn release(&mut self, count: usize) {
+        self.writer.write_all(&vec![1; count]).unwrap();
+        self.writer.flush().unwrap();
+    }
+}
+
+impl Drop for GatePipe {
+    fn drop(&mut self) {
+        unsafe { libc::close(self.reader) };
+    }
+}
+
 fn start_cat(frontend: &mut Frontend) -> (String, u32) {
     frontend.send(&Message::PtyStart {
         executable: "/bin/cat".to_string(),
@@ -224,6 +288,30 @@ fn start_cat(frontend: &mut Frontend) -> (String, u32) {
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     }
+}
+
+fn start_sleep(frontend: &mut Frontend) -> (String, u32) {
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/sleep".to_string(),
+        resolution: None,
+        argv: vec!["600".to_string()],
+        cols: 80,
+        rows: 24,
+    });
+    match frontend.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected pty-started, got {other:?}"),
+    }
+}
+
+fn acknowledge_start(frontend: &mut Frontend, session_id: &str) {
+    frontend.send(&Message::PtyStartAck {
+        session_id: session_id.to_string(),
+    });
 }
 
 fn resolution_start(
@@ -674,21 +762,12 @@ fn second_controller_and_stale_session_are_rejected() {
 fn natural_exit_removes_registry_and_process_group() {
     let runtime = RuntimeDir::new("natural-exit");
     let mut frontend = Frontend::connect(&runtime.0);
-    frontend.send(&Message::PtyStart {
-        executable: "/bin/true".to_string(),
-        resolution: None,
-        argv: Vec::new(),
-        cols: 80,
-        rows: 24,
+    let (session_id, child_pid) = start_cat(&mut frontend);
+    // EOT at an empty canonical input line gives cat EOF only after the
+    // legacy PtyStarted contract has been observed.
+    frontend.send(&Message::PtyInput {
+        data_b64: "BA==".to_string(),
     });
-    let (session_id, child_pid) = match frontend.recv() {
-        Message::PtyStarted {
-            session_id,
-            child_pid,
-            ..
-        } => (session_id, child_pid),
-        other => panic!("expected pty-started, got {other:?}"),
-    };
     frontend.send(&Message::PtyDetach);
     assert_eq!(frontend.recv(), Message::PtyDetached);
 
@@ -819,12 +898,439 @@ fn unread_pty_input_does_not_strand_the_controller_lease() {
     wait_socket_gone(&runtime.socket());
 }
 
+#[test]
+fn lifecycle_gate_a_reaps_pending_start_before_byte_one_and_recovers() {
+    let runtime = RuntimeDir::new("lifecycle-gate-a");
+    let mut events = EventPipe::new();
+    let mut gate = GatePipe::new();
+    let mut frontend = Frontend::connect_with_options_and_gate(
+        &runtime.0,
+        Some(events.writer),
+        Some(gate.reader),
+        FrontendOptions::lifecycle(),
+    );
+
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/cat".to_string(),
+        resolution: None,
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    });
+    let agent_pgid = read_event_with_code(&mut events.reader, PTY_STARTED_PENDING);
+    kill_process_group(agent_pgid);
+    wait_matching_w_without_g(&mut events.reader, agent_pgid);
+    wait_process_group_gone(agent_pgid as u32);
+
+    gate.release(1);
+    assert!(matches!(
+        frontend.recv(),
+        Message::Reject {
+            code: RejectCode::SpawnFailed,
+            ..
+        }
+    ));
+    assert!(drain_ready_events(&mut events.reader)
+        .into_iter()
+        .all(|(code, pgid)| code != PTY_STARTED_WRITING || pgid != agent_pgid));
+
+    gate.release(2);
+    let (session_id, _) = start_cat(&mut frontend);
+    stop_started(&mut frontend, session_id);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn lifecycle_gate_b_finishes_started_then_reports_exit_and_recovers() {
+    let runtime = RuntimeDir::new("lifecycle-gate-b");
+    let mut events = EventPipe::new();
+    let mut gate = GatePipe::new();
+    let mut frontend = Frontend::connect_with_options_and_gate(
+        &runtime.0,
+        Some(events.writer),
+        Some(gate.reader),
+        FrontendOptions::lifecycle(),
+    );
+
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/sleep".to_string(),
+        resolution: None,
+        argv: vec!["600".to_string()],
+        cols: 80,
+        rows: 24,
+    });
+    let agent_pgid = read_event_with_code(&mut events.reader, PTY_STARTED_PENDING);
+    gate.release(1);
+    read_matching_event(&mut events.reader, PTY_STARTED_WRITING, agent_pgid);
+    kill_process_group(agent_pgid);
+    wait_process_group_gone(agent_pgid as u32);
+    gate.release(1);
+
+    let session_id = match frontend.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => {
+            assert_eq!(child_pid, agent_pgid as u32);
+            session_id
+        }
+        other => panic!("expected pty-started, got {other:?}"),
+    };
+    assert_eq!(
+        frontend.recv_until(|message| matches!(message, Message::PtyExited { .. })),
+        Message::PtyExited { session_id }
+    );
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, agent_pgid);
+
+    gate.release(2);
+    let (recovery_id, _) = start_cat(&mut frontend);
+    stop_started(&mut frontend, recovery_id);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn lifecycle_disconnect_before_ack_reaps_and_forgets_session() {
+    let runtime = RuntimeDir::new("lifecycle-unacked-disconnect");
+    let mut frontend =
+        Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    let (session_id, child_pid) = start_cat(&mut frontend);
+    frontend.close();
+    wait_process_group_gone(child_pid);
+
+    let mut replacement =
+        Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    replacement.send(&Message::PtyAttach { session_id });
+    assert!(matches!(
+        replacement.recv(),
+        Message::Reject {
+            code: RejectCode::SessionNotFound,
+            ..
+        }
+    ));
+    replacement.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn lifecycle_detach_before_ack_reaps_and_forgets_session() {
+    let runtime = RuntimeDir::new("lifecycle-unacked-detach");
+    let mut frontend =
+        Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    let (session_id, child_pid) = start_cat(&mut frontend);
+    frontend.send(&Message::PtyDetach);
+    assert_eq!(frontend.recv(), Message::PtyDetached);
+    wait_process_group_gone(child_pid);
+
+    frontend.send(&Message::PtyAttach { session_id });
+    assert!(matches!(
+        frontend.recv(),
+        Message::Reject {
+            code: RejectCode::SessionNotFound,
+            ..
+        }
+    ));
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn failed_pty_started_write_reaps_row_and_allows_recovery() {
+    let runtime = RuntimeDir::new("lifecycle-start-write-failure");
+    let mut events = EventPipe::new();
+    let mut gate = GatePipe::new();
+    let mut frontend = Frontend::connect_with_options_and_gate(
+        &runtime.0,
+        Some(events.writer),
+        Some(gate.reader),
+        FrontendOptions::lifecycle(),
+    );
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/sleep".to_string(),
+        resolution: None,
+        argv: vec!["600".to_string()],
+        cols: 80,
+        rows: 24,
+    });
+    let agent_pgid = read_event_with_code(&mut events.reader, PTY_STARTED_PENDING);
+    gate.release(1);
+    read_matching_event(&mut events.reader, PTY_STARTED_WRITING, agent_pgid);
+    frontend.kill();
+    gate.release(1);
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, agent_pgid);
+    wait_process_group_gone(agent_pgid as u32);
+
+    gate.release(2);
+    let mut recovery = Frontend::connect_with_options_and_gate(
+        &runtime.0,
+        Some(events.writer),
+        Some(gate.reader),
+        FrontendOptions::lifecycle(),
+    );
+    let (session_id, _) = start_cat(&mut recovery);
+    stop_started(&mut recovery, session_id);
+    recovery.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn acknowledged_unsolicited_exit_pushes_and_same_connection_recovers() {
+    let runtime = RuntimeDir::new("lifecycle-acked-exit");
+    let mut events = EventPipe::new();
+    let mut frontend = Frontend::connect_with_options(
+        &runtime.0,
+        Some(events.writer),
+        FrontendOptions::lifecycle(),
+    );
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/sh".to_string(),
+        resolution: None,
+        argv: vec!["-c".to_string(), "read _; exit 0".to_string()],
+        cols: 80,
+        rows: 24,
+    });
+    let (session_id, child_pid) = match frontend.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected pty-started, got {other:?}"),
+    };
+    acknowledge_start(&mut frontend, &session_id);
+    frontend.send(&Message::PtyInput {
+        data_b64: "Cg==".to_string(),
+    });
+    assert_eq!(
+        frontend.recv_until(|message| matches!(message, Message::PtyExited { .. })),
+        Message::PtyExited {
+            session_id: session_id.clone(),
+        }
+    );
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, child_pid as i32);
+
+    let (recovery_id, _) = start_cat(&mut frontend);
+    stop_started(&mut frontend, recovery_id);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn acknowledged_detach_and_close_remains_attachable() {
+    let runtime = RuntimeDir::new("lifecycle-acked-reattach");
+    let mut first = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    let (session_id, child_pid) = start_cat(&mut first);
+    acknowledge_start(&mut first, &session_id);
+    first.send(&Message::PtyDetach);
+    assert_eq!(first.recv(), Message::PtyDetached);
+    first.close();
+
+    let mut second = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    second.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    assert_eq!(
+        second.recv(),
+        Message::PtyAttached {
+            session_id: session_id.clone(),
+            child_pid,
+        }
+    );
+    stop_started(&mut second, session_id);
+    second.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn detached_unsolicited_exit_has_no_push_and_is_not_attachable() {
+    let runtime = RuntimeDir::new("lifecycle-detached-exit");
+    let mut events = EventPipe::new();
+    let mut first = Frontend::connect_with_options(
+        &runtime.0,
+        Some(events.writer),
+        FrontendOptions::lifecycle(),
+    );
+    let (session_id, child_pid) = start_sleep(&mut first);
+    acknowledge_start(&mut first, &session_id);
+    first.send(&Message::PtyDetach);
+    assert_eq!(first.recv(), Message::PtyDetached);
+    kill_process_group(child_pid as i32);
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, child_pid as i32);
+    wait_process_group_gone(child_pid);
+    assert_eq!(first.try_recv(), None);
+
+    let mut second = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    second.send(&Message::PtyAttach { session_id });
+    assert!(matches!(
+        second.recv(),
+        Message::Reject {
+            code: RejectCode::SessionNotFound,
+            ..
+        }
+    ));
+    first.close();
+    second.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn lifecycle_stop_returns_stopped_without_exited_push() {
+    let runtime = RuntimeDir::new("lifecycle-stop");
+    let mut events = EventPipe::new();
+    let mut frontend = Frontend::connect_with_options(
+        &runtime.0,
+        Some(events.writer),
+        FrontendOptions::lifecycle(),
+    );
+    let (session_id, child_pid) = start_sleep(&mut frontend);
+    acknowledge_start(&mut frontend, &session_id);
+    stop_started(&mut frontend, session_id);
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, child_pid as i32);
+    assert_eq!(frontend.try_recv(), None);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn capable_birth_legacy_controller_gets_no_push_or_reconcile() {
+    let runtime = RuntimeDir::new("lifecycle-capable-to-legacy");
+    let mut events = EventPipe::new();
+    let mut capable = Frontend::connect_with_options(
+        &runtime.0,
+        Some(events.writer),
+        FrontendOptions::lifecycle(),
+    );
+    let (session_id, child_pid) = start_sleep(&mut capable);
+    acknowledge_start(&mut capable, &session_id);
+    capable.send(&Message::PtyDetach);
+    assert_eq!(capable.recv(), Message::PtyDetached);
+    capable.close();
+
+    let mut legacy = Frontend::connect(&runtime.0);
+    legacy.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    assert!(matches!(legacy.recv(), Message::PtyAttached { .. }));
+    kill_process_group(child_pid as i32);
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, child_pid as i32);
+    wait_process_group_gone(child_pid);
+    assert_eq!(legacy.try_recv(), None);
+
+    legacy.send(&Message::PtyStart {
+        executable: "/bin/cat".to_string(),
+        resolution: None,
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    });
+    assert!(matches!(
+        legacy.recv(),
+        Message::Reject {
+            code: RejectCode::ControllerBusy,
+            ..
+        }
+    ));
+    legacy.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn legacy_birth_capable_controller_gets_push_and_reconcile() {
+    let runtime = RuntimeDir::new("lifecycle-legacy-to-capable");
+    let mut events = EventPipe::new();
+    let mut legacy = Frontend::connect_with_event(&runtime.0, Some(events.writer));
+    let (session_id, child_pid) = start_sleep(&mut legacy);
+    legacy.send(&Message::PtyDetach);
+    assert_eq!(legacy.recv(), Message::PtyDetached);
+    legacy.close();
+
+    let mut capable =
+        Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    capable.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    assert!(matches!(capable.recv(), Message::PtyAttached { .. }));
+    acknowledge_start(&mut capable, &session_id);
+    kill_process_group(child_pid as i32);
+    read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, child_pid as i32);
+    wait_process_group_gone(child_pid);
+    assert_eq!(
+        capable.recv_until(|message| matches!(message, Message::PtyExited { .. })),
+        Message::PtyExited { session_id }
+    );
+
+    let (recovery_id, _) = start_cat(&mut capable);
+    stop_started(&mut capable, recovery_id);
+    capable.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn lifecycle_ack_requires_capability_and_controller_and_client_exited_is_unknown() {
+    let runtime = RuntimeDir::new("lifecycle-direction-errors");
+    let mut legacy = Frontend::connect(&runtime.0);
+    let (session_id, _) = start_cat(&mut legacy);
+    legacy.send(&Message::PtyStartAck {
+        session_id: session_id.clone(),
+    });
+    assert!(matches!(
+        legacy.recv(),
+        Message::Reject {
+            code: RejectCode::Unsupported,
+            ..
+        }
+    ));
+    legacy.send(&Message::PtyExited {
+        session_id: session_id.clone(),
+    });
+    assert!(matches!(
+        legacy.recv(),
+        Message::Reject {
+            code: RejectCode::UnknownType,
+            ..
+        }
+    ));
+
+    let mut capable =
+        Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    capable.send(&Message::PtyStartAck {
+        session_id: "f".repeat(32),
+    });
+    assert!(matches!(
+        capable.recv(),
+        Message::Reject {
+            code: RejectCode::SessionNotFound,
+            ..
+        }
+    ));
+    capable.send(&Message::PtyStartAck {
+        session_id: session_id.clone(),
+    });
+    assert!(matches!(
+        capable.recv(),
+        Message::Reject {
+            code: RejectCode::NotController,
+            ..
+        }
+    ));
+
+    stop_started(&mut legacy, session_id);
+    legacy.close();
+    capable.close();
+    wait_socket_gone(&runtime.socket());
+}
+
 // The broker emits these records from the actual listener and shutdown branches.
 const BROKER_READY: u8 = b'R';
 const FRONTEND_LOCK_ACQUIRED: u8 = b'L';
 const SHUTDOWN_LOCK_BUSY: u8 = b'B';
 const NAMED_FRONTEND_ACCEPTED: u8 = b'A';
 const SHUTDOWN_LOCK_ACQUIRED: u8 = b'S';
+const PTY_STARTED_PENDING: u8 = b'P';
+const PTY_STARTED_WRITING: u8 = b'G';
+const AGENT_WATCHER_REMOVED: u8 = b'W';
 
 #[test]
 fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
@@ -850,7 +1356,6 @@ fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
     let mut second_input = second.stdin.take().unwrap();
     let second_output = second.stdout.take().unwrap();
     unsafe { libc::close(gate[0]) };
-    use std::io::Write;
     second_input
         .write_all(
             &encode_frame(&Message::Hello {
@@ -901,7 +1406,6 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
         .unwrap();
     let mut first_input = first.stdin.take().unwrap();
     let mut first_output = first.stdout.take().unwrap();
-    use std::io::Write;
     first_input
         .write_all(
             &encode_frame(&Message::Hello {
@@ -1048,13 +1552,68 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
 }
 
 fn read_broker_event(reader: &mut fs::File) -> (u8, i32) {
-    use std::io::Read;
     let mut record = [0; 5];
     reader.read_exact(&mut record).unwrap();
     (
         record[0],
-        i32::from_ne_bytes(record[1..].try_into().unwrap()),
+        i32::from_le_bytes(record[1..].try_into().unwrap()),
     )
+}
+
+fn read_event_with_code(reader: &mut fs::File, expected_code: u8) -> i32 {
+    loop {
+        let (code, subject) = read_broker_event(reader);
+        if code == expected_code {
+            return subject;
+        }
+    }
+}
+
+fn read_matching_event(reader: &mut fs::File, expected_code: u8, expected_pgid: i32) {
+    loop {
+        let (code, pgid) = read_broker_event(reader);
+        if code == expected_code && pgid == expected_pgid {
+            return;
+        }
+    }
+}
+
+fn wait_matching_w_without_g(reader: &mut fs::File, agent_pgid: i32) {
+    loop {
+        let (code, pgid) = read_broker_event(reader);
+        if pgid != agent_pgid {
+            continue;
+        }
+        assert_ne!(
+            code,
+            PTY_STARTED_WRITING,
+            "Gate A saw matching G before W for pgid {agent_pgid}"
+        );
+        if code == AGENT_WATCHER_REMOVED {
+            return;
+        }
+    }
+}
+
+fn drain_ready_events(reader: &mut fs::File) -> Vec<(u8, i32)> {
+    let mut events = Vec::new();
+    loop {
+        let mut poll_fd = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+        assert!(result >= 0, "poll broker events failed");
+        if result == 0 || poll_fd.revents & libc::POLLIN == 0 {
+            return events;
+        }
+        events.push(read_broker_event(reader));
+    }
+}
+
+fn kill_process_group(pgid: i32) {
+    assert_eq!(unsafe { libc::kill(-pgid, libc::SIGKILL) }, 0);
 }
 
 fn wait_process_group_gone(child_pid: u32) {

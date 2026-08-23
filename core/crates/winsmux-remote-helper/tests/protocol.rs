@@ -209,6 +209,40 @@ fn welcome_negotiates_agent_path_v1_in_server_order() {
 }
 
 #[test]
+fn welcome_negotiates_session_lifecycle_v1_in_server_order() {
+    let mut output = Vec::new();
+    serve_stdio(
+        Cursor::new(
+            encode_frame(&hello_with_caps(
+                vec![
+                    "session-lifecycle-v1".to_string(),
+                    "pty-v1".to_string(),
+                    "frame-v1".to_string(),
+                ],
+                MAX_FRAME_LEN,
+            ))
+            .unwrap(),
+        ),
+        &mut output,
+    )
+    .unwrap();
+    let payload = read_frame(&mut Cursor::new(output))
+        .unwrap()
+        .expect("welcome frame");
+    match decode_payload(&payload).unwrap() {
+        Message::Welcome { capabilities, .. } => assert_eq!(
+            capabilities,
+            vec![
+                "frame-v1".to_string(),
+                "pty-v1".to_string(),
+                "session-lifecycle-v1".to_string(),
+            ]
+        ),
+        other => panic!("expected Welcome, got {other:?}"),
+    }
+}
+
+#[test]
 fn legal_hello_roundtrip_welcome() {
     let mut output = Vec::new();
     serve_stdio(
@@ -358,7 +392,7 @@ fn golden_max_payload_lengths() {
     let welcome = encode_payload(&max_legal_welcome()).unwrap().len() as u32;
     let reject = encode_payload(&max_legal_reject()).unwrap().len() as u32;
     assert_eq!(hello, 523);
-    assert_eq!(welcome, 192);
+    assert_eq!(welcome, 215);
     assert_eq!(reject, 816);
 
     // U+0001 is legal (only NUL is forbidden) and serde_json emits it as
@@ -424,6 +458,55 @@ fn legacy_pty_start_and_started_json_remain_byte_compatible() {
         encode_payload(&started).unwrap(),
         br#"{"type":"pty-started","session_id":"ffffffffffffffffffffffffffffffff","child_pid":42}"#
     );
+}
+
+#[test]
+fn lifecycle_message_wire_names_and_session_ids_roundtrip() {
+    let session_id = "f".repeat(32);
+    let cases = [
+        (
+            Message::PtyStartAck {
+                session_id: session_id.clone(),
+            },
+            br#"{"type":"pty-start-ack","session_id":"ffffffffffffffffffffffffffffffff"}"#
+                .as_slice(),
+        ),
+        (
+            Message::PtyExited { session_id },
+            br#"{"type":"pty-exited","session_id":"ffffffffffffffffffffffffffffffff"}"#.as_slice(),
+        ),
+    ];
+
+    for (message, expected) in cases {
+        let payload = encode_payload(&message).unwrap();
+        assert_eq!(payload, expected);
+        assert_eq!(decode_payload(&payload).unwrap(), message);
+    }
+}
+
+#[test]
+fn lifecycle_message_directions_are_frozen() {
+    let session_id = "f".repeat(32);
+    let ack = encode_payload(&Message::PtyStartAck {
+        session_id: session_id.clone(),
+    })
+    .unwrap();
+    assert!(matches!(
+        respond_after_negotiation(&ack),
+        Message::Reject {
+            code: RejectCode::Unsupported,
+            ..
+        }
+    ));
+
+    let exited = encode_payload(&Message::PtyExited { session_id }).unwrap();
+    assert!(matches!(
+        respond_after_negotiation(&exited),
+        Message::Reject {
+            code: RejectCode::UnknownType,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -692,24 +775,26 @@ fn pty_start_is_known_but_unsupported_after_welcome() {
 
 #[test]
 fn session_ids_are_exact_lowercase_hex() {
-    for session_id in [
-        "a".repeat(31),
-        "a".repeat(33),
-        "A".repeat(32),
-        "g".repeat(32),
-    ] {
-        let payload = serde_json::to_vec(&serde_json::json!({
-            "type": "pty-attach",
-            "session_id": session_id
-        }))
-        .unwrap();
-        assert!(matches!(
-            decode_payload(&payload),
-            Err(Message::Reject {
-                code: RejectCode::Malformed,
-                ..
-            })
-        ));
+    for kind in ["pty-attach", "pty-start-ack", "pty-exited"] {
+        for session_id in [
+            "a".repeat(31),
+            "a".repeat(33),
+            "A".repeat(32),
+            "g".repeat(32),
+        ] {
+            let payload = serde_json::to_vec(&serde_json::json!({
+                "type": kind,
+                "session_id": session_id
+            }))
+            .unwrap();
+            assert!(matches!(
+                decode_payload(&payload),
+                Err(Message::Reject {
+                    code: RejectCode::Malformed,
+                    ..
+                })
+            ));
+        }
     }
 }
 
