@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
 #[cfg(target_os = "linux")]
+mod agent_adapter;
+#[cfg(target_os = "linux")]
 pub mod session;
 
 /// Payload-byte ceiling. Pinned by `measured_max_payloads` to the largest
@@ -24,7 +26,15 @@ pub const MAX_SESSION_ID_HEX: usize = 32;
 pub const MAX_PTY_IO_CHUNK: usize = 256;
 pub const MAX_PTY_COLS: u16 = 512;
 pub const MAX_PTY_ROWS: u16 = 512;
-pub const SUPPORTED_CAPABILITIES: [&str; 2] = ["frame-v1", "pty-v1"];
+pub const SUPPORTED_CAPABILITIES: [&str; 3] = ["frame-v1", "pty-v1", "agent-path-v1"];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentResolution {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub absolute_path: Option<String>,
+    pub user_candidates: Vec<String>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -49,6 +59,8 @@ pub enum Message {
     #[serde(rename = "pty-start")]
     PtyStart {
         executable: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolution: Option<AgentResolution>,
         argv: Vec<String>,
         cols: u16,
         rows: u16,
@@ -57,6 +69,8 @@ pub enum Message {
     PtyStarted {
         session_id: String,
         child_pid: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resolved_executable: Option<String>,
     },
     #[serde(rename = "pty-attach")]
     PtyAttach {
@@ -438,6 +452,7 @@ fn validate_message(message: &Message) -> Result<(), &'static str> {
     match message {
         Message::PtyStart {
             executable,
+            resolution,
             argv,
             cols,
             rows,
@@ -455,13 +470,53 @@ fn validate_message(message: &Message) -> Result<(), &'static str> {
             {
                 return Err("argv is illegal");
             }
+            if let Some(resolution) = resolution {
+                if !matches!(executable.as_str(), "claude" | "codex") {
+                    return Err("resolution executable is illegal");
+                }
+                if resolution
+                    .absolute_path
+                    .as_deref()
+                    .is_some_and(|path| !unix_absolute_path_is_legal(path))
+                    || resolution
+                        .user_candidates
+                        .iter()
+                        .any(|path| !unix_absolute_path_is_legal(path))
+                {
+                    return Err("resolution path is illegal");
+                }
+                let combined_limit = if resolution.absolute_path.is_some() {
+                    MAX_ARGV_COUNT - 1
+                } else {
+                    MAX_ARGV_COUNT
+                };
+                if argv
+                    .len()
+                    .checked_add(resolution.user_candidates.len())
+                    .is_none_or(|count| count > combined_limit)
+                {
+                    return Err("resolution argv and candidates are illegal");
+                }
+            }
             dimensions_are_legal(*cols, *rows)?;
         }
         Message::PtyStarted {
             session_id,
             child_pid,
+            resolved_executable,
+        } => {
+            session_id_is_legal(session_id)?;
+            if *child_pid == 0 {
+                return Err("child_pid is illegal");
+            }
+            if resolved_executable
+                .as_deref()
+                .is_some_and(|path| !unix_absolute_path_is_legal(path))
+            {
+                return Err("resolved_executable is illegal");
+            }
         }
-        | Message::PtyAttached {
+        Message::PtyAttached {
             session_id,
             child_pid,
         } => {
@@ -493,6 +548,17 @@ fn dimensions_are_legal(cols: u16, rows: u16) -> Result<(), &'static str> {
         return Err("PTY dimensions are illegal");
     }
     Ok(())
+}
+
+fn unix_absolute_path_is_legal(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= MAX_EXECUTABLE_BYTES
+        && path.starts_with('/')
+        && !path.as_bytes().contains(&0)
+        && path
+            .as_bytes()
+            .split(|byte| *byte == b'/')
+            .all(|component| component != b"." && component != b"..")
 }
 
 fn session_id_is_legal(session_id: &str) -> Result<(), &'static str> {
@@ -547,18 +613,36 @@ mod measure {
         // U+0001 is legal in executable and argv strings (only NUL is
         // rejected), and serde_json encodes every byte as \\u0001.
         let escaped = "\u{0001}".repeat(MAX_EXECUTABLE_BYTES);
+        let escaped_path = format!("/{}", "\u{0001}".repeat(MAX_EXECUTABLE_BYTES - 1));
         let session_id = "f".repeat(MAX_SESSION_ID_HEX);
         let data_b64 = encode_base64(&vec![u8::MAX; MAX_PTY_IO_CHUNK]);
         let messages = [
             Message::PtyStart {
                 executable: escaped,
+                resolution: None,
                 argv: vec!["\u{0001}".repeat(MAX_ARGV_ELEM_BYTES); MAX_ARGV_COUNT],
+                cols: MAX_PTY_COLS,
+                rows: MAX_PTY_ROWS,
+            },
+            Message::PtyStart {
+                executable: "claude".to_string(),
+                resolution: Some(AgentResolution {
+                    absolute_path: Some(escaped_path.clone()),
+                    user_candidates: Vec::new(),
+                }),
+                argv: vec!["\u{0001}".repeat(MAX_ARGV_ELEM_BYTES); MAX_ARGV_COUNT - 1],
                 cols: MAX_PTY_COLS,
                 rows: MAX_PTY_ROWS,
             },
             Message::PtyStarted {
                 session_id: session_id.clone(),
                 child_pid: u32::MAX,
+                resolved_executable: None,
+            },
+            Message::PtyStarted {
+                session_id: session_id.clone(),
+                child_pid: u32::MAX,
+                resolved_executable: Some(escaped_path),
             },
             Message::PtyAttach {
                 session_id: session_id.clone(),
