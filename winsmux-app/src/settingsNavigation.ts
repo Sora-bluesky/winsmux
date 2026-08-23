@@ -1,5 +1,7 @@
 export type SettingsScope = "user" | "workspace";
 
+export const SSH_CONNECT_REVIEW_SECTION_ID = "settings-section-ssh-connect-review";
+
 export interface SettingsSectionCandidate {
   id: string;
   text: string;
@@ -12,6 +14,9 @@ export interface SettingsSectionVisibility {
 }
 
 export function getSettingsSectionScope(sectionId: string): SettingsScope {
+  if (sectionId === SSH_CONNECT_REVIEW_SECTION_ID) {
+    return "user";
+  }
   return sectionId === "settings-section-workspace" || sectionId === "settings-section-team-profile"
     ? "workspace"
     : "user";

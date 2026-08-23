@@ -113,7 +113,7 @@ import {
   getSettingsTabScope,
   shouldDisableSettingsNavItem,
   type SettingsScope,
-} from "./settingsNavigation";
+} from "./settingsNavigation"; import { mountSshConnectReview } from "./sshConnectReview";
 import {
   bindFirstRunWizard,
   maybeStartFirstRunOnboarding,
@@ -17239,7 +17239,7 @@ function resetSettingsView() {
     searchInput.value = "";
   }
   updateSettingsSearchFilter();
-  setActiveSettingsNav("settings-section-common");
+  setActiveSettingsNav("settings-section-common"); mountSshConnectReview();
   const content = document.getElementById("settings-content");
   if (content) {
     content.scrollTop = 0;
