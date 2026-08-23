@@ -221,6 +221,7 @@ $whitelistPatterns = @(
     'winsmux-app/src-tauri/src/desktop_control_plane_params.rs',
     'winsmux-app/src-tauri/src/desktop_provider_capabilities.rs',
     'winsmux-app/src-tauri/src/desktop_session_restore.rs',
+    'winsmux-app/src-tauri/src/remote_session.rs',
     'winsmux-app/src-tauri/src/ssh_connect_review.rs',
     'winsmux-app/src/sshConnectReview.css',
     'winsmux-app/src/sshConnectReview.test.ts',
