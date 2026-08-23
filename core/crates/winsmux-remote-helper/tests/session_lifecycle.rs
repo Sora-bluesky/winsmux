@@ -3,14 +3,18 @@
 //! Linux end-to-end coverage lives here so the frozen Windows-only CI remains unchanged.
 //! The tests exercise the real broker binary, lock file, Unix socket, PTY, and process group.
 
+use std::ffi::OsString;
 use std::fs;
+use std::io::Read;
 use std::os::fd::{FromRawFd, RawFd};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use winsmux_remote_helper::{
-    decode_payload, encode_frame, read_frame, Message, RejectCode, MAX_FRAME_LEN, PROTOCOL_VERSION,
+    decode_payload, encode_frame, encode_payload, read_frame, AgentResolution, Message, RejectCode,
+    MAX_EXECUTABLE_BYTES, MAX_FRAME_LEN, PROTOCOL_VERSION,
 };
 
 struct RuntimeDir(PathBuf);
@@ -50,12 +54,53 @@ struct Frontend {
     output: ChildStdout,
 }
 
+struct FrontendOptions {
+    capabilities: Vec<String>,
+    peer_frame_limit: u32,
+    path: Option<OsString>,
+    current_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+}
+
+impl FrontendOptions {
+    fn legacy() -> Self {
+        Self {
+            capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
+            peer_frame_limit: MAX_FRAME_LEN,
+            path: None,
+            current_dir: None,
+            home: None,
+        }
+    }
+
+    fn agent() -> Self {
+        let mut options = Self::legacy();
+        options.capabilities.push("agent-path-v1".to_string());
+        options
+    }
+}
+
 impl Frontend {
     fn connect(runtime: &Path) -> Self {
         Self::connect_with_event(runtime, None)
     }
 
     fn connect_with_event(runtime: &Path, event_fd: Option<RawFd>) -> Self {
+        Self::connect_with_options(runtime, event_fd, FrontendOptions::legacy())
+    }
+
+    fn connect_with_options(
+        runtime: &Path,
+        event_fd: Option<RawFd>,
+        options: FrontendOptions,
+    ) -> Self {
+        let FrontendOptions {
+            capabilities,
+            peer_frame_limit,
+            path,
+            current_dir,
+            home,
+        } = options;
         let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"));
         command
             .args(["serve", "--stdio"])
@@ -63,6 +108,15 @@ impl Frontend {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if let Some(path) = path {
+            command.env("PATH", path);
+        }
+        if let Some(current_dir) = current_dir {
+            command.current_dir(current_dir);
+        }
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
         if let Some(event_fd) = event_fd {
             command.env("WINSMUX_TEST_BROKER_EVENT_FD", event_fd.to_string());
         }
@@ -78,8 +132,8 @@ impl Frontend {
             protocol_version: PROTOCOL_VERSION,
             client_version: "task774-test".to_string(),
             nonce: "ab".repeat(32),
-            capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
-            peer_frame_limit: MAX_FRAME_LEN,
+            capabilities,
+            peer_frame_limit,
         });
         assert!(matches!(frontend.recv(), Message::Welcome { .. }));
         frontend
@@ -116,6 +170,20 @@ impl Frontend {
         let status = self.child.wait().unwrap();
         assert!(status.success());
     }
+
+    fn close_and_read_stderr(mut self) -> Vec<u8> {
+        drop(self.input);
+        let status = self.child.wait().unwrap();
+        assert!(status.success());
+        let mut stderr = Vec::new();
+        self.child
+            .stderr
+            .take()
+            .expect("stderr pipe")
+            .read_to_end(&mut stderr)
+            .unwrap();
+        stderr
+    }
 }
 
 struct EventPipe {
@@ -143,6 +211,7 @@ impl Drop for EventPipe {
 fn start_cat(frontend: &mut Frontend) -> (String, u32) {
     frontend.send(&Message::PtyStart {
         executable: "/bin/cat".to_string(),
+        resolution: None,
         argv: Vec::new(),
         cols: 80,
         rows: 24,
@@ -151,9 +220,393 @@ fn start_cat(frontend: &mut Frontend) -> (String, u32) {
         Message::PtyStarted {
             session_id,
             child_pid,
+            ..
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     }
+}
+
+fn resolution_start(
+    executable: &str,
+    absolute_path: Option<&Path>,
+    user_candidates: &[PathBuf],
+) -> Message {
+    Message::PtyStart {
+        executable: executable.to_string(),
+        resolution: Some(AgentResolution {
+            absolute_path: absolute_path.map(utf8_path),
+            user_candidates: user_candidates.iter().map(|path| utf8_path(path)).collect(),
+        }),
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    }
+}
+
+fn utf8_path(path: &Path) -> String {
+    path.to_str().expect("UTF-8 fixture path").to_string()
+}
+
+fn make_agent_link(path: &Path) {
+    fs::create_dir_all(path.parent().expect("agent parent")).unwrap();
+    symlink("/bin/cat", path).unwrap();
+}
+
+fn make_marker_agent(path: &Path, marker: &Path) {
+    fs::create_dir_all(path.parent().expect("agent parent")).unwrap();
+    fs::write(
+        path,
+        format!(
+            "#!/bin/sh\nprintf started > \"{}\"\nexec /bin/cat\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+fn expect_resolved_start(frontend: &mut Frontend, expected: &Path) -> (String, u32) {
+    match frontend.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            resolved_executable: Some(resolved_executable),
+        } => {
+            assert_eq!(resolved_executable, utf8_path(expected));
+            (session_id, child_pid)
+        }
+        other => panic!("expected resolved pty-started, got {other:?}"),
+    }
+}
+
+fn stop_started(frontend: &mut Frontend, session_id: String) {
+    frontend.send(&Message::PtyStop { session_id });
+    assert_eq!(frontend.recv(), Message::PtyStopped);
+}
+
+fn directory_with_byte_len(base: &Path, target_len: usize) -> PathBuf {
+    let mut path = base.to_path_buf();
+    while path.as_os_str().as_bytes().len() < target_len {
+        let current = path.as_os_str().as_bytes().len();
+        let remaining = target_len - current;
+        assert!(remaining >= 2, "cannot add a one-byte Unix path component");
+        let mut increment = remaining.min(201);
+        if remaining > increment && remaining - increment == 1 {
+            increment -= 1;
+        }
+        path.push("x".repeat(increment - 1));
+    }
+    assert_eq!(path.as_os_str().as_bytes().len(), target_len);
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[test]
+fn resolution_without_agent_path_capability_rejects_before_agent_spawn() {
+    let runtime = RuntimeDir::new("agent-capability");
+    let marker = runtime.0.join("agent-started");
+    let agent = runtime.0.join("fixtures/claude");
+    make_marker_agent(&agent, &marker);
+    let mut options = FrontendOptions::legacy();
+    options.path = Some(OsString::new());
+    let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+
+    frontend.send(&resolution_start("claude", Some(&agent), &[]));
+    assert!(matches!(
+        frontend.recv(),
+        Message::Reject {
+            code: RejectCode::Unsupported,
+            ..
+        }
+    ));
+    assert!(!marker.exists(), "the Agent executable must not have run");
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn resolver_uses_absolute_then_inherited_path_then_candidates_for_both_agents() {
+    for executable in ["claude", "codex"] {
+        let runtime = RuntimeDir::new(&format!("precedence-{executable}"));
+        let absolute = runtime.0.join("absolute").join(executable);
+        let path_dir = runtime.0.join("path");
+        let from_path = path_dir.join(executable);
+        let candidate = runtime.0.join("candidate").join(executable);
+        let later_candidate = runtime.0.join("later-candidate").join(executable);
+        for path in [&absolute, &from_path, &candidate, &later_candidate] {
+            make_agent_link(path);
+        }
+        let user_candidates = vec![candidate.clone(), later_candidate];
+        let mut options = FrontendOptions::agent();
+        options.path = Some(path_dir.as_os_str().to_os_string());
+        let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+
+        frontend.send(&resolution_start(
+            executable,
+            Some(&absolute),
+            &user_candidates,
+        ));
+        let (session_id, _) = expect_resolved_start(&mut frontend, &absolute);
+        stop_started(&mut frontend, session_id);
+
+        frontend.send(&resolution_start(executable, None, &user_candidates));
+        let (session_id, _) = expect_resolved_start(&mut frontend, &from_path);
+        stop_started(&mut frontend, session_id);
+
+        fs::remove_file(&from_path).unwrap();
+        frontend.send(&resolution_start(executable, None, &user_candidates));
+        let (session_id, _) = expect_resolved_start(&mut frontend, &candidate);
+        stop_started(&mut frontend, session_id);
+
+        let stderr = String::from_utf8(frontend.close_and_read_stderr()).unwrap();
+        for selected in [&absolute, &from_path, &candidate] {
+            assert!(
+                !stderr.contains(&utf8_path(selected)),
+                "selected executable must not be logged"
+            );
+        }
+        wait_socket_gone(&runtime.socket());
+    }
+}
+
+#[test]
+fn resolver_skips_unsafe_and_non_utf8_path_entries_without_private_scans() {
+    let runtime = RuntimeDir::new("unsafe-path");
+    let cwd = runtime.0.join("cwd");
+    let relative = cwd.join("relative");
+    let traversal_root = runtime.0.join("traversal");
+    let traversal_safe = traversal_root.join("safe");
+    let traversal_target = traversal_root.join("trap");
+    let home = runtime.0.join("home");
+    fs::create_dir_all(&traversal_safe).unwrap();
+    for path in [
+        cwd.join("claude"),
+        relative.join("claude"),
+        traversal_target.join("claude"),
+        home.join(".local/bin/claude"),
+        home.join(".claude/private/claude"),
+    ] {
+        make_agent_link(&path);
+    }
+
+    let mut invalid_bytes = runtime.0.as_os_str().as_bytes().to_vec();
+    invalid_bytes.extend_from_slice(b"/invalid-\xff");
+    let invalid_dir = PathBuf::from(OsString::from_vec(invalid_bytes));
+    make_agent_link(&invalid_dir.join("claude"));
+
+    let traversal_entry = traversal_safe.join("../trap");
+    let mut path_bytes = b":.:relative:".to_vec();
+    path_bytes.extend_from_slice(traversal_entry.as_os_str().as_bytes());
+    path_bytes.push(b':');
+    path_bytes.extend_from_slice(invalid_dir.as_os_str().as_bytes());
+    let mut options = FrontendOptions::agent();
+    options.path = Some(OsString::from_vec(path_bytes));
+    options.current_dir = Some(cwd);
+    options.home = Some(home);
+    let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+
+    frontend.send(&resolution_start("claude", None, &[]));
+    assert!(matches!(
+        frontend.recv(),
+        Message::Reject {
+            code: RejectCode::SpawnFailed,
+            ..
+        }
+    ));
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn path_join_of_2567_bytes_is_skipped_for_bounded_candidate() {
+    let runtime = RuntimeDir::new("overlong-path");
+    let path_entry = directory_with_byte_len(&runtime.0.join("long"), 2_560);
+    let overlong = path_entry.join("claude");
+    assert_eq!(overlong.as_os_str().as_bytes().len(), 2_567);
+    make_agent_link(&overlong);
+    let candidate = runtime.0.join("candidate/claude");
+    make_agent_link(&candidate);
+    let mut options = FrontendOptions::agent();
+    options.path = Some(path_entry.as_os_str().to_os_string());
+    let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+
+    frontend.send(&resolution_start(
+        "claude",
+        None,
+        std::slice::from_ref(&candidate),
+    ));
+    let (session_id, _) = expect_resolved_start(&mut frontend, &candidate);
+    stop_started(&mut frontend, session_id);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn missing_directory_and_non_executable_candidates_leave_no_registry_session() {
+    for fixture in ["missing", "directory", "non-executable"] {
+        let runtime = RuntimeDir::new(&format!("candidate-{fixture}"));
+        let candidate = runtime.0.join("candidate/claude");
+        match fixture {
+            "missing" => {}
+            "directory" => fs::create_dir_all(&candidate).unwrap(),
+            "non-executable" => {
+                fs::create_dir_all(candidate.parent().unwrap()).unwrap();
+                fs::write(&candidate, b"not executable").unwrap();
+                fs::set_permissions(&candidate, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let mut options = FrontendOptions::agent();
+        options.path = Some(OsString::new());
+        let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+        frontend.send(&resolution_start(
+            "claude",
+            None,
+            std::slice::from_ref(&candidate),
+        ));
+        assert!(matches!(
+            frontend.recv(),
+            Message::Reject {
+                code: RejectCode::SpawnFailed,
+                ..
+            }
+        ));
+        frontend.close();
+        wait_socket_gone(&runtime.socket());
+    }
+}
+
+#[test]
+fn other_execute_bit_without_euid_access_falls_through_to_path() {
+    let runtime = RuntimeDir::new("other-x-only");
+    let blocked = runtime.0.join("blocked/claude");
+    fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+    fs::write(&blocked, b"#!/bin/sh\nexec /bin/cat\n").unwrap();
+    fs::set_permissions(&blocked, fs::Permissions::from_mode(0o001)).unwrap();
+    let usable = runtime.0.join("bin/claude");
+    make_agent_link(&usable);
+    let mut options = FrontendOptions::agent();
+    options.path = Some(usable.parent().unwrap().as_os_str().to_os_string());
+    let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+    frontend.send(&resolution_start("claude", Some(&blocked), &[]));
+    let (session_id, _) = expect_resolved_start(&mut frontend, &usable);
+    stop_started(&mut frontend, session_id);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn peer_limit_l_minus_one_rejects_before_spawn_and_l_may_start() {
+    let rejected_runtime = RuntimeDir::new("peer-l-minus-one");
+    let rejected_dir = directory_with_byte_len(&rejected_runtime.0.join("agent"), 249);
+    let rejected_agent = rejected_dir.join("claude");
+    assert_eq!(
+        rejected_agent.as_os_str().as_bytes().len(),
+        MAX_EXECUTABLE_BYTES
+    );
+    let marker = rejected_runtime.0.join("agent-started");
+    make_marker_agent(&rejected_agent, &marker);
+    let conservative_l = encode_payload(&Message::PtyStarted {
+        session_id: "f".repeat(32),
+        child_pid: u32::MAX,
+        resolved_executable: Some(utf8_path(&rejected_agent)),
+    })
+    .unwrap()
+    .len() as u32;
+    assert!(conservative_l - 1 > 192, "Welcome must still fit");
+    let mut options = FrontendOptions::agent();
+    options.peer_frame_limit = conservative_l - 1;
+    options.path = Some(OsString::new());
+    let mut frontend = Frontend::connect_with_options(&rejected_runtime.0, None, options);
+    frontend.send(&resolution_start("claude", Some(&rejected_agent), &[]));
+    assert!(matches!(
+        frontend.recv(),
+        Message::Reject {
+            code: RejectCode::PeerLimit,
+            ..
+        }
+    ));
+    assert!(!marker.exists(), "L-1 must reject before Agent execve");
+    frontend.close();
+    wait_socket_gone(&rejected_runtime.socket());
+
+    let accepted_runtime = RuntimeDir::new("peer-l");
+    let accepted_dir = directory_with_byte_len(&accepted_runtime.0.join("agent"), 249);
+    let accepted_agent = accepted_dir.join("claude");
+    assert_eq!(
+        accepted_agent.as_os_str().as_bytes().len(),
+        MAX_EXECUTABLE_BYTES
+    );
+    make_agent_link(&accepted_agent);
+    let conservative_l = encode_payload(&Message::PtyStarted {
+        session_id: "f".repeat(32),
+        child_pid: u32::MAX,
+        resolved_executable: Some(utf8_path(&accepted_agent)),
+    })
+    .unwrap()
+    .len() as u32;
+    let mut options = FrontendOptions::agent();
+    options.peer_frame_limit = conservative_l;
+    options.path = Some(OsString::new());
+    let mut frontend = Frontend::connect_with_options(&accepted_runtime.0, None, options);
+    frontend.send(&resolution_start("claude", Some(&accepted_agent), &[]));
+    let response = frontend.recv();
+    assert!(encode_payload(&response).unwrap().len() <= conservative_l as usize);
+    let (session_id, resolved_executable) = match response {
+        Message::PtyStarted {
+            session_id,
+            resolved_executable: Some(resolved_executable),
+            ..
+        } => (session_id, resolved_executable),
+        other => panic!("expected pty-started at L, got {other:?}"),
+    };
+    assert_eq!(resolved_executable, utf8_path(&accepted_agent));
+    stop_started(&mut frontend, session_id);
+    frontend.close();
+    wait_socket_gone(&accepted_runtime.socket());
+}
+
+#[test]
+fn resolved_session_detaches_attaches_to_same_pid_and_stops() {
+    let runtime = RuntimeDir::new("resolved-reattach");
+    let candidate = runtime.0.join("candidate/claude");
+    make_agent_link(&candidate);
+    let mut options = FrontendOptions::agent();
+    options.path = Some(OsString::new());
+    let mut first = Frontend::connect_with_options(&runtime.0, None, options);
+    first.send(&resolution_start(
+        "claude",
+        None,
+        std::slice::from_ref(&candidate),
+    ));
+    let (session_id, child_pid) = expect_resolved_start(&mut first, &candidate);
+    first.send(&Message::PtyDetach);
+    assert_eq!(first.recv(), Message::PtyDetached);
+    first.close();
+
+    let mut second = Frontend::connect(&runtime.0);
+    second.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    assert_eq!(
+        second.recv(),
+        Message::PtyAttached {
+            session_id: session_id.clone(),
+            child_pid,
+        }
+    );
+    stop_started(&mut second, session_id.clone());
+    second.send(&Message::PtyAttach { session_id });
+    assert!(matches!(
+        second.recv(),
+        Message::Reject {
+            code: RejectCode::SessionNotFound,
+            ..
+        }
+    ));
+    second.close();
+    wait_process_group_gone(child_pid);
+    wait_socket_gone(&runtime.socket());
 }
 
 #[test]
@@ -223,6 +676,7 @@ fn natural_exit_removes_registry_and_process_group() {
     let mut frontend = Frontend::connect(&runtime.0);
     frontend.send(&Message::PtyStart {
         executable: "/bin/true".to_string(),
+        resolution: None,
         argv: Vec::new(),
         cols: 80,
         rows: 24,
@@ -231,6 +685,7 @@ fn natural_exit_removes_registry_and_process_group() {
         Message::PtyStarted {
             session_id,
             child_pid,
+            ..
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     };
@@ -258,6 +713,7 @@ fn detached_output_is_drained_until_natural_exit() {
     let mut frontend = Frontend::connect(&runtime.0);
     frontend.send(&Message::PtyStart {
         executable: "/usr/bin/seq".to_string(),
+        resolution: None,
         argv: vec!["1".to_string(), "100000".to_string()],
         cols: 80,
         rows: 24,
@@ -266,6 +722,7 @@ fn detached_output_is_drained_until_natural_exit() {
         Message::PtyStarted {
             session_id,
             child_pid,
+            ..
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     };
@@ -321,6 +778,7 @@ fn unread_pty_input_does_not_strand_the_controller_lease() {
     let mut first = Frontend::connect(&runtime.0);
     first.send(&Message::PtyStart {
         executable: "/bin/sh".to_string(),
+        resolution: None,
         argv: vec!["-c".to_string(), "stty -echo; exec sleep 600".to_string()],
         cols: 80,
         rows: 24,
@@ -329,6 +787,7 @@ fn unread_pty_input_does_not_strand_the_controller_lease() {
         Message::PtyStarted {
             session_id,
             child_pid,
+            ..
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     };
@@ -545,6 +1004,7 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
     assert_eq!(event, BROKER_READY);
     first.send(&Message::PtyStart {
         executable: "/bin/sh".to_string(),
+        resolution: None,
         argv: vec![
             "-c".to_string(),
             "sleep 600 & read -r _; printf ready; wait".to_string(),
@@ -556,6 +1016,7 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
         Message::PtyStarted {
             session_id,
             child_pid,
+            ..
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     };

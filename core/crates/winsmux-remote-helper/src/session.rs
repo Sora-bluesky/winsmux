@@ -1,8 +1,9 @@
 //! Linux-only on-demand broker for persistent remote PTY sessions.
 
 use crate::{
-    decode_base64, decode_payload, encode_base64, encode_payload, negotiate, read_frame,
-    write_frame, Message, RejectCode, MAX_PTY_IO_CHUNK, PREFIX_LEN,
+    agent_adapter::resolve_agent, decode_base64, decode_payload, encode_base64, encode_payload,
+    negotiate, read_frame, write_frame, Message, RejectCode, MAX_FRAME_LEN, MAX_PTY_IO_CHUNK,
+    PREFIX_LEN,
 };
 use std::collections::HashMap;
 use std::env;
@@ -1013,6 +1014,11 @@ fn handle_frontend(
         _ => 0,
     };
     let reply = negotiate(&hello);
+    let agent_path_enabled = matches!(
+        &reply,
+        Message::Welcome { capabilities, .. }
+            if capabilities.iter().any(|capability| capability == "agent-path-v1")
+    );
     send_message(&writer, &reply)?;
     if !matches!(reply, Message::Welcome { .. }) {
         return Ok(());
@@ -1051,6 +1057,7 @@ fn handle_frontend(
             frontend_id,
             &writer,
             peer_frame_limit,
+            agent_path_enabled,
             &mut controlled_session,
         )?;
     }
@@ -1062,11 +1069,13 @@ fn dispatch_message(
     frontend_id: u64,
     writer: &Arc<Mutex<UnixStream>>,
     peer_frame_limit: u32,
+    agent_path_enabled: bool,
     controlled_session: &mut Option<String>,
 ) -> io::Result<()> {
     match message {
         Message::PtyStart {
             executable,
+            resolution,
             argv,
             cols,
             rows,
@@ -1078,6 +1087,26 @@ fn dispatch_message(
                     "frontend already controls a session",
                 );
             }
+            if resolution.is_some() && !agent_path_enabled {
+                return send_reject(
+                    writer,
+                    RejectCode::Unsupported,
+                    "agent-path-v1 was not negotiated",
+                );
+            }
+            let (executable, resolved_executable) = match resolution {
+                Some(resolution) => match resolve_agent(&executable, &resolution) {
+                    Ok(path) => (path.clone(), Some(path)),
+                    Err(_) => {
+                        return send_reject(
+                            writer,
+                            RejectCode::SpawnFailed,
+                            "no executable candidate found",
+                        )
+                    }
+                },
+                None => (executable, None),
+            };
             start_session(
                 state,
                 frontend_id,
@@ -1085,6 +1114,7 @@ fn dispatch_message(
                 peer_frame_limit,
                 controlled_session,
                 executable,
+                resolved_executable,
                 argv,
                 cols,
                 rows,
@@ -1259,14 +1289,49 @@ fn start_session(
     peer_frame_limit: u32,
     controlled_session: &mut Option<String>,
     executable: String,
+    resolved_executable: Option<String>,
     argv: Vec<String>,
     cols: u16,
     rows: u16,
 ) -> io::Result<()> {
+    let session_id = unique_session_id(state)?;
+    let probe = pty_started_response(&session_id, u32::MAX, resolved_executable.as_deref());
+    let probe_len = match encode_payload(&probe) {
+        Ok(payload) => payload.len(),
+        Err(_) => {
+            return send_reject(
+                writer,
+                RejectCode::PeerLimit,
+                "PtyStarted cannot be encoded",
+            )
+        }
+    };
+    if probe_len > MAX_FRAME_LEN.min(peer_frame_limit) as usize {
+        return send_reject(
+            writer,
+            RejectCode::PeerLimit,
+            "peer_frame_limit cannot carry PtyStarted",
+        );
+    }
+
     let agent = match spawn_agent(&executable, &argv, cols, rows) {
         Ok(agent) => agent,
         Err(error) => return send_reject(writer, RejectCode::SpawnFailed, error.to_string()),
     };
+    let child_pid = agent.pid as u32;
+    let started = pty_started_response(&session_id, child_pid, resolved_executable.as_deref());
+    let actual_len = encode_payload(&started).ok().map(|payload| payload.len());
+    if actual_len.is_none_or(|len| len > probe_len || len > peer_frame_limit as usize) {
+        let cleanup = cleanup_unregistered_agent(agent);
+        let reject = send_reject(
+            writer,
+            RejectCode::PeerLimit,
+            "peer_frame_limit cannot carry PtyStarted",
+        );
+        cleanup?;
+        return reject;
+    }
+
     let SpawnedAgent {
         pid,
         pgid,
@@ -1274,9 +1339,7 @@ fn start_session(
         reader,
         guardian,
     } = agent;
-    let child_pid = pid as u32;
     let guardian_pid = guardian.pid;
-    let session_id = unique_session_id(state)?;
     let completion = Arc::new(Completion::new());
     {
         let mut inner = lock_mutex(&state.inner);
@@ -1325,13 +1388,7 @@ fn start_session(
     }
 
     *controlled_session = Some(session_id.clone());
-    let response = send_message(
-        writer,
-        &Message::PtyStarted {
-            session_id: session_id.clone(),
-            child_pid,
-        },
-    );
+    let response = send_message(writer, &started);
     {
         let (open, ready) = &*gate;
         *lock_mutex(open) = true;
@@ -1340,6 +1397,35 @@ fn start_session(
     response?;
     activate_controller(state, &session_id, frontend_id);
     Ok(())
+}
+
+fn pty_started_response(
+    session_id: &str,
+    child_pid: u32,
+    resolved_executable: Option<&str>,
+) -> Message {
+    Message::PtyStarted {
+        session_id: session_id.to_string(),
+        child_pid,
+        resolved_executable: resolved_executable.map(str::to_string),
+    }
+}
+
+fn cleanup_unregistered_agent(agent: SpawnedAgent) -> io::Result<()> {
+    let SpawnedAgent {
+        pid,
+        pgid,
+        master,
+        reader,
+        guardian,
+    } = agent;
+    let guardian_pid = guardian.pid;
+    drop(reader);
+    drop(master);
+    drop(guardian);
+    let agent_cleanup = stop_and_reap_without_watcher(pid, pgid);
+    let guardian_cleanup = wait_pid(guardian_pid);
+    agent_cleanup.and(guardian_cleanup)
 }
 
 fn activate_controller(state: &BrokerState, session_id: &str, frontend_id: u64) {

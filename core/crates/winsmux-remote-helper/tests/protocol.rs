@@ -175,6 +175,40 @@ fn capability_intersection_drops_unknown_tokens() {
 }
 
 #[test]
+fn welcome_negotiates_agent_path_v1_in_server_order() {
+    let mut output = Vec::new();
+    serve_stdio(
+        Cursor::new(
+            encode_frame(&hello_with_caps(
+                vec![
+                    "agent-path-v1".to_string(),
+                    "pty-v1".to_string(),
+                    "frame-v1".to_string(),
+                ],
+                MAX_FRAME_LEN,
+            ))
+            .unwrap(),
+        ),
+        &mut output,
+    )
+    .unwrap();
+    let payload = read_frame(&mut Cursor::new(output))
+        .unwrap()
+        .expect("welcome frame");
+    match decode_payload(&payload).unwrap() {
+        Message::Welcome { capabilities, .. } => assert_eq!(
+            capabilities,
+            vec![
+                "frame-v1".to_string(),
+                "pty-v1".to_string(),
+                "agent-path-v1".to_string(),
+            ]
+        ),
+        other => panic!("expected Welcome, got {other:?}"),
+    }
+}
+
+#[test]
 fn legal_hello_roundtrip_welcome() {
     let mut output = Vec::new();
     serve_stdio(
@@ -324,7 +358,7 @@ fn golden_max_payload_lengths() {
     let welcome = encode_payload(&max_legal_welcome()).unwrap().len() as u32;
     let reject = encode_payload(&max_legal_reject()).unwrap().len() as u32;
     assert_eq!(hello, 523);
-    assert_eq!(welcome, 176);
+    assert_eq!(welcome, 192);
     assert_eq!(reject, 816);
 
     // U+0001 is legal (only NUL is forbidden) and serde_json emits it as
@@ -332,6 +366,7 @@ fn golden_max_payload_lengths() {
     let escaped = "\u{0001}".repeat(MAX_EXECUTABLE_BYTES);
     let pty_start = Message::PtyStart {
         executable: escaped.clone(),
+        resolution: None,
         argv: vec!["\u{0001}".repeat(MAX_ARGV_ELEM_BYTES); MAX_ARGV_COUNT],
         cols: MAX_PTY_COLS,
         rows: MAX_PTY_ROWS,
@@ -353,6 +388,7 @@ fn golden_max_payload_lengths() {
 fn pty_message_wire_names_are_hyphenated() {
     let message = Message::PtyStart {
         executable: "/bin/cat".to_string(),
+        resolution: None,
         argv: Vec::new(),
         cols: 80,
         rows: 24,
@@ -363,6 +399,187 @@ fn pty_message_wire_names_are_hyphenated() {
         "pty-start"
     );
     assert_eq!(decode_payload(&payload).unwrap(), message);
+}
+
+#[test]
+fn legacy_pty_start_and_started_json_remain_byte_compatible() {
+    let start = Message::PtyStart {
+        executable: "/bin/cat".to_string(),
+        resolution: None,
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    };
+    assert_eq!(
+        encode_payload(&start).unwrap(),
+        br#"{"type":"pty-start","executable":"/bin/cat","argv":[],"cols":80,"rows":24}"#
+    );
+
+    let started = Message::PtyStarted {
+        session_id: "f".repeat(32),
+        child_pid: 42,
+        resolved_executable: None,
+    };
+    assert_eq!(
+        encode_payload(&started).unwrap(),
+        br#"{"type":"pty-started","session_id":"ffffffffffffffffffffffffffffffff","child_pid":42}"#
+    );
+}
+
+#[test]
+fn resolution_envelope_roundtrips_with_optional_absolute_path() {
+    let payload = br#"{"type":"pty-start","executable":"claude","resolution":{"absolute_path":"/opt/agents/claude","user_candidates":["/usr/local/bin/claude"]},"argv":["--version"],"cols":80,"rows":24}"#;
+    let message = decode_payload(payload).expect("valid resolution envelope");
+    match &message {
+        Message::PtyStart {
+            executable,
+            resolution: Some(resolution),
+            argv,
+            cols,
+            rows,
+        } => {
+            assert_eq!(executable, "claude");
+            assert_eq!(
+                resolution.absolute_path.as_deref(),
+                Some("/opt/agents/claude")
+            );
+            assert_eq!(resolution.user_candidates, ["/usr/local/bin/claude"]);
+            assert_eq!(argv, &vec!["--version".to_string()]);
+            assert_eq!((*cols, *rows), (80, 24));
+        }
+        other => panic!("expected resolution pty-start, got {other:?}"),
+    }
+    assert_eq!(encode_payload(&message).unwrap(), payload);
+
+    let without_absolute = br#"{"type":"pty-start","executable":"codex","resolution":{"user_candidates":[]},"argv":[],"cols":80,"rows":24}"#;
+    let message = decode_payload(without_absolute).expect("optional absolute_path");
+    assert_eq!(encode_payload(&message).unwrap(), without_absolute);
+}
+
+#[test]
+fn resolution_envelope_enforces_provider_paths_and_combined_count() {
+    let cases = [
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "agent",
+            "resolution": {"user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"absolute_path": "relative/claude", "user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"absolute_path": "/opt/../bin/claude", "user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"absolute_path": "/opt/\0claude", "user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "codex",
+            "resolution": {"absolute_path": format!("/{}", "x".repeat(MAX_EXECUTABLE_BYTES)), "user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "codex",
+            "resolution": {"absolute_path": format!("/{}", "é".repeat(128)), "user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"user_candidates": ["/opt/./claude"]},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"user_candidates": [""]},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"path": "/caller/supplied", "user_candidates": []},
+            "argv": [], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "claude",
+            "resolution": {"absolute_path": "/opt/claude", "user_candidates": vec!["/bin/claude"; 4]},
+            "argv": vec!["x"; 4], "cols": 80, "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "codex",
+            "resolution": {"user_candidates": vec!["/bin/codex"; 4]},
+            "argv": vec!["x"; 5], "cols": 80, "rows": 24
+        }),
+    ];
+    for value in cases {
+        assert!(matches!(
+            decode_payload(&serde_json::to_vec(&value).unwrap()),
+            Err(Message::Reject {
+                code: RejectCode::Malformed,
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
+fn resolution_request_and_success_response_maxima_fit_frozen_frame_ceiling() {
+    let escaped_argument = "\u{0001}".repeat(MAX_ARGV_ELEM_BYTES);
+    let escaped_path = format!("/{}", "\u{0001}".repeat(MAX_EXECUTABLE_BYTES - 1));
+    let mut measured_request_max = 0;
+    for has_absolute in [false, true] {
+        let combined_limit = if has_absolute { 7 } else { 8 };
+        for candidate_count in 0..=combined_limit {
+            let argv_count = combined_limit - candidate_count;
+            let mut resolution = serde_json::json!({
+                "user_candidates": vec![escaped_path.clone(); candidate_count]
+            });
+            if has_absolute {
+                resolution["absolute_path"] = serde_json::Value::String(escaped_path.clone());
+            }
+            let value = serde_json::json!({
+                "type": "pty-start",
+                "executable": "claude",
+                "resolution": resolution,
+                "argv": vec![escaped_argument.clone(); argv_count],
+                "cols": MAX_PTY_COLS,
+                "rows": MAX_PTY_ROWS
+            });
+            let message = decode_payload(&serde_json::to_vec(&value).unwrap())
+                .expect("legal maximum resolution request");
+            let encoded_len = encode_payload(&message).unwrap().len();
+            measured_request_max = measured_request_max.max(encoded_len);
+            assert!(encoded_len < MAX_FRAME_LEN as usize);
+        }
+    }
+    assert_eq!(measured_request_max, 12_432);
+
+    let started = serde_json::json!({
+        "type": "pty-started",
+        "session_id": "f".repeat(32),
+        "child_pid": u32::MAX,
+        "resolved_executable": escaped_path
+    });
+    let started =
+        decode_payload(&serde_json::to_vec(&started).unwrap()).expect("legal maximum pty-started");
+    assert_eq!(encode_payload(&started).unwrap().len(), 1_649);
+    assert!(encode_frame(&started).is_ok());
+    assert_eq!(MAX_FRAME_LEN, 13_915);
 }
 
 #[test]
@@ -451,6 +668,7 @@ fn pty_resize_enforces_nonzero_frozen_bounds() {
 fn pty_start_is_known_but_unsupported_after_welcome() {
     let message = Message::PtyStart {
         executable: "agent".to_string(),
+        resolution: None,
         argv: Vec::new(),
         cols: 80,
         rows: 24,
