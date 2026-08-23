@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use winsmux_remote_helper::{
     decode_payload, encode_frame, encode_payload, max_legal_hello, max_legal_reject,
     max_legal_welcome, read_frame, respond_after_negotiation, serve_stdio, Message, RejectCode,
-    MAX_FRAME_LEN, PREFIX_LEN, PROTOCOL_VERSION,
+    MAX_ARGV_COUNT, MAX_ARGV_ELEM_BYTES, MAX_EXECUTABLE_BYTES, MAX_FRAME_LEN, MAX_PTY_COLS,
+    MAX_PTY_IO_CHUNK, MAX_PTY_ROWS, PREFIX_LEN, PROTOCOL_VERSION,
 };
 
 struct CountingReader {
@@ -51,7 +52,10 @@ fn hello_with_caps(capabilities: Vec<String>, peer_frame_limit: u32) -> Message 
 }
 
 fn hello(peer_frame_limit: u32) -> Message {
-    hello_with_caps(vec!["frame-v1".to_string()], peer_frame_limit)
+    hello_with_caps(
+        vec!["frame-v1".to_string(), "pty-v1".to_string()],
+        peer_frame_limit,
+    )
 }
 
 fn frame_with_declared_len(declared: u32, payload: &[u8]) -> Vec<u8> {
@@ -106,10 +110,7 @@ fn unknown_type_detail_does_not_panic_on_multibyte_truncate() {
 #[test]
 fn nul_client_version_is_malformed_not_a_larger_hello() {
     let mut hello = hello(MAX_FRAME_LEN);
-    if let Message::Hello {
-        client_version, ..
-    } = &mut hello
-    {
+    if let Message::Hello { client_version, .. } = &mut hello {
         *client_version = "win\0mux".to_string();
     }
     let mut output = Vec::new();
@@ -164,7 +165,10 @@ fn capability_intersection_drops_unknown_tokens() {
         .expect("welcome frame");
     match decode_payload(&payload).unwrap() {
         Message::Welcome { capabilities, .. } => {
-            assert_eq!(capabilities, vec!["frame-v1".to_string()]);
+            assert_eq!(
+                capabilities,
+                vec!["frame-v1".to_string(), "pty-v1".to_string()]
+            );
         }
         other => panic!("expected Welcome, got {other:?}"),
     }
@@ -190,7 +194,10 @@ fn legal_hello_roundtrip_welcome() {
         } => {
             assert_eq!(protocol_version, PROTOCOL_VERSION);
             assert_eq!(echoed, nonce());
-            assert_eq!(capabilities, vec!["frame-v1".to_string()]);
+            assert_eq!(
+                capabilities,
+                vec!["frame-v1".to_string(), "pty-v1".to_string()]
+            );
             assert_eq!(peer_frame_limit, MAX_FRAME_LEN);
         }
         other => panic!("expected Welcome, got {other:?}"),
@@ -219,7 +226,7 @@ fn version_mismatch_rejects() {
 
 #[test]
 fn unknown_type_rejects() {
-    let json = br#"{"type":"pty-start","protocol_version":1}"#;
+    let json = br#"{"type":"exec","protocol_version":1}"#;
     let mut frame = (json.len() as u32).to_be_bytes().to_vec();
     frame.extend_from_slice(json);
     let mut output = Vec::new();
@@ -284,10 +291,31 @@ fn oversized_prefix_does_not_read_payload() {
 fn size_gate_allows_n_minus_one_and_n() {
     for declared in [MAX_FRAME_LEN - 1, MAX_FRAME_LEN] {
         let payload = vec![b'x'; declared as usize];
-        let result = read_frame(&mut Cursor::new(frame_with_declared_len(declared, &payload)))
-            .unwrap();
-        assert!(result.is_ok(), "declared {declared} must pass the size gate");
+        let result = read_frame(&mut Cursor::new(frame_with_declared_len(
+            declared, &payload,
+        )))
+        .unwrap();
+        assert!(
+            result.is_ok(),
+            "declared {declared} must pass the size gate"
+        );
     }
+}
+
+#[test]
+fn size_gate_rejects_n_plus_one_without_reading_payload() {
+    let declared = MAX_FRAME_LEN + 1;
+    let junk = vec![0u8; 64];
+    let mut reader = CountingReader::new(frame_with_declared_len(declared, &junk));
+    let result = read_frame(&mut reader).unwrap();
+    assert!(matches!(
+        result,
+        Err(Message::Reject {
+            code: RejectCode::Oversized,
+            ..
+        })
+    ));
+    assert_eq!(reader.payload_bytes_read.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -296,9 +324,175 @@ fn golden_max_payload_lengths() {
     let welcome = encode_payload(&max_legal_welcome()).unwrap().len() as u32;
     let reject = encode_payload(&max_legal_reject()).unwrap().len() as u32;
     assert_eq!(hello, 523);
-    assert_eq!(welcome, 165);
-    assert_eq!(reject, 176);
-    assert_eq!(hello.max(welcome).max(reject), MAX_FRAME_LEN);
+    assert_eq!(welcome, 176);
+    assert_eq!(reject, 816);
+
+    // U+0001 is legal (only NUL is forbidden) and serde_json emits it as
+    // `\\u0001`, making it the worst-case one-byte string specimen.
+    let escaped = "\u{0001}".repeat(MAX_EXECUTABLE_BYTES);
+    let pty_start = Message::PtyStart {
+        executable: escaped.clone(),
+        argv: vec!["\u{0001}".repeat(MAX_ARGV_ELEM_BYTES); MAX_ARGV_COUNT],
+        cols: MAX_PTY_COLS,
+        rows: MAX_PTY_ROWS,
+    };
+    const MAX_LEGAL_PTY_START_PAYLOAD: usize = 13_915;
+    assert_eq!(
+        encode_payload(&pty_start).unwrap().len(),
+        MAX_LEGAL_PTY_START_PAYLOAD,
+        "golden worst-case legal pty-start payload"
+    );
+    assert_eq!(MAX_FRAME_LEN as usize, MAX_LEGAL_PTY_START_PAYLOAD);
+    assert_eq!(
+        encode_frame(&pty_start).unwrap().len(),
+        PREFIX_LEN + MAX_LEGAL_PTY_START_PAYLOAD
+    );
+}
+
+#[test]
+fn pty_message_wire_names_are_hyphenated() {
+    let message = Message::PtyStart {
+        executable: "/bin/cat".to_string(),
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    };
+    let payload = encode_payload(&message).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&payload).unwrap()["type"],
+        "pty-start"
+    );
+    assert_eq!(decode_payload(&payload).unwrap(), message);
+}
+
+#[test]
+fn oversized_pty_start_fields_are_malformed_before_spawn() {
+    let cases = [
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "x".repeat(MAX_EXECUTABLE_BYTES + 1),
+            "argv": [],
+            "cols": 80,
+            "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "/bin/cat",
+            "argv": vec!["x"; MAX_ARGV_COUNT + 1],
+            "cols": 80,
+            "rows": 24
+        }),
+        serde_json::json!({
+            "type": "pty-start",
+            "executable": "/bin/cat",
+            "argv": ["x".repeat(MAX_ARGV_ELEM_BYTES + 1)],
+            "cols": 80,
+            "rows": 24
+        }),
+    ];
+    for value in cases {
+        match decode_payload(&serde_json::to_vec(&value).unwrap()) {
+            Err(Message::Reject { code, .. }) => assert_eq!(code, RejectCode::Malformed),
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn pty_input_requires_canonical_base64_for_one_to_256_bytes() {
+    for data_b64 in ["".to_string(), "***".to_string(), "A".repeat(348)] {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "pty-input",
+            "data_b64": data_b64
+        }))
+        .unwrap();
+        match decode_payload(&payload) {
+            Err(Message::Reject { code, .. }) => assert_eq!(code, RejectCode::Malformed),
+            other => panic!("expected Malformed, got {other:?}"),
+        }
+    }
+
+    let legal = Message::PtyInput {
+        data_b64: "AA==".to_string(),
+    };
+    assert_eq!(
+        decode_payload(&encode_payload(&legal).unwrap()).unwrap(),
+        legal
+    );
+    assert_eq!(MAX_PTY_IO_CHUNK, 256);
+}
+
+#[test]
+fn pty_resize_enforces_nonzero_frozen_bounds() {
+    for (cols, rows) in [
+        (0, 24),
+        (80, 0),
+        (MAX_PTY_COLS + 1, 24),
+        (80, MAX_PTY_ROWS + 1),
+    ] {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "pty-resize",
+            "cols": cols,
+            "rows": rows
+        }))
+        .unwrap();
+        assert!(matches!(
+            decode_payload(&payload),
+            Err(Message::Reject {
+                code: RejectCode::Malformed,
+                ..
+            })
+        ));
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn pty_start_is_known_but_unsupported_after_welcome() {
+    let message = Message::PtyStart {
+        executable: "agent".to_string(),
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    };
+    let mut input = encode_frame(&hello(MAX_FRAME_LEN)).unwrap();
+    input.extend_from_slice(&encode_frame(&message).unwrap());
+    let mut output = Vec::new();
+    serve_stdio(Cursor::new(input), &mut output).unwrap();
+    let mut output = Cursor::new(output);
+    let welcome = read_frame(&mut output).unwrap().expect("welcome");
+    assert!(matches!(
+        decode_payload(&welcome).unwrap(),
+        Message::Welcome { .. }
+    ));
+    let reject = read_frame(&mut output).unwrap().expect("unsupported");
+    match decode_payload(&reject).unwrap() {
+        Message::Reject { code, .. } => assert_eq!(code, RejectCode::Unsupported),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn session_ids_are_exact_lowercase_hex() {
+    for session_id in [
+        "a".repeat(31),
+        "a".repeat(33),
+        "A".repeat(32),
+        "g".repeat(32),
+    ] {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "type": "pty-attach",
+            "session_id": session_id
+        }))
+        .unwrap();
+        assert!(matches!(
+            decode_payload(&payload),
+            Err(Message::Reject {
+                code: RejectCode::Malformed,
+                ..
+            })
+        ));
+    }
 }
 
 #[test]
@@ -337,13 +531,17 @@ fn peer_limit_too_small_rejects_welcome() {
 
 #[test]
 fn black_box_binary_hello_welcome() {
-    let mut child = Command::new(helper_bin())
+    let mut command = Command::new(helper_bin());
+    command
         .args(["serve", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn helper");
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "linux")]
+    let runtime = LinuxRuntimeDir::new("protocol-black-box");
+    #[cfg(target_os = "linux")]
+    command.env("XDG_RUNTIME_DIR", &runtime.0);
+    let mut child = command.spawn().expect("spawn helper");
     {
         let mut stdin = child.stdin.take().expect("stdin");
         use std::io::Write;
@@ -353,6 +551,8 @@ fn black_box_binary_hello_welcome() {
     }
     let output = child.wait_with_output().expect("wait helper");
     assert!(output.status.success());
+    #[cfg(target_os = "linux")]
+    runtime.wait_for_broker_exit();
     let payload = read_frame(&mut Cursor::new(output.stdout))
         .unwrap()
         .expect("welcome");
@@ -360,6 +560,48 @@ fn black_box_binary_hello_welcome() {
         decode_payload(&payload).unwrap(),
         Message::Welcome { .. }
     ));
+}
+
+#[cfg(target_os = "linux")]
+struct LinuxRuntimeDir(PathBuf);
+
+#[cfg(target_os = "linux")]
+impl LinuxRuntimeDir {
+    fn new(label: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("winsmux-{label}-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        Self(path)
+    }
+
+    fn wait_for_broker_exit(&self) {
+        let socket = self
+            .0
+            .join("winsmux")
+            .join("remote-helper")
+            .join("broker.sock");
+        loop {
+            match std::fs::symlink_metadata(&socket) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) => panic!("lstat broker.sock failed: {error}"),
+                Ok(_) => std::thread::yield_now(),
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxRuntimeDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]

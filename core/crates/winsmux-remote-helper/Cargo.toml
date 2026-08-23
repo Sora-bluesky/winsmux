@@ -4,7 +4,7 @@ version = "0.36.36"
 edition = "2021"
 publish = false
 license = "Apache-2.0 AND MIT"
-description = "stdio remote-helper protocol for winsmux (Hello/Welcome/Reject only)"
+description = "stdio remote-helper protocol and Linux PTY broker for winsmux"
 
 [[bin]]
 name = "winsmux-remote-helper"
@@ -13,3 +13,6 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = "=1.0.149"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "=0.2.183"

@@ -1,13 +1,14 @@
-//! Length-prefixed stdio protocol for `winsmux-remote-helper`.
-//!
-//! TASK-772 first PR. No SSH, PTY, filesystem, network, or host mutation.
+//! Length-prefixed protocol for `winsmux-remote-helper`.
 
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 
+#[cfg(target_os = "linux")]
+pub mod session;
+
 /// Payload-byte ceiling. Pinned by `measured_max_payloads` to the largest
-/// production encoding of a legal Hello, Welcome, or Reject. No extra margin.
-pub const MAX_FRAME_LEN: u32 = 523;
+/// production encoding at the frozen legal field maxima. No extra margin.
+pub const MAX_FRAME_LEN: u32 = 13_915;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const PREFIX_LEN: usize = 4;
 pub const MAX_CLIENT_VERSION_BYTES: usize = 64;
@@ -16,7 +17,14 @@ pub const NONCE_HEX_LEN: usize = NONCE_LEN * 2;
 pub const MAX_CAPABILITY_LEN: usize = 32;
 pub const MAX_CAPABILITIES: usize = 8;
 pub const MAX_REJECT_DETAIL_BYTES: usize = 128;
-pub const SUPPORTED_CAPABILITIES: [&str; 1] = ["frame-v1"];
+pub const MAX_EXECUTABLE_BYTES: usize = 256;
+pub const MAX_ARGV_COUNT: usize = 8;
+pub const MAX_ARGV_ELEM_BYTES: usize = 256;
+pub const MAX_SESSION_ID_HEX: usize = 32;
+pub const MAX_PTY_IO_CHUNK: usize = 256;
+pub const MAX_PTY_COLS: u16 = 512;
+pub const MAX_PTY_ROWS: u16 = 512;
+pub const SUPPORTED_CAPABILITIES: [&str; 2] = ["frame-v1", "pty-v1"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -38,6 +46,50 @@ pub enum Message {
         code: RejectCode,
         detail: String,
     },
+    #[serde(rename = "pty-start")]
+    PtyStart {
+        executable: String,
+        argv: Vec<String>,
+        cols: u16,
+        rows: u16,
+    },
+    #[serde(rename = "pty-started")]
+    PtyStarted {
+        session_id: String,
+        child_pid: u32,
+    },
+    #[serde(rename = "pty-attach")]
+    PtyAttach {
+        session_id: String,
+    },
+    #[serde(rename = "pty-attached")]
+    PtyAttached {
+        session_id: String,
+        child_pid: u32,
+    },
+    #[serde(rename = "pty-detach")]
+    PtyDetach,
+    #[serde(rename = "pty-detached")]
+    PtyDetached,
+    #[serde(rename = "pty-stop")]
+    PtyStop {
+        session_id: String,
+    },
+    #[serde(rename = "pty-stopped")]
+    PtyStopped,
+    #[serde(rename = "pty-input")]
+    PtyInput {
+        data_b64: String,
+    },
+    #[serde(rename = "pty-output")]
+    PtyOutput {
+        data_b64: String,
+    },
+    #[serde(rename = "pty-resize")]
+    PtyResize {
+        cols: u16,
+        rows: u16,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +100,11 @@ pub enum RejectCode {
     Malformed,
     Oversized,
     PeerLimit,
+    Unsupported,
+    SessionNotFound,
+    ControllerBusy,
+    NotController,
+    SpawnFailed,
 }
 
 #[derive(Debug)]
@@ -67,9 +124,8 @@ pub fn encode_payload(message: &Message) -> Result<Vec<u8>, serde_json::Error> {
 }
 
 pub fn encode_frame(message: &Message) -> io::Result<Vec<u8>> {
-    let payload = encode_payload(message).map_err(|error| {
-        io::Error::new(io::ErrorKind::InvalidData, error)
-    })?;
+    let payload = encode_payload(message)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     if payload.len() > MAX_FRAME_LEN as usize {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -124,9 +180,8 @@ pub fn read_frame<R: Read>(reader: &mut R) -> io::Result<Result<Vec<u8>, Message
 }
 
 pub fn decode_payload(payload: &[u8]) -> Result<Message, Message> {
-    let value: serde_json::Value = serde_json::from_slice(payload).map_err(|_| {
-        Message::reject(RejectCode::Malformed, "payload is not JSON")
-    })?;
+    let value: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|_| Message::reject(RejectCode::Malformed, "payload is not JSON"))?;
     let Some(kind) = value.get("type").and_then(serde_json::Value::as_str) else {
         return Err(Message::reject(
             RejectCode::Malformed,
@@ -134,7 +189,9 @@ pub fn decode_payload(payload: &[u8]) -> Result<Message, Message> {
         ));
     };
     match kind {
-        "hello" | "welcome" | "reject" => {}
+        "hello" | "welcome" | "reject" | "pty-start" | "pty-started" | "pty-attach"
+        | "pty-attached" | "pty-detach" | "pty-detached" | "pty-stop" | "pty-stopped"
+        | "pty-input" | "pty-output" | "pty-resize" => {}
         _ => {
             return Err(Message::reject(
                 RejectCode::UnknownType,
@@ -142,9 +199,10 @@ pub fn decode_payload(payload: &[u8]) -> Result<Message, Message> {
             ));
         }
     }
-    serde_json::from_value(value).map_err(|_| {
-        Message::reject(RejectCode::Malformed, "payload fields are invalid")
-    })
+    let message: Message = serde_json::from_value(value)
+        .map_err(|_| Message::reject(RejectCode::Malformed, "payload fields are invalid"))?;
+    validate_message(&message).map_err(|detail| Message::reject(RejectCode::Malformed, detail))?;
+    Ok(message)
 }
 
 pub fn negotiate(hello: &Message) -> Message {
@@ -171,9 +229,9 @@ pub fn negotiate(hello: &Message) -> Message {
         return Message::reject(RejectCode::Malformed, "nonce must be 32-byte hex");
     }
     if capabilities.len() > MAX_CAPABILITIES
-        || capabilities
-            .iter()
-            .any(|item| item.is_empty() || item.len() > MAX_CAPABILITY_LEN || !capability_is_legal(item))
+        || capabilities.iter().any(|item| {
+            item.is_empty() || item.len() > MAX_CAPABILITY_LEN || !capability_is_legal(item)
+        })
     {
         return Message::reject(RejectCode::Malformed, "capabilities are illegal");
     }
@@ -202,15 +260,38 @@ pub fn negotiate(hello: &Message) -> Message {
 
 pub fn respond_after_negotiation(payload: &[u8]) -> Message {
     match decode_payload(payload) {
-        Ok(Message::Hello { .. }) => {
-            Message::reject(RejectCode::UnknownType, "hello is not accepted after Welcome")
-        }
-        Ok(Message::Welcome { .. }) => {
-            Message::reject(RejectCode::UnknownType, "welcome is not accepted from the peer")
-        }
+        Ok(Message::Hello { .. }) => Message::reject(
+            RejectCode::UnknownType,
+            "hello is not accepted after Welcome",
+        ),
+        Ok(Message::Welcome { .. }) => Message::reject(
+            RejectCode::UnknownType,
+            "welcome is not accepted from the peer",
+        ),
         Ok(Message::Reject { .. }) => Message::reject(
             RejectCode::UnknownType,
             "reject is not an accepted follow-on type",
+        ),
+        Ok(
+            Message::PtyStart { .. }
+            | Message::PtyAttach { .. }
+            | Message::PtyDetach
+            | Message::PtyStop { .. }
+            | Message::PtyInput { .. }
+            | Message::PtyResize { .. },
+        ) => Message::reject(
+            RejectCode::Unsupported,
+            "pty-v1 is supported only by the Linux broker",
+        ),
+        Ok(
+            Message::PtyStarted { .. }
+            | Message::PtyAttached { .. }
+            | Message::PtyDetached
+            | Message::PtyStopped
+            | Message::PtyOutput { .. },
+        ) => Message::reject(
+            RejectCode::UnknownType,
+            "server-only message is not accepted from the peer",
         ),
         Err(reject) => reject,
     }
@@ -280,7 +361,149 @@ pub fn max_legal_welcome() -> Message {
 }
 
 pub fn max_legal_reject() -> Message {
-    Message::reject(RejectCode::Malformed, "d".repeat(MAX_REJECT_DETAIL_BYTES))
+    // Reject detail is deliberately truncated by bytes but otherwise may carry
+    // JSON control characters originating in malformed peer input.
+    Message::reject(
+        RejectCode::Malformed,
+        "\u{0001}".repeat(MAX_REJECT_DETAIL_BYTES),
+    )
+}
+
+pub(crate) fn decode_base64(value: &str) -> Option<Vec<u8>> {
+    if value.is_empty() || value.len() % 4 != 0 {
+        return None;
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(value.len() / 4 * 3);
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let last = index + 1 == bytes.len() / 4;
+        let a = base64_value(chunk[0])?;
+        let b = base64_value(chunk[1])?;
+        decoded.push((a << 2) | (b >> 4));
+        if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
+                return None;
+            }
+            continue;
+        }
+        let c = base64_value(chunk[2])?;
+        decoded.push((b << 4) | (c >> 2));
+        if chunk[3] == b'=' {
+            if !last || c & 0x03 != 0 {
+                return None;
+            }
+            continue;
+        }
+        let d = base64_value(chunk[3])?;
+        decoded.push((c << 6) | d);
+    }
+    (encode_base64(&decoded) == value).then_some(decoded)
+}
+
+pub(crate) fn encode_base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied();
+        let c = chunk.get(2).copied();
+        encoded.push(TABLE[(a >> 2) as usize] as char);
+        encoded.push(TABLE[(((a & 0x03) << 4) | b.unwrap_or(0) >> 4) as usize] as char);
+        match b {
+            Some(b) => {
+                encoded.push(TABLE[(((b & 0x0f) << 2) | c.unwrap_or(0) >> 6) as usize] as char)
+            }
+            None => encoded.push('='),
+        }
+        match c {
+            Some(c) => encoded.push(TABLE[(c & 0x3f) as usize] as char),
+            None => encoded.push('='),
+        }
+    }
+    encoded
+}
+
+fn base64_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn validate_message(message: &Message) -> Result<(), &'static str> {
+    match message {
+        Message::PtyStart {
+            executable,
+            argv,
+            cols,
+            rows,
+        } => {
+            if executable.is_empty()
+                || executable.len() > MAX_EXECUTABLE_BYTES
+                || executable.as_bytes().contains(&0)
+            {
+                return Err("executable is illegal");
+            }
+            if argv.len() > MAX_ARGV_COUNT
+                || argv.iter().any(|argument| {
+                    argument.len() > MAX_ARGV_ELEM_BYTES || argument.as_bytes().contains(&0)
+                })
+            {
+                return Err("argv is illegal");
+            }
+            dimensions_are_legal(*cols, *rows)?;
+        }
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+        }
+        | Message::PtyAttached {
+            session_id,
+            child_pid,
+        } => {
+            session_id_is_legal(session_id)?;
+            if *child_pid == 0 {
+                return Err("child_pid is illegal");
+            }
+        }
+        Message::PtyAttach { session_id } | Message::PtyStop { session_id } => {
+            session_id_is_legal(session_id)?;
+        }
+        Message::PtyInput { data_b64 } | Message::PtyOutput { data_b64 } => {
+            let decoded = decode_base64(data_b64).ok_or("data_b64 is illegal")?;
+            if decoded.is_empty() || decoded.len() > MAX_PTY_IO_CHUNK {
+                return Err("data_b64 decoded length is illegal");
+            }
+        }
+        Message::PtyResize { cols, rows } => dimensions_are_legal(*cols, *rows)?,
+        Message::Reject { detail, .. } if detail.len() > MAX_REJECT_DETAIL_BYTES => {
+            return Err("reject detail is illegal");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn dimensions_are_legal(cols: u16, rows: u16) -> Result<(), &'static str> {
+    if cols == 0 || cols > MAX_PTY_COLS || rows == 0 || rows > MAX_PTY_ROWS {
+        return Err("PTY dimensions are illegal");
+    }
+    Ok(())
+}
+
+fn session_id_is_legal(session_id: &str) -> Result<(), &'static str> {
+    if session_id.len() != MAX_SESSION_ID_HEX
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("session_id is illegal");
+    }
+    Ok(())
 }
 
 fn nonce_is_legal(nonce: &str) -> bool {
@@ -321,7 +544,50 @@ mod measure {
         let hello = encode_payload(&max_legal_hello()).unwrap().len() as u32;
         let welcome = encode_payload(&max_legal_welcome()).unwrap().len() as u32;
         let reject = encode_payload(&max_legal_reject()).unwrap().len() as u32;
-        let measured = hello.max(welcome).max(reject);
+        // U+0001 is legal in executable and argv strings (only NUL is
+        // rejected), and serde_json encodes every byte as \\u0001.
+        let escaped = "\u{0001}".repeat(MAX_EXECUTABLE_BYTES);
+        let session_id = "f".repeat(MAX_SESSION_ID_HEX);
+        let data_b64 = encode_base64(&vec![u8::MAX; MAX_PTY_IO_CHUNK]);
+        let messages = [
+            Message::PtyStart {
+                executable: escaped,
+                argv: vec!["\u{0001}".repeat(MAX_ARGV_ELEM_BYTES); MAX_ARGV_COUNT],
+                cols: MAX_PTY_COLS,
+                rows: MAX_PTY_ROWS,
+            },
+            Message::PtyStarted {
+                session_id: session_id.clone(),
+                child_pid: u32::MAX,
+            },
+            Message::PtyAttach {
+                session_id: session_id.clone(),
+            },
+            Message::PtyAttached {
+                session_id: session_id.clone(),
+                child_pid: u32::MAX,
+            },
+            Message::PtyDetach,
+            Message::PtyDetached,
+            Message::PtyStop {
+                session_id: session_id.clone(),
+            },
+            Message::PtyStopped,
+            Message::PtyInput {
+                data_b64: data_b64.clone(),
+            },
+            Message::PtyOutput { data_b64 },
+            Message::PtyResize {
+                cols: MAX_PTY_COLS,
+                rows: MAX_PTY_ROWS,
+            },
+        ];
+        let measured = messages
+            .iter()
+            .map(|message| encode_payload(message).unwrap().len() as u32)
+            .chain([hello, welcome, reject])
+            .max()
+            .unwrap();
         assert_eq!(
             (hello, welcome, reject, measured, MAX_FRAME_LEN),
             (hello, welcome, reject, measured, measured),

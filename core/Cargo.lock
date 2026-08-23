@@ -1909,6 +1909,7 @@ dependencies = [
 name = "winsmux-remote-helper"
 version = "0.36.36"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
 ]
