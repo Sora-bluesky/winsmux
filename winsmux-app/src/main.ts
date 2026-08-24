@@ -113,7 +113,7 @@ import {
   getSettingsTabScope,
   shouldDisableSettingsNavItem,
   type SettingsScope,
-} from "./settingsNavigation"; import { mountSshConnectReview } from "./sshConnectReview";
+} from "./settingsNavigation"; import { mountSshConnectReview } from "./sshConnectReview"; import { mountFleetProjection, projectLocalFleet, refreshRemoteFleetProjection } from "./fleetProjection";
 import {
   bindFirstRunWizard,
   maybeStartFirstRunOnboarding,
@@ -2174,7 +2174,7 @@ function ensurePanePtyStarted(paneId: string) {
   const cwd = getPaneStartupCwd(paneId);
   entry.ptyStarting = spawnPtyPane(paneId, cols, rows, startupInput, cwd)
     .then(() => {
-      entry.ptyStarted = true;
+      entry.ptyStarted = true; projectLocalFleet(panes);
       entry.activeStartupInput = startupInput ?? "";
       entry.metaElement.textContent = getLanguageText("waiting for summary", "要約待ち");
       requestDesktopSummaryRefresh(undefined, 500);
@@ -2188,11 +2188,11 @@ function ensurePanePtyStarted(paneId: string) {
       throw error;
     })
     .finally(() => {
-      entry.ptyStarting = null;
+      entry.ptyStarting = null; projectLocalFleet(panes);
       renderWorkerStatusSurface();
     });
 
-  return entry.ptyStarting;
+  projectLocalFleet(panes); return entry.ptyStarting;
 }
 
 function closePane(id: string) {
@@ -2209,7 +2209,7 @@ function closePane(id: string) {
   entry.terminal.dispose();
 
   entry.container.remove();
-  panes.delete(id);
+  panes.delete(id); projectLocalFleet(panes);
   if (focusedWorkbenchPaneId === id) {
     focusedWorkbenchPaneId = null;
   }
@@ -2810,7 +2810,7 @@ function setWorkerStatusStripVisible(visible: boolean, options?: { persist?: boo
   scheduleWorkbenchPaneFit();
 }
 
-async function refreshWorkerStatusSurface() {
+async function refreshWorkerStatusSurface() { projectLocalFleet(panes);
   if (workerStatusRefreshInFlight) {
     return workerStatusRefreshInFlight;
   }
@@ -2821,7 +2821,7 @@ async function refreshWorkerStatusSurface() {
     return Promise.resolve();
   }
 
-  const requestProjectDir = getActiveProjectDirPayload();
+  const requestProjectDir = getActiveProjectDirPayload(); void refreshRemoteFleetProjection();
   const requestProjectKey = normalizeProjectDirInput(requestProjectDir) || "";
   const requestSequence = ++workerStatusRefreshSequence;
   const isCurrentWorkerStatusRequest = (responseProjectDir?: string | null) => {
@@ -3762,7 +3762,7 @@ function isWorkerPaneRunningExpectedStartup(entry: PaneEntry, startupInput: stri
 async function resetWorkerPaneForStartup(target: string, entry: PaneEntry) {
   clearPaneStartupInput(target);
   entry.ptyStarted = false;
-  entry.ptyStarting = null;
+  entry.ptyStarting = null; projectLocalFleet(panes);
   entry.activeStartupInput = "";
   entry.outputBuffer = "";
   entry.metaElement.textContent = getLanguageText("restarting shell", "シェル再起動中");
@@ -18562,7 +18562,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   }, 0);
   applyPopoutSurfaceState(popoutSurfaceState);
   registerDesktopSummaryLiveRefresh();
-  scheduleInitialDesktopRefresh();
+  scheduleInitialDesktopRefresh(); mountFleetProjection();
   initializeSidebarResize();
   initializeWorkbenchResize();
   initializeSourceControlSplitResize();

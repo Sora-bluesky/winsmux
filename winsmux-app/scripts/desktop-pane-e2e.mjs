@@ -497,10 +497,23 @@ async function assertDrawerVisible(page, expected) {
 }
 
 async function ensureDrawerOpen(page) {
+  await dismissFirstRunWizardIfOpen(page);
   if (await page.locator("#terminal-drawer").evaluate((drawer) => drawer.hidden).catch(() => false)) {
     await clickWorkerPanesFooterToggle(page);
     await assertDrawerVisible(page, true);
   }
+}
+
+async function dismissFirstRunWizardIfOpen(page) {
+  await page.evaluate(() => {
+    const overlay = document.getElementById("first-run-wizard");
+    if (!overlay || overlay.hidden || !overlay.classList.contains("open")) {
+      return;
+    }
+    overlay.classList.remove("open");
+    overlay.hidden = true;
+    overlay.replaceChildren();
+  }).catch(() => {});
 }
 
 async function clickWorkerPanesFooterToggle(page) {
@@ -2756,6 +2769,7 @@ async function main() {
 
     await runStep("wait for desktop app chrome", async () => {
       await waitForAppReady(page);
+      await dismissFirstRunWizardIfOpen(page);
       return { url: page.url() };
     });
 
@@ -2968,6 +2982,7 @@ async function main() {
     });
 
     await runStep("drawer close and reopen controls", async () => {
+      await dismissFirstRunWizardIfOpen(page);
       await ensureDrawerOpen(page);
       await page.click("#close-terminal-drawer-btn");
       await assertDrawerVisible(page, false);
@@ -3050,7 +3065,18 @@ async function main() {
       await startPaneFromUiAndWaitForPrompt(page, "worker-1", "#pane-worker-1 .pane-terminal");
       await typeIntoTerminal(page, "#pane-worker-1 .pane-terminal", `Write-Output '${WORKER_UI_MARKER}'`);
       const output = await waitForPtyOutputLine(page, "worker-1", WORKER_UI_MARKER);
-      return { outputTail: output.slice(-800) };
+      await page.waitForFunction(() => Array.from(document.querySelectorAll("#fleet-projection .fleet-projection-row"))
+        .some((row) => row.querySelector(".fleet-projection-location")?.textContent === "LOCAL · This device"
+          && row.querySelector(".fleet-projection-state")?.textContent === "live"
+          && row.querySelector(".fleet-projection-latency")?.textContent === "local"), undefined, { timeout: 10_000 });
+      const liveLocalFleetRows = await page.locator("#fleet-projection .fleet-projection-row").evaluateAll((rows) => rows
+        .filter((row) => row.querySelector(".fleet-projection-location")?.textContent === "LOCAL · This device"
+          && row.querySelector(".fleet-projection-state")?.textContent === "live"
+          && row.querySelector(".fleet-projection-latency")?.textContent === "local").length);
+      if (liveLocalFleetRows < 1) {
+        throw new Error("Fleet should contain a live local worker row after the pane starts");
+      }
+      return { outputTail: output.slice(-800), liveLocalFleetRows };
     });
 
     await runStep("worker status pills mirror native state and focus panes", async () => {
