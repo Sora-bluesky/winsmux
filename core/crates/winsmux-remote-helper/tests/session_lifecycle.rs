@@ -1332,6 +1332,12 @@ fn acknowledged_detach_and_close_remains_attachable() {
         cols: 80,
         rows: 24,
     });
+    eprintln!("# waiting T");
+    read_event_with_code(&mut events.reader, PTY_START_DISPATCHED);
+    eprintln!("# got T");
+    eprintln!("# waiting t");
+    read_event_with_code(&mut events.reader, AGENT_SPAWNED);
+    eprintln!("# got t");
     eprintln!("# waiting P");
     let _agent_pgid = read_event_with_code(&mut events.reader, PTY_STARTED_PENDING);
     eprintln!("# got P");
@@ -1550,6 +1556,8 @@ const FRONTEND_LOCK_ACQUIRED: u8 = b'L';
 const SHUTDOWN_LOCK_BUSY: u8 = b'B';
 const NAMED_FRONTEND_ACCEPTED: u8 = b'A';
 const SHUTDOWN_LOCK_ACQUIRED: u8 = b'S';
+const PTY_START_DISPATCHED: u8 = b'T';
+const AGENT_SPAWNED: u8 = b't';
 const PTY_STARTED_PENDING: u8 = b'P';
 const PTY_STARTED_WRITING: u8 = b'G';
 const AGENT_WATCHER_REMOVED: u8 = b'W';

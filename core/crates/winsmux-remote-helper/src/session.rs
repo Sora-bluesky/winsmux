@@ -1332,6 +1332,7 @@ fn dispatch_message(
             cols,
             rows,
         } => {
+            state.hooks.emit(b'T');
             if lifecycle_enabled
                 && controlled_session.as_ref().is_some_and(|session_id| {
                     !lock_mutex(&state.inner).sessions.contains_key(session_id)
@@ -1645,6 +1646,7 @@ fn start_session(
         Ok(agent) => agent,
         Err(error) => return send_reject(writer, RejectCode::SpawnFailed, error.to_string()),
     };
+    state.hooks.emit_subject(b't', agent.pid);
     let child_pid = agent.pid as u32;
     let started = pty_started_response(&session_id, child_pid, resolved_executable.as_deref());
     let actual_len = encode_payload(&started).ok().map(|payload| payload.len());
@@ -2026,7 +2028,6 @@ fn spawn_agent(
         return Err(error);
     }
 
-    let broker_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         let error = io::Error::last_os_error();
@@ -2052,7 +2053,6 @@ fn spawn_agent(
         close_fd(guardian_ack[1]);
         let mut failed = unsafe {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
-                || libc::getppid() != broker_pid
                 || libc::setpgid(0, 0) != 0
         };
         for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
