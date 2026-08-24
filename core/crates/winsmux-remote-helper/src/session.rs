@@ -185,8 +185,19 @@ fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
             let _ = io::copy(&mut io::stdin().lock(), &mut upstream);
             let _ = upstream.shutdown(std::net::Shutdown::Write);
         })?;
-    io::copy(&mut stream, &mut io::stdout().lock())?;
-    Ok(())
+    // Keep socket->stdout off the main thread so a blocked pipe write cannot
+    // stall stdin->socket forwarding and deadlock PtyStart/PtyStarted relay.
+    let stdout = thread::Builder::new()
+        .name("winsmux-remote-helper-stdout".to_string())
+        .spawn(move || io::copy(&mut stream, &mut io::stdout().lock()))?;
+    match stdout.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            "stdout relay thread panicked",
+        )),
+    }
 }
 
 struct RuntimePaths {
@@ -508,6 +519,38 @@ fn read_ack(fd: RawFd) -> io::Result<u8> {
             error
         }
     })
+}
+
+fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<()> {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+        if result > 0 {
+            if poll_fd.revents & libc::POLLIN != 0 {
+                return Ok(());
+            }
+            if poll_fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "pipe closed before readiness",
+                ));
+            }
+        }
+        if result == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pipe readiness timed out",
+            ));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
 }
 
 fn read_one_byte(fd: RawFd) -> io::Result<u8> {
@@ -1942,6 +1985,7 @@ fn spawn_agent(
             }
             unsafe { libc::_exit(127) };
         }
+        close_fd(exec_status[1]);
         unsafe {
             libc::execve(
                 executable.as_ptr(),
@@ -2001,7 +2045,10 @@ fn spawn_agent(
 
     close_fd(guardian_liveness[0]);
     close_fd(guardian_ack[1]);
-    let guardian_ready = read_ack(guardian_ack[0]);
+    let guardian_ready = match poll_readable(guardian_ack[0], 5_000) {
+        Ok(()) => read_ack(guardian_ack[0]),
+        Err(error) => Err(error),
+    };
     close_fd(guardian_ack[0]);
     if !matches!(guardian_ready, Ok(0)) {
         close_fd(agent_release[1]);
@@ -2029,6 +2076,13 @@ fn spawn_agent(
         pid: guardian_pid,
         _liveness: unsafe { File::from_raw_fd(guardian_liveness[1]) },
     };
+
+    if let Err(error) = poll_readable(exec_status[0], 5_000) {
+        close_fd(exec_status[0]);
+        close_fd(master);
+        cleanup_guarded_agent(pid, pid, guardian);
+        return Err(error);
+    }
 
     let mut status = [0u8; 1];
     let status_read = loop {
