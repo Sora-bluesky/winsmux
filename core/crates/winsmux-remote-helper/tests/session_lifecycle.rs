@@ -1318,8 +1318,32 @@ fn acknowledged_unsolicited_exit_pushes_and_same_connection_recovers() {
 #[test]
 fn acknowledged_detach_and_close_remains_attachable() {
     let runtime = RuntimeDir::new("lifecycle-acked-reattach");
-    let mut first = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
-    let (session_id, child_pid) = start_cat(&mut first);
+    let mut events = EventPipe::new();
+    let mut first = Frontend::connect_with_options(
+        &runtime.0,
+        Some(events.writer),
+        FrontendOptions::lifecycle(),
+    );
+    eprintln!("# pty-start send");
+    first.send(&Message::PtyStart {
+        executable: "/bin/cat".to_string(),
+        resolution: None,
+        argv: Vec::new(),
+        cols: 80,
+        rows: 24,
+    });
+    eprintln!("# waiting P");
+    let _agent_pgid = read_event_with_code(&mut events.reader, PTY_STARTED_PENDING);
+    eprintln!("# got P");
+    eprintln!("# pty-start recv");
+    let (session_id, child_pid) = match first.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected pty-started, got {other:?}"),
+    };
     acknowledge_start(&mut first, &session_id);
     first.send(&Message::PtyDetach);
     assert_eq!(first.recv(), Message::PtyDetached);
