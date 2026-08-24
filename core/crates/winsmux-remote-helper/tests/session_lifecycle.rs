@@ -160,10 +160,7 @@ impl Frontend {
     }
 
     fn send(&mut self, message: &Message) {
-        self.input
-            .write_all(&encode_frame(message).unwrap())
-            .unwrap();
-        self.input.flush().unwrap();
+        write_all_deadline(&mut self.input, &encode_frame(message).unwrap(), "frontend");
     }
 
     fn recv(&mut self) -> Message {
@@ -1531,18 +1528,18 @@ fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
     let mut second_input = second.stdin.take().unwrap();
     let second_output = second.stdout.take().unwrap();
     unsafe { libc::close(gate[0]) };
-    second_input
-        .write_all(
-            &encode_frame(&Message::Hello {
-                protocol_version: PROTOCOL_VERSION,
-                client_version: "lock-owner-exits".to_string(),
-                nonce: "ef".repeat(32),
-                capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
-                peer_frame_limit: MAX_FRAME_LEN,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+    write_all_deadline(
+        &mut second_input,
+        &encode_frame(&Message::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_version: "lock-owner-exits".to_string(),
+            nonce: "ef".repeat(32),
+            capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
+            peer_frame_limit: MAX_FRAME_LEN,
+        })
+        .unwrap(),
+        "lock-owner-exits hello",
+    );
     let (event, lock_owner_pid) = read_broker_event(&mut events.reader);
     assert_eq!(event, FRONTEND_LOCK_ACQUIRED);
     assert_eq!(lock_owner_pid, second_pid);
@@ -1581,18 +1578,18 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
         .unwrap();
     let mut first_input = first.stdin.take().unwrap();
     let mut first_output = first.stdout.take().unwrap();
-    first_input
-        .write_all(
-            &encode_frame(&Message::Hello {
-                protocol_version: PROTOCOL_VERSION,
-                client_version: "barrier".to_string(),
-                nonce: "cd".repeat(32),
-                capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
-                peer_frame_limit: MAX_FRAME_LEN,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+    write_all_deadline(
+        &mut first_input,
+        &encode_frame(&Message::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_version: "barrier".to_string(),
+            nonce: "cd".repeat(32),
+            capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
+            peer_frame_limit: MAX_FRAME_LEN,
+        })
+        .unwrap(),
+        "barrier hello",
+    );
     let (event, broker_pid) = read_broker_event(&mut events.reader);
     assert_eq!(event, BROKER_READY);
     let welcome = read_frame_deadline(&mut first_output);
@@ -1617,18 +1614,18 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
     let mut second_input = second.stdin.take().unwrap();
     let mut second_output = second.stdout.take().unwrap();
     unsafe { libc::close(gate[0]) };
-    second_input
-        .write_all(
-            &encode_frame(&Message::Hello {
-                protocol_version: PROTOCOL_VERSION,
-                client_version: "barrier-b".to_string(),
-                nonce: "ef".repeat(32),
-                capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
-                peer_frame_limit: MAX_FRAME_LEN,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+    write_all_deadline(
+        &mut second_input,
+        &encode_frame(&Message::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            client_version: "barrier-b".to_string(),
+            nonce: "ef".repeat(32),
+            capabilities: vec!["frame-v1".to_string(), "pty-v1".to_string()],
+            peer_frame_limit: MAX_FRAME_LEN,
+        })
+        .unwrap(),
+        "barrier-b hello",
+    );
     let (event, lock_owner_pid) = read_broker_event(&mut events.reader);
     assert_eq!(event, FRONTEND_LOCK_ACQUIRED);
     assert_eq!(lock_owner_pid, second_pid);
@@ -1850,12 +1847,71 @@ fn read_payload_deadline<R: Read + AsRawFd>(reader: &mut R, what: &str) -> Vec<u
     payload
 }
 
+fn set_nonblock(fd: RawFd) {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL, 0) };
+    assert!(flags >= 0, "F_GETFL failed");
+    if flags & libc::O_NONBLOCK == 0 {
+        assert_eq!(
+            unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) },
+            0,
+            "F_SETFL O_NONBLOCK failed"
+        );
+    }
+}
+
+fn write_all_deadline<W: Write + AsRawFd>(writer: &mut W, buf: &[u8], what: &str) {
+    set_nonblock(writer.as_raw_fd());
+    let deadline = wait_deadline();
+    let mut off = 0;
+    while off < buf.len() {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        assert!(!remain.is_zero(), "{what} write stalled within 15s");
+        let ms = i32::try_from(remain.as_millis().min(15_000)).unwrap_or(15_000);
+        let mut poll_fd = libc::pollfd {
+            fd: writer.as_raw_fd(),
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, ms) };
+        assert!(result >= 0, "poll {what} write failed");
+        assert!(result > 0, "{what} write stalled within 15s");
+        match writer.write(&buf[off..]) {
+            Ok(0) => panic!("{what} write eof"),
+            Ok(n) => off += n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(error) => panic!("{what} write: {error}"),
+        }
+    }
+    loop {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        assert!(!remain.is_zero(), "{what} flush stalled within 15s");
+        match writer.flush() {
+            Ok(()) => return,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                let ms = i32::try_from(remain.as_millis().min(15_000)).unwrap_or(15_000);
+                let mut poll_fd = libc::pollfd {
+                    fd: writer.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                let result = unsafe { libc::poll(&mut poll_fd, 1, ms) };
+                assert!(result >= 0, "poll {what} flush failed");
+                assert!(result > 0, "{what} flush stalled within 15s");
+            }
+            Err(error) => panic!("{what} flush: {error}"),
+        }
+    }
+}
+
 fn read_exact_until<R: Read + AsRawFd>(
     reader: &mut R,
     buf: &mut [u8],
     deadline: Instant,
     what: &str,
 ) {
+    set_nonblock(reader.as_raw_fd());
     let mut off = 0;
     while off < buf.len() {
         let remain = deadline.saturating_duration_since(Instant::now());
@@ -1880,6 +1936,7 @@ fn read_exact_until<R: Read + AsRawFd>(
 }
 
 fn read_to_end_deadline<R: Read + AsRawFd>(reader: &mut R, what: &str) -> Vec<u8> {
+    set_nonblock(reader.as_raw_fd());
     let deadline = wait_deadline();
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
