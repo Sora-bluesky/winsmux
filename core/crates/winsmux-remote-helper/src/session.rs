@@ -191,7 +191,7 @@ fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
         .name("winsmux-remote-helper-stdout".to_string())
         .spawn(move || io::copy(&mut stream, &mut io::stdout().lock()))?;
     match stdout.join() {
-        Ok(Ok(())) => Ok(()),
+        Ok(Ok(_)) => Ok(()),
         Ok(Err(error)) => Err(error),
         Err(_) => Err(io::Error::new(
             io::ErrorKind::Other,
