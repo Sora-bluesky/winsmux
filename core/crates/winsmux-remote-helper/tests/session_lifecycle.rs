@@ -53,7 +53,7 @@ struct Frontend {
     child: Child,
     input: ChildStdin,
     output: ChildStdout,
-    stderr: JoinHandle<Vec<u8>>,
+    stderr: Option<JoinHandle<Vec<u8>>>,
 }
 
 struct FrontendOptions {
@@ -62,6 +62,7 @@ struct FrontendOptions {
     path: Option<OsString>,
     current_dir: Option<PathBuf>,
     home: Option<PathBuf>,
+    capture_stderr: bool,
 }
 
 impl FrontendOptions {
@@ -72,6 +73,7 @@ impl FrontendOptions {
             path: None,
             current_dir: None,
             home: None,
+            capture_stderr: false,
         }
     }
 
@@ -93,6 +95,12 @@ impl FrontendOptions {
 impl Frontend {
     fn connect(runtime: &Path) -> Self {
         Self::connect_with_event(runtime, None)
+    }
+
+    fn connect_capturing(runtime: &Path) -> Self {
+        let mut options = FrontendOptions::legacy();
+        options.capture_stderr = true;
+        Self::connect_with_options(runtime, None, options)
     }
 
     fn connect_with_event(runtime: &Path, event_fd: Option<RawFd>) -> Self {
@@ -119,6 +127,7 @@ impl Frontend {
             path,
             current_dir,
             home,
+            capture_stderr,
         } = options;
         let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"));
         command
@@ -126,7 +135,11 @@ impl Frontend {
             .env("XDG_RUNTIME_DIR", runtime)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stderr(if capture_stderr {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            });
         if let Some(path) = path {
             command.env("PATH", path);
         }
@@ -144,9 +157,12 @@ impl Frontend {
         }
         eprintln!("# connect {}", runtime.display());
         let mut child = command.spawn().unwrap();
+        eprintln!("# spawned {}", child.id());
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
-        let stderr = drain_stderr(child.stderr.take().expect("stderr pipe"));
+        let stderr = capture_stderr.then(|| {
+            drain_stderr(child.stderr.take().expect("stderr pipe"))
+        });
         let mut frontend = Self {
             child,
             input,
@@ -160,7 +176,9 @@ impl Frontend {
             capabilities,
             peer_frame_limit,
         });
+        eprintln!("# hello sent");
         assert!(matches!(frontend.recv(), Message::Welcome { .. }));
+        eprintln!("# welcome");
         frontend
     }
 
@@ -209,7 +227,7 @@ impl Frontend {
         drop(self.input);
         let status = wait_child(&mut self.child, "frontend close stderr");
         assert!(status.success());
-        self.stderr.join().expect("stderr drain")
+        self.stderr.take().expect("stderr drain").join().expect("stderr drain")
     }
 
     fn kill(mut self) {
@@ -540,6 +558,7 @@ fn resolver_uses_absolute_then_inherited_path_then_candidates_for_both_agents() 
         let user_candidates = vec![candidate.clone(), later_candidate];
         let mut options = FrontendOptions::agent();
         options.path = Some(path_dir.as_os_str().to_os_string());
+        options.capture_stderr = true;
         let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
 
         frontend.send(&resolution_start(
@@ -874,9 +893,9 @@ fn second_controller_and_stale_session_are_rejected() {
 #[test]
 fn observer_controls_are_rejected_while_owner_can_still_stop() {
     let runtime = RuntimeDir::new("observer-controls");
-    let mut owner = Frontend::connect(&runtime.0);
+    let mut owner = Frontend::connect_capturing(&runtime.0);
     let (session_id, _) = start_cat(&mut owner);
-    let mut contender = Frontend::connect(&runtime.0);
+    let mut contender = Frontend::connect_capturing(&runtime.0);
 
     contender.send(&Message::PtyInput {
         data_b64: PRIVATE_CANARY_B64.to_string(),
@@ -912,7 +931,7 @@ fn observer_controls_are_rejected_while_owner_can_still_stop() {
 #[test]
 fn fake_done_and_control_json_remain_agent_output_until_owner_stops() {
     let runtime = RuntimeDir::new("fake-done-output");
-    let mut owner = Frontend::connect(&runtime.0);
+    let mut owner = Frontend::connect_capturing(&runtime.0);
     let (session_id, _) = start_cat(&mut owner);
 
     owner.send(&Message::PtyInput {
@@ -1656,7 +1675,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
         child: second,
         input: second_input,
         output: second_output,
-        stderr: thread::spawn(|| Vec::new()),
+        stderr: None,
     };
     second.close();
     wait_socket_gone(&runtime.socket());
