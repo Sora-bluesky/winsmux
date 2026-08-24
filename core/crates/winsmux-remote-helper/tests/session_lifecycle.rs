@@ -11,7 +11,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use winsmux_remote_helper::{
     decode_payload, encode_frame, encode_payload, read_frame, AgentResolution, Message, RejectCode,
     MAX_EXECUTABLE_BYTES, MAX_FRAME_LEN, PROTOCOL_VERSION,
@@ -167,12 +167,22 @@ impl Frontend {
     }
 
     fn recv(&mut self) -> Message {
+        let mut poll_fd = libc::pollfd {
+            fd: self.output.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, 15_000) };
+        assert!(result >= 0, "poll frontend output failed");
+        assert!(result > 0, "frontend produced no frame within 15s");
         let payload = read_frame(&mut self.output).unwrap().unwrap();
         decode_payload(&payload).unwrap()
     }
 
     fn recv_until(&mut self, expected: fn(&Message) -> bool) -> Message {
+        let deadline = wait_deadline();
         loop {
+            assert!(Instant::now() < deadline, "recv_until missed expected message within 15s");
             let message = self.recv();
             if expected(&message) {
                 return message;
@@ -197,13 +207,13 @@ impl Frontend {
 
     fn close(mut self) {
         drop(self.input);
-        let status = self.child.wait().unwrap();
+        let status = wait_child(&mut self.child, "frontend close");
         assert!(status.success());
     }
 
     fn close_and_read_stderr(mut self) -> Vec<u8> {
         drop(self.input);
-        let status = self.child.wait().unwrap();
+        let status = wait_child(&mut self.child, "frontend close stderr");
         assert!(status.success());
         let mut stderr = Vec::new();
         self.child
@@ -219,7 +229,7 @@ impl Frontend {
         self.child.kill().unwrap();
         drop(self.input);
         drop(self.output);
-        assert!(!self.child.wait().unwrap().success());
+        assert!(!wait_child(&mut self.child, "frontend kill").success());
     }
 }
 
@@ -412,7 +422,9 @@ fn decode_test_base64(value: &str) -> Vec<u8> {
 
 fn recv_agent_bytes(frontend: &mut Frontend, expected: &[u8]) {
     let mut observed = Vec::new();
+    let deadline = wait_deadline();
     loop {
+        assert!(Instant::now() < deadline, "agent bytes missing expected payload within 15s");
         match frontend.recv() {
             Message::PtyOutput { data_b64 } => {
                 observed.extend(decode_test_base64(&data_b64));
@@ -483,17 +495,25 @@ fn runtime_dir_final_symlink_is_rejected_without_leftovers() {
     let runtime_link = root.0.join("runtime-link");
     symlink(&target, &runtime_link).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
         .args(["serve", "--stdio"])
         .env("XDG_RUNTIME_DIR", &runtime_link)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
+        .spawn()
+        .unwrap();
+    let status = wait_child(&mut child, "symlink runtime helper");
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("stdout pipe")
+        .read_to_end(&mut stdout)
         .unwrap();
 
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert!(!status.success());
+    assert!(stdout.is_empty());
     assert!(!target.join("winsmux").exists());
     assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
 }
@@ -1554,7 +1574,7 @@ fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
     assert_eq!(unsafe { libc::kill(second_pid, libc::SIGKILL) }, 0);
     drop(second_input);
     drop(second_output);
-    assert!(!second.wait().unwrap().success());
+    assert!(!wait_child(&mut second, "lock-owner second").success());
     unsafe { libc::close(gate[1]) };
 
     let (event, shutdown_pid) = read_broker_event(&mut events.reader);
@@ -1593,7 +1613,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
         .unwrap();
     let (event, broker_pid) = read_broker_event(&mut events.reader);
     assert_eq!(event, BROKER_READY);
-    let welcome = read_frame(&mut first_output).unwrap().unwrap();
+    let welcome = read_frame_deadline(&mut first_output);
     assert!(matches!(
         decode_payload(&welcome).unwrap(),
         Message::Welcome { .. }
@@ -1632,7 +1652,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
     assert_eq!(lock_owner_pid, second_pid);
 
     drop(first_input);
-    assert!(first.wait().unwrap().success());
+    assert!(wait_child(&mut first, "barrier first").success());
 
     let (event, busy_pid) = read_broker_event(&mut events.reader);
     assert_eq!(event, SHUTDOWN_LOCK_BUSY);
@@ -1640,7 +1660,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
 
     assert_eq!(unsafe { libc::write(gate[1], [1u8].as_ptr().cast(), 1) }, 1);
     unsafe { libc::close(gate[1]) };
-    let welcome = read_frame(&mut second_output).unwrap().unwrap();
+    let welcome = read_frame_deadline(&mut second_output);
     assert!(matches!(
         decode_payload(&welcome).unwrap(),
         Message::Welcome { .. }
@@ -1708,7 +1728,7 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
 
     assert_eq!(unsafe { libc::kill(broker_pid, libc::SIGKILL) }, 0);
     drop(first.input);
-    assert!(first.child.wait().unwrap().success());
+    assert!(wait_child(&mut first.child, "killed-broker frontend").success());
     wait_process_group_gone(child_pid);
 
     let mut replacement = Frontend::connect(&runtime.0);
@@ -1724,7 +1744,29 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
     wait_socket_gone(&runtime.socket());
 }
 
+fn wait_child(child: &mut Child, what: &str) -> std::process::ExitStatus {
+    let deadline = wait_deadline();
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{what} still running after 15s"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn read_broker_event(reader: &mut fs::File) -> (u8, i32) {
+    let mut poll_fd = libc::pollfd {
+        fd: reader.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut poll_fd, 1, 15_000) };
+    assert!(result >= 0, "poll broker event failed");
+    assert!(result > 0, "broker event missing within 15s");
     let mut record = [0; 5];
     reader.read_exact(&mut record).unwrap();
     (
@@ -1734,7 +1776,9 @@ fn read_broker_event(reader: &mut fs::File) -> (u8, i32) {
 }
 
 fn read_event_with_code(reader: &mut fs::File, expected_code: u8) -> i32 {
+    let deadline = wait_deadline();
     loop {
+        assert!(Instant::now() < deadline, "broker event {expected_code} missing within 15s");
         let (code, subject) = read_broker_event(reader);
         if code == expected_code {
             return subject;
@@ -1743,7 +1787,9 @@ fn read_event_with_code(reader: &mut fs::File, expected_code: u8) -> i32 {
 }
 
 fn read_matching_event(reader: &mut fs::File, expected_code: u8, expected_pgid: i32) {
+    let deadline = wait_deadline();
     loop {
+        assert!(Instant::now() < deadline, "matching broker event missing within 15s");
         let (code, pgid) = read_broker_event(reader);
         if code == expected_code && pgid == expected_pgid {
             return;
@@ -1752,7 +1798,9 @@ fn read_matching_event(reader: &mut fs::File, expected_code: u8, expected_pgid: 
 }
 
 fn wait_matching_w_without_g(reader: &mut fs::File, agent_pgid: i32) {
+    let deadline = wait_deadline();
     loop {
+        assert!(Instant::now() < deadline, "matching W without G missing within 15s");
         let (code, pgid) = read_broker_event(reader);
         if pgid != agent_pgid {
             continue;
@@ -1789,7 +1837,24 @@ fn kill_process_group(pgid: i32) {
     assert_eq!(unsafe { libc::kill(-pgid, libc::SIGKILL) }, 0);
 }
 
+fn wait_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(15)
+}
+
+fn read_frame_deadline<R: Read + AsRawFd>(reader: &mut R) -> Vec<u8> {
+    let mut poll_fd = libc::pollfd {
+        fd: reader.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut poll_fd, 1, 15_000) };
+    assert!(result >= 0, "poll frame failed");
+    assert!(result > 0, "frame missing within 15s");
+    read_frame(reader).unwrap().unwrap()
+}
+
 fn wait_process_group_gone(child_pid: u32) {
+    let deadline = wait_deadline();
     loop {
         let rc = unsafe { libc::kill(-(child_pid as i32), 0) };
         if rc == -1 {
@@ -1799,11 +1864,16 @@ fn wait_process_group_gone(child_pid: u32) {
             }
             panic!("kill(-pgid, 0) failed: {error}");
         }
+        assert!(
+            Instant::now() < deadline,
+            "process group {child_pid} still present after 15s"
+        );
         std::thread::yield_now();
     }
 }
 
 fn wait_process_gone(pid: i32) {
+    let deadline = wait_deadline();
     loop {
         let rc = unsafe { libc::kill(pid, 0) };
         if rc == -1 {
@@ -1813,16 +1883,28 @@ fn wait_process_gone(pid: i32) {
             }
             panic!("kill(pid, 0) failed: {error}");
         }
+        assert!(
+            Instant::now() < deadline,
+            "process {pid} still present after 15s"
+        );
         std::thread::yield_now();
     }
 }
 
 fn wait_socket_gone(socket: &Path) {
+    let deadline = wait_deadline();
     loop {
         match fs::symlink_metadata(socket) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
             Err(error) => panic!("lstat broker.sock failed: {error}"),
-            Ok(_) => std::thread::yield_now(),
+            Ok(_) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "broker socket still present after 15s: {}",
+                    socket.display()
+                );
+                std::thread::yield_now();
+            }
         }
     }
 }

@@ -481,13 +481,14 @@ jobs:
   helper-linux-negatives:
     name: Helper Linux Negatives
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Test remote helper Linux negatives
-        run: cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml
+        run: cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml -- --nocapture --test-threads=1
 
   core-build-test:
     name: Core Build and Test
