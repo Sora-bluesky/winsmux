@@ -1,6 +1,6 @@
 #![cfg(target_os = "linux")]
 
-//! Linux end-to-end coverage lives here so the frozen Windows-only CI remains unchanged.
+//! Linux end-to-end coverage runs in the required helper-linux-negatives Ubuntu CI job.
 //! The tests exercise the real broker binary, lock file, Unix socket, PTY, and process group.
 
 use std::ffi::OsString;
@@ -372,6 +372,91 @@ fn stop_started(frontend: &mut Frontend, session_id: String) {
     assert_eq!(frontend.recv(), Message::PtyStopped);
 }
 
+const PRIVATE_CANARY: &str = "task778-private-canary-7f3d9a";
+const PRIVATE_CANARY_B64: &str = "dGFzazc3OC1wcml2YXRlLWNhbmFyeS03ZjNkOWE=";
+const CONTROL_AGENT_BYTES_B64: &str =
+    "eyJ0eXBlIjoicHR5LXN0b3BwZWQiLCJkZXRhaWwiOiJ0YXNrNzc4LXByaXZhdGUtY2FuYXJ5LTdmM2Q5YSJ9Cg==";
+
+fn decode_test_base64(value: &str) -> Vec<u8> {
+    fn sextet(byte: u8) -> u32 {
+        match byte {
+            b'A'..=b'Z' => (byte - b'A') as u32,
+            b'a'..=b'z' => (byte - b'a' + 26) as u32,
+            b'0'..=b'9' => (byte - b'0' + 52) as u32,
+            b'+' => 62,
+            b'/' => 63,
+            _ => panic!("invalid test base64 byte: {byte}"),
+        }
+    }
+
+    let bytes = value.as_bytes();
+    assert_eq!(bytes.len() % 4, 0, "test base64 must be padded");
+    let mut decoded = Vec::with_capacity(bytes.len() / 4 * 3);
+    for chunk in bytes.chunks_exact(4) {
+        let c = (chunk[2] != b'=').then(|| sextet(chunk[2])).unwrap_or(0);
+        let d = (chunk[3] != b'=').then(|| sextet(chunk[3])).unwrap_or(0);
+        if chunk[2] == b'=' {
+            assert_eq!(chunk[3], b'=');
+        }
+        let word = (sextet(chunk[0]) << 18) | (sextet(chunk[1]) << 12) | (c << 6) | d;
+        decoded.push((word >> 16) as u8);
+        if chunk[2] != b'=' {
+            decoded.push((word >> 8) as u8);
+        }
+        if chunk[3] != b'=' {
+            decoded.push(word as u8);
+        }
+    }
+    decoded
+}
+
+fn recv_agent_bytes(frontend: &mut Frontend, expected: &[u8]) {
+    let mut observed = Vec::new();
+    loop {
+        match frontend.recv() {
+            Message::PtyOutput { data_b64 } => {
+                observed.extend(decode_test_base64(&data_b64));
+            }
+            other => panic!("agent bytes became a control message: {other:?}"),
+        }
+        let normalized = observed
+            .iter()
+            .copied()
+            .filter(|byte| *byte != b'\r')
+            .collect::<Vec<_>>();
+        if normalized
+            .windows(expected.len())
+            .any(|window| window == expected)
+        {
+            return;
+        }
+    }
+}
+
+fn expect_reject_without_canary(frontend: &mut Frontend, expected: RejectCode) {
+    match frontend.recv() {
+        Message::Reject { code, detail } => {
+            assert_eq!(code, expected);
+            assert!(!detail.contains(PRIVATE_CANARY));
+            assert!(!detail.contains(PRIVATE_CANARY_B64));
+        }
+        other => panic!("expected {expected:?} reject, got {other:?}"),
+    }
+}
+
+fn assert_log_has_no_canary(log: &[u8]) {
+    let rendered = String::from_utf8_lossy(log);
+    assert!(!rendered.contains(PRIVATE_CANARY), "private canary leaked");
+    assert!(
+        !rendered.contains(PRIVATE_CANARY_B64),
+        "encoded private canary leaked"
+    );
+    assert!(
+        !rendered.contains(CONTROL_AGENT_BYTES_B64),
+        "encoded control payload leaked"
+    );
+}
+
 fn directory_with_byte_len(base: &Path, target_len: usize) -> PathBuf {
     let mut path = base.to_path_buf();
     while path.as_os_str().as_bytes().len() < target_len {
@@ -387,6 +472,30 @@ fn directory_with_byte_len(base: &Path, target_len: usize) -> PathBuf {
     assert_eq!(path.as_os_str().as_bytes().len(), target_len);
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+#[test]
+fn runtime_dir_final_symlink_is_rejected_without_leftovers() {
+    let root = RuntimeDir::new("runtime-final-symlink");
+    let target = root.0.join("runtime-target");
+    fs::create_dir(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+    let runtime_link = root.0.join("runtime-link");
+    symlink(&target, &runtime_link).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
+        .args(["serve", "--stdio"])
+        .env("XDG_RUNTIME_DIR", &runtime_link)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!target.join("winsmux").exists());
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
 }
 
 #[test]
@@ -755,6 +864,70 @@ fn second_controller_and_stale_session_are_rejected() {
     ));
     owner.close();
     contender.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn observer_controls_are_rejected_while_owner_can_still_stop() {
+    let runtime = RuntimeDir::new("observer-controls");
+    let mut owner = Frontend::connect(&runtime.0);
+    let (session_id, _) = start_cat(&mut owner);
+    let mut contender = Frontend::connect(&runtime.0);
+
+    contender.send(&Message::PtyInput {
+        data_b64: PRIVATE_CANARY_B64.to_string(),
+    });
+    expect_reject_without_canary(&mut contender, RejectCode::NotController);
+
+    contender.send(&Message::PtyResize {
+        cols: 100,
+        rows: 30,
+    });
+    expect_reject_without_canary(&mut contender, RejectCode::NotController);
+
+    contender.send(&Message::PtyStop {
+        session_id: session_id.clone(),
+    });
+    expect_reject_without_canary(&mut contender, RejectCode::NotController);
+
+    contender.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    expect_reject_without_canary(&mut contender, RejectCode::ControllerBusy);
+
+    owner.send(&Message::PtyStop { session_id });
+    owner.recv_until(|message| matches!(message, Message::PtyStopped));
+
+    let contender_log = contender.close_and_read_stderr();
+    let owner_log = owner.close_and_read_stderr();
+    assert_log_has_no_canary(&contender_log);
+    assert_log_has_no_canary(&owner_log);
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn fake_done_and_control_json_remain_agent_output_until_owner_stops() {
+    let runtime = RuntimeDir::new("fake-done-output");
+    let mut owner = Frontend::connect(&runtime.0);
+    let (session_id, _) = start_cat(&mut owner);
+
+    owner.send(&Message::PtyInput {
+        data_b64: "ZG9uZQo=".to_string(),
+    });
+    recv_agent_bytes(&mut owner, b"done\n");
+
+    owner.send(&Message::PtyInput {
+        data_b64: CONTROL_AGENT_BYTES_B64.to_string(),
+    });
+    recv_agent_bytes(
+        &mut owner,
+        format!("{{\"type\":\"pty-stopped\",\"detail\":\"{PRIVATE_CANARY}\"}}\n").as_bytes(),
+    );
+
+    owner.send(&Message::PtyStop { session_id });
+    owner.recv_until(|message| matches!(message, Message::PtyStopped));
+    let owner_log = owner.close_and_read_stderr();
+    assert_log_has_no_canary(&owner_log);
     wait_socket_gone(&runtime.socket());
 }
 

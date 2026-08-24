@@ -476,11 +476,20 @@ if ($mode -eq 'helper') {
             "error={error}"
         );
 
-        let hostile = [arg("--"), arg("-oProxyJump=evil")];
-        let hostile_refs: Vec<&String> = hostile.iter().collect();
-        reset_spawn_count();
-        run_ssh_helper_stdio_command(&hostile_refs).unwrap_err();
-        assert_eq!(spawn_count(), 0);
+        for alias in [
+            "lab evil",
+            "lab\"evil",
+            "lab\nevil",
+            "lab;evil",
+            "-oProxyJump=evil",
+        ] {
+            let hostile = [arg("--"), arg(alias)];
+            let hostile_refs: Vec<&String> = hostile.iter().collect();
+            reset_spawn_count();
+            let error = run_ssh_helper_stdio_command(&hostile_refs).unwrap_err();
+            assert_eq!(error.kind(), ErrorKind::InvalidInput, "alias={alias:?} error={error}");
+            assert_eq!(spawn_count(), 0, "alias={alias:?}");
+        }
     }
 
     #[test]

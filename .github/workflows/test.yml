@@ -478,6 +478,17 @@ jobs:
           name: test-results-${{ matrix.result }}
           path: test-results-${{ matrix.result }}.xml
 
+  helper-linux-negatives:
+    name: Helper Linux Negatives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test remote helper Linux negatives
+        run: cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml
+
   core-build-test:
     name: Core Build and Test
     runs-on: windows-latest
@@ -511,6 +522,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: winsmux-app
         run: npm ci
+
+      - name: Test SSH connect review UI
+        working-directory: winsmux-app
+        run: node --experimental-strip-types --test src/sshConnectReview.test.ts
 
       - name: Build frontend
         working-directory: winsmux-app
@@ -1540,6 +1555,7 @@ jobs:
       - desktop-build-test
       - desktop-nsis-lifecycle
       - task811-receipt-bind
+      - helper-linux-negatives
     if: always()
     steps:
       - name: Require all checks
@@ -1556,7 +1572,8 @@ jobs:
             "${{ needs.core-build-test.result }}" \
             "${{ needs.desktop-build-test.result }}" \
             "${{ needs.desktop-nsis-lifecycle.result }}" \
-            "${{ needs.task811-receipt-bind.result }}"; do
+            "${{ needs.task811-receipt-bind.result }}" \
+            "${{ needs.helper-linux-negatives.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
               exit 1
