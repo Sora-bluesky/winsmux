@@ -8,6 +8,7 @@ mod desktop_session_restore;
 mod desktop_team_profile;
 mod pty_backend;
 mod remote_debug_gate;
+mod remote_session;
 mod ssh_connect_review;
 
 use control_pipe::{
@@ -1918,6 +1919,7 @@ fn request_desktop_runtime_shutdown(
     summary: &DesktopSummaryStreamManager,
     voice: &VoiceCaptureManager,
     pty: &PtyManager,
+    remote_sessions: &remote_session::RemoteSessionManager,
     voice_timeout: Duration,
     pty_timeout: Duration,
 ) -> Option<DesktopShutdownReport> {
@@ -1928,6 +1930,7 @@ fn request_desktop_runtime_shutdown(
     summary.stop_requested.store(true, Ordering::SeqCst);
     let voice_cleanup_completed = request_voice_capture_shutdown(voice, voice_timeout);
     let (pty_count, pty_exited_count) = drain_all_ptys(pty, pty_timeout);
+    remote_sessions.shutdown(pty_timeout);
     // Exclusive pipe stays with the control-pipe server thread until process
     // death, so unlink here cannot race a successor rotate. updater `app.exit(0)`
     // reaches this function via RunEvent ExitRequested/Exit.
@@ -1945,11 +1948,13 @@ fn request_desktop_runtime_shutdown_for_app(app: &AppHandle) {
     let summary = app.state::<DesktopSummaryStreamManager>();
     let voice = app.state::<VoiceCaptureManager>();
     let pty = app.state::<PtyManager>();
+    let remote_sessions = app.state::<remote_session::RemoteSessionManager>();
     if let Some(report) = request_desktop_runtime_shutdown(
         &shutdown,
         &summary,
         &voice,
         &pty,
+        &remote_sessions,
         Duration::from_millis(DESKTOP_SHUTDOWN_VOICE_WAIT_MS),
         Duration::from_millis(DESKTOP_SHUTDOWN_PTY_WAIT_MS),
     ) {
@@ -2093,6 +2098,7 @@ pub fn run() {
         .manage(DesktopShutdownManager {
             requested: AtomicBool::new(false),
         })
+        .manage(remote_session::RemoteSessionManager::new())
         .manage(VoiceCaptureManager {
             snapshot: Arc::new(Mutex::new(VoiceCaptureRuntimeSnapshot::default())),
             session: Mutex::new(None),
@@ -2135,6 +2141,10 @@ pub fn run() {
             desktop_update_download_installer,
             desktop_update_launch_installer,
             ssh_connect_review::ssh_connect_review,
+            remote_session::remote_session_start,
+            remote_session::remote_session_reattach,
+            remote_session::remote_session_detach,
+            remote_session::remote_session_snapshots,
             pty_json_rpc,
             pty_spawn,
             pty_write,
@@ -2612,12 +2622,14 @@ mod tests {
             panes: Arc::new(Mutex::new(HashMap::new())),
             next_generation: AtomicU64::new(1),
         };
+        let remote_sessions = remote_session::RemoteSessionManager::new();
 
         let report = request_desktop_runtime_shutdown(
             &shutdown,
             &summary,
             &voice,
             &pty,
+            &remote_sessions,
             Duration::from_millis(1),
             Duration::from_millis(1),
         )
@@ -2644,6 +2656,7 @@ mod tests {
             &summary,
             &voice,
             &pty,
+            &remote_sessions,
             Duration::from_millis(1),
             Duration::from_millis(1),
         )
