@@ -308,6 +308,35 @@ impl ManagerState {
         }
     }
 
+    fn publish_confirmed_pending_unreachable(
+        &mut self,
+        key: &SessionKey,
+        transport_id: u64,
+    ) -> bool {
+        let Some(SessionRecord::Pending {
+            transport_id: current_id,
+            last_hello_welcome_rtt_ms,
+            tombstoned: false,
+        }) = self.records.get(key)
+        else {
+            return false;
+        };
+        if *current_id != transport_id {
+            return false;
+        }
+        let last_hello_welcome_rtt_ms = *last_hello_welcome_rtt_ms;
+        self.records.insert(
+            key.clone(),
+            SessionRecord::Published {
+                controller_state: ControllerState::Unreachable,
+                last_hello_welcome_rtt_ms,
+                transport_id: None,
+                transition_id: None,
+            },
+        );
+        true
+    }
+
     fn mark_unreachable(&mut self, key: &SessionKey, transport_id: u64) {
         let Some(SessionRecord::Published {
             controller_state,
@@ -880,6 +909,13 @@ impl RemoteSessionHandle {
                 return Err("remote_session_start_not_published");
             }
             PublishPendingOutcome::Rejected => {
+                if let Some(snapshot) = self.inner.state.lock().ok().and_then(|state| {
+                    state.snapshot(&key).filter(|snapshot| {
+                        snapshot.controller_state == ControllerState::Unreachable
+                    })
+                }) {
+                    return Ok(snapshot);
+                }
                 self.inner.discard_pending(&transport, &key);
                 return Err("remote_session_start_not_published");
             }
@@ -1603,9 +1639,14 @@ fn handle_transport_loss(inner: &Weak<ManagerInner>, transport: &Arc<Transport>)
     };
     if let Ok(mut binding) = transport.binding.lock() {
         match &*binding {
-            ReaderBinding::Pending(key) | ReaderBinding::ConfirmedPending(key) => {
+            ReaderBinding::Pending(key) => {
                 if let Ok(mut state) = inner.state.lock() {
                     state.tombstone_pending(key, transport.id);
+                }
+            }
+            ReaderBinding::ConfirmedPending(key) => {
+                if let Ok(mut state) = inner.state.lock() {
+                    state.publish_confirmed_pending_unreachable(key, transport.id);
                 }
             }
             ReaderBinding::AwaitingAttach(key) | ReaderBinding::Attaching(key) => {
@@ -1705,7 +1746,7 @@ mod tests {
     use std::sync::mpsc::{self, Receiver, SyncSender};
     use std::sync::{Arc, Condvar, Mutex};
     use std::thread::{self, JoinHandle};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use winsmux_remote_helper::{
         decode_payload, read_frame, write_frame, AgentResolution, Message, MAX_FRAME_LEN,
         PROTOCOL_VERSION, SUPPORTED_CAPABILITIES,
@@ -2355,6 +2396,36 @@ mod tests {
         }
     }
 
+    fn confirmed_pending_drop_after_ack_script(
+        session_id: &str,
+        gate: Arc<TestGate>,
+    ) -> FakeScript {
+        FakeScript {
+            welcome: WelcomeMode::Valid,
+            steps: vec![
+                ScriptStep::Expect(Message::PtyStart {
+                    executable: "claude".to_string(),
+                    resolution: Some(AgentResolution {
+                        absolute_path: None,
+                        user_candidates: Vec::new(),
+                    }),
+                    argv: Vec::new(),
+                    cols: 120,
+                    rows: 40,
+                }),
+                ScriptStep::Send(Message::PtyStarted {
+                    session_id: session_id.to_string(),
+                    child_pid: 7878,
+                    resolved_executable: Some("/usr/bin/claude".to_string()),
+                }),
+                ScriptStep::Expect(Message::PtyStartAck {
+                    session_id: session_id.to_string(),
+                }),
+                ScriptStep::Pause(gate),
+            ],
+        }
+    }
+
     fn confirmed_pending_shutdown_script(session_id: &str) -> FakeScript {
         FakeScript {
             welcome: WelcomeMode::Valid,
@@ -2496,6 +2567,74 @@ mod tests {
         assert!(state.tombstone_pending(&key, 41));
         assert!(!state.publish_pending(&key, 41));
         assert!(state.snapshots().is_empty());
+    }
+
+    #[test]
+    fn confirmed_pending_transport_loss_publishes_unreachable() {
+        let key = SessionKey::new(
+            "build-host".to_string(),
+            "fedcba9876543210fedcba9876543210".to_string(),
+        );
+        let mut state = ManagerState::default();
+        assert!(state.insert_pending(key.clone(), 41, 9));
+        assert!(state.publish_confirmed_pending_unreachable(&key, 41));
+        let snapshots = state.snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].controller_state, ControllerState::Unreachable);
+        assert!(state.can_reattach(&key));
+        assert!(!state.publish_pending(&key, 41));
+    }
+
+    #[test]
+    fn transport_loss_after_ack_before_publish_retains_unreachable() {
+        let session_id = "4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e";
+        let script_gate = Arc::new(TestGate::default());
+        let start_gate = Arc::new(TestGate::default());
+        let spawner = Arc::new(FakeSpawner::new(vec![
+            confirmed_pending_drop_after_ack_script(session_id, script_gate.clone()),
+        ]));
+        let manager = Arc::new(RemoteSessionManager::with_spawner(spawner.clone()));
+        let start_hook_gate = start_gate.clone();
+        manager
+            .handle
+            .inner
+            .test_hooks
+            .set_after_start_ack(Arc::new(move || {
+                assert!(start_hook_gate.pause());
+            }));
+        let start_manager = manager.clone();
+        let start = thread::spawn(move || {
+            start_manager.start("build-host".to_string(), RemoteAgent::Claude, 120, 40)
+        });
+        script_gate.wait_until_reached();
+        start_gate.wait_until_reached();
+        script_gate.release();
+        let deadline = Instant::now() + Duration::from_millis(crate::DESKTOP_SHUTDOWN_PTY_WAIT_MS);
+        loop {
+            if manager
+                .snapshots()
+                .iter()
+                .any(|snapshot| snapshot.controller_state == ControllerState::Unreachable)
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "ACK-confirmed transport loss should publish unreachable before start resumes"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        wait_until_reaped(&spawner.logs()[0]);
+        start_gate.release();
+        let snapshot = start
+            .join()
+            .expect("start thread should join")
+            .expect("ACK-confirmed loss must retain ownership");
+        assert_eq!(snapshot.controller_state, ControllerState::Unreachable);
+        assert_eq!(snapshot.session_id, session_id);
+        let snapshots = manager.snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].controller_state, ControllerState::Unreachable);
     }
 
     #[test]
