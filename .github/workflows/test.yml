@@ -481,14 +481,29 @@ jobs:
   helper-linux-negatives:
     name: Helper Linux Negatives
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Test remote helper Linux negatives
-        run: cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml -- --nocapture --test-threads=1
+      - name: Test remote helper protocol
+        run: timeout --kill-after=5s 60s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --lib --test protocol -- --nocapture
+
+      - name: Test remote helper Linux session lifecycle
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle --no-run
+          mapfile -t tests < <(cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle -- --list --format=terse | sed -n 's/: test$//p')
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "session_lifecycle listed no tests" >&2
+            exit 1
+          fi
+          for test_name in "${tests[@]}"; do
+            echo "::group::${test_name}"
+            timeout --kill-after=5s 20s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle "${test_name}" -- --exact --nocapture --test-threads=1
+            echo "::endgroup::"
+          done
 
   core-build-test:
     name: Core Build and Test

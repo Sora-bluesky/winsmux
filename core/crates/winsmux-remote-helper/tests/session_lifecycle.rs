@@ -11,6 +11,7 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use winsmux_remote_helper::{
     decode_payload, encode_frame, encode_payload, AgentResolution, Message, RejectCode,
@@ -52,6 +53,7 @@ struct Frontend {
     child: Child,
     input: ChildStdin,
     output: ChildStdout,
+    stderr: JoinHandle<Vec<u8>>,
 }
 
 struct FrontendOptions {
@@ -140,13 +142,16 @@ impl Frontend {
         if let Some(gate_fd) = pty_started_gate_fd {
             command.env("WINSMUX_TEST_PTY_STARTED_GATE_FD", gate_fd.to_string());
         }
+        eprintln!("# connect {}", runtime.display());
         let mut child = command.spawn().unwrap();
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
+        let stderr = drain_stderr(child.stderr.take().expect("stderr pipe"));
         let mut frontend = Self {
             child,
             input,
             output,
+            stderr,
         };
         frontend.send(&Message::Hello {
             protocol_version: PROTOCOL_VERSION,
@@ -204,8 +209,7 @@ impl Frontend {
         drop(self.input);
         let status = wait_child(&mut self.child, "frontend close stderr");
         assert!(status.success());
-        let mut stderr = self.child.stderr.take().expect("stderr pipe");
-        read_to_end_deadline(&mut stderr, "frontend stderr")
+        self.stderr.join().expect("stderr drain")
     }
 
     fn kill(mut self) {
@@ -471,6 +475,7 @@ fn directory_with_byte_len(base: &Path, target_len: usize) -> PathBuf {
 
 #[test]
 fn runtime_dir_final_symlink_is_rejected_without_leftovers() {
+    eprintln!("# runtime_dir_final_symlink_is_rejected_without_leftovers");
     let root = RuntimeDir::new("runtime-final-symlink");
     let target = root.0.join("runtime-target");
     fs::create_dir(&target).unwrap();
@@ -483,7 +488,7 @@ fn runtime_dir_final_symlink_is_rejected_without_leftovers() {
         .env("XDG_RUNTIME_DIR", &runtime_link)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     drop(child.stdin.take());
@@ -1521,7 +1526,7 @@ fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
         .env("WINSMUX_TEST_FRONTEND_GATE_FD", gate[0].to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let second_pid = second.id() as i32;
@@ -1607,7 +1612,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
         .env("WINSMUX_TEST_FRONTEND_GATE_FD", gate[0].to_string())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap();
     let second_pid = second.id() as i32;
@@ -1651,6 +1656,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
         child: second,
         input: second_input,
         output: second_output,
+        stderr: thread::spawn(|| Vec::new()),
     };
     second.close();
     wait_socket_gone(&runtime.socket());
@@ -1721,6 +1727,14 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
     ));
     replacement.close();
     wait_socket_gone(&runtime.socket());
+}
+
+fn drain_stderr(mut stderr: std::process::ChildStderr) -> JoinHandle<Vec<u8>> {
+    thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = stderr.read_to_end(&mut buf);
+        buf
+    })
 }
 
 fn wait_child(child: &mut Child, what: &str) -> std::process::ExitStatus {
