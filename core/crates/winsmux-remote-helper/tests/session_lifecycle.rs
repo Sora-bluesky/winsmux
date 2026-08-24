@@ -288,6 +288,7 @@ impl Drop for GatePipe {
 }
 
 fn start_cat(frontend: &mut Frontend) -> (String, u32) {
+    eprintln!("# pty-start send");
     frontend.send(&Message::PtyStart {
         executable: "/bin/cat".to_string(),
         resolution: None,
@@ -295,6 +296,7 @@ fn start_cat(frontend: &mut Frontend) -> (String, u32) {
         cols: 80,
         rows: 24,
     });
+    eprintln!("# pty-start recv");
     match frontend.recv() {
         Message::PtyStarted {
             session_id,

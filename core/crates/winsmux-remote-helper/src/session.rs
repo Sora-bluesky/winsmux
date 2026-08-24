@@ -1795,16 +1795,32 @@ fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
     let mut filled = 0;
     while filled < bytes.len() {
         let result = unsafe {
-            libc::getrandom(bytes[filled..].as_mut_ptr().cast(), bytes.len() - filled, 0)
+            libc::getrandom(
+                bytes[filled..].as_mut_ptr().cast(),
+                bytes.len() - filled,
+                libc::GRND_NONBLOCK,
+            )
         };
         if result > 0 {
             filled += result as usize;
             continue;
         }
+        if result == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "getrandom returned zero bytes",
+            ));
+        }
         let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EAGAIN) {
+            break;
+        }
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
+    }
+    if filled < bytes.len() {
+        File::open("/dev/urandom")?.read_exact(&mut bytes[filled..])?;
     }
     Ok(())
 }
