@@ -5,7 +5,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use winsmux_remote_helper::{
-    decode_payload, encode_frame, encode_payload, read_frame, AgentResolution, Message, RejectCode,
-    MAX_EXECUTABLE_BYTES, MAX_FRAME_LEN, PROTOCOL_VERSION,
+    decode_payload, encode_frame, encode_payload, AgentResolution, Message, RejectCode,
+    MAX_EXECUTABLE_BYTES, MAX_FRAME_LEN, PREFIX_LEN, PROTOCOL_VERSION,
 };
 
 struct RuntimeDir(PathBuf);
@@ -167,15 +167,7 @@ impl Frontend {
     }
 
     fn recv(&mut self) -> Message {
-        let mut poll_fd = libc::pollfd {
-            fd: self.output.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let result = unsafe { libc::poll(&mut poll_fd, 1, 15_000) };
-        assert!(result >= 0, "poll frontend output failed");
-        assert!(result > 0, "frontend produced no frame within 15s");
-        let payload = read_frame(&mut self.output).unwrap().unwrap();
+        let payload = read_payload_deadline(&mut self.output, "frontend");
         decode_payload(&payload).unwrap()
     }
 
@@ -215,14 +207,8 @@ impl Frontend {
         drop(self.input);
         let status = wait_child(&mut self.child, "frontend close stderr");
         assert!(status.success());
-        let mut stderr = Vec::new();
-        self.child
-            .stderr
-            .take()
-            .expect("stderr pipe")
-            .read_to_end(&mut stderr)
-            .unwrap();
-        stderr
+        let mut stderr = self.child.stderr.take().expect("stderr pipe");
+        read_to_end_deadline(&mut stderr, "frontend stderr")
     }
 
     fn kill(mut self) {
@@ -498,19 +484,15 @@ fn runtime_dir_final_symlink_is_rejected_without_leftovers() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
         .args(["serve", "--stdio"])
         .env("XDG_RUNTIME_DIR", &runtime_link)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    drop(child.stdin.take());
     let status = wait_child(&mut child, "symlink runtime helper");
-    let mut stdout = Vec::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout pipe")
-        .read_to_end(&mut stdout)
-        .unwrap();
+    let mut stdout = child.stdout.take().expect("stdout pipe");
+    let stdout = read_to_end_deadline(&mut stdout, "symlink runtime stdout");
 
     assert!(!status.success());
     assert!(stdout.is_empty());
@@ -1750,10 +1732,19 @@ fn wait_child(child: &mut Child, what: &str) -> std::process::ExitStatus {
         if let Some(status) = child.try_wait().unwrap() {
             return status;
         }
-        assert!(
-            Instant::now() < deadline,
-            "{what} still running after 15s"
-        );
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let reap_until = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    panic!("{what} still running after 15s; killed with {status}");
+                }
+                if Instant::now() >= reap_until {
+                    panic!("{what} still running after 15s; kill did not reap");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -1768,7 +1759,7 @@ fn read_broker_event(reader: &mut fs::File) -> (u8, i32) {
     assert!(result >= 0, "poll broker event failed");
     assert!(result > 0, "broker event missing within 15s");
     let mut record = [0; 5];
-    reader.read_exact(&mut record).unwrap();
+    read_exact_until(reader, &mut record, wait_deadline(), "broker event");
     (
         record[0],
         i32::from_le_bytes(record[1..].try_into().unwrap()),
@@ -1842,15 +1833,78 @@ fn wait_deadline() -> Instant {
 }
 
 fn read_frame_deadline<R: Read + AsRawFd>(reader: &mut R) -> Vec<u8> {
-    let mut poll_fd = libc::pollfd {
-        fd: reader.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    let result = unsafe { libc::poll(&mut poll_fd, 1, 15_000) };
-    assert!(result >= 0, "poll frame failed");
-    assert!(result > 0, "frame missing within 15s");
-    read_frame(reader).unwrap().unwrap()
+    read_payload_deadline(reader, "frame")
+}
+
+fn read_payload_deadline<R: Read + AsRawFd>(reader: &mut R, what: &str) -> Vec<u8> {
+    let deadline = wait_deadline();
+    let mut prefix = [0u8; PREFIX_LEN];
+    read_exact_until(reader, &mut prefix, deadline, what);
+    let declared = u32::from_be_bytes(prefix);
+    assert!(
+        declared > 0 && declared <= MAX_FRAME_LEN,
+        "{what} declared {declared} bytes"
+    );
+    let mut payload = vec![0u8; declared as usize];
+    read_exact_until(reader, &mut payload, deadline, what);
+    payload
+}
+
+fn read_exact_until<R: Read + AsRawFd>(
+    reader: &mut R,
+    buf: &mut [u8],
+    deadline: Instant,
+    what: &str,
+) {
+    let mut off = 0;
+    while off < buf.len() {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        assert!(!remain.is_zero(), "{what} incomplete read within 15s");
+        let ms = i32::try_from(remain.as_millis().min(15_000)).unwrap_or(15_000);
+        let mut poll_fd = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, ms) };
+        assert!(result >= 0, "poll {what} failed");
+        assert!(result > 0, "{what} stalled within 15s");
+        match reader.read(&mut buf[off..]) {
+            Ok(0) => panic!("{what} eof mid-frame"),
+            Ok(n) => off += n,
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(error) => panic!("{what} read: {error}"),
+        }
+    }
+}
+
+fn read_to_end_deadline<R: Read + AsRawFd>(reader: &mut R, what: &str) -> Vec<u8> {
+    let deadline = wait_deadline();
+    let mut buf = Vec::new();
+    let mut tmp = [0u8; 4096];
+    loop {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        assert!(!remain.is_zero(), "{what} still open after 15s");
+        let ms = i32::try_from(remain.as_millis().min(15_000)).unwrap_or(15_000);
+        let mut poll_fd = libc::pollfd {
+            fd: reader.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let result = unsafe { libc::poll(&mut poll_fd, 1, ms) };
+        assert!(result >= 0, "poll {what} failed");
+        if result == 0 {
+            panic!("{what} still open after 15s");
+        }
+        match reader.read(&mut tmp) {
+            Ok(0) => return buf,
+            Ok(n) => buf.extend_from_slice(&tmp[..n]),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {}
+            Err(error) => panic!("{what} read: {error}"),
+        }
+    }
 }
 
 fn wait_process_group_gone(child_pid: u32) {
