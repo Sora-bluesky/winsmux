@@ -177,7 +177,7 @@ fn write_payload_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<(
     writer.flush()
 }
 
-fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
+fn relay_stdio(stream: UnixStream) -> io::Result<()> {
     let socket_fd = stream.as_raw_fd();
     set_nonblocking(socket_fd)?;
     set_nonblocking(libc::STDIN_FILENO)?;
@@ -1070,6 +1070,7 @@ impl BrokerState {
             }
         }
         let mut session = inner.sessions.remove(session_id)?;
+        self.hooks.emit_agent(b'm', session.pgid);
         session.agent_exited = true;
         let notification = (session.write_phase == WritePhase::Written && !session.stop_in_flight)
             .then(|| session.controller.as_ref())
@@ -2419,6 +2420,7 @@ fn spawn_output_reader(
 }
 
 fn request_process_group_stop(pgid: libc::pid_t) -> io::Result<()> {
+    TestHooks::from_environment().emit_agent(b'Q', pgid);
     signal_process_group(pgid, libc::SIGTERM)?;
     signal_process_group(pgid, libc::SIGKILL)
 }

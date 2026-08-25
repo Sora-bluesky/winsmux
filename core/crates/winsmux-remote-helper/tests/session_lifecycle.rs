@@ -1386,6 +1386,14 @@ fn acknowledged_detach_and_close_remains_attachable() {
             assert_ne!(code, DISCONNECT_REAP, "disconnect reaped pgid={subject}");
             assert_ne!(code, PTY_DETACH_REAPED, "late detach reap pgid={subject}");
             assert_ne!(
+                code, PROCESS_GROUP_STOP,
+                "agent signalled before reattach pgid={subject}"
+            );
+            assert_ne!(
+                code, SESSION_ROW_REMOVED,
+                "session row removed before reattach pgid={subject}"
+            );
+            assert_ne!(
                 code, AGENT_WATCHER_REMOVED,
                 "agent exited before reattach pgid={subject}"
             );
@@ -1617,6 +1625,8 @@ const PTY_DETACH_REAPED: u8 = b'D';
 const DISCONNECT_KEEP: u8 = b'K';
 const DISCONNECT_REAP: u8 = b'k';
 const AGENT_WATCHER_REMOVED: u8 = b'W';
+const SESSION_ROW_REMOVED: u8 = b'm';
+const PROCESS_GROUP_STOP: u8 = b'Q';
 
 #[test]
 fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
