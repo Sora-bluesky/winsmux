@@ -8,7 +8,7 @@ worker slots, and evidence collection. It is not itself an LLM runtime and it
 does not promise that one specific provider, model, or endpoint will always be
 available.
 
-Last reviewed against current upstream documentation: 2026-07-02.
+Last reviewed against current upstream documentation: 2026-08-25.
 
 ## Naming policy
 
@@ -286,11 +286,11 @@ guide future adapters and documentation.
 
 | Runtime | Windows posture | Practical role for winsmux |
 | ------- | --------------- | -------------------------- |
-| LM Studio | Windows x64 and ARM are supported. The docs recommend 16 GB RAM and 4 GB dedicated VRAM. It can serve local models through OpenAI-compatible and Anthropic-compatible APIs. | Good candidate for a future local endpoint adapter and for manual local model experiments today. |
-| Ollama | Native Windows app. The docs list Windows 10 22H2 or newer, NVIDIA driver 452.39 or newer for NVIDIA cards, and current AMD Radeon drivers for Radeon cards. The local API is served at `http://localhost:11434`. | Good candidate for a future local endpoint adapter when the machine has a supported GPU path. |
+| LM Studio | Windows x64 and ARM are supported, and x64 builds require AVX2. The docs recommend 16 GB RAM. It serves local models through an OpenAI-compatible API on port 1234, and the Anthropic-compatible API (`/v1/messages`) is now an officially documented path, so Anthropic-style clients can point `ANTHROPIC_BASE_URL` at a local server. | Good candidate for a future local endpoint adapter and for manual local model experiments today. |
+| Ollama | Native Windows app. The download page lists Windows 10 or later. Current GPU docs require NVIDIA compute capability 5.0 or newer with driver 550 or newer, and driver 570 or newer for compute capability 5.0 to 6.2. Since 0.30 the runtime ships wider GGUF compatibility through llama.cpp and enables the Vulkan backend by default. The local API still binds to `127.0.0.1:11434` by default. | Good candidate for a future local endpoint adapter when the machine has a supported GPU path. |
 | llama.cpp | Cross-platform engine for GGUF models with backends such as CUDA, HIP, Vulkan, SYCL, OpenVINO, Metal, and CPU BLAS paths. | Useful as a low-level runtime, either directly or through tools that package it. |
 | vLLM | Server-oriented runtime. Current docs list Linux as the supported OS and state that Windows is not natively supported; use WSL or a Linux server for Windows workflows. | Good candidate for remote or WSL-hosted high-throughput inference, not a default native Windows dependency. |
-| ONNX Runtime GenAI with Windows ML | Windows local inference path for ONNX generative models. The Windows ML GenAI library is documented as a preview 0.x library. | Interesting future native-app path, but not a stable default worker backend yet. |
+| ONNX Runtime GenAI with Windows ML | Windows local inference path for ONNX generative models. The Windows ML GenAI library is still documented as a preview 0.x library as of 2026-08. | Interesting future native-app path, but not a stable default worker backend yet. |
 
 ## Practical local hardware guidance
 
@@ -300,7 +300,7 @@ quantization, context length, tool use, and the runtime.
 | Machine class | Useful for | Notes |
 | ------------- | ---------- | ----- |
 | CPU-only Windows PC with 16 GB RAM | Small quantized models, smoke tests, offline demos | Expect lower speed. Prefer small context sizes. |
-| Windows PC with 8 to 12 GB VRAM and 32 GB system RAM | Many 7B/8B class quantized models, light coding assistance, local review experiments | This is the most practical consumer tier. |
+| Windows PC with 8 to 12 GB VRAM and 32 GB or more system RAM | Dense models up to roughly 14B at Q4 with weights around 7 to 9 GB, light coding assistance, local review experiments | This is the most practical consumer tier. The 14B class assumes the 12 GB end of the tier. 30B-class MoE models with around 3B active parameters can also run through partial CPU offload when system RAM allows it, at reduced speed. |
 | Windows PC with 16 to 24 GB VRAM and 64 GB system RAM | Larger quantized models and longer context experiments | Still runtime-specific. Check the model card and runtime memory estimator. |
 | WSL/Linux server with datacenter GPU | vLLM-style serving and multi-user or high-throughput jobs | Treat as a remote or WSL endpoint, not a native Windows pane. |
 
