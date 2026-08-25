@@ -2182,26 +2182,18 @@ fn spawn_agent(
 
     close_fd(guardian_liveness[0]);
     close_fd(guardian_ack[1]);
-    let guardian_ready = match read_status_pipe(guardian_ack[0], 5_000) {
-        Ok(Some(0)) => Ok(()),
-        Ok(Some(_)) => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "process-group guardian returned a non-zero ack",
-        )),
-        Ok(None) => Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "process-group guardian closed before ack",
-        )),
-        Err(error) => Err(error),
-    };
+    let guardian_ready = read_ack(guardian_ack[0]);
     close_fd(guardian_ack[0]);
-    if let Err(error) = guardian_ready {
+    if !matches!(guardian_ready, Ok(0)) {
         close_fd(agent_release[1]);
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
         abandon_agent_fork(pid, pid, Some(guardian_pid));
-        return Err(error);
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "process-group guardian failed before Agent execve",
+        ));
     }
     if let Err(error) = write_ack(agent_release[1], 0) {
         close_fd(agent_release[1]);
