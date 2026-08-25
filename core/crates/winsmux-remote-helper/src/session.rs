@@ -178,14 +178,114 @@ fn write_payload_frame<W: Write>(writer: &mut W, payload: &[u8]) -> io::Result<(
 }
 
 fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
-    let mut upstream = stream.try_clone()?;
-    thread::Builder::new()
-        .name("winsmux-remote-helper-stdin".to_string())
-        .spawn(move || {
-            let _ = io::copy(&mut io::stdin().lock(), &mut upstream);
-            let _ = upstream.shutdown(std::net::Shutdown::Write);
-        })?;
-    io::copy(&mut stream, &mut io::stdout().lock())?;
+    let socket_fd = stream.as_raw_fd();
+    set_nonblocking(socket_fd)?;
+    set_nonblocking(libc::STDIN_FILENO)?;
+    let mut stdin_open = true;
+    let mut socket_open = true;
+    let mut buf = [0u8; 8192];
+
+    while stdin_open || socket_open {
+        let mut poll_fds = [
+            libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: if stdin_open { libc::POLLIN } else { 0 },
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: socket_fd,
+                events: if socket_open { libc::POLLIN } else { 0 },
+                revents: 0,
+            },
+        ];
+        if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+
+        if stdin_open && poll_fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            match relay_read_fd(socket_fd, libc::STDIN_FILENO, &mut buf) {
+                Ok(0) => {
+                    stdin_open = false;
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+        }
+
+        if socket_open && poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
+        {
+            match relay_read_fd(libc::STDOUT_FILENO, socket_fd, &mut buf) {
+                Ok(0) => socket_open = false,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
+}
+
+fn relay_read_fd(dst: RawFd, src: RawFd, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        let read = unsafe { libc::read(src, buf.as_mut_ptr().cast(), buf.len()) };
+        if read == 0 {
+            return Ok(0);
+        }
+        if read > 0 {
+            relay_write_all_poll(dst, &buf[..read as usize])?;
+            return Ok(read as usize);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EAGAIN) || error.kind() == io::ErrorKind::WouldBlock {
+            return Err(error);
+        }
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
+}
+
+fn relay_write_all_poll(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
+    while !bytes.is_empty() {
+        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
+        if written > 0 {
+            bytes = &bytes[written as usize..];
+            continue;
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EAGAIN) || error.kind() == io::ErrorKind::WouldBlock {
+            let mut poll_fd = libc::pollfd {
+                fd,
+                events: libc::POLLOUT,
+                revents: 0,
+            };
+            loop {
+                let result = unsafe { libc::poll(&mut poll_fd, 1, -1) };
+                if result > 0 {
+                    break;
+                }
+                if result == 0 {
+                    continue;
+                }
+                let poll_err = io::Error::last_os_error();
+                if poll_err.kind() != io::ErrorKind::Interrupted {
+                    return Err(poll_err);
+                }
+            }
+            continue;
+        }
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
     Ok(())
 }
 
