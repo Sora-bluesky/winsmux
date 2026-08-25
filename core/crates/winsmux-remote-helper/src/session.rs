@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const HANDSHAKE_ATTEMPTS: usize = 3;
@@ -619,7 +619,7 @@ fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<()> {
     loop {
         let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
         if result > 0 {
-            if poll_fd.revents & libc::POLLIN != 0 {
+            if poll_fd.revents & (libc::POLLIN | libc::POLLRDHUP) != 0 {
                 return Ok(());
             }
             if poll_fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
@@ -666,6 +666,38 @@ fn read_one_byte(fd: RawFd) -> io::Result<u8> {
 
 fn write_ack(fd: RawFd, byte: u8) -> io::Result<()> {
     write_all_fd(fd, &[byte])
+}
+
+/// Poll then read one byte or EOF without blocking past `timeout_ms`.
+fn read_status_pipe(fd: RawFd, timeout_ms: i32) -> io::Result<Option<u8>> {
+    set_nonblocking(fd)?;
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
+    loop {
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "pipe readiness timed out",
+            ));
+        }
+        let ms = i32::try_from(remain.as_millis().min(i32::MAX as u128)).unwrap_or(i32::MAX);
+        poll_readable(fd, ms)?;
+        let mut byte = 0u8;
+        match unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) } {
+            1 => return Ok(Some(byte)),
+            0 => return Ok(None),
+            _ => {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    continue;
+                }
+                return Err(error);
+            }
+        }
+    }
 }
 
 fn redirect_stdio_to_dev_null() -> io::Result<()> {
@@ -2160,55 +2192,53 @@ fn spawn_agent(
         return Err(error);
     }
     close_fd(agent_release[1]);
-    let guardian_ready = match poll_readable(guardian_ack[0], 5_000) {
-        Ok(()) => read_ack(guardian_ack[0]),
+    let guardian_ready = match read_status_pipe(guardian_ack[0], 5_000) {
+        Ok(Some(0)) => Ok(()),
+        Ok(Some(_)) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process-group guardian returned a non-zero ack",
+        )),
+        Ok(None) => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "process-group guardian closed before ack",
+        )),
         Err(error) => Err(error),
     };
     close_fd(guardian_ack[0]);
-    if !matches!(guardian_ready, Ok(0)) {
+    if !guardian_ready.is_ok() {
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
         abandon_agent_fork(pid, pid, Some(guardian_pid));
-        return Err(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            "process-group guardian failed before Agent execve",
-        ));
+        return Err(guardian_ready.err().unwrap_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "process-group guardian failed before Agent execve",
+            )
+        }));
     }
     let guardian = ProcessGroupGuardian {
         pid: guardian_pid,
         _liveness: unsafe { File::from_raw_fd(guardian_liveness[1]) },
     };
 
-    if let Err(error) = poll_readable(exec_status[0], 5_000) {
-        close_fd(exec_status[0]);
-        close_fd(master);
-        cleanup_guarded_agent(pid, pid, guardian);
-        return Err(error);
-    }
-
-    let mut status = [0u8; 1];
-    let status_read = loop {
-        let result = unsafe { libc::read(exec_status[0], status.as_mut_ptr().cast(), 1) };
-        if result >= 0 {
-            break result;
+    let exec_result = read_status_pipe(exec_status[0], 5_000);
+    close_fd(exec_status[0]);
+    match exec_result {
+        Ok(None) => {}
+        Ok(Some(_)) => {
+            close_fd(master);
+            cleanup_guarded_agent(pid, pid, guardian);
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "Agent execve failed",
+            ));
         }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            close_fd(exec_status[0]);
+        Err(error) => {
             close_fd(master);
             cleanup_guarded_agent(pid, pid, guardian);
             return Err(error);
         }
-    };
-    close_fd(exec_status[0]);
-    if status_read != 0 {
-        close_fd(master);
-        cleanup_guarded_agent(pid, pid, guardian);
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Agent execve failed",
-        ));
     }
 
     let reader_fd = unsafe { libc::fcntl(master, libc::F_DUPFD_CLOEXEC, 3) };
