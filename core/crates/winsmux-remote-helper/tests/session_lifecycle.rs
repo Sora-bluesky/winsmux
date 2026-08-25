@@ -1898,9 +1898,9 @@ fn wait_child(child: &mut Child, what: &str) -> std::process::ExitStatus {
 
 fn format_wait_status(status: i32) -> String {
     let status = status as libc::c_int;
-    if libc::WIFEXITED(status) != 0 {
+    if libc::WIFEXITED(status) {
         format!("exit:{}", libc::WEXITSTATUS(status))
-    } else if libc::WIFSIGNALED(status) != 0 {
+    } else if libc::WIFSIGNALED(status) {
         format!("signal:{}", libc::WTERMSIG(status))
     } else {
         format!("raw:{status}")
