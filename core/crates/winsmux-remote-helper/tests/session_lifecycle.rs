@@ -1343,7 +1343,7 @@ fn acknowledged_unsolicited_exit_pushes_and_same_connection_recovers() {
 fn acknowledged_detach_and_close_remains_attachable() {
     let runtime = RuntimeDir::new("lifecycle-acked-reattach");
     let mut first = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
-    let (session_id, child_pid) = start_cat(&mut first);
+    let (session_id, child_pid) = start_sleep(&mut first);
     acknowledge_start(&mut first, &session_id);
     first.send(&Message::PtyDetach);
     assert_eq!(first.recv(), Message::PtyDetached);
