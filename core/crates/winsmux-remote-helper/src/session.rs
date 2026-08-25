@@ -934,6 +934,8 @@ struct Session {
     child_pid: u32,
     pgid: libc::pid_t,
     master: Arc<Mutex<File>>,
+    // Extra master dup keeps the PTY slave open while the row outlives the controller.
+    _master_lease: File,
     controller: Option<Controller>,
     agent_exited: bool,
     write_phase: WritePhase,
@@ -1728,6 +1730,7 @@ fn start_session(
         guardian,
     } = agent;
     let guardian_pid = guardian.pid;
+    let master_lease = dup_pty_master_lease(&master)?;
     let completion = Arc::new(Completion::new());
     {
         let mut inner = lock_mutex(&state.inner);
@@ -1737,6 +1740,7 @@ fn start_session(
                 child_pid,
                 pgid,
                 master: master.clone(),
+                _master_lease: master_lease,
                 controller: Some(Controller {
                     frontend_id,
                     writer: writer.clone(),
@@ -1928,6 +1932,15 @@ fn activate_controller(state: &BrokerState, session_id: &str, frontend_id: u64) 
     {
         controller.active = true;
     }
+}
+
+fn dup_pty_master_lease(master: &Arc<Mutex<File>>) -> io::Result<File> {
+    let fd = lock_mutex(master).as_raw_fd();
+    let lease_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if lease_fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(lease_fd) })
 }
 
 fn controller_master(
