@@ -958,8 +958,10 @@ impl BrokerState {
                     && controller.lifecycle_enabled
                     && !session.start_confirmed
                 {
+                    self.hooks.emit_agent(b'k', session.pgid);
                     unconfirmed.push(session_id.clone());
                 } else {
+                    self.hooks.emit_agent(b'K', session.pgid);
                     session.controller = None;
                 }
             }
@@ -975,6 +977,18 @@ impl BrokerState {
         self.write_phase_changed.notify_all();
         for reap in reaps {
             let _ = reap_registered_session(reap);
+        }
+        {
+            let inner = lock_mutex(&self.inner);
+            self.hooks
+                .emit_subject(b'X', i32::try_from(inner.sessions.len()).unwrap_or(i32::MAX));
+            for session in inner.sessions.values() {
+                if session.start_confirmed {
+                    self.hooks.emit_agent(b'Y', session.pgid);
+                } else {
+                    self.hooks.emit_agent(b'y', session.pgid);
+                }
+            }
         }
         self.wake();
     }

@@ -1373,8 +1373,24 @@ fn acknowledged_detach_and_close_remains_attachable() {
         "agent must be alive after detach (no unconfirmed reap)"
     );
     first.close();
+    // After detach the controller is cleared; disconnect should leave the row.
+    // X = remaining session count, Y = confirmed pgid, k = disconnect reap.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut saw_x = None;
+    while Instant::now() < deadline {
+        if let Some((code, subject)) = try_read_broker_event(&mut events.reader) {
+            eprintln!("# post-close-event code={} subject={}", code as char, subject);
+            if code == b'X' {
+                saw_x = Some(subject);
+            }
+            assert_ne!(code, DISCONNECT_REAP, "disconnect reaped pgid={subject}");
+            assert_ne!(code, PTY_DETACH_REAPED, "late detach reap pgid={subject}");
+        } else {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     eprintln!(
-        "# post-close agent={} socket={}",
+        "# post-close agent={} socket={} sessions_x={saw_x:?}",
         unsafe { libc::kill(child_pid as i32, 0) },
         runtime.socket().exists()
     );
@@ -1586,6 +1602,8 @@ const PTY_STARTED_WRITING: u8 = b'G';
 const PTY_START_ACK_OK: u8 = b'C';
 const PTY_START_ACK_REJECT: u8 = b'c';
 const PTY_DETACH_REAPED: u8 = b'D';
+const DISCONNECT_KEEP: u8 = b'K';
+const DISCONNECT_REAP: u8 = b'k';
 const AGENT_WATCHER_REMOVED: u8 = b'W';
 
 #[test]
@@ -1854,6 +1872,29 @@ fn read_broker_event(reader: &mut fs::File) -> (u8, i32) {
         record[0],
         i32::from_le_bytes(record[1..].try_into().unwrap()),
     )
+}
+
+fn try_read_broker_event(reader: &mut fs::File) -> Option<(u8, i32)> {
+    let mut poll_fd = libc::pollfd {
+        fd: reader.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+    if result <= 0 {
+        return None;
+    }
+    let mut record = [0; 5];
+    read_exact_until(
+        reader,
+        &mut record,
+        Instant::now() + Duration::from_millis(200),
+        "broker event",
+    );
+    Some((
+        record[0],
+        i32::from_le_bytes(record[1..].try_into().unwrap()),
+    ))
 }
 
 fn read_event_with_code(reader: &mut fs::File, expected_code: u8) -> i32 {
