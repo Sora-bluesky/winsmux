@@ -2150,13 +2150,22 @@ fn spawn_agent(
 
     close_fd(guardian_liveness[0]);
     close_fd(guardian_ack[1]);
+    if let Err(error) = write_ack(agent_release[1], 0) {
+        close_fd(agent_release[1]);
+        close_fd(guardian_ack[0]);
+        close_fd(guardian_liveness[1]);
+        close_fd(exec_status[0]);
+        close_fd(master);
+        abandon_agent_fork(pid, pid, Some(guardian_pid));
+        return Err(error);
+    }
+    close_fd(agent_release[1]);
     let guardian_ready = match poll_readable(guardian_ack[0], 5_000) {
         Ok(()) => read_ack(guardian_ack[0]),
         Err(error) => Err(error),
     };
     close_fd(guardian_ack[0]);
     if !matches!(guardian_ready, Ok(0)) {
-        close_fd(agent_release[1]);
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
@@ -2166,15 +2175,6 @@ fn spawn_agent(
             "process-group guardian failed before Agent execve",
         ));
     }
-    if let Err(error) = write_ack(agent_release[1], 0) {
-        close_fd(agent_release[1]);
-        close_fd(guardian_liveness[1]);
-        close_fd(exec_status[0]);
-        close_fd(master);
-        abandon_agent_fork(pid, pid, Some(guardian_pid));
-        return Err(error);
-    }
-    close_fd(agent_release[1]);
     let guardian = ProcessGroupGuardian {
         pid: guardian_pid,
         _liveness: unsafe { File::from_raw_fd(guardian_liveness[1]) },
