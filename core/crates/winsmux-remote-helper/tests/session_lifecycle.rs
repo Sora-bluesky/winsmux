@@ -1357,7 +1357,7 @@ fn acknowledged_detach_and_close_remains_attachable() {
         Some(events.writer),
         FrontendOptions::lifecycle(),
     );
-    let (session_id, child_pid) = start_cat(&mut first);
+    let (session_id, child_pid) = start_sleep(&mut first);
     acknowledge_start(&mut first, &session_id);
     assert_ack_ok(&mut events.reader, child_pid as i32);
     assert_eq!(
@@ -1385,14 +1385,26 @@ fn acknowledged_detach_and_close_remains_attachable() {
             }
             assert_ne!(code, DISCONNECT_REAP, "disconnect reaped pgid={subject}");
             assert_ne!(code, PTY_DETACH_REAPED, "late detach reap pgid={subject}");
+            assert_ne!(
+                code, AGENT_WATCHER_REMOVED,
+                "agent exited before reattach pgid={subject}"
+            );
+            assert_ne!(
+                code, SHUTDOWN_LOCK_ACQUIRED,
+                "broker shut down before reattach pid={subject}"
+            );
         } else {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
-    eprintln!(
-        "# post-close agent={} socket={} sessions_x={saw_x:?}",
-        unsafe { libc::kill(child_pid as i32, 0) },
-        runtime.socket().exists()
+    assert_eq!(saw_x, Some(1), "expected one confirmed session after close");
+    assert!(
+        unsafe { libc::kill(child_pid as i32, 0) } == 0,
+        "agent must stay alive after close"
+    );
+    assert!(
+        runtime.socket().exists(),
+        "broker socket must remain while detached session persists"
     );
 
     let mut second = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());

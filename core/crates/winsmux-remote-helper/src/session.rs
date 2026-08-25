@@ -183,9 +183,12 @@ fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
     set_nonblocking(libc::STDIN_FILENO)?;
     let mut stdin_open = true;
     let mut socket_open = true;
+    let mut stdin_pending = Vec::new();
     let mut buf = [0u8; 8192];
 
-    while stdin_open || socket_open {
+    while stdin_open || socket_open || !stdin_pending.is_empty() {
+        relay_flush_complete_frames(socket_fd, &mut stdin_pending)?;
+
         let mut poll_fds = [
             libc::pollfd {
                 fd: libc::STDIN_FILENO,
@@ -198,22 +201,36 @@ fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
                 revents: 0,
             },
         ];
-        if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) } < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
+        if stdin_pending.is_empty() && (stdin_open || socket_open) {
+            if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) } < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
             }
-            return Err(error);
+        } else if !stdin_pending.is_empty() {
+            // A partial frame is buffered; keep draining stdin without stalling on poll.
+            poll_fds[0].events = if stdin_open { libc::POLLIN } else { 0 };
+            poll_fds[1].events = 0;
+            if stdin_open
+                && unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, 0) } < 0
+                && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
+            {
+                return Err(io::Error::last_os_error());
+            }
+        } else {
+            break;
         }
 
         if stdin_open && poll_fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-            match relay_read_fd(socket_fd, libc::STDIN_FILENO, &mut buf) {
-                Ok(0) => {
+            match relay_append_stdin(&mut stdin_pending, &mut buf) {
+                Ok(true) => {}
+                Ok(false) => {
                     stdin_open = false;
+                    relay_flush_complete_frames(socket_fd, &mut stdin_pending)?;
                     let _ = stream.shutdown(std::net::Shutdown::Write);
                 }
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error),
             }
         }
@@ -229,6 +246,52 @@ fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn relay_append_stdin(pending: &mut Vec<u8>, buf: &mut [u8]) -> io::Result<bool> {
+    loop {
+        let read = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
+        if read == 0 {
+            return Ok(false);
+        }
+        if read > 0 {
+            pending.extend_from_slice(&buf[..read as usize]);
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EAGAIN) || error.kind() == io::ErrorKind::WouldBlock {
+            return Ok(true);
+        }
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
+}
+
+fn relay_flush_complete_frames(socket_fd: RawFd, pending: &mut Vec<u8>) -> io::Result<()> {
+    loop {
+        if pending.len() < PREFIX_LEN {
+            return Ok(());
+        }
+        let declared = u32::from_be_bytes(
+            pending[..PREFIX_LEN]
+                .try_into()
+                .expect("prefix slice length"),
+        );
+        if declared > MAX_FRAME_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stdin relay frame exceeds MAX_FRAME_LEN",
+            ));
+        }
+        let frame_len = PREFIX_LEN + declared as usize;
+        if pending.len() < frame_len {
+            return Ok(());
+        }
+        relay_write_all_poll(socket_fd, &pending[..frame_len])?;
+        pending.drain(..frame_len);
+    }
 }
 
 fn relay_read_fd(dst: RawFd, src: RawFd, buf: &mut [u8]) -> io::Result<usize> {
