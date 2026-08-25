@@ -838,7 +838,13 @@ jobs:
               prior_download = [ordered]@{ exit_code = $null; artifact_found = $false; sha256_verified = $false }
               staging = [ordered]@{ exit_code = $null; candidate_staged = $false; prior_staged = $false }
               network_isolation = [ordered]@{ exit_code = $null; rule_enabled = $false; positive_control_exit_code = $null; positive_control_blocked = $false }
-              network_restore = [ordered]@{ exit_code = $null; rule_absent = $false }
+              network_restore = [ordered]@{
+                exit_code = $null
+                rule_absent = $false
+                dns_cache_cleared = $false
+                positive_control_exit_code = $null
+                positive_control_reachable = $false
+              }
             }
             protected_inventory = [ordered]@{ before = @() }
             legs = [ordered]@{
@@ -1138,17 +1144,34 @@ jobs:
           $ruleName = "winsmux-task679-outbound-${{ github.run_id }}-${{ github.run_attempt }}"
           $evidencePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts/task679-nsis-lifecycle/evidence.json'
           $restoreExit = 0
+          $ruleAbsent = $false
+          $dnsCacheCleared = $false
+          $control = [pscustomobject]@{ ExitCode = -1 }
+          $controlRestored = $false
           try {
             Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction Stop
             $ruleAbsent = -not [bool](Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue)
             if (-not $ruleAbsent) { throw 'Run-scoped outbound firewall rule remained after cleanup.' }
+
+            Clear-DnsClientCache -ErrorAction Stop
+            $dnsCacheCleared = $true
+            $curlStdout = Join-Path $env:RUNNER_TEMP 'task679-network-restore-control.stdout'
+            $curlStderr = Join-Path $env:RUNNER_TEMP 'task679-network-restore-control.stderr'
+            $control = Start-Process -FilePath 'curl.exe' -ArgumentList @('--fail', '--silent', '--show-error', 'https://github.com/') -Wait -PassThru -NoNewWindow -RedirectStandardOutput $curlStdout -RedirectStandardError $curlStderr
+            $controlRestored = $control.ExitCode -eq 0
+            if (-not $controlRestored) { throw 'Outbound positive control did not recover after firewall cleanup.' }
           } catch {
             $restoreExit = 1
-            $ruleAbsent = $false
           }
           if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
             $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 12
-            $evidence.stages.network_restore = [ordered]@{ exit_code = $restoreExit; rule_absent = $ruleAbsent }
+            $evidence.stages.network_restore = [ordered]@{
+              exit_code = $restoreExit
+              rule_absent = $ruleAbsent
+              dns_cache_cleared = $dnsCacheCleared
+              positive_control_exit_code = [int]$control.ExitCode
+              positive_control_reachable = $controlRestored
+            }
             if ($restoreExit -ne 0) {
               $evidence.outcome = 'fail'
               $evidence.failure_stage = 'network_restore'
