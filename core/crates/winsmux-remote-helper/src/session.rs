@@ -2247,7 +2247,7 @@ fn spawn_agent(
 
 fn run_process_group_guardian(
     liveness_fd: RawFd,
-    agent_pgid: libc::pid_t,
+    _agent_pgid: libc::pid_t,
     ack_fd: RawFd,
 ) -> io::Result<()> {
     write_ack(ack_fd, 0)?;
@@ -2265,7 +2265,10 @@ fn run_process_group_guardian(
             return Err(error);
         }
     }
-    signal_process_group(agent_pgid, libc::SIGKILL)
+    // Session reap and PtyStop call request_process_group_stop explicitly.
+    // Do not SIGKILL here: a transient liveness EOF must not reap a confirmed
+    // detached row while the broker still holds the session.
+    Ok(())
 }
 
 fn cleanup_guarded_agent(pid: libc::pid_t, pgid: libc::pid_t, guardian: ProcessGroupGuardian) {
