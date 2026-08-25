@@ -1324,12 +1324,27 @@ fn acknowledged_unsolicited_exit_pushes_and_same_connection_recovers() {
     wait_socket_gone(&runtime.socket());
 }
 
+fn assert_ack_ok(reader: &mut fs::File, child_pid: i32) {
+    let (code, subject) = read_broker_event(reader);
+    match code {
+        PTY_START_ACK_OK => assert_eq!(subject, child_pid),
+        PTY_START_ACK_REJECT => panic!("pty-start-ack rejected (subject={subject})"),
+        other => panic!("expected pty-start-ack ok, got code {other} subject {subject}"),
+    }
+}
+
 #[test]
 fn acknowledged_detach_and_close_remains_attachable() {
     let runtime = RuntimeDir::new("lifecycle-acked-reattach");
-    let mut first = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
-    let (session_id, child_pid) = start_sleep(&mut first);
+    let mut events = EventPipe::new();
+    let mut first = Frontend::connect_with_options(
+        &runtime.0,
+        Some(events.writer),
+        FrontendOptions::lifecycle(),
+    );
+    let (session_id, child_pid) = start_cat(&mut first);
     acknowledge_start(&mut first, &session_id);
+    assert_ack_ok(&mut events.reader, child_pid as i32);
     first.send(&Message::PtyDetach);
     assert_eq!(first.recv(), Message::PtyDetached);
     first.close();
@@ -1543,6 +1558,9 @@ const SHUTDOWN_LOCK_ACQUIRED: u8 = b'S';
 const PTY_START_DISPATCHED: u8 = b'T';
 const PTY_STARTED_PENDING: u8 = b'P';
 const PTY_STARTED_WRITING: u8 = b'G';
+const PTY_START_ACK_OK: u8 = b'C';
+const PTY_START_ACK_REJECT: u8 = b'c';
+const PTY_DETACH_REAPED: u8 = b'D';
 const AGENT_WATCHER_REMOVED: u8 = b'W';
 
 #[test]
