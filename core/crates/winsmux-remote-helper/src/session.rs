@@ -2380,7 +2380,7 @@ fn spawn_agent_watcher(
         .spawn(move || {
             let mut notification = None;
             let mut classified = false;
-            let result = wait_for_agent_group(pid, pgid, &state.hooks, || {
+            let result = wait_for_agent_group(pid, pgid, state.hooks, || {
                 notification = state.remove_after_agent_exit(&session_id);
                 classified = true;
             })
