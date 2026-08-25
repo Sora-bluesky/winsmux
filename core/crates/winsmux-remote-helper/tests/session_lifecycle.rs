@@ -160,9 +160,8 @@ impl Frontend {
         eprintln!("# spawned {}", child.id());
         let input = child.stdin.take().unwrap();
         let output = child.stdout.take().unwrap();
-        let stderr = capture_stderr.then(|| {
-            drain_stderr(child.stderr.take().expect("stderr pipe"))
-        });
+        let stderr =
+            capture_stderr.then(|| drain_stderr(child.stderr.take().expect("stderr pipe")));
         let mut frontend = Self {
             child,
             input,
@@ -194,7 +193,10 @@ impl Frontend {
     fn recv_until(&mut self, expected: fn(&Message) -> bool) -> Message {
         let deadline = wait_deadline();
         loop {
-            assert!(Instant::now() < deadline, "recv_until missed expected message within 15s");
+            assert!(
+                Instant::now() < deadline,
+                "recv_until missed expected message within 15s"
+            );
             let message = self.recv();
             if expected(&message) {
                 return message;
@@ -227,7 +229,11 @@ impl Frontend {
         drop(self.input);
         let status = wait_child(&mut self.child, "frontend close stderr");
         assert!(status.success());
-        self.stderr.take().expect("stderr drain").join().expect("stderr drain")
+        self.stderr
+            .take()
+            .expect("stderr drain")
+            .join()
+            .expect("stderr drain")
     }
 
     fn kill(mut self) {
@@ -431,7 +437,10 @@ fn recv_agent_bytes(frontend: &mut Frontend, expected: &[u8]) {
     let mut observed = Vec::new();
     let deadline = wait_deadline();
     loop {
-        assert!(Instant::now() < deadline, "agent bytes missing expected payload within 15s");
+        assert!(
+            Instant::now() < deadline,
+            "agent bytes missing expected payload within 15s"
+        );
         match frontend.recv() {
             Message::PtyOutput { data_b64 } => {
                 observed.extend(decode_test_base64(&data_b64));
@@ -1335,12 +1344,6 @@ fn acknowledged_detach_and_close_remains_attachable() {
     eprintln!("# waiting T");
     read_event_with_code(&mut events.reader, PTY_START_DISPATCHED);
     eprintln!("# got T");
-    eprintln!("# waiting t");
-    read_event_with_code(&mut events.reader, AGENT_SPAWNED);
-    eprintln!("# got t");
-    eprintln!("# waiting P");
-    let _agent_pgid = read_event_with_code(&mut events.reader, PTY_STARTED_PENDING);
-    eprintln!("# got P");
     eprintln!("# pty-start recv");
     let (session_id, child_pid) = match first.recv() {
         Message::PtyStarted {
@@ -1348,6 +1351,9 @@ fn acknowledged_detach_and_close_remains_attachable() {
             child_pid,
             ..
         } => (session_id, child_pid),
+        Message::Reject { code, detail, .. } => {
+            panic!("pty-start rejected after dispatch: {code:?} {detail}");
+        }
         other => panic!("expected pty-started, got {other:?}"),
     };
     acknowledge_start(&mut first, &session_id);
@@ -1833,7 +1839,10 @@ fn read_broker_event(reader: &mut fs::File) -> (u8, i32) {
 fn read_event_with_code(reader: &mut fs::File, expected_code: u8) -> i32 {
     let deadline = wait_deadline();
     loop {
-        assert!(Instant::now() < deadline, "broker event {expected_code} missing within 15s");
+        assert!(
+            Instant::now() < deadline,
+            "broker event {expected_code} missing within 15s"
+        );
         let (code, subject) = read_broker_event(reader);
         if code == expected_code {
             return subject;
@@ -1844,7 +1853,10 @@ fn read_event_with_code(reader: &mut fs::File, expected_code: u8) -> i32 {
 fn read_matching_event(reader: &mut fs::File, expected_code: u8, expected_pgid: i32) {
     let deadline = wait_deadline();
     loop {
-        assert!(Instant::now() < deadline, "matching broker event missing within 15s");
+        assert!(
+            Instant::now() < deadline,
+            "matching broker event missing within 15s"
+        );
         let (code, pgid) = read_broker_event(reader);
         if code == expected_code && pgid == expected_pgid {
             return;
@@ -1855,14 +1867,16 @@ fn read_matching_event(reader: &mut fs::File, expected_code: u8, expected_pgid: 
 fn wait_matching_w_without_g(reader: &mut fs::File, agent_pgid: i32) {
     let deadline = wait_deadline();
     loop {
-        assert!(Instant::now() < deadline, "matching W without G missing within 15s");
+        assert!(
+            Instant::now() < deadline,
+            "matching W without G missing within 15s"
+        );
         let (code, pgid) = read_broker_event(reader);
         if pgid != agent_pgid {
             continue;
         }
         assert_ne!(
-            code,
-            PTY_STARTED_WRITING,
+            code, PTY_STARTED_WRITING,
             "Gate A saw matching G before W for pgid {agent_pgid}"
         );
         if code == AGENT_WATCHER_REMOVED {

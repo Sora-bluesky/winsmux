@@ -218,7 +218,8 @@ fn relay_stdio(mut stream: UnixStream) -> io::Result<()> {
             }
         }
 
-        if socket_open && poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+        if socket_open && poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
+        {
             match relay_read_fd(libc::STDOUT_FILENO, socket_fd, &mut buf) {
                 Ok(0) => socket_open = false,
                 Ok(_) => {}
@@ -627,6 +628,7 @@ fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<()> {
                     "pipe closed before readiness",
                 ));
             }
+            continue;
         }
         if result == 0 {
             return Err(io::Error::new(
@@ -702,6 +704,21 @@ fn wait_pid(pid: libc::pid_t) -> io::Result<()> {
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
+    }
+}
+
+fn abandon_agent_child(pid: libc::pid_t) {
+    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    let _ = wait_pid(pid);
+}
+
+fn abandon_agent_fork(pid: libc::pid_t, pgid: libc::pid_t, guardian_pid: Option<libc::pid_t>) {
+    let _ = request_process_group_stop(pgid);
+    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    let _ = wait_pid(pid);
+    if let Some(guardian_pid) = guardian_pid {
+        let _ = unsafe { libc::kill(guardian_pid, libc::SIGKILL) };
+        let _ = wait_pid(guardian_pid);
     }
 }
 
@@ -2101,7 +2118,7 @@ fn spawn_agent(
             close_fd(guardian_ack[1]);
             close_fd(exec_status[0]);
             close_fd(master);
-            let _ = wait_pid(pid);
+            abandon_agent_child(pid);
             return Err(error);
         }
     }
@@ -2116,7 +2133,7 @@ fn spawn_agent(
         close_fd(guardian_ack[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        let _ = wait_pid(pid);
+        abandon_agent_child(pid);
         return Err(error);
     }
     if guardian_pid == 0 {
@@ -2143,8 +2160,7 @@ fn spawn_agent(
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        let _ = wait_pid(pid);
-        let _ = wait_pid(guardian_pid);
+        abandon_agent_fork(pid, pid, Some(guardian_pid));
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
             "process-group guardian failed before Agent execve",
@@ -2155,8 +2171,7 @@ fn spawn_agent(
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        let _ = wait_pid(pid);
-        let _ = wait_pid(guardian_pid);
+        abandon_agent_fork(pid, pid, Some(guardian_pid));
         return Err(error);
     }
     close_fd(agent_release[1]);
@@ -2238,9 +2253,7 @@ fn run_process_group_guardian(
 fn cleanup_guarded_agent(pid: libc::pid_t, pgid: libc::pid_t, guardian: ProcessGroupGuardian) {
     let guardian_pid = guardian.pid;
     drop(guardian);
-    let _ = request_process_group_stop(pgid);
-    let _ = wait_pid(pid);
-    let _ = wait_pid(guardian_pid);
+    abandon_agent_fork(pid, pgid, Some(guardian_pid));
 }
 
 fn process_environment() -> io::Result<Vec<CString>> {
