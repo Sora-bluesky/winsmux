@@ -63,6 +63,7 @@ struct FrontendOptions {
     current_dir: Option<PathBuf>,
     home: Option<PathBuf>,
     capture_stderr: bool,
+    agent_spawn_gate_fd: Option<RawFd>,
 }
 
 impl FrontendOptions {
@@ -74,6 +75,7 @@ impl FrontendOptions {
             current_dir: None,
             home: None,
             capture_stderr: false,
+            agent_spawn_gate_fd: None,
         }
     }
 
@@ -128,6 +130,7 @@ impl Frontend {
             current_dir,
             home,
             capture_stderr,
+            agent_spawn_gate_fd,
         } = options;
         let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"));
         command
@@ -154,6 +157,9 @@ impl Frontend {
         }
         if let Some(gate_fd) = pty_started_gate_fd {
             command.env("WINSMUX_TEST_PTY_STARTED_GATE_FD", gate_fd.to_string());
+        }
+        if let Some(gate_fd) = agent_spawn_gate_fd {
+            command.env("WINSMUX_TEST_AGENT_SPAWN_GATE_FD", gate_fd.to_string());
         }
         eprintln!("# connect {}", runtime.display());
         let mut child = command.spawn().unwrap();
@@ -229,6 +235,18 @@ impl Frontend {
         drop(self.input);
         let status = wait_child(&mut self.child, "frontend close stderr");
         assert!(status.success());
+        self.stderr
+            .take()
+            .expect("stderr drain")
+            .join()
+            .expect("stderr drain")
+    }
+
+    fn close_input_expecting_failure(mut self, what: &str) -> Vec<u8> {
+        drop(self.input);
+        drop(self.output);
+        let status = wait_child(&mut self.child, what);
+        assert!(!status.success(), "{what} unexpectedly succeeded");
         self.stderr
             .take()
             .expect("stderr drain")
@@ -318,6 +336,49 @@ fn start_sleep(frontend: &mut Frontend) -> (String, u32) {
         executable: "/bin/sleep".to_string(),
         resolution: None,
         argv: vec!["600".to_string()],
+        cols: 80,
+        rows: 24,
+    });
+    match frontend.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected pty-started, got {other:?}"),
+    }
+}
+
+fn start_reattach_transformer(frontend: &mut Frontend) -> (String, u32) {
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/sh".to_string(),
+        resolution: None,
+        argv: vec![
+            "-c".to_string(),
+            "stty -echo; IFS= read -r _; printf 'task778-reattach-transform\\n'; exec sleep 600"
+                .to_string(),
+        ],
+        cols: 80,
+        rows: 24,
+    });
+    match frontend.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected pty-started, got {other:?}"),
+    }
+}
+
+fn start_partial_relay_probe(frontend: &mut Frontend) -> (String, u32) {
+    frontend.send(&Message::PtyStart {
+        executable: "/bin/sh".to_string(),
+        resolution: None,
+        argv: vec![
+            "-c".to_string(),
+            "stty -echo; IFS= read -r _; printf 'task778-partial-open\\n'; exec cat".to_string(),
+        ],
         cols: 80,
         rows: 24,
     });
@@ -500,6 +561,196 @@ fn directory_with_byte_len(base: &Path, target_len: usize) -> PathBuf {
     assert_eq!(path.as_os_str().as_bytes().len(), target_len);
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+#[test]
+fn truncated_stdin_prefix_and_payload_exit_nonzero() {
+    let complete = encode_frame(&Message::PtyResize { cols: 81, rows: 25 }).unwrap();
+    let cases = [
+        ("prefix-1", complete[..1].to_vec()),
+        ("prefix-2", complete[..2].to_vec()),
+        ("prefix-3", complete[..3].to_vec()),
+        ("payload", complete[..complete.len() - 1].to_vec()),
+    ];
+
+    for (label, fragment) in cases {
+        let runtime = RuntimeDir::new(&format!("relay-truncated-{label}"));
+        let mut frontend = Frontend::connect_capturing(&runtime.0);
+        write_all_deadline(
+            &mut frontend.input,
+            &fragment,
+            "truncated frontend fragment",
+        );
+        let stderr = frontend.close_input_expecting_failure("truncated frontend");
+        let stderr = String::from_utf8_lossy(&stderr);
+        assert!(
+            stderr.contains("truncated stdin relay frame"),
+            "missing truncated relay error for {label}: {stderr}"
+        );
+        wait_socket_gone(&runtime.socket());
+    }
+}
+
+#[test]
+fn partial_stdin_keeps_socket_progress_and_resumes_in_order() {
+    let runtime = RuntimeDir::new("relay-partial-open");
+    let mut frontend = Frontend::connect(&runtime.0);
+    let (session_id, child_pid) = start_partial_relay_probe(&mut frontend);
+    let trigger = encode_frame(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    })
+    .unwrap();
+    let resumed = encode_frame(&Message::PtyInput {
+        data_b64: "cmVzdW1lCg==".to_string(),
+    })
+    .unwrap();
+    let split = PREFIX_LEN + 1;
+    let mut first_write = trigger;
+    first_write.extend_from_slice(&resumed[..split]);
+    write_all_deadline(
+        &mut frontend.input,
+        &first_write,
+        "complete frame plus partial stdin frame",
+    );
+
+    recv_agent_bytes(&mut frontend, b"task778-partial-open\n");
+    write_all_deadline(
+        &mut frontend.input,
+        &resumed[split..],
+        "remaining stdin frame fragment",
+    );
+    recv_agent_bytes(&mut frontend, b"resume\n");
+
+    frontend.send(&Message::PtyStop { session_id });
+    assert_eq!(frontend.recv(), Message::PtyStopped);
+    wait_process_group_gone(child_pid);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn complete_frame_reaches_agent_before_truncated_tail_fails() {
+    let runtime = RuntimeDir::new("relay-complete-before-truncated");
+    let options = FrontendOptions {
+        capture_stderr: true,
+        ..FrontendOptions::lifecycle()
+    };
+    let mut frontend = Frontend::connect_with_options(&runtime.0, None, options);
+    let (session_id, child_pid) = start_partial_relay_probe(&mut frontend);
+    acknowledge_start(&mut frontend, &session_id);
+    let trigger = encode_frame(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    })
+    .unwrap();
+    let tail = encode_frame(&Message::PtyInput {
+        data_b64: "cmVzdW1lCg==".to_string(),
+    })
+    .unwrap();
+    let mut input = trigger;
+    input.extend_from_slice(&tail[..PREFIX_LEN + 1]);
+    write_all_deadline(
+        &mut frontend.input,
+        &input,
+        "complete frame plus truncated stdin tail",
+    );
+
+    recv_agent_bytes(&mut frontend, b"task778-partial-open\n");
+    let stderr = frontend.close_input_expecting_failure("complete before truncated tail");
+    let stderr = String::from_utf8_lossy(&stderr);
+    assert!(
+        stderr.contains("truncated stdin relay frame"),
+        "missing truncated relay error: {stderr}"
+    );
+
+    let mut replacement = Frontend::connect(&runtime.0);
+    replacement.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    assert_eq!(
+        replacement.recv(),
+        Message::PtyAttached {
+            session_id: session_id.clone(),
+            child_pid,
+        }
+    );
+    replacement.send(&Message::PtyStop { session_id });
+    assert_eq!(replacement.recv(), Message::PtyStopped);
+    wait_process_group_gone(child_pid);
+    replacement.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn fragmented_and_coalesced_complete_frames_preserve_order() {
+    let runtime = RuntimeDir::new("relay-fragmented-and-coalesced");
+    let mut frontend = Frontend::connect(&runtime.0);
+    let (session_id, child_pid) = start_partial_relay_probe(&mut frontend);
+    let fragmented = encode_frame(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    })
+    .unwrap();
+    for byte in &fragmented {
+        write_all_deadline(
+            &mut frontend.input,
+            std::slice::from_ref(byte),
+            "one-byte complete stdin frame fragment",
+        );
+    }
+    recv_agent_bytes(&mut frontend, b"task778-partial-open\n");
+
+    let mut coalesced = encode_frame(&Message::PtyInput {
+        data_b64: "cmVzdW1lCg==".to_string(),
+    })
+    .unwrap();
+    coalesced.extend_from_slice(
+        &encode_frame(&Message::PtyInput {
+            data_b64: "dGhpcmQK".to_string(),
+        })
+        .unwrap(),
+    );
+    write_all_deadline(
+        &mut frontend.input,
+        &coalesced,
+        "coalesced complete stdin frames",
+    );
+    recv_agent_bytes(&mut frontend, b"resume\nthird\n");
+
+    frontend.send(&Message::PtyStop { session_id });
+    assert_eq!(frontend.recv(), Message::PtyStopped);
+    wait_process_group_gone(child_pid);
+    frontend.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn partial_stdin_exits_after_broker_socket_eof() {
+    let runtime = RuntimeDir::new("relay-partial-socket-eof");
+    let mut events = EventPipe::new();
+    let mut frontend = Frontend::connect_with_event(&runtime.0, Some(events.writer));
+    let (event, broker_pid) = read_broker_event(&mut events.reader);
+    assert_eq!(event, BROKER_READY);
+    let (_, child_pid) = start_partial_relay_probe(&mut frontend);
+    let trigger = encode_frame(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    })
+    .unwrap();
+    let partial = encode_frame(&Message::PtyInput {
+        data_b64: "cmVzdW1lCg==".to_string(),
+    })
+    .unwrap();
+    let mut input = trigger;
+    input.extend_from_slice(&partial[..PREFIX_LEN + 1]);
+    write_all_deadline(
+        &mut frontend.input,
+        &input,
+        "complete frame plus partial stdin before socket eof",
+    );
+    recv_agent_bytes(&mut frontend, b"task778-partial-open\n");
+
+    assert_eq!(unsafe { libc::kill(broker_pid, libc::SIGKILL) }, 0);
+    let status = wait_child(&mut frontend.child, "partial stdin socket eof");
+    assert!(status.success(), "partial stdin socket eof: {status}");
+    wait_process_group_gone(child_pid);
 }
 
 #[test]
@@ -1360,7 +1611,7 @@ fn acknowledged_detach_and_close_remains_attachable() {
     );
     let (code, broker_pid) = read_broker_event(&mut events.reader);
     assert_eq!(code, BROKER_READY);
-    let (session_id, child_pid) = start_cat(&mut first);
+    let (session_id, child_pid) = start_reattach_transformer(&mut first);
     acknowledge_start(&mut first, &session_id);
     assert_ack_ok(&mut events.reader, child_pid as i32);
     assert_eq!(
@@ -1376,23 +1627,16 @@ fn acknowledged_detach_and_close_remains_attachable() {
         "agent must be alive after detach (no unconfirmed reap)"
     );
     first.close();
-    assert_eq!(
-        unsafe { libc::kill(broker_pid, 0) },
-        0,
-        "broker must survive frontend close"
-    );
-    assert_eq!(
-        unsafe { libc::kill(child_pid as i32, 0) },
-        0,
-        "agent must survive frontend close"
-    );
     // After detach the controller is cleared; disconnect should leave the row.
     // X = remaining session count, Y = confirmed pgid, k = disconnect reap.
     let deadline = Instant::now() + Duration::from_millis(500);
     let mut saw_x = None;
     while Instant::now() < deadline {
         if let Some((code, subject)) = try_read_broker_event(&mut events.reader) {
-            eprintln!("# post-close-event code={} subject={}", code as char, subject);
+            eprintln!(
+                "# post-close-event code={} subject={}",
+                code as char, subject
+            );
             if code == AGENT_EXIT_STATUS {
                 eprintln!("# agent-wait-status {}", format_wait_status(subject));
             }
@@ -1414,6 +1658,10 @@ fn acknowledged_detach_and_close_remains_attachable() {
                 "agent exited before reattach pgid={subject}"
             );
             assert_ne!(
+                code, AGENT_EXIT_STATUS,
+                "agent wait completed before reattach status={subject}"
+            );
+            assert_ne!(
                 code, SHUTDOWN_LOCK_ACQUIRED,
                 "broker shut down before reattach pid={subject}"
             );
@@ -1422,9 +1670,15 @@ fn acknowledged_detach_and_close_remains_attachable() {
         }
     }
     assert_eq!(saw_x, Some(1), "expected one confirmed session after close");
-    assert!(
-        unsafe { libc::kill(child_pid as i32, 0) } == 0,
-        "agent must stay alive after close"
+    assert_eq!(
+        unsafe { libc::kill(broker_pid, 0) },
+        0,
+        "broker must survive frontend close"
+    );
+    assert_eq!(
+        unsafe { libc::kill(child_pid as i32, 0) },
+        0,
+        "agent must survive frontend close"
     );
     assert!(
         runtime.socket().exists(),
@@ -1442,8 +1696,127 @@ fn acknowledged_detach_and_close_remains_attachable() {
             child_pid,
         }
     );
-    stop_started(&mut second, session_id);
+    second.send(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    });
+    recv_agent_bytes(&mut second, b"task778-reattach-transform\n");
+    second.send(&Message::PtyStop { session_id });
+    assert_eq!(second.recv(), Message::PtyStopped);
+    wait_process_group_gone(child_pid);
     second.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn stopping_one_session_does_not_wait_for_another_guardian() {
+    let runtime = RuntimeDir::new("two-session-guardian-disarm");
+    let mut first = Frontend::connect(&runtime.0);
+    let (first_session_id, first_child_pid) = start_sleep(&mut first);
+    let mut second = Frontend::connect(&runtime.0);
+    let (second_session_id, second_child_pid) = start_reattach_transformer(&mut second);
+
+    first.send(&Message::PtyStop {
+        session_id: first_session_id,
+    });
+    assert_eq!(first.recv(), Message::PtyStopped);
+    wait_process_group_gone(first_child_pid);
+
+    assert_eq!(
+        unsafe { libc::kill(-(second_child_pid as i32), 0) },
+        0,
+        "the second session must remain alive after the first session stops"
+    );
+    second.send(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    });
+    recv_agent_bytes(&mut second, b"task778-reattach-transform\n");
+
+    second.send(&Message::PtyStop {
+        session_id: second_session_id,
+    });
+    assert_eq!(second.recv(), Message::PtyStopped);
+    wait_process_group_gone(second_child_pid);
+    second.close();
+    first.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
+fn concurrent_starts_are_serialized_before_fork_and_broker_death_kills_both_groups() {
+    let runtime = RuntimeDir::new("concurrent-guardian-ownership");
+    let mut events = EventPipe::new();
+    let mut gate = GatePipe::new();
+    let mut options = FrontendOptions::legacy();
+    options.agent_spawn_gate_fd = Some(gate.reader);
+    let mut first = Frontend::connect_with_options(&runtime.0, Some(events.writer), options);
+    let (event, broker_pid) = read_broker_event(&mut events.reader);
+    assert_eq!(event, BROKER_READY);
+    let mut second = Frontend::connect(&runtime.0);
+
+    let start_with_descendant = |marker: &str| {
+        Message::PtyStart {
+            executable: "/bin/sh".to_string(),
+            resolution: None,
+            argv: vec![
+                "-c".to_string(),
+                format!(
+                    "sleep 600 & child=$!; until kill -0 \"$child\"; do :; done; printf '{marker}\\n'; read -r _; wait \"$child\""
+                ),
+            ],
+            cols: 80,
+            rows: 24,
+        }
+    };
+
+    first.send(&start_with_descendant("task778-concurrent-a-ready"));
+    assert_eq!(
+        read_event_with_code(&mut events.reader, AGENT_SPAWN_GATE_ENTER),
+        broker_pid
+    );
+    second.send(&start_with_descendant("task778-concurrent-b-ready"));
+    assert_eq!(
+        read_event_with_code(&mut events.reader, AGENT_SPAWN_LOCK_CONTENDED),
+        broker_pid,
+        "the second start must wait at the broker-wide spawn lock"
+    );
+
+    gate.release(1);
+    assert_eq!(
+        read_event_with_code(&mut events.reader, AGENT_SPAWN_GATE_ENTER),
+        broker_pid
+    );
+    gate.release(1);
+
+    let (_, first_child_pid) = match first.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected first pty-started, got {other:?}"),
+    };
+    let (_, second_child_pid) = match second.recv() {
+        Message::PtyStarted {
+            session_id,
+            child_pid,
+            ..
+        } => (session_id, child_pid),
+        other => panic!("expected second pty-started, got {other:?}"),
+    };
+    recv_agent_bytes(&mut first, b"task778-concurrent-a-ready\n");
+    recv_agent_bytes(&mut second, b"task778-concurrent-b-ready\n");
+
+    assert_eq!(unsafe { libc::kill(broker_pid, libc::SIGKILL) }, 0);
+    drop(first.input);
+    drop(second.input);
+    assert!(wait_child(&mut first.child, "concurrent first frontend").success());
+    assert!(wait_child(&mut second.child, "concurrent second frontend").success());
+    wait_process_group_gone(first_child_pid);
+    wait_process_group_gone(second_child_pid);
+
+    // A replacement broker must be able to remove the stale listener and bind
+    // the same path; its normal idle shutdown then removes the socket entry.
+    Frontend::connect(&runtime.0).close();
     wait_socket_gone(&runtime.socket());
 }
 
@@ -1635,6 +2008,8 @@ const SHUTDOWN_LOCK_ACQUIRED: u8 = b'S';
 const PTY_START_DISPATCHED: u8 = b'T';
 const PTY_STARTED_PENDING: u8 = b'P';
 const PTY_STARTED_WRITING: u8 = b'G';
+const AGENT_SPAWN_GATE_ENTER: u8 = b'F';
+const AGENT_SPAWN_LOCK_CONTENDED: u8 = b'f';
 const PTY_START_ACK_OK: u8 = b'C';
 const PTY_START_ACK_REJECT: u8 = b'c';
 const PTY_DETACH_REAPED: u8 = b'D';
@@ -1825,7 +2200,7 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
         resolution: None,
         argv: vec![
             "-c".to_string(),
-            "sleep 600 & read -r _; printf ready; wait".to_string(),
+            "sleep 600 & child=$!; until kill -0 \"$child\"; do :; done; printf 'task778-descendant-ready\\n'; read -r _; wait \"$child\"".to_string(),
         ],
         cols: 80,
         rows: 24,
@@ -1838,12 +2213,9 @@ fn broker_death_kills_agent_descendants_and_never_rebuilds_an_old_session_id() {
         } => (session_id, child_pid),
         other => panic!("expected pty-started, got {other:?}"),
     };
-    // The shell starts sleep before read. This input/output rendezvous proves
-    // the descendant exists before the broker is killed.
-    first.send(&Message::PtyInput {
-        data_b64: "Z28K".to_string(),
-    });
-    first.recv_until(|message| matches!(message, Message::PtyOutput { .. }));
+    // The shell emits this marker only after `kill -0 "$!"` observes its
+    // background child; it is not terminal echo from a frontend input frame.
+    recv_agent_bytes(&mut first, b"task778-descendant-ready\n");
     first.send(&Message::PtyDetach);
     first.recv_until(|message| matches!(message, Message::PtyDetached));
 

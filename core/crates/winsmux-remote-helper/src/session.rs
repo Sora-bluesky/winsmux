@@ -17,7 +17,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::Duration;
 
@@ -29,6 +29,8 @@ const TEST_BROKER_EVENT_FD: &str = "WINSMUX_TEST_BROKER_EVENT_FD";
 const TEST_DISCONNECT_TRACE: &str = "WINSMUX_TEST_DISCONNECT_TRACE";
 const TEST_FRONTEND_GATE_FD: &str = "WINSMUX_TEST_FRONTEND_GATE_FD";
 const TEST_PTY_STARTED_GATE_FD: &str = "WINSMUX_TEST_PTY_STARTED_GATE_FD";
+const TEST_AGENT_SPAWN_GATE_FD: &str = "WINSMUX_TEST_AGENT_SPAWN_GATE_FD";
+const PROCESS_GROUP_GUARDIAN_DISARM: u8 = b'D';
 
 /// Keep the public process invocation as `serve --stdio`; on Linux this process is
 /// a transparent frontend for the per-euid broker.
@@ -182,173 +184,278 @@ fn relay_stdio(stream: UnixStream) -> io::Result<()> {
     let socket_fd = stream.as_raw_fd();
     set_nonblocking(socket_fd)?;
     set_nonblocking(libc::STDIN_FILENO)?;
-    let mut stdin_open = true;
-    let mut socket_open = true;
-    let mut stdin_pending = Vec::new();
+    set_nonblocking(libc::STDOUT_FILENO)?;
+    let mut state = RelayState::new();
     let mut buf = [0u8; 8192];
 
-    while stdin_open || socket_open || !stdin_pending.is_empty() {
-        relay_flush_complete_frames(socket_fd, &mut stdin_pending)?;
+    loop {
+        state.queue_complete_stdin_frame()?;
+        if state.stdin == RelayStdinState::EofTruncated {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "truncated stdin relay frame",
+            ));
+        }
+        if state.stdin == RelayStdinState::EofClean
+            && matches!(state.to_socket, RelaySocketTx::Collecting)
+        {
+            stream.shutdown(std::net::Shutdown::Write)?;
+            state.to_socket = RelaySocketTx::Closed;
+        }
+        if state.socket_rx == RelaySocketRxState::Eof
+            && matches!(state.to_stdout, RelayStdoutTx::Empty)
+        {
+            return Ok(());
+        }
 
         let mut poll_fds = [
             libc::pollfd {
-                fd: libc::STDIN_FILENO,
-                events: if stdin_open { libc::POLLIN } else { 0 },
+                fd: if state.wants_stdin_read() {
+                    libc::STDIN_FILENO
+                } else {
+                    -1
+                },
+                events: libc::POLLIN,
                 revents: 0,
             },
             libc::pollfd {
-                fd: socket_fd,
-                events: if socket_open { libc::POLLIN } else { 0 },
+                fd: if state.socket_events() != 0 {
+                    socket_fd
+                } else {
+                    -1
+                },
+                events: state.socket_events(),
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if matches!(state.to_stdout, RelayStdoutTx::Queued { .. }) {
+                    libc::STDOUT_FILENO
+                } else {
+                    -1
+                },
+                events: libc::POLLOUT,
                 revents: 0,
             },
         ];
-        if stdin_pending.is_empty() && (stdin_open || socket_open) {
-            if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) } < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error);
+        if unsafe { libc::poll(poll_fds.as_mut_ptr(), poll_fds.len() as _, -1) } < 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
             }
-        } else if !stdin_pending.is_empty() {
-            // A partial frame is buffered; keep draining stdin without stalling on poll.
-            poll_fds[0].events = if stdin_open { libc::POLLIN } else { 0 };
-            poll_fds[1].events = 0;
-            if stdin_open
-                && unsafe { libc::poll(poll_fds.as_mut_ptr(), 1, 0) } < 0
-                && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
-            {
-                return Err(io::Error::last_os_error());
-            }
-        } else {
-            break;
-        }
-
-        if stdin_open && poll_fds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
-            match relay_append_stdin(&mut stdin_pending, &mut buf) {
-                Ok(true) => {}
-                Ok(false) => {
-                    stdin_open = false;
-                    relay_flush_complete_frames(socket_fd, &mut stdin_pending)?;
-                    let _ = stream.shutdown(std::net::Shutdown::Write);
-                }
-                Err(error) => return Err(error),
-            }
-        }
-
-        if socket_open && poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0
-        {
-            match relay_read_fd(libc::STDOUT_FILENO, socket_fd, &mut buf) {
-                Ok(0) => socket_open = false,
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error),
-            }
-        }
-    }
-    Ok(())
-}
-
-fn relay_append_stdin(pending: &mut Vec<u8>, buf: &mut [u8]) -> io::Result<bool> {
-    loop {
-        let read = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), buf.len()) };
-        if read == 0 {
-            return Ok(false);
-        }
-        if read > 0 {
-            pending.extend_from_slice(&buf[..read as usize]);
-            return Ok(true);
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EAGAIN) || error.kind() == io::ErrorKind::WouldBlock {
-            return Ok(true);
-        }
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        return Err(error);
-    }
-}
-
-fn relay_flush_complete_frames(socket_fd: RawFd, pending: &mut Vec<u8>) -> io::Result<()> {
-    loop {
-        if pending.len() < PREFIX_LEN {
-            return Ok(());
-        }
-        let declared = u32::from_be_bytes(
-            pending[..PREFIX_LEN]
-                .try_into()
-                .expect("prefix slice length"),
-        );
-        if declared > MAX_FRAME_LEN {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "stdin relay frame exceeds MAX_FRAME_LEN",
-            ));
-        }
-        let frame_len = PREFIX_LEN + declared as usize;
-        if pending.len() < frame_len {
-            return Ok(());
-        }
-        relay_write_all_poll(socket_fd, &pending[..frame_len])?;
-        pending.drain(..frame_len);
-    }
-}
-
-fn relay_read_fd(dst: RawFd, src: RawFd, buf: &mut [u8]) -> io::Result<usize> {
-    loop {
-        let read = unsafe { libc::read(src, buf.as_mut_ptr().cast(), buf.len()) };
-        if read == 0 {
-            return Ok(0);
-        }
-        if read > 0 {
-            relay_write_all_poll(dst, &buf[..read as usize])?;
-            return Ok(read as usize);
-        }
-        let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EAGAIN) || error.kind() == io::ErrorKind::WouldBlock {
             return Err(error);
         }
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
+
+        relay_reject_poll_error("stdin", poll_fds[0].revents)?;
+        relay_reject_poll_error("socket", poll_fds[1].revents)?;
+        relay_reject_poll_error("stdout", poll_fds[2].revents)?;
+
+        if poll_fds[2].revents & libc::POLLOUT != 0 {
+            if let RelayStdoutTx::Queued { bytes, offset } = &mut state.to_stdout {
+                if relay_write_once(libc::STDOUT_FILENO, bytes, offset)? {
+                    state.to_stdout = RelayStdoutTx::Empty;
+                }
+            }
         }
-        return Err(error);
+
+        if poll_fds[1].revents & (libc::POLLIN | libc::POLLHUP) != 0
+            && matches!(state.to_stdout, RelayStdoutTx::Empty)
+        {
+            match relay_read_once(socket_fd, &mut buf)? {
+                RelayRead::Data(bytes) => {
+                    state.to_stdout = RelayStdoutTx::Queued { bytes, offset: 0 };
+                }
+                RelayRead::Eof => state.socket_rx = RelaySocketRxState::Eof,
+                RelayRead::Retry => {}
+            }
+        }
+
+        if state.socket_rx == RelaySocketRxState::Open && poll_fds[1].revents & libc::POLLOUT != 0 {
+            if let RelaySocketTx::Queued { bytes, offset } = &mut state.to_socket {
+                if relay_write_once(socket_fd, bytes, offset)? {
+                    state.to_socket = RelaySocketTx::Collecting;
+                }
+            }
+        }
+
+        if poll_fds[0].revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+            state.read_stdin_once(&mut buf)?;
+        }
     }
 }
 
-fn relay_write_all_poll(fd: RawFd, mut bytes: &[u8]) -> io::Result<()> {
-    while !bytes.is_empty() {
-        let written = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len()) };
-        if written > 0 {
-            bytes = &bytes[written as usize..];
-            continue;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RelayStdinState {
+    Open,
+    EofClean,
+    EofTruncated,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RelaySocketRxState {
+    Open,
+    Eof,
+}
+
+enum RelaySocketTx {
+    Collecting,
+    Queued { bytes: Vec<u8>, offset: usize },
+    Closed,
+}
+
+enum RelayStdoutTx {
+    Empty,
+    Queued { bytes: Vec<u8>, offset: usize },
+}
+
+struct RelayState {
+    stdin: RelayStdinState,
+    socket_rx: RelaySocketRxState,
+    stdin_frame: Vec<u8>,
+    to_socket: RelaySocketTx,
+    to_stdout: RelayStdoutTx,
+}
+
+impl RelayState {
+    fn new() -> Self {
+        Self {
+            stdin: RelayStdinState::Open,
+            socket_rx: RelaySocketRxState::Open,
+            stdin_frame: Vec::with_capacity(PREFIX_LEN),
+            to_socket: RelaySocketTx::Collecting,
+            to_stdout: RelayStdoutTx::Empty,
+        }
+    }
+
+    fn wants_stdin_read(&self) -> bool {
+        self.stdin == RelayStdinState::Open && matches!(self.to_socket, RelaySocketTx::Collecting)
+    }
+
+    fn socket_events(&self) -> libc::c_short {
+        if self.socket_rx == RelaySocketRxState::Eof {
+            return 0;
+        }
+        let mut events = 0;
+        if matches!(self.to_stdout, RelayStdoutTx::Empty) {
+            events |= libc::POLLIN;
+        }
+        if matches!(self.to_socket, RelaySocketTx::Queued { .. }) {
+            events |= libc::POLLOUT;
+        }
+        events
+    }
+
+    fn queue_complete_stdin_frame(&mut self) -> io::Result<()> {
+        if !matches!(self.to_socket, RelaySocketTx::Collecting)
+            || self.stdin_frame.len() < PREFIX_LEN
+        {
+            return Ok(());
+        }
+        let frame_len = relay_stdin_frame_len(&self.stdin_frame)?;
+        if self.stdin_frame.len() == frame_len {
+            let bytes = mem::take(&mut self.stdin_frame);
+            self.to_socket = RelaySocketTx::Queued { bytes, offset: 0 };
+        }
+        Ok(())
+    }
+
+    fn read_stdin_once(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        let frame_len = relay_stdin_frame_len(&self.stdin_frame)?;
+        let remaining = frame_len - self.stdin_frame.len();
+        let limit = remaining.min(buf.len());
+        let read = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr().cast(), limit) };
+        if read > 0 {
+            self.stdin_frame.extend_from_slice(&buf[..read as usize]);
+            return Ok(());
+        }
+        if read == 0 {
+            self.stdin = if self.stdin_frame.is_empty() {
+                RelayStdinState::EofClean
+            } else {
+                RelayStdinState::EofTruncated
+            };
+            return Ok(());
         }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EAGAIN) || error.kind() == io::ErrorKind::WouldBlock {
-            let mut poll_fd = libc::pollfd {
-                fd,
-                events: libc::POLLOUT,
-                revents: 0,
-            };
-            loop {
-                let result = unsafe { libc::poll(&mut poll_fd, 1, -1) };
-                if result > 0 {
-                    break;
-                }
-                if result == 0 {
-                    continue;
-                }
-                let poll_err = io::Error::last_os_error();
-                if poll_err.kind() != io::ErrorKind::Interrupted {
-                    return Err(poll_err);
-                }
-            }
-            continue;
+        if relay_retryable(&error) {
+            return Ok(());
         }
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        return Err(error);
+        Err(error)
+    }
+}
+
+fn relay_stdin_frame_len(frame: &[u8]) -> io::Result<usize> {
+    if frame.len() < PREFIX_LEN {
+        return Ok(PREFIX_LEN);
+    }
+    let declared = u32::from_be_bytes(frame[..PREFIX_LEN].try_into().expect("prefix slice length"));
+    if declared > MAX_FRAME_LEN {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stdin relay frame exceeds MAX_FRAME_LEN",
+        ));
+    }
+    Ok(PREFIX_LEN + declared as usize)
+}
+
+enum RelayRead {
+    Data(Vec<u8>),
+    Eof,
+    Retry,
+}
+
+fn relay_read_once(fd: RawFd, buf: &mut [u8]) -> io::Result<RelayRead> {
+    let read = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    if read > 0 {
+        return Ok(RelayRead::Data(buf[..read as usize].to_vec()));
+    }
+    if read == 0 {
+        return Ok(RelayRead::Eof);
+    }
+    let error = io::Error::last_os_error();
+    if relay_retryable(&error) {
+        return Ok(RelayRead::Retry);
+    }
+    Err(error)
+}
+
+fn relay_write_once(fd: RawFd, bytes: &[u8], offset: &mut usize) -> io::Result<bool> {
+    let pending = &bytes[*offset..];
+    let written = unsafe { libc::write(fd, pending.as_ptr().cast(), pending.len()) };
+    if written > 0 {
+        *offset += written as usize;
+        return Ok(*offset == bytes.len());
+    }
+    if written == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "relay write made no progress",
+        ));
+    }
+    let error = io::Error::last_os_error();
+    if relay_retryable(&error) {
+        return Ok(false);
+    }
+    Err(error)
+}
+
+fn relay_retryable(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::Interrupted
+        || error.kind() == io::ErrorKind::WouldBlock
+        || error.raw_os_error() == Some(libc::EAGAIN)
+}
+
+fn relay_reject_poll_error(label: &str, revents: libc::c_short) -> io::Result<()> {
+    if revents & libc::POLLNVAL != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("relay {label} poll reported POLLNVAL"),
+        ));
+    }
+    if revents & libc::POLLERR != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("relay {label} poll reported POLLERR"),
+        ));
     }
     Ok(())
 }
@@ -759,7 +866,13 @@ fn broker_main(paths: &RuntimePaths, initial: UnixStream, ack_fd: RawFd) -> io::
     }
     let hooks = TestHooks::from_environment();
     let pty_started_gate = PtyStartedTestGate::from_environment();
-    let state = Arc::new(BrokerState::new(wake[1], hooks, pty_started_gate));
+    let agent_spawn_gate = AgentSpawnTestGate::from_environment();
+    let state = Arc::new(BrokerState::new(
+        wake[1],
+        hooks,
+        pty_started_gate,
+        agent_spawn_gate,
+    ));
     hooks.emit(b'R');
     write_ack(ack_fd, 0)?;
     close_fd(ack_fd);
@@ -804,6 +917,11 @@ struct TestHooks {
 
 #[derive(Clone, Copy)]
 struct PtyStartedTestGate {
+    fd: Option<RawFd>,
+}
+
+#[derive(Clone, Copy)]
+struct AgentSpawnTestGate {
     fd: Option<RawFd>,
 }
 
@@ -932,12 +1050,49 @@ impl PtyStartedTestGate {
     }
 }
 
+impl AgentSpawnTestGate {
+    fn from_environment() -> Self {
+        #[cfg(debug_assertions)]
+        {
+            let fd = env::var(TEST_AGENT_SPAWN_GATE_FD)
+                .ok()
+                .and_then(|value| value.parse::<RawFd>().ok())
+                .filter(|fd| unsafe { libc::fcntl(*fd, libc::F_GETFD) } >= 0);
+            if let Some(fd) = fd {
+                let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+                if flags >= 0 {
+                    unsafe {
+                        libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+                    }
+                }
+            }
+            return Self { fd };
+        }
+        #[cfg(not(debug_assertions))]
+        Self { fd: None }
+    }
+
+    fn enabled(self) -> bool {
+        self.fd.is_some()
+    }
+
+    fn wait_after_pipes_created(self, hooks: TestHooks) -> io::Result<()> {
+        let Some(fd) = self.fd else {
+            return Ok(());
+        };
+        hooks.emit(b'F');
+        read_one_byte(fd).map(|_| ())
+    }
+}
+
 struct BrokerState {
     inner: Mutex<BrokerInner>,
+    agent_spawn: Mutex<()>,
     write_phase_changed: Condvar,
     wake_write: RawFd,
     hooks: TestHooks,
     pty_started_gate: PtyStartedTestGate,
+    agent_spawn_gate: AgentSpawnTestGate,
 }
 
 struct BrokerInner {
@@ -951,8 +1106,6 @@ struct Session {
     child_pid: u32,
     pgid: libc::pid_t,
     master: Arc<Mutex<File>>,
-    // Extra master dup keeps the PTY slave open while the row outlives the controller.
-    _master_lease: File,
     controller: Option<Controller>,
     agent_exited: bool,
     write_phase: WritePhase,
@@ -972,9 +1125,19 @@ enum WritePhase {
 
 struct ProcessGroupGuardian {
     pid: libc::pid_t,
-    // Keeping this write end open is the broker's process-group ownership
-    // lease. EOF tells the guardian to kill the Agent group.
-    _liveness: File,
+    // This is a one-to-one broker-to-guardian cleanup channel. EOF means the
+    // broker was lost; the explicit byte means the broker reaped the group.
+    liveness: Mutex<Option<File>>,
+}
+
+impl ProcessGroupGuardian {
+    fn disarm(&self) -> io::Result<()> {
+        let liveness = lock_mutex(&self.liveness).take();
+        let Some(liveness) = liveness else {
+            return Ok(());
+        };
+        write_all_fd(liveness.as_raw_fd(), &[PROCESS_GROUP_GUARDIAN_DISARM])
+    }
 }
 
 struct Controller {
@@ -996,7 +1159,12 @@ struct ExitNotification {
 }
 
 impl BrokerState {
-    fn new(wake_write: RawFd, hooks: TestHooks, pty_started_gate: PtyStartedTestGate) -> Self {
+    fn new(
+        wake_write: RawFd,
+        hooks: TestHooks,
+        pty_started_gate: PtyStartedTestGate,
+        agent_spawn_gate: AgentSpawnTestGate,
+    ) -> Self {
         Self {
             inner: Mutex::new(BrokerInner {
                 frontends: 1,
@@ -1004,11 +1172,35 @@ impl BrokerState {
                 sessions: HashMap::new(),
                 shutdown_lock_waiter: false,
             }),
+            agent_spawn: Mutex::new(()),
             write_phase_changed: Condvar::new(),
             wake_write,
             hooks,
             pty_started_gate,
+            agent_spawn_gate,
         }
+    }
+
+    fn spawn_agent(
+        &self,
+        executable: &str,
+        argv: &[String],
+        cols: u16,
+        rows: u16,
+    ) -> io::Result<SpawnedAgent> {
+        let _spawn = match self.agent_spawn.try_lock() {
+            Ok(guard) => guard,
+            Err(TryLockError::WouldBlock) => {
+                if self.agent_spawn_gate.enabled() {
+                    self.hooks.emit(b'f');
+                }
+                lock_mutex(&self.agent_spawn)
+            }
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        spawn_agent(executable, argv, cols, rows, || {
+            self.agent_spawn_gate.wait_after_pipes_created(self.hooks)
+        })
     }
 
     fn initial_frontend_id(&self) -> u64 {
@@ -1062,8 +1254,10 @@ impl BrokerState {
         }
         if disconnect_trace_enabled() {
             let inner = lock_mutex(&self.inner);
-            self.hooks
-                .emit_subject(b'X', i32::try_from(inner.sessions.len()).unwrap_or(i32::MAX));
+            self.hooks.emit_subject(
+                b'X',
+                i32::try_from(inner.sessions.len()).unwrap_or(i32::MAX),
+            );
             for session in inner.sessions.values() {
                 if session.start_confirmed {
                     self.hooks.emit_agent(b'Y', session.pgid);
@@ -1459,16 +1653,12 @@ fn dispatch_message(
                 let mut inner = lock_mutex(&state.inner);
                 match inner.sessions.get_mut(&session_id) {
                     None => Err((RejectCode::SessionNotFound, "session does not exist", 1)),
-                    Some(session) if session.agent_exited => Err((
-                        RejectCode::SessionNotFound,
-                        "Agent has exited",
-                        2,
-                    )),
-                    Some(session) if session.write_phase != WritePhase::Written => Err((
-                        RejectCode::SessionNotFound,
-                        "Agent has exited",
-                        3,
-                    )),
+                    Some(session) if session.agent_exited => {
+                        Err((RejectCode::SessionNotFound, "Agent has exited", 2))
+                    }
+                    Some(session) if session.write_phase != WritePhase::Written => {
+                        Err((RejectCode::SessionNotFound, "Agent has exited", 3))
+                    }
                     Some(session)
                         if controlled_session.as_deref() != Some(session_id.as_str())
                             || !session.controller.as_ref().is_some_and(|controller| {
@@ -1579,7 +1769,6 @@ fn dispatch_message(
                         {
                             session.controller = None;
                         }
-                        lock_pty_slave_against_hangup(&session.master);
                     }
                     None
                 }
@@ -1722,7 +1911,7 @@ fn start_session(
         );
     }
 
-    let agent = match spawn_agent(&executable, &argv, cols, rows) {
+    let agent = match state.spawn_agent(&executable, &argv, cols, rows) {
         Ok(agent) => agent,
         Err(error) => return send_reject(writer, RejectCode::SpawnFailed, error.to_string()),
     };
@@ -1748,19 +1937,6 @@ fn start_session(
         guardian,
     } = agent;
     let guardian_pid = guardian.pid;
-    let master_lease = match dup_pty_master_lease(&master) {
-        Ok(lease) => lease,
-        Err(error) => {
-            cleanup_unregistered_agent(SpawnedAgent {
-                pid,
-                pgid,
-                master,
-                reader,
-                guardian,
-            })?;
-            return Err(error);
-        }
-    };
     let completion = Arc::new(Completion::new());
     {
         let mut inner = lock_mutex(&state.inner);
@@ -1770,7 +1946,6 @@ fn start_session(
                 child_pid,
                 pgid,
                 master: master.clone(),
-                _master_lease: master_lease,
                 controller: Some(Controller {
                     frontend_id,
                     writer: writer.clone(),
@@ -1793,14 +1968,21 @@ fn start_session(
         session_id.clone(),
         pid,
         pgid,
-        guardian,
+        guardian.clone(),
         completion.clone(),
     );
     if let Err(error) = watcher {
         let cleanup =
             stop_and_reap_without_watcher(pid, pgid).map_err(|cleanup| cleanup.to_string());
         lock_mutex(&state.inner).sessions.remove(&session_id);
-        let guardian_cleanup = wait_pid(guardian_pid).map_err(|cleanup| cleanup.to_string());
+        let guardian_cleanup = if cleanup.is_ok() {
+            disarm_and_wait_guardian(&guardian, guardian_pid)
+        } else {
+            // A group that was not proven gone must keep its guardian armed.
+            drop(guardian);
+            wait_pid(guardian_pid)
+        }
+        .map_err(|cleanup| cleanup.to_string());
         completion.finish(cleanup.and(guardian_cleanup));
         return send_reject(writer, RejectCode::SpawnFailed, error.to_string());
     }
@@ -1946,9 +2128,15 @@ fn cleanup_unregistered_agent(agent: SpawnedAgent) -> io::Result<()> {
     let guardian_pid = guardian.pid;
     drop(reader);
     drop(master);
-    drop(guardian);
     let agent_cleanup = stop_and_reap_without_watcher(pid, pgid);
-    let guardian_cleanup = wait_pid(guardian_pid);
+    let guardian_cleanup = if agent_cleanup.is_ok() {
+        disarm_and_wait_guardian(&guardian, guardian_pid)
+    } else {
+        // Do not disarm a group that was not proven gone: EOF keeps the
+        // guardian responsible for SIGKILL if the broker cannot finish cleanup.
+        drop(guardian);
+        wait_pid(guardian_pid)
+    };
     agent_cleanup.and(guardian_cleanup)
 }
 
@@ -1963,27 +2151,6 @@ fn activate_controller(state: &BrokerState, session_id: &str, frontend_id: u64) 
         controller.active = true;
     }
 }
-
-fn dup_pty_master_lease(master: &Arc<Mutex<File>>) -> io::Result<File> {
-    let fd = lock_mutex(master).as_raw_fd();
-    let lease_fd = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
-    if lease_fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(lease_fd) })
-}
-
-#[cfg(target_os = "linux")]
-fn lock_pty_slave_against_hangup(master: &Arc<Mutex<File>>) {
-    let lock = 1i32;
-    let master_fd = lock_mutex(master).as_raw_fd();
-    unsafe {
-        libc::ioctl(master_fd, libc::TIOCSPTLCK, &lock as *const i32);
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn lock_pty_slave_against_hangup(_master: &Arc<Mutex<File>>) {}
 
 fn controller_master(
     state: &BrokerState,
@@ -2064,12 +2231,16 @@ struct SpawnedAgent {
     guardian: Arc<ProcessGroupGuardian>,
 }
 
-fn spawn_agent(
+fn spawn_agent<F>(
     executable: &str,
     argv: &[String],
     cols: u16,
     rows: u16,
-) -> io::Result<SpawnedAgent> {
+    after_pipes_created: F,
+) -> io::Result<SpawnedAgent>
+where
+    F: FnOnce() -> io::Result<()>,
+{
     let executable = CString::new(executable.as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "executable contains NUL"))?;
     let mut arguments = Vec::with_capacity(argv.len() + 1);
@@ -2126,7 +2297,20 @@ fn spawn_agent(
         return Err(error);
     }
 
-    let broker_pid = unsafe { libc::getpid() };
+    if let Err(error) = after_pipes_created() {
+        close_fd(master);
+        close_fd(slave);
+        for fd in exec_status
+            .into_iter()
+            .chain(agent_release)
+            .chain(guardian_liveness)
+            .chain(guardian_ack)
+        {
+            close_fd(fd);
+        }
+        return Err(error);
+    }
+
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         let error = io::Error::last_os_error();
@@ -2150,14 +2334,7 @@ fn spawn_agent(
         close_fd(guardian_liveness[1]);
         close_fd(guardian_ack[0]);
         close_fd(guardian_ack[1]);
-        let mut failed = unsafe {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
-                || libc::getppid() != broker_pid
-                || libc::setpgid(0, 0) != 0
-        };
-        unsafe {
-            libc::signal(libc::SIGHUP, libc::SIG_IGN);
-        }
+        let mut failed = unsafe { libc::setpgid(0, 0) != 0 };
         for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
             if unsafe { libc::dup2(slave, target) } < 0 {
                 failed = true;
@@ -2235,15 +2412,17 @@ fn spawn_agent(
 
     close_fd(guardian_liveness[0]);
     close_fd(guardian_ack[1]);
+    let guardian = ProcessGroupGuardian {
+        pid: guardian_pid,
+        liveness: Mutex::new(Some(unsafe { File::from_raw_fd(guardian_liveness[1]) })),
+    };
     let guardian_ready = read_ack(guardian_ack[0]);
     close_fd(guardian_ack[0]);
     if !matches!(guardian_ready, Ok(0)) {
         close_fd(agent_release[1]);
-        close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        let _ = wait_pid(pid);
-        let _ = wait_pid(guardian_pid);
+        cleanup_guarded_agent(pid, pid, guardian);
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
             "process-group guardian failed before Agent execve",
@@ -2251,18 +2430,12 @@ fn spawn_agent(
     }
     if let Err(error) = write_ack(agent_release[1], 0) {
         close_fd(agent_release[1]);
-        close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        let _ = wait_pid(pid);
-        let _ = wait_pid(guardian_pid);
+        cleanup_guarded_agent(pid, pid, guardian);
         return Err(error);
     }
     close_fd(agent_release[1]);
-    let guardian = ProcessGroupGuardian {
-        pid: guardian_pid,
-        _liveness: unsafe { File::from_raw_fd(guardian_liveness[1]) },
-    };
 
     let mut status = [0u8; 1];
     let status_read = loop {
@@ -2306,36 +2479,47 @@ fn spawn_agent(
 
 fn run_process_group_guardian(
     liveness_fd: RawFd,
-    _agent_pgid: libc::pid_t,
+    agent_pgid: libc::pid_t,
     ack_fd: RawFd,
 ) -> io::Result<()> {
     write_ack(ack_fd, 0)?;
-    loop {
-        let mut byte = 0u8;
-        let read = unsafe { libc::read(liveness_fd, (&mut byte as *mut u8).cast(), 1) };
-        if read == 0 {
-            break;
+    match read_one_byte(liveness_fd) {
+        // The broker explicitly proves the group has already been stopped and
+        // reaped before sending this byte, so the guardian exits without a kill.
+        Ok(_) => Ok(()),
+        // EOF is intentionally reserved for broker process loss. Future
+        // guardians may inherit this write FD, so normal cleanup must not wait
+        // for EOF.
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {
+            signal_process_group(agent_pgid, libc::SIGKILL)
         }
-        if read > 0 {
-            continue;
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
+        Err(error) => Err(error),
     }
-    // Session reap and PtyStop call request_process_group_stop explicitly.
-    // Do not SIGKILL here: a transient liveness EOF must not reap a confirmed
-    // detached row while the broker still holds the session.
-    Ok(())
 }
 
 fn cleanup_guarded_agent(pid: libc::pid_t, pgid: libc::pid_t, guardian: ProcessGroupGuardian) {
     let guardian_pid = guardian.pid;
-    drop(guardian);
-    let _ = request_process_group_stop(pgid);
-    let _ = wait_pid(pid);
-    let _ = wait_pid(guardian_pid);
+    let group_cleanup = stop_and_reap_without_watcher(pid, pgid);
+    let guardian_cleanup = if group_cleanup.is_ok() {
+        disarm_and_wait_guardian(&guardian, guardian_pid)
+    } else {
+        // This startup error did not prove the group gone. Closing the lease
+        // keeps the guardian on its abnormal EOF -> SIGKILL responsibility.
+        drop(guardian);
+        wait_pid(guardian_pid)
+    };
+    let _ = group_cleanup.and(guardian_cleanup);
+}
+
+fn disarm_and_wait_guardian(
+    guardian: &ProcessGroupGuardian,
+    guardian_pid: libc::pid_t,
+) -> io::Result<()> {
+    // Reap even when the write reports an error so no successful cleanup leaves
+    // a guardian zombie behind.
+    let disarm = guardian.disarm();
+    let guardian_wait = wait_pid(guardian_pid);
+    disarm.and(guardian_wait)
 }
 
 fn process_environment() -> io::Result<Vec<CString>> {
@@ -2393,8 +2577,16 @@ fn spawn_agent_watcher(
             }
             state.hooks.emit_agent(b'W', pgid);
             let guardian_pid = guardian.pid;
-            drop(guardian);
-            let guardian_result = wait_pid(guardian_pid).map_err(|error| error.to_string());
+            let guardian_result = if result.is_ok() {
+                disarm_and_wait_guardian(&guardian, guardian_pid)
+            } else {
+                // If the group cleanup failed, leave the guardian armed. Its
+                // EOF path remains the fail-closed SIGKILL owner rather than
+                // treating an unproven live group as normal cleanup.
+                drop(guardian);
+                wait_pid(guardian_pid)
+            }
+            .map_err(|error| error.to_string());
             completion.finish(result.and(guardian_result));
             state.wake();
         })?;
@@ -2502,7 +2694,12 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> io::Result<()
     }
 }
 
-fn wait_for_agent_group<F>(pid: libc::pid_t, pgid: libc::pid_t, hooks: TestHooks, agent_exited: F) -> io::Result<()>
+fn wait_for_agent_group<F>(
+    pid: libc::pid_t,
+    pgid: libc::pid_t,
+    hooks: TestHooks,
+    agent_exited: F,
+) -> io::Result<()>
 where
     F: FnOnce(),
 {
