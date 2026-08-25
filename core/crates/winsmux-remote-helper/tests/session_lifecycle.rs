@@ -1357,7 +1357,7 @@ fn acknowledged_detach_and_close_remains_attachable() {
         Some(events.writer),
         FrontendOptions::lifecycle(),
     );
-    let (session_id, child_pid) = start_sleep(&mut first);
+    let (session_id, child_pid) = start_cat(&mut first);
     acknowledge_start(&mut first, &session_id);
     assert_ack_ok(&mut events.reader, child_pid as i32);
     assert_eq!(
