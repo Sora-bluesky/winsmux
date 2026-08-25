@@ -1347,6 +1347,11 @@ fn acknowledged_detach_and_close_remains_attachable() {
     acknowledge_start(&mut first, &session_id);
     first.send(&Message::PtyDetach);
     assert_eq!(first.recv(), Message::PtyDetached);
+    assert_eq!(
+        unsafe { libc::kill(child_pid as i32, 0) },
+        0,
+        "acknowledged detach must not reap the agent process group"
+    );
     first.close();
 
     let mut second = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
