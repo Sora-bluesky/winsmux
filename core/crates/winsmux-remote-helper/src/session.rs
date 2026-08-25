@@ -619,10 +619,10 @@ fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<()> {
     loop {
         let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
         if result > 0 {
-            if poll_fd.revents & (libc::POLLIN | libc::POLLRDHUP) != 0 {
+            if poll_fd.revents & (libc::POLLIN | libc::POLLRDHUP | libc::POLLHUP) != 0 {
                 return Ok(());
             }
-            if poll_fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+            if poll_fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "pipe closed before readiness",
