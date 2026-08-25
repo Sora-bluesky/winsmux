@@ -11,6 +11,8 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use winsmux_remote_helper::{
@@ -20,14 +22,22 @@ use winsmux_remote_helper::{
 
 struct RuntimeDir(PathBuf);
 
+static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(0);
+
 impl RuntimeDir {
     fn new(label: &str) -> Self {
-        let nonce = SystemTime::now()
+        let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let nonce = (nanos as u64) ^ ((nanos >> u64::BITS) as u64);
+        Self::new_with_nonce(label, nonce)
+    }
+
+    fn new_with_nonce(_label: &str, nonce: u64) -> Self {
+        let id = NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "winsmux-task774-{label}-{}-{nonce}",
+            "winsmux-task774-{}-{nonce:x}-{id:x}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();
@@ -46,6 +56,45 @@ impl RuntimeDir {
 impl Drop for RuntimeDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn runtime_dir_fixture_preserves_parallel_path_contract() {
+    const PARALLEL_SAMPLE_SIZE: usize = 32;
+    let barrier = Arc::new(Barrier::new(PARALLEL_SAMPLE_SIZE));
+    let label = "long-runtime-label-".repeat(64);
+    let creators: Vec<_> = (0..PARALLEL_SAMPLE_SIZE)
+        .map(|_| {
+            let barrier = Arc::clone(&barrier);
+            let label = label.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                RuntimeDir::new_with_nonce(&label, 0)
+            })
+        })
+        .collect();
+    let runtimes: Vec<_> = creators
+        .into_iter()
+        .map(|creator| creator.join().unwrap())
+        .collect();
+
+    let mut paths = std::collections::HashSet::new();
+    for runtime in &runtimes {
+        assert!(
+            paths.insert(runtime.0.clone()),
+            "parallel RuntimeDir paths must be unique"
+        );
+        assert!(
+            runtime.socket().as_os_str().as_bytes().len() <= 107,
+            "socket path exceeds Linux sockaddr_un.sun_path"
+        );
+    }
+
+    for runtime in runtimes {
+        let path = runtime.0.clone();
+        drop(runtime);
+        assert!(!path.exists(), "RuntimeDir drop must remove its directory");
     }
 }
 
