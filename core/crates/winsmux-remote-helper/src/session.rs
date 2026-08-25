@@ -727,9 +727,14 @@ fn close_fd(fd: RawFd) {
 }
 
 fn wait_pid(pid: libc::pid_t) -> io::Result<()> {
+    wait_pid_status(pid).map(|_| ())
+}
+
+fn wait_pid_status(pid: libc::pid_t) -> io::Result<i32> {
+    let mut status = 0;
     loop {
-        if unsafe { libc::waitpid(pid, ptr::null_mut(), 0) } == pid {
-            return Ok(());
+        if unsafe { libc::waitpid(pid, &mut status, 0) } == pid {
+            return Ok(status);
         }
         let error = io::Error::last_os_error();
         if error.kind() != io::ErrorKind::Interrupted {
@@ -1574,6 +1579,7 @@ fn dispatch_message(
                         {
                             session.controller = None;
                         }
+                        lock_pty_slave_against_hangup(&session.master);
                     }
                     None
                 }
@@ -1966,6 +1972,18 @@ fn dup_pty_master_lease(master: &Arc<Mutex<File>>) -> io::Result<File> {
     }
     Ok(unsafe { File::from_raw_fd(lease_fd) })
 }
+
+#[cfg(target_os = "linux")]
+fn lock_pty_slave_against_hangup(master: &Arc<Mutex<File>>) {
+    let lock = 1i32;
+    let master_fd = lock_mutex(master).as_raw_fd();
+    unsafe {
+        libc::ioctl(master_fd, libc::TIOCSPTLCK, &lock as *const i32);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn lock_pty_slave_against_hangup(_master: &Arc<Mutex<File>>) {}
 
 fn controller_master(
     state: &BrokerState,
@@ -2362,7 +2380,7 @@ fn spawn_agent_watcher(
         .spawn(move || {
             let mut notification = None;
             let mut classified = false;
-            let result = wait_for_agent_group(pid, pgid, || {
+            let result = wait_for_agent_group(pid, pgid, &state.hooks, || {
                 notification = state.remove_after_agent_exit(&session_id);
                 classified = true;
             })
@@ -2484,11 +2502,12 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> io::Result<()
     }
 }
 
-fn wait_for_agent_group<F>(pid: libc::pid_t, pgid: libc::pid_t, agent_exited: F) -> io::Result<()>
+fn wait_for_agent_group<F>(pid: libc::pid_t, pgid: libc::pid_t, hooks: TestHooks, agent_exited: F) -> io::Result<()>
 where
     F: FnOnce(),
 {
-    wait_pid(pid)?;
+    let status = wait_pid_status(pid)?;
+    hooks.emit_subject(b'e', status);
     agent_exited();
     request_process_group_stop(pgid)?;
     reap_process_group(pgid)?;

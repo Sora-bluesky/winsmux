@@ -1358,6 +1358,8 @@ fn acknowledged_detach_and_close_remains_attachable() {
         Some(events.writer),
         FrontendOptions::lifecycle(),
     );
+    let (code, broker_pid) = read_broker_event(&mut events.reader);
+    assert_eq!(code, BROKER_READY);
     let (session_id, child_pid) = start_cat(&mut first);
     acknowledge_start(&mut first, &session_id);
     assert_ack_ok(&mut events.reader, child_pid as i32);
@@ -1374,6 +1376,16 @@ fn acknowledged_detach_and_close_remains_attachable() {
         "agent must be alive after detach (no unconfirmed reap)"
     );
     first.close();
+    assert_eq!(
+        unsafe { libc::kill(broker_pid, 0) },
+        0,
+        "broker must survive frontend close"
+    );
+    assert_eq!(
+        unsafe { libc::kill(child_pid as i32, 0) },
+        0,
+        "agent must survive frontend close"
+    );
     // After detach the controller is cleared; disconnect should leave the row.
     // X = remaining session count, Y = confirmed pgid, k = disconnect reap.
     let deadline = Instant::now() + Duration::from_millis(500);
@@ -1381,6 +1393,9 @@ fn acknowledged_detach_and_close_remains_attachable() {
     while Instant::now() < deadline {
         if let Some((code, subject)) = try_read_broker_event(&mut events.reader) {
             eprintln!("# post-close-event code={} subject={}", code as char, subject);
+            if code == AGENT_EXIT_STATUS {
+                eprintln!("# agent-wait-status {}", format_wait_status(subject));
+            }
             if code == b'X' {
                 saw_x = Some(subject);
             }
@@ -1628,6 +1643,7 @@ const DISCONNECT_REAP: u8 = b'k';
 const AGENT_WATCHER_REMOVED: u8 = b'W';
 const SESSION_ROW_REMOVED: u8 = b'm';
 const PROCESS_GROUP_STOP: u8 = b'Q';
+const AGENT_EXIT_STATUS: u8 = b'e';
 
 #[test]
 fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
@@ -1877,6 +1893,17 @@ fn wait_child(child: &mut Child, what: &str) -> std::process::ExitStatus {
             }
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+fn format_wait_status(status: i32) -> String {
+    let status = status as libc::c_int;
+    if libc::WIFEXITED(status) != 0 {
+        format!("exit:{}", libc::WEXITSTATUS(status))
+    } else if libc::WIFSIGNALED(status) != 0 {
+        format!("signal:{}", libc::WTERMSIG(status))
+    } else {
+        format!("raw:{status}")
     }
 }
 
