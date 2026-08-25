@@ -2182,16 +2182,6 @@ fn spawn_agent(
 
     close_fd(guardian_liveness[0]);
     close_fd(guardian_ack[1]);
-    if let Err(error) = write_ack(agent_release[1], 0) {
-        close_fd(agent_release[1]);
-        close_fd(guardian_ack[0]);
-        close_fd(guardian_liveness[1]);
-        close_fd(exec_status[0]);
-        close_fd(master);
-        abandon_agent_fork(pid, pid, Some(guardian_pid));
-        return Err(error);
-    }
-    close_fd(agent_release[1]);
     let guardian_ready = match read_status_pipe(guardian_ack[0], 5_000) {
         Ok(Some(0)) => Ok(()),
         Ok(Some(_)) => Err(io::Error::new(
@@ -2205,18 +2195,23 @@ fn spawn_agent(
         Err(error) => Err(error),
     };
     close_fd(guardian_ack[0]);
-    if !guardian_ready.is_ok() {
+    if let Err(error) = guardian_ready {
+        close_fd(agent_release[1]);
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
         abandon_agent_fork(pid, pid, Some(guardian_pid));
-        return Err(guardian_ready.err().unwrap_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                "process-group guardian failed before Agent execve",
-            )
-        }));
+        return Err(error);
     }
+    if let Err(error) = write_ack(agent_release[1], 0) {
+        close_fd(agent_release[1]);
+        close_fd(guardian_liveness[1]);
+        close_fd(exec_status[0]);
+        close_fd(master);
+        abandon_agent_fork(pid, pid, Some(guardian_pid));
+        return Err(error);
+    }
+    close_fd(agent_release[1]);
     let guardian = ProcessGroupGuardian {
         pid: guardian_pid,
         _liveness: unsafe { File::from_raw_fd(guardian_liveness[1]) },
