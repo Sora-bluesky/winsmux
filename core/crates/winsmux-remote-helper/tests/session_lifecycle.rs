@@ -1327,35 +1327,8 @@ fn acknowledged_unsolicited_exit_pushes_and_same_connection_recovers() {
 #[test]
 fn acknowledged_detach_and_close_remains_attachable() {
     let runtime = RuntimeDir::new("lifecycle-acked-reattach");
-    let mut events = EventPipe::new();
-    let mut first = Frontend::connect_with_options(
-        &runtime.0,
-        Some(events.writer),
-        FrontendOptions::lifecycle(),
-    );
-    eprintln!("# pty-start send");
-    first.send(&Message::PtyStart {
-        executable: "/bin/cat".to_string(),
-        resolution: None,
-        argv: Vec::new(),
-        cols: 80,
-        rows: 24,
-    });
-    eprintln!("# waiting T");
-    read_event_with_code(&mut events.reader, PTY_START_DISPATCHED);
-    eprintln!("# got T");
-    eprintln!("# pty-start recv");
-    let (session_id, child_pid) = match first.recv() {
-        Message::PtyStarted {
-            session_id,
-            child_pid,
-            ..
-        } => (session_id, child_pid),
-        Message::Reject { code, detail, .. } => {
-            panic!("pty-start rejected after dispatch: {code:?} {detail}");
-        }
-        other => panic!("expected pty-started, got {other:?}"),
-    };
+    let mut first = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    let (session_id, child_pid) = start_cat(&mut first);
     acknowledge_start(&mut first, &session_id);
     first.send(&Message::PtyDetach);
     assert_eq!(first.recv(), Message::PtyDetached);
