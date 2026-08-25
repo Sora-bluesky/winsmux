@@ -833,6 +833,71 @@ fn close_fd(fd: RawFd) {
     }
 }
 
+fn guardian_fd_fallback_limit() -> io::Result<u32> {
+    let mut limits = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limits) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let finite_limit = [limits.rlim_cur, limits.rlim_max]
+        .into_iter()
+        .filter(|limit| *limit != libc::RLIM_INFINITY)
+        .max()
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "RLIMIT_NOFILE has no finite guardian fallback bound",
+            )
+        })?;
+    let raw_fd_limit = (libc::c_int::MAX as u64) + 1;
+    Ok(u32::try_from((finite_limit as u64).min(raw_fd_limit))
+        .expect("c_int descriptor limit fits u32"))
+}
+
+fn close_guardian_fds_except(first_keep: RawFd, second_keep: RawFd, fallback_limit: u32) -> bool {
+    if first_keep < 0 || second_keep < 0 {
+        return false;
+    }
+
+    let first_keep = first_keep as u32;
+    let second_keep = second_keep as u32;
+    let low_keep = first_keep.min(second_keep);
+    let high_keep = first_keep.max(second_keep);
+    let mut close_range_ok = true;
+    if low_keep > 0 {
+        close_range_ok &= close_fd_range(0, low_keep - 1);
+    }
+    if high_keep > low_keep + 1 {
+        close_range_ok &= close_fd_range(low_keep + 1, high_keep - 1);
+    }
+    close_range_ok &= close_fd_range(high_keep + 1, u32::MAX);
+    if close_range_ok {
+        return true;
+    }
+
+    let mut fd = 0;
+    while fd < fallback_limit {
+        if fd != first_keep && fd != second_keep {
+            let result = unsafe { libc::close(fd as RawFd) };
+            if result != 0 {
+                let errno = unsafe { *libc::__errno_location() };
+                if errno != libc::EBADF {
+                    return false;
+                }
+            }
+        }
+        fd += 1;
+    }
+    true
+}
+
+fn close_fd_range(first: u32, last: u32) -> bool {
+    unsafe { libc::syscall(libc::SYS_close_range, first, last, 0u32) == 0 }
+}
+
 fn wait_pid(pid: libc::pid_t) -> io::Result<()> {
     wait_pid_status(pid).map(|_| ())
 }
@@ -2259,6 +2324,7 @@ where
     let mut environment_pointers: Vec<*const libc::c_char> =
         environment.iter().map(|entry| entry.as_ptr()).collect();
     environment_pointers.push(ptr::null());
+    let guardian_fallback_limit = guardian_fd_fallback_limit()?;
 
     let size = libc::winsize {
         ws_row: rows,
@@ -2399,11 +2465,16 @@ where
         return Err(error);
     }
     if guardian_pid == 0 {
-        close_fd(master);
-        close_fd(exec_status[0]);
-        close_fd(agent_release[1]);
-        close_fd(guardian_liveness[1]);
-        close_fd(guardian_ack[0]);
+        if !close_guardian_fds_except(
+            guardian_liveness[0],
+            guardian_ack[1],
+            guardian_fallback_limit,
+        ) {
+            unsafe {
+                libc::write(guardian_ack[1], [1u8].as_ptr().cast(), 1);
+                libc::_exit(1);
+            }
+        }
         let result = run_process_group_guardian(guardian_liveness[0], pid, guardian_ack[1]);
         close_fd(guardian_liveness[0]);
         close_fd(guardian_ack[1]);

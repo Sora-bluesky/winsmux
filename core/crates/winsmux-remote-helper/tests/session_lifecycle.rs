@@ -1708,6 +1708,30 @@ fn acknowledged_detach_and_close_remains_attachable() {
 }
 
 #[test]
+fn guardian_does_not_retain_unrelated_frontend_socket() {
+    let runtime = RuntimeDir::new("guardian-fd");
+    let mut owner = Frontend::connect(&runtime.0);
+    let unrelated = Frontend::connect(&runtime.0);
+
+    // The guardian is forked after both broker-side frontend sockets exist.
+    // Closing the unrelated frontend can finish only if that guardian did not
+    // retain the broker's copy of its socket.
+    let (session_id, child_pid) = start_sleep(&mut owner);
+    unrelated.close();
+    assert_eq!(
+        unsafe { libc::kill(child_pid as i32, 0) },
+        0,
+        "closing an unrelated frontend must not stop the guarded agent"
+    );
+
+    owner.send(&Message::PtyStop { session_id });
+    assert_eq!(owner.recv(), Message::PtyStopped);
+    wait_process_group_gone(child_pid);
+    owner.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
 fn stopping_one_session_does_not_wait_for_another_guardian() {
     let runtime = RuntimeDir::new("two-session-guardian-disarm");
     let mut first = Frontend::connect(&runtime.0);
