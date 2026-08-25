@@ -335,6 +335,9 @@ fn acknowledge_start(frontend: &mut Frontend, session_id: &str) {
     frontend.send(&Message::PtyStartAck {
         session_id: session_id.to_string(),
     });
+    if let Some(Message::Reject { code, detail, .. }) = frontend.try_recv() {
+        panic!("pty-start-ack rejected: {code:?} {detail}");
+    }
 }
 
 fn resolution_start(

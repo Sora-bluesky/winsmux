@@ -1824,9 +1824,10 @@ fn start_session(
             session.start_confirmed = !lifecycle_enabled;
         }
     }
+    *controlled_session = Some(session_id.clone());
     let response = send_message(writer, &started);
-    if response.is_ok() {
-        *controlled_session = Some(session_id.clone());
+    if response.is_err() {
+        *controlled_session = None;
     }
     let reap = {
         let mut inner = lock_mutex(&state.inner);
