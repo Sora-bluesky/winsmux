@@ -1354,7 +1354,7 @@ fn acknowledged_detach_and_close_remains_attachable() {
     );
     first.close();
 
-    let mut second = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    let mut second = Frontend::connect(&runtime.0);
     second.send(&Message::PtyAttach {
         session_id: session_id.clone(),
     });
