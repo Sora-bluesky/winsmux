@@ -1817,6 +1817,13 @@ fn start_session(
         return Err(error);
     }
 
+    {
+        let mut inner = lock_mutex(&state.inner);
+        if let Some(session) = inner.sessions.get_mut(&session_id) {
+            session.write_phase = WritePhase::Written;
+            session.start_confirmed = !lifecycle_enabled;
+        }
+    }
     let response = send_message(writer, &started);
     if response.is_ok() {
         *controlled_session = Some(session_id.clone());
@@ -1825,8 +1832,6 @@ fn start_session(
         let mut inner = lock_mutex(&state.inner);
         inner.sessions.get_mut(&session_id).and_then(|session| {
             if response.is_ok() {
-                session.write_phase = WritePhase::Written;
-                session.start_confirmed = !lifecycle_enabled;
                 if let Some(controller) = session
                     .controller
                     .as_mut()
@@ -1837,6 +1842,7 @@ fn start_session(
                 None
             } else {
                 session.write_phase = WritePhase::Abandoned;
+                session.start_confirmed = false;
                 if let Some(controller) = session.controller.as_mut() {
                     controller.active = false;
                 }
