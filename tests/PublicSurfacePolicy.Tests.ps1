@@ -570,6 +570,41 @@ Describe 'Public surface policy' {
         $gate.Value | Should -Match 'needs\.task811-receipt-bind\.result'
     }
 
+    It 'restores DNS and proves GitHub reachability before publishing NSIS evidence' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
+        $job = [regex]::Match($workflow, '(?ms)^  desktop-nsis-lifecycle:.*?(?=^  task811-operator-infra:)')
+        $restore = [regex]::Match($job.Value, '(?ms)^      - name: Restore runner outbound networking.*?(?=^      - name: Publish non-sensitive lifecycle evidence)')
+        $publish = [regex]::Match($job.Value, '(?ms)^      - name: Publish non-sensitive lifecycle evidence.*?uses: actions/upload-artifact@v7')
+        $restoreEvidence = [regex]::Match($restore.Value, '(?ms)\$evidence\.stages\.network_restore\s*=\s*\[ordered\]@\{(?<body>.*?)^\s*\}')
+
+        $job.Success | Should -BeTrue
+        $restore.Success | Should -BeTrue
+        $publish.Success | Should -BeTrue
+        $restore.Value | Should -Match 'if:\s+always\(\)'
+        $publish.Value | Should -Match 'if:\s+always\(\)'
+
+        $removeIndex = $restore.Value.IndexOf('Remove-NetFirewallRule', [StringComparison]::Ordinal)
+        $ruleAbsentIndex = $restore.Value.IndexOf('if (-not $ruleAbsent)', [StringComparison]::Ordinal)
+        $dnsRecoveryIndex = $restore.Value.IndexOf('Clear-DnsClientCache', [StringComparison]::Ordinal)
+        $controlIndex = $restore.Value.IndexOf("'https://github.com/'", [StringComparison]::Ordinal)
+        $controlSuccessIndex = $restore.Value.IndexOf('if (-not $controlRestored)', [StringComparison]::Ordinal)
+        $uploadIndex = $job.Value.IndexOf('uses: actions/upload-artifact@v7', [StringComparison]::Ordinal)
+
+        $removeIndex | Should -BeGreaterThan -1
+        $ruleAbsentIndex | Should -BeGreaterThan $removeIndex
+        $dnsRecoveryIndex | Should -BeGreaterThan $ruleAbsentIndex
+        $controlIndex | Should -BeGreaterThan $dnsRecoveryIndex
+        $controlSuccessIndex | Should -BeGreaterThan $controlIndex
+        $uploadIndex | Should -BeGreaterThan $controlSuccessIndex
+
+        $restoreEvidence.Success | Should -BeTrue
+        $restoreEvidence.Groups['body'].Value | Should -Match 'rule_absent\s*=\s*\$ruleAbsent'
+        $restoreEvidence.Groups['body'].Value | Should -Match 'dns_cache_cleared\s*=\s*\$dnsCacheCleared'
+        $restoreEvidence.Groups['body'].Value | Should -Match 'positive_control_exit_code\s*=\s*\[int\]\$control\.ExitCode'
+        $restoreEvidence.Groups['body'].Value | Should -Match 'positive_control_reachable\s*=\s*\$controlRestored'
+        $restoreEvidence.Groups['body'].Value | Should -Not -Match 'https?://|github\.com|token'
+    }
+
     It 'keeps the Pester integration shard on a 30-minute outer budget' {
         $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
         $registry = Get-Content (Join-Path $repoRoot 'scripts/winsmux-pester.psm1') -Raw

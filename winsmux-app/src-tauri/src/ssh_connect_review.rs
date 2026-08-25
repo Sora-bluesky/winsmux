@@ -750,6 +750,34 @@ mod tests {
     }
 
     #[test]
+    fn hostile_aliases_fail_before_review_runner_starts() {
+        for alias in [
+            "lab evil",
+            "lab\"evil",
+            "lab\nevil",
+            "lab;evil",
+            "-oProxyJump=evil",
+        ] {
+            let mut runner = FakeRunner::default();
+            let mut hostile = request(SshConnectReviewAction::Runtime);
+            hostile.alias = Some(alias.to_string());
+
+            let error = handle_request_with(hostile, &mut runner)
+                .expect_err("hostile alias must fail before the review runner starts");
+            assert_eq!(
+                error,
+                ReviewFailure("ssh_connect_review_alias_invalid"),
+                "alias={alias:?}"
+            );
+            assert!(runner.begin_calls.is_empty(), "alias={alias:?}");
+            assert!(runner.commands.is_empty(), "alias={alias:?}");
+            assert!(runner.finish_calls.is_empty(), "alias={alias:?}");
+            assert!(runner.runtime_calls.is_empty(), "alias={alias:?}");
+            assert!(runner.stop_calls.is_empty(), "alias={alias:?}");
+        }
+    }
+
+    #[test]
     fn registered_runtime_performs_one_handshake() {
         let mut runner = FakeRunner::default();
         runner.outputs.push_back(successful(json!({
@@ -926,13 +954,15 @@ mod tests {
     #[test]
     fn redaction_keeps_fingerprints_and_strips_private_fields() {
         let fingerprint = test_fingerprint('f');
+        let private_canary = "task778-private-canary-7f3d9a";
         let raw = json!({
             "state": "registered",
             "hostname": "private.example.internal",
             "user": "private-user",
             "identity_file": "C:\\Users\\private-user\\.ssh\\id_ed25519",
             "key_comment": "private-user@private-host",
-            "transcript": "raw helper output",
+            "transcript": format!("raw helper output {private_canary}"),
+            "private_detail": private_canary,
             "confirmed_fingerprint": fingerprint
         });
 
@@ -940,6 +970,7 @@ mod tests {
         let rendered = serde_json::to_string(&safe).expect("safe snapshot should serialize");
 
         assert!(rendered.contains(&test_fingerprint('f')));
+        assert!(!rendered.contains(private_canary));
         for secret in [
             "private.example.internal",
             "private-user",
@@ -1001,6 +1032,32 @@ mod tests {
         pty_welcome.extend_from_slice(&(pty_payload.len() as u32).to_be_bytes());
         pty_welcome.extend_from_slice(&pty_payload);
         assert!(read_welcome_frame(&mut pty_welcome.as_slice(), &"00".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn welcome_version_mismatch_and_oversize_fail_closed() {
+        let nonce = "00".repeat(32);
+        let mismatched_payload = serde_json::to_vec(&json!({
+            "type": "welcome",
+            "protocol_version": REMOTE_HELPER_PROTOCOL_VERSION + 1,
+            "nonce": nonce,
+            "capabilities": ["frame-v1"],
+            "peer_frame_limit": REMOTE_HELPER_MAX_FRAME_LEN,
+        }))
+        .expect("version-mismatched Welcome should encode");
+        let mut mismatched = Vec::new();
+        mismatched.extend_from_slice(&(mismatched_payload.len() as u32).to_be_bytes());
+        mismatched.extend_from_slice(&mismatched_payload);
+        assert_eq!(
+            read_welcome_frame(&mut mismatched.as_slice(), &"00".repeat(32)),
+            Err(ReviewFailure("ssh_connect_review_handshake_rejected"))
+        );
+
+        let oversized = (REMOTE_HELPER_MAX_FRAME_LEN + 1).to_be_bytes();
+        assert_eq!(
+            read_welcome_frame(&mut oversized.as_slice(), &"00".repeat(32)),
+            Err(ReviewFailure("ssh_connect_review_handshake_frame_invalid"))
+        );
     }
 
     struct CompanionOverrideGuard;

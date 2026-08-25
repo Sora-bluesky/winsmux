@@ -478,6 +478,33 @@ jobs:
           name: test-results-${{ matrix.result }}
           path: test-results-${{ matrix.result }}.xml
 
+  helper-linux-negatives:
+    name: Helper Linux Negatives
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test remote helper protocol
+        run: timeout --kill-after=5s 60s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --lib --test protocol -- --nocapture
+
+      - name: Test remote helper Linux session lifecycle
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle --no-run
+          mapfile -t tests < <(cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle -- --list --format=terse | sed -n 's/: test$//p')
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "session_lifecycle listed no tests" >&2
+            exit 1
+          fi
+          for test_name in "${tests[@]}"; do
+            echo "::group::${test_name}"
+            timeout --kill-after=5s 20s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle "${test_name}" -- --exact --nocapture --test-threads=1
+            echo "::endgroup::"
+          done
+
   core-build-test:
     name: Core Build and Test
     runs-on: windows-latest
@@ -511,6 +538,10 @@ jobs:
       - name: Install frontend dependencies
         working-directory: winsmux-app
         run: npm ci
+
+      - name: Test SSH connect review UI
+        working-directory: winsmux-app
+        run: node --experimental-strip-types --test src/sshConnectReview.test.ts
 
       - name: Build frontend
         working-directory: winsmux-app
@@ -807,7 +838,13 @@ jobs:
               prior_download = [ordered]@{ exit_code = $null; artifact_found = $false; sha256_verified = $false }
               staging = [ordered]@{ exit_code = $null; candidate_staged = $false; prior_staged = $false }
               network_isolation = [ordered]@{ exit_code = $null; rule_enabled = $false; positive_control_exit_code = $null; positive_control_blocked = $false }
-              network_restore = [ordered]@{ exit_code = $null; rule_absent = $false }
+              network_restore = [ordered]@{
+                exit_code = $null
+                rule_absent = $false
+                dns_cache_cleared = $false
+                positive_control_exit_code = $null
+                positive_control_reachable = $false
+              }
             }
             protected_inventory = [ordered]@{ before = @() }
             legs = [ordered]@{
@@ -1107,17 +1144,34 @@ jobs:
           $ruleName = "winsmux-task679-outbound-${{ github.run_id }}-${{ github.run_attempt }}"
           $evidencePath = Join-Path $env:GITHUB_WORKSPACE 'artifacts/task679-nsis-lifecycle/evidence.json'
           $restoreExit = 0
+          $ruleAbsent = $false
+          $dnsCacheCleared = $false
+          $control = [pscustomobject]@{ ExitCode = -1 }
+          $controlRestored = $false
           try {
             Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction Stop
             $ruleAbsent = -not [bool](Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue)
             if (-not $ruleAbsent) { throw 'Run-scoped outbound firewall rule remained after cleanup.' }
+
+            Clear-DnsClientCache -ErrorAction Stop
+            $dnsCacheCleared = $true
+            $curlStdout = Join-Path $env:RUNNER_TEMP 'task679-network-restore-control.stdout'
+            $curlStderr = Join-Path $env:RUNNER_TEMP 'task679-network-restore-control.stderr'
+            $control = Start-Process -FilePath 'curl.exe' -ArgumentList @('--fail', '--silent', '--show-error', 'https://github.com/') -Wait -PassThru -NoNewWindow -RedirectStandardOutput $curlStdout -RedirectStandardError $curlStderr
+            $controlRestored = $control.ExitCode -eq 0
+            if (-not $controlRestored) { throw 'Outbound positive control did not recover after firewall cleanup.' }
           } catch {
             $restoreExit = 1
-            $ruleAbsent = $false
           }
           if (Test-Path -LiteralPath $evidencePath -PathType Leaf) {
             $evidence = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 12
-            $evidence.stages.network_restore = [ordered]@{ exit_code = $restoreExit; rule_absent = $ruleAbsent }
+            $evidence.stages.network_restore = [ordered]@{
+              exit_code = $restoreExit
+              rule_absent = $ruleAbsent
+              dns_cache_cleared = $dnsCacheCleared
+              positive_control_exit_code = [int]$control.ExitCode
+              positive_control_reachable = $controlRestored
+            }
             if ($restoreExit -ne 0) {
               $evidence.outcome = 'fail'
               $evidence.failure_stage = 'network_restore'
@@ -1540,6 +1594,7 @@ jobs:
       - desktop-build-test
       - desktop-nsis-lifecycle
       - task811-receipt-bind
+      - helper-linux-negatives
     if: always()
     steps:
       - name: Require all checks
@@ -1556,7 +1611,8 @@ jobs:
             "${{ needs.core-build-test.result }}" \
             "${{ needs.desktop-build-test.result }}" \
             "${{ needs.desktop-nsis-lifecycle.result }}" \
-            "${{ needs.task811-receipt-bind.result }}"; do
+            "${{ needs.task811-receipt-bind.result }}" \
+            "${{ needs.helper-linux-negatives.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
               exit 1

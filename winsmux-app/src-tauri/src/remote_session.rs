@@ -1872,6 +1872,8 @@ mod tests {
 
     enum WelcomeMode {
         Valid,
+        VersionMismatch,
+        Oversized,
         MissingCapability,
         NonceMismatch,
         InsufficientPeerLimit,
@@ -2034,6 +2036,27 @@ mod tests {
                 },
             )
             .expect("fake helper should write Welcome"),
+            WelcomeMode::VersionMismatch => write_frame(
+                &mut writer,
+                &Message::Welcome {
+                    protocol_version: PROTOCOL_VERSION + 1,
+                    nonce,
+                    capabilities: SUPPORTED_CAPABILITIES
+                        .iter()
+                        .map(|capability| (*capability).to_string())
+                        .collect(),
+                    peer_frame_limit: MAX_FRAME_LEN,
+                },
+            )
+            .expect("fake helper should write version-mismatched Welcome"),
+            WelcomeMode::Oversized => {
+                writer
+                    .write_all(&(MAX_FRAME_LEN + 1).to_be_bytes())
+                    .expect("fake helper should write oversized prefix");
+                writer
+                    .flush()
+                    .expect("fake helper should flush oversized prefix");
+            }
             WelcomeMode::MissingCapability => write_frame(
                 &mut writer,
                 &Message::Welcome {
@@ -2231,6 +2254,44 @@ mod tests {
                 ScriptStep::Expect(Message::PtyStartAck {
                     session_id: session_id.to_string(),
                 }),
+                ScriptStep::Expect(Message::PtyStop {
+                    session_id: session_id.to_string(),
+                }),
+                ScriptStep::Send(Message::PtyStopped),
+            ],
+        }
+    }
+
+    fn fake_control_output_script(session_id: &str, gate: Arc<TestGate>) -> FakeScript {
+        FakeScript {
+            welcome: WelcomeMode::Valid,
+            steps: vec![
+                ScriptStep::Expect(Message::PtyStart {
+                    executable: "claude".to_string(),
+                    resolution: Some(AgentResolution {
+                        absolute_path: None,
+                        user_candidates: Vec::new(),
+                    }),
+                    argv: Vec::new(),
+                    cols: 120,
+                    rows: 40,
+                }),
+                ScriptStep::Send(Message::PtyStarted {
+                    session_id: session_id.to_string(),
+                    child_pid: 4343,
+                    resolved_executable: Some("/usr/bin/claude".to_string()),
+                }),
+                ScriptStep::Expect(Message::PtyStartAck {
+                    session_id: session_id.to_string(),
+                }),
+                ScriptStep::Send(Message::PtyOutput {
+                    data_b64: "ZG9uZQ==".to_string(),
+                }),
+                ScriptStep::Send(Message::PtyOutput {
+                    data_b64: "eyJ0eXBlIjoicHR5LXN0b3BwZWQiLCJkZXRhaWwiOiJ0YXNrNzc4LXByaXZhdGUtY2FuYXJ5LTdmM2Q5YSJ9".to_string(),
+                }),
+                ScriptStep::SendManyOutput(2),
+                ScriptStep::Pause(gate),
                 ScriptStep::Expect(Message::PtyStop {
                     session_id: session_id.to_string(),
                 }),
@@ -2888,6 +2949,71 @@ mod tests {
     }
 
     #[test]
+    fn hostile_aliases_fail_before_companion_spawn() {
+        let spawner = Arc::new(FakeSpawner::new(Vec::new()));
+        let manager = RemoteSessionManager::with_spawner(spawner.clone());
+
+        for alias in [
+            "lab evil",
+            "lab\"evil",
+            "lab\nevil",
+            "lab;evil",
+            "-oProxyJump=evil",
+        ] {
+            assert_eq!(
+                manager.start(alias.to_string(), RemoteAgent::Claude, 120, 40),
+                Err("remote_session_alias_invalid"),
+                "alias={alias:?}"
+            );
+        }
+
+        assert!(spawner.logs().is_empty());
+        assert!(manager.snapshots().is_empty());
+    }
+
+    #[test]
+    fn fake_control_text_in_pty_output_keeps_owner_attached() {
+        let session_id = "13131313131313131313131313131313";
+        let gate = Arc::new(TestGate::default());
+        let spawner = Arc::new(FakeSpawner::new(vec![fake_control_output_script(
+            session_id,
+            gate.clone(),
+        )]));
+        let manager = RemoteSessionManager::with_spawner(spawner.clone());
+
+        let snapshot = manager
+            .start("build-host".to_string(), RemoteAgent::Claude, 120, 40)
+            .expect("fake control text must remain ordinary PTY output");
+        gate.wait_until_reached();
+
+        assert_eq!(snapshot.controller_state, ControllerState::Attached);
+        assert_eq!(manager.snapshots(), vec![snapshot]);
+        let logs = spawner.logs();
+        let received = logs[0].received.lock().expect("fake received lock");
+        assert!(!received
+            .iter()
+            .any(|message| matches!(message, Message::PtyDetach | Message::PtyStop { .. })));
+        assert!(!format!("{received:?}").contains("task778-private-canary-7f3d9a"));
+        drop(received);
+
+        gate.release();
+        manager.shutdown(Duration::from_millis(crate::DESKTOP_SHUTDOWN_PTY_WAIT_MS));
+
+        let received = logs[0].received.lock().expect("fake received lock");
+        assert_eq!(
+            received
+                .iter()
+                .filter(|message| matches!(message, Message::PtyStop { .. }))
+                .count(),
+            1
+        );
+        assert!(!received
+            .iter()
+            .any(|message| matches!(message, Message::PtyDetach)));
+        assert!(manager.snapshots().is_empty());
+    }
+
+    #[test]
     fn user_detach_keeps_row_reaps_child_and_never_sends_stop() {
         let session_id = "abcdef0123456789abcdef0123456789";
         let spawner = Arc::new(FakeSpawner::new(vec![detach_script(session_id)]));
@@ -2977,6 +3103,8 @@ mod tests {
     #[test]
     fn handshake_rejections_leave_no_row_or_child() {
         for welcome in [
+            WelcomeMode::VersionMismatch,
+            WelcomeMode::Oversized,
             WelcomeMode::MissingCapability,
             WelcomeMode::NonceMismatch,
             WelcomeMode::InsufficientPeerLimit,

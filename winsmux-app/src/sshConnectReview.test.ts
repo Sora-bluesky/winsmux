@@ -188,6 +188,7 @@ Object.assign(globalThis, {
   Node: FakeElement,
 });
 
+const PRIVATE_CANARY = "task778-private-canary-7f3d9a";
 const invokeCalls: Array<{ command: string; payload: unknown }> = [];
 let nextInvokeResponse = { ok: true, action: "inspect", hostState: "not_found" };
 globalThis.__sshConnectReviewTestInvoke = async (command: string, payload: unknown) => {
@@ -318,7 +319,7 @@ test("scope proposals never enter the backend request", async () => {
   const confirmButton = document.getElementById("ssh-connect-review-confirm");
   assert.ok(aliasInput && workspaceInput && permissionSelect && confirmButton);
   aliasInput.value = "registered-alias";
-  workspaceInput.value = "private-workspace-proposal";
+  workspaceInput.value = `${PRIVATE_CANARY}:private-workspace-proposal`;
   permissionSelect.value = "read_write";
   nextInvokeResponse = {
     ok: true,
@@ -333,8 +334,10 @@ test("scope proposals never enter the backend request", async () => {
   const call = invokeCalls.at(-1);
   assert.equal(call.command, "ssh_connect_review");
   assert.deepEqual(Object.keys(call.payload.request).sort(), ["action", "alias", "requestId"]);
+  assert.equal(JSON.stringify(call.payload).includes(PRIVATE_CANARY), false);
   assert.equal(JSON.stringify(call.payload).includes("private-workspace-proposal"), false);
   assert.equal(JSON.stringify(call.payload).includes("read_write"), false);
+  workspaceInput.value = "";
 });
 
 test("review previews use the current alias and match the confirmation request", async () => {
@@ -490,4 +493,44 @@ test("safe stop tombstones its request while a later runtime uses a new request"
   assert.equal(stopRequest.action, "stop");
   assert.equal(runtimeRequest.action, "runtime");
   assert.notEqual(runtimeRequest.requestId, stopRequest.requestId);
+});
+
+test("private canary never reaches the DOM, error text, or invoke payload", async () => {
+  const aliasInput = document.getElementById("ssh-connect-review-alias");
+  const inspectButton = document.getElementById("ssh-connect-review-inspect");
+  const reviewStatus = document.getElementById("ssh-connect-review-review-status");
+  assert.ok(aliasInput && inspectButton && reviewStatus);
+  aliasInput.value = "registered-alias";
+  aliasInput.dispatch("input");
+
+  nextInvokeResponse = {
+    ok: false,
+    action: "inspect",
+    errorCode: PRIVATE_CANARY,
+    privateDetail: PRIVATE_CANARY,
+  };
+  const callsBefore = invokeCalls.length;
+  inspectButton.click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const serializeElement = (element: FakeElement): unknown => ({
+    attributes: [...element.attributes.entries()],
+    dataset: element.dataset,
+    id: element.id,
+    textContent: element.textContent,
+    value: element.value,
+    children: element.children.map(serializeElement),
+  });
+  assert.equal(JSON.stringify(invokeCalls[callsBefore].payload).includes(PRIVATE_CANARY), false);
+  assert.equal(reviewStatus.textContent.includes(PRIVATE_CANARY), false);
+  assert.equal(JSON.stringify(serializeElement(document.documentElement)).includes(PRIVATE_CANARY), false);
+
+  nextInvokeResponse = Promise.reject(new Error(PRIVATE_CANARY));
+  inspectButton.click();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(JSON.stringify(invokeCalls.at(-1).payload).includes(PRIVATE_CANARY), false);
+  assert.equal(reviewStatus.textContent, "Action failed without exposing subprocess output.");
+  assert.equal(reviewStatus.textContent.includes(PRIVATE_CANARY), false);
+  assert.equal(JSON.stringify(serializeElement(document.documentElement)).includes(PRIVATE_CANARY), false);
 });
