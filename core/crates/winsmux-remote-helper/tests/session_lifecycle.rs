@@ -1350,6 +1350,7 @@ fn assert_ack_ok(reader: &mut fs::File, child_pid: i32) {
 
 #[test]
 fn acknowledged_detach_and_close_remains_attachable() {
+    std::env::set_var("WINSMUX_TEST_DISCONNECT_TRACE", "1");
     let runtime = RuntimeDir::new("lifecycle-acked-reattach");
     let mut events = EventPipe::new();
     let mut first = Frontend::connect_with_options(

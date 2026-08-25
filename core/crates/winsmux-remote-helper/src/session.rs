@@ -26,6 +26,7 @@ const HANDSHAKE_ATTEMPTS: usize = 3;
 const BROKER_SOCKET_NAME: &str = "broker.sock";
 const BROKER_LOCK_NAME: &str = "broker.lock";
 const TEST_BROKER_EVENT_FD: &str = "WINSMUX_TEST_BROKER_EVENT_FD";
+const TEST_DISCONNECT_TRACE: &str = "WINSMUX_TEST_DISCONNECT_TRACE";
 const TEST_FRONTEND_GATE_FD: &str = "WINSMUX_TEST_FRONTEND_GATE_FD";
 const TEST_PTY_STARTED_GATE_FD: &str = "WINSMUX_TEST_PTY_STARTED_GATE_FD";
 
@@ -885,6 +886,17 @@ impl TestHooks {
     }
 }
 
+fn disconnect_trace_enabled() -> bool {
+    #[cfg(debug_assertions)]
+    {
+        env::var(TEST_DISCONNECT_TRACE).ok().as_deref() == Some("1")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        false
+    }
+}
+
 impl PtyStartedTestGate {
     fn from_environment() -> Self {
         #[cfg(debug_assertions)]
@@ -1043,7 +1055,7 @@ impl BrokerState {
         for reap in reaps {
             let _ = reap_registered_session(reap);
         }
-        {
+        if disconnect_trace_enabled() {
             let inner = lock_mutex(&self.inner);
             self.hooks
                 .emit_subject(b'X', i32::try_from(inner.sessions.len()).unwrap_or(i32::MAX));
@@ -1730,7 +1742,19 @@ fn start_session(
         guardian,
     } = agent;
     let guardian_pid = guardian.pid;
-    let master_lease = dup_pty_master_lease(&master)?;
+    let master_lease = match dup_pty_master_lease(&master) {
+        Ok(lease) => lease,
+        Err(error) => {
+            cleanup_unregistered_agent(SpawnedAgent {
+                pid,
+                pgid,
+                master,
+                reader,
+                guardian,
+            })?;
+            return Err(error);
+        }
+    };
     let completion = Arc::new(Completion::new());
     {
         let mut inner = lock_mutex(&state.inner);
@@ -2113,6 +2137,9 @@ fn spawn_agent(
                 || libc::getppid() != broker_pid
                 || libc::setpgid(0, 0) != 0
         };
+        unsafe {
+            libc::signal(libc::SIGHUP, libc::SIG_IGN);
+        }
         for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
             if unsafe { libc::dup2(slave, target) } < 0 {
                 failed = true;
