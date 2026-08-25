@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const HANDSHAKE_ATTEMPTS: usize = 3;
@@ -610,39 +610,6 @@ fn read_ack(fd: RawFd) -> io::Result<u8> {
     })
 }
 
-fn poll_readable(fd: RawFd, timeout_ms: i32) -> io::Result<()> {
-    let mut poll_fd = libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    };
-    loop {
-        let result = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
-        if result > 0 {
-            if poll_fd.revents & (libc::POLLIN | libc::POLLRDHUP | libc::POLLHUP) != 0 {
-                return Ok(());
-            }
-            if poll_fd.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "pipe closed before readiness",
-                ));
-            }
-            continue;
-        }
-        if result == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "pipe readiness timed out",
-            ));
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(error);
-        }
-    }
-}
-
 fn read_one_byte(fd: RawFd) -> io::Result<u8> {
     let mut byte = 0u8;
     loop {
@@ -666,38 +633,6 @@ fn read_one_byte(fd: RawFd) -> io::Result<u8> {
 
 fn write_ack(fd: RawFd, byte: u8) -> io::Result<()> {
     write_all_fd(fd, &[byte])
-}
-
-/// Poll then read one byte or EOF without blocking past `timeout_ms`.
-fn read_status_pipe(fd: RawFd, timeout_ms: i32) -> io::Result<Option<u8>> {
-    set_nonblocking(fd)?;
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(0) as u64);
-    loop {
-        let remain = deadline.saturating_duration_since(Instant::now());
-        if remain.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "pipe readiness timed out",
-            ));
-        }
-        let ms = i32::try_from(remain.as_millis().min(i32::MAX as u128)).unwrap_or(i32::MAX);
-        poll_readable(fd, ms)?;
-        let mut byte = 0u8;
-        match unsafe { libc::read(fd, (&mut byte as *mut u8).cast(), 1) } {
-            1 => return Ok(Some(byte)),
-            0 => return Ok(None),
-            _ => {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                if error.kind() == io::ErrorKind::WouldBlock {
-                    continue;
-                }
-                return Err(error);
-            }
-        }
-    }
 }
 
 fn redirect_stdio_to_dev_null() -> io::Result<()> {
@@ -736,21 +671,6 @@ fn wait_pid(pid: libc::pid_t) -> io::Result<()> {
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
-    }
-}
-
-fn abandon_agent_child(pid: libc::pid_t) {
-    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
-    let _ = wait_pid(pid);
-}
-
-fn abandon_agent_fork(pid: libc::pid_t, pgid: libc::pid_t, guardian_pid: Option<libc::pid_t>) {
-    let _ = request_process_group_stop(pgid);
-    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
-    let _ = wait_pid(pid);
-    if let Some(guardian_pid) = guardian_pid {
-        let _ = unsafe { libc::kill(guardian_pid, libc::SIGKILL) };
-        let _ = wait_pid(guardian_pid);
     }
 }
 
@@ -1381,7 +1301,6 @@ fn dispatch_message(
             cols,
             rows,
         } => {
-            state.hooks.emit(b'T');
             if lifecycle_enabled
                 && controlled_session.as_ref().is_some_and(|session_id| {
                     !lock_mutex(&state.inner).sessions.contains_key(session_id)
@@ -1432,6 +1351,7 @@ fn dispatch_message(
         }
         Message::PtyStartAck { session_id } => {
             if !lifecycle_enabled {
+                state.hooks.emit_subject(b'c', 5);
                 return send_reject(
                     writer,
                     RejectCode::Unsupported,
@@ -1708,7 +1628,6 @@ fn start_session(
         Ok(agent) => agent,
         Err(error) => return send_reject(writer, RejectCode::SpawnFailed, error.to_string()),
     };
-    state.hooks.emit_subject(b't', agent.pid);
     let child_pid = agent.pid as u32;
     let started = pty_started_response(&session_id, child_pid, resolved_executable.as_deref());
     let actual_len = encode_payload(&started).ok().map(|payload| payload.len());
@@ -1990,32 +1909,16 @@ fn fill_random(bytes: &mut [u8]) -> io::Result<()> {
     let mut filled = 0;
     while filled < bytes.len() {
         let result = unsafe {
-            libc::getrandom(
-                bytes[filled..].as_mut_ptr().cast(),
-                bytes.len() - filled,
-                libc::GRND_NONBLOCK,
-            )
+            libc::getrandom(bytes[filled..].as_mut_ptr().cast(), bytes.len() - filled, 0)
         };
         if result > 0 {
             filled += result as usize;
             continue;
         }
-        if result == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "getrandom returned zero bytes",
-            ));
-        }
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(libc::EAGAIN) {
-            break;
-        }
         if error.kind() != io::ErrorKind::Interrupted {
             return Err(error);
         }
-    }
-    if filled < bytes.len() {
-        File::open("/dev/urandom")?.read_exact(&mut bytes[filled..])?;
     }
     Ok(())
 }
@@ -2090,6 +1993,7 @@ fn spawn_agent(
         return Err(error);
     }
 
+    let broker_pid = unsafe { libc::getpid() };
     let pid = unsafe { libc::fork() };
     if pid < 0 {
         let error = io::Error::last_os_error();
@@ -2115,6 +2019,7 @@ fn spawn_agent(
         close_fd(guardian_ack[1]);
         let mut failed = unsafe {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0
+                || libc::getppid() != broker_pid
                 || libc::setpgid(0, 0) != 0
         };
         for target in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
@@ -2135,7 +2040,6 @@ fn spawn_agent(
             }
             unsafe { libc::_exit(127) };
         }
-        close_fd(exec_status[1]);
         unsafe {
             libc::execve(
                 executable.as_ptr(),
@@ -2163,7 +2067,7 @@ fn spawn_agent(
             close_fd(guardian_ack[1]);
             close_fd(exec_status[0]);
             close_fd(master);
-            abandon_agent_child(pid);
+            let _ = wait_pid(pid);
             return Err(error);
         }
     }
@@ -2178,7 +2082,7 @@ fn spawn_agent(
         close_fd(guardian_ack[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        abandon_agent_child(pid);
+        let _ = wait_pid(pid);
         return Err(error);
     }
     if guardian_pid == 0 {
@@ -2202,7 +2106,8 @@ fn spawn_agent(
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        abandon_agent_fork(pid, pid, Some(guardian_pid));
+        let _ = wait_pid(pid);
+        let _ = wait_pid(guardian_pid);
         return Err(io::Error::new(
             io::ErrorKind::ConnectionRefused,
             "process-group guardian failed before Agent execve",
@@ -2213,7 +2118,8 @@ fn spawn_agent(
         close_fd(guardian_liveness[1]);
         close_fd(exec_status[0]);
         close_fd(master);
-        abandon_agent_fork(pid, pid, Some(guardian_pid));
+        let _ = wait_pid(pid);
+        let _ = wait_pid(guardian_pid);
         return Err(error);
     }
     close_fd(agent_release[1]);
@@ -2222,23 +2128,28 @@ fn spawn_agent(
         _liveness: unsafe { File::from_raw_fd(guardian_liveness[1]) },
     };
 
-    let exec_result = read_status_pipe(exec_status[0], 5_000);
-    close_fd(exec_status[0]);
-    match exec_result {
-        Ok(None) => {}
-        Ok(Some(_)) => {
-            close_fd(master);
-            cleanup_guarded_agent(pid, pid, guardian);
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "Agent execve failed",
-            ));
+    let mut status = [0u8; 1];
+    let status_read = loop {
+        let result = unsafe { libc::read(exec_status[0], status.as_mut_ptr().cast(), 1) };
+        if result >= 0 {
+            break result;
         }
-        Err(error) => {
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            close_fd(exec_status[0]);
             close_fd(master);
             cleanup_guarded_agent(pid, pid, guardian);
             return Err(error);
         }
+    };
+    close_fd(exec_status[0]);
+    if status_read != 0 {
+        close_fd(master);
+        cleanup_guarded_agent(pid, pid, guardian);
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Agent execve failed",
+        ));
     }
 
     let reader_fd = unsafe { libc::fcntl(master, libc::F_DUPFD_CLOEXEC, 3) };
@@ -2283,7 +2194,9 @@ fn run_process_group_guardian(
 fn cleanup_guarded_agent(pid: libc::pid_t, pgid: libc::pid_t, guardian: ProcessGroupGuardian) {
     let guardian_pid = guardian.pid;
     drop(guardian);
-    abandon_agent_fork(pid, pgid, Some(guardian_pid));
+    let _ = request_process_group_stop(pgid);
+    let _ = wait_pid(pid);
+    let _ = wait_pid(guardian_pid);
 }
 
 fn process_environment() -> io::Result<Vec<CString>> {

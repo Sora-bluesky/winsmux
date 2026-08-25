@@ -1360,8 +1360,18 @@ fn acknowledged_detach_and_close_remains_attachable() {
     let (session_id, child_pid) = start_cat(&mut first);
     acknowledge_start(&mut first, &session_id);
     assert_ack_ok(&mut events.reader, child_pid as i32);
+    assert_eq!(
+        unsafe { libc::kill(child_pid as i32, 0) },
+        0,
+        "agent must be alive after ack"
+    );
     first.send(&Message::PtyDetach);
     assert_eq!(first.recv(), Message::PtyDetached);
+    assert_eq!(
+        unsafe { libc::kill(child_pid as i32, 0) },
+        0,
+        "agent must be alive after detach (no unconfirmed reap)"
+    );
     first.close();
     eprintln!(
         "# post-close agent={} socket={}",
