@@ -1448,11 +1448,10 @@ fn dispatch_message(
                         Err((RejectCode::SessionNotFound, "Agent has exited"))
                     }
                     Some(session)
-                        if controlled_session.as_deref() != Some(session_id.as_str())
-                            || !session.controller.as_ref().is_some_and(|controller| {
-                                controller.frontend_id == frontend_id
-                                    && controller.lifecycle_enabled
-                            }) =>
+                        if !session.controller.as_ref().is_some_and(|controller| {
+                            controller.frontend_id == frontend_id
+                                && controller.lifecycle_enabled
+                        }) =>
                     {
                         Err((
                             RejectCode::NotController,
@@ -1461,6 +1460,9 @@ fn dispatch_message(
                     }
                     Some(session) => {
                         session.start_confirmed = true;
+                        if controlled_session.as_deref() != Some(session_id.as_str()) {
+                            *controlled_session = Some(session_id.clone());
+                        }
                         Ok(())
                     }
                 }

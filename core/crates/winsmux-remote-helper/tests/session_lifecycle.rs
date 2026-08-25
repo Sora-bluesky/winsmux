@@ -335,8 +335,20 @@ fn acknowledge_start(frontend: &mut Frontend, session_id: &str) {
     frontend.send(&Message::PtyStartAck {
         session_id: session_id.to_string(),
     });
-    if let Some(Message::Reject { code, detail, .. }) = frontend.try_recv() {
-        panic!("pty-start-ack rejected: {code:?} {detail}");
+    // Successful PtyStartAck is silent; soak a short window for rejects only.
+    let deadline = Instant::now() + Duration::from_millis(200);
+    while Instant::now() < deadline {
+        let Some(message) = frontend.try_recv() else {
+            thread::sleep(Duration::from_millis(5));
+            continue;
+        };
+        match message {
+            Message::Reject { code, detail, .. } => {
+                panic!("pty-start-ack rejected: {code:?} {detail}");
+            }
+            Message::PtyOutput { .. } => continue,
+            other => panic!("unexpected message while waiting for pty-start-ack: {other:?}"),
+        }
     }
 }
 
