@@ -1325,11 +1325,26 @@ fn acknowledged_unsolicited_exit_pushes_and_same_connection_recovers() {
 }
 
 fn assert_ack_ok(reader: &mut fs::File, child_pid: i32) {
-    let (code, subject) = read_broker_event(reader);
-    match code {
-        PTY_START_ACK_OK => assert_eq!(subject, child_pid),
-        PTY_START_ACK_REJECT => panic!("pty-start-ack rejected (subject={subject})"),
-        other => panic!("expected pty-start-ack ok, got code {other} subject {subject}"),
+    let deadline = wait_deadline();
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "pty-start-ack event missing within 15s"
+        );
+        let (code, subject) = read_broker_event(reader);
+        match code {
+            PTY_START_ACK_OK => {
+                assert_eq!(subject, child_pid);
+                return;
+            }
+            PTY_START_ACK_REJECT => {
+                panic!("pty-start-ack rejected (reason_tag={subject})")
+            }
+            PTY_DETACH_REAPED => {
+                panic!("detach reaped before pty-start-ack ok (pgid={subject})")
+            }
+            _ => {}
+        }
     }
 }
 

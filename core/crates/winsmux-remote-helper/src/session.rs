@@ -1441,16 +1441,17 @@ fn dispatch_message(
             let ack_result = {
                 let mut inner = lock_mutex(&state.inner);
                 match inner.sessions.get_mut(&session_id) {
-                    None => Err((RejectCode::SessionNotFound, "session does not exist", 0)),
-                    Some(session)
-                        if session.agent_exited || session.write_phase != WritePhase::Written =>
-                    {
-                        Err((
-                            RejectCode::SessionNotFound,
-                            "Agent has exited",
-                            session.pgid,
-                        ))
-                    }
+                    None => Err((RejectCode::SessionNotFound, "session does not exist", 1)),
+                    Some(session) if session.agent_exited => Err((
+                        RejectCode::SessionNotFound,
+                        "Agent has exited",
+                        2,
+                    )),
+                    Some(session) if session.write_phase != WritePhase::Written => Err((
+                        RejectCode::SessionNotFound,
+                        "Agent has exited",
+                        3,
+                    )),
                     Some(session)
                         if controlled_session.as_deref() != Some(session_id.as_str())
                             || !session.controller.as_ref().is_some_and(|controller| {
@@ -1461,14 +1462,11 @@ fn dispatch_message(
                         Err((
                             RejectCode::NotController,
                             "frontend does not own the controller lease",
-                            session.pgid,
+                            4,
                         ))
                     }
                     Some(session) => {
                         session.start_confirmed = true;
-                        if controlled_session.as_deref() != Some(session_id.as_str()) {
-                            *controlled_session = Some(session_id.clone());
-                        }
                         Ok(session.pgid)
                     }
                 }
@@ -1478,10 +1476,8 @@ fn dispatch_message(
                     state.hooks.emit_agent(b'C', pgid);
                     Ok(())
                 }
-                Err((code, detail, pgid)) => {
-                    state
-                        .hooks
-                        .emit_subject(b'c', ack_reject_tag(code, pgid));
+                Err((code, detail, reason)) => {
+                    state.hooks.emit_subject(b'c', reason);
                     send_reject(writer, code, detail)
                 }
             }
@@ -1923,20 +1919,6 @@ fn cleanup_unregistered_agent(agent: SpawnedAgent) -> io::Result<()> {
     let agent_cleanup = stop_and_reap_without_watcher(pid, pgid);
     let guardian_cleanup = wait_pid(guardian_pid);
     agent_cleanup.and(guardian_cleanup)
-}
-
-fn ack_reject_tag(code: RejectCode, pgid: libc::pid_t) -> libc::pid_t {
-    let tag = match code {
-        RejectCode::SessionNotFound => 1,
-        RejectCode::NotController => 2,
-        RejectCode::Unsupported => 3,
-        _ => 4,
-    };
-    if pgid == 0 {
-        tag
-    } else {
-        pgid
-    }
 }
 
 fn activate_controller(state: &BrokerState, session_id: &str, frontend_id: u64) {
