@@ -51,8 +51,8 @@
       "severity": "high",
       "description": "Co-occurrence of decode/eval intent with raw escape sequences in one prompt - likely an evasion attempt rather than technical conversation.",
       "patterns": [
-        "(?=[\\s\\S]*(?:base64\\s+decode|eval\\s*\\())(?=[\\s\\S]*\\\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}))",
-        "(?=[\\s\\S]*base64\\s+decode)(?=[\\s\\S]*eval\\s*\\()"
+        "^(?=[\\s\\S]*(?:base64\\s+decode|eval\\s*\\())(?=[\\s\\S]*\\\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}))",
+        "^(?=[\\s\\S]*base64\\s+decode)(?=[\\s\\S]*eval\\s*\\()"
       ]
     }
   }
