@@ -45,7 +45,8 @@ The current `injection-patterns.json` file defines these categories:
 | `role_hijack` | high | Attempts to redefine the assistant role or identity. |
 | `prompt_extraction` | critical | Attempts to extract hidden instructions or internal state. |
 | `context_manipulation` | medium | Fabricated context or authority claims. |
-| `encoding_evasion` | high | Encoding or eval patterns that try to bypass checks. |
+| `encoding_evasion` | medium | Single encoding or eval tokens. Common in ordinary technical conversation, so medium alone; channel-context boost still raises this to high for untrusted channel input. |
+| `encoding_evasion_combo` | high | Co-occurrence of decode or eval intent with raw escape sequences in one text, which indicates a likely evasion attempt rather than technical conversation. |
 
 The hook implementation also checks invisible Unicode controls before loading
 the pattern file, because those characters can alter how text is interpreted.
@@ -61,7 +62,7 @@ that the repository exports OCSF events today.
 | TM-002 | Role or identity hijack | `Bash`, `Edit`, `Write`, `Read`, `WebFetch` | `role_hijack` | Security Finding | `sh-injection-guard.js` denies high-severity role redefinition patterns. |
 | TM-003 | Hidden prompt or instruction extraction | `Bash`, `Edit`, `Write`, `Read`, `WebFetch` | `prompt_extraction` | Security Finding | `sh-injection-guard.js` denies critical prompt extraction patterns. |
 | TM-004 | Fabricated prior context or authority | `Bash`, `Edit`, `Write`, `Read`, `WebFetch` | `context_manipulation` | Detection Finding | `sh-injection-guard.js` allows medium findings with warning context and evidence. |
-| TM-005 | Encoding or eval evasion | `Bash`, file operations, fetched URLs | `encoding_evasion` | Security Finding | NFKC normalization and pattern checks deny high-severity encoding and eval probes. |
+| TM-005 | Encoding or eval evasion | `Bash`, file operations, fetched URLs | `encoding_evasion`, `encoding_evasion_combo` | Security Finding | NFKC normalization plus co-occurrence pattern checks deny high-severity evasion; single tokens stay medium and escalate to high only in untrusted channel context. |
 | TM-006 | Invisible or bidirectional character evasion | File paths, command text, prompts | zero-width control check | Security Finding | `ZERO_WIDTH_RE` is applied before pattern loading. |
 | TM-007 | Destructive shell command execution | `Bash` | destructive command gate | Security Finding | `sh-gate.js` blocks destructive file-system and device patterns. |
 | TM-008 | Tool switching to bypass file-write controls | `Bash` | tool-switching patterns | Security Finding | `sh-gate.js` blocks shell-based file-write bypasses such as scripting one-liners and redirects. |

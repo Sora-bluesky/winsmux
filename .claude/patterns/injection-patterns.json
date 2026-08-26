@@ -14,7 +14,7 @@
       "description": "Attempts to redefine the assistant's role or identity.",
       "patterns": [
         "you\\s+are\\s+now",
-        "act\\s+as",
+        "\\bact\\s+as\\b",
         "pretend\\s+(?:to\\s+be|you(?:'re|\\s+are))",
         "roleplay\\s+as"
       ]
@@ -38,13 +38,21 @@
       ]
     },
     "encoding_evasion": {
-      "severity": "high",
-      "description": "Attempts to use encoding or eval to bypass security patterns.",
+      "severity": "medium",
+      "description": "Single encoding/eval tokens. Common in ordinary technical conversation, so medium alone; channel-context boost still raises this to high for untrusted channel input.",
       "patterns": [
         "base64\\s+decode",
         "eval\\s*\\(",
         "\\\\x[0-9a-f]{2}",
         "\\\\u[0-9a-f]{4}"
+      ]
+    },
+    "encoding_evasion_combo": {
+      "severity": "high",
+      "description": "Co-occurrence of decode/eval intent with raw escape sequences in one prompt - likely an evasion attempt rather than technical conversation.",
+      "patterns": [
+        "^(?=[\\s\\S]*(?:base64\\s+decode|eval\\s*\\())(?=[\\s\\S]*\\\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}))",
+        "^(?=[\\s\\S]*base64\\s+decode)(?=[\\s\\S]*eval\\s*\\()"
       ]
     }
   }
