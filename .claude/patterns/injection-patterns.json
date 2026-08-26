@@ -14,7 +14,7 @@
       "description": "Attempts to redefine the assistant's role or identity.",
       "patterns": [
         "you\\s+are\\s+now",
-        "act\\s+as",
+        "\\bact\\s+as\\b",
         "pretend\\s+(?:to\\s+be|you(?:'re|\\s+are))",
         "roleplay\\s+as"
       ]
