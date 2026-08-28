@@ -99,9 +99,106 @@ Add-Check 'CI runs v0.36.18 release hardening tests' ($workflow -match 'V03618Re
 Add-Check 'CI runs subagent worktree guard tests' ($workflow -match 'codex-subagent-worktree-guard\.Tests\.ps1') '.github/workflows/test.yml'
 Add-Check 'test workflow uses least privilege read permission' ($workflow -match "(?ms)^permissions:\s*\r?\n\s*contents:\s*read") '.github/workflows/test.yml'
 Add-Check 'test workflow cancels duplicate branch runs' ($workflow -match "(?ms)^concurrency:\s*\r?\n\s*group:\s*\$\{\{\s*github\.workflow\s*\}\}-\$\{\{\s*github\.ref\s*\}\}\s*\r?\n\s*cancel-in-progress:\s*true") '.github/workflows/test.yml'
-foreach ($token in @('run-pester-shard.ps1', 'RequiredVersion 5.7.1', 'install_once_then_rerun', 'TASK810_CONSUMER_KERNEL_BEGIN', 'TASK810_CONSUMER_KERNEL_END', 'Get-PSRepository -Name PSGallery', 'Register-PSRepository -Default', 'Install-Module Pester', '-Repository PSGallery')) {
+foreach ($token in @('run-pester-shard.ps1', 'RequiredVersion 5.7.1', 'install_once_then_rerun', 'TASK810_CONSUMER_KERNEL_BEGIN', 'TASK810_CONSUMER_KERNEL_END', 'Install-Module Pester')) {
     Add-Check "test workflow uses exact TASK-810 Pester protocol: $token" ($workflow -match [regex]::Escape($token)) '.github/workflows/test.yml'
 }
+$task856PesterRepository = 'WinsmuxPesterGallery'
+$task856PesterSource = 'https://www.powershellgallery.com/api/v2'
+$task856PesterInstallSiblings = @(
+    [pscustomobject]@{
+        name           = 'matrix shared Pester installer'
+        phase_variable = 'task810InstallPhase'
+        block          = [regex]::Match($workflow, '(?ms)^  pester:.*?^\s{10}if \(\[bool\]\$decision\.install\) \{\r?\n(?<install>.*?)^\s{10}\$task810ExitCode = \[int\]\$decision\.exit').Groups['install'].Value
+    }
+    [pscustomobject]@{
+        name           = 'desktop Pester installer'
+        phase_variable = 'task810InstallPhase'
+        block          = [regex]::Match($workflow, '(?ms)^  desktop-build-test:.*?^\s{10}if \(\[bool\]\$decision\.install\) \{\r?\n(?<install>.*?)^\s{10}\$task810ExitCode = \[int\]\$decision\.exit').Groups['install'].Value
+    }
+    [pscustomobject]@{
+        name           = 'TASK-811 Pester installer'
+        phase_variable = 'task811PesterPhase'
+        block          = [regex]::Match($workflow, '(?ms)^  task811-operator-infra:.*?^\s{10}if \(\$selection\.resolution_status -ceq ''missing''\) \{\r?\n(?<install>.*?)^\s{12}\$selection = Resolve-WinsmuxPester571').Groups['install'].Value
+    }
+)
+$task856C05DiagnosticPrefix = 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:'
+foreach ($sibling in $task856PesterInstallSiblings) {
+    $explicitRegistration = "Register-PSRepository -Name '$task856PesterRepository' -SourceLocation '$task856PesterSource' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop"
+    $sourceLookup = '$pesterRepository = Get-PSRepository -ErrorAction SilentlyContinue'
+    $sourceFilter = "Where-Object { (([string]`$_.SourceLocation -replace '/+$', '') -ieq '$task856PesterSource') }"
+    $deterministicSort = 'Sort-Object -Property Name -CaseSensitive'
+    $firstRepository = 'Select-Object -First 1'
+    $newRepositoryName = '$pesterRepositoryName = ''WinsmuxPesterGallery'''
+    $existingRepositoryName = '$pesterRepositoryName = [string]$pesterRepository.Name'
+    $selectedSet = 'Set-PSRepository -Name $pesterRepositoryName -InstallationPolicy Trusted -ErrorAction Stop'
+    $pesterInstall = 'Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository $pesterRepositoryName -ErrorAction Stop'
+    $registrationIndex = $sibling.block.IndexOf($explicitRegistration, [System.StringComparison]::Ordinal)
+    $setIndex = $sibling.block.IndexOf($selectedSet, [System.StringComparison]::Ordinal)
+    $installIndex = $sibling.block.IndexOf($pesterInstall, [System.StringComparison]::Ordinal)
+    $repositoryPhaseAssignment = ('${0} = ''pester_repository_failure''' -f [string]$sibling.phase_variable)
+    $sourceSelectionPattern =
+        [regex]::Escape($sourceLookup) + '\s*\|\s*' +
+        [regex]::Escape($sourceFilter) + '\s*\|\s*' +
+        [regex]::Escape($deterministicSort) + '\s*\|\s*' +
+        [regex]::Escape($firstRepository)
+    $registrationBranchPattern =
+        [regex]::Escape($newRepositoryName) + '\s*' +
+        [regex]::Escape('if ($null -eq $pesterRepository)') + '\s*\{\s*' +
+        [regex]::Escape($repositoryPhaseAssignment) + '\s*' +
+        [regex]::Escape($explicitRegistration) + '\s*\}\s*else\s*\{\s*' +
+        [regex]::Escape($existingRepositoryName) + '\s*\}'
+    Add-Check "TASK-856 $($sibling.name) omits network-backed NuGet provider installation" (
+        -not [string]::IsNullOrEmpty($sibling.block) -and
+        $sibling.block -notmatch '\bInstall-PackageProvider\b'
+    ) '.github/workflows/test.yml'
+    Add-Check "TASK-856 $($sibling.name) deterministically reuses an equivalent official repository or registers one" (
+        -not [string]::IsNullOrEmpty($sibling.block) -and
+        $sibling.block -notmatch 'Register-PSRepository\s+-Default\b' -and
+        [regex]::IsMatch($sibling.block, $sourceSelectionPattern, [System.Text.RegularExpressions.RegexOptions]::Multiline) -and
+        [regex]::IsMatch($sibling.block, $registrationBranchPattern, [System.Text.RegularExpressions.RegexOptions]::Multiline) -and
+        [regex]::Matches($sibling.block, [regex]::Escape('Register-PSRepository -Name')).Count -eq 1 -and
+        $registrationIndex -ge 0 -and
+        $setIndex -gt $registrationIndex -and
+        $installIndex -gt $registrationIndex
+    ) '.github/workflows/test.yml'
+
+    $phaseCommandPairs = @(
+        [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape($sourceLookup) }
+        [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape($explicitRegistration) }
+        [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape($selectedSet) }
+        [pscustomobject]@{ phase = 'pester_module_install_failure'; command = [regex]::Escape($pesterInstall) }
+    )
+    $phaseCommandsPass = -not [string]::IsNullOrEmpty($sibling.block)
+    foreach ($pair in $phaseCommandPairs) {
+        $assignment = [regex]::Escape(('${0} = ''{1}''' -f [string]$sibling.phase_variable, [string]$pair.phase))
+        $pattern = $assignment + '\s*\r?\n\s*' + [string]$pair.command
+        if (-not [regex]::IsMatch($sibling.block, $pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)) {
+            $phaseCommandsPass = $false
+        }
+    }
+    Add-Check "TASK-856 $($sibling.name) tracks every C05 bootstrap phase immediately before its command" $phaseCommandsPass '.github/workflows/test.yml'
+
+    $diagnosticPattern = [regex]::Escape($task856C05DiagnosticPrefix) + [string][char]39 + '\s*\+\s*\$' + [regex]::Escape([string]$sibling.phase_variable)
+    Add-Check "TASK-856 $($sibling.name) emits only the stable C05 phase token" (
+        -not [string]::IsNullOrEmpty($sibling.block) -and
+        [regex]::IsMatch($sibling.block, $diagnosticPattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
+    ) '.github/workflows/test.yml'
+
+    if ($sibling.name -eq 'TASK-811 Pester installer') {
+        Add-Check 'TASK-856 TASK-811 C05 bootstrap failure exits 2' (
+            -not [string]::IsNullOrEmpty($sibling.block) -and
+            $sibling.block -match '(?m)^\s*exit\s+2\s*$'
+        ) '.github/workflows/test.yml'
+    }
+}
+foreach ($token in @(
+        'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_repository_failure',
+        'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
+    )) {
+    Add-Check "CI health classifier recognizes stable TASK-856 token $token" ($workflow -match [regex]::Escape($token)) '.github/workflows/test.yml'
+}
+Add-Check 'CI health classifier omits the retired TASK-856 provider token' ($workflow -notmatch [regex]::Escape('TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_package_provider_failure')) '.github/workflows/test.yml'
+Add-Check 'CI health classifier does not depend on the retired raw package error' ($workflow -notmatch [regex]::Escape("Missing option value for: '-source'")) '.github/workflows/test.yml'
 Add-Check 'test workflow does not use MinimumVersion Pester selection' ($workflow -notmatch 'Import-Module Pester -MinimumVersion') '.github/workflows/test.yml'
 Add-Check 'test workflow does not use Start-Sleep retry loop for Pester install' ($workflow -notmatch 'Start-Sleep -Seconds \(5 \* \$attempt\)') '.github/workflows/test.yml'
 Add-Check 'desktop build workflow uses least privilege read permission' ($desktopBuildWorkflow -match "(?ms)^permissions:\s*\r?\n\s*contents:\s*read") '.github/workflows/build-desktop.yml'
