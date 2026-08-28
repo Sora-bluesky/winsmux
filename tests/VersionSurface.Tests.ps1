@@ -255,6 +255,37 @@ Describe 'winsmux version surface' {
         $preCommitWhitelist | Should -Match "(?m)^    'scripts/test-public-remote-helper\.sh',\r?$"
     }
 
+    It 'runs packaged helper negative protocol and controller-boundary selectors' {
+        $testScript = Join-Path $script:RepoRoot 'scripts\test-public-remote-helper.sh'
+
+        Test-Path -LiteralPath $testScript -PathType Leaf | Should -BeTrue
+        $packagedTest = Get-Content -LiteralPath $testScript -Raw -Encoding UTF8
+        $packagedHelperExportIndex = $packagedTest.IndexOf('export WINSMUX_REMOTE_HELPER_UNDER_TEST="$install_path"', [StringComparison]::Ordinal)
+        $runExactIndex = $packagedTest.IndexOf('run_exact() {', [StringComparison]::Ordinal)
+        $packagedHelperExportIndex | Should -BeGreaterThan -1
+        $runExactIndex | Should -BeGreaterThan $packagedHelperExportIndex
+
+        foreach ($selector in @(
+            'run_exact protocol argv_without_serve_stdio_exits_2',
+            'run_exact protocol argv_extra_token_exits_2',
+            'run_exact protocol black_box_binary_hello_welcome',
+            'run_exact session_lifecycle packaged_release_detach_close_reattach_io_and_stop_is_protocol_visible',
+            'run_exact protocol black_box_binary_unknown_type_rejects',
+            'run_exact protocol black_box_binary_oversized_prefix_rejects',
+            'run_exact session_lifecycle fake_done_and_control_json_remain_agent_output_until_owner_stops',
+            'run_exact session_lifecycle second_controller_and_stale_session_are_rejected'
+        )) {
+            ([regex]::Matches($packagedTest, "(?m)^$([regex]::Escape($selector))\r?$")).Count | Should -Be 1
+        }
+
+        foreach ($selector in @(
+            'run_exact protocol unknown_type_rejects',
+            'run_exact protocol oversized_prefix_does_not_read_payload'
+        )) {
+            ([regex]::Matches($packagedTest, "(?m)^$([regex]::Escape($selector))\r?$")).Count | Should -Be 0
+        }
+    }
+
     It 'keeps Ubuntu 22.04 native remote-helper evidence manual and outside Merge Gate' {
         $workflowPath = Join-Path $script:RepoRoot '.github\workflows\remote-helper-ubuntu-2204.yml'
         $testWorkflowPath = Join-Path $script:RepoRoot '.github\workflows\test.yml'
