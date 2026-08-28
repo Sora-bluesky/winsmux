@@ -33,6 +33,7 @@ $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
 $SCRIPT_DIR   = Join-Path $WINSMUX_DIR "scripts"
 $BRIDGE_DIR   = Join-Path $WINSMUX_DIR "winsmux-core"
 $BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR "scripts"
+$BRIDGE_ROUTER_DIR = Join-Path $BRIDGE_DIR "router"
 $VERSION_FILE = Join-Path $WINSMUX_DIR "version"
 $PROFILE_FILE = Join-Path $WINSMUX_DIR "install-profile"
 $PROFILE_MANIFEST_FILE = Join-Path $WINSMUX_DIR "install-profile.json"
@@ -208,7 +209,7 @@ function Get-InstallProfileContents {
         "core" { return @("runtime", "wrappers", "path", "base_config") }
         "orchestra" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile", "vault") }
         "security" { return @("runtime", "wrappers", "path", "base_config", "vault", "redaction", "audit_scripts") }
-        "full" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile", "vault", "redaction", "audit_scripts") }
+        "full" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile", "vault", "redaction", "audit_scripts", "local_router_artifacts") }
         default { throw "Unsupported install profile '$Profile'." }
     }
 }
@@ -363,6 +364,13 @@ function Install-SecuritySupportScripts {
     Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 }
 
+function Install-LocalRouterArtifacts {
+    Download-File "winsmux-core/scripts/coordinator-router.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "coordinator-router.ps1")
+    Download-File "winsmux-core/scripts/local-router-shadow.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "local-router-shadow.ps1")
+    Download-File "winsmux-core/router/local-small-router-v03621.manifest.json" (Join-Path $BRIDGE_ROUTER_DIR "local-small-router-v03621.manifest.json")
+    Download-File "winsmux-core/router/local-small-router-v03621.weights.json" (Join-Path $BRIDGE_ROUTER_DIR "local-small-router-v03621.weights.json")
+}
+
 function Remove-ProfileExcludedSupportScripts {
     param([Parameter(Mandatory = $true)][string]$Profile)
 
@@ -436,6 +444,20 @@ function Remove-ProfileExcludedSupportScripts {
             if (Test-Path -LiteralPath $path -PathType Leaf) {
                 Remove-Item -LiteralPath $path -Force
                 Write-Status "Removed profile-excluded support script: $fileName"
+            }
+        }
+    }
+
+    if (-not (Test-InstallProfileContent -Profile $Profile -Content "local_router_artifacts")) {
+        foreach ($path in @(
+            (Join-Path $BRIDGE_SCRIPTS_DIR "coordinator-router.ps1"),
+            (Join-Path $BRIDGE_SCRIPTS_DIR "local-router-shadow.ps1"),
+            (Join-Path $BRIDGE_ROUTER_DIR "local-small-router-v03621.manifest.json"),
+            (Join-Path $BRIDGE_ROUTER_DIR "local-small-router-v03621.weights.json")
+        )) {
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                Remove-Item -LiteralPath $path -Force
+                Write-Status "Removed profile-excluded local router artifact: $(Split-Path -Leaf $path)"
             }
         }
     }
@@ -905,6 +927,9 @@ function Invoke-Install {
     }
     if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "vault") {
         Install-SecuritySupportScripts
+    }
+    if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "local_router_artifacts") {
+        Install-LocalRouterArtifacts
     }
     Remove-ProfileExcludedSupportScripts -Profile $resolvedInstallProfile
 

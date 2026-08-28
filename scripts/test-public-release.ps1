@@ -38,11 +38,13 @@ $script:DesktopTeardownProbeTotalBudgetMilliseconds = 20000
 $script:DesktopOutputRetainLimitBytes = 16384
 $script:OwnedRootPrefix = 'winsmux-public-release-'
 $script:DesktopLifecycle = $null
+$script:DesktopRouterInventory = $null
 $script:DesktopFolderContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\winsmux'
 $script:DesktopBackgroundContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\winsmux'
 $script:DesktopProductPath = 'Registry::HKEY_CURRENT_USER\Software\github\winsmux'
 $script:DesktopUninstallPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux'
 $script:DesktopSmokeEnvMarkerArgument = '--winsmux-smoke-env-marker'
+$script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
 function Assert-Condition {
     param(
@@ -110,6 +112,46 @@ function Get-CoreReleaseAssetNames {
         'winsmux-arm64.exe'
         'winsmux-remote-helper-linux-x64'
     )
+}
+
+function Get-DesktopRouterInventory {
+    param([Parameter(Mandatory)][string]$InstallRoot)
+
+    $relativePaths = @(
+        'winsmux-core/scripts/coordinator-router.ps1',
+        'winsmux-core/scripts/local-router-shadow.ps1',
+        'winsmux-core/router/local-small-router-v03621.manifest.json',
+        'winsmux-core/router/local-small-router-v03621.weights.json'
+    )
+    foreach ($relativePath in $relativePaths) {
+        $sourcePath = Join-Path $script:RepositoryRoot $relativePath
+        $installedPath = Join-Path $InstallRoot $relativePath
+        Assert-Condition (Test-Path -LiteralPath $sourcePath -PathType Leaf) "Checked-out Desktop router source artifact missing: $relativePath"
+        Assert-Condition (Test-Path -LiteralPath $installedPath -PathType Leaf) "Candidate Desktop installer omitted router artifact: $relativePath"
+        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-Condition ($installedHash -ceq $sourceHash) "Candidate Desktop router artifact hash mismatch: $relativePath expected=$sourceHash actual=$installedHash"
+    }
+
+    $installedShadowPath = Join-Path $InstallRoot 'winsmux-core/scripts/local-router-shadow.ps1'
+    $resolvedInstalledRouter = & {
+        param([Parameter(Mandatory)][string]$ShadowPath)
+        . $ShadowPath
+        Resolve-WinsmuxLocalRouterArtifact
+    } $installedShadowPath
+    $expectedManifestPath = Join-Path $InstallRoot 'winsmux-core/router/local-small-router-v03621.manifest.json'
+    $expectedWeightsPath = Join-Path $InstallRoot 'winsmux-core/router/local-small-router-v03621.weights.json'
+    Assert-Condition (
+        [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.manifest_path), [IO.Path]::GetFullPath($expectedManifestPath), [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.weights_path), [IO.Path]::GetFullPath($expectedWeightsPath), [StringComparison]::OrdinalIgnoreCase)
+    ) 'Candidate Desktop default local-router manifest did not resolve to its installed sibling artifacts.'
+
+    return [ordered]@{
+        found = $relativePaths.Count
+        expected = $relativePaths.Count
+        sha256_match = $relativePaths.Count
+        manifest_resolvable = $true
+    }
 }
 
 function Resolve-ReleaseCoordinates {
@@ -2640,6 +2682,7 @@ function Invoke-DesktopSmoke {
     $expectedHash = ''
     $childEnvironment = @{}
     $observation = $null
+    $routerInventory = $null
     $setupFailure = $null
     try {
         Assert-DesktopRunner
@@ -2709,6 +2752,7 @@ function Invoke-DesktopSmoke {
                 Assert-Condition (-not [string]::Equals($priorAppHash, $candidateAppHash, [StringComparison]::OrdinalIgnoreCase)) 'Candidate over-install did not replace the prior winsmux-app.exe payload.'
             }
             Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
+            $routerInventory = Get-DesktopRouterInventory -InstallRoot $installRoot
         }
 
         $webViewRoot = Join-Path $childRoot 'WebView2'
@@ -2738,6 +2782,7 @@ function Invoke-DesktopSmoke {
         throw $setupFailure
     }
     Assert-DesktopLifecyclePhase -Context $context -ExpectedPhase 'clean'
+    $script:DesktopRouterInventory = $routerInventory
     return [ordered]@{
         asset = $assetName
         sha256 = $expectedHash
@@ -4634,6 +4679,9 @@ $result = [ordered]@{
     attempts = $script:RetryCount
     retry_delay_seconds = $script:RetryDelaySeconds
     cleanup = 'clean'
+}
+if ($Surface -eq 'Desktop') {
+    $result.router_inventory = $script:DesktopRouterInventory
 }
 if ($Json) {
     $result | ConvertTo-Json -Depth 10 -Compress

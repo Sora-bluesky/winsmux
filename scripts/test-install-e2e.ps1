@@ -388,6 +388,51 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
     throw 'Installed profile manifest does not match the requested full release.'
 }
 
+$routerArtifactPaths = @(
+    'winsmux-core/scripts/coordinator-router.ps1',
+    'winsmux-core/scripts/local-router-shadow.ps1',
+    'winsmux-core/router/local-small-router-v03621.manifest.json',
+    'winsmux-core/router/local-small-router-v03621.weights.json'
+)
+$routerInventoryItems = @($routerArtifactPaths | ForEach-Object {
+    $relativePath = $_
+    $sourcePath = Join-Path $repoRoot $relativePath
+    $installedPath = Join-Path (Join-Path $fixtureHome '.winsmux') $relativePath
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        throw "Checked-out router source artifact missing: $relativePath"
+    }
+    if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
+        throw "$Route full install omitted router artifact: $relativePath"
+    }
+    $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($installedHash -cne $sourceHash) {
+        throw "$Route full install router artifact hash mismatch: $relativePath expected=$sourceHash actual=$installedHash"
+    }
+    [ordered]@{
+        path = $relativePath
+        sha256 = $installedHash
+    }
+})
+$installedShadowPath = Join-Path (Join-Path $fixtureHome '.winsmux') 'winsmux-core/scripts/local-router-shadow.ps1'
+$resolvedInstalledRouter = & {
+    param([Parameter(Mandatory)][string]$ShadowPath)
+    . $ShadowPath
+    Resolve-WinsmuxLocalRouterArtifact
+} $installedShadowPath
+$expectedInstalledManifest = Join-Path (Join-Path $fixtureHome '.winsmux') 'winsmux-core/router/local-small-router-v03621.manifest.json'
+$expectedInstalledWeights = Join-Path (Join-Path $fixtureHome '.winsmux') 'winsmux-core/router/local-small-router-v03621.weights.json'
+if (-not [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.manifest_path), [IO.Path]::GetFullPath($expectedInstalledManifest), [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.weights_path), [IO.Path]::GetFullPath($expectedInstalledWeights), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Route full install did not resolve the default local-router manifest to its installed sibling artifacts."
+}
+$routerInventory = [ordered]@{
+    found = $routerInventoryItems.Count
+    expected = $routerArtifactPaths.Count
+    sha256_match = $routerInventoryItems.Count
+    manifest_resolvable = $true
+}
+
 $lockedNativeUpdateVerified = $false
 if ($Route -eq 'Direct' -and $isGitHubRunner) {
     $cmdFixture = Join-Path $env:SystemRoot 'System32\cmd.exe'
@@ -487,6 +532,7 @@ if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace
     wrapper_doctor_native_version_verified = $true
     wrapper_doctor_terminal_absence_verified = $true
     wrapper_launch_project_dir_verified = $true
+    router_inventory = $routerInventory
     wrapper_target = $core
     native_target = $native
     fragment = $fragment

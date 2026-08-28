@@ -136,6 +136,7 @@ $whitelistPatterns = @(
     'scripts/test-v03628-race-abnormal-soak.ps1',
     'scripts/test-v03628-runtime-reliability-gate.ps1',
     'scripts/test-v03628-packaged-restore-gate.ps1',
+    'scripts/test-v03638-router-distribution.ps1',
     'scripts/upstream-reevaluation.ps1',
     'scripts/validate-pester-reduction-plan.ps1',
     'scripts/validate-legacy-compat-inventory.ps1',
