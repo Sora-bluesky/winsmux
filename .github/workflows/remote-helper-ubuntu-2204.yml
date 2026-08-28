@@ -1,0 +1,73 @@
+name: Remote Helper Ubuntu 22.04 Evidence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  remote-helper-native:
+    name: Remote Helper Ubuntu 22.04 (${{ matrix.runner }}, ${{ matrix.artifact_arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            artifact_arch: x64
+          - runner: ubuntu-22.04-arm
+            artifact_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test remote helper protocol
+        run: timeout --kill-after=5s 60s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --lib --test protocol -- --nocapture
+
+      - name: Test remote helper Linux session lifecycle
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle --no-run
+          mapfile -t tests < <(cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle -- --list --format=terse | sed -n 's/: test$//p')
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "session_lifecycle listed no tests" >&2
+            exit 1
+          fi
+          for test_name in "${tests[@]}"; do
+            echo "::group::${test_name}"
+            timeout --kill-after=5s 20s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle "${test_name}" -- --exact --nocapture --test-threads=1
+            echo "::endgroup::"
+          done
+
+      - name: Package native remote helper
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.artifact_arch }}" == "x64" ]]; then
+            bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }}
+          else
+            bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }} arm64
+          fi
+
+      - name: Record native remote helper evidence
+        run: |
+          set -euo pipefail
+          artifact="remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }}"
+          printf 'artifact_path=%s\n' "$artifact"
+          grep -E '^(VERSION_ID|PRETTY_NAME)=' /etc/os-release
+          uname -srm
+          stat --format='artifact_bytes=%s' "$artifact"
+          sha256sum "$artifact"
+          file -b "$artifact"
+          readelf -h "$artifact" | grep -E '^[[:space:]]*(Class|Data|Machine):'
+
+      - name: Test packaged native remote helper
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.artifact_arch }}" == "x64" ]]; then
+            bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }}
+          else
+            bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }} arm64
+          fi

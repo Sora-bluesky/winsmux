@@ -255,6 +255,63 @@ Describe 'winsmux version surface' {
         $preCommitWhitelist | Should -Match "(?m)^    'scripts/test-public-remote-helper\.sh',\r?$"
     }
 
+    It 'keeps Ubuntu 22.04 native remote-helper evidence manual and outside Merge Gate' {
+        $workflowPath = Join-Path $script:RepoRoot '.github\workflows\remote-helper-ubuntu-2204.yml'
+        $testWorkflowPath = Join-Path $script:RepoRoot '.github\workflows\test.yml'
+        $preCommitWhitelistPath = Join-Path $script:RepoRoot '.githooks\pre-commit-whitelist.ps1'
+
+        Test-Path -LiteralPath $workflowPath -PathType Leaf | Should -BeTrue
+        $workflow = Get-Content -LiteralPath $workflowPath -Raw -Encoding UTF8
+        $testWorkflow = Get-Content -LiteralPath $testWorkflowPath -Raw -Encoding UTF8
+        $preCommitWhitelist = Get-Content -LiteralPath $preCommitWhitelistPath -Raw -Encoding UTF8
+
+        $workflow | Should -Match '(?ms)^on:\r?\n  workflow_dispatch:\r?\n\r?\npermissions:'
+        $workflow | Should -Not -Match '(?m)^\s+(push|pull_request|pull_request_target|schedule|workflow_call|workflow_run|repository_dispatch):'
+        $workflow | Should -Match '(?ms)^permissions:\s*\r?\n\s+contents:\s+read\s*$'
+        $workflow | Should -Not -Match '(?m)^\s+needs:'
+        $workflow | Should -Match '(?m)^\s+fail-fast:\s+false\s*$'
+        $workflow | Should -Match '(?m)^\s+timeout-minutes:\s+15\s*$'
+        $preCommitWhitelist | Should -Match "(?m)^    '\.github/workflows/remote-helper-ubuntu-2204\.yml',\r?$"
+
+        $nativeRows = [regex]::Matches($workflow, '(?m)^\s+- runner: (?<runner>[^\r\n]+)\r?\n\s+artifact_arch: (?<artifact_arch>[^\r\n]+)\s*$')
+        $nativeRows.Count | Should -Be 2
+        ("$($nativeRows[0].Groups['runner'].Value)/$($nativeRows[0].Groups['artifact_arch'].Value)") | Should -Be 'ubuntu-22.04/x64'
+        ("$($nativeRows[1].Groups['runner'].Value)/$($nativeRows[1].Groups['artifact_arch'].Value)") | Should -Be 'ubuntu-22.04-arm/arm64'
+
+        $workflow | Should -Match '(?ms)if \[\[ "\$\{\{ matrix\.artifact_arch \}\}" == "x64" \]\]; then\r?\n\s+bash ./scripts/package-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\}\r?\n\s+else\r?\n\s+bash ./scripts/package-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\} arm64\r?\n\s+fi'
+        $workflow | Should -Match '(?ms)if \[\[ "\$\{\{ matrix\.artifact_arch \}\}" == "x64" \]\]; then\r?\n\s+bash ./scripts/test-public-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\}\r?\n\s+else\r?\n\s+bash ./scripts/test-public-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\} arm64\r?\n\s+fi'
+
+        $workflow | Should -Match '(?ms)^      - name: Package native remote helper\r?\n.*?^      - name: Record native remote helper evidence\r?\n'
+        foreach ($evidenceCommand in @(
+            'artifact="remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }}"',
+            'printf ''artifact_path=%s\n'' "$artifact"',
+            'grep -E ''^(VERSION_ID|PRETTY_NAME)='' /etc/os-release',
+            'uname -srm',
+            'stat --format=''artifact_bytes=%s'' "$artifact"',
+            'sha256sum "$artifact"',
+            'file -b "$artifact"',
+            'readelf -h "$artifact" | grep -E ''^[[:space:]]*(Class|Data|Machine):'''
+        )) {
+            $workflow | Should -Match ([regex]::Escape($evidenceCommand))
+        }
+
+        foreach ($command in @(
+            'timeout --kill-after=5s 60s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --lib --test protocol -- --nocapture',
+            'cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle --no-run',
+            'timeout --kill-after=5s 20s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle "${test_name}" -- --exact --nocapture --test-threads=1'
+        )) {
+            $workflow | Should -Match ([regex]::Escape($command))
+        }
+
+        $testWorkflow | Should -Not -Match 'remote-helper-ubuntu-2204'
+        $testWorkflow | Should -Not -Match 'ubuntu-22\.04'
+        $mergeGate = [regex]::Match($testWorkflow, '(?ms)^  merge-gate:\r?\n(?<body>.*?)(?=^  [a-z0-9-]+:\r?\n|\z)').Value
+        $mergeGate.Length | Should -BeGreaterThan 0
+        $mergeGate | Should -Match '(?ms)^\s+needs:\r?\n'
+        $mergeGate | Should -Not -Match '(?m)^\s+- remote-helper-native\s*$'
+        $mergeGate | Should -Not -Match '(?m)^\s+- (?:remote-helper-ubuntu-2204|helper-linux-ubuntu-2204|ubuntu-22\.04)\s*$'
+    }
+
     It 'T668-SMOKE-CORE-ASSET-INVENTORY requires both public Core executables' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
