@@ -442,15 +442,21 @@ jobs:
           if ([bool]$decision.install) {
               try {
                   $task810InstallPhase = 'pester_repository_failure'
-                  $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
-                  if (-not $repo) {
+                  $pesterRepository = Get-PSRepository -ErrorAction SilentlyContinue |
+                      Where-Object { (([string]$_.SourceLocation -replace '/+$', '') -ieq 'https://www.powershellgallery.com/api/v2') } |
+                      Sort-Object -Property Name -CaseSensitive |
+                      Select-Object -First 1
+                  $pesterRepositoryName = 'WinsmuxPesterGallery'
+                  if ($null -eq $pesterRepository) {
                       $task810InstallPhase = 'pester_repository_failure'
                       Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop
+                  } else {
+                      $pesterRepositoryName = [string]$pesterRepository.Name
                   }
                   $task810InstallPhase = 'pester_repository_failure'
-                  Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+                  Set-PSRepository -Name $pesterRepositoryName -InstallationPolicy Trusted -ErrorAction Stop
                   $task810InstallPhase = 'pester_module_install_failure'
-                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
+                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository $pesterRepositoryName -ErrorAction Stop
                   $installUsed = $true
               } catch {
                   $task810ExitCode = 2
@@ -755,15 +761,21 @@ jobs:
           if ([bool]$decision.install) {
               try {
                   $task810InstallPhase = 'pester_repository_failure'
-                  $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
-                  if (-not $repo) {
+                  $pesterRepository = Get-PSRepository -ErrorAction SilentlyContinue |
+                      Where-Object { (([string]$_.SourceLocation -replace '/+$', '') -ieq 'https://www.powershellgallery.com/api/v2') } |
+                      Sort-Object -Property Name -CaseSensitive |
+                      Select-Object -First 1
+                  $pesterRepositoryName = 'WinsmuxPesterGallery'
+                  if ($null -eq $pesterRepository) {
                       $task810InstallPhase = 'pester_repository_failure'
                       Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop
+                  } else {
+                      $pesterRepositoryName = [string]$pesterRepository.Name
                   }
                   $task810InstallPhase = 'pester_repository_failure'
-                  Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+                  Set-PSRepository -Name $pesterRepositoryName -InstallationPolicy Trusted -ErrorAction Stop
                   $task810InstallPhase = 'pester_module_install_failure'
-                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
+                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository $pesterRepositoryName -ErrorAction Stop
                   $installUsed = $true
               } catch {
                   $task810ExitCode = 2
@@ -1226,15 +1238,21 @@ jobs:
           if ($selection.resolution_status -ceq 'missing') {
             try {
               $task811PesterPhase = 'pester_repository_failure'
-              $gallery = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
-              if (-not $gallery) {
+              $pesterRepository = Get-PSRepository -ErrorAction SilentlyContinue |
+                Where-Object { (([string]$_.SourceLocation -replace '/+$', '') -ieq 'https://www.powershellgallery.com/api/v2') } |
+                Sort-Object -Property Name -CaseSensitive |
+                Select-Object -First 1
+              $pesterRepositoryName = 'WinsmuxPesterGallery'
+              if ($null -eq $pesterRepository) {
                 $task811PesterPhase = 'pester_repository_failure'
                 Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop
+              } else {
+                $pesterRepositoryName = [string]$pesterRepository.Name
               }
               $task811PesterPhase = 'pester_repository_failure'
-              Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+              Set-PSRepository -Name $pesterRepositoryName -InstallationPolicy Trusted -ErrorAction Stop
               $task811PesterPhase = 'pester_module_install_failure'
-              Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
+              Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository $pesterRepositoryName -ErrorAction Stop
             } catch {
               Write-Host ('TASK810_RUNNER_PROTOCOL_FAILURE:C05:' + $task811PesterPhase)
               exit 2

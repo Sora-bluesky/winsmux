@@ -124,25 +124,48 @@ $task856PesterInstallSiblings = @(
 $task856C05DiagnosticPrefix = 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:'
 foreach ($sibling in $task856PesterInstallSiblings) {
     $explicitRegistration = "Register-PSRepository -Name '$task856PesterRepository' -SourceLocation '$task856PesterSource' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop"
-    $pesterInstall = "Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository '$task856PesterRepository' -ErrorAction Stop"
+    $sourceLookup = '$pesterRepository = Get-PSRepository -ErrorAction SilentlyContinue'
+    $sourceFilter = "Where-Object { (([string]`$_.SourceLocation -replace '/+$', '') -ieq '$task856PesterSource') }"
+    $deterministicSort = 'Sort-Object -Property Name -CaseSensitive'
+    $firstRepository = 'Select-Object -First 1'
+    $newRepositoryName = '$pesterRepositoryName = ''WinsmuxPesterGallery'''
+    $existingRepositoryName = '$pesterRepositoryName = [string]$pesterRepository.Name'
+    $selectedSet = 'Set-PSRepository -Name $pesterRepositoryName -InstallationPolicy Trusted -ErrorAction Stop'
+    $pesterInstall = 'Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository $pesterRepositoryName -ErrorAction Stop'
     $registrationIndex = $sibling.block.IndexOf($explicitRegistration, [System.StringComparison]::Ordinal)
+    $setIndex = $sibling.block.IndexOf($selectedSet, [System.StringComparison]::Ordinal)
     $installIndex = $sibling.block.IndexOf($pesterInstall, [System.StringComparison]::Ordinal)
+    $repositoryPhaseAssignment = ('${0} = ''pester_repository_failure''' -f [string]$sibling.phase_variable)
+    $sourceSelectionPattern =
+        [regex]::Escape($sourceLookup) + '\s*\|\s*' +
+        [regex]::Escape($sourceFilter) + '\s*\|\s*' +
+        [regex]::Escape($deterministicSort) + '\s*\|\s*' +
+        [regex]::Escape($firstRepository)
+    $registrationBranchPattern =
+        [regex]::Escape($newRepositoryName) + '\s*' +
+        [regex]::Escape('if ($null -eq $pesterRepository)') + '\s*\{\s*' +
+        [regex]::Escape($repositoryPhaseAssignment) + '\s*' +
+        [regex]::Escape($explicitRegistration) + '\s*\}\s*else\s*\{\s*' +
+        [regex]::Escape($existingRepositoryName) + '\s*\}'
     Add-Check "TASK-856 $($sibling.name) omits network-backed NuGet provider installation" (
         -not [string]::IsNullOrEmpty($sibling.block) -and
         $sibling.block -notmatch '\bInstall-PackageProvider\b'
     ) '.github/workflows/test.yml'
-    Add-Check "TASK-856 $($sibling.name) uses an explicit NuGet Pester repository" (
+    Add-Check "TASK-856 $($sibling.name) deterministically reuses an equivalent official repository or registers one" (
         -not [string]::IsNullOrEmpty($sibling.block) -and
         $sibling.block -notmatch 'Register-PSRepository\s+-Default\b' -and
-        $sibling.block -notmatch '\bPSGallery\b' -and
+        [regex]::IsMatch($sibling.block, $sourceSelectionPattern, [System.Text.RegularExpressions.RegexOptions]::Multiline) -and
+        [regex]::IsMatch($sibling.block, $registrationBranchPattern, [System.Text.RegularExpressions.RegexOptions]::Multiline) -and
+        [regex]::Matches($sibling.block, [regex]::Escape('Register-PSRepository -Name')).Count -eq 1 -and
         $registrationIndex -ge 0 -and
+        $setIndex -gt $registrationIndex -and
         $installIndex -gt $registrationIndex
     ) '.github/workflows/test.yml'
 
     $phaseCommandPairs = @(
-        [pscustomobject]@{ phase = 'pester_repository_failure'; command = '\$(?:repo|gallery)\s*=\s*Get-PSRepository\s+-Name\s+''WinsmuxPesterGallery''\s+-ErrorAction\s+SilentlyContinue' }
+        [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape($sourceLookup) }
         [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape($explicitRegistration) }
-        [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape("Set-PSRepository -Name '$task856PesterRepository' -InstallationPolicy Trusted -ErrorAction Stop") }
+        [pscustomobject]@{ phase = 'pester_repository_failure'; command = [regex]::Escape($selectedSet) }
         [pscustomobject]@{ phase = 'pester_module_install_failure'; command = [regex]::Escape($pesterInstall) }
     )
     $phaseCommandsPass = -not [string]::IsNullOrEmpty($sibling.block)
