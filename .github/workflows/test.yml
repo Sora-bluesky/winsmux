@@ -441,10 +441,11 @@ jobs:
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
-                  $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-                  if (-not $repo) { Register-PSRepository -Default -ErrorAction Stop }
-                  Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository PSGallery -ErrorAction Stop
+                  if ($env:GITHUB_ACTIONS -eq 'true') { Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop }
+                  $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
+                  if (-not $repo) { Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop }
+                  Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
                   $installUsed = $true
               } catch {
                   $task810ExitCode = 2
@@ -748,10 +749,11 @@ jobs:
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
-                  $repo = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-                  if (-not $repo) { Register-PSRepository -Default -ErrorAction Stop }
-                  Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository PSGallery -ErrorAction Stop
+                  if ($env:GITHUB_ACTIONS -eq 'true') { Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop }
+                  $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
+                  if (-not $repo) { Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop }
+                  Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+                  Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
                   $installUsed = $true
               } catch {
                   $task810ExitCode = 2
@@ -1212,10 +1214,11 @@ jobs:
           Import-Module ./scripts/winsmux-pester.psm1 -Force
           $selection = Resolve-WinsmuxPester571
           if ($selection.resolution_status -ceq 'missing') {
-            $gallery = Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if (-not $gallery) { Register-PSRepository -Default -ErrorAction Stop }
-            Set-PSRepository -Name PSGallery -InstallationPolicy Trusted -ErrorAction Stop
-            Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository PSGallery -ErrorAction Stop
+            if ($env:GITHUB_ACTIONS -eq 'true') { Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop }
+            $gallery = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
+            if (-not $gallery) { Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop }
+            Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+            Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
             $selection = Resolve-WinsmuxPester571
           }
           if ($selection.resolution_status -cne 'resolved') {
