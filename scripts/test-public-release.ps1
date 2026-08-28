@@ -151,6 +151,37 @@ function Get-GitBlobSha256 {
     }
 }
 
+function Resolve-DesktopRouterInventoryPolicy {
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$ReleaseTag,
+        [AllowEmptyString()][string]$CandidateInstallerPath
+    )
+
+    if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
+        return [pscustomobject]@{
+            required = $true
+            treeish = 'HEAD'
+        }
+    }
+
+    $versionMatch = [regex]::Match($Version, '^(?<core>\d+\.\d+\.\d+)(?:-|$)')
+    if (-not $versionMatch.Success) {
+        throw "Unsupported Desktop release version: $Version"
+    }
+    if ([version]$versionMatch.Groups['core'].Value -lt [version]'0.36.38') {
+        return [pscustomobject]@{
+            required = $false
+            treeish = $null
+        }
+    }
+
+    return [pscustomobject]@{
+        required = $true
+        treeish = $ReleaseTag
+    }
+}
+
 function Get-DesktopRouterInventory {
     param(
         [Parameter(Mandatory)][string]$InstallRoot,
@@ -2721,7 +2752,7 @@ function Invoke-DesktopSmoke {
     $childEnvironment = @{}
     $observation = $null
     $routerInventory = $null
-    $routerTreeish = if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) { 'HEAD' } else { $ReleaseTag }
+    $routerPolicy = Resolve-DesktopRouterInventoryPolicy -Version $Version -ReleaseTag $ReleaseTag -CandidateInstallerPath $CandidateInstallerPath
     $setupFailure = $null
     try {
         Assert-DesktopRunner
@@ -2791,7 +2822,9 @@ function Invoke-DesktopSmoke {
                 Assert-Condition (-not [string]::Equals($priorAppHash, $candidateAppHash, [StringComparison]::OrdinalIgnoreCase)) 'Candidate over-install did not replace the prior winsmux-app.exe payload.'
             }
             Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
-            $routerInventory = Get-DesktopRouterInventory -InstallRoot $installRoot -Treeish $routerTreeish
+            if ($routerPolicy.required) {
+                $routerInventory = Get-DesktopRouterInventory -InstallRoot $installRoot -Treeish $routerPolicy.treeish
+            }
         }
 
         $webViewRoot = Join-Path $childRoot 'WebView2'
@@ -4719,7 +4752,7 @@ $result = [ordered]@{
     retry_delay_seconds = $script:RetryDelaySeconds
     cleanup = 'clean'
 }
-if ($Surface -eq 'Desktop') {
+if ($Surface -eq 'Desktop' -and $null -ne $script:DesktopRouterInventory) {
     $result.router_inventory = $script:DesktopRouterInventory
 }
 if ($Json) {
