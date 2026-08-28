@@ -48,6 +48,48 @@ function ConvertTo-WinsmuxBinaryVersion {
     return $Matches['binary'] + $Matches['suffix']
 }
 
+function Get-GitBlobSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Treeish,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $tempPath = Join-Path ([IO.Path]::GetTempPath()) ("winsmux-install-blob-{0}.tmp" -f [Guid]::NewGuid().ToString('N'))
+    $process = $null
+    try {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command git -ErrorAction Stop).Source
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-C', $repoRoot, 'cat-file', 'blob', "${Treeish}:$RelativePath")) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = [Diagnostics.Process]::Start($startInfo)
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $stream = [IO.FileStream]::new($tempPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $process.StandardOutput.BaseStream.CopyTo($stream)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        $process.WaitForExit()
+        [void]$stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "git cat-file failed for ${Treeish}:$RelativePath with exit $($process.ExitCode)."
+        }
+        return (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop
+        }
+    }
+}
+
 $scratch = if ([string]::IsNullOrWhiteSpace($ScratchRoot)) {
     $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
     Join-Path $base ("winsmux-install-e2e-" + [System.Guid]::NewGuid().ToString('N'))
@@ -396,15 +438,11 @@ $routerArtifactPaths = @(
 )
 $routerInventoryItems = @($routerArtifactPaths | ForEach-Object {
     $relativePath = $_
-    $sourcePath = Join-Path $repoRoot $relativePath
     $installedPath = Join-Path (Join-Path $fixtureHome '.winsmux') $relativePath
-    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
-        throw "Checked-out router source artifact missing: $relativePath"
-    }
     if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
         throw "$Route full install omitted router artifact: $relativePath"
     }
-    $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $sourceHash = Get-GitBlobSha256 -Treeish $SourceCommit -RelativePath $relativePath
     $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($installedHash -cne $sourceHash) {
         throw "$Route full install router artifact hash mismatch: $relativePath expected=$sourceHash actual=$installedHash"

@@ -30,6 +30,65 @@ function Get-Sha256 {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLowerInvariant()
 }
 
+function Get-GitBlobSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Treeish,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $tempPath = Join-Path ([IO.Path]::GetTempPath()) ("winsmux-router-blob-{0}.tmp" -f [Guid]::NewGuid().ToString('N'))
+    $process = $null
+    try {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command git -ErrorAction Stop).Source
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-C', $repoRoot, 'cat-file', 'blob', "${Treeish}:$RelativePath")) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = [Diagnostics.Process]::Start($startInfo)
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $stream = [IO.FileStream]::new($tempPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $process.StandardOutput.BaseStream.CopyTo($stream)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        $process.WaitForExit()
+        [void]$stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "git cat-file failed for ${Treeish}:$RelativePath with exit $($process.ExitCode)."
+        }
+        return Get-Sha256 $tempPath
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop
+        }
+    }
+}
+
+function Get-GitAttributeValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Attribute
+    )
+
+    $line = (& git -C $repoRoot check-attr $Attribute -- $RelativePath 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "git check-attr failed for $RelativePath ($Attribute)."
+    }
+    $prefix = "${RelativePath}: ${Attribute}: "
+    if (-not $line.StartsWith($prefix, [StringComparison]::Ordinal)) {
+        throw "git check-attr returned an unexpected record for $RelativePath ($Attribute)."
+    }
+    return $line.Substring($prefix.Length)
+}
+
 function Get-TauriResourceInventory {
     $configPath = Join-Path $repoRoot 'winsmux-app/src-tauri/tauri.conf.json'
     $configDirectory = Split-Path -Parent $configPath
@@ -102,12 +161,26 @@ function Get-InstallerInventory {
 $sourceInventory = @()
 foreach ($artifact in $artifacts) {
     $sourcePath = Join-Path $repoRoot $artifact.source
+    $present = Test-Path -LiteralPath $sourcePath -PathType Leaf
+    $worktreeHash = if ($present) { Get-Sha256 $sourcePath } else { $null }
+    $blobHash = Get-GitBlobSha256 -Treeish HEAD -RelativePath $artifact.source
+    $requiresLfAttribute = $artifact.source -in @(
+        'winsmux-core/scripts/coordinator-router.ps1',
+        'winsmux-core/scripts/local-router-shadow.ps1'
+    )
+    $textAttribute = Get-GitAttributeValue -RelativePath $artifact.source -Attribute text
+    $eolAttribute = Get-GitAttributeValue -RelativePath $artifact.source -Attribute eol
     $sourceInventory += , [ordered]@{
         path = $artifact.source
-        present = Test-Path -LiteralPath $sourcePath -PathType Leaf
-        sha256 = if (Test-Path -LiteralPath $sourcePath -PathType Leaf) { Get-Sha256 $sourcePath } else { $null }
+        present = $present
+        blob_sha256 = $blobHash
+        worktree_sha256 = $worktreeHash
+        blob_matches_worktree = $present -and $blobHash -ceq $worktreeHash
+        lf_attribute = -not $requiresLfAttribute -or ($textAttribute -ceq 'set' -and $eolAttribute -ceq 'lf')
     }
 }
+$sourceByPath = @{}
+foreach ($item in $sourceInventory) { $sourceByPath[[string]$item.path] = $item }
 
 $manifestResolvable = $false
 $manifestError = $null
@@ -124,11 +197,13 @@ try {
 $tauriInventory = Get-TauriResourceInventory
 $desktopItems = @($artifacts | ForEach-Object {
     $entry = $tauriInventory[$_.target]
+    $sourceEntry = $sourceByPath[$_.source]
     [ordered]@{
         path = $_.target
         present = $null -ne $entry
         source_matches = $null -ne $entry -and [string]$entry.source -ceq $_.source
         sha256 = if ($null -ne $entry) { [string]$entry.sha256 } else { $null }
+        blob_matches_resource = $null -ne $entry -and [string]$entry.sha256 -ceq [string]$sourceEntry.blob_sha256
     }
 })
 
@@ -171,9 +246,12 @@ $cleanupOwnsExactFiles = @($artifacts | Where-Object {
 }).Count -eq 0
 $cleanupIsNonRecursive = $cleanupText -notmatch '(?s)Remove-Item[^\r\n]*(?:-Recurse|\s-r\b)'
 
-$desktopFound = @($desktopItems | Where-Object { $_.present -and $_.source_matches }).Count
+$desktopFound = @($desktopItems | Where-Object { $_.present -and $_.source_matches -and $_.blob_matches_resource }).Count
 $cliFound = @($installerInventory.Values | Where-Object { $_.declared -and $_.destination_matches }).Count
-$sourceReady = @($sourceInventory | Where-Object { $_.present -and -not [string]::IsNullOrWhiteSpace([string]$_.sha256) }).Count -eq $artifacts.Count
+$sourceReady = @($sourceInventory | Where-Object {
+    $_.present -and $_.blob_matches_worktree -and $_.lf_attribute -and
+        -not [string]::IsNullOrWhiteSpace([string]$_.blob_sha256)
+}).Count -eq $artifacts.Count
 $profileReady = $fullOwnsPayload -and (@($nonFullExcludePayload | Where-Object { $_ }).Count -eq 3) -and $installIsFullOnly
 $cleanupReady = $cleanupOwnsExactFiles -and $cleanupIsNonRecursive
 $allPass = $sourceReady -and $manifestResolvable -and ($parseErrors.Count -eq 0) -and
