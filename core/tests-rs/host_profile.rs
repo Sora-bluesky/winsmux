@@ -24,20 +24,49 @@ fn write_known_hosts(dir: &Path, blob: &str) -> PathBuf {
 
 fn install_fake_ssh(dir: &Path, g_text: &str) -> PathBuf {
     fs::write(dir.join("g-text.txt"), g_text.replace('\n', "\r\n")).unwrap();
-    fs::write(
-        dir.join("ssh.cmd"),
-        "@echo off\r\n\
-         setlocal EnableExtensions\r\n\
-         >\"%~dp0ssh-argv.txt\" echo %*\r\n\
-         if /I not \"%~1\"==\"-G\" exit /b 2\r\n\
-         if not \"%~2\"==\"--\" exit /b 2\r\n\
-         if \"%~3\"==\"\" exit /b 2\r\n\
-         if not \"%~4\"==\"\" exit /b 2\r\n\
-         type \"%~dp0g-text.txt\"\r\n\
-         exit /b 0\r\n",
-    )
-    .unwrap();
-    dir.join("ssh.cmd")
+
+    #[cfg(windows)]
+    {
+        fs::write(
+            dir.join("ssh.cmd"),
+            "@echo off\r\n\
+             setlocal EnableExtensions\r\n\
+             >\"%~dp0ssh-argv.txt\" echo %*\r\n\
+             if /I not \"%~1\"==\"-G\" exit /b 2\r\n\
+             if not \"%~2\"==\"--\" exit /b 2\r\n\
+             if \"%~3\"==\"\" exit /b 2\r\n\
+             if not \"%~4\"==\"\" exit /b 2\r\n\
+             type \"%~dp0g-text.txt\"\r\n\
+             exit /b 0\r\n",
+        )
+        .unwrap();
+        dir.join("ssh.cmd")
+    }
+
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("ssh");
+        fs::write(
+            &path,
+            r#"#!/bin/sh
+script_dir=$(dirname "$0")
+printf '%s\n' "$*" > "$script_dir/ssh-argv.txt"
+case "$1" in
+  -G|-g) ;;
+  *) exit 2 ;;
+esac
+[ "$2" = "--" ] || exit 2
+[ -n "$3" ] || exit 2
+[ -z "$4" ] || exit 2
+cat "$script_dir/g-text.txt"
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
 }
 
 fn run_host_profile(

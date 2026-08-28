@@ -511,6 +511,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - name: Test host-profile fingerprint change evidence
+        run: |
+          cargo test --manifest-path core/Cargo.toml --test host_profile register_promotes_pending_and_change_blocks -- --exact --nocapture
+          cargo test --manifest-path core/Cargo.toml --test host_profile -- --nocapture
+
       - name: Test remote helper protocol
         run: timeout --kill-after=5s 60s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --lib --test protocol -- --nocapture
 
