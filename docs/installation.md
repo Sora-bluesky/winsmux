@@ -111,6 +111,29 @@ is no longer part of the public release surface. See [Public Distribution
 Boundary](source-access.md) for the public distribution and redistribution
 boundary.
 
+## Linux remote helper
+
+As of `v0.36.37`, the packaged remote-helper path is supported only on Ubuntu
+24.04 x86_64. Ubuntu 22.04, Rocky Linux 9, aarch64, and other Linux targets have
+not completed the packaged compatibility checks for this release; treat them as
+experimental and unsupported until a later release says otherwise.
+
+Install the helper from the same GitHub Release as the Windows winsmux client.
+Verify its entry in `SHA256SUMS` before copying it to the fixed user path used by
+the OpenSSH transport:
+
+```bash
+release_tag=v0.36.37
+base_url="https://github.com/Sora-bluesky/winsmux/releases/download/$release_tag"
+curl -fLO "$base_url/SHA256SUMS"
+curl -fLO "$base_url/winsmux-remote-helper-linux-x64"
+grep '  winsmux-remote-helper-linux-x64$' SHA256SUMS | sha256sum --check -
+install -Dm755 winsmux-remote-helper-linux-x64 "$HOME/.local/bin/winsmux-remote-helper"
+```
+
+The Windows OpenSSH transport starts
+`./.local/bin/winsmux-remote-helper serve --stdio` from the remote home directory.
+
 ## CLI package install
 
 ```powershell

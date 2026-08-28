@@ -692,6 +692,11 @@ if ($Version -eq 'v0.36.27') {
     )
     $highlightItems = @($v03622Highlights + $highlightItems | Select-Object -First 6)
 }
+if ($Version -eq 'v0.36.37') {
+    $highlightItems = @(
+        'Moved the six-environment Remote Execution expansion to v0.36.38; v0.36.37 supports only the packaged Ubuntu 24.04 x86_64 helper path, while other Linux targets remain experimental and unsupported'
+    ) + @($highlightItems)
+}
 if ($highlightItems.Count -lt 3) {
     foreach ($fallbackHighlight in @(
         'Release scope is derived from the public version-tag commit range when private planning metadata is not available in CI',
@@ -769,6 +774,9 @@ $distributionItems = @(
     'Release assets include `SHA256SUMS` generated from the core executables',
     'GitHub Release publication consumes the checked `release/release-body.md` and `release/*` asset set only after quality and public-surface gates pass'
 )
+if ($Version -eq 'v0.36.37') {
+    $distributionItems += 'Release assets include `winsmux-remote-helper-linux-x64` for manual installation at `~/.local/bin/winsmux-remote-helper` on the supported Ubuntu 24.04 x86_64 path'
+}
 Add-Section -Builder $builder -Title 'Distribution' -Items $distributionItems -Seen $null
 
 $validationItems = @(
@@ -778,6 +786,9 @@ $validationItems = @(
     'Generated release notes must pass `scripts/audit-public-surface.ps1` before publication',
     'The release job depends on successful build jobs before release assets can be uploaded'
 )
+if ($Version -eq 'v0.36.37') {
+    $validationItems += 'Ubuntu 24.04 CI packages the release helper bytes and runs black-box Hello, usage, PTY I/O, detach, close, reattach, and stop checks against that same binary'
+}
 if ($Version -eq 'v0.36.22') {
     $validationItems += 'The PR gate passed Core Build and Test, Desktop Build and Test, Pester matrix jobs, gitleaks, public-surface audit, npm build, and Merge Gate before tagging'
 }

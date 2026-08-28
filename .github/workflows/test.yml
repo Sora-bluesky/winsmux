@@ -480,7 +480,7 @@ jobs:
 
   helper-linux-negatives:
     name: Helper Linux Negatives
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -504,6 +504,12 @@ jobs:
             timeout --kill-after=5s 20s cargo test --manifest-path core/crates/winsmux-remote-helper/Cargo.toml --test session_lifecycle "${test_name}" -- --exact --nocapture --test-threads=1
             echo "::endgroup::"
           done
+
+      - name: Package supported remote helper
+        run: bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
+
+      - name: Test packaged remote helper
+        run: bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
 
   core-build-test:
     name: Core Build and Test

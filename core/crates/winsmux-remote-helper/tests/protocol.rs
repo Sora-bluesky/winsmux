@@ -34,7 +34,10 @@ impl Read for CountingReader {
 }
 
 fn helper_bin() -> PathBuf {
-    env!("CARGO_BIN_EXE_winsmux-remote-helper").into()
+    std::env::var_os("WINSMUX_REMOTE_HELPER_UNDER_TEST")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_winsmux-remote-helper").into())
 }
 
 fn nonce() -> String {

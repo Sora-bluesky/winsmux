@@ -97,6 +97,28 @@ Windows が発行元または SmartScreen の警告を出した場合は、同�
 
 `v1.0.0` 以降の公開配布は、インストーラーを主経路にします。完全な実装ソース一式は、公開リリース面には含めません。公開配布と再配布の境界は [公開配布の境界](source-access.ja.md) を参照してください。
 
+## Linux リモートヘルパー
+
+`v0.36.37` でパッケージ済みリモートヘルパーをサポートするのは、Ubuntu
+24.04 x86_64 だけです。Ubuntu 22.04、Rocky Linux 9、aarch64 など、今回
+パッケージ互換性を確認していない Linux 環境は試験的な扱いで、未サポートです。
+今後のリリースで実行結果を確認するまでは、サポート済みとして扱いません。
+
+Windows 側の winsmux と同じ GitHub Release からヘルパーを取得します。
+`SHA256SUMS` の該当行と照合してから、OpenSSH 経路が使う固定位置へ配置します。
+
+```bash
+release_tag=v0.36.37
+base_url="https://github.com/Sora-bluesky/winsmux/releases/download/$release_tag"
+curl -fLO "$base_url/SHA256SUMS"
+curl -fLO "$base_url/winsmux-remote-helper-linux-x64"
+grep '  winsmux-remote-helper-linux-x64$' SHA256SUMS | sha256sum --check -
+install -Dm755 winsmux-remote-helper-linux-x64 "$HOME/.local/bin/winsmux-remote-helper"
+```
+
+Windows の OpenSSH 経路は、リモートのホームディレクトリから
+`./.local/bin/winsmux-remote-helper serve --stdio` を起動します。
+
 ## CLI パッケージでのインストール
 
 ```powershell
