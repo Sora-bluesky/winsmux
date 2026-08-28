@@ -491,8 +491,16 @@ jobs:
           path: test-results-${{ matrix.result }}.xml
 
   helper-linux-negatives:
-    name: Helper Linux Negatives
-    runs-on: ubuntu-24.04
+    name: Helper Linux Negatives (${{ matrix.runner }}, ${{ matrix.artifact_arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            artifact_arch: x64
+          - runner: ubuntu-24.04-arm
+            artifact_arch: arm64
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -517,11 +525,23 @@ jobs:
             echo "::endgroup::"
           done
 
-      - name: Package supported remote helper
-        run: bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
+      - name: Package native remote helper
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.artifact_arch }}" == "x64" ]]; then
+            bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }}
+          else
+            bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }} arm64
+          fi
 
-      - name: Test packaged remote helper
-        run: bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
+      - name: Test packaged native remote helper
+        run: |
+          set -euo pipefail
+          if [[ "${{ matrix.artifact_arch }}" == "x64" ]]; then
+            bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }}
+          else
+            bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }} arm64
+          fi
 
   core-build-test:
     name: Core Build and Test

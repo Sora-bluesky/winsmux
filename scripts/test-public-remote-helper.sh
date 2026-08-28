@@ -1,13 +1,38 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 1 ]]; then
-  echo "usage: scripts/test-public-remote-helper.sh <packaged-helper>" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "usage: scripts/test-public-remote-helper.sh <packaged-helper> [x64|arm64]" >&2
   exit 2
 fi
 
-if [[ "$(uname -s)" != "Linux" || "$(uname -m)" != "x86_64" ]]; then
-  echo "winsmux packaged remote helper tests support Linux x86_64 only" >&2
+expected_arch="${2:-x64}"
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "winsmux packaged remote helper tests support Linux hosts only" >&2
+  exit 1
+fi
+
+host_arch="$(uname -m)"
+case "$host_arch" in
+  x86_64) host_artifact_arch="x64";;
+  aarch64|arm64) host_artifact_arch="arm64";;
+  *)
+    echo "winsmux packaged remote helper tests support Linux x86_64 and aarch64 hosts only" >&2
+    exit 1
+    ;;
+esac
+
+case "$expected_arch" in
+  x64|arm64) ;;
+  *)
+    echo "winsmux packaged remote helper tests require expected architecture x64 or arm64" >&2
+    exit 2
+    ;;
+esac
+
+if [[ "$host_artifact_arch" != "$expected_arch" ]]; then
+  echo "winsmux packaged remote helper tests expected $expected_arch but native host is $host_artifact_arch" >&2
   exit 1
 fi
 
