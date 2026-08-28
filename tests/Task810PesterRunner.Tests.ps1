@@ -518,6 +518,31 @@ exit $task810ExitCode
             }
         }
 
+        function script:Get-Task810PesterBootstrapSiblingBlocks {
+            $patterns = @(
+                [pscustomobject]@{
+                    Name = 'Matrix'
+                    Pattern = '(?ms)^  pester:.*?^\s{10}if \(\[bool\]\$decision\.install\) \{\r?\n(?<install>.*?)^\s{10}\$task810ExitCode = \[int\]\$decision\.exit'
+                }
+                [pscustomobject]@{
+                    Name = 'Desktop'
+                    Pattern = '(?ms)^  desktop-build-test:.*?^\s{10}if \(\[bool\]\$decision\.install\) \{\r?\n(?<install>.*?)^\s{10}\$task810ExitCode = \[int\]\$decision\.exit'
+                }
+                [pscustomobject]@{
+                    Name = 'TASK811'
+                    Pattern = '(?ms)^  task811-operator-infra:.*?^\s{10}if \(\$selection\.resolution_status -ceq ''missing''\) \{\r?\n(?<install>.*?)^\s{12}\$selection = Resolve-WinsmuxPester571'
+                }
+            )
+            foreach ($pattern in $patterns) {
+                $match = [regex]::Match($script:WorkflowText, [string]$pattern.Pattern)
+                if (-not $match.Success) { throw "failed to extract $($pattern.Name) Pester bootstrap block" }
+                [pscustomobject]@{
+                    Name = [string]$pattern.Name
+                    Text = [string]$match.Groups['install'].Value
+                }
+            }
+        }
+
         function script:Invoke-Task810ActualScalar {
             param(
                 [Parameter(Mandatory)][ValidateSet('Matrix','Desktop')]$Adapter,
@@ -525,7 +550,7 @@ exit $task810ExitCode
                 [Parameter(Mandatory)][string]$StaticResultFile,
                 [Parameter(Mandatory)][AllowEmptyString()][string]$RunnerStdout,
                 [bool]$RunnerThrow = $false,
-                [ValidateSet('none', 'provider', 'repository', 'module')]
+                [ValidateSet('none', 'repository', 'module')]
                 [string]$InstallThrowPhase = 'none',
                 [bool]$InstallUsedInitial = $false,
                 [bool]$DeleteResultAfterFirst = $false,
@@ -564,10 +589,6 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
             $fixtureHost = [Task810FixtureHost]::new()
             $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
             # Inject bootstrap commands as session functions.
-            $packageProviderSb = {
-                param([string]$Name, [switch]$Force, [string]$Scope, [string]$ErrorAction)
-                if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'provider') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
-            }.GetNewClosure()
             $repositoryGetSb = {
                 param([string]$Name, [string]$ErrorAction)
                 if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'repository') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
@@ -586,7 +607,6 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 $script:task810InstallCount = [int]$script:task810InstallCount + 1
                 if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'module') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
             }.GetNewClosure()
-            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Install-PackageProvider', $packageProviderSb.ToString()))
             $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Install-Module', $installSb.ToString()))
             $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Get-PSRepository', $repositoryGetSb.ToString()))
             $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Register-PSRepository', $repositoryRegisterSb.ToString()))
@@ -595,7 +615,6 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
             $fixtureRunspace = [RunspaceFactory]::CreateRunspace($fixtureHost, $iss)
             $fixturePowerShell = $null
             $prevLoc = Get-Location
-            $previousGithubActions = [Environment]::GetEnvironmentVariable('GITHUB_ACTIONS')
             $previousInstallThrowPhase = [Environment]::GetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW_PHASE')
             $previousRawMarker = [Environment]::GetEnvironmentVariable('TASK810_FIXTURE_RAW_MARKER')
             try {
@@ -611,7 +630,6 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 } else {
                     [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RUNNER_THROW', '0')
                 }
-                [Environment]::SetEnvironmentVariable('GITHUB_ACTIONS', 'true')
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW_PHASE', $InstallThrowPhase)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RAW_MARKER', "TASK856_RAW_MARKER:$InstallThrowPhase:C:\not-for-output")
                 if ($DeleteResultAfterFirst) {
@@ -687,7 +705,6 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 }
             } finally {
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RUNNER_THROW', $null)
-                [Environment]::SetEnvironmentVariable('GITHUB_ACTIONS', $previousGithubActions)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW_PHASE', $previousInstallThrowPhase)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RAW_MARKER', $previousRawMarker)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_DELETE_RESULT', $null)
@@ -738,12 +755,11 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
         function script:Assert-Task810C05PhaseDiagnostic {
             param(
                 [Parameter(Mandatory)][ValidateSet('Matrix', 'Desktop')][string]$Adapter,
-                [Parameter(Mandatory)][ValidateSet('provider', 'repository', 'module')][string]$FailurePhase,
+                [Parameter(Mandatory)][ValidateSet('repository', 'module')][string]$FailurePhase,
                 [Parameter(Mandatory)][string]$ShardId,
                 [Parameter(Mandatory)][string]$StaticResultFile
             )
             $phaseToken = switch ($FailurePhase) {
-                'provider' { 'pester_package_provider_failure' }
                 'repository' { 'pester_repository_failure' }
                 'module' { 'pester_module_install_failure' }
             }
@@ -1723,17 +1739,18 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
     }
 
     Context 'C05 phase-safe diagnostics' {
-        It 'Matrix C05 provider failure is raw-safe' {
-            Assert-Task810C05PhaseDiagnostic -Adapter Matrix -FailurePhase provider -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml'
+        It 'all Pester bootstrap siblings omit package-provider installation' {
+            $siblings = @(Get-Task810PesterBootstrapSiblingBlocks)
+            $siblings.Count | Should -Be 3
+            foreach ($sibling in $siblings) {
+                $sibling.Text | Should -Not -Match '\bInstall-PackageProvider\b' -Because "$($sibling.Name) must not bootstrap NuGet through a network-backed provider install"
+            }
         }
         It 'Matrix C05 repository failure is raw-safe' {
             Assert-Task810C05PhaseDiagnostic -Adapter Matrix -FailurePhase repository -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml'
         }
         It 'Matrix C05 module failure is raw-safe' {
             Assert-Task810C05PhaseDiagnostic -Adapter Matrix -FailurePhase module -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml'
-        }
-        It 'Desktop C05 provider failure is raw-safe' {
-            Assert-Task810C05PhaseDiagnostic -Adapter Desktop -FailurePhase provider -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml'
         }
         It 'Desktop C05 repository failure is raw-safe' {
             Assert-Task810C05PhaseDiagnostic -Adapter Desktop -FailurePhase repository -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml'

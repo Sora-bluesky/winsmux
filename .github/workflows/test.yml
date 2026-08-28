@@ -441,10 +441,6 @@ jobs:
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
-                  if ($env:GITHUB_ACTIONS -eq 'true') {
-                      $task810InstallPhase = 'pester_package_provider_failure'
-                      Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop
-                  }
                   $task810InstallPhase = 'pester_repository_failure'
                   $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
                   if (-not $repo) {
@@ -758,10 +754,6 @@ jobs:
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
-                  if ($env:GITHUB_ACTIONS -eq 'true') {
-                      $task810InstallPhase = 'pester_package_provider_failure'
-                      Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop
-                  }
                   $task810InstallPhase = 'pester_repository_failure'
                   $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
                   if (-not $repo) {
@@ -1233,10 +1225,6 @@ jobs:
           $selection = Resolve-WinsmuxPester571
           if ($selection.resolution_status -ceq 'missing') {
             try {
-              if ($env:GITHUB_ACTIONS -eq 'true') {
-                $task811PesterPhase = 'pester_package_provider_failure'
-                Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop
-              }
               $task811PesterPhase = 'pester_repository_failure'
               $gallery = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
               if (-not $gallery) {
@@ -1341,7 +1329,6 @@ jobs:
           CLASS_INTEGRATION = "Pester integration timeout_minutes: 30"
           CLASS_TASK810 = "TASK810_RUNNER_PROTOCOL_FAILURE"
           CLASS_TASK810_C05_PHASES = (
-              "TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_package_provider_failure",
               "TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_repository_failure",
               "TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure",
           )
