@@ -212,7 +212,7 @@ Describe 'winsmux version surface' {
         (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,core_asset_inventory,missing_arm64_checksum_entry,duplicate_arm64_checksum_entry,arm64_checksum_mismatch,missing_helper_checksum_entry,duplicate_helper_checksum_entry,helper_checksum_mismatch,valid,missing_checksum_entry,duplicate_checksum_entry,checksum_mismatch,version_mismatch,temp_cleanup'
     }
 
-    It 'packages and publishes the supported Ubuntu 24.04 x64 remote helper bytes' {
+    It 'requires native CI on Ubuntu 24.04 x64 and arm64 while public helper assets remain x64-only' {
         $testWorkflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\test.yml') -Raw -Encoding UTF8
         $releaseWorkflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-core.yml') -Raw -Encoding UTF8
         $preCommitWhitelist = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.githooks\pre-commit-whitelist.ps1') -Raw -Encoding UTF8
@@ -221,6 +221,7 @@ Describe 'winsmux version surface' {
 
         Test-Path -LiteralPath $packageScript -PathType Leaf | Should -BeTrue
         Test-Path -LiteralPath $testScript -PathType Leaf | Should -BeTrue
+        $packageScriptText = Get-Content -LiteralPath $packageScript -Raw -Encoding UTF8
         $packagedTest = Get-Content -LiteralPath $testScript -Raw -Encoding UTF8
         $compileIndex = $packagedTest.IndexOf('cargo test \', [StringComparison]::Ordinal)
         $runExactIndex = $packagedTest.IndexOf('run_exact() {', [StringComparison]::Ordinal)
@@ -231,9 +232,21 @@ Describe 'winsmux version surface' {
         $compileBlock | Should -Match '--test session_lifecycle'
         $compileBlock | Should -Match '--no-run'
         $compileBlock | Should -Not -Match 'timeout'
-        $testWorkflow | Should -Match '(?ms)^  helper-linux-negatives:\r?\n    name: Helper Linux Negatives\r?\n    runs-on: ubuntu-24\.04\s'
-        $testWorkflow | Should -Match 'package-remote-helper\.sh'
-        $testWorkflow | Should -Match 'test-public-remote-helper\.sh'
+        $testWorkflow | Should -Match '(?ms)^  helper-linux-negatives:\r?\n    name: Helper Linux Negatives \(\$\{\{ matrix\.runner \}\}, \$\{\{ matrix\.artifact_arch \}\}\)\r?\n    strategy:\r?\n      fail-fast: false\r?\n      matrix:\r?\n        include:\r?\n          - runner: ubuntu-24\.04\r?\n            artifact_arch: x64\r?\n          - runner: ubuntu-24\.04-arm\r?\n            artifact_arch: arm64\r?\n    runs-on: \$\{\{ matrix\.runner \}\}\s'
+        $testWorkflow | Should -Match 'Test remote helper protocol'
+        $testWorkflow | Should -Match 'Test remote helper Linux session lifecycle'
+        $testWorkflow | Should -Match '(?ms)if \[\[ "\$\{\{ matrix\.artifact_arch \}\}" == "x64" \]\]; then\r?\n            bash ./scripts/package-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\}\r?\n          else\r?\n            bash ./scripts/package-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\} arm64\r?\n          fi'
+        $testWorkflow | Should -Match '(?ms)if \[\[ "\$\{\{ matrix\.artifact_arch \}\}" == "x64" \]\]; then\r?\n            bash ./scripts/test-public-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\}\r?\n          else\r?\n            bash ./scripts/test-public-remote-helper\.sh remote-helper-dist/winsmux-remote-helper-linux-\$\{\{ matrix\.artifact_arch \}\} arm64\r?\n          fi'
+        $packageScriptText | Should -Match 'expected_arch="\$\{2:-x64\}"'
+        $packageScriptText | Should -Match 'x86_64\) host_artifact_arch="x64";;'
+        $packageScriptText | Should -Match 'aarch64\|arm64\) host_artifact_arch="arm64";;'
+        $packageScriptText | Should -Match 'ELF 64-bit LSB'
+        $packageScriptText | Should -Match 'Advanced Micro Devices X86-64'
+        $packageScriptText | Should -Match 'AArch64'
+        $packageScriptText | Should -Not -Match '(?s)cargo build.*--target'
+        $packagedTest | Should -Match 'expected_arch="\$\{2:-x64\}"'
+        $packagedTest | Should -Match 'x86_64\) host_artifact_arch="x64";;'
+        $packagedTest | Should -Match 'aarch64\|arm64\) host_artifact_arch="arm64";;'
         $releaseWorkflow | Should -Match '(?ms)^  build-helper:\r?\n    runs-on: ubuntu-24\.04\s'
         $releaseWorkflow | Should -Match '(?m)^    needs: \[build, build-helper\]\s*$'
         $releaseWorkflow | Should -Match 'winsmux-remote-helper-linux-x64'
