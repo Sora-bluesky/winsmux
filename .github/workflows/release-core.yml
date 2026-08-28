@@ -33,8 +33,24 @@ jobs:
           name: ${{ matrix.artifact }}
           path: target/${{ matrix.target }}/release/winsmux.exe
 
+  build-helper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Package supported remote helper
+        run: bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
+      - name: Test packaged remote helper
+        run: bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
+      - name: Upload helper artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: winsmux-remote-helper-linux-x64
+          path: remote-helper-dist/winsmux-remote-helper-linux-x64
+
   release:
-    needs: build
+    needs: [build, build-helper]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -61,7 +77,9 @@ jobs:
           mkdir -p release
           cp winsmux-windows-x64/winsmux.exe release/winsmux-x64.exe
           cp winsmux-windows-arm64/winsmux.exe release/winsmux-arm64.exe
-          cd release && sha256sum *.exe > SHA256SUMS
+          cp winsmux-remote-helper-linux-x64/winsmux-remote-helper-linux-x64 release/winsmux-remote-helper-linux-x64
+          cd release
+          sha256sum winsmux-arm64.exe winsmux-remote-helper-linux-x64 winsmux-x64.exe > SHA256SUMS
       - name: Generate Release Body
         shell: pwsh
         run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"

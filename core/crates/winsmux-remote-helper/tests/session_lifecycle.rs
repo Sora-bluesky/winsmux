@@ -24,6 +24,13 @@ struct RuntimeDir(PathBuf);
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(0);
 
+fn helper_bin() -> PathBuf {
+    std::env::var_os("WINSMUX_REMOTE_HELPER_UNDER_TEST")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_winsmux-remote-helper").into())
+}
+
 impl RuntimeDir {
     fn new(label: &str) -> Self {
         let nanos = SystemTime::now()
@@ -181,7 +188,7 @@ impl Frontend {
             capture_stderr,
             agent_spawn_gate_fd,
         } = options;
-        let mut command = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"));
+        let mut command = Command::new(helper_bin());
         command
             .args(["serve", "--stdio"])
             .env("XDG_RUNTIME_DIR", runtime)
@@ -812,7 +819,7 @@ fn runtime_dir_final_symlink_is_rejected_without_leftovers() {
     let runtime_link = root.0.join("runtime-link");
     symlink(&target, &runtime_link).unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
+    let mut child = Command::new(helper_bin())
         .args(["serve", "--stdio"])
         .env("XDG_RUNTIME_DIR", &runtime_link)
         .stdin(Stdio::piped())
@@ -1757,6 +1764,47 @@ fn acknowledged_detach_and_close_remains_attachable() {
 }
 
 #[test]
+fn packaged_release_detach_close_reattach_io_and_stop_is_protocol_visible() {
+    let runtime = RuntimeDir::new("packaged-release-reattach");
+    let mut first = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    let (session_id, child_pid) = start_reattach_transformer(&mut first);
+    acknowledge_start(&mut first, &session_id);
+    first.send(&Message::PtyDetach);
+    assert_eq!(first.recv(), Message::PtyDetached);
+    first.close();
+
+    let mut second = Frontend::connect_with_options(&runtime.0, None, FrontendOptions::lifecycle());
+    second.send(&Message::PtyAttach {
+        session_id: session_id.clone(),
+    });
+    assert_eq!(
+        second.recv(),
+        Message::PtyAttached {
+            session_id: session_id.clone(),
+            child_pid,
+        }
+    );
+    second.send(&Message::PtyInput {
+        data_b64: "d2FrZQo=".to_string(),
+    });
+    recv_agent_bytes(&mut second, b"task778-reattach-transform\n");
+    second.send(&Message::PtyStop {
+        session_id: session_id.clone(),
+    });
+    assert_eq!(second.recv(), Message::PtyStopped);
+    second.send(&Message::PtyAttach { session_id });
+    assert!(matches!(
+        second.recv(),
+        Message::Reject {
+            code: RejectCode::SessionNotFound,
+            ..
+        }
+    ));
+    second.close();
+    wait_socket_gone(&runtime.socket());
+}
+
+#[test]
 fn guardian_does_not_retain_unrelated_frontend_socket() {
     let runtime = RuntimeDir::new("guardian-fd");
     let mut owner = Frontend::connect(&runtime.0);
@@ -2103,7 +2151,7 @@ fn lock_owner_exit_before_connect_wakes_idle_broker_shutdown() {
 
     let mut gate = [-1; 2];
     assert_eq!(unsafe { libc::pipe(gate.as_mut_ptr()) }, 0);
-    let mut second = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
+    let mut second = Command::new(helper_bin())
         .args(["serve", "--stdio"])
         .env("XDG_RUNTIME_DIR", &runtime.0)
         .env("WINSMUX_TEST_BROKER_EVENT_FD", events.writer.to_string())
@@ -2157,7 +2205,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
     let runtime = RuntimeDir::new("lock-barrier");
     let mut events = EventPipe::new();
 
-    let mut first = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
+    let mut first = Command::new(helper_bin())
         .args(["serve", "--stdio"])
         .env("XDG_RUNTIME_DIR", &runtime.0)
         .env("WINSMUX_TEST_BROKER_EVENT_FD", events.writer.to_string())
@@ -2189,7 +2237,7 @@ fn lock_owned_before_connect_blocks_shutdown_then_reuses_same_broker() {
 
     let mut gate = [-1; 2];
     assert_eq!(unsafe { libc::pipe(gate.as_mut_ptr()) }, 0);
-    let mut second = Command::new(env!("CARGO_BIN_EXE_winsmux-remote-helper"))
+    let mut second = Command::new(helper_bin())
         .args(["serve", "--stdio"])
         .env("XDG_RUNTIME_DIR", &runtime.0)
         .env("WINSMUX_TEST_BROKER_EVENT_FD", events.writer.to_string())

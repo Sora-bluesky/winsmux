@@ -73,9 +73,11 @@ fn command_spec(alias: &str) -> SshCommandSpec {
             "-T".to_string(),
             "-o".to_string(),
             "BatchMode=yes".to_string(),
+            "-o".to_string(),
+            "RemoteCommand=none".to_string(),
             "--".to_string(),
             alias.to_string(),
-            "winsmux-remote-helper".to_string(),
+            "./.local/bin/winsmux-remote-helper".to_string(),
             "serve".to_string(),
             "--stdio".to_string(),
         ],
@@ -422,9 +424,11 @@ if ($mode -eq 'helper') {
                 "-T",
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "RemoteCommand=none",
                 "--",
                 "-oProxyJump=evil",
-                "winsmux-remote-helper",
+                "./.local/bin/winsmux-remote-helper",
                 "serve",
                 "--stdio",
             ]
@@ -508,15 +512,9 @@ if ($mode -eq 'helper') {
         let spawn_log = fs::read_to_string(dir.path().join("ssh-spawn.txt")).unwrap();
         assert_eq!(spawn_log.lines().count(), 1);
         let argv = fs::read_to_string(dir.path().join("ssh-argv.txt")).unwrap();
-        assert!(
-            argv.contains("-T")
-                && argv.contains("BatchMode=yes")
-                && argv.contains("--")
-                && argv.contains("lab")
-                && argv.contains("winsmux-remote-helper")
-                && argv.contains("serve")
-                && argv.contains("--stdio"),
-            "argv={argv}"
+        assert_eq!(
+            argv.trim_end(),
+            "-T -o BatchMode=yes -o RemoteCommand=none -- lab ./.local/bin/winsmux-remote-helper serve --stdio"
         );
     }
 

@@ -19,6 +19,7 @@ Describe 'winsmux version surface' {
         $workspaceLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'Cargo.lock') -Raw -Encoding UTF8
         $coreManifest = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\Cargo.toml') -Raw -Encoding UTF8
         $coreLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\Cargo.lock') -Raw -Encoding UTF8
+        $helperManifest = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\crates\winsmux-remote-helper\Cargo.toml') -Raw -Encoding UTF8
 
         $installScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $installScript | Should -Match '\$releaseAction\s*=\s*\$Action\.Trim\(\)\.ToLowerInvariant\(\)'
@@ -44,6 +45,9 @@ Describe 'winsmux version surface' {
         $coreManifest | Should -Match '(?m)^license\s*=\s*"Apache-2\.0 AND MIT"\r?$'
         $coreManifest | Should -Match '(?m)^repository\s*=\s*"https://github\.com/Sora-bluesky/winsmux"\r?$'
         $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
+        $helperManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
+        $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-remote-helper"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
+        $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-remote-helper"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
     It 'keeps Windows PowerShell bridge script UTF-8 BOM encoded' {
@@ -64,6 +68,13 @@ Describe 'winsmux version surface' {
         $releaseScript | Should -Match '\[System\.Text\.UTF8Encoding\]::new\(\$hasUtf8Bom\)'
         $releaseScript | Should -Match '\[System\.IO\.File\]::WriteAllText\(\$Path, \$Content, \$encoding\)'
         $releaseScript | Should -Not -Match 'Set-Content -Path \$t\.Path'
+    }
+
+    It 'syncs the remote helper manifest and both workspace lock entries' {
+        $releaseScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\bump-version.ps1') -Raw -Encoding UTF8
+
+        $releaseScript | Should -Match 'core\\crates\\winsmux-remote-helper\\Cargo\.toml'
+        ([regex]::Matches($releaseScript, 'name\\s\*=\\s\*"winsmux-remote-helper"')).Count | Should -Be 2
     }
 
     It 'uses latest release resolution for tagless install and update actions' {
@@ -198,13 +209,46 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Core'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,core_asset_inventory,missing_arm64_checksum_entry,duplicate_arm64_checksum_entry,arm64_checksum_mismatch,valid,missing_checksum_entry,duplicate_checksum_entry,checksum_mismatch,version_mismatch,temp_cleanup'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,core_asset_inventory,missing_arm64_checksum_entry,duplicate_arm64_checksum_entry,arm64_checksum_mismatch,missing_helper_checksum_entry,duplicate_helper_checksum_entry,helper_checksum_mismatch,valid,missing_checksum_entry,duplicate_checksum_entry,checksum_mismatch,version_mismatch,temp_cleanup'
+    }
+
+    It 'packages and publishes the supported Ubuntu 24.04 x64 remote helper bytes' {
+        $testWorkflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\test.yml') -Raw -Encoding UTF8
+        $releaseWorkflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-core.yml') -Raw -Encoding UTF8
+        $preCommitWhitelist = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.githooks\pre-commit-whitelist.ps1') -Raw -Encoding UTF8
+        $packageScript = Join-Path $script:RepoRoot 'scripts\package-remote-helper.sh'
+        $testScript = Join-Path $script:RepoRoot 'scripts\test-public-remote-helper.sh'
+
+        Test-Path -LiteralPath $packageScript -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $testScript -PathType Leaf | Should -BeTrue
+        $packagedTest = Get-Content -LiteralPath $testScript -Raw -Encoding UTF8
+        $compileIndex = $packagedTest.IndexOf('cargo test \', [StringComparison]::Ordinal)
+        $runExactIndex = $packagedTest.IndexOf('run_exact() {', [StringComparison]::Ordinal)
+        $compileIndex | Should -BeGreaterThan -1
+        $runExactIndex | Should -BeGreaterThan $compileIndex
+        $compileBlock = $packagedTest.Substring($compileIndex, $runExactIndex - $compileIndex)
+        $compileBlock | Should -Match '--test protocol'
+        $compileBlock | Should -Match '--test session_lifecycle'
+        $compileBlock | Should -Match '--no-run'
+        $compileBlock | Should -Not -Match 'timeout'
+        $testWorkflow | Should -Match '(?ms)^  helper-linux-negatives:\r?\n    name: Helper Linux Negatives\r?\n    runs-on: ubuntu-24\.04\s'
+        $testWorkflow | Should -Match 'package-remote-helper\.sh'
+        $testWorkflow | Should -Match 'test-public-remote-helper\.sh'
+        $releaseWorkflow | Should -Match '(?ms)^  build-helper:\r?\n    runs-on: ubuntu-24\.04\s'
+        $releaseWorkflow | Should -Match '(?m)^    needs: \[build, build-helper\]\s*$'
+        $releaseWorkflow | Should -Match 'winsmux-remote-helper-linux-x64'
+        $releaseWorkflow | Should -Match 'sha256sum winsmux-arm64\.exe winsmux-remote-helper-linux-x64 winsmux-x64\.exe > SHA256SUMS'
+        $preCommitWhitelist | Should -Match "(?m)^    'scripts/package-remote-helper\.sh',\r?$"
+        $preCommitWhitelist | Should -Match "(?m)^    'scripts/test-public-remote-helper\.sh',\r?$"
     }
 
     It 'T668-SMOKE-CORE-ASSET-INVENTORY requires both public Core executables' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $helper = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
         $helper | Should -Match 'function Get-CoreReleaseAssetNames'
+        $helper | Should -Match "'winsmux-remote-helper-linux-x64'"
+        $helper | Should -Match '\$executedAssetName\s*=\s*\$coreAssetNames\[0\]'
+        $helper | Should -Not -Match "Invoke-PublicChildProcess[^\r\n]*winsmux-remote-helper-linux-x64"
 
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Core -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
         $LASTEXITCODE | Should -Be 0

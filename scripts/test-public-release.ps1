@@ -108,6 +108,7 @@ function Get-CoreReleaseAssetNames {
     return @(
         'winsmux-x64.exe'
         'winsmux-arm64.exe'
+        'winsmux-remote-helper-linux-x64'
     )
 }
 
@@ -2423,6 +2424,7 @@ function Invoke-CoreSmoke {
         asset = $executedAssetName
         sha256 = $expectedHashes[$executedAssetName]
         version = $Version
+        verified_assets = @($coreAssetNames)
     }
 }
 
@@ -2787,18 +2789,23 @@ function Invoke-SelfTest {
             $coreAssetNames = @(Get-CoreReleaseAssetNames)
             $x64Payload = Join-Path $root 'winsmux-x64.exe'
             $arm64Payload = Join-Path $root 'winsmux-arm64.exe'
+            $helperPayload = Join-Path $root 'winsmux-remote-helper-linux-x64'
             Set-Content -LiteralPath $x64Payload -Value 'public-core-x64' -Encoding ascii -NoNewline
             Set-Content -LiteralPath $arm64Payload -Value 'public-core-arm64' -Encoding ascii -NoNewline
+            Set-Content -LiteralPath $helperPayload -Value 'public-remote-helper-x64' -Encoding ascii -NoNewline
             $x64Hash = (Get-FileHash -LiteralPath $x64Payload -Algorithm SHA256).Hash.ToLowerInvariant()
             $arm64Hash = (Get-FileHash -LiteralPath $arm64Payload -Algorithm SHA256).Hash.ToLowerInvariant()
+            $helperHash = (Get-FileHash -LiteralPath $helperPayload -Algorithm SHA256).Hash.ToLowerInvariant()
             $manifest = [string]::Join([Environment]::NewLine, @(
                 "$x64Hash  winsmux-x64.exe",
-                "$arm64Hash  winsmux-arm64.exe"
+                "$arm64Hash  winsmux-arm64.exe",
+                "$helperHash  winsmux-remote-helper-linux-x64"
             ))
 
-            Assert-Condition ($coreAssetNames.Count -eq 2) 'Core asset inventory did not contain exactly two assets.'
+            Assert-Condition ($coreAssetNames.Count -eq 3) 'Core asset inventory did not contain exactly three assets.'
             Assert-Condition ($coreAssetNames[0] -ceq 'winsmux-x64.exe') 'Core asset inventory did not keep x64 first.'
             Assert-Condition ($coreAssetNames[1] -ceq 'winsmux-arm64.exe') 'Core asset inventory did not keep ARM64 second.'
+            Assert-Condition ($coreAssetNames[2] -ceq 'winsmux-remote-helper-linux-x64') 'Core asset inventory did not keep the Linux x64 helper third.'
             $caseIds.Add('core_asset_inventory')
 
             Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText "$x64Hash  winsmux-x64.exe" -AssetName 'winsmux-arm64.exe' }) 'Missing ARM64 checksum entry was accepted.'
@@ -2811,10 +2818,22 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Assert-FileChecksum -Path $arm64Payload -ExpectedHash ('0' * 64) }) 'ARM64 checksum mismatch was accepted.'
             $caseIds.Add('arm64_checksum_mismatch')
 
+            Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText "$x64Hash  winsmux-x64.exe" -AssetName 'winsmux-remote-helper-linux-x64' }) 'Missing helper checksum entry was accepted.'
+            $caseIds.Add('missing_helper_checksum_entry')
+
+            $duplicateHelperManifest = [string]::Join([Environment]::NewLine, @($manifest, "$helperHash  winsmux-remote-helper-linux-x64"))
+            Assert-Condition (Test-Throws { Get-ChecksumEntry -ManifestText $duplicateHelperManifest -AssetName 'winsmux-remote-helper-linux-x64' }) 'Duplicate helper checksum entry was accepted.'
+            $caseIds.Add('duplicate_helper_checksum_entry')
+
+            Assert-Condition (Test-Throws { Assert-FileChecksum -Path $helperPayload -ExpectedHash ('0' * 64) }) 'Helper checksum mismatch was accepted.'
+            $caseIds.Add('helper_checksum_mismatch')
+
             Assert-Condition ((Get-ChecksumEntry -ManifestText $manifest -AssetName 'winsmux-x64.exe') -ceq $x64Hash) 'Valid x64 checksum entry was rejected.'
             Assert-Condition ((Get-ChecksumEntry -ManifestText $manifest -AssetName 'winsmux-arm64.exe') -ceq $arm64Hash) 'Valid ARM64 checksum entry was rejected.'
+            Assert-Condition ((Get-ChecksumEntry -ManifestText $manifest -AssetName 'winsmux-remote-helper-linux-x64') -ceq $helperHash) 'Valid helper checksum entry was rejected.'
             Assert-FileChecksum -Path $x64Payload -ExpectedHash $x64Hash
             Assert-FileChecksum -Path $arm64Payload -ExpectedHash $arm64Hash
+            Assert-FileChecksum -Path $helperPayload -ExpectedHash $helperHash
             $expectedCoreProgramName = [IO.Path]::GetFileNameWithoutExtension($coreAssetNames[0])
             Assert-CoreVersionResult -Result ([pscustomobject]@{ exit_code = 0; stdout = "$expectedCoreProgramName $Version"; stderr = '' }) -ExpectedProgramName $expectedCoreProgramName -ExpectedVersion $Version
             $caseIds.Add('valid')
