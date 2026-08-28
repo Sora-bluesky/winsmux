@@ -441,16 +441,25 @@ jobs:
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
-                  if ($env:GITHUB_ACTIONS -eq 'true') { Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop }
+                  if ($env:GITHUB_ACTIONS -eq 'true') {
+                      $task810InstallPhase = 'pester_package_provider_failure'
+                      Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop
+                  }
+                  $task810InstallPhase = 'pester_repository_failure'
                   $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
-                  if (-not $repo) { Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop }
+                  if (-not $repo) {
+                      $task810InstallPhase = 'pester_repository_failure'
+                      Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop
+                  }
+                  $task810InstallPhase = 'pester_repository_failure'
                   Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+                  $task810InstallPhase = 'pester_module_install_failure'
                   Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
                   $installUsed = $true
               } catch {
                   $task810ExitCode = 2
-                  $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
-                  $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:' + $task810InstallPhase
+                  $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = $task810Diagnostic; install = $false; rerun = $false }
               }
               if ($installUsed) {
                   $runnerCallThrew = $false
@@ -749,16 +758,25 @@ jobs:
           $decision = Get-Task810ConsumerDecision -Threw:$runnerCallThrew -Capture $capture -ExpectedShardId $shardId -ExpectedResultFile $staticResultPath -InstallUsed:$installUsed
           if ([bool]$decision.install) {
               try {
-                  if ($env:GITHUB_ACTIONS -eq 'true') { Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop }
+                  if ($env:GITHUB_ACTIONS -eq 'true') {
+                      $task810InstallPhase = 'pester_package_provider_failure'
+                      Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop
+                  }
+                  $task810InstallPhase = 'pester_repository_failure'
                   $repo = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
-                  if (-not $repo) { Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop }
+                  if (-not $repo) {
+                      $task810InstallPhase = 'pester_repository_failure'
+                      Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop
+                  }
+                  $task810InstallPhase = 'pester_repository_failure'
                   Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+                  $task810InstallPhase = 'pester_module_install_failure'
                   Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
                   $installUsed = $true
               } catch {
                   $task810ExitCode = 2
-                  $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'
-                  $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE'; install = $false; rerun = $false }
+                  $task810Diagnostic = 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:' + $task810InstallPhase
+                  $decision = [pscustomobject]@{ code = 'C05'; exit = 2; diagnostic = $task810Diagnostic; install = $false; rerun = $false }
               }
               if ($installUsed) {
                   $runnerCallThrew = $false
@@ -1214,11 +1232,25 @@ jobs:
           Import-Module ./scripts/winsmux-pester.psm1 -Force
           $selection = Resolve-WinsmuxPester571
           if ($selection.resolution_status -ceq 'missing') {
-            if ($env:GITHUB_ACTIONS -eq 'true') { Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop }
-            $gallery = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
-            if (-not $gallery) { Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop }
-            Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
-            Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
+            try {
+              if ($env:GITHUB_ACTIONS -eq 'true') {
+                $task811PesterPhase = 'pester_package_provider_failure'
+                Install-PackageProvider -Name NuGet -Force -Scope CurrentUser -ErrorAction Stop
+              }
+              $task811PesterPhase = 'pester_repository_failure'
+              $gallery = Get-PSRepository -Name 'WinsmuxPesterGallery' -ErrorAction SilentlyContinue
+              if (-not $gallery) {
+                $task811PesterPhase = 'pester_repository_failure'
+                Register-PSRepository -Name 'WinsmuxPesterGallery' -SourceLocation 'https://www.powershellgallery.com/api/v2' -PackageManagementProvider NuGet -InstallationPolicy Trusted -ErrorAction Stop
+              }
+              $task811PesterPhase = 'pester_repository_failure'
+              Set-PSRepository -Name 'WinsmuxPesterGallery' -InstallationPolicy Trusted -ErrorAction Stop
+              $task811PesterPhase = 'pester_module_install_failure'
+              Install-Module Pester -Force -Scope CurrentUser -RequiredVersion 5.7.1 -Repository 'WinsmuxPesterGallery' -ErrorAction Stop
+            } catch {
+              Write-Host ('TASK810_RUNNER_PROTOCOL_FAILURE:C05:' + $task811PesterPhase)
+              exit 2
+            }
             $selection = Resolve-WinsmuxPester571
           }
           if ($selection.resolution_status -cne 'resolved') {
@@ -1308,6 +1340,11 @@ jobs:
 
           CLASS_INTEGRATION = "Pester integration timeout_minutes: 30"
           CLASS_TASK810 = "TASK810_RUNNER_PROTOCOL_FAILURE"
+          CLASS_TASK810_C05_PHASES = (
+              "TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_package_provider_failure",
+              "TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_repository_failure",
+              "TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure",
+          )
           CLASS_NSIS = "Desktop NSIS CreateArtifact ENOTFOUND"
           CLASS_INSTALLER = "installer-download"
           CLASS_EMPTY = "empty-stdout Core"
@@ -1450,7 +1487,7 @@ jobs:
                   if job.get("conclusion") in FAILED:
                       task810_unavailable = True
                   continue
-              if CLASS_TASK810 in text and "Missing option value for: '-source'" in text:
+              if any(token in text for token in CLASS_TASK810_C05_PHASES):
                   matched.append(f"- {CLASS_TASK810} (job={job.get('name')})")
                   matched_ids.add(job.get("id"))
                   task810_ok = True

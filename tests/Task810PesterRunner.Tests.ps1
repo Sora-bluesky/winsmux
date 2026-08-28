@@ -489,7 +489,7 @@ $shardId = '__TASK810_SHARD_ID__'
 $staticResultPath = '__TASK810_STATIC_RESULT__'
 $installUsed = __TASK810_INSTALL_USED__
 __TASK810_KERNEL__
-Write-Host ('TASK810_DECISION|' + [string]$decision.code + '|' + [string]$decision.exit + '|' + $(if ($null -ne $decision.diagnostic) { [string]$decision.diagnostic } else { '' }) + '|' + ($(if ([bool]$decision.install) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$decision.rerun) { 'True' } else { 'False' })))
+Write-Host ('TASK810_DECISION|' + [string]$decision.code + '|' + [string]$decision.exit + '|' + $(if ($null -ne $decision.diagnostic) { [string]$decision.diagnostic } else { '' }) + '|' + ($(if ([bool]$decision.install) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$decision.rerun) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$installUsed) { 'True' } else { 'False' })))
 if ($null -ne $task810Diagnostic) { Write-Host $task810Diagnostic }
 exit $task810ExitCode
 '@
@@ -507,7 +507,7 @@ __TASK810_KERNEL__
   Remove-Item Env:WINSMUX_DBGGATE_PORT -ErrorAction SilentlyContinue
   $script:task810DesktopCleanup = $true
 }
-Write-Host ('TASK810_DECISION|' + [string]$decision.code + '|' + [string]$decision.exit + '|' + $(if ($null -ne $decision.diagnostic) { [string]$decision.diagnostic } else { '' }) + '|' + ($(if ([bool]$decision.install) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$decision.rerun) { 'True' } else { 'False' })))
+Write-Host ('TASK810_DECISION|' + [string]$decision.code + '|' + [string]$decision.exit + '|' + $(if ($null -ne $decision.diagnostic) { [string]$decision.diagnostic } else { '' }) + '|' + ($(if ([bool]$decision.install) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$decision.rerun) { 'True' } else { 'False' })) + '|' + ($(if ([bool]$installUsed) { 'True' } else { 'False' })))
 if ($null -ne $task810Diagnostic) { Write-Host $task810Diagnostic }
 exit $task810ExitCode
 '@
@@ -525,7 +525,8 @@ exit $task810ExitCode
                 [Parameter(Mandatory)][string]$StaticResultFile,
                 [Parameter(Mandatory)][AllowEmptyString()][string]$RunnerStdout,
                 [bool]$RunnerThrow = $false,
-                [bool]$InstallThrow = $false,
+                [ValidateSet('none', 'provider', 'repository', 'module')]
+                [string]$InstallThrowPhase = 'none',
                 [bool]$InstallUsedInitial = $false,
                 [bool]$DeleteResultAfterFirst = $false,
                 [string]$AppPath = 'C:\fixture\winsmux-app.exe',
@@ -562,20 +563,41 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
             $events = [System.Collections.Generic.List[string]]::new()
             $fixtureHost = [Task810FixtureHost]::new()
             $iss = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-            # Inject Install-Module / gallery commands as session functions
-            $installSb = {
-                param()
-                $script:task810InstallCount = [int]$script:task810InstallCount + 1
-                if ($env:TASK810_FIXTURE_INSTALL_THROW -eq '1') { throw 'fixture-install-throw' }
+            # Inject bootstrap commands as session functions.
+            $packageProviderSb = {
+                param([string]$Name, [switch]$Force, [string]$Scope, [string]$ErrorAction)
+                if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'provider') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
             }.GetNewClosure()
+            $repositoryGetSb = {
+                param([string]$Name, [string]$ErrorAction)
+                if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'repository') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
+                return [pscustomobject]@{ Name = 'WinsmuxPesterGallery' }
+            }.GetNewClosure()
+            $repositoryRegisterSb = {
+                param([string]$Name, [string]$SourceLocation, [string]$PackageManagementProvider, [string]$InstallationPolicy, [string]$ErrorAction)
+                if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'repository') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
+            }.GetNewClosure()
+            $repositorySetSb = {
+                param([string]$Name, [string]$InstallationPolicy, [string]$ErrorAction)
+                if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'repository') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
+            }.GetNewClosure()
+            $installSb = {
+                param([string]$Name, [switch]$Force, [string]$Scope, [string]$RequiredVersion, [string]$Repository, [string]$ErrorAction)
+                $script:task810InstallCount = [int]$script:task810InstallCount + 1
+                if ([string]$env:TASK810_FIXTURE_INSTALL_THROW_PHASE -ceq 'module') { throw [string]$env:TASK810_FIXTURE_RAW_MARKER }
+            }.GetNewClosure()
+            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Install-PackageProvider', $packageProviderSb.ToString()))
             $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Install-Module', $installSb.ToString()))
-            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Get-PSRepository', { param($Name) return [pscustomobject]@{ Name = 'PSGallery' } }.ToString()))
-            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Register-PSRepository', { param() }.ToString()))
-            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Set-PSRepository', { param() }.ToString()))
+            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Get-PSRepository', $repositoryGetSb.ToString()))
+            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Register-PSRepository', $repositoryRegisterSb.ToString()))
+            $iss.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry 'Set-PSRepository', $repositorySetSb.ToString()))
 
             $fixtureRunspace = [RunspaceFactory]::CreateRunspace($fixtureHost, $iss)
             $fixturePowerShell = $null
             $prevLoc = Get-Location
+            $previousGithubActions = [Environment]::GetEnvironmentVariable('GITHUB_ACTIONS')
+            $previousInstallThrowPhase = [Environment]::GetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW_PHASE')
+            $previousRawMarker = [Environment]::GetEnvironmentVariable('TASK810_FIXTURE_RAW_MARKER')
             try {
                 Set-Location -LiteralPath $fixtureRoot
                 $fixtureRunspace.Open()
@@ -589,11 +611,9 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 } else {
                     [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RUNNER_THROW', '0')
                 }
-                if ($InstallThrow) {
-                    [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW', '1')
-                } else {
-                    [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW', '0')
-                }
+                [Environment]::SetEnvironmentVariable('GITHUB_ACTIONS', 'true')
+                [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW_PHASE', $InstallThrowPhase)
+                [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RAW_MARKER', "TASK856_RAW_MARKER:$InstallThrowPhase:C:\not-for-output")
                 if ($DeleteResultAfterFirst) {
                     [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_DELETE_RESULT', '1')
                 } else {
@@ -627,6 +647,7 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 $decisionDiagnostic = $null
                 $decisionInstall = $null
                 $decisionRerun = $null
+                $installUsedAfter = $null
                 foreach ($line in @($hostText -split '\r?\n')) {
                     if ($line.StartsWith('TASK810_DECISION|')) {
                         $parts = $line.Split('|')
@@ -637,6 +658,7 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                             if ([string]::IsNullOrEmpty($decisionDiagnostic)) { $decisionDiagnostic = $null }
                             $decisionInstall = [bool]::Parse([string]$parts[4])
                             $decisionRerun = [bool]::Parse([string]$parts[5])
+                            if ($parts.Count -ge 7) { $installUsedAfter = [bool]::Parse([string]$parts[6]) }
                         }
                     }
                 }
@@ -659,12 +681,15 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                     decision_diagnostic = $decisionDiagnostic
                     decision_install    = $decisionInstall
                     decision_rerun      = $decisionRerun
+                    install_used        = $installUsedAfter
                     diagnostic          = $(if ($null -ne $decisionDiagnostic) { $decisionDiagnostic } else { $printedDiagnostic })
                     host_text           = [string]$hostText
                 }
             } finally {
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RUNNER_THROW', $null)
-                [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW', $null)
+                [Environment]::SetEnvironmentVariable('GITHUB_ACTIONS', $previousGithubActions)
+                [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_INSTALL_THROW_PHASE', $previousInstallThrowPhase)
+                [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RAW_MARKER', $previousRawMarker)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_DELETE_RESULT', $null)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_ENVELOPE', $null)
                 [Environment]::SetEnvironmentVariable('TASK810_FIXTURE_RESULT_PATH', $null)
@@ -708,6 +733,36 @@ Write-Output -InputObject ([string]`$env:TASK810_FIXTURE_ENVELOPE)
                 selected_module   = [pscustomobject]$mod
             }
             return ($obj | ConvertTo-Json -Compress -Depth 5)
+        }
+
+        function script:Assert-Task810C05PhaseDiagnostic {
+            param(
+                [Parameter(Mandatory)][ValidateSet('Matrix', 'Desktop')][string]$Adapter,
+                [Parameter(Mandatory)][ValidateSet('provider', 'repository', 'module')][string]$FailurePhase,
+                [Parameter(Mandatory)][string]$ShardId,
+                [Parameter(Mandatory)][string]$StaticResultFile
+            )
+            $phaseToken = switch ($FailurePhase) {
+                'provider' { 'pester_package_provider_failure' }
+                'repository' { 'pester_repository_failure' }
+                'module' { 'pester_module_install_failure' }
+            }
+            $expectedDiagnostic = "TASK810_RUNNER_PROTOCOL_FAILURE:C05:$phaseToken"
+            $rawMarker = "TASK856_RAW_MARKER:$FailurePhase:C:\not-for-output"
+            $json = New-Task810CanonicalEnvelopeJson -ShardId $ShardId -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile $StaticResultFile -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
+            $r = Invoke-Task810ActualScalar -Adapter $Adapter -ShardId $ShardId -StaticResultFile $StaticResultFile -RunnerStdout $json -InstallThrowPhase $FailurePhase
+
+            $r.exit_code | Should -Be 2
+            $r.decision_code | Should -Be 'C05'
+            $r.decision_exit | Should -Be 2
+            $r.decision_install | Should -BeFalse
+            $r.decision_rerun | Should -BeFalse
+            $r.install_used | Should -BeFalse
+            $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after a bootstrap failure'
+            $r.decision_diagnostic | Should -Be $expectedDiagnostic
+            $r.diagnostic | Should -Be $expectedDiagnostic
+            $r.host_text | Should -Not -Match ([regex]::Escape($rawMarker))
+            $r.error_text | Should -Not -Match ([regex]::Escape($rawMarker))
         }
 
 
@@ -1482,7 +1537,7 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
         }
         It 'decision:C05' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
-            $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrow:$true
+            $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrowPhase module
             $r.exit_code | Should -Be 2
             $r.install_count | Should -Be 1
             $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
@@ -1490,8 +1545,8 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
             $r.decision_exit | Should -Be 2
             $r.decision_rerun | Should -BeFalse
             $r.decision_install | Should -BeFalse
-            $r.decision_diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
-            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.decision_diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
         }
         It 'decision:C06' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
@@ -1567,13 +1622,13 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
         }
         It 'kernel:C05' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
-            $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrow:$true
+            $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrowPhase module
             $r.exit_code | Should -Be 2
             $r.install_count | Should -Be 1
             $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
             $r.decision_code | Should -Be 'C05'
-            $r.decision_diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
-            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.decision_diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
         }
         It 'kernel:C06' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
@@ -1633,13 +1688,13 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
         }
         It 'Matrix:C05' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'bridge-foundation' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ResultFile 'test-results-bridge-foundation.xml' -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
-            $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrow:$true
+            $r = Invoke-Task810ActualScalar -Adapter Matrix -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml' -RunnerStdout $json -InstallThrowPhase module
             $r.exit_code | Should -Be 2
             $r.install_count | Should -Be 1
             $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
             $r.decision_code | Should -Be 'C05'
             $r.decision_rerun | Should -BeFalse
-            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
             $r.desktop_cleanup | Should -BeFalse
         }
         It 'Desktop:C07' {
@@ -1656,14 +1711,35 @@ Export-ModuleMember -Function New-PesterConfiguration, Invoke-Pester
         }
         It 'Desktop:C05' {
             $json = New-Task810CanonicalEnvelopeJson -ShardId 'desktop-debug-process' -ResultFile 'test-results-desktop-debug-v03630.xml' -ResolutionStatus 'missing' -ExecutionStatus 'not_started' -TestOutcome 'not_run' -FailureOrigin 'none' -WorkflowAction 'install_once_then_rerun' -PesterInvoked:$false -ErrorCode 'pester_5_7_1_missing' -ModulePresent:$false
-            $r = Invoke-Task810ActualScalar -Adapter Desktop -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml' -RunnerStdout $json -InstallThrow:$true
+            $r = Invoke-Task810ActualScalar -Adapter Desktop -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml' -RunnerStdout $json -InstallThrowPhase module
             $r.exit_code | Should -Be 2
             $r.desktop_cleanup | Should -BeTrue
             $r.install_count | Should -Be 1
             $r.runner_calls | Should -Be 1 -Because 'C05 must not same-ID-rerun after install-throw'
             $r.decision_code | Should -Be 'C05'
             $r.decision_rerun | Should -BeFalse
-            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE'
+            $r.diagnostic | Should -Be 'TASK810_RUNNER_PROTOCOL_FAILURE:C05:pester_module_install_failure'
+        }
+    }
+
+    Context 'C05 phase-safe diagnostics' {
+        It 'Matrix C05 provider failure is raw-safe' {
+            Assert-Task810C05PhaseDiagnostic -Adapter Matrix -FailurePhase provider -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml'
+        }
+        It 'Matrix C05 repository failure is raw-safe' {
+            Assert-Task810C05PhaseDiagnostic -Adapter Matrix -FailurePhase repository -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml'
+        }
+        It 'Matrix C05 module failure is raw-safe' {
+            Assert-Task810C05PhaseDiagnostic -Adapter Matrix -FailurePhase module -ShardId 'bridge-foundation' -StaticResultFile 'test-results-bridge-foundation.xml'
+        }
+        It 'Desktop C05 provider failure is raw-safe' {
+            Assert-Task810C05PhaseDiagnostic -Adapter Desktop -FailurePhase provider -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml'
+        }
+        It 'Desktop C05 repository failure is raw-safe' {
+            Assert-Task810C05PhaseDiagnostic -Adapter Desktop -FailurePhase repository -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml'
+        }
+        It 'Desktop C05 module failure is raw-safe' {
+            Assert-Task810C05PhaseDiagnostic -Adapter Desktop -FailurePhase module -ShardId 'desktop-debug-process' -StaticResultFile 'test-results-desktop-debug-v03630.xml'
         }
     }
 }
