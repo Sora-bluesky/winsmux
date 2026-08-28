@@ -868,6 +868,49 @@ fn black_box_binary_hello_welcome() {
     ));
 }
 
+fn assert_black_box_binary_reject(frame: &[u8], expected_code: RejectCode) {
+    let mut command = Command::new(helper_bin());
+    command
+        .args(["serve", "--stdio"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(target_os = "linux")]
+    let runtime = LinuxRuntimeDir::new("protocol-black-box-reject");
+    #[cfg(target_os = "linux")]
+    command.env("XDG_RUNTIME_DIR", &runtime.0);
+    let mut child = command.spawn().expect("spawn helper");
+    {
+        let mut stdin = child.stdin.take().expect("stdin");
+        use std::io::Write;
+        stdin.write_all(frame).unwrap();
+    }
+    let output = child.wait_with_output().expect("wait helper");
+    assert!(output.status.success());
+    #[cfg(target_os = "linux")]
+    runtime.wait_for_broker_exit();
+    let payload = read_frame(&mut Cursor::new(output.stdout))
+        .unwrap()
+        .expect("reject");
+    match decode_payload(&payload).unwrap() {
+        Message::Reject { code, .. } => assert_eq!(code, expected_code),
+        other => panic!("expected Reject, got {other:?}"),
+    }
+}
+
+#[test]
+fn black_box_binary_unknown_type_rejects() {
+    let json = br#"{"type":"exec","protocol_version":1}"#;
+    let mut frame = (json.len() as u32).to_be_bytes().to_vec();
+    frame.extend_from_slice(json);
+    assert_black_box_binary_reject(&frame, RejectCode::UnknownType);
+}
+
+#[test]
+fn black_box_binary_oversized_prefix_rejects() {
+    assert_black_box_binary_reject(&(MAX_FRAME_LEN + 1).to_be_bytes(), RejectCode::Oversized);
+}
+
 #[cfg(target_os = "linux")]
 struct LinuxRuntimeDir(PathBuf);
 
