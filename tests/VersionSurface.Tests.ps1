@@ -273,6 +273,7 @@ Describe 'winsmux version surface' {
             'run_exact protocol black_box_binary_unknown_type_rejects',
             'run_exact protocol black_box_binary_oversized_prefix_rejects',
             'run_exact session_lifecycle fake_done_and_control_json_remain_agent_output_until_owner_stops',
+            'run_exact session_lifecycle observer_controls_are_rejected_while_owner_can_still_stop',
             'run_exact session_lifecycle second_controller_and_stale_session_are_rejected'
         )) {
             ([regex]::Matches($packagedTest, "(?m)^$([regex]::Escape($selector))\r?$")).Count | Should -Be 1
