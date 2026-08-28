@@ -48,6 +48,48 @@ function ConvertTo-WinsmuxBinaryVersion {
     return $Matches['binary'] + $Matches['suffix']
 }
 
+function Get-GitBlobSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Treeish,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $tempPath = Join-Path ([IO.Path]::GetTempPath()) ("winsmux-install-blob-{0}.tmp" -f [Guid]::NewGuid().ToString('N'))
+    $process = $null
+    try {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command git -ErrorAction Stop).Source
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-C', $repoRoot, 'cat-file', 'blob', "${Treeish}:$RelativePath")) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = [Diagnostics.Process]::Start($startInfo)
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $stream = [IO.FileStream]::new($tempPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $process.StandardOutput.BaseStream.CopyTo($stream)
+            $stream.Flush($true)
+        } finally {
+            $stream.Dispose()
+        }
+        $process.WaitForExit()
+        [void]$stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "git cat-file failed for ${Treeish}:$RelativePath with exit $($process.ExitCode)."
+        }
+        return (Get-FileHash -LiteralPath $tempPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+        if (Test-Path -LiteralPath $tempPath -PathType Leaf) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction Stop
+        }
+    }
+}
+
 $scratch = if ([string]::IsNullOrWhiteSpace($ScratchRoot)) {
     $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
     Join-Path $base ("winsmux-install-e2e-" + [System.Guid]::NewGuid().ToString('N'))
@@ -388,6 +430,47 @@ if ($manifest.profile -ne 'full' -or $manifest.version -ne $expectedNativeVersio
     throw 'Installed profile manifest does not match the requested full release.'
 }
 
+$routerArtifactPaths = @(
+    'winsmux-core/scripts/coordinator-router.ps1',
+    'winsmux-core/scripts/local-router-shadow.ps1',
+    'winsmux-core/router/local-small-router-v03621.manifest.json',
+    'winsmux-core/router/local-small-router-v03621.weights.json'
+)
+$routerInventoryItems = @($routerArtifactPaths | ForEach-Object {
+    $relativePath = $_
+    $installedPath = Join-Path (Join-Path $fixtureHome '.winsmux') $relativePath
+    if (-not (Test-Path -LiteralPath $installedPath -PathType Leaf)) {
+        throw "$Route full install omitted router artifact: $relativePath"
+    }
+    $sourceHash = Get-GitBlobSha256 -Treeish $SourceCommit -RelativePath $relativePath
+    $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($installedHash -cne $sourceHash) {
+        throw "$Route full install router artifact hash mismatch: $relativePath expected=$sourceHash actual=$installedHash"
+    }
+    [ordered]@{
+        path = $relativePath
+        sha256 = $installedHash
+    }
+})
+$installedShadowPath = Join-Path (Join-Path $fixtureHome '.winsmux') 'winsmux-core/scripts/local-router-shadow.ps1'
+$resolvedInstalledRouter = & {
+    param([Parameter(Mandatory)][string]$ShadowPath)
+    . $ShadowPath
+    Resolve-WinsmuxLocalRouterArtifact
+} $installedShadowPath
+$expectedInstalledManifest = Join-Path (Join-Path $fixtureHome '.winsmux') 'winsmux-core/router/local-small-router-v03621.manifest.json'
+$expectedInstalledWeights = Join-Path (Join-Path $fixtureHome '.winsmux') 'winsmux-core/router/local-small-router-v03621.weights.json'
+if (-not [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.manifest_path), [IO.Path]::GetFullPath($expectedInstalledManifest), [StringComparison]::OrdinalIgnoreCase) -or
+    -not [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.weights_path), [IO.Path]::GetFullPath($expectedInstalledWeights), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Route full install did not resolve the default local-router manifest to its installed sibling artifacts."
+}
+$routerInventory = [ordered]@{
+    found = $routerInventoryItems.Count
+    expected = $routerArtifactPaths.Count
+    sha256_match = $routerInventoryItems.Count
+    manifest_resolvable = $true
+}
+
 $lockedNativeUpdateVerified = $false
 if ($Route -eq 'Direct' -and $isGitHubRunner) {
     $cmdFixture = Join-Path $env:SystemRoot 'System32\cmd.exe'
@@ -487,6 +570,7 @@ if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace
     wrapper_doctor_native_version_verified = $true
     wrapper_doctor_terminal_absence_verified = $true
     wrapper_launch_project_dir_verified = $true
+    router_inventory = $routerInventory
     wrapper_target = $core
     native_target = $native
     fragment = $fragment

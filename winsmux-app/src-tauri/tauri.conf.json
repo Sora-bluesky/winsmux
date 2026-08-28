@@ -33,7 +33,8 @@
     ],
     "resources": {
       "../../scripts/winsmux-core.ps1": "scripts/winsmux-core.ps1",
-      "../../winsmux-core/scripts/*": "winsmux-core/scripts"
+      "../../winsmux-core/scripts/*": "winsmux-core/scripts",
+      "../../winsmux-core/router/*": "winsmux-core/router"
     },
     "targets": "all",
     "icon": [

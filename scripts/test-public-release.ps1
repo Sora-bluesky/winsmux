@@ -38,11 +38,13 @@ $script:DesktopTeardownProbeTotalBudgetMilliseconds = 20000
 $script:DesktopOutputRetainLimitBytes = 16384
 $script:OwnedRootPrefix = 'winsmux-public-release-'
 $script:DesktopLifecycle = $null
+$script:DesktopRouterInventory = $null
 $script:DesktopFolderContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\winsmux'
 $script:DesktopBackgroundContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\winsmux'
 $script:DesktopProductPath = 'Registry::HKEY_CURRENT_USER\Software\github\winsmux'
 $script:DesktopUninstallPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux'
 $script:DesktopSmokeEnvMarkerArgument = '--winsmux-smoke-env-marker'
+$script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
 function Assert-Condition {
     param(
@@ -110,6 +112,115 @@ function Get-CoreReleaseAssetNames {
         'winsmux-arm64.exe'
         'winsmux-remote-helper-linux-x64'
     )
+}
+
+function Get-GitBlobSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$Treeish,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $process = $null
+    try {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = (Get-Command git -ErrorAction Stop).Source
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-C', $script:RepositoryRoot, 'cat-file', 'blob', "${Treeish}:$RelativePath")) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+
+        $process = [Diagnostics.Process]::Start($startInfo)
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $hash = $sha256.ComputeHash($process.StandardOutput.BaseStream)
+        } finally {
+            $sha256.Dispose()
+        }
+        $process.WaitForExit()
+        [void]$stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            throw "git cat-file failed for ${Treeish}:$RelativePath with exit $($process.ExitCode)."
+        }
+        return [Convert]::ToHexString($hash).ToLowerInvariant()
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Resolve-DesktopRouterInventoryPolicy {
+    param(
+        [Parameter(Mandatory)][string]$Version,
+        [Parameter(Mandatory)][string]$ReleaseTag,
+        [AllowEmptyString()][string]$CandidateInstallerPath
+    )
+
+    if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
+        return [pscustomobject]@{
+            required = $true
+            treeish = 'HEAD'
+        }
+    }
+
+    $versionMatch = [regex]::Match($Version, '^(?<core>\d+\.\d+\.\d+)(?:-|$)')
+    if (-not $versionMatch.Success) {
+        throw "Unsupported Desktop release version: $Version"
+    }
+    if ([version]$versionMatch.Groups['core'].Value -lt [version]'0.36.38') {
+        return [pscustomobject]@{
+            required = $false
+            treeish = $null
+        }
+    }
+
+    return [pscustomobject]@{
+        required = $true
+        treeish = $ReleaseTag
+    }
+}
+
+function Get-DesktopRouterInventory {
+    param(
+        [Parameter(Mandatory)][string]$InstallRoot,
+        [Parameter(Mandatory)][string]$Treeish
+    )
+
+    $relativePaths = @(
+        'winsmux-core/scripts/coordinator-router.ps1',
+        'winsmux-core/scripts/local-router-shadow.ps1',
+        'winsmux-core/router/local-small-router-v03621.manifest.json',
+        'winsmux-core/router/local-small-router-v03621.weights.json'
+    )
+    foreach ($relativePath in $relativePaths) {
+        $installedPath = Join-Path $InstallRoot $relativePath
+        Assert-Condition (Test-Path -LiteralPath $installedPath -PathType Leaf) "Candidate Desktop installer omitted router artifact: $relativePath"
+        $sourceHash = Get-GitBlobSha256 -Treeish $Treeish -RelativePath $relativePath
+        $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        Assert-Condition ($installedHash -ceq $sourceHash) "Candidate Desktop router artifact hash mismatch: $relativePath expected=$sourceHash actual=$installedHash"
+    }
+
+    $installedShadowPath = Join-Path $InstallRoot 'winsmux-core/scripts/local-router-shadow.ps1'
+    $resolvedInstalledRouter = & {
+        param([Parameter(Mandatory)][string]$ShadowPath)
+        . $ShadowPath
+        Resolve-WinsmuxLocalRouterArtifact
+    } $installedShadowPath
+    $expectedManifestPath = Join-Path $InstallRoot 'winsmux-core/router/local-small-router-v03621.manifest.json'
+    $expectedWeightsPath = Join-Path $InstallRoot 'winsmux-core/router/local-small-router-v03621.weights.json'
+    Assert-Condition (
+        [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.manifest_path), [IO.Path]::GetFullPath($expectedManifestPath), [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals([IO.Path]::GetFullPath([string]$resolvedInstalledRouter.weights_path), [IO.Path]::GetFullPath($expectedWeightsPath), [StringComparison]::OrdinalIgnoreCase)
+    ) 'Candidate Desktop default local-router manifest did not resolve to its installed sibling artifacts.'
+
+    return [ordered]@{
+        found = $relativePaths.Count
+        expected = $relativePaths.Count
+        sha256_match = $relativePaths.Count
+        manifest_resolvable = $true
+    }
 }
 
 function Resolve-ReleaseCoordinates {
@@ -2640,6 +2751,8 @@ function Invoke-DesktopSmoke {
     $expectedHash = ''
     $childEnvironment = @{}
     $observation = $null
+    $routerInventory = $null
+    $routerPolicy = Resolve-DesktopRouterInventoryPolicy -Version $Version -ReleaseTag $ReleaseTag -CandidateInstallerPath $CandidateInstallerPath
     $setupFailure = $null
     try {
         Assert-DesktopRunner
@@ -2709,6 +2822,9 @@ function Invoke-DesktopSmoke {
                 Assert-Condition (-not [string]::Equals($priorAppHash, $candidateAppHash, [StringComparison]::OrdinalIgnoreCase)) 'Candidate over-install did not replace the prior winsmux-app.exe payload.'
             }
             Set-DesktopLifecyclePhase -Context $context -NextPhase 'materialized_verified'
+            if ($routerPolicy.required) {
+                $routerInventory = Get-DesktopRouterInventory -InstallRoot $installRoot -Treeish $routerPolicy.treeish
+            }
         }
 
         $webViewRoot = Join-Path $childRoot 'WebView2'
@@ -2738,6 +2854,7 @@ function Invoke-DesktopSmoke {
         throw $setupFailure
     }
     Assert-DesktopLifecyclePhase -Context $context -ExpectedPhase 'clean'
+    $script:DesktopRouterInventory = $routerInventory
     return [ordered]@{
         asset = $assetName
         sha256 = $expectedHash
@@ -4634,6 +4751,9 @@ $result = [ordered]@{
     attempts = $script:RetryCount
     retry_delay_seconds = $script:RetryDelaySeconds
     cleanup = 'clean'
+}
+if ($Surface -eq 'Desktop' -and $null -ne $script:DesktopRouterInventory) {
+    $result.router_inventory = $script:DesktopRouterInventory
 }
 if ($Json) {
     $result | ConvertTo-Json -Depth 10 -Compress

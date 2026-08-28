@@ -76,6 +76,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Verify local router distribution
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test-v03638-router-distribution.ps1 -Json
+
       - name: Verify installer download targets
         shell: pwsh
         run: pwsh -NoProfile -File scripts/assert-install-downloads-exist.ps1 -RepositoryRoot . -Treeish HEAD
@@ -1094,6 +1098,8 @@ jobs:
               candidate_version_verified = $false
               candidate_hash_verified = $false
               packaged_page_observed = $false
+              router_inventory_verified = $false
+              router_manifest_resolvable = $false
               cleanup_verified = $false
               installer_contract_verified = $false
               upgrade_payload_replacement_verified = $null
@@ -1112,12 +1118,16 @@ jobs:
               $versionVerified = [string]$receipt.version -ceq $env:TASK679_VERSION -and [string]$receipt.evidence.version -ceq $env:TASK679_VERSION -and [string]$receipt.release_tag -ceq "v$env:TASK679_VERSION"
               $hashVerified = [string]$receipt.evidence.sha256 -ceq $env:TASK679_CANDIDATE_HASH -and [string]$receipt.evidence.asset -ceq $env:TASK679_CANDIDATE_ASSET
               $pageObserved = [string]$receipt.evidence.page_url -match '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)'
+              $routerInventoryVerified = [int]$receipt.router_inventory.found -eq 4 -and [int]$receipt.router_inventory.expected -eq 4 -and [int]$receipt.router_inventory.sha256_match -eq 4
+              $routerManifestResolvable = [bool]$receipt.router_inventory.manifest_resolvable
               $cleanupVerified = $receipt.ok -eq $true -and [string]$receipt.surface -ceq 'Desktop' -and [string]$receipt.cleanup -ceq 'clean'
-              $receiptValid = $versionVerified -and $hashVerified -and $pageObserved -and $cleanupVerified
+              $receiptValid = $versionVerified -and $hashVerified -and $pageObserved -and $routerInventoryVerified -and $routerManifestResolvable -and $cleanupVerified
               $result.receipt_valid = $receiptValid
               $result.candidate_version_verified = $versionVerified
               $result.candidate_hash_verified = $hashVerified
               $result.packaged_page_observed = $pageObserved
+              $result.router_inventory_verified = $routerInventoryVerified
+              $result.router_manifest_resolvable = $routerManifestResolvable
               $result.cleanup_verified = $cleanupVerified
               $result.installer_contract_verified = $receiptValid
               if ($Name -ceq 'upgrade') {

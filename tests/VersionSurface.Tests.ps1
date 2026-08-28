@@ -1703,6 +1703,52 @@ Resolve-DesktopWebSocketPathAuthority `
         $branchText | Should -Match 'Assert-FileChecksum'
     }
 
+    It 'T857-DESKTOP-ROUTER-COMPAT-01 requires router inventory only for candidates and releases at or after 0.36.38' {
+        $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($helperPath, [ref]$tokens, [ref]$parseErrors)
+        @($parseErrors).Count | Should -Be 0
+
+        $policyFunctions = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Resolve-DesktopRouterInventoryPolicy'
+        }, $true))
+        $policyFunctions.Count | Should -Be 1
+
+        $policyHarness = [scriptblock]::Create($policyFunctions[0].Extent.Text)
+        . $policyHarness
+        $cases = @(
+            @{ name = 'candidate_old'; version = '0.36.30'; tag = 'v0.36.30.1'; candidate = 'candidate.exe'; required = $true; treeish = 'HEAD' },
+            @{ name = 'candidate_current'; version = '0.36.38'; tag = 'v0.36.38'; candidate = 'candidate.exe'; required = $true; treeish = 'HEAD' },
+            @{ name = 'public_recovery'; version = '0.36.30'; tag = 'v0.36.30.1'; candidate = ''; required = $false; treeish = $null },
+            @{ name = 'public_before_cutover'; version = '0.36.37'; tag = 'v0.36.37'; candidate = ''; required = $false; treeish = $null },
+            @{ name = 'public_at_cutover'; version = '0.36.38'; tag = 'v0.36.38'; candidate = ''; required = $true; treeish = 'v0.36.38' },
+            @{ name = 'public_future'; version = '0.37.0'; tag = 'v0.37.0'; candidate = ''; required = $true; treeish = 'v0.37.0' }
+        )
+        foreach ($case in $cases) {
+            $policy = Resolve-DesktopRouterInventoryPolicy `
+                -Version ([string]$case.version) `
+                -ReleaseTag ([string]$case.tag) `
+                -CandidateInstallerPath ([string]$case.candidate)
+            $policy.required | Should -Be ([bool]$case.required) -Because ([string]$case.name)
+            $policy.treeish | Should -Be $case.treeish -Because ([string]$case.name)
+        }
+
+        $desktopSmoke = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -ceq 'Invoke-DesktopSmoke'
+        }, $true))
+        $desktopSmoke.Count | Should -Be 1
+        $desktopSmoke[0].Body.Extent.Text | Should -Match 'Resolve-DesktopRouterInventoryPolicy'
+        $desktopSmoke[0].Body.Extent.Text | Should -Match '(?s)if\s*\(\$routerPolicy\.required\).*?Get-DesktopRouterInventory'
+
+        $helperText = Get-Content -LiteralPath $helperPath -Raw -Encoding UTF8
+        $helperText | Should -Match '(?s)if\s*\(\$Surface\s+-eq\s+''Desktop''\s+-and\s+\$null\s+-ne\s+\$script:DesktopRouterInventory\).*?\$result\.router_inventory'
+    }
+
     It 'T838-ENVMODE-01 constructs the desktop child environment for both legacy env modes' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
