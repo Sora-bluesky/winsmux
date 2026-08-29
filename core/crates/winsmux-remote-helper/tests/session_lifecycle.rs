@@ -2051,6 +2051,7 @@ fn legacy_birth_capable_controller_gets_push_and_reconcile() {
     });
     assert!(matches!(capable.recv(), Message::PtyAttached { .. }));
     acknowledge_start(&mut capable, &session_id);
+    assert_ack_ok(&mut events.reader, child_pid as i32);
     kill_process_group(child_pid as i32);
     read_matching_event(&mut events.reader, AGENT_WATCHER_REMOVED, child_pid as i32);
     wait_process_group_gone(child_pid);
