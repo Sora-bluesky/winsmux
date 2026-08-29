@@ -107,6 +107,7 @@ tests/bridge/_helpers/*
 !tests/V03619RepoAudit.Tests.ps1
 !tests/V03620CoordinatorFoundation.Tests.ps1
 !tests/V03621LocalRouterShadow.Tests.ps1
+!tests/V03638RouterReliability.Tests.ps1
 !tests/V03626DesktopSplitGate.Tests.ps1
 !tests/V03627CompatPerformanceGate.Tests.ps1
 !tests/V03628RaceAbnormalSoak.Tests.ps1
