@@ -882,6 +882,10 @@ jobs:
           $priorTag = 'v0.36.33'
           $priorAsset = 'winsmux_0.36.33_x64-setup.exe'
           $priorExpectedHash = '011df20edc393299172c0e48a4584a0b99d441b7848c493d7f4b7e37339f55e9'
+          $migrationPriorVersion = '0.36.20'
+          $migrationPriorTag = 'v0.36.20'
+          $migrationPriorAsset = 'winsmux_0.36.20_x64-setup.exe'
+          $migrationPriorExpectedHash = 'c2dcd352f8f2ffff572a785ebb83be263a655775700dc2d70284a26cd685fc46'
           $candidateAsset = "winsmux_${version}_x64-setup.exe"
           $evidence = [ordered]@{
             schema_version = 'task679-nsis-lifecycle-v1'
@@ -891,11 +895,13 @@ jobs:
             inputs = [ordered]@{
               candidate = [ordered]@{ version = $version; asset = $candidateAsset; sha256 = '' }
               prior = [ordered]@{ version = $priorVersion; tag = $priorTag; asset = $priorAsset; sha256 = ''; expected_sha256 = $priorExpectedHash }
+              migration_prior = [ordered]@{ version = $migrationPriorVersion; tag = $migrationPriorTag; asset = $migrationPriorAsset; sha256 = ''; expected_sha256 = $migrationPriorExpectedHash }
             }
             stages = [ordered]@{
               build = [ordered]@{ exit_code = 0; command = 'npm run tauri -- build --bundles nsis'; artifact_verified = $false }
               prior_download = [ordered]@{ exit_code = $null; artifact_found = $false; sha256_verified = $false }
-              staging = [ordered]@{ exit_code = $null; candidate_staged = $false; prior_staged = $false }
+              migration_prior_download = [ordered]@{ exit_code = $null; artifact_found = $false; sha256_verified = $false }
+              staging = [ordered]@{ exit_code = $null; candidate_staged = $false; prior_staged = $false; migration_prior_staged = $false }
               network_isolation = [ordered]@{ exit_code = $null; rule_enabled = $false; positive_control_exit_code = $null; positive_control_blocked = $false }
               network_restore = [ordered]@{
                 exit_code = $null
@@ -909,6 +915,7 @@ jobs:
             legs = [ordered]@{
               fresh = [ordered]@{ status = 'pending' }
               upgrade = [ordered]@{ status = 'pending' }
+              migration = [ordered]@{ status = 'pending' }
             }
           }
           function Write-Task679Evidence {
@@ -930,6 +937,7 @@ jobs:
             New-Item -ItemType Directory -Path $stageRoot, $protectedRoot -Force | Out-Null
             $candidatePath = Join-Path $stageRoot $candidateAsset
             $priorPath = Join-Path $stageRoot $priorAsset
+            $migrationPriorPath = Join-Path $stageRoot $migrationPriorAsset
             Copy-Item -LiteralPath $candidateSource -Destination $candidatePath
 
             $stage = 'prior_download'
@@ -943,15 +951,33 @@ jobs:
               throw 'Pinned prior NSIS installer download failed or produced no file.'
             }
 
+            $stage = 'migration_prior_download'
+            $migrationPriorUrl = "https://github.com/${{ github.repository }}/releases/download/$migrationPriorTag/$migrationPriorAsset"
+            & curl.exe --fail --location --silent --show-error --output $migrationPriorPath $migrationPriorUrl
+            $migrationPriorDownloadExit = [int]$LASTEXITCODE
+            $evidence.stages.migration_prior_download.exit_code = $migrationPriorDownloadExit
+            $evidence.stages.migration_prior_download.artifact_found = Test-Path -LiteralPath $migrationPriorPath -PathType Leaf
+            Write-Task679Evidence
+            if ($migrationPriorDownloadExit -ne 0 -or -not $evidence.stages.migration_prior_download.artifact_found) {
+              throw 'Pinned v0.36.20 migration NSIS installer download failed or produced no file.'
+            }
+
             $stage = 'checksum_verification'
             $candidateHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash.ToLowerInvariant()
             $priorHash = (Get-FileHash -LiteralPath $priorPath -Algorithm SHA256).Hash.ToLowerInvariant()
+            $migrationPriorHash = (Get-FileHash -LiteralPath $migrationPriorPath -Algorithm SHA256).Hash.ToLowerInvariant()
             $evidence.inputs.candidate.sha256 = $candidateHash
             $evidence.inputs.prior.sha256 = $priorHash
+            $evidence.inputs.migration_prior.sha256 = $migrationPriorHash
             $evidence.stages.prior_download.sha256_verified = [string]::Equals($priorHash, $priorExpectedHash, [StringComparison]::Ordinal)
             if (-not $evidence.stages.prior_download.sha256_verified) {
               Write-Task679Evidence
               throw 'Pinned prior NSIS installer SHA-256 did not match SHA256SUMS-desktop evidence.'
+            }
+            $evidence.stages.migration_prior_download.sha256_verified = [string]::Equals($migrationPriorHash, $migrationPriorExpectedHash, [StringComparison]::Ordinal)
+            if (-not $evidence.stages.migration_prior_download.sha256_verified) {
+              Write-Task679Evidence
+              throw 'Pinned v0.36.20 migration NSIS installer SHA-256 did not match SHA256SUMS-desktop evidence.'
             }
 
             $stage = 'protected_inventory'
@@ -971,7 +997,7 @@ jobs:
               })
             }
             $evidence.protected_inventory.before = @($protectedBefore)
-            $evidence.stages.staging = [ordered]@{ exit_code = 0; candidate_staged = $true; prior_staged = $true }
+            $evidence.stages.staging = [ordered]@{ exit_code = 0; candidate_staged = $true; prior_staged = $true; migration_prior_staged = $true }
             Write-Task679Evidence
 
             $firewallRule = "winsmux-task679-outbound-${{ github.run_id }}-${{ github.run_attempt }}"
@@ -983,6 +1009,9 @@ jobs:
               "TASK679_PRIOR_PATH=$priorPath",
               "TASK679_PRIOR_HASH=$priorHash",
               "TASK679_PRIOR_VERSION=$priorVersion",
+              "TASK679_MIGRATION_PRIOR_PATH=$migrationPriorPath",
+              "TASK679_MIGRATION_PRIOR_HASH=$migrationPriorHash",
+              "TASK679_MIGRATION_PRIOR_VERSION=$migrationPriorVersion",
               "TASK679_PROTECTED_ROOT=$protectedRoot",
               "TASK679_EVIDENCE_PATH=$evidencePath",
               "TASK679_FIREWALL_RULE=$firewallRule"
@@ -1035,7 +1064,7 @@ jobs:
             throw
           }
 
-      - name: Run offline fresh and pinned-prior upgrade legs
+      - name: Run offline fresh, pinned-prior upgrade, and v0.36.20 migration legs
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -1076,8 +1105,10 @@ jobs:
           }
           function Invoke-Task679HelperLeg {
             param(
-              [Parameter(Mandatory)][ValidateSet('fresh', 'upgrade')][string]$Name,
-              [Parameter(Mandatory)]$ProtectedBefore
+              [Parameter(Mandatory)][ValidateSet('fresh', 'upgrade', 'migration')][string]$Name,
+              [Parameter(Mandatory)]$ProtectedBefore,
+              [string]$PriorInstallerPath = '',
+              [string]$PriorVersion = ''
             )
             $stdoutPath = Join-Path $env:RUNNER_TEMP "task679-$Name.stdout"
             $stderrPath = Join-Path $env:RUNNER_TEMP "task679-$Name.stderr"
@@ -1091,8 +1122,11 @@ jobs:
               '-CandidateInstallerPath', $env:TASK679_CANDIDATE_PATH,
               '-Json'
             )
-            if ($Name -ceq 'upgrade') {
-              $arguments += @('-PriorInstallerPath', $env:TASK679_PRIOR_PATH, '-PriorVersion', $env:TASK679_PRIOR_VERSION)
+            if ($Name -cne 'fresh') {
+              if ([string]::IsNullOrWhiteSpace($PriorInstallerPath) -or [string]::IsNullOrWhiteSpace($PriorVersion)) {
+                throw "The $Name leg requires an explicit prior installer path and version."
+              }
+              $arguments += @('-PriorInstallerPath', $PriorInstallerPath, '-PriorVersion', $PriorVersion)
             }
             $process = Start-Process -FilePath (Join-Path $PSHOME 'pwsh.exe') -ArgumentList $arguments -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
             $inventory = Compare-Task679ProtectedInventory -Before $ProtectedBefore
@@ -1135,7 +1169,7 @@ jobs:
               $result.router_manifest_resolvable = $routerManifestResolvable
               $result.cleanup_verified = $cleanupVerified
               $result.installer_contract_verified = $receiptValid
-              if ($Name -ceq 'upgrade') {
+              if ($Name -cin @('upgrade', 'migration')) {
                 $result.upgrade_payload_replacement_verified = $receiptValid
               }
               if ($receiptValid -and $inventory.all_unchanged) {
@@ -1155,7 +1189,8 @@ jobs:
             }
             $candidateHash = (Get-FileHash -LiteralPath $env:TASK679_CANDIDATE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
             $priorHash = (Get-FileHash -LiteralPath $env:TASK679_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH) {
+            $migrationPriorHash = (Get-FileHash -LiteralPath $env:TASK679_MIGRATION_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH -or $migrationPriorHash -cne $env:TASK679_MIGRATION_PRIOR_HASH) {
               throw 'Staged installer hash changed before the offline legs.'
             }
             $fresh = Invoke-Task679HelperLeg -Name fresh -ProtectedBefore $evidence.protected_inventory.before
@@ -1176,10 +1211,11 @@ jobs:
             }
             $candidateHash = (Get-FileHash -LiteralPath $env:TASK679_CANDIDATE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
             $priorHash = (Get-FileHash -LiteralPath $env:TASK679_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
-            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH) {
+            $migrationPriorHash = (Get-FileHash -LiteralPath $env:TASK679_MIGRATION_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH -or $migrationPriorHash -cne $env:TASK679_MIGRATION_PRIOR_HASH) {
               throw 'Staged installer hash changed between the offline legs.'
             }
-            $upgrade = Invoke-Task679HelperLeg -Name upgrade -ProtectedBefore $evidence.protected_inventory.before
+            $upgrade = Invoke-Task679HelperLeg -Name upgrade -ProtectedBefore $evidence.protected_inventory.before -PriorInstallerPath $env:TASK679_PRIOR_PATH -PriorVersion $env:TASK679_PRIOR_VERSION
             $upgrade.network_rule_remained_enabled = Test-Task679NetworkRule
             if (-not $upgrade.network_rule_remained_enabled) {
               $upgrade.status = 'fail'
@@ -1189,6 +1225,28 @@ jobs:
             Write-Task679Evidence
             if ([string]$upgrade.status -cne 'pass') {
               throw 'Offline pinned-prior upgrade leg did not satisfy its receipt contract.'
+            }
+
+            $currentStage = 'migration'
+            if (-not (Test-Task679NetworkRule)) {
+              throw 'Outbound network isolation was not active before the v0.36.20 migration leg.'
+            }
+            $candidateHash = (Get-FileHash -LiteralPath $env:TASK679_CANDIDATE_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            $priorHash = (Get-FileHash -LiteralPath $env:TASK679_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            $migrationPriorHash = (Get-FileHash -LiteralPath $env:TASK679_MIGRATION_PRIOR_PATH -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($candidateHash -cne $env:TASK679_CANDIDATE_HASH -or $priorHash -cne $env:TASK679_PRIOR_HASH -or $migrationPriorHash -cne $env:TASK679_MIGRATION_PRIOR_HASH) {
+              throw 'Staged installer hash changed before the v0.36.20 migration leg.'
+            }
+            $migration = Invoke-Task679HelperLeg -Name migration -ProtectedBefore $evidence.protected_inventory.before -PriorInstallerPath $env:TASK679_MIGRATION_PRIOR_PATH -PriorVersion $env:TASK679_MIGRATION_PRIOR_VERSION
+            $migration.network_rule_remained_enabled = Test-Task679NetworkRule
+            if (-not $migration.network_rule_remained_enabled) {
+              $migration.status = 'fail'
+              $migration.failure = 'network_rule_missing'
+            }
+            $evidence.legs.migration = $migration
+            Write-Task679Evidence
+            if ([string]$migration.status -cne 'pass') {
+              throw 'Offline v0.36.20 migration leg did not satisfy its receipt contract.'
             }
 
             $evidence.outcome = 'pass'
