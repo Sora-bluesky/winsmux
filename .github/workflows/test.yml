@@ -241,7 +241,7 @@ jobs:
           - name: local-router-v03621
             result: local-router-v03621
             timeout_minutes: 12
-            paths: tests/V03621LocalRouterShadow.Tests.ps1
+            paths: tests/V03621LocalRouterShadow.Tests.ps1;tests/V03638RouterReliability.Tests.ps1
           - name: desktop-split-v03626
             result: desktop-split-v03626
             timeout_minutes: 12

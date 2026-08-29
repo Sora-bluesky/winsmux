@@ -153,6 +153,7 @@ function Get-WinsmuxPesterShardRegistry {
         ) -ResultFile 'test-results-coordinator-v03620.xml')
         (New-WinsmuxPesterMatrixRow -Ordinal 20 -ShardId 'local-router-v03621' -TimeoutMinutes 12 -TestPaths @(
             'tests/V03621LocalRouterShadow.Tests.ps1'
+            'tests/V03638RouterReliability.Tests.ps1'
         ) -ResultFile 'test-results-local-router-v03621.xml')
         (New-WinsmuxPesterMatrixRow -Ordinal 21 -ShardId 'desktop-split-v03626' -TimeoutMinutes 12 -TestPaths @(
             'tests/V03626DesktopSplitGate.Tests.ps1'
