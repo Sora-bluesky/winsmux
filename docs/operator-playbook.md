@@ -88,6 +88,39 @@ Rules that make tiering robust:
 - **First-source before asserting.** Bot reviews, docs, and your own past comments are claims;
   confirm them at file:line before acting, and cite the confirmation in your reply/commit.
 
+### v0.36.38 Local Router Shadow Mode operations
+
+`coordinator-router.ps1` retains deterministic execution authority.
+`local-router-shadow.ps1` produces a Shadow Mode proposal only and does not alter execution.
+
+Run the distribution gate first:
+
+```powershell
+pwsh -NoProfile -File scripts/test-v03638-router-distribution.ps1
+```
+
+It verifies the four source artifacts, the bundled desktop resources, and the CLI full profile.
+It is a distribution gate, not the fixed 100-case reliability gate.
+
+Then run the fixed 100-case reliability gate:
+
+```powershell
+pwsh -NoProfile -File scripts/test-v03638-router-reliability.ps1
+```
+
+The receipt evaluates these six classifications: `normal`, `previous-model-failure`,
+`previous-infrastructure-failure`, `write-scope-conflict`, `all-offline`, and
+`threshold-fallback`. Record its identity and provenance fields: `schema`, `gate_id`,
+`target_version`, `task_base_sha`, `executed_head_sha`, and `source_sha256`. Record its
+outcome fields: `run_count`, `class_counts`, `class_results`, `max_batch_size`,
+`provider_calls`, `prompt_canary_occurrences`, `failures`, `child`, `child_output`,
+`cleanup`, and `release_ready`. A passing receipt requires `provider_calls=0` and
+`prompt_canary_occurrences=0`.
+
+For each Shadow Mode decision, `fallback_required` states whether deterministic fallback is
+needed. `fallback_decision` preserves that deterministic route, and `final_authority` is the
+execution decision that remains in force.
+
 ## 6. Review & merge gate
 
 - **Independent review to PASS.** Dispatch a fresh-context deep-reasoning slot to review the
