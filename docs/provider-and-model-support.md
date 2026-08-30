@@ -208,6 +208,26 @@ winsmux records the selected model and runtime metadata when they appear in run
 evidence, but the operator remains responsible for deciding whether that model
 is acceptable for a task.
 
+## Local Router Shadow Mode model card
+
+The artifact has `artifact_id` `winsmux-local-router-shadow-v03621` and
+`policy_revision` `v03621`. These identify the artifact and its policy, not the product
+target version `v0.36.38`. Its provenance is a repository-authored deterministic route-head
+fixture for offline Shadow Mode evaluation.
+
+The artifact has 12 route-state features. Its weighted slot heads and role heads emit logits,
+which `local-router-shadow.ps1` converts to probabilities with softmax. It runs in
+`PowerShell 7` with `shadow_only` execution. The shadow result is a proposal; deterministic
+routing remains the execution authority. See the
+[Local Router Shadow Mode operations](operator-playbook.md#v03638-local-router-shadow-mode-operations)
+for the distribution and reliability evidence required by operators.
+
+| Claim class | Boundary |
+| --- | --- |
+| Verified | Only behavior directly demonstrated by the exact-base source, manifest, weights, executed distribution gate, executed fixed 100-case reliability receipt, and exact-main workflow may be stated as verified. |
+| Experimental | Weights, thresholds, Shadow Mode diagnostics, and offline fixture results are diagnostic evidence only; they do not establish general model quality or production readiness. |
+| Unsupported | Do not claim that this artifact changes production routing, calls providers, stores raw prompts, writes files, performs autonomous failover, is an LLM or provider model, or proves real-environment quality, availability, cost, or safety. |
+
 ## Worker pane model picker and benchmark comparison
 
 The desktop runtime settings surface separates model entries into six classes:
