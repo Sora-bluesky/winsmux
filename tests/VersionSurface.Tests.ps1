@@ -963,7 +963,28 @@ Describe 'winsmux version surface' {
         }
     }
 
-    It 'IR668-RECOVERY-WORKFLOW-01 runs a main-bound read-only three-surface recovery receipt' {
+    It 'T615-DESKTOP-CANDIDATE-01 binds the checked-out candidate identity and derives the installer from VERSION without publication' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\desktop-candidate-cdp-gate.yml') -Raw -Encoding UTF8
+
+        $workflow | Should -Match '(?ms)^on:\s*\r?\n\s+workflow_dispatch:'
+        $workflow | Should -Not -Match '(?m)^\s+(push|pull_request|schedule):'
+        $workflow | Should -Match '(?ms)^permissions:\s*\r?\n\s+contents:\s+read\s*$'
+        $workflow | Should -Not -Match '(?i)secrets\.|npm publish|softprops/action-gh-release|git (push|tag)|actions/upload-artifact'
+        $workflow | Should -Match 'ref:\s+\$\{\{ inputs\.candidate_ref \}\}'
+        $workflow | Should -Match 'persist-credentials:\s+false'
+        $workflow | Should -Match ('(?m)^\s+default:\s+v{0}\s*$' -f [regex]::Escape($script:ProductVersion))
+        $workflow | Should -Match ('(?m)^\s+default:\s+{0}\s*$' -f [regex]::Escape($script:ProductVersion))
+
+        $workflow | Should -Match '\$checkedOutVersion\s*=\s*\(Get-Content\s+-LiteralPath\s+''VERSION''\s+-Raw'
+        $workflow | Should -Match '\$expectedReleaseTag\s*=\s*"v\$checkedOutVersion"'
+        $workflow | Should -Match '\$version\s+-cne\s+\$checkedOutVersion'
+        $workflow | Should -Match '\$releaseTag\s+-cne\s+\$expectedReleaseTag'
+        $workflow | Should -Match '\[string\]::Equals\(\$resolvedCommit,\s*\$candidate,\s*\[StringComparison\]::OrdinalIgnoreCase\)'
+        $workflow | Should -Match 'winsmux_\$\(\$checkedOutVersion\)_x64-setup\.exe'
+        $workflow | Should -Not -Match 'winsmux_0\.36\.30(?:\.1)?_x64-setup\.exe'
+    }
+
+    It 'IR668-RECOVERY-WORKFLOW-01 runs a dynamically tag-bound read-only three-surface recovery receipt' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\public-smoke-recovery.yml') -Raw -Encoding UTF8
 
         $workflow | Should -Match '(?ms)^on:\s*\r?\n\s+workflow_dispatch:'
@@ -986,21 +1007,39 @@ Describe 'winsmux version surface' {
             'RECOVERY_NATIVE_VERSION: ${{ inputs.native_version }}',
             'RECOVERY_NPM_VERSION: ${{ inputs.npm_version }}',
             'RECOVERY_WORKFLOW_REF: ${{ github.ref }}',
-            'RECOVERY_WORKFLOW_SHA: ${{ github.sha }}'
+            'RECOVERY_WORKFLOW_SHA: ${{ github.sha }}',
+            'RECOVERY_WORKFLOW_FILE_SHA: ${{ github.workflow_sha }}'
         )) {
             $workflow | Should -Match ([regex]::Escape($environmentBinding))
         }
+        $workflow | Should -Match ('(?m)^\s+default:\s+v{0}\s*$' -f [regex]::Escape($script:ProductVersion))
+        (@([regex]::Matches($workflow, ('(?m)^\s+default:\s+{0}\s*$' -f [regex]::Escape($script:ProductVersion))))).Count | Should -Be 2
+        $workflow | Should -Not -Match 'v0\.36\.30\.1|0\.36\.30-pkgfix\.1|8b9b6eb5a26aa490422e91286b647bca29adb8f5|9f5585151703d8d1dd3fca373d687194f0b94933'
+        $workflow | Should -Not -Match ([regex]::Escape('refs/heads/main'))
         foreach ($coordinate in @(
-            'refs/heads/main',
-            '9f5585151703d8d1dd3fca373d687194f0b94933',
-            '8b9b6eb5a26aa490422e91286b647bca29adb8f5',
             'refs/tags/$Tag^{}',
+            '$expectedWorkflowRef = "refs/tags/$releaseTag"',
+            '$workflowRef -cne $expectedWorkflowRef',
+            "releaseCommit -cnotmatch '^[0-9a-f]{40}$'",
+            "workflowSha -cnotmatch '^[0-9a-f]{40}$'",
+            "workflowFileSha -cnotmatch '^[0-9a-f]{40}$'",
+            '$releaseTagMatch.Groups[''version''].Value',
+            'nativeVersion -cne $workflowVersion',
+            'npmVersion -cne $workflowVersion',
+            'workflowSha -cne $releaseCommit',
+            'workflowFileSha -cne $releaseCommit',
             'helperSourceCommit -cne $workflowSha',
+            'helperSourceCommit -cne $workflowFileSha',
+            'helperSourceCommit -cne $releaseCommit',
             'tagBefore = Get-RemoteTagIdentity',
             'tagAfter = Get-RemoteTagIdentity',
-            'Assert-ExactProperties -Object $helperReceipt',
-            "@('asset', 'sha256', 'version')",
+            'tagBefore.target_commit -cne $releaseCommit',
+            'Assert-ExactProperties -Object $helperReceipt -Expected $expectedReceiptProperties',
+            '$expectedReceiptProperties += ''router_inventory''',
+            "@('asset', 'sha256', 'version', 'verified_assets')",
+            "@('winsmux-x64.exe', 'winsmux-arm64.exe', 'winsmux-remote-helper-linux-x64')",
             "@('asset', 'sha256', 'version', 'page_url')",
+            'Assert-ExactProperties -Object $helperReceipt.router_inventory -Expected @(''found'', ''expected'', ''sha256_match'', ''manifest_resolvable'')',
             "'node_path',",
             "'npm_cli_path'",
             'workflow_source_commit',

@@ -6,22 +6,21 @@ on:
       release_tag:
         description: Immutable annotated release tag to verify.
         required: true
-        default: v0.36.30.1
+        default: v0.36.38
         type: string
       release_commit:
         description: Peeled commit of the immutable annotated release tag.
         required: true
-        default: 8b9b6eb5a26aa490422e91286b647bca29adb8f5
         type: string
       native_version:
         description: Exact Core and Desktop product version.
         required: true
-        default: 0.36.30
+        default: 0.36.38
         type: string
       npm_version:
         description: Exact public npm package version.
         required: true
-        default: 0.36.30-pkgfix.1
+        default: 0.36.38
         type: string
 
 permissions:
@@ -61,6 +60,7 @@ jobs:
           RECOVERY_REPOSITORY: ${{ github.repository }}
           RECOVERY_WORKFLOW_REF: ${{ github.ref }}
           RECOVERY_WORKFLOW_SHA: ${{ github.sha }}
+          RECOVERY_WORKFLOW_FILE_SHA: ${{ github.workflow_sha }}
           RECOVERY_SURFACE: ${{ matrix.surface }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -113,37 +113,52 @@ jobs:
           $repository = [string]$env:RECOVERY_REPOSITORY
           $workflowRef = [string]$env:RECOVERY_WORKFLOW_REF
           $workflowSha = [string]$env:RECOVERY_WORKFLOW_SHA
+          $workflowFileSha = [string]$env:RECOVERY_WORKFLOW_FILE_SHA
           $surface = [string]$env:RECOVERY_SURFACE
 
+          $releaseTagMatch = [regex]::Match($releaseTag, '^v(?<version>\d+\.\d+\.\d+)$')
+          if (-not $releaseTagMatch.Success) {
+            throw "Recovery release_tag '$releaseTag' is not a stable release tag."
+          }
+          $expectedWorkflowRef = "refs/tags/$releaseTag"
+          $workflowVersion = $releaseTagMatch.Groups['version'].Value
           if (
-            $releaseTag -cne 'v0.36.30.1' -or
-            $releaseCommit -cne '8b9b6eb5a26aa490422e91286b647bca29adb8f5' -or
-            $nativeVersion -cne '0.36.30' -or
-            $npmVersion -cne '0.36.30-pkgfix.1' -or
+            $releaseCommit -cnotmatch '^[0-9a-f]{40}$' -or
+            $workflowSha -cnotmatch '^[0-9a-f]{40}$' -or
+            $workflowFileSha -cnotmatch '^[0-9a-f]{40}$' -or
+            $nativeVersion -cne $workflowVersion -or
+            $npmVersion -cne $workflowVersion -or
             $repository -cne 'Sora-bluesky/winsmux' -or
-            $workflowRef -cne 'refs/heads/main' -or
+            $workflowRef -cne $expectedWorkflowRef -or
+            $workflowSha -cne $releaseCommit -or
+            $workflowFileSha -cne $releaseCommit -or
             $surface -notin @('Core', 'Desktop', 'Npm')
           ) {
-            throw 'Recovery workflow accepts only the immutable v0.36.30.1 public coordinates from main.'
+            throw 'Recovery workflow requires one stable version, lowercase full commit identities, the canonical repository, and a tag-bound workflow source.'
           }
 
-          $workflowVersion = $releaseTag.Substring(1)
           $helperVersion = if ($surface -ceq 'Npm') { $npmVersion } else { $workflowVersion }
           $expectedReceiptVersion = if ($surface -ceq 'Npm') { $npmVersion } else { $nativeVersion }
 
           $helperSourceCommit = (& git rev-parse HEAD).Trim()
-          if ($LASTEXITCODE -ne 0 -or $helperSourceCommit -cne $workflowSha) {
-            throw 'Checked-out helper source does not equal the workflow main event commit.'
+          if (
+            $LASTEXITCODE -ne 0 -or
+            $helperSourceCommit -cne $workflowSha -or
+            $helperSourceCommit -cne $workflowFileSha -or
+            $helperSourceCommit -cne $releaseCommit
+          ) {
+            throw 'Checked-out helper source does not equal the tag-bound workflow and release commit.'
           }
           $helperSourceSha256 = (Get-FileHash -LiteralPath scripts/test-public-release.ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
 
           $tagBefore = Get-RemoteTagIdentity -Tag $releaseTag
           if (
-            $tagBefore.tag_object_sha -cne '9f5585151703d8d1dd3fca373d687194f0b94933' -or
+            $tagBefore.tag_object_sha -notmatch '^[0-9a-f]{40}$' -or
+            $tagBefore.target_commit -notmatch '^[0-9a-f]{40}$' -or
             $tagBefore.target_commit -cne $releaseCommit -or
             $tagBefore.tag_object_sha -ceq $tagBefore.target_commit
           ) {
-            throw 'Annotated tag identity did not bind the immutable v0.36.30.1 object and peeled target.'
+            throw 'Annotated tag identity did not bind a distinct tag object to the requested peeled commit.'
           }
 
           $helperOutput = @(
@@ -153,7 +168,7 @@ jobs:
             throw "$surface helper did not produce exactly one terminal JSON receipt."
           }
           $helperReceipt = ([string]$helperOutput[0] | ConvertFrom-Json -Depth 20)
-          Assert-ExactProperties -Object $helperReceipt -Expected @(
+          $expectedReceiptProperties = @(
             'ok',
             'surface',
             'version',
@@ -163,7 +178,11 @@ jobs:
             'attempts',
             'retry_delay_seconds',
             'cleanup'
-          ) -Label "$surface receipt"
+          )
+          if ($surface -ceq 'Desktop') {
+            $expectedReceiptProperties += 'router_inventory'
+          }
+          Assert-ExactProperties -Object $helperReceipt -Expected $expectedReceiptProperties -Label "$surface receipt"
           if (
             $helperReceipt.ok -ne $true -or
             [string]$helperReceipt.surface -cne $surface -or
@@ -177,24 +196,31 @@ jobs:
 
           switch ($surface) {
             'Core' {
-              Assert-ExactProperties -Object $helperReceipt.evidence -Expected @('asset', 'sha256', 'version') -Label 'Core evidence'
+              $expectedCoreAssets = @('winsmux-x64.exe', 'winsmux-arm64.exe', 'winsmux-remote-helper-linux-x64')
+              Assert-ExactProperties -Object $helperReceipt.evidence -Expected @('asset', 'sha256', 'version', 'verified_assets') -Label 'Core evidence'
               if (
                 [string]$helperReceipt.evidence.asset -cne 'winsmux-x64.exe' -or
                 [string]$helperReceipt.evidence.sha256 -notmatch '^[0-9a-f]{64}$' -or
-                [string]$helperReceipt.evidence.version -cne $nativeVersion
+                [string]$helperReceipt.evidence.version -cne $nativeVersion -or
+                (@($helperReceipt.evidence.verified_assets) -join [char]10) -cne ($expectedCoreAssets -join [char]10)
               ) {
-                throw 'Core evidence did not bind the exact public executable, digest, and native version.'
+                throw 'Core evidence did not bind the exact public executable inventory, digest, and native version.'
               }
             }
             'Desktop' {
               Assert-ExactProperties -Object $helperReceipt.evidence -Expected @('asset', 'sha256', 'version', 'page_url') -Label 'Desktop evidence'
+              Assert-ExactProperties -Object $helperReceipt.router_inventory -Expected @('found', 'expected', 'sha256_match', 'manifest_resolvable') -Label 'Desktop router inventory'
               if (
                 [string]$helperReceipt.evidence.asset -cne "winsmux_$($nativeVersion)_x64-setup.exe" -or
                 [string]$helperReceipt.evidence.sha256 -notmatch '^[0-9a-f]{64}$' -or
                 [string]$helperReceipt.evidence.version -cne $nativeVersion -or
-                [string]$helperReceipt.evidence.page_url -notmatch '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)'
+                [string]$helperReceipt.evidence.page_url -notmatch '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)' -or
+                [int]$helperReceipt.router_inventory.found -ne 4 -or
+                [int]$helperReceipt.router_inventory.expected -ne 4 -or
+                [int]$helperReceipt.router_inventory.sha256_match -ne 4 -or
+                $helperReceipt.router_inventory.manifest_resolvable -ne $true
               ) {
-                throw 'Desktop evidence did not bind the exact public installer, digest, native version, and production page.'
+                throw 'Desktop evidence did not bind the exact public installer, digest, native version, production page, and router inventory.'
               }
             }
             'Npm' {
