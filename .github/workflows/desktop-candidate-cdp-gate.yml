@@ -20,12 +20,12 @@ on:
       release_tag:
         description: Release tag for smoke helper
         required: false
-        default: v0.36.30.1
+        default: v0.36.38
         type: string
       version:
         description: Version for smoke helper
         required: false
-        default: 0.36.30.1
+        default: 0.36.38
         type: string
 
 permissions:
@@ -54,6 +54,39 @@ jobs:
         with:
           ref: ${{ inputs.candidate_ref }}
           persist-credentials: false
+
+      - name: Validate checked-out candidate release identity
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $candidate = [string]$env:CANDIDATE_REF
+          $releaseTag = [string]$env:RELEASE_TAG
+          $version = [string]$env:VERSION_INPUT
+          $checkedOutVersion = (Get-Content -LiteralPath 'VERSION' -Raw -Encoding UTF8).Trim()
+          if ($checkedOutVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Checked-out VERSION is not a stable product version (value='$checkedOutVersion')."
+          }
+
+          $resolvedCommit = (& git rev-parse HEAD 2>$null | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $resolvedCommit -notmatch '^[0-9a-fA-F]{40}$') {
+            throw "Unable to resolve checked-out HEAD as a full commit SHA (value='$resolvedCommit')."
+          }
+          if (-not [string]::Equals($resolvedCommit, $candidate, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Checked-out HEAD '$resolvedCommit' does not match candidate_ref '$candidate'."
+          }
+
+          $expectedReleaseTag = "v$checkedOutVersion"
+          if ($version -cne $checkedOutVersion) {
+            throw "Input version '$version' does not match checked-out VERSION '$checkedOutVersion'."
+          }
+          if ($releaseTag -cne $expectedReleaseTag) {
+            throw "Input release_tag '$releaseTag' does not match checked-out VERSION tag '$expectedReleaseTag'."
+          }
+          Write-Host "candidate identity accepted: commit=$resolvedCommit version=$checkedOutVersion release_tag=$releaseTag"
 
       - name: Setup Node.js 24
         uses: actions/setup-node@v6
@@ -190,7 +223,8 @@ jobs:
 
           $version = '${{ inputs.version }}'
           $releaseTag = '${{ inputs.release_tag }}'
-          $installer = 'target/release/bundle/nsis/winsmux_0.36.30_x64-setup.exe'
+          $checkedOutVersion = (Get-Content -LiteralPath 'VERSION' -Raw -Encoding UTF8).Trim()
+          $installer = Join-Path 'target/release/bundle/nsis' "winsmux_$($checkedOutVersion)_x64-setup.exe"
           if (-not (Test-Path -LiteralPath $installer)) {
             throw "Leg B failed: installer missing at $installer"
           }
