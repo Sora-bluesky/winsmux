@@ -115,7 +115,7 @@ $requiredScripts = @(
     @{ name = 'test:viewport-harness'; patterns = @('viewport-harness\.mjs'); evidence = 'visual and accessibility browser harness' },
     @{ name = 'test:clickable-coverage'; patterns = @('clickable-coverage-harness\.mjs'); evidence = 'clickable UI coverage harness' },
     @{ name = 'test:desktop-pane-e2e'; patterns = @('desktop-pane-e2e\.mjs'); evidence = 'native desktop pane E2E harness' },
-    @{ name = 'test:desktop-status-e2e'; patterns = @('desktop-pane-e2e\.mjs', '--stop-after-worker-status'); evidence = 'focused worker-status desktop E2E' },
+    @{ name = 'test:desktop-status-e2e'; patterns = @('desktop-status-e2e\.mjs'); evidence = 'MSVC-initialized focused worker-status desktop E2E wrapper' },
     @{ name = 'test:desktop-release-popout-e2e'; patterns = @('desktop-pane-e2e\.mjs', '--release-popout-only'); evidence = 'packaged popout E2E path' },
     @{ name = 'test:desktop-split-static'; patterns = @('test-v03626-desktop-split-gate\.ps1'); evidence = 'v0.36.26 static wiring gate aggregator' },
     @{ name = 'test:desktop-split-gate'; patterns = @('test-v03626-desktop-split-gate\.ps1', '-RequireEvidence'); evidence = 'v0.36.26 release gate aggregator with required evidence' },
@@ -151,7 +151,31 @@ foreach ($modulePath in $splitModules) {
 $viewportHarness = Get-RepoContent 'winsmux-app/scripts/viewport-harness.mjs'
 $clickableHarness = Get-RepoContent 'winsmux-app/scripts/clickable-coverage-harness.mjs'
 $desktopE2e = Get-RepoContent 'winsmux-app/scripts/desktop-pane-e2e.mjs'
+$desktopStatusE2e = Get-RepoContent 'winsmux-app/scripts/desktop-status-e2e.mjs'
+$windowsMsvcEnv = Get-RepoContent 'winsmux-app/scripts/windows-msvc-env.mjs'
+$desktopStatusCheck = Get-RepoContent 'winsmux-app/scripts/desktop-status-e2e-check.mjs'
+$desktopStatusImplementation = $desktopStatusE2e + "`n" + $windowsMsvcEnv
 $viteConfig = Get-RepoContent 'winsmux-app/vite.config.ts'
+
+Add-ContainsAllCheck 'desktop status E2E wrapper and canonical stage table preserve the runner mode' $desktopStatusImplementation @(
+    'windows-msvc-env\.mjs',
+    'desktop-pane-e2e\.mjs',
+    '--stop-after-worker-status',
+    'projectRunResult'
+) 'winsmux-app/scripts/desktop-status-e2e.mjs'
+
+Add-ContainsAllCheck 'desktop status MSVC resolver exposes the frozen stage and process-result tables' $windowsMsvcEnv @(
+    'DESKTOP_STATUS_STAGE_TABLE',
+    'PROCESS_RESULT_DECISION_TABLE',
+    'resolveMsvcEnvironment',
+    'sanitizeStatusEnvironment'
+) 'winsmux-app/scripts/windows-msvc-env.mjs'
+
+Add-ContainsAllCheck 'desktop status wrapper check exercises the public package route' $desktopStatusCheck @(
+    'desktop-status-e2e\.mjs',
+    'windows-msvc-env\.mjs',
+    'test:desktop-status-e2e'
+) 'winsmux-app/scripts/desktop-status-e2e-check.mjs'
 
 Add-ContainsAllCheck 'visual harness writes replayable viewport evidence' $viewportHarness @(
     'OUTPUT_DIR',
