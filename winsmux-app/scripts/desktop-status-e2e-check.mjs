@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -8,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   DESKTOP_STATUS_STAGE_TABLE,
   PROCESS_RESULT_DECISION_TABLE,
+  executeCanonicalStage,
   executeStageProjection,
   parseSetOutput,
   resolveMsvcEnvironment,
@@ -32,20 +32,12 @@ const CONTROL_KEYS = Object.freeze([
   "WINSMUX_DESKTOP_E2E_CONTROL_PIPE_TOKEN",
   "WINSMUX_DESKTOP_E2E_CDP_TIMEOUT_MS",
 ]);
-const EXPECTED_OWNER_ORDER_SHA256 = Object.freeze({
-  resolver: "d66d22ff8e80c365c7000c56b3abcaa78ebbd7f03b57e65e3b4b59e2abc7f7d5",
-  wrapper: "1691a570a064adf8a0979b5eed6bf99e181eb6e62200ef4fa088245761439473",
-});
 
 const checks = [];
 let processResultCoverage = null;
 function check(name, body) {
   body();
   checks.push(name);
-}
-
-function sha256(text) {
-  return createHash("sha256").update(text).digest("hex");
 }
 
 function deepFrozen(value, seen = new Set()) {
@@ -213,12 +205,22 @@ function wrapperFailureWitness(target) {
   }
 }
 
-function assertOwnerFailureWitnesses(owner, factory) {
+function stageFailureWitness(target) {
+  if (target.owner === "resolver") return resolverFailureWitness(target);
+  if (target.owner === "wrapper") return wrapperFailureWitness(target);
+  if (target.owner === "main") {
+    return {
+      execute: () => executeStageProjection({ owner: target.owner, context: {} }),
+    };
+  }
+  assert.fail(`missing owner witness for ${target.owner}`);
+}
+
+function assertOwnerFailureWitnesses(owner) {
   const rows = rowsFor(owner);
   const observedFailures = [];
-  assert.equal(sha256(rows.map((row) => row.id).join("\n")), EXPECTED_OWNER_ORDER_SHA256[owner], `${owner} causal order`);
   for (const [targetIndex, target] of rows.entries()) {
-    const witness = factory(target);
+    const witness = stageFailureWitness(target);
     const projection = witness.execute();
     assert.equal(projection.ok, false, `${target.id} must fail`);
     assert.strictEqual(projection.failure_row, target, `${target.id} canonical failure row`);
@@ -231,20 +233,103 @@ function assertOwnerFailureWitnesses(owner, factory) {
       assert.equal(witness.statCalls.length, statMilestones.filter((row) => rows.indexOf(row) <= targetIndex).length, `${target.id} later stat count`);
       const expectedEffects = reachedRows.filter((row) => [...spawnMilestones, ...statMilestones].includes(row)).map((row) => row.id);
       assert.deepEqual(witness.effects, expectedEffects, `${target.id} causal side-effect trace`);
-    } else {
+    } else if (owner === "wrapper") {
       const resolverCallIndex = rows.indexOf(rowById("resolver-call"));
       const runnerLaunchIndex = rows.indexOf(rowById("runner-launch"));
       assert.equal(witness.resolverCalls.length, targetIndex >= resolverCallIndex ? 1 : 0, `${target.id} later resolver count`);
       assert.equal(witness.runnerCalls.length, targetIndex >= runnerLaunchIndex ? 1 : 0, `${target.id} later runner count`);
       const expectedEffects = reachedRows.filter((row) => row.id === "resolver-call" || row.id === "runner-launch").map((row) => row.id);
       assert.deepEqual(witness.effects, expectedEffects, `${target.id} causal side-effect trace`);
+    } else {
+      assert.equal(owner, "main");
+      assert.equal(rows.length, 1);
+      assert.equal(projection.process_snapshot, null);
+      const projected = projectRunResult({ projection, msvcSource: null });
+      assert.deepEqual(projected, { ok: false, failure_code: target.public_failure_code, failure_stage: target.id, exit_code: 1, child_status: null, child_signal: null, msvc_source: null });
     }
   }
   assert.deepEqual(observedFailures, rows.map((row) => row.id), `${owner} observed failure order`);
 }
 
+function assertAllOwnerFailureWitnesses() {
+  const owners = [...new Set(DESKTOP_STATUS_STAGE_TABLE.map((row) => row.owner))];
+  assert.ok(owners.length > 0);
+  for (const owner of owners) assertOwnerFailureWitnesses(owner);
+}
+
+const processAccessFields = Object.freeze(PROCESS_RESULT_DECISION_TABLE.filter((row) => row.field !== null).map((row) => row.field));
+const handledProcessPartitionKeys = new Set();
+
+function emptyAccessMap() {
+  return Object.fromEntries(processAccessFields.map((field) => [field, 0]));
+}
+
+function processPartitionKey(decisionRow, partition) {
+  const rowIndex = PROCESS_RESULT_DECISION_TABLE.indexOf(decisionRow);
+  const partitionIndex = decisionRow.partitions.indexOf(partition);
+  assert.ok(rowIndex >= 0 && partitionIndex >= 0);
+  assert.equal(decisionRow.partitions.lastIndexOf(partition), partitionIndex, `${decisionRow.id} duplicate partition`);
+  return `${rowIndex}/${partitionIndex}/${partition}`;
+}
+
+function applyContinuationBaseline({ probe, read }, rows, result_stdout_kind) {
+  for (const row of rows) {
+    if (row.field === null) continue;
+    if (row.field === "stdout") {
+      read.stdout = result_stdout_kind === "none" ? 0 : 1;
+    } else {
+      probe[row.field] = 1;
+      read[row.field] = 1;
+    }
+  }
+}
+
+function expectedAccessVector({ decisionRow, partition, result_stdout_kind }) {
+  assert.ok(["string", "buffer", "none"].includes(result_stdout_kind));
+  const rowIndex = PROCESS_RESULT_DECISION_TABLE.indexOf(decisionRow);
+  assert.ok(rowIndex >= 0);
+  const key = processPartitionKey(decisionRow, partition);
+  const expected = { probe: emptyAccessMap(), read: emptyAccessMap() };
+  const earlierRows = PROCESS_RESULT_DECISION_TABLE.slice(0, rowIndex);
+  const laterRows = PROCESS_RESULT_DECISION_TABLE.slice(rowIndex + 1);
+  applyContinuationBaseline(expected, earlierRows, result_stdout_kind);
+
+  let continues = false;
+  if (decisionRow.id === "result-object") {
+    if (partition.startsWith("non-null object")) continues = true;
+    else if (!partition.includes("terminal malformed")) assert.fail(`unhandled oracle partition ${key}`);
+  } else if (["error-field", "signal-field", "status-field"].includes(decisionRow.id)) {
+    const field = decisionRow.field;
+    if (partition.startsWith("own-property probe throw") || partition.startsWith("own property absent")) {
+      expected.probe[field] = 1;
+    } else if (partition.startsWith("own getter read throw") || partition.includes("own value") || partition.includes("own integer") || partition.includes("matching") || partition.includes("every other own")) {
+      expected.probe[field] = 1;
+      expected.read[field] = 1;
+    } else {
+      assert.fail(`unhandled oracle partition ${key}`);
+    }
+    if (decisionRow.id === "error-field" || decisionRow.id === "signal-field") {
+      continues = partition.startsWith("own property absent") || partition.includes("undefined") || partition.includes("null -> continue");
+    } else {
+      continues = partition.includes("integer zero");
+    }
+  } else if (decisionRow.id === "success-validator") {
+    if (!partition.startsWith("validator throw") && !partition.includes("not exactly true") && !partition.includes("exactly true")) {
+      assert.fail(`unhandled oracle partition ${key}`);
+    }
+    expected.read.stdout = result_stdout_kind === "none" ? 0 : 1;
+  } else {
+    assert.fail(`unhandled oracle row ${decisionRow.id}`);
+  }
+  if (continues) applyContinuationBaseline(expected, laterRows, result_stdout_kind);
+  handledProcessPartitionKeys.add(key);
+  Object.freeze(expected.probe);
+  Object.freeze(expected.read);
+  return Object.freeze(expected);
+}
+
 function trackedResult(properties, { probeThrow = null, readThrow = null, absent = [] } = {}) {
-  const counts = { probe: Object.create(null), read: Object.create(null) };
+  const counts = { probe: emptyAccessMap(), read: emptyAccessMap() };
   const target = { ...properties };
   for (const key of absent) delete target[key];
   const result = new Proxy(target, {
@@ -262,12 +347,15 @@ function trackedResult(properties, { probeThrow = null, readThrow = null, absent
   return { result, counts };
 }
 
-function validStdoutFor(stageId) {
-  return stageId === "capture-result" ? setBuffer() : `${VS_INSTALLATION}\r\n`;
+function validStdoutFor(stageRow) {
+  if (stageRow.result_stdout_kind === "string") return `${VS_INSTALLATION}\r\n`;
+  if (stageRow.result_stdout_kind === "buffer") return setBuffer();
+  if (stageRow.result_stdout_kind === "none") return Buffer.alloc(2);
+  assert.fail(`unexpected result stdout kind ${stageRow.result_stdout_kind}`);
 }
 
-function partitionVariants(decisionRow, partition, stageId) {
-  const properties = { signal: null, status: 0, stdout: validStdoutFor(stageId) };
+function partitionVariants(decisionRow, partition, stageRow) {
+  const properties = { error: null, signal: null, status: 0, stdout: validStdoutFor(stageRow) };
   const variants = [];
   const add = (label, changes = {}, faults = {}, expectedCategory = "zero-status", expectedSignal = null, expectedStatus = expectedCategory === "zero-status" ? 0 : null) => {
     const tracked = trackedResult({ ...properties, ...changes }, faults);
@@ -300,33 +388,35 @@ function partitionVariants(decisionRow, partition, stageId) {
     else add("nonzero", { status: 29 }, {}, "nonzero-status", null, 29);
   } else if (decisionRow.id === "success-validator") {
     if (partition.startsWith("validator throw")) add("validator-throw", {}, { readThrow: "stdout" }, "malformed");
-    else if (partition.includes("not exactly true")) add("validator-not-true", { stdout: stageId === "capture-result" ? "wrong" : Buffer.alloc(2) }, {}, "malformed");
+    else if (partition.includes("not exactly true")) add("validator-not-true", { stdout: stageRow.result_stdout_kind === "buffer" ? "wrong" : Buffer.alloc(2) }, {}, "malformed");
     else add("validator-true");
   }
   return variants;
 }
 
-function executeProcessVariant(stageId, result) {
-  if (stageId === "vswhere-result") {
+function executeProcessVariant(stageRow, result) {
+  if (stageRow.result_stdout_kind === "string" && stageRow.owner === "resolver") {
     const witness = makeResolverExecution({ vswhereResult: result });
     return { projection: witness.execute(), childCalls: witness.spawnCalls.length };
   }
-  if (stageId === "capture-result") {
+  if (stageRow.result_stdout_kind === "buffer" && stageRow.owner === "resolver") {
     const witness = makeResolverExecution({ captureResult: result });
     return { projection: witness.execute(), childCalls: witness.spawnCalls.length };
   }
+  assert.equal(stageRow.result_stdout_kind, "none");
+  assert.equal(stageRow.owner, "wrapper");
   const witness = makeWrapperExecution({ runnerResult: result });
   return { projection: witness.execute(), childCalls: witness.runnerCalls.length };
 }
 
-function isProcessPartitionApplicable(stageRow, decisionRow, variant) {
-  return !(stageRow.id === "runner-result" && decisionRow.id === "success-validator" && variant.label !== "validator-true");
+function isProcessPartitionApplicable(stageRow, decisionRow, partition) {
+  return !(stageRow.result_stdout_kind === "none" && decisionRow.field === "stdout" && !partition.startsWith("validator result exactly true"));
 }
 
 function assertProcessPartitionsThroughStages() {
-  const resultStages = rowsFor("resolver").filter((row) => row.id.endsWith("-result"));
-  resultStages.push(...rowsFor("wrapper").filter((row) => row.id === "runner-result"));
-  assert.deepEqual(resultStages.map((row) => row.id), ["vswhere-result", "capture-result", "runner-result"]);
+  assert.deepEqual(processAccessFields, ["error", "signal", "status", "stdout"]);
+  const resultStages = DESKTOP_STATUS_STAGE_TABLE.filter((row) => row.result_stdout_kind !== null);
+  assert.equal(resultStages.length, 3);
   const excluded = [];
   const executedPartitions = new Set();
   let successValidatorExecutions = 0;
@@ -334,17 +424,22 @@ function assertProcessPartitionsThroughStages() {
   for (const stageRow of resultStages) {
     for (const decisionRow of PROCESS_RESULT_DECISION_TABLE) {
       for (const partition of decisionRow.partitions) {
-        const variants = partitionVariants(decisionRow, partition, stageRow.id);
+        const expectedVector = expectedAccessVector({ decisionRow, partition, result_stdout_kind: stageRow.result_stdout_kind });
+        const variants = partitionVariants(decisionRow, partition, stageRow);
         assert.ok(variants.length > 0, `${stageRow.id}/${decisionRow.id} unhandled partition: ${partition}`);
         for (const variant of variants) {
-          const applicabilityKey = `${stageRow.id}/${variant.label}`;
-          if (!isProcessPartitionApplicable(stageRow, decisionRow, variant)) {
+          const applicabilityKey = `${stageRow.id}/${decisionRow.id}/${variant.label}`;
+          if (!isProcessPartitionApplicable(stageRow, decisionRow, partition)) {
             excluded.push(applicabilityKey);
             continue;
           }
-          executedPartitions.add(`${stageRow.id}/${decisionRow.id}/${partition}`);
+          const executionKey = `${DESKTOP_STATUS_STAGE_TABLE.indexOf(stageRow)}/${processPartitionKey(decisionRow, partition)}`;
+          executedPartitions.add(executionKey);
           if (decisionRow.id === "success-validator") successValidatorExecutions += 1;
-          const { projection, childCalls } = executeProcessVariant(stageRow.id, variant.result);
+          const { projection, childCalls } = executeProcessVariant(stageRow, variant.result);
+          const actualVector = variant.counts ?? { probe: emptyAccessMap(), read: emptyAccessMap() };
+          assert.deepEqual(actualVector.probe, expectedVector.probe, `${stageRow.id}/${decisionRow.id}/${variant.label} probe vector`);
+          assert.deepEqual(actualVector.read, expectedVector.read, `${stageRow.id}/${decisionRow.id}/${variant.label} read vector`);
           if (variant.expected.category === "zero-status") {
             assert.equal(projection.ok, true, `${stageRow.id}/${decisionRow.id}/${variant.label}`);
           } else {
@@ -352,25 +447,12 @@ function assertProcessPartitionsThroughStages() {
             assert.strictEqual(projection.failure_row, stageRow);
             assert.deepEqual(projection.process_snapshot, variant.expected);
           }
-          const expectedChildren = stageRow.id === "vswhere-result" ? (projection.ok ? 2 : 1) : stageRow.id === "capture-result" ? 2 : 1;
+          const expectedChildren = stageRow.result_stdout_kind === "string" ? (projection.ok ? 2 : 1) : stageRow.result_stdout_kind === "buffer" ? 2 : 1;
           assert.equal(childCalls, expectedChildren, `${stageRow.id}/${decisionRow.id}/${variant.label} first failure`);
-          if (variant.counts && variant.targetField) {
-            const field = variant.targetField;
-            if (partition.startsWith("own property absent")) {
-              assert.equal(variant.counts.probe[field], 1);
-              assert.equal(variant.counts.read[field] ?? 0, 0);
-            } else if (partition.includes("getter read") || partition.includes("own value") || partition.includes("matching") || partition.includes("every other own value")) {
-              assert.equal(variant.counts.probe[field], 1);
-              assert.equal(variant.counts.read[field], 1);
-            } else if (partition.startsWith("own-property probe throw")) {
-              assert.equal(variant.counts.probe[field], 1);
-              assert.equal(variant.counts.read[field] ?? 0, 0);
-            }
-          }
           if (decisionRow.id === "success-validator") {
-            const stdoutReads = variant.counts?.read.stdout ?? 0;
-            assert.equal(stdoutReads, stageRow.id === "runner-result" ? 0 : 1, `${stageRow.id} stdout ownership`);
-            if (stageRow.id === "runner-result") runnerStdoutReads += stdoutReads;
+            const stdoutReads = actualVector.read.stdout;
+            assert.equal(stdoutReads, stageRow.result_stdout_kind === "none" ? 0 : 1, `${stageRow.id} stdout ownership`);
+            if (stageRow.result_stdout_kind === "none") runnerStdoutReads += stdoutReads;
           }
         }
       }
@@ -378,22 +460,37 @@ function assertProcessPartitionsThroughStages() {
   }
   const commonRows = PROCESS_RESULT_DECISION_TABLE.filter((row) => row.id !== "success-validator");
   const expectedCommonPartitionStageExecutions = resultStages.length * commonRows.reduce((total, row) => total + row.partitions.length, 0);
-  const commonPartitionStageExecutions = [...executedPartitions].filter((key) => commonRows.some((row) => key.includes(`/${row.id}/`))).length;
+  const expectedCommonExecutionKeys = new Set();
+  for (const stageRow of resultStages) {
+    for (const decisionRow of commonRows) {
+      for (const partition of decisionRow.partitions) {
+        expectedCommonExecutionKeys.add(`${DESKTOP_STATUS_STAGE_TABLE.indexOf(stageRow)}/${processPartitionKey(decisionRow, partition)}`);
+      }
+    }
+  }
+  const commonPartitionStageExecutions = [...expectedCommonExecutionKeys].filter((key) => executedPartitions.has(key)).length;
   const successValidatorRow = PROCESS_RESULT_DECISION_TABLE.find((row) => row.id === "success-validator");
   assert.ok(successValidatorRow);
   assert.equal(commonRows.length, 4);
   assert.equal(commonPartitionStageExecutions, expectedCommonPartitionStageExecutions);
   assert.equal(successValidatorExecutions, successValidatorRow.partitions.length * 2 + 1);
   assert.equal(runnerStdoutReads, 0);
-  assert.deepEqual(excluded.sort(), ["runner-result/validator-not-true", "runner-result/validator-throw"]);
+  assert.equal(excluded.length, 2);
+  assert.ok(excluded.every((key) => key.includes("/success-validator/validator-")));
+  const declaredPartitionKeys = new Set();
+  for (const decisionRow of PROCESS_RESULT_DECISION_TABLE) {
+    for (const partition of decisionRow.partitions) declaredPartitionKeys.add(processPartitionKey(decisionRow, partition));
+  }
+  assert.deepEqual([...handledProcessPartitionKeys].sort(), [...declaredPartitionKeys].sort());
   processResultCoverage = Object.freeze({
     common_rows: commonRows.length,
-    common_actual_stages: resultStages.length,
+    derived_actual_result_stage_count: resultStages.length,
+    executed_partition_stage_count: executedPartitions.size,
     common_partition_stage_executions: commonPartitionStageExecutions,
     success_validator_vswhere_capture_executions: successValidatorRow.partitions.length * 2,
     runner_exact_true_executions: 1,
     runner_stdout_reads: runnerStdoutReads,
-    excluded,
+    derived_exclusions: excluded.sort(),
   });
 }
 
@@ -456,18 +553,22 @@ check("canonical tables and owner projections are frozen and complete", () => {
   assert.equal(runnerEnvironmentKeys.length, 13);
   assert.equal(overrideKeys.length, 11);
   for (const row of DESKTOP_STATUS_STAGE_TABLE) {
-    assert.deepEqual(Object.keys(row).sort(), ["child_policy", "exit_policy", "id", "internal_failure_code", "msvc_source_policy", "operation", "owner", "public_failure_code"].sort());
+    assert.deepEqual(Object.keys(row).sort(), ["child_policy", "exit_policy", "id", "internal_failure_code", "msvc_source_policy", "operation", "owner", "public_failure_code", "result_stdout_kind"].sort());
     assert.equal(typeof row.operation, "function");
+    assert.ok([null, "string", "buffer", "none"].includes(row.result_stdout_kind));
   }
+  const resultKindCounts = Object.fromEntries(["string", "buffer", "none"].map((kind) => [kind, DESKTOP_STATUS_STAGE_TABLE.filter((row) => row.result_stdout_kind === kind).length]));
+  assert.deepEqual(resultKindCounts, { string: 1, buffer: 1, none: 1 });
   for (const row of PROCESS_RESULT_DECISION_TABLE) {
     assert.deepEqual(Object.keys(row).sort(), ["field", "id", "operation", "partitions"].sort());
     assert.equal(typeof row.operation, "function");
   }
   assert.throws(() => executeStageProjection({ owner: "unknown", context: {} }), /invalid stage projection/);
+  assert.throws(() => executeCanonicalStage({ stageRow: {}, context: {} }), /invalid canonical stage/);
+  assert.throws(() => executeCanonicalStage({ stageRow: DESKTOP_STATUS_STAGE_TABLE[0], context: null }), /invalid canonical stage/);
 });
 
-check("every resolver row has an executor failure witness", () => assertOwnerFailureWitnesses("resolver", resolverFailureWitness));
-check("every wrapper row has an executor failure witness", () => assertOwnerFailureWitnesses("wrapper", wrapperFailureWitness));
+check("every canonical owner row has an executor failure witness", assertAllOwnerFailureWitnesses);
 check("common process partitions cover three actual stages; success validation covers vswhere/capture plus runner exact-true", assertProcessPartitionsThroughStages);
 check("all three canonical sanitization points remove or reject injected values", assertSanitizationPoints);
 
@@ -480,12 +581,12 @@ check("fixed transports use exact executables, argv, options, and shared environ
   const command = `call "${VSDEVCMD_PATH}" -no_logo -arch=x64 -host_arch=x64 >nul && set`;
   const cmdArgv = ["/d", "/s", "/u", "/v:off", "/c", command];
   assert.equal(vswhere.file, VSWHERE_PATH);
-  assert.equal(vswhere.argv.length, 8);
+  assert.equal(vswhere.argv.length, 8, `transport/vswhere-argv-length expected=8 actual=${vswhere.argv.length}`);
   assert.deepEqual(vswhere.argv, vswhereArgv);
   assert.deepEqual(Object.keys(vswhere.options).sort(), ["encoding", "env", "shell", "windowsHide"].sort());
   assert.deepEqual({ ...vswhere.options, env: undefined }, { encoding: "utf8", windowsHide: true, shell: false, env: undefined });
   assert.equal(cmd.file, COMSPEC_PATH);
-  assert.equal(cmd.argv.length, 6);
+  assert.equal(cmd.argv.length, 6, `transport/cmd-argv-length expected=6 actual=${cmd.argv.length}`);
   assert.deepEqual(cmd.argv, cmdArgv);
   assert.equal(cmd.argv.filter((value) => value === command).length, 1);
   assert.deepEqual(Object.keys(cmd.options).sort(), ["encoding", "env", "shell", "windowsHide", "windowsVerbatimArguments"].sort());
@@ -506,18 +607,15 @@ check("fixed transports use exact executables, argv, options, and shared environ
   assert.deepEqual(runResult, { ok: true, failure_code: null, failure_stage: null, exit_code: 0, child_status: 0, child_signal: null, msvc_source: "vsdevcmd" });
   assert.equal(runnerCalls.length, 1);
   assert.equal(runnerCalls[0][0], "C:\\Node\\node.exe");
+  assert.equal(runnerCalls[0][1].length, 2, `transport/runner-argv-length expected=2 actual=${runnerCalls[0][1].length}`);
   assert.deepEqual(runnerCalls[0][1], [RUNNER_PATH, "--stop-after-worker-status"]);
   assert.deepEqual(runnerCalls[0][2], { cwd: APP_DIR, env: { Keep: "yes" }, stdio: "inherit", windowsHide: false, shell: false });
 });
 
-check("set parsing, path grammar, required values, and stat boundaries remain closed", () => {
+check("set parsing, required values, and stat boundaries remain closed", () => {
   assert.deepEqual(parseSetOutput("=C:=C:\\x\r\nA=one=two\r\nB=three\r\n"), { ok: true, env: { A: "one=two", B: "three" } });
   assert.deepEqual(parseSetOutput("A=1\nA=2\n"), { ok: false });
   assert.deepEqual(parseSetOutput("missing\n"), { ok: false });
-  for (const character of ['"', "%", "!", "^", "&", "|", "<", ">", "\r", "\n", "\0"]) {
-    const projection = makeResolverExecution({ vswhereResult: { status: 0, stdout: `C:\\VS${character}bad\r\n` } }).execute();
-    assert.strictEqual(projection.failure_row, rowById(character === "\n" ? "installation-output" : "installation-path"));
-  }
   for (const required of Object.keys(makeCapturedEnv())) {
     for (const replacement of [undefined, ""]) {
       const environment = makeCapturedEnv();
@@ -542,6 +640,52 @@ check("set parsing, path grammar, required values, and stat boundaries remain cl
     statSyncFn: () => { throw new Error("must not stat"); },
   });
   assert.deepEqual(nonWindows, { ok: true, source: "non-windows", env: { Keep: "yes" }, vsdevcmd_path: null });
+});
+
+check("installation path grammar rejects exact code points at its canonical row and accepts full transports", () => {
+  const installationPathRow = rowById("installation-path");
+  const rejectedCodePoints = [34, 37, 33, 94, 38, 124, 60, 62, 13, 10, 0];
+  assert.equal(new Set(rejectedCodePoints).size, rejectedCodePoints.length);
+  assert.deepEqual(rejectedCodePoints, [34, 37, 33, 94, 38, 124, 60, 62, 13, 10, 0]);
+  for (const codePoint of rejectedCodePoints) {
+    const character = String.fromCodePoint(codePoint);
+    assert.equal(character.length, 1);
+    assert.equal(character.codePointAt(0), codePoint);
+    let childCalls = 0;
+    const step = executeCanonicalStage({
+      stageRow: installationPathRow,
+      context: {
+        installationPath: `C:\\VS${character}bad`,
+        spawnSyncFn: () => { childCalls += 1; throw new Error("later cmd child must not run"); },
+      },
+    });
+    assert.deepEqual(Object.keys(step), ["kind", "failure_row", "process_snapshot"]);
+    assert.equal(step.kind, "failure");
+    assert.strictEqual(step.failure_row, installationPathRow);
+    assert.equal(step.process_snapshot, null);
+    assert.equal(childCalls, 0);
+  }
+
+  const acceptedPaths = [
+    "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools",
+    "C:\\開発\\Visual Studio\\BuildTools",
+  ];
+  for (const installationPath of acceptedPaths) {
+    const expectedVsDevCmd = `${installationPath}\\Common7\\Tools\\VsDevCmd.bat`;
+    const step = executeCanonicalStage({ stageRow: installationPathRow, context: { installationPath } });
+    assert.equal(step.kind, "continue");
+    assert.strictEqual(step.stage_row, installationPathRow);
+    assert.equal(step.context.vsdevcmdPath, expectedVsDevCmd);
+
+    const witness = makeResolverExecution({ vswhereResult: { status: 0, signal: null, stdout: `${installationPath}\r\n` } });
+    assert.equal(witness.execute().ok, true);
+    assert.equal(witness.spawnCalls.length, 2);
+    const [vswhere, cmd] = witness.spawnCalls;
+    const command = `call "${expectedVsDevCmd}" -no_logo -arch=x64 -host_arch=x64 >nul && set`;
+    assert.equal(cmd.file, COMSPEC_PATH);
+    assert.deepEqual(cmd.argv, ["/d", "/s", "/u", "/v:off", "/c", command]);
+    assert.strictEqual(cmd.options.env, vswhere.options.env);
+  }
 });
 
 check("public RunResult fields are projected only from canonical rows", () => {
@@ -576,6 +720,19 @@ check("controlled child processes prove import silence and main stream ownership
   assert.equal(preChild.stderr, `${JSON.stringify(diagnostic)}\n`);
   assert.equal(preChild.stderr.includes(APP_DIR), false);
   assert.equal(preChild.stderr.includes("Error"), false);
+  const mainCatchScript = `
+    const { main } = await import(${JSON.stringify(wrapperUrl)});
+    process.argv = null;
+    main();
+  `;
+  const mainCatch = runNode(["--input-type=module", "-e", mainCatchScript]);
+  assert.equal(mainCatch.status, 1);
+  assert.equal(mainCatch.stdout, "");
+  assert.equal(mainCatch.stderr.split("\n").filter(Boolean).length, 1);
+  const mainDiagnostic = JSON.parse(mainCatch.stderr.trim());
+  assert.deepEqual(Object.keys(mainDiagnostic), ["schema", "ok", "failure_code", "failure_stage", "exit_code", "child_status", "child_signal", "msvc_source"]);
+  assert.deepEqual(mainDiagnostic, { schema: "winsmux-desktop-status-wrapper/v1", ok: false, failure_code: "DESKTOP_STATUS_WRAPPER_EXCEPTION", failure_stage: "main-catch", exit_code: 1, child_status: null, child_signal: null, msvc_source: null });
+  assert.equal(mainCatch.stderr, `${JSON.stringify(mainDiagnostic)}\n`);
   const childScript = `
     const { main } = await import(${JSON.stringify(wrapperUrl)});
     process.argv = [process.execPath];

@@ -52,7 +52,7 @@ function validInstallationPath(value) {
   return typeof value === "string" && path.win32.isAbsolute(value) && !FORBIDDEN_CMD_PATH.test(value);
 }
 
-function makeStage({ id, owner, internal_failure_code, public_failure_code = internal_failure_code, msvc_source_policy = null, child_policy = null, exit_policy = "one" }, implementation) {
+function makeStage({ id, owner, internal_failure_code, public_failure_code = internal_failure_code, msvc_source_policy = null, child_policy = null, exit_policy = "one", result_stdout_kind = null }, implementation) {
   const row = {
     id,
     owner,
@@ -61,6 +61,7 @@ function makeStage({ id, owner, internal_failure_code, public_failure_code = int
     msvc_source_policy,
     child_policy,
     exit_policy,
+    result_stdout_kind,
     operation: null,
   };
   row.operation = Object.freeze((context) => implementation(context, row));
@@ -161,6 +162,38 @@ export function normalizeSpawnResult({ result, successValidator }) {
   return snapshot("malformed");
 }
 
+export function normalizeStageSpawnResult({ stageRow, result }) {
+  if (!DESKTOP_STATUS_STAGE_TABLE.includes(stageRow) || stageRow.result_stdout_kind === null) {
+    throw new TypeError("invalid result stage");
+  }
+  let stdout = null;
+  let successValidator;
+  if (stageRow.result_stdout_kind === "string") {
+    successValidator = (candidate) => {
+      const value = candidate.stdout;
+      if (typeof value !== "string") return false;
+      stdout = value;
+      return true;
+    };
+  } else if (stageRow.result_stdout_kind === "buffer") {
+    successValidator = (candidate) => {
+      const value = candidate.stdout;
+      if (!Buffer.isBuffer(value)) return false;
+      stdout = value;
+      return true;
+    };
+  } else if (stageRow.result_stdout_kind === "none") {
+    successValidator = () => true;
+  } else {
+    throw new TypeError("invalid result stdout kind");
+  }
+  const process_snapshot = normalizeSpawnResult({ result, successValidator });
+  return {
+    process_snapshot,
+    stdout: process_snapshot.category === "zero-status" ? stdout : null,
+  };
+}
+
 export const DESKTOP_STATUS_STAGE_TABLE = Object.freeze([
   makeStage({ id: "arguments", owner: "wrapper", internal_failure_code: "DESKTOP_STATUS_ARGUMENTS_INVALID" }, (context) => (
     Array.isArray(context.argv) && context.argv.length === 0 ? continueWith(context) : failWith()
@@ -192,9 +225,8 @@ export const DESKTOP_STATUS_STAGE_TABLE = Object.freeze([
     const vswhereResult = context.spawnSyncFn(context.vswherePath, ["-latest", "-products", "*", "-requires", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath", "-utf8"], { encoding: "utf8", windowsHide: true, shell: false, env: context.sanitizedBaseEnv });
     return continueWith({ ...context, vswhereResult });
   }),
-  makeStage({ id: "vswhere-result", owner: "resolver", internal_failure_code: "MSVC_SETUP_FAILED" }, (context) => {
-    let stdout;
-    const process_snapshot = normalizeSpawnResult({ result: context.vswhereResult, successValidator: (result) => { stdout = result.stdout; return typeof stdout === "string"; } });
+  makeStage({ id: "vswhere-result", owner: "resolver", internal_failure_code: "MSVC_SETUP_FAILED", result_stdout_kind: "string" }, (context, row) => {
+    const { process_snapshot, stdout } = normalizeStageSpawnResult({ stageRow: row, result: context.vswhereResult });
     return process_snapshot.category === "zero-status" ? continueWith({ ...context, vswhereStdout: stdout }) : failWith(process_snapshot);
   }),
   makeStage({ id: "installation-output", owner: "resolver", internal_failure_code: "MSVC_TOOLCHAIN_NOT_FOUND" }, (context) => {
@@ -218,9 +250,8 @@ export const DESKTOP_STATUS_STAGE_TABLE = Object.freeze([
     const captureResult = context.spawnSyncFn(context.comspecPath, ["/d", "/s", "/u", "/v:off", "/c", command], { encoding: "buffer", windowsHide: true, windowsVerbatimArguments: true, shell: false, env: context.sanitizedBaseEnv });
     return continueWith({ ...context, captureResult });
   }),
-  makeStage({ id: "capture-result", owner: "resolver", internal_failure_code: "MSVC_SETUP_FAILED" }, (context) => {
-    let stdout;
-    const process_snapshot = normalizeSpawnResult({ result: context.captureResult, successValidator: (result) => { stdout = result.stdout; return Buffer.isBuffer(stdout); } });
+  makeStage({ id: "capture-result", owner: "resolver", internal_failure_code: "MSVC_SETUP_FAILED", result_stdout_kind: "buffer" }, (context, row) => {
+    const { process_snapshot, stdout } = normalizeStageSpawnResult({ stageRow: row, result: context.captureResult });
     return process_snapshot.category === "zero-status" ? continueWith({ ...context, captureBuffer: stdout }) : failWith(process_snapshot);
   }),
   makeStage({ id: "capture-decode", owner: "resolver", internal_failure_code: "MSVC_ENV_INVALID" }, (context) => {
@@ -259,25 +290,52 @@ export const DESKTOP_STATUS_STAGE_TABLE = Object.freeze([
     const runnerResult = context.spawnSyncFn(context.execPath, [runnerPath, "--stop-after-worker-status"], { cwd: context.appDir, env: context.finalEnv, stdio: "inherit", windowsHide: false, shell: false });
     return continueWith({ ...context, runnerResult });
   }),
-  makeStage({ id: "runner-result", owner: "wrapper", internal_failure_code: "DESKTOP_STATUS_CHILD_FAILED", msvc_source_policy: "resolved", child_policy: "from-process-result", exit_policy: "status-1-through-255-else-one" }, (context) => {
-    const process_snapshot = normalizeSpawnResult({ result: context.runnerResult, successValidator: () => true });
+  makeStage({ id: "runner-result", owner: "wrapper", internal_failure_code: "DESKTOP_STATUS_CHILD_FAILED", msvc_source_policy: "resolved", child_policy: "from-process-result", exit_policy: "status-1-through-255-else-one", result_stdout_kind: "none" }, (context, row) => {
+    const { process_snapshot } = normalizeStageSpawnResult({ stageRow: row, result: context.runnerResult });
     return process_snapshot.category === "zero-status" ? continueWith(context) : failWith(process_snapshot);
   }),
   makeStage({ id: "main-catch", owner: "main", internal_failure_code: "DESKTOP_STATUS_WRAPPER_EXCEPTION" }, () => failWith()),
 ]);
+
+function hasExactKeys(value, keys) {
+  if (value === null || typeof value !== "object") return false;
+  const actual = Object.keys(value).sort();
+  return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+export function executeCanonicalStage({ stageRow, context }) {
+  if (!DESKTOP_STATUS_STAGE_TABLE.includes(stageRow) || context === null || typeof context !== "object") {
+    throw new TypeError("invalid canonical stage");
+  }
+  try {
+    const operationResult = stageRow.operation(context);
+    if (hasExactKeys(operationResult, ["context", "kind"]) && operationResult.kind === "continue" && operationResult.context !== null && typeof operationResult.context === "object") {
+      return { kind: "continue", stage_row: stageRow, context: operationResult.context };
+    }
+    if (hasExactKeys(operationResult, ["context", "kind"]) && operationResult.kind === "complete" && operationResult.context !== null && typeof operationResult.context === "object") {
+      return { kind: "complete", stage_row: stageRow, context: operationResult.context };
+    }
+    if (hasExactKeys(operationResult, ["kind", "process_snapshot"]) && operationResult.kind === "fail" && (operationResult.process_snapshot === null || typeof operationResult.process_snapshot === "object")) {
+      return { kind: "failure", failure_row: stageRow, process_snapshot: operationResult.process_snapshot };
+    }
+    if (hasExactKeys(operationResult, ["failure_row", "kind"]) && operationResult.kind === "propagate" && DESKTOP_STATUS_STAGE_TABLE.includes(operationResult.failure_row) && operationResult.failure_row.owner === "resolver") {
+      return { kind: "failure", failure_row: operationResult.failure_row, process_snapshot: null };
+    }
+  } catch {
+    return { kind: "failure", failure_row: stageRow, process_snapshot: null };
+  }
+  return { kind: "failure", failure_row: stageRow, process_snapshot: null };
+}
 
 export function executeStageProjection({ owner, context }) {
   const rows = DESKTOP_STATUS_STAGE_TABLE.filter((row) => row.owner === owner);
   if (rows.length === 0 || context === null || typeof context !== "object") throw new TypeError("invalid stage projection");
   let current = context;
   for (const row of rows) {
-    let operationResult;
-    try { operationResult = row.operation(current); } catch { return { ok: false, failure_row: row, process_snapshot: null }; }
-    if (operationResult?.kind === "continue" && operationResult.context && typeof operationResult.context === "object") { current = operationResult.context; continue; }
-    if (operationResult?.kind === "complete" && operationResult.context && typeof operationResult.context === "object") return { ok: true, completion: "early", context: operationResult.context };
-    if (operationResult?.kind === "fail" && (operationResult.process_snapshot === null || typeof operationResult.process_snapshot === "object")) return { ok: false, failure_row: row, process_snapshot: operationResult.process_snapshot };
-    if (operationResult?.kind === "propagate" && DESKTOP_STATUS_STAGE_TABLE.includes(operationResult.failure_row) && operationResult.failure_row.owner === "resolver") return { ok: false, failure_row: operationResult.failure_row, process_snapshot: null };
-    return { ok: false, failure_row: row, process_snapshot: null };
+    const step = executeCanonicalStage({ stageRow: row, context: current });
+    if (step.kind === "continue") { current = step.context; continue; }
+    if (step.kind === "complete") return { ok: true, completion: "early", context: step.context };
+    return { ok: false, failure_row: step.failure_row, process_snapshot: step.process_snapshot };
   }
   return { ok: true, completion: "exhausted", context: current };
 }
