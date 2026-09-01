@@ -1,7 +1,6 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$script:behaviorCheckName = 'desktop status behavioral contract executes successfully'
 $negativeCases = @(
     @{
         Name = 'nonzero child exit with stderr'
@@ -32,6 +31,8 @@ $negativeCases = @(
 
 Describe 'v0.36.26 desktop split gate' {
     BeforeAll {
+        $script:behaviorCheckName = 'desktop status behavioral contract executes successfully'
+
         function Invoke-DesktopSplitGate {
             param(
                 [Parameter(Mandatory = $true)][string]$GateScript,
