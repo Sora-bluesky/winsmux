@@ -104,6 +104,112 @@ function Add-JsonOkEvidenceCheck {
     Add-Check $Name $ok $RelativePath
 }
 
+function Invoke-DesktopStatusBehaviorCheck {
+    $checkerRelativePath = 'winsmux-app/scripts/desktop-status-e2e-check.mjs'
+    $result = [ordered]@{
+        pass     = $false
+        evidence = "$checkerRelativePath; result=execution-failed"
+    }
+
+    try {
+        $nodeCommand = Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    } catch {
+        $result.evidence = "$checkerRelativePath; result=node-unavailable"
+        return [pscustomobject]$result
+    }
+
+    $nodePath = [string]$nodeCommand.Path
+    $checkerPath = Join-Path $repoRoot $checkerRelativePath
+    $workingDirectory = Join-Path $repoRoot 'winsmux-app'
+    if (
+        [string]::IsNullOrWhiteSpace($nodePath) -or
+        -not (Test-Path -LiteralPath $nodePath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $checkerPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $workingDirectory -PathType Container)
+    ) {
+        $result.evidence = "$checkerRelativePath; result=entrypoint-unavailable"
+        return [pscustomobject]$result
+    }
+
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $nodePath
+    $startInfo.WorkingDirectory = $workingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $null = $startInfo.ArgumentList.Add($checkerPath)
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            $result.evidence = "$checkerRelativePath; result=start-failed"
+            return [pscustomobject]$result
+        }
+
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $exitCode = $process.ExitCode
+    } catch {
+        $result.evidence = "$checkerRelativePath; result=process-failed"
+        return [pscustomobject]$result
+    } finally {
+        $process.Dispose()
+    }
+
+    if ($exitCode -ne 0) {
+        $result.evidence = "$checkerRelativePath; result=child-exit-nonzero"
+        return [pscustomobject]$result
+    }
+    if ([string]::IsNullOrWhiteSpace($stdout)) {
+        $result.evidence = "$checkerRelativePath; result=stdout-empty"
+        return [pscustomobject]$result
+    }
+
+    try {
+        $parsed = $stdout | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+    } catch {
+        $result.evidence = "$checkerRelativePath; result=stdout-invalid-json"
+        return [pscustomobject]$result
+    }
+
+    if ($parsed -isnot [System.Collections.IDictionary]) {
+        $result.evidence = "$checkerRelativePath; result=contract-invalid"
+        return [pscustomobject]$result
+    }
+
+    $okIsTrueBoolean = (
+        $parsed.ContainsKey('ok') -and
+        $parsed['ok'] -is [System.Boolean] -and
+        $parsed['ok'] -eq $true
+    )
+    $checkCountIsPositiveInteger = $false
+    if ($parsed.ContainsKey('check_count')) {
+        $checkCount = $parsed['check_count']
+        $checkCountIsPositiveInteger = (
+            ($checkCount -is [System.Int64] -or $checkCount -is [System.Numerics.BigInteger]) -and
+            $checkCount -gt 0
+        )
+    }
+    $checksIsCollection = (
+        $parsed.ContainsKey('checks') -and
+        $parsed['checks'] -is [System.Collections.ICollection]
+    )
+
+    if (-not ($okIsTrueBoolean -and $checkCountIsPositiveInteger -and $checksIsCollection)) {
+        $result.evidence = "$checkerRelativePath; result=contract-invalid"
+        return [pscustomobject]$result
+    }
+
+    $result.pass = $true
+    $result.evidence = "$checkerRelativePath; result=ok"
+    return [pscustomobject]$result
+}
+
 $packageJson = Get-RepoJson 'winsmux-app/package.json'
 if ($null -eq $packageJson) {
     throw 'test-v03626-desktop-split-gate: failed to read winsmux-app/package.json.'
@@ -153,7 +259,6 @@ $clickableHarness = Get-RepoContent 'winsmux-app/scripts/clickable-coverage-harn
 $desktopE2e = Get-RepoContent 'winsmux-app/scripts/desktop-pane-e2e.mjs'
 $desktopStatusE2e = Get-RepoContent 'winsmux-app/scripts/desktop-status-e2e.mjs'
 $windowsMsvcEnv = Get-RepoContent 'winsmux-app/scripts/windows-msvc-env.mjs'
-$desktopStatusCheck = Get-RepoContent 'winsmux-app/scripts/desktop-status-e2e-check.mjs'
 $desktopStatusImplementation = $desktopStatusE2e + "`n" + $windowsMsvcEnv
 $viteConfig = Get-RepoContent 'winsmux-app/vite.config.ts'
 
@@ -171,11 +276,10 @@ Add-ContainsAllCheck 'desktop status MSVC resolver exposes the frozen stage and 
     'sanitizeStatusEnvironment'
 ) 'winsmux-app/scripts/windows-msvc-env.mjs'
 
-Add-ContainsAllCheck 'desktop status wrapper check exercises the public package route' $desktopStatusCheck @(
-    'desktop-status-e2e\.mjs',
-    'windows-msvc-env\.mjs',
-    'test:desktop-status-e2e'
-) 'winsmux-app/scripts/desktop-status-e2e-check.mjs'
+$desktopStatusBehavior = Invoke-DesktopStatusBehaviorCheck
+Add-Check 'desktop status behavioral contract executes successfully' `
+    ([bool]$desktopStatusBehavior.pass) `
+    ([string]$desktopStatusBehavior.evidence)
 
 Add-ContainsAllCheck 'visual harness writes replayable viewport evidence' $viewportHarness @(
     'OUTPUT_DIR',
