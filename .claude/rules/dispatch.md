@@ -29,8 +29,8 @@ User-facing progress updates must use **operator**. `Operator` is an internal ro
 17. If pane expansion or attach confirmation does not succeed, treat the session as `blocked` and report the smoke/startup failure.
 18. Do not plan merge work while the orchestra session is still not dispatchable.
 
-## Builder Dispatch (legacy compatibility mode only)
-Use Standard Dispatch below by default. This flow applies only to legacy Builder/Reviewer layouts.
+## Builder Dispatch
+Legacy compatibility mode only: use Standard Dispatch below by default. This flow applies only to legacy Builder/Reviewer layouts.
 1. Check pane state: `winsmux capture-pane -t <pane> -p | tail -5`
 2. Write `.builder-prompt.txt` to Builder worktree (from manifest.yaml launch_dir)
 3. Send: `winsmux send -t <pane> "Read .builder-prompt.txt and implement"` (send submits with Enter itself; do not send a separate Enter)
