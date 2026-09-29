@@ -1000,6 +1000,7 @@ fn run_main() -> io::Result<()> {
     // boundary. Dispatch it before legacy session cleanup and environment-based
     // target resolution. A legacy -t selector is rejected rather than silently
     // becoming a workspace target.
+    #[cfg(windows)]
     if global_prefix_command_is(&args, global_prefix, "workspace") {
         let command_index = global_prefix
             .command_index
@@ -1014,6 +1015,12 @@ fn run_main() -> io::Result<()> {
             return Ok(());
         }
         std::process::exit(code);
+    }
+
+    #[cfg(not(windows))]
+    if global_prefix_command_is(&args, global_prefix, "workspace") {
+        eprintln!("winsmux workspace: unsupported_platform");
+        std::process::exit(2);
     }
 
     // Public workspace-plan is a read-only preview. It must not mutate session

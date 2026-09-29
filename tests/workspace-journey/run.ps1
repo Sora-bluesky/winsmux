@@ -390,7 +390,8 @@ $expectedStoreRoot = Join-Path $env:LOCALAPPDATA 'winsmux/workspace/v1'
 if ([IO.Path]::GetFullPath($StoreRoot) -ine [IO.Path]::GetFullPath($expectedStoreRoot)) {
     throw 'Store root is not the default Windows workspace store'
 }
-if ([IO.Path]::GetFullPath($FixtureParentRoot) -ine [IO.Path]::GetFullPath([IO.Path]::GetTempPath())) {
+if ([IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($FixtureParentRoot)) -ine
+    [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath([IO.Path]::GetTempPath()))) {
     throw 'Fixture parent does not match native child temp root'
 }
 $fixture = Assert-FreshDirectChild -ParentRoot $FixtureParentRoot -ChildPath $FixturePath

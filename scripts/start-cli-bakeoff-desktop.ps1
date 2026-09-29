@@ -210,31 +210,6 @@ function Assert-NoExternalWinsmuxDesktopApp {
     }
 }
 
-function Wait-RepoWinsmuxDesktopApp {
-    param(
-        [int]$TimeoutSeconds = 120,
-        [int]$ExpectedProcessId = 0
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        $candidate = Get-CimInstance Win32_Process |
-            Where-Object {
-                $_.Name -eq 'winsmux-app.exe' -and
-                (Test-PathInsideRepo ([string]$_.ExecutablePath)) -and
-                ($ExpectedProcessId -le 0 -or [int]$_.ProcessId -eq $ExpectedProcessId)
-            } |
-            Sort-Object ProcessId -Descending |
-            Select-Object -First 1
-        if ($null -ne $candidate) {
-            return $candidate
-        }
-        Start-Sleep -Milliseconds 500
-    } while ((Get-Date) -lt $deadline)
-
-    throw "winsmux desktop app did not start within $TimeoutSeconds seconds."
-}
-
 function Invoke-WebViewDevToolsRuntimeExpression {
     param(
         [Parameter(Mandatory = $true)][string]$WebSocketDebuggerUrl,
@@ -663,13 +638,7 @@ function Assert-NoVisibleDesktopHelperWindows {
                 $isMainTaoEventTarget = [int]$_.processId -eq $MainProcessId -and
                     [string]::IsNullOrWhiteSpace([string]$_.title) -and
                     [string]$_.className -eq 'Tao Thread Event Target'
-                -not $isExpectedMainWindow -and (
-                    -not $isMainTaoEventTarget -and (
-                    [int]$_.processId -ne $MainProcessId -or
-                    [string]$_.processName -match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd' -or
-                    [string]$_.className -match 'ConsoleWindowClass|CASCADIA_HOSTING_WINDOW_CLASS|Chrome_WidgetWin'
-                    )
-                )
+                -not $isExpectedMainWindow -and -not $isMainTaoEventTarget
             }
     )
 
@@ -679,39 +648,6 @@ function Assert-NoVisibleDesktopHelperWindows {
     }
 
     return $visibleWindows
-}
-
-function Assert-WebViewArgumentsDoNotOpenConsole {
-    param([Parameter(Mandatory = $true)][string]$Arguments)
-
-    if ($Arguments -match '--enable-logging|--v=') {
-        throw "WebView2 launch arguments would open or amplify diagnostic console output: $Arguments"
-    }
-}
-
-function Assert-DesktopOperatorControlPipe {
-    param([int]$TimeoutSeconds = 30)
-
-    $coreScript = Join-Path $RepoRoot 'scripts\winsmux-core.ps1'
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    $lastOutput = ''
-
-    do {
-        $output = (& pwsh -NoProfile -ExecutionPolicy Bypass -File $coreScript operator-snapshot --lines 5 2>&1 | Out-String).Trim()
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -eq 0 -and -not [string]::IsNullOrWhiteSpace($output)) {
-            $normalizedOutput = $output -replace '\s+', ' '
-            return [pscustomobject]@{
-                ok = $true
-                command = 'operator-snapshot --lines 5'
-                outputSnippet = $normalizedOutput.Substring(0, [Math]::Min(240, $normalizedOutput.Length))
-            }
-        }
-        $lastOutput = $output
-        Start-Sleep -Milliseconds 500
-    } while ((Get-Date) -lt $deadline)
-
-    throw "winsmux desktop operator API was not reachable through the control pipe. Last output: $lastOutput"
 }
 
 function Move-WindowToVisibleWorkspace {

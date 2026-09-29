@@ -2582,6 +2582,7 @@ fn main() {
         }
         tauri::RunEvent::Exit => {
             eprintln!("TASK870_NATIVE_ACTUAL_APP_EXIT");
+            #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
             if input_guard_scenario {
                 let manager=app_handle.state::<Arc<winsmux_app_lib::workspace_transport::WorkspaceManager>>();
                 let inputs=app_handle.state::<NativeInputs>();
