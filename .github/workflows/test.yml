@@ -1351,6 +1351,46 @@ jobs:
             throw 'TASK-679 failed to restore runner outbound networking.'
           }
 
+      - name: Stage tested desktop candidate for Windows operation
+        if: success()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Get-Content -LiteralPath 'artifacts/task679-nsis-lifecycle/evidence.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($evidence.outcome -cne 'pass') { throw 'NSIS lifecycle has not passed.' }
+          $version = (Get-Content -LiteralPath 'VERSION' -Raw -Encoding UTF8).Trim()
+          $asset = [string]$evidence.inputs.candidate.asset
+          if ($asset -cne "winsmux_${version}_x64-setup.exe") { throw 'Candidate installer name differs from VERSION.' }
+          $source = Join-Path 'target/release/bundle/nsis' $asset
+          $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne [string]$evidence.inputs.candidate.sha256) { throw 'Tested installer bytes changed.' }
+          $commit = (& git rev-parse HEAD | Out-String).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $commit -cne [string]$evidence.source_commit) { throw 'Tested checkout changed.' }
+          $tree = (& git rev-parse 'HEAD^{tree}' | Out-String).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') { throw 'Tested tree is unavailable.' }
+          $target = 'artifacts/task876-integrated-candidate'
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          $staged = Join-Path $target $asset
+          Copy-Item -LiteralPath $source -Destination $staged
+          if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) {
+            throw 'Staged installer bytes differ from the tested installer.'
+          }
+          [ordered]@{
+            schema = 'task876-integrated-candidate/v1'
+            source_commit = $commit
+            source_tree = $tree
+            installer = $asset
+            installer_sha256 = $hash
+          } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $target 'identity.json') -Encoding UTF8
+
+      - name: Upload tested desktop candidate
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: task876-integrated-candidate
+          path: artifacts/task876-integrated-candidate/*
+          if-no-files-found: error
+
       - name: Publish non-sensitive lifecycle evidence
         if: always()
         uses: actions/upload-artifact@v7

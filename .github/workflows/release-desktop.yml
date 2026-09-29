@@ -23,6 +23,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Fetch immutable v0.36.38 Desktop contract source
+        shell: pwsh
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.36.38
+          if ($LASTEXITCODE -ne 0) { throw 'v0.36.38 Desktop source fetch failed.' }
+          $legacyCommit = (& git rev-parse 'FETCH_HEAD^{commit}' | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $legacyCommit -ne '2e46363ddf11143c0840db5d6816591a02772471') {
+            throw 'v0.36.38 Desktop source identity mismatch.'
+          }
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
