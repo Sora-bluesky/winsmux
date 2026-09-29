@@ -119,6 +119,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Fetch immutable v0.36.38 Desktop contract source
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.36.38
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = '2e46363ddf11143c0840db5d6816591a02772471'
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -268,6 +273,15 @@ jobs:
             paths: tests/planning-model.Tests.ps1
     steps:
       - uses: actions/checkout@v6
+
+      - name: Fetch immutable v0.36.38 Desktop contract source
+        if: matrix.name == 'worker-benchmark'
+        shell: pwsh
+        run: |
+          git fetch --no-tags --depth=1 origin refs/tags/v0.36.38
+          if ($LASTEXITCODE -ne 0) { throw 'v0.36.38 Desktop source fetch failed.' }
+          $legacyCommit = (& git rev-parse 'FETCH_HEAD^{commit}' | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $legacyCommit -ne '2e46363ddf11143c0840db5d6816591a02772471') { throw 'v0.36.38 Desktop source identity mismatch.' }
 
       - name: Run Pester (${{ matrix.name }})
         shell: pwsh
@@ -552,6 +566,29 @@ jobs:
             bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }} arm64
           fi
 
+  workspace-journey-native:
+    name: Workspace Journey Native Non-PTY Gate
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Assert isolated Windows workspace journey
+        shell: pwsh
+        env:
+          WINSMUX_EPHEMERAL_RUNNER: ${{ runner.environment }}
+        run: pwsh -NoProfile -File tests/workspace-journey/ci-run.ps1
+
+      - name: Upload available workspace journey diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-journey-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/workspace-journey/
+          if-no-files-found: ignore
+
   core-build-test:
     name: Core Build and Test
     runs-on: windows-latest
@@ -598,7 +635,16 @@ jobs:
         working-directory: winsmux-app
         run: npm run prepare:companion-cli
 
+      - name: Prepare pinned older CLI for native version-pair proof
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pwsh -NoProfile -File winsmux-app/scripts/prepare-legacy-cli.ps1
+
       - name: Test Tauri backend
+        # cargo test does not launch the dev server. Read the frontend built above.
+        env:
+          TAURI_CONFIG: '{"build":{"devUrl":null}}'
         run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
 
       - name: Build desktop binary without bundling
@@ -1305,6 +1351,46 @@ jobs:
             throw 'TASK-679 failed to restore runner outbound networking.'
           }
 
+      - name: Stage tested desktop candidate for Windows operation
+        if: success()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Get-Content -LiteralPath 'artifacts/task679-nsis-lifecycle/evidence.json' -Raw -Encoding UTF8 | ConvertFrom-Json
+          if ($evidence.outcome -cne 'pass') { throw 'NSIS lifecycle has not passed.' }
+          $version = (Get-Content -LiteralPath 'VERSION' -Raw -Encoding UTF8).Trim()
+          $asset = [string]$evidence.inputs.candidate.asset
+          if ($asset -cne "winsmux_${version}_x64-setup.exe") { throw 'Candidate installer name differs from VERSION.' }
+          $source = Join-Path 'target/release/bundle/nsis' $asset
+          $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -cne [string]$evidence.inputs.candidate.sha256) { throw 'Tested installer bytes changed.' }
+          $commit = (& git rev-parse HEAD | Out-String).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $commit -cne [string]$evidence.source_commit) { throw 'Tested checkout changed.' }
+          $tree = (& git rev-parse 'HEAD^{tree}' | Out-String).Trim().ToLowerInvariant()
+          if ($LASTEXITCODE -ne 0 -or $tree -notmatch '^[0-9a-f]{40}$') { throw 'Tested tree is unavailable.' }
+          $target = 'artifacts/task876-integrated-candidate'
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          $staged = Join-Path $target $asset
+          Copy-Item -LiteralPath $source -Destination $staged
+          if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) {
+            throw 'Staged installer bytes differ from the tested installer.'
+          }
+          [ordered]@{
+            schema = 'task876-integrated-candidate/v1'
+            source_commit = $commit
+            source_tree = $tree
+            installer = $asset
+            installer_sha256 = $hash
+          } | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $target 'identity.json') -Encoding UTF8
+
+      - name: Upload tested desktop candidate
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: task876-integrated-candidate
+          path: artifacts/task876-integrated-candidate/*
+          if-no-files-found: error
+
       - name: Publish non-sensitive lifecycle evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -1739,6 +1825,7 @@ jobs:
       - desktop-nsis-lifecycle
       - task811-receipt-bind
       - helper-linux-negatives
+      - workspace-journey-native
     if: always()
     steps:
       - name: Require all checks
@@ -1756,7 +1843,8 @@ jobs:
             "${{ needs.desktop-build-test.result }}" \
             "${{ needs.desktop-nsis-lifecycle.result }}" \
             "${{ needs.task811-receipt-bind.result }}" \
-            "${{ needs.helper-linux-negatives.result }}"; do
+            "${{ needs.helper-linux-negatives.result }}" \
+            "${{ needs.workspace-journey-native.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
               exit 1

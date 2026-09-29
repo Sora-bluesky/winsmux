@@ -1,0 +1,55 @@
+[package]
+name = "winsmux-workspace"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Strict shared workspace wire contracts"
+
+[features]
+native-e2e-faults = []
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+schemars = "0.8.22"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+git2 = { version = "0.20.4", default-features = false }
+libgit2-sys = "0.18.5"
+flate2 = "1.1"
+crc32fast = "1.4"
+ignore = "=0.4.33"
+
+[[test]]
+name = "workspace_admission_e2e"
+path = "../../tests-rs/workspace_admission_e2e.rs"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_UI_Shell",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_SystemInformation",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Ioctl",
+] }
+
+[[test]]
+name = "runtime_ownership"
+path = "tests/runtime_ownership.rs"
+
+[[test]]
+name = "layout_restore"
+path = "tests/layout_restore.rs"

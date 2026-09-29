@@ -1,0 +1,48 @@
+.workspace-project-pane { color: CanvasText; background: Canvas; font: 1rem/1.45 system-ui, sans-serif; color-scheme: light dark; min-width: 0; }
+.workspace-project-pane * { box-sizing: border-box; }
+.workspace-project-pane button, .workspace-project-pane input { font: inherit; color: ButtonText; background: ButtonFace; border: 1px solid ButtonBorder; border-radius: .3rem; padding: .4rem .65rem; }
+.workspace-project-pane button:disabled { color: GrayText; }
+.workspace-project-pane :focus-visible { outline: 3px solid Highlight; outline-offset: 2px; }
+.workspace-toolbar, .workspace-pane-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; padding: .5rem; }
+.workspace-toolbar h1 { flex: 1 1 16rem; margin: 0; font-size: 1.15rem; overflow-wrap: anywhere; }
+.workspace-body { display: grid; grid-template-columns: minmax(12rem, 19rem) minmax(0, 1fr); gap: .6rem; }
+.workspace-body:has(nav[hidden]) { grid-template-columns: minmax(0, 1fr); }
+.workspace-body nav { border-inline-end: 1px solid ButtonBorder; padding: .5rem; min-width: 0; }
+.workspace-body nav ul { list-style: none; margin: 0; padding: 0; }
+.workspace-body nav button { width: 100%; text-align: start; overflow-wrap: anywhere; margin-block-end: .4rem; }
+.workspace-project-pane [aria-current=true] { border: 3px solid Highlight; }
+.workspace-body main, .workspace-layout { min-width: 0; padding: .4rem; }
+.workspace-split { display: flex; gap: .6rem; min-width: 0; }
+.workspace-split > :first-child { flex: var(--first-ratio) 1 0%; }
+.workspace-split > :last-child { flex: var(--second-ratio) 1 0%; }
+.workspace-vertical { flex-direction: column; }
+.workspace-pane { min-width: 0; border: 1px solid ButtonBorder; padding: .5rem; }
+.workspace-pane[data-selected=true] { border: 3px solid Highlight; }
+.workspace-pane h2 { font-size: 1rem; margin: 0; }
+.workspace-pane p { overflow-wrap: anywhere; margin-block: .4rem; }
+.workspace-pane fieldset { display: flex; flex-wrap: wrap; gap: .5rem; margin: .5rem 0; border: 1px solid ButtonBorder; min-width: 0; }
+.workspace-pane label { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; max-width: 100%; min-width: 0; }
+.workspace-pane input { flex: 0 1 6.5rem; width: 6.5rem; min-width: 0; max-width: 100%; }
+.workspace-terminal { min-height: 12rem; min-width: 0; overflow: auto; border: 1px solid ButtonBorder; }
+.workspace-project-pane dialog { color: CanvasText; background: Canvas; border: 2px solid ButtonBorder; max-width: min(40rem, 95vw); max-height: 90vh; overflow: auto; overflow-wrap: anywhere; }
+.workspace-project-pane dialog button { margin: .3rem; }
+.workspace-project-pane dialog::backdrop { background: rgb(0 0 0 / .35); }
+.workspace-project-pane [hidden] { display: none !important; }
+.workspace-toolbar label { display:flex;align-items:center;gap:.4rem;max-width:100%;overflow-wrap:anywhere; }
+.workspace-toolbar input[type=checkbox] { flex:none;width:auto; }
+.workspace-input-confirmation { color:CanvasText;background:Canvas;border:2px solid ButtonBorder;padding:.65rem;overflow-wrap:anywhere; }
+.workspace-input-confirmation[hidden] { display:none!important; }
+.workspace-input-confirmation h2 { font:inherit;font-weight:700;margin:.25rem 0; }
+.workspace-input-confirmation button { font:inherit;color:ButtonText;background:ButtonFace;border:1px solid ButtonBorder;padding:.4rem;margin:.25rem;max-width:100%; }
+.workspace-input-confirmation :focus-visible, .workspace-input-confirmation:focus-visible { outline:3px solid Highlight;outline-offset:2px; }
+.workspace-input-preedit { white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%; }
+.workspace-terminal .xterm-accessibility { color:CanvasText; }
+@media (max-width: 48rem) {
+  .workspace-body { display: flex; flex-direction: column; }
+  .workspace-body nav { max-height: 35vh; overflow: auto; border: 1px solid ButtonBorder; }
+  .workspace-horizontal { flex-direction: column; }
+}
+@media (forced-colors: active) {
+  .workspace-project-pane :focus-visible { outline-color: Highlight; }
+  .workspace-project-pane dialog::backdrop { background: Canvas; opacity: .75; }
+}

@@ -82,6 +82,11 @@ tasks/cli-bakeoff/*
 tests/
 !tests/
 tests/*
+!tests/workspace-journey/
+tests/workspace-journey/*
+!tests/workspace-journey/ci-run.ps1
+!tests/workspace-journey/run.ps1
+!tests/workspace-journey/prepare-legacy-cli.ps1
 !tests/test_support/
 !tests/test_support/rust_parity.rs
 !tests/Integration.GateEnforcement.Tests.ps1
@@ -227,6 +232,9 @@ dist/
 build/
 out/
 output/
+# Short-path Cargo target used by local Windows builds.
+/t/debug/
+/t/release/
 *.tsbuildinfo
 
 # =========================
