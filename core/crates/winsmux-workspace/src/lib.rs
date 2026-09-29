@@ -77,9 +77,16 @@ pub mod memory_testing {
 /// one-shot boundary. Diagnostics are fixed classifications and never include
 /// request, path, environment, or handle data.
 pub fn run_cli(arguments: &[String]) -> i32 {
+    #[cfg(windows)]
+    if let [command, handle] = arguments {
+        if command == "__host-child" {
+            return host::run_child_cli(handle);
+        }
+    }
     let result = match arguments {
         [command] if command == "host" => host::run_launcher(),
         [command] if command == "connect" => client::run_connect(),
+        #[cfg(not(windows))]
         [command, handle] if command == "__host-child" => host::run_child(handle),
         #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
         [command, owner, ready, discard, parent] if command == "__task870-host-stop-reply-loss" => {

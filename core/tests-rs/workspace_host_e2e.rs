@@ -2914,7 +2914,7 @@ fn host_startup_fails_closed_before_discovery_when_security_primitives_fail() {
     let _host_test = HOST_TEST_LOCK.lock().expect("host test lock");
     let binary = binary();
     let home = tempfile::tempdir().expect("temporary isolated home");
-    for injection in [FAIL_SERVER_TOKEN, FAIL_CNG] {
+    for (injection, stage) in [(FAIL_SERVER_TOKEN, "capability"), (FAIL_CNG, "server_key")] {
         let exit = InteractiveHost::start_with_environment(
             &binary,
             home.path(),
@@ -2934,11 +2934,33 @@ fn host_startup_fails_closed_before_discovery_when_security_primitives_fail() {
             String::from_utf8_lossy(&exit.output)
         );
         assert!(
+            String::from_utf8_lossy(&exit.output)
+                .contains(&format!("TASK876_CHILD_STARTUP stage={stage}")),
+            "{injection}: {}",
+            String::from_utf8_lossy(&exit.output)
+        );
+        assert!(
             extract_all_json(&exit.output).is_empty(),
             "{injection}: {}",
             String::from_utf8_lossy(&exit.output)
         );
     }
+    let untraced = InteractiveHost::start_with_environment(
+        &binary,
+        home.path(),
+        &["workspace", "host"],
+        &[(FAIL_SERVER_TOKEN, "1"), ("WINSMUX_TASK876_STARTUP_TRACE", "0")],
+    ).wait_for_exit();
+    assert_eq!(untraced.code, 1);
+    assert!(String::from_utf8_lossy(&untraced.output).contains("transport_failed"));
+    assert!(!String::from_utf8_lossy(&untraced.output).contains("TASK876_CHILD_STARTUP"));
+    assert!(extract_all_json(&untraced.output).is_empty());
+
+    let mut healthy = InteractiveHost::start(&binary, home.path());
+    let _discovery = healthy.discovery();
+    let recovered = healthy.console_eof();
+    assert_eq!(recovered.code, 0, "{}", String::from_utf8_lossy(&recovered.output));
+    assert!(!String::from_utf8_lossy(&recovered.output).contains("TASK876_CHILD_STARTUP"));
 }
 
 #[test]

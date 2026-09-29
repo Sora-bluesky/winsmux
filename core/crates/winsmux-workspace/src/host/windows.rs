@@ -431,6 +431,180 @@ impl LauncherStartupStage {
     }
 }
 
+// Reserved only for an opted-in debug __host-child that failed before it
+// attempted its first private startup frame. Never encode handles or paths.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildStartupStage {
+    Handle,
+    Identity,
+    Mutex,
+    InheritanceProbe,
+    Capability,
+    ServerKey,
+    Authorization,
+    CancelEvent,
+    Supervisor,
+    Discovery,
+    PublicPipe,
+    AcceptThread,
+    DiscoverySerialization,
+}
+
+#[cfg(debug_assertions)]
+impl ChildStartupStage {
+    fn code(self) -> i32 {
+        80 + self as i32
+    }
+    fn from_code(code: u32) -> Option<Self> {
+        match code {
+            80 => Some(Self::Handle),
+            81 => Some(Self::Identity),
+            82 => Some(Self::Mutex),
+            83 => Some(Self::InheritanceProbe),
+            84 => Some(Self::Capability),
+            85 => Some(Self::ServerKey),
+            86 => Some(Self::Authorization),
+            87 => Some(Self::CancelEvent),
+            88 => Some(Self::Supervisor),
+            89 => Some(Self::Discovery),
+            90 => Some(Self::PublicPipe),
+            91 => Some(Self::AcceptThread),
+            92 => Some(Self::DiscoverySerialization),
+            _ => None,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Handle => "handle",
+            Self::Identity => "identity",
+            Self::Mutex => "mutex",
+            Self::InheritanceProbe => "inheritance_probe",
+            Self::Capability => "capability",
+            Self::ServerKey => "server_key",
+            Self::Authorization => "authorization",
+            Self::CancelEvent => "cancel_event",
+            Self::Supervisor => "supervisor",
+            Self::Discovery => "discovery",
+            Self::PublicPipe => "public_pipe",
+            Self::AcceptThread => "accept_thread",
+            Self::DiscoverySerialization => "discovery_serialization",
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+struct ChildStartupTrace {
+    stage: std::cell::Cell<ChildStartupStage>,
+    frame_attempted: std::cell::Cell<bool>,
+}
+
+#[cfg(debug_assertions)]
+impl ChildStartupTrace {
+    fn new() -> Self {
+        Self {
+            stage: std::cell::Cell::new(ChildStartupStage::Handle),
+            frame_attempted: std::cell::Cell::new(false),
+        }
+    }
+    fn set(&self, stage: ChildStartupStage) {
+        self.stage.set(stage);
+    }
+    fn exit_code(&self, error: HostError) -> i32 {
+        if !self.frame_attempted.get() && error != HostError::Cancelled {
+            self.stage.get().code()
+        } else {
+            error.exit_code()
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+fn attempt_first_startup_frame(
+    trace: Option<&ChildStartupTrace>,
+    write_once: impl FnOnce() -> Result<(), HostError>,
+) -> Result<(), HostError> {
+    if let Some(trace) = trace {
+        trace.frame_attempted.set(true);
+    }
+    write_once()
+}
+
+#[cfg(all(test, debug_assertions))]
+mod child_startup_trace_tests {
+    use super::*;
+
+    #[test]
+    fn reserved_codes_decode_only_known_stages() {
+        for code in 80..=92 {
+            let stage = ChildStartupStage::from_code(code).expect("reserved stage");
+            assert_eq!(stage.code(), code as i32);
+        }
+        for code in [0, 1, 79, 93, 95, 130, u32::MAX] {
+            assert!(ChildStartupStage::from_code(code).is_none());
+        }
+    }
+
+    #[test]
+    fn first_frame_attempt_suppresses_preframe_code_even_on_immediate_or_partial_failure() {
+        for written_bytes in [0, 3] {
+            let trace = ChildStartupTrace::new();
+            trace.set(ChildStartupStage::DiscoverySerialization);
+            let result = attempt_first_startup_frame(Some(&trace), || {
+                let _simulated_written_bytes = written_bytes;
+                Err(HostError::Transport)
+            });
+            assert_eq!(result, Err(HostError::Transport));
+            assert!(trace.frame_attempted.get());
+            assert_eq!(trace.exit_code(HostError::Transport), 1);
+        }
+    }
+
+    #[test]
+    fn successful_frame_then_cleanup_failure_does_not_claim_startup_failure() {
+        let trace = ChildStartupTrace::new();
+        attempt_first_startup_frame(Some(&trace), || Ok(())).expect("first frame");
+        let result = finish_host_result(Some(HostError::Transport), false);
+        assert_eq!(result, Err(HostError::Transport));
+        assert_eq!(trace.exit_code(result.unwrap_err()), 1);
+    }
+
+    #[test]
+    fn first_error_and_launcher_request_error_keep_priority() {
+        let trace = ChildStartupTrace::new();
+        trace.set(ChildStartupStage::ServerKey);
+        let mut first = Some(HostError::Startup);
+        record_first_error(&mut first, HostError::Transport);
+        assert_eq!(first, Some(HostError::Startup));
+        assert_eq!(
+            trace.exit_code(first.unwrap()),
+            ChildStartupStage::ServerKey.code()
+        );
+        assert_eq!(
+            combine_launcher_results(
+                Err(HostError::Protocol),
+                Ok(84),
+                LauncherStartupStage::StartupFrame,
+                true
+            ),
+            Err(HostError::Protocol)
+        );
+        assert_eq!(
+            combine_launcher_results(
+                Err(HostError::Transport),
+                Err(HostError::Startup),
+                LauncherStartupStage::StartupFrame,
+                true
+            ),
+            Err(HostError::Transport)
+        );
+        assert_eq!(
+            combine_launcher_results(Ok(()), Ok(84), LauncherStartupStage::StartupFrame, true),
+            Err(HostError::Transport)
+        );
+    }
+}
+
 pub fn run_launcher() -> Result<(), HostError> {
     #[cfg(debug_assertions)]
     let startup_stage = std::cell::Cell::new(LauncherStartupStage::Terminal);
@@ -538,13 +712,45 @@ fn run_launcher_inner(
         // Closing the private endpoint is the owner's shutdown signal. Keep the
         // console session alive until the child has also been collected.
         drop(owner.take());
-        let child_result = wait_child(child);
-        match request_result {
-            Err(error) => Err(error),
-            Ok(()) => child_result,
-        }
+        let child_result = child.wait().map_err(map_io);
+        combine_launcher_results(
+            request_result,
+            child_result,
+            #[cfg(debug_assertions)]
+            startup_stage.get(),
+            #[cfg(debug_assertions)]
+            std::env::var("WINSMUX_TASK876_STARTUP_TRACE").as_deref()
+                == Ok("1"),
+        )
     })();
     session.finish(result)
+}
+
+fn combine_launcher_results(
+    request_result: Result<(), HostError>,
+    child_result: Result<u32, HostError>,
+    #[cfg(debug_assertions)] startup_stage: LauncherStartupStage,
+    #[cfg(debug_assertions)] trace_enabled: bool,
+) -> Result<(), HostError> {
+    #[cfg(debug_assertions)]
+    if trace_enabled
+        && request_result == Err(HostError::Transport)
+        && matches!(startup_stage, LauncherStartupStage::StartupFrame)
+    {
+        if let Ok(code) = child_result {
+            if let Some(stage) = ChildStartupStage::from_code(code) {
+                eprintln!("TASK876_CHILD_STARTUP stage={}", stage.label());
+            }
+        }
+    }
+    match request_result {
+        Err(error) => Err(error),
+        Ok(()) => match child_result {
+            Ok(0) => Ok(()),
+            Ok(_) => Err(HostError::Transport),
+            Err(error) => Err(error),
+        },
+    }
 }
 
 fn wait_child(child: ChildProcess) -> Result<(), HostError> {
@@ -715,7 +921,36 @@ pub fn run_child(argument: &str) -> Result<(), HostError> {
         argument,
         #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
         None,
+        #[cfg(debug_assertions)]
+        None,
     )
+}
+
+pub(crate) fn run_child_cli(argument: &str) -> i32 {
+    #[cfg(debug_assertions)]
+    if std::env::var("WINSMUX_TASK876_STARTUP_TRACE").as_deref() == Ok("1") {
+        let trace = ChildStartupTrace::new();
+        let result = run_child_inner(
+            argument,
+            #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
+            None,
+            Some(&trace),
+        );
+        return match result {
+            Ok(()) => 0,
+            Err(error) => {
+                eprintln!("winsmux workspace: {}", error.classification());
+                trace.exit_code(error)
+            }
+        };
+    }
+    match run_child(argument) {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("winsmux workspace: {}", error.classification());
+            error.exit_code()
+        }
+    }
 }
 
 #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
@@ -725,7 +960,7 @@ pub fn run_child_stop_reply_loss(
     discard: &str,
     parent: &str,
 ) -> Result<(), HostError> {
-    run_child_inner(owner, Some([ready, discard, parent]))
+    run_child_inner(owner, Some([ready, discard, parent]), None)
 }
 
 fn run_child_inner(
@@ -733,6 +968,7 @@ fn run_child_inner(
     #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))] gate_arguments: Option<
         [&str; 3],
     >,
+    #[cfg(debug_assertions)] trace: Option<&ChildStartupTrace>,
 ) -> Result<(), HostError> {
     let raw = usize::from_str_radix(argument, 16).map_err(|_| HostError::Startup)? as HANDLE;
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
@@ -760,6 +996,8 @@ fn run_child_inner(
         owner,
         #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
         gate,
+        #[cfg(debug_assertions)]
+        trace,
     )
 }
 
@@ -768,18 +1006,55 @@ fn run_host(
     #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))] gate: Option<
         stop_reply_loss::ChildGate,
     >,
+    #[cfg(debug_assertions)] trace: Option<&ChildStartupTrace>,
 ) -> Result<(), HostError> {
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::Identity);
+    }
     let identity = Identity::current().map_err(map_io)?;
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::Mutex);
+    }
     let _mutex = acquire_host_mutex(&identity)?;
     #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::InheritanceProbe);
+    }
+    #[cfg(debug_assertions)]
     let mut inheritance_probe = super::testing::InheritanceProbe::start(owner.raw())?;
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::Capability);
+    }
     let server_capability = ServerCapabilityToken::create(&identity).map_err(map_io)?;
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::ServerKey);
+    }
     let server_key = Arc::new(ServerKey::generate().map_err(map_io)?);
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::Authorization);
+    }
     let authorization = Arc::new(Authorization::new(Vec::new()));
     authorization.start_provider_probes();
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::CancelEvent);
+    }
     let host_cancel = Arc::new(CancelEvent::new().map_err(map_io)?);
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::Supervisor);
+    }
     let supervisor = ConnectionSupervisor::new(authorization.clone(), host_cancel.clone())
         .map_err(map_supervisor)?;
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::Discovery);
+    }
     let discovery = Discovery::for_server(
         &identity,
         authorization.instance_id().clone(),
@@ -787,6 +1062,10 @@ fn run_host(
     )?;
     let pipe_name = discovery.pipe_name.clone();
 
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::PublicPipe);
+    }
     let listener =
         create_public_pipe(&pipe_name, &identity, true, &server_capability).map_err(map_io)?;
     let accept_authorization = authorization.clone();
@@ -798,6 +1077,10 @@ fn run_host(
     let shutdown_authorization = accept_authorization.clone();
     let shutdown_cancel = accept_cancel.clone();
     let accept_supervisor = supervisor.clone();
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        trace.set(ChildStartupStage::AcceptThread);
+    }
     let accept_thread = std::thread::Builder::new()
         .name("winsmux-workspace-accept".to_owned())
         .spawn(move || {
@@ -834,16 +1117,27 @@ fn run_host(
     let mut first_error = None;
     let mut owner_cancelled = false;
     let startup_result = (|| -> Result<(), HostError> {
+        #[cfg(debug_assertions)]
+        if let Some(trace) = trace {
+            trace.set(ChildStartupStage::DiscoverySerialization);
+        }
         let discovery_bytes = serde_json::to_vec(&discovery).map_err(|_| HostError::Protocol)?;
         #[cfg(debug_assertions)]
         if inheritance_probe.is_some() {
-            write_frame(
-                owner.raw(),
-                super::testing::HANDLE_PROBE_READY,
-                &[host_cancel.raw()],
-            )
-            .map_err(map_io)?;
+            attempt_first_startup_frame(trace, || {
+                write_frame(
+                    owner.raw(),
+                    super::testing::HANDLE_PROBE_READY,
+                    &[host_cancel.raw()],
+                )
+                .map_err(map_io)
+            })?;
         }
+        #[cfg(debug_assertions)]
+        attempt_first_startup_frame(trace, || {
+            write_frame(owner.raw(), &discovery_bytes, &[host_cancel.raw()]).map_err(map_io)
+        })?;
+        #[cfg(not(debug_assertions))]
         write_frame(owner.raw(), &discovery_bytes, &[host_cancel.raw()]).map_err(map_io)?;
         match owner_loop_inner(
             owner.raw(),

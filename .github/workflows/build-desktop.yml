@@ -59,6 +59,10 @@ jobs:
         run: pwsh -NoProfile -File winsmux-app/scripts/prepare-legacy-cli.ps1
 
       - name: Test Tauri backend
+        # cargo test does not launch the dev server. Use the frontend built above
+        # so the native WebView exercise reaches the actual app instead of :1420.
+        env:
+          TAURI_CONFIG: '{"build":{"devUrl":null}}'
         run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
 
       - name: Build desktop binary without bundling

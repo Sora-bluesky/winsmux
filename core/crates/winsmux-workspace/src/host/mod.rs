@@ -138,6 +138,8 @@ mod windows;
 
 #[cfg(windows)]
 pub use windows::{run_child, run_launcher, WorkspaceOwner, WorkspaceRequestError};
+#[cfg(windows)]
+pub(crate) use windows::run_child_cli;
 #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
 pub use windows::{run_child_stop_reply_loss, StopReplyLossGate, StopReplyLossRelease};
 #[cfg(all(windows, debug_assertions))]
