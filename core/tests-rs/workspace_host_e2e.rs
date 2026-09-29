@@ -739,6 +739,9 @@ impl InteractiveHost {
         command.env("HOME", home);
         command.env("WINSMUX_TASK862_MARKER", ENV_MARKER);
         command.env_remove(CONNECT_READY_EVENT);
+        if arguments == ["workspace", "host"] {
+            command.env("WINSMUX_TASK876_STARTUP_TRACE", "1");
+        }
         for (name, value) in environment {
             command.env(name, value);
         }

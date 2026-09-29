@@ -52,6 +52,12 @@ jobs:
         working-directory: winsmux-app
         run: npm run prepare:companion-cli
 
+      - name: Prepare pinned older CLI for native version-pair proof
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pwsh -NoProfile -File winsmux-app/scripts/prepare-legacy-cli.ps1
+
       - name: Test Tauri backend
         run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
 

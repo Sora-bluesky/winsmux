@@ -217,8 +217,10 @@ function Assert-PrivateSnapshotSecurity {
     param([Security.AccessControl.FileSystemSecurity] $Acl)
     $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $allowed = @($owner, 'S-1-5-18', 'S-1-5-32-544')
-    if (-not $Acl.AreAccessRulesProtected -or
-        $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) {
+    $ownerMatches = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -eq $owner
+    $daclProtected = $Acl.AreAccessRulesProtected
+    if (-not $daclProtected -or -not $ownerMatches) {
+        Write-Host "TASK876_PRIVATE_SNAPSHOT_ACL owner_matches=$ownerMatches protected=$daclProtected"
         throw 'Private snapshot owner or protected DACL changed'
     }
     $rules = @($Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))

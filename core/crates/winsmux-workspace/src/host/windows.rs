@@ -392,17 +392,90 @@ impl Drop for HostMutex {
     }
 }
 
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy)]
+enum LauncherStartupStage {
+    Terminal,
+    Identity,
+    InheritanceProbe,
+    Console,
+    Channel,
+    ChildSpawn,
+    StartupFrame,
+    ProbeReady,
+    DiscoveryFrame,
+    DiscoveryParse,
+    DiscoveryValidation,
+    DiscoverySerialization,
+    OutputStarted,
+}
+
+#[cfg(debug_assertions)]
+impl LauncherStartupStage {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Terminal => "terminal",
+            Self::Identity => "identity",
+            Self::InheritanceProbe => "inheritance_probe",
+            Self::Console => "console",
+            Self::Channel => "channel",
+            Self::ChildSpawn => "child_spawn",
+            Self::StartupFrame => "startup_frame",
+            Self::ProbeReady => "probe_ready",
+            Self::DiscoveryFrame => "discovery_frame",
+            Self::DiscoveryParse => "discovery_parse",
+            Self::DiscoveryValidation => "discovery_validation",
+            Self::DiscoverySerialization => "discovery_serialization",
+            Self::OutputStarted => "output_started",
+        }
+    }
+}
+
 pub fn run_launcher() -> Result<(), HostError> {
+    #[cfg(debug_assertions)]
+    let startup_stage = std::cell::Cell::new(LauncherStartupStage::Terminal);
+    #[cfg(debug_assertions)]
+    let result = run_launcher_inner(&startup_stage);
+    #[cfg(not(debug_assertions))]
+    let result = run_launcher_inner();
+    #[cfg(debug_assertions)]
+    if std::env::var("WINSMUX_TASK876_STARTUP_TRACE").as_deref() == Ok("1") {
+        if let Err(error) = result {
+            if !matches!(startup_stage.get(), LauncherStartupStage::OutputStarted) {
+                eprintln!(
+                    "TASK876_OWNER_STARTUP stage={} class={}",
+                    startup_stage.get().label(),
+                    error.classification()
+                );
+            }
+        }
+    }
+    result
+}
+
+fn run_launcher_inner(
+    #[cfg(debug_assertions)] startup_stage: &std::cell::Cell<LauncherStartupStage>,
+) -> Result<(), HostError> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         return Err(HostError::InteractiveRequired);
     }
 
+    #[cfg(debug_assertions)]
+    startup_stage.set(LauncherStartupStage::Identity);
     let identity = Identity::current().map_err(map_io)?;
     #[cfg(debug_assertions)]
+    startup_stage.set(LauncherStartupStage::InheritanceProbe);
+    #[cfg(debug_assertions)]
     let launcher_probe = super::testing::LauncherInheritanceProbe::start(&identity)?;
+    #[cfg(debug_assertions)]
+    startup_stage.set(LauncherStartupStage::Console);
     let session = ConsoleSession::start()?;
     let result = (|| {
+        #[cfg(debug_assertions)]
+        startup_stage.set(LauncherStartupStage::Channel);
         let (owner_handle, inherited) = create_private_channel(&identity)?;
+        #[cfg(debug_assertions)]
+        startup_stage.set(LauncherStartupStage::ChildSpawn);
         let child = spawn_host(inherited.raw()).map_err(map_io)?;
         drop(inherited);
         #[cfg(debug_assertions)]
@@ -415,6 +488,8 @@ pub fn run_launcher() -> Result<(), HostError> {
             if let Some(error) = launcher_probe_error {
                 return Err(error);
             }
+            #[cfg(debug_assertions)]
+            startup_stage.set(LauncherStartupStage::StartupFrame);
             let startup = read_frame(
                 owner.as_ref().expect("owner channel is present").raw(),
                 &[session.cancel().raw()],
@@ -423,7 +498,9 @@ pub fn run_launcher() -> Result<(), HostError> {
             #[cfg(debug_assertions)]
             let startup = match launcher_probe.as_ref() {
                 Some(probe) => {
+                    startup_stage.set(LauncherStartupStage::ProbeReady);
                     probe.verify_ready(&startup)?;
+                    startup_stage.set(LauncherStartupStage::DiscoveryFrame);
                     read_frame(
                         owner.as_ref().expect("owner channel is present").raw(),
                         &[session.cancel().raw()],
@@ -432,11 +509,19 @@ pub fn run_launcher() -> Result<(), HostError> {
                 }
                 None => startup,
             };
+            #[cfg(debug_assertions)]
+            startup_stage.set(LauncherStartupStage::DiscoveryParse);
             let discovery: Discovery =
                 serde_json::from_slice(&startup).map_err(|_| HostError::Protocol)?;
+            #[cfg(debug_assertions)]
+            startup_stage.set(LauncherStartupStage::DiscoveryValidation);
             let fingerprint = discovery.validate_for(&identity)?;
+            #[cfg(debug_assertions)]
+            startup_stage.set(LauncherStartupStage::DiscoverySerialization);
             let line = serde_json::to_vec(&discovery).map_err(|_| HostError::Protocol)?;
             let mut stdout = std::io::stdout().lock();
+            #[cfg(debug_assertions)]
+            startup_stage.set(LauncherStartupStage::OutputStarted);
             stdout
                 .write_all(&line)
                 .and_then(|_| stdout.write_all(b"\n"))

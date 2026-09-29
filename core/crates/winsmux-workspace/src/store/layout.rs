@@ -19,20 +19,21 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo,
-    SDDL_REVISION_1, SE_FILE_OBJECT,
+    SetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, IsValidSid, ACCESS_ALLOWED_ACE,
-    ACE_HEADER, ACL_SIZE_INFORMATION, AclSizeInformation, DACL_SECURITY_INFORMATION,
-    PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    CreateWellKnownSid, EqualSid, GetAce, GetAclInformation, GetSecurityDescriptorControl,
+    IsValidSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL_SIZE_INFORMATION, AclSizeInformation,
+    DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
+    SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, FlushFileBuffers, GetDriveTypeW, GetFileInformationByHandle,
     GetFileSizeEx, QueryDosDeviceW, ReadFile, SetEndOfFile,
     SetFilePointerEx, WriteFile, BY_HANDLE_FILE_INFORMATION, CREATE_NEW, DELETE,
-    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-    OPEN_EXISTING, READ_CONTROL,
+    OPEN_EXISTING, READ_CONTROL, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
@@ -51,7 +52,13 @@ const SYNCHRONIZE: u32 = 0x00100000;
 const DRIVE_FIXED: u32 = 3;
 const DIRECTORY_HOLD_ACCESS: u32 =
     FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | SYNCHRONIZE | READ_CONTROL;
-const MANAGED_WRITE_ACCESS: u32 = GENERIC_READ | GENERIC_WRITE | DELETE;
+const MANAGED_WRITE_ACCESS: u32 = GENERIC_READ | GENERIC_WRITE | DELETE | WRITE_OWNER;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SnapshotOwner {
+    User,
+    Administrators,
+}
 
 /// Per-instance fault points for module tests. Not a public store operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -134,6 +141,23 @@ impl PrivateDescriptor {
         Ok(Self { descriptor })
     }
 
+    fn for_user_owned_snapshot(user: &Sid) -> Result<Self, ErrorCode> {
+        let sid = sid_sddl(user)?;
+        let sddl = format!(
+            "O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
+        );
+        let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut descriptor = null_mut();
+        if unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide.as_ptr(), SDDL_REVISION_1, &mut descriptor, null_mut(),
+            )
+        } == 0 || descriptor.is_null() {
+            return Err(ErrorCode::PersistenceFailed);
+        }
+        Ok(Self { descriptor })
+    }
+
     fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
@@ -199,23 +223,23 @@ impl DirectoryChain {
         let path = self.v1.join(name);
         match open_file(&path, access, share, OPEN_EXISTING, null())? {
             None => Ok(None),
-            Some(handle) => Ok(Some(ManagedFile::proved(handle, user)?)),
+            Some(handle) => Ok(Some(ManagedFile::proved_snapshot_read(handle, user)?)),
         }
     }
 
     fn acquire_writable(&self, name: &str, user: &Sid) -> Result<ManagedFile, ErrorCode> {
         let path = self.v1.join(name);
         if let Some(handle) = open_file(&path, MANAGED_WRITE_ACCESS, 0, OPEN_EXISTING, null())? {
-            return ManagedFile::proved(handle, user);
+            return ManagedFile::proved_writable_snapshot(handle, user);
         }
-        let descriptor = PrivateDescriptor::for_user(user)?;
+        let descriptor = PrivateDescriptor::for_user_owned_snapshot(user)?;
         let sa = descriptor.attributes();
         match open_file(&path, MANAGED_WRITE_ACCESS, 0, CREATE_NEW, &sa) {
-            Ok(Some(handle)) => ManagedFile::proved(handle, user),
+            Ok(Some(handle)) => ManagedFile::proved_writable_snapshot(handle, user),
             Ok(None) | Err(_) => {
                 let handle = open_file(&path, MANAGED_WRITE_ACCESS, 0, OPEN_EXISTING, null())?
                     .ok_or(ErrorCode::PersistenceFailed)?;
-                ManagedFile::proved(handle, user)
+                ManagedFile::proved_writable_snapshot(handle, user)
             }
         }
     }
@@ -250,6 +274,31 @@ impl ManagedFile {
         let file = Self { handle };
         inspect_ordinary_single_link(file.handle.raw())?;
         check_private_acl_handle(file.handle.raw(), user)?;
+        Ok(file)
+    }
+
+    fn proved_snapshot_read(handle: OwnedHandle, user: &Sid) -> Result<Self, ErrorCode> {
+        let file = Self { handle };
+        inspect_ordinary_single_link(file.raw())?;
+        snapshot_owner(file.raw(), user)?;
+        Ok(file)
+    }
+
+    fn proved_writable_snapshot(handle: OwnedHandle, user: &Sid) -> Result<Self, ErrorCode> {
+        let file = Self::proved_snapshot_read(handle, user)?;
+        if snapshot_owner(file.raw(), user)? == SnapshotOwner::Administrators {
+            if unsafe {
+                SetSecurityInfo(
+                    file.raw(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
+                    user.as_ptr(), null_mut(), null(), null(),
+                )
+            } != 0 {
+                return Err(ErrorCode::PersistenceFailed);
+            }
+            if snapshot_owner(file.raw(), user)? != SnapshotOwner::User {
+                return Err(ErrorCode::PersistenceFailed);
+            }
+        }
         Ok(file)
     }
 
@@ -297,7 +346,10 @@ impl ManagedFile {
 
     fn prove_after_rename(&self, user: &Sid) -> Result<(), ErrorCode> {
         inspect_ordinary_single_link(self.handle.raw())?;
-        check_private_acl_handle(self.handle.raw(), user)
+        if snapshot_owner(self.handle.raw(), user)? != SnapshotOwner::User {
+            return Err(ErrorCode::PersistenceFailed);
+        }
+        Ok(())
     }
 }
 
@@ -391,7 +443,9 @@ impl LayoutTransaction {
             (Some((proved, _)), backup_bytes) => {
                 let refresh = backup_bytes
                     .as_ref()
-                    .map_or(true, |existing| existing != &proved);
+                    .map_or(true, |(existing, owner)| {
+                        existing != &proved || *owner != SnapshotOwner::User
+                    });
                 if refresh {
                     self.stage_replace(
                         BACKUP_NAME,
@@ -455,7 +509,7 @@ impl LayoutTransaction {
         &self,
         authority: &AllocationAuthority,
         pool: AllocationPool,
-    ) -> Result<Option<Vec<u8>>, ErrorCode> {
+    ) -> Result<Option<(Vec<u8>, SnapshotOwner)>, ErrorCode> {
         match self._chain.open_existing(
             BACKUP_NAME,
             GENERIC_READ,
@@ -463,7 +517,10 @@ impl LayoutTransaction {
             &self.identity.user,
         )? {
             None => Ok(None),
-            Some(file) => Ok(Some(file.read_bytes(authority, pool)?)),
+            Some(file) => Ok(Some((
+                file.read_bytes(authority, pool)?,
+                snapshot_owner(file.raw(), &self.identity.user)?,
+            ))),
         }
     }
 
@@ -1050,14 +1107,62 @@ fn check_private_acl_handle(handle: HANDLE, user: &Sid) -> Result<(), ErrorCode>
         }
         return Err(ErrorCode::PersistenceFailed);
     }
-    let result = dacl_is_private(dacl, user);
+    let result = dacl_is_private(dacl, user, false);
     unsafe {
         LocalFree(sd);
     }
     result
 }
 
-fn dacl_is_private(dacl: *mut windows_sys::Win32::Security::ACL, user: &Sid) -> Result<(), ErrorCode> {
+fn snapshot_owner(handle: HANDLE, user: &Sid) -> Result<SnapshotOwner, ErrorCode> {
+    let mut owner: PSID = null_mut();
+    let mut dacl = null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+    let err = unsafe {
+        GetSecurityInfo(
+            handle,
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            &mut owner,
+            null_mut(),
+            &mut dacl,
+            null_mut(),
+            &mut sd,
+        )
+    };
+    if err != 0 || sd.is_null() || owner.is_null() || dacl.is_null() {
+        if !sd.is_null() {
+            unsafe { LocalFree(sd); }
+        }
+        return Err(ErrorCode::PersistenceFailed);
+    }
+    let result = (|| {
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        if unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) } == 0
+            || control & SE_DACL_PROTECTED == 0
+        {
+            return Err(ErrorCode::PersistenceFailed);
+        }
+        dacl_is_private(dacl, user, true)?;
+        if unsafe { EqualSid(owner, user.as_ptr()) } != 0 {
+            return Ok(SnapshotOwner::User);
+        }
+        let admins = well_known_sid(WIN_BUILTIN_ADMINISTRATORS_SID)?;
+        if unsafe { EqualSid(owner, admins.as_ptr().cast_mut().cast()) } != 0 {
+            return Ok(SnapshotOwner::Administrators);
+        }
+        Err(ErrorCode::PersistenceFailed)
+    })();
+    unsafe { LocalFree(sd); }
+    result
+}
+
+fn dacl_is_private(
+    dacl: *mut windows_sys::Win32::Security::ACL,
+    user: &Sid,
+    require_full_user_access: bool,
+) -> Result<(), ErrorCode> {
     let mut info = ACL_SIZE_INFORMATION {
         AclBytesInUse: 0,
         AclBytesFree: 0,
@@ -1080,6 +1185,7 @@ fn dacl_is_private(dacl: *mut windows_sys::Win32::Security::ACL, user: &Sid) -> 
     let system = well_known_sid(WIN_LOCAL_SYSTEM_SID)?;
     let admins = well_known_sid(WIN_BUILTIN_ADMINISTRATORS_SID)?;
     let mut saw_user = false;
+    let mut saw_user_full_access = false;
     for index in 0..info.AceCount {
         let mut ace: *mut c_void = null_mut();
         if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
@@ -1096,6 +1202,7 @@ fn dacl_is_private(dacl: *mut windows_sys::Win32::Security::ACL, user: &Sid) -> 
         }
         if unsafe { EqualSid(sid, user.as_ptr()) } != 0 {
             saw_user = true;
+            saw_user_full_access |= allowed.Mask & FILE_ALL_ACCESS == FILE_ALL_ACCESS;
             continue;
         }
         let system_ok = unsafe { EqualSid(sid, system.as_ptr().cast_mut().cast()) } != 0;
@@ -1105,7 +1212,7 @@ fn dacl_is_private(dacl: *mut windows_sys::Win32::Security::ACL, user: &Sid) -> 
         }
         return Err(ErrorCode::PersistenceFailed);
     }
-    if !saw_user {
+    if !saw_user || (require_full_user_access && !saw_user_full_access) {
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(())
@@ -1124,7 +1231,9 @@ mod tests {
         ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
         SetNamedSecurityInfoW,
     };
-    use windows_sys::Win32::Security::GetSecurityDescriptorDacl;
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
     use windows_sys::Win32::Storage::FileSystem::{CREATE_ALWAYS, FILE_SHARE_DELETE, FILE_SHARE_WRITE};
 
     static SEQ: AtomicU64 = AtomicU64::new(1);
@@ -1426,6 +1535,38 @@ mod tests {
         assert_eq!(err, 0);
     }
 
+    fn unprotect_existing_dacl(path: &Path) {
+        let mut wide = wide_path(path).expect("dacl path");
+        let mut dacl = null_mut();
+        let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+        let read = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+                null_mut(), null_mut(), &mut dacl, null_mut(), &mut sd,
+            )
+        };
+        assert_eq!(read, 0);
+        assert!(!sd.is_null());
+        assert!(!dacl.is_null());
+        let write = unsafe {
+            SetNamedSecurityInfoW(
+                wide.as_mut_ptr(), SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                null_mut(), null_mut(), dacl, null_mut(),
+            )
+        };
+        unsafe { LocalFree(sd); }
+        assert_eq!(write, 0);
+    }
+
+    fn assert_user_owned_snapshot(store: &LayoutStore, name: &str) {
+        let handle = open_query_handle(&store.v1.join(name));
+        assert_eq!(
+            snapshot_owner(handle.raw(), &store.identity.user).expect("private snapshot"),
+            SnapshotOwner::User,
+        );
+    }
+
     fn junction(link: &Path, target: &Path) {
         let status = std::process::Command::new("cmd")
             .args(["/C", "mklink", "/J"])
@@ -1465,6 +1606,7 @@ mod tests {
         save_once(&store, &empty(1, 1), &authority).expect("first save");
         assert!(store.v1.join(CONFIRMED_NAME).is_file());
         assert!(!store.v1.join(BACKUP_NAME).exists());
+        assert_user_owned_snapshot(&store, CONFIRMED_NAME);
         let tx = store.begin(&authority, pool()).expect("lease");
         assert_eq!(
             tx.read_confirmed(&authority, pool()).expect("read C"),
@@ -1490,6 +1632,85 @@ mod tests {
         save_once(&store, &second, &authority).expect("later");
         assert_eq!(disk(&store, BACKUP_NAME), bytes(&first));
         assert_eq!(disk(&store, CONFIRMED_NAME), bytes(&second));
+        assert_user_owned_snapshot(&store, BACKUP_NAME);
+        assert_user_owned_snapshot(&store, CONFIRMED_NAME);
+    }
+
+    #[test]
+    fn private_legacy_temp_is_reowned_before_staging_on_same_file() {
+        let (_guard, store, authority) = fixture();
+        plant(&store, TEMP_NAME, b"legacy-temp");
+        let temp_key = file_key_path(&store.v1.join(TEMP_NAME));
+        save_once(&store, &empty(8, 9), &authority).expect("save via legacy temp");
+        assert_eq!(file_key_path(&store.v1.join(CONFIRMED_NAME)), temp_key);
+        assert_user_owned_snapshot(&store, CONFIRMED_NAME);
+        assert_eq!(disk(&store, CONFIRMED_NAME), bytes(&empty(8, 9)));
+    }
+
+    #[test]
+    fn equal_bytes_legacy_backup_is_refreshed_to_user_owner() {
+        let (_guard, store, authority) = fixture();
+        let first = empty(10, 11);
+        save_once(&store, &first, &authority).expect("first save");
+        plant(&store, BACKUP_NAME, &bytes(&first));
+        let old_owner = snapshot_owner(
+            open_query_handle(&store.v1.join(BACKUP_NAME)).raw(),
+            &store.identity.user,
+        )
+        .expect("private legacy backup");
+        let old_key = file_key_path(&store.v1.join(BACKUP_NAME));
+        let second = empty(12, 13);
+        save_once(&store, &second, &authority).expect("later save");
+        assert_eq!(disk(&store, BACKUP_NAME), bytes(&first));
+        assert_eq!(disk(&store, CONFIRMED_NAME), bytes(&second));
+        assert_user_owned_snapshot(&store, BACKUP_NAME);
+        assert_user_owned_snapshot(&store, CONFIRMED_NAME);
+        if old_owner == SnapshotOwner::Administrators {
+            assert_ne!(file_key_path(&store.v1.join(BACKUP_NAME)), old_key);
+        }
+    }
+
+    #[test]
+    fn unprotected_snapshot_dacl_fails_before_mutating_existing_bytes() {
+        let (_guard, store, authority) = fixture();
+        plant(&store, TEMP_NAME, b"keep-temp");
+        let temp_key = file_key_path(&store.v1.join(TEMP_NAME));
+        unprotect_existing_dacl(&store.v1.join(TEMP_NAME));
+        assert_eq!(
+            save_once(&store, &empty(1, 1), &authority),
+            Err(ErrorCode::PersistenceFailed)
+        );
+        assert_eq!(disk(&store, TEMP_NAME), b"keep-temp");
+        assert_eq!(file_key_path(&store.v1.join(TEMP_NAME)), temp_key);
+        assert!(!store.v1.join(CONFIRMED_NAME).exists());
+
+        let (_guard, store, authority) = fixture();
+        save_once(&store, &empty(2, 2), &authority).expect("first save");
+        let c_before = disk(&store, CONFIRMED_NAME);
+        let c_key = file_key_path(&store.v1.join(CONFIRMED_NAME));
+        unprotect_existing_dacl(&store.v1.join(CONFIRMED_NAME));
+        assert_eq!(
+            save_once(&store, &empty(3, 3), &authority),
+            Err(ErrorCode::PersistenceFailed)
+        );
+        assert_eq!(disk(&store, CONFIRMED_NAME), c_before);
+        assert_eq!(file_key_path(&store.v1.join(CONFIRMED_NAME)), c_key);
+        assert!(!store.v1.join(BACKUP_NAME).exists());
+
+        let (_guard, store, authority) = fixture();
+        save_once(&store, &empty(4, 4), &authority).expect("first save");
+        plant(&store, BACKUP_NAME, &bytes(&empty(4, 4)));
+        let c_before = disk(&store, CONFIRMED_NAME);
+        let b_before = disk(&store, BACKUP_NAME);
+        let b_key = file_key_path(&store.v1.join(BACKUP_NAME));
+        unprotect_existing_dacl(&store.v1.join(BACKUP_NAME));
+        assert_eq!(
+            save_once(&store, &empty(5, 5), &authority),
+            Err(ErrorCode::PersistenceFailed)
+        );
+        assert_eq!(disk(&store, CONFIRMED_NAME), c_before);
+        assert_eq!(disk(&store, BACKUP_NAME), b_before);
+        assert_eq!(file_key_path(&store.v1.join(BACKUP_NAME)), b_key);
     }
 
     #[test]
