@@ -10,6 +10,11 @@ mod pty_backend;
 mod remote_debug_gate;
 mod remote_session;
 mod ssh_connect_review;
+pub mod workspace_transport;
+#[doc(hidden)]
+pub mod workspace_input_guard;
+mod startup_secondary_native;
+mod webview_accelerators;
 
 use control_pipe::{
     control_pipe_ui_is_enabled, revoke_control_pipe_token_on_exit, start_control_pipe_server,
@@ -548,12 +553,28 @@ fn desktop_update_download_installer(
     }
 }
 
-#[tauri::command]
-fn desktop_update_launch_installer(
+#[derive(Clone)]
+pub(crate) struct PreparedDesktopUpdate {
+    installer_path: PathBuf,
+    expected_sha256: String,
+}
+
+impl PreparedDesktopUpdate {
+    pub(crate) fn same_prepared(&self, other: &Self) -> bool {
+        self.installer_path == other.installer_path && self.expected_sha256 == other.expected_sha256
+    }
+}
+
+async fn desktop_update_launch_installer(
     app: AppHandle,
     installer_path: String,
     expected_sha256: String,
 ) -> Result<(), String> {
+    let prepared = prepare_desktop_update(&installer_path, &expected_sha256)?;
+    workspace_transport::install_prepared_update(app, prepared).await
+}
+
+fn prepare_desktop_update(installer_path: &str, expected_sha256: &str) -> Result<PreparedDesktopUpdate, String> {
     let path = PathBuf::from(installer_path.trim());
     if !path.is_file() {
         return Err("update installer file does not exist".to_string());
@@ -564,7 +585,7 @@ fn desktop_update_launch_installer(
 
     #[cfg(not(windows))]
     {
-        let _ = (app, path, expected_sha256);
+        let _ = (path, expected_sha256);
         return Err("Desktop installer updates are supported only on Windows.".to_string());
     }
 
@@ -596,6 +617,20 @@ fn desktop_update_launch_installer(
                 "update installer checksum changed before launch: expected {expected}, got {actual}"
             ));
         }
+        Ok(PreparedDesktopUpdate { installer_path: canonical_path, expected_sha256: expected })
+    }
+}
+
+pub(crate) fn launch_prepared_desktop_update(_app: &AppHandle, prepared: &PreparedDesktopUpdate, authorize: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    let validated = prepare_desktop_update(&prepared.installer_path.to_string_lossy(), &prepared.expected_sha256)?;
+    authorize()?;
+    #[cfg(all(windows, debug_assertions, feature="native-e2e-faults"))]
+    if let Some(effects)=_app.try_state::<NativeDesktopEffects>() {
+        return (effects.update_launcher)(&validated.installer_path,&validated.expected_sha256);
+    }
+    #[cfg(windows)]
+    {
+        let canonical_path = validated.installer_path;
         let app_path = std::env::current_exe()
             .map_err(|err| format!("failed to resolve current winsmux executable: {err}"))?;
         let restart_script_path = std::env::temp_dir()
@@ -617,10 +652,58 @@ Start-Process -FilePath $AppPath | Out-Null
         build_update_restart_command(&restart_script_path, &canonical_path, &app_path)
             .spawn()
             .map_err(|err| format!("failed to launch update restart helper: {err}"))?;
-        app.exit(0);
     }
 
     Ok(())
+}
+
+#[cfg(all(windows, debug_assertions, feature="native-e2e-faults"))]
+pub struct NativeDesktopEffects {
+    pub update_launcher: Arc<dyn Fn(&Path, &str) -> Result<(),String> + Send + Sync>,
+    pub cleanup_observer: Arc<dyn Fn(serde_json::Value) + Send + Sync>,
+}
+
+#[cfg(all(windows, debug_assertions, feature="native-e2e-faults"))]
+pub fn native_desktop_runtime_inventory(app:&AppHandle) -> serde_json::Value {
+    let manager=app.state::<PtyManager>();
+    let panes=manager.panes.lock().expect("native PTY inventory");
+    let children:Vec<_>=panes.iter().map(|(id,pty)| serde_json::json!({"pane_id":id,"generation":pty.generation,"alive":pty.alive.load(Ordering::SeqCst),"pid":pty.child.lock().expect("owned child").process_id()})).collect();
+    serde_json::json!({"shutdown_requested":app.state::<DesktopShutdownManager>().requested.load(Ordering::SeqCst),"children":children})
+}
+
+/// Shared runtime state installation. Native tests use the actual cleanup owners.
+pub fn with_desktop_runtime_state(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
+    builder
+        .manage(PtyManager {
+            panes: Arc::new(Mutex::new(HashMap::new())),
+            next_generation: AtomicU64::new(1),
+        })
+        .manage(DesktopSummaryStreamManager {
+            started: AtomicBool::new(false),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+        })
+        .manage(DesktopShutdownManager { requested: AtomicBool::new(false) })
+        .manage(remote_session::RemoteSessionManager::new())
+        .manage(VoiceCaptureManager {
+            snapshot: Arc::new(Mutex::new(VoiceCaptureRuntimeSnapshot::default())),
+            session: Mutex::new(None),
+            next_generation: AtomicU64::new(1),
+        })
+}
+
+/// The same command registrations are reused by the real native harness.
+pub mod desktop_lifecycle_commands {
+    use super::*;
+    #[tauri::command]
+    pub async fn desktop_update_launch_installer(app: AppHandle, installer_path:String, expected_sha256:String) -> Result<(),String> {
+        super::desktop_update_launch_installer(app,installer_path,expected_sha256).await
+    }
+    #[tauri::command]
+    pub async fn pty_spawn(app:AppHandle,pane_id:String,cols:u16,rows:u16) -> Result<(),String> {super::pty_spawn(app,pane_id,cols,rows).await}
+    #[tauri::command]
+    pub async fn pty_write(app:AppHandle,pane_id:String,data:String) -> Result<(),String> {super::pty_write(app,pane_id,data).await}
+    #[tauri::command]
+    pub async fn pty_capture(app:AppHandle,pane_id:String,lines:Option<u16>) -> Result<serde_json::Value,String> {super::pty_capture(app,pane_id,lines).await}
 }
 
 struct SinglePty {
@@ -1237,12 +1320,10 @@ async fn pty_json_rpc(
     Ok(handle_pty_json_rpc(&transport, request))
 }
 
-#[tauri::command]
 async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
     spawn_pty(&app, pane_id, cols, rows, None, None, "pty.spawn")
 }
 
-#[tauri::command]
 async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), String> {
     write_pty(&app, &pane_id, &data)
 }
@@ -1252,7 +1333,6 @@ async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Re
     resize_pty(&app, &pane_id, cols, rows)
 }
 
-#[tauri::command]
 async fn pty_capture(
     app: AppHandle,
     pane_id: String,
@@ -1958,6 +2038,10 @@ fn request_desktop_runtime_shutdown_for_app(app: &AppHandle) {
         Duration::from_millis(DESKTOP_SHUTDOWN_VOICE_WAIT_MS),
         Duration::from_millis(DESKTOP_SHUTDOWN_PTY_WAIT_MS),
     ) {
+        #[cfg(all(windows, debug_assertions, feature="native-e2e-faults"))]
+        if let Some(effects)=app.try_state::<NativeDesktopEffects>() {
+            (effects.cleanup_observer)(serde_json::json!({"voice_stop_requested":report.voice_stop_requested,"voice_cleanup_completed":report.voice_cleanup_completed,"pty_count":report.pty_count,"pty_exited_count":report.pty_exited_count}));
+        }
         if report.pty_count != report.pty_exited_count {
             eprintln!(
                 "Desktop shutdown stopped {}/{} PTY children before timeout.",
@@ -2069,41 +2153,49 @@ impl PtyCommandTransport for TauriPtyTransport {
     }
 }
 
+#[cfg(windows)]
+#[derive(Debug,PartialEq,Eq)]
+pub enum DesktopLoopOutcome {
+    Confirmed {code:i32,runtime_code:i32},
+    UnexpectedReturn {runtime_code:i32},
+}
+
+/// Windows completion is confirmed by the actual Exit dispatcher, never an observer.
+/// Returning here also means Tauri's cleanup_before_exit has finished.
+#[cfg(windows)]
+pub fn run_windows_desktop_loop<F:FnMut(&AppHandle,tauri::RunEvent)+'static>(app:tauri::App,mut observer:F)->DesktopLoopOutcome {
+    let manager=Arc::clone(app.state::<Arc<workspace_transport::WorkspaceManager>>().inner());
+    let runtime_code=app.run_return(move|handle,event| {
+        workspace_transport::dispatch_desktop_event(handle,&event);
+        observer(handle,event);
+    });
+    match manager.confirmed_exit_code() {
+        Some(code)=>DesktopLoopOutcome::Confirmed {code,runtime_code},
+        None=>DesktopLoopOutcome::UnexpectedReturn {runtime_code},
+    }
+}
+
+pub fn with_desktop_webview_policy<R: tauri::Runtime>(builder: tauri::Builder<R>) -> Result<tauri::Builder<R>, String> {
+    let policy = remote_debug_gate::WebviewCreationPolicy::from_gate(remote_debug_gate::resolve_from_env())
+        .map_err(|reason| reason.diagnostic_token().to_owned())?;
+    Ok(webview_accelerators::install(builder.manage(policy)))
+}
+
+pub fn desktop_webview_browser_args<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Option<String>, String> {
+    app.try_state::<remote_debug_gate::WebviewCreationPolicy>()
+        .map(|policy| policy.additional_browser_args.clone()).ok_or_else(|| "creation_policy_missing".into())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let remote_debug_browser_args: Option<String> = match remote_debug_gate::resolve_from_env() {
-        remote_debug_gate::RemoteDebugGate::Rejected(reason) => {
-            eprintln!(
-                "winsmux-desktop: remote debug gate rejected: {}",
-                reason.diagnostic_token()
-            );
+    let app = with_desktop_webview_policy(with_desktop_runtime_state(tauri::Builder::default()))
+        .unwrap_or_else(|reason| {
+            eprintln!("winsmux-desktop: remote debug gate rejected: {}", reason);
             std::process::exit(2);
-        }
-        remote_debug_gate::RemoteDebugGate::Disabled => None,
-        remote_debug_gate::RemoteDebugGate::Enabled { port } => {
-            Some(remote_debug_gate::compose_browser_args(port))
-        }
-    };
-    let app = tauri::Builder::default()
+        })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(PtyManager {
-            panes: Arc::new(Mutex::new(HashMap::new())),
-            next_generation: AtomicU64::new(1),
-        })
-        .manage(DesktopSummaryStreamManager {
-            started: AtomicBool::new(false),
-            stop_requested: Arc::new(AtomicBool::new(false)),
-        })
-        .manage(DesktopShutdownManager {
-            requested: AtomicBool::new(false),
-        })
-        .manage(remote_session::RemoteSessionManager::new())
-        .manage(VoiceCaptureManager {
-            snapshot: Arc::new(Mutex::new(VoiceCaptureRuntimeSnapshot::default())),
-            session: Mutex::new(None),
-            next_generation: AtomicU64::new(1),
-        })
+        .manage(Arc::new(workspace_transport::WorkspaceManager::default()))
         .setup(move |app| {
             let main_window_config = app
                 .config()
@@ -2115,18 +2207,17 @@ pub fn run() {
                 .ok_or("main window configuration is missing")?;
             let mut window_builder =
                 tauri::WebviewWindowBuilder::from_config(app.handle(), &main_window_config)?;
-            if let Some(args) = remote_debug_browser_args.as_deref() {
-                window_builder = window_builder.additional_browser_args(args);
+            if let Some(args) = desktop_webview_browser_args(app.handle())? {
+                window_builder = window_builder.additional_browser_args(&args);
             }
             window_builder.build()?;
-            let app_handle = app.handle().clone();
-            start_control_pipe_server(Arc::new(TauriPtyTransport {
-                app: app_handle.clone(),
-            }));
-            schedule_desktop_summary_refresh_streams(app_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            webview_accelerators::startup_main_policy_ready,
+            webview_accelerators::startup_main_show,
+            remote_debug_gate::startup_secondary_creation_policy,
+            startup_secondary_native::startup_secondary_request,
             desktop_summary_snapshot,
             desktop_run_explain,
             desktop_events_json,
@@ -2139,31 +2230,42 @@ pub fn run() {
             desktop_control_pipe_enabled,
             desktop_update_check,
             desktop_update_download_installer,
-            desktop_update_launch_installer,
+            desktop_lifecycle_commands::desktop_update_launch_installer,
             ssh_connect_review::ssh_connect_review,
+            workspace_transport::workspace_session_open,
+            workspace_transport::workspace_request,
+            workspace_transport::workspace_discovery_get,
+            workspace_transport::workspace_host_status,
+            workspace_transport::workspace_session_close,
+            workspace_transport::workspace_force_exit,
+            workspace_input_guard::workspace_input_guard_register,
+            workspace_input_guard::workspace_input_guard_reply,
+            workspace_input_guard::workspace_input_guard_status,
             remote_session::remote_session_start,
             remote_session::remote_session_reattach,
             remote_session::remote_session_detach,
             remote_session::remote_session_snapshots,
             pty_json_rpc,
-            pty_spawn,
-            pty_write,
+            desktop_lifecycle_commands::pty_spawn,
+            desktop_lifecycle_commands::pty_write,
             pty_resize,
-            pty_capture,
+            desktop_lifecycle_commands::pty_capture,
             pty_respawn,
             pty_close
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
-            request_desktop_runtime_shutdown_for_app(app_handle);
+    #[cfg(windows)]
+    match run_windows_desktop_loop(app,|_,_|{}) {
+        DesktopLoopOutcome::Confirmed {code,..}=>std::process::exit(code),
+        DesktopLoopOutcome::UnexpectedReturn {runtime_code}=> {
+            eprintln!("winsmux-desktop: incomplete lifecycle return: runtime_code={runtime_code}");
+            panic!("Windows event loop returned without confirmed application completion");
         }
-    });
+    }
+    #[cfg(not(windows))]
+    app.run(|app_handle,event|workspace_transport::dispatch_desktop_event(app_handle,&event));
 }
 
 #[cfg(test)]

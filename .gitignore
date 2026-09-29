@@ -227,6 +227,9 @@ dist/
 build/
 out/
 output/
+# Short-path Cargo target used by local Windows builds.
+/t/debug/
+/t/release/
 *.tsbuildinfo
 
 # =========================

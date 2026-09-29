@@ -1,0 +1,1920 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "AgentLaunchParams": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LegacyAgentLaunchParams"
+        },
+        {
+          "$ref": "#/definitions/GuardedAgentLaunchParams"
+        }
+      ]
+    },
+    "ArtifactChooseParams": {
+      "additionalProperties": false,
+      "properties": {
+        "kept_artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "left_artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "right_artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        }
+      },
+      "required": [
+        "kept_artifact_id",
+        "left_artifact_id",
+        "project_id",
+        "right_artifact_id"
+      ],
+      "type": "object"
+    },
+    "ArtifactId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ArtifactReadParams": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "max_bytes": {
+          "$ref": "#/definitions/P"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "max_bytes"
+      ],
+      "type": "object"
+    },
+    "ArtifactRegisterParams": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "relative_path": {
+          "$ref": "#/definitions/RelativePath"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project_id",
+        "relative_path",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "Axis": {
+      "enum": [
+        "horizontal",
+        "vertical"
+      ],
+      "type": "string"
+    },
+    "CleanupRunGetParams": {
+      "additionalProperties": false,
+      "properties": {
+        "include_cleanup": {
+          "$ref": "#/definitions/True"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "include_cleanup",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "ConnectionDecideParams": {
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "deny"
+          }
+        }
+      },
+      "properties": {
+        "connection_id": {
+          "$ref": "#/definitions/ConnectionId"
+        },
+        "decision": {
+          "$ref": "#/definitions/Decision"
+        },
+        "project_ids": {
+          "$ref": "#/definitions/StringSet_ProjectId"
+        },
+        "scopes": {
+          "$ref": "#/definitions/StringSet_Scope"
+        }
+      },
+      "required": [
+        "connection_id",
+        "decision",
+        "project_ids",
+        "scopes"
+      ],
+      "then": {
+        "properties": {
+          "project_ids": {
+            "maxItems": 0
+          },
+          "scopes": {
+            "maxItems": 0
+          }
+        }
+      },
+      "type": "object"
+    },
+    "ConnectionId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ConnectionParams": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "$ref": "#/definitions/ConnectionId"
+        }
+      },
+      "required": [
+        "connection_id"
+      ],
+      "type": "object"
+    },
+    "ConnectionRequestParams": {
+      "additionalProperties": false,
+      "properties": {
+        "project_ids": {
+          "$ref": "#/definitions/StringSet_ProjectId"
+        },
+        "scopes": {
+          "$ref": "#/definitions/StringSet_Scope"
+        }
+      },
+      "required": [
+        "project_ids",
+        "scopes"
+      ],
+      "type": "object"
+    },
+    "Decision": {
+      "enum": [
+        "allow",
+        "deny"
+      ],
+      "type": "string"
+    },
+    "Empty": {
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "EventsWaitParams": {
+      "additionalProperties": false,
+      "properties": {
+        "after_event_seq": {
+          "$ref": "#/definitions/U"
+        },
+        "wait_ms": {
+          "$ref": "#/definitions/U"
+        }
+      },
+      "required": [
+        "after_event_seq",
+        "wait_ms"
+      ],
+      "type": "object"
+    },
+    "GuardedAgentLaunchParams": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_current_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "provider": {
+          "$ref": "#/definitions/Provider"
+        }
+      },
+      "required": [
+        "effort",
+        "expected_current_run_id",
+        "model",
+        "pane_id",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "GuardedPaneCloseParams": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_current_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        }
+      },
+      "required": [
+        "expected_current_run_id",
+        "pane_id"
+      ],
+      "type": "object"
+    },
+    "GuardedShellLaunchParams": {
+      "additionalProperties": false,
+      "properties": {
+        "expected_current_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "shell_profile_id": {
+          "$ref": "#/definitions/NonEmpty"
+        }
+      },
+      "required": [
+        "expected_current_run_id",
+        "pane_id",
+        "shell_profile_id"
+      ],
+      "type": "object"
+    },
+    "InputKey": {
+      "enum": [
+        "enter",
+        "interrupt",
+        "tab",
+        "escape"
+      ],
+      "type": "string"
+    },
+    "InputKeyParams": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "$ref": "#/definitions/InputKey"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "key",
+        "pane_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "InputWriteParams": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "pane_id",
+        "run_id",
+        "text"
+      ],
+      "type": "object"
+    },
+    "InstanceId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "LegacyAgentLaunchParams": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "provider": {
+          "$ref": "#/definitions/Provider"
+        }
+      },
+      "required": [
+        "effort",
+        "model",
+        "pane_id",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "LegacyRunGetParams": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "LegacyShellLaunchParams": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "shell_profile_id": {
+          "$ref": "#/definitions/NonEmpty"
+        }
+      },
+      "required": [
+        "pane_id",
+        "shell_profile_id"
+      ],
+      "type": "object"
+    },
+    "NonEmpty": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "OperationId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "OperationParams": {
+      "additionalProperties": false,
+      "properties": {
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        }
+      },
+      "required": [
+        "operation_id"
+      ],
+      "type": "object"
+    },
+    "OutputReadParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "max_bytes": {
+          "$ref": "#/definitions/P"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "cursor",
+        "max_bytes",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "P": {
+      "maximum": 9007199254740991.0,
+      "minimum": 1.0,
+      "type": "integer"
+    },
+    "PaneCloseParams": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PaneParams"
+        },
+        {
+          "$ref": "#/definitions/GuardedPaneCloseParams"
+        }
+      ]
+    },
+    "PaneCreateParams": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "shell_profile_id": {
+          "$ref": "#/definitions/NonEmpty"
+        }
+      },
+      "required": [
+        "project_id",
+        "shell_profile_id"
+      ],
+      "type": "object"
+    },
+    "PaneId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "PaneParams": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        }
+      },
+      "required": [
+        "pane_id"
+      ],
+      "type": "object"
+    },
+    "PaneResizeParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cols": {
+          "$ref": "#/definitions/P"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "rows": {
+          "$ref": "#/definitions/P"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "cols",
+        "pane_id",
+        "rows",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "PaneSelectParams": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PaneId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "pane_id"
+      ],
+      "type": "object"
+    },
+    "PaneSplitParams": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "$ref": "#/definitions/Axis"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        }
+      },
+      "required": [
+        "axis",
+        "pane_id"
+      ],
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ProjectOpenParams": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/definitions/NonEmpty"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "ProjectParams": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "ProjectSelectParams": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "Provider": {
+      "enum": [
+        "codex",
+        "claude"
+      ],
+      "type": "string"
+    },
+    "RelativePath": {
+      "minLength": 1,
+      "pattern": "(?:^(?![\\s\\S]*[\\\\:\\u0000-\\u001f\\u007f-\\u009f])(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Nn][Ii][Nn]\\$|[Cc][Oo][Nn][Oo][Uu][Tt]\\$|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])(?:\\.|/|$))[^/]*[^/ .](?:/(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Nn][Ii][Nn]\\$|[Cc][Oo][Nn][Oo][Uu][Tt]\\$|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])(?:\\.|/|$))[^/]*[^/ .])*$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "RunGetParams": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LegacyRunGetParams"
+        },
+        {
+          "$ref": "#/definitions/CleanupRunGetParams"
+        }
+      ]
+    },
+    "RunId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "RunParams": {
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "Scope": {
+      "enum": [
+        "metadata",
+        "read_output",
+        "control"
+      ],
+      "type": "string"
+    },
+    "ShellLaunchParams": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LegacyShellLaunchParams"
+        },
+        {
+          "$ref": "#/definitions/GuardedShellLaunchParams"
+        }
+      ]
+    },
+    "StringSet_ProjectId": {
+      "items": {
+        "$ref": "#/definitions/ProjectId"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "StringSet_Scope": {
+      "items": {
+        "$ref": "#/definitions/Scope"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "True": {
+      "const": true,
+      "type": "boolean"
+    },
+    "U": {
+      "maximum": 9007199254740991.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "Version": {
+      "maximum": 1.0,
+      "minimum": 1.0,
+      "type": "integer"
+    }
+  },
+  "description": "Structural projection of the Rust contract. Raw-byte validation additionally enforces duplicate keys, integer lexemes, byte/container-depth limits, cross-references, request correlation and runtime authorization/state. No runtime effects are implemented here.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InstanceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "enum": [
+            "capabilities.get"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InstanceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "enum": [
+            "connection.request"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ConnectionRequestParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "connection.list"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "connection.decide"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ConnectionDecideParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "connection.revoke"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ConnectionParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "host.stop"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "project.list"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "project.open"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectOpenParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "project.select"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectSelectParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "project.forget"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "pane.list"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "pane.create"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/PaneCreateParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "pane.split"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/PaneSplitParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "pane.select"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/PaneSelectParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "pane.close"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/PaneCloseParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "pane.resize"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/PaneResizeParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "shell.launch"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ShellLaunchParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "agent.launch"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/AgentLaunchParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "input.write"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/InputWriteParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "input.key"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/InputKeyParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "run.get"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/RunGetParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "run.interrupt"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/RunParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "operation.get"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/OperationParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "output.read"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/OutputReadParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "events.wait"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/EventsWaitParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "layout.save"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "layout.restore"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "artifact.register"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ArtifactRegisterParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "artifact.list"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "artifact.read"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ArtifactReadParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "artifact.diff"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ArtifactReadParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "artifact.choose"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ArtifactChooseParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "artifact.choice.list"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/ProjectParams"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "expected_topology_revision": {
+          "type": "null"
+        },
+        "instance_id": {
+          "$ref": "#/definitions/InstanceId"
+        },
+        "operation": {
+          "enum": [
+            "diagnostics.get"
+          ],
+          "type": "string"
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "params": {
+          "$ref": "#/definitions/Empty"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "operation",
+        "params",
+        "expected_topology_revision",
+        "instance_id",
+        "operation_id",
+        "schema_version"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "Request",
+  "type": "object"
+}

@@ -552,6 +552,29 @@ jobs:
             bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-${{ matrix.artifact_arch }} arm64
           fi
 
+  workspace-journey-native:
+    name: Workspace Journey Native Non-PTY Gate
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Assert isolated Windows workspace journey
+        shell: pwsh
+        env:
+          WINSMUX_EPHEMERAL_RUNNER: ${{ runner.environment }}
+        run: pwsh -NoProfile -File tests/workspace-journey/ci-run.ps1
+
+      - name: Upload available workspace journey diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: workspace-journey-native-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/workspace-journey/
+          if-no-files-found: ignore
+
   core-build-test:
     name: Core Build and Test
     runs-on: windows-latest
@@ -1739,6 +1762,7 @@ jobs:
       - desktop-nsis-lifecycle
       - task811-receipt-bind
       - helper-linux-negatives
+      - workspace-journey-native
     if: always()
     steps:
       - name: Require all checks
@@ -1756,7 +1780,8 @@ jobs:
             "${{ needs.desktop-build-test.result }}" \
             "${{ needs.desktop-nsis-lifecycle.result }}" \
             "${{ needs.task811-receipt-bind.result }}" \
-            "${{ needs.helper-linux-negatives.result }}"; do
+            "${{ needs.helper-linux-negatives.result }}" \
+            "${{ needs.workspace-journey-native.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
               exit 1

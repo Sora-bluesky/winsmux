@@ -5,6 +5,9 @@ description = "Desktop control plane for winsmux"
 authors = ["Sora-bluesky"]
 edition = "2021"
 
+[features]
+native-e2e-faults = ["winsmux-workspace/native-e2e-faults"]
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -14,10 +17,16 @@ edition = "2021"
 name = "winsmux_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[test]]
+name = "workspace_native_webview"
+harness = false
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+sha2 = "0.10"
 
 [dependencies]
+uuid = { version = "1", features = ["v4"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -30,3 +39,8 @@ portable-pty = "0.9.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Media", "Win32_Media_Audio", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading"] }
 winsmux-remote-helper = { path = "../../core/crates/winsmux-remote-helper" }
+winsmux-workspace = { path = "../../core/crates/winsmux-workspace" }
+
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
+windows = "0.61.3"

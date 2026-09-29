@@ -189,51 +189,9 @@ function Copy-BenchmarkTaskPack {
     }
 }
 
-function Stop-RepoWinsmuxDesktopTree {
-    $processes = @(Get-CimInstance Win32_Process)
-    $appPids = @(
-        $processes |
-            Where-Object {
-                $_.Name -eq 'winsmux-app.exe' -and
-                (Test-PathInsideRepo ([string]$_.ExecutablePath))
-            } |
-            ForEach-Object { [int]$_.ProcessId }
-    )
-
-    if ($appPids.Count -eq 0) {
-        return
-    }
-
-    $ids = [System.Collections.Generic.HashSet[int]]::new()
-    foreach ($pidValue in $appPids) {
-        [void]$ids.Add($pidValue)
-    }
-
-    $changed = $true
-    while ($changed) {
-        $changed = $false
-        foreach ($process in $processes) {
-            if ($ids.Contains([int]$process.ParentProcessId) -and -not $ids.Contains([int]$process.ProcessId)) {
-                [void]$ids.Add([int]$process.ProcessId)
-                $changed = $true
-            }
-        }
-    }
-
-    foreach ($id in (@($ids) | Sort-Object -Descending)) {
-        Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-    }
-
-    $deadline = (Get-Date).AddSeconds(15)
-    do {
-        $remaining = @($ids | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
-        if ($remaining.Count -eq 0) {
-            return
-        }
-        Start-Sleep -Milliseconds 250
-    } while ((Get-Date) -lt $deadline)
-
-    throw "Existing repo-built winsmux desktop process did not exit: $($remaining -join ', ')"
+function Assert-NoRepoWinsmuxDesktopApp {
+    $existing = @(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'winsmux-app.exe' -and (Test-PathInsideRepo ([string]$_.ExecutablePath)) })
+    if ($existing.Count -gt 0) { throw 'Existing repo desktop app is busy. Close it normally before building or launching.' }
 }
 
 function Assert-NoExternalWinsmuxDesktopApp {
@@ -284,9 +242,11 @@ function Invoke-WebViewDevToolsRuntimeExpression {
         [int]$TimeoutSeconds = 5
     )
 
-    $socket = [System.Net.WebSockets.ClientWebSocket]::new()
-    $cancellation = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
+    $socket = $null
+    $cancellation = $null
     try {
+        $socket = [System.Net.WebSockets.ClientWebSocket]::new()
+        $cancellation = [System.Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds($TimeoutSeconds))
         [void]$socket.ConnectAsync([Uri]$WebSocketDebuggerUrl, $cancellation.Token).GetAwaiter().GetResult()
         $request = @{
             id = 1
@@ -355,17 +315,28 @@ function Invoke-WebViewDevToolsRuntimeExpression {
             return $valueProperty.Value
         }
     } finally {
-        if ($socket.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+        try {
+            if ($null -ne $socket -and $null -ne $cancellation -and -not $cancellation.IsCancellationRequested -and
+                $socket.State -in @([System.Net.WebSockets.WebSocketState]::Open, [System.Net.WebSockets.WebSocketState]::CloseReceived)) {
+                try {
+                    [void]$socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', $cancellation.Token).GetAwaiter().GetResult()
+                } catch { }
+            }
+        } finally {
             try {
-                [void]$socket.CloseAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, 'done', [System.Threading.CancellationToken]::None).GetAwaiter().GetResult()
-            } catch {
+                if ($null -ne $socket -and $socket.State -notin @([System.Net.WebSockets.WebSocketState]::Closed, [System.Net.WebSockets.WebSocketState]::Aborted)) {
+                    try { $socket.Abort() } catch { }
+                }
+            } finally {
+                try {
+                    if ($null -ne $socket) { try { $socket.Dispose() } catch { } }
+                } finally {
+                    if ($null -ne $cancellation) { try { $cancellation.Dispose() } catch { } }
+                }
             }
         }
-        $socket.Dispose()
-        $cancellation.Dispose()
     }
 }
-
 function Convert-ToFlatObjectArray {
     param([AllowNull()]$Value)
 
@@ -412,88 +383,62 @@ function Get-ObjectPropertyValue {
     return $null
 }
 
-function Test-DesktopOperatorSurface {
+function Test-DesktopWorkspaceSurface {
     param([Parameter(Mandatory = $true)]$Page)
-
-    $webSocketDebuggerUrlProperty = $Page.PSObject.Properties['webSocketDebuggerUrl']
-    $webSocketDebuggerUrl = if ($null -ne $webSocketDebuggerUrlProperty) { [string]$webSocketDebuggerUrlProperty.Value } else { '' }
-    if ([string]::IsNullOrWhiteSpace($webSocketDebuggerUrl)) {
-        throw 'Production desktop page does not expose a DevTools websocket URL.'
-    }
-
+    $webSocketDebuggerUrl = [string](Get-ObjectPropertyValue $Page 'webSocketDebuggerUrl')
+    if ([string]::IsNullOrWhiteSpace($webSocketDebuggerUrl)) { throw 'Production page has no DevTools websocket.' }
     $expression = @'
-(() => {
-  const requiredSelectors = [
-    "#app-shell",
-    "#workspace",
-    "#operator-terminal-panel",
-    "#composer",
-    "#composer-input",
-    "#panes-container"
-  ];
-  const missingSelectors = requiredSelectors.filter((selector) => !document.querySelector(selector));
-  const title = document.title || "";
-  const href = location.href || "";
-  const bodyText = ((document.body && document.body.innerText) || "").slice(0, 4000);
-  const browserErrorPattern = /(ERR_CONNECTION_REFUSED|refused to connect|This site can't be reached|This site cannot be reached|localhost:1420|127\.0\.0\.1:1420)/i;
-  const hasBrowserError = browserErrorPattern.test(title) || browserErrorPattern.test(bodyText);
-  const tauriInvokeAvailable = Boolean(window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke);
-  return JSON.stringify({
-    ok: document.readyState !== "loading" && missingSelectors.length === 0 && !hasBrowserError && tauriInvokeAvailable,
-    readyState: document.readyState,
-    title,
-    href,
-    missingSelectors,
-    hasBrowserError,
-    browserErrorSnippet: hasBrowserError ? bodyText.slice(0, 300) : "",
-    tauriInvokeAvailable
-  });
+(async () => {
+  const closed = (v, keys) => v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === keys.length && keys.every(k => Object.prototype.hasOwnProperty.call(v,k));
+  const uuid = v => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
+  const uint = v => Number.isSafeInteger(v) && v >= 0;
+  const invoke = window.__TAURI__?.core?.invoke;
+  const label = window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
+  const root = document.getElementById('workspace-startup');
+  const view = root?.querySelector('.workspace-project-pane');
+  const fail = reason => JSON.stringify({ok:false,reason,href:location.href,label});
+  if (!invoke || label !== 'main' || location.search || window.top !== window || !/^https?:\/\/tauri\.localhost\/?$|^tauri:\/\/localhost\/?$/.test(location.href) || !root || !view || root.dataset.startupState !== 'mounted' || view.dataset.availability !== 'available') return fail('native main workspace not mounted');
+  let session; try { session = JSON.parse(root.dataset.session); } catch { return fail('session DTO missing'); }
+  if (!closed(session,['instance_id','schema_version']) || !uuid(session.instance_id) || session.schema_version !== 1 || session.instance_id !== view.dataset.instanceId || !uuid(root.dataset.generation) || view.dataset.generation !== root.dataset.generation) return fail('session DTO invalid');
+  const identity = JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId,root.dataset.initialProjectId,root.dataset.initialOperationId,root.dataset.initialOutcome]);
+  const stable = () => root.isConnected && root.dataset.startupState === 'mounted' && view.dataset.availability === 'available' && identity === JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId,root.dataset.initialProjectId,root.dataset.initialOperationId,root.dataset.initialOutcome]);
+  const revision = Number(view.dataset.topologyRevision);
+  if (!uint(revision)) return fail('view revision invalid');
+  const observations = [];
+  async function read(operation, params) {
+    if (!stable()) throw new Error('generation or revision changed');
+    const request = {schema_version:1,instance_id:session.instance_id,operation_id:crypto.randomUUID(),expected_topology_revision:null,operation,params};
+    const response = await invoke('workspace_request',{requestJson:JSON.stringify(request)});
+    if (!stable() || !closed(response,['schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error']) || response.schema_version !== 1 || response.instance_id !== session.instance_id || response.operation_id !== request.operation_id || response.accepted !== true || response.error !== null || !uint(response.event_seq) || response.topology_revision !== revision || !closed(response.result,['operation','data']) || response.result.operation !== operation) throw new Error('canonical read unconfirmed');
+    observations.push({request,response}); return response.result.data;
+  }
+  try {
+    const capabilities = await read('capabilities.get',{});
+    if (!closed(capabilities,['max_message_bytes','operations','providers','replay_capacity','schema_version','shell_profile_ids']) || capabilities.schema_version !== 1 || !Array.isArray(capabilities.operations) || !['capabilities.get','project.list','pane.list','run.get'].every(op=>capabilities.operations.includes(op))) return fail('capabilities invalid');
+    const projects = await read('project.list',{});
+    if (!closed(projects,['projects','selected_project_id']) || !Array.isArray(projects.projects) || !projects.projects.every(p=>closed(p,['project_id','display_name','path','root_state']) && uuid(p.project_id) && (p.display_name === null || typeof p.display_name === 'string') && (p.path === null || typeof p.path === 'string') && ['verified','unavailable','changed','unknown'].includes(p.root_state)) || projects.selected_project_id !== view.dataset.selectedProjectId) return fail('project list invalid');
+    if (root.dataset.initialOutcome !== 'completed' || !uuid(root.dataset.initialOperationId) || !uuid(root.dataset.initialProjectId) || root.dataset.initialProjectId !== projects.selected_project_id || root.dataset.initialPath !== __EXPECTED_PATH__) return fail('explicit folder not confirmed');
+    const project = projects.projects.find(p=>p.project_id === root.dataset.initialProjectId);
+    if (!project || project.root_state !== 'verified' || typeof project.path !== 'string' || !project.path) return fail('canonical root unverified');
+    const panes = await read('pane.list',{project_id:project.project_id});
+    if (!closed(panes,['panes','project_id','root','selected_pane_id']) || panes.project_id !== project.project_id || !Array.isArray(panes.panes) || !panes.panes.every(p=>closed(p,['pane_id','project_id','display_name','path','current_run_id','observation']) && uuid(p.pane_id) && p.project_id === project.project_id && (p.current_run_id === null || uuid(p.current_run_id))) || (panes.selected_pane_id !== null && !panes.panes.some(p=>p.pane_id===panes.selected_pane_id))) return fail('canonical panes invalid');
+    const runs=[];
+    for (const pane of panes.panes) {
+      if (pane.current_run_id === null) { if (pane.observation !== null) return fail('empty pane observation'); continue; }
+      const data = await read('run.get',{run_id:pane.current_run_id});
+      if (!closed(data,['run']) || !closed(data.run,['current','evidence','exit_code','observed_at','pane_id','process','run_id','work']) || data.run.run_id !== pane.current_run_id || data.run.pane_id !== pane.pane_id || data.run.current !== true || !['starting','running','exited','unknown'].includes(data.run.process) || !['unknown','running','awaiting_input','succeeded','failed'].includes(data.run.work) || !['unavailable','provider_event','process_exit'].includes(data.run.evidence)) return fail('exact run unconfirmed');
+      runs.push(data.run);
+    }
+    if (root.dataset.initialCreated === 'true' && (!panes.selected_pane_id || !panes.panes.some(p=>p.pane_id===panes.selected_pane_id && uuid(p.current_run_id)))) return fail('created project run unconfirmed');
+    if (!['true','false'].includes(root.dataset.initialCreated) || !stable()) return fail('initial result or generation changed');
+    return JSON.stringify({ok:true,label,href:location.href,session,generation:root.dataset.generation,topologyRevision:revision,initialOperationId:root.dataset.initialOperationId,created:root.dataset.initialCreated==='true',project,panes,runs,observations});
+  } catch(error) { return fail(typeof error === 'string' ? error : error?.message || 'read failed'); }
 })()
 '@
-
+    $expression = $expression.Replace('__EXPECTED_PATH__', (ConvertTo-Json -InputObject $resolvedProjectDir -Compress))
     $surfaceJson = [string](Invoke-WebViewDevToolsRuntimeExpression -WebSocketDebuggerUrl $webSocketDebuggerUrl -Expression $expression)
-    if ([string]::IsNullOrWhiteSpace($surfaceJson)) {
-        throw 'DevTools operator surface evaluation returned an empty result.'
-    }
-    try {
-        $surface = $surfaceJson | ConvertFrom-Json -Depth 20
-    } catch {
-        $surfaceSnippet = $surfaceJson.Substring(0, [Math]::Min(200, $surfaceJson.Length))
-        throw "DevTools operator surface evaluation did not return valid JSON. snippet=$surfaceSnippet error=$($_.Exception.Message)"
-    }
-    $surfaceOk = Get-ObjectPropertyValue -Object $surface -Name 'ok'
-    if ($null -eq $surfaceOk) {
-        $properties = @($surface.PSObject.Properties | ForEach-Object { $_.Name })
-        throw "DevTools operator surface evaluation did not return an ok property. properties=$($properties -join ',')"
-    }
-
-    if (-not [bool]$surfaceOk) {
-        $reasons = @()
-        $readyState = [string](Get-ObjectPropertyValue -Object $surface -Name 'readyState')
-        if ($readyState -eq 'loading') {
-            $reasons += 'readyState=loading'
-        }
-        $missingSelectors = @(Get-ObjectPropertyValue -Object $surface -Name 'missingSelectors')
-        if ($missingSelectors.Count -gt 0) {
-            $reasons += "missingSelectors=$($missingSelectors -join ',')"
-        }
-        $tauriInvokeAvailable = Get-ObjectPropertyValue -Object $surface -Name 'tauriInvokeAvailable'
-        if (-not [bool]$tauriInvokeAvailable) {
-            $reasons += 'tauriInvokeAvailable=false'
-        }
-        $hasBrowserError = Get-ObjectPropertyValue -Object $surface -Name 'hasBrowserError'
-        if ([bool]$hasBrowserError) {
-            $browserErrorSnippet = Get-ObjectPropertyValue -Object $surface -Name 'browserErrorSnippet'
-            $reasons += "browserError=$browserErrorSnippet"
-        }
-        if ($reasons.Count -eq 0) {
-            $reasons += 'unknown'
-        }
-        $href = Get-ObjectPropertyValue -Object $surface -Name 'href'
-        $title = Get-ObjectPropertyValue -Object $surface -Name 'title'
-        throw "winsmux desktop page is not a usable operator UI yet. $($reasons -join '; ') location=$href title=$title"
-    }
-
+    $surface = $surfaceJson | ConvertFrom-Json -Depth 100
+    if (-not [bool](Get-ObjectPropertyValue $surface 'ok')) { throw "Workspace observation unconfirmed: $(Get-ObjectPropertyValue $surface 'reason')" }
     return $surface
 }
 
@@ -529,11 +474,11 @@ function Assert-ProductionDesktopPage {
             if ($productionPages.Count -gt 0) {
                 foreach ($productionPage in $productionPages) {
                     try {
-                        $operatorSurface = Test-DesktopOperatorSurface -Page $productionPage
+                        $workspaceSurface = Test-DesktopWorkspaceSurface -Page $productionPage
                         return @{
                             mode = 'production'
                             urls = $urls
-                            operatorSurface = $operatorSurface
+                            workspaceSurface = $workspaceSurface
                         }
                     } catch {
                         $lastError = $_.Exception.Message
@@ -551,7 +496,7 @@ function Assert-ProductionDesktopPage {
         Start-Sleep -Milliseconds 500
     } while ((Get-Date) -lt $deadline)
 
-    throw "Could not verify the production desktop operator UI on port $Port. Last error: $lastError"
+    throw "Could not verify the production desktop workspace UI on port $Port. Last error: $lastError"
 }
 
 function Initialize-WinsmuxBenchmarkUser32 {
@@ -834,7 +779,8 @@ Copy-BenchmarkTaskPack -SourceDir $canonicalTaskDir -DestinationDir $projectTask
 $desktopBuildTools = $null
 if (-not $SkipBuild) {
     $desktopBuildTools = Assert-DesktopBuildToolsAvailable
-    Stop-RepoWinsmuxDesktopTree
+    Assert-NoExternalWinsmuxDesktopApp
+    Assert-NoRepoWinsmuxDesktopApp
     Invoke-CheckedCommand -FilePath 'cargo' -ArgumentList @('build', '--release', '-p', 'winsmux') -WorkingDirectory $RepoRoot
     Invoke-CheckedCommand -FilePath 'npm' -ArgumentList @('run', 'tauri', '--', 'build', '--no-bundle') -WorkingDirectory (Join-Path $RepoRoot 'winsmux-app')
 }
@@ -903,73 +849,71 @@ if (-not (Test-Path -LiteralPath $releaseApp -PathType Leaf)) {
     throw "Production desktop executable was not found: $releaseApp"
 }
 
-Stop-RepoWinsmuxDesktopTree
+Assert-NoRepoWinsmuxDesktopApp
 Assert-NoExternalWinsmuxDesktopApp
-
-$webviewUserData = Join-Path $RepoRoot '.winsmux\tmp\webview2-v03623-harness'
+if (Get-NetTCPConnection -LocalPort $DebugPort -State Listen -ErrorAction SilentlyContinue) { throw 'Desktop debug port is busy. Existing process is preserved.' }
+$webviewUserData = Join-Path $RepoRoot ('.winsmux\tmp\workspace-launch-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $webviewUserData -Force | Out-Null
-$env:WINSMUX_BIN = $releaseCli
-$env:WINSMUX_ORCHESTRA_PROJECT_DIR = $resolvedProjectDir
-$env:WINSMUX_ORCHESTRA_ATTACH_MODE = 'desktop-app'
-$env:WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH = '1'
-$env:WINSMUX_CONTROL_PIPE_TOKEN = "winsmux-desktop-launch-$([guid]::NewGuid().ToString('N'))"
-$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=$DebugPort --remote-allow-origins=*"
-Assert-WebViewArgumentsDoNotOpenConsole -Arguments $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS
-$env:WEBVIEW2_USER_DATA_FOLDER = $webviewUserData
-$env:NO_COLOR = '1'
-
+$startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = $releaseApp
+$startInfo.WorkingDirectory = $RepoRoot
+$startInfo.UseShellExecute = $false
+$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+$startInfo.ArgumentList.Add('--project-dir')
+$startInfo.ArgumentList.Add($resolvedProjectDir)
+foreach ($key in @($startInfo.Environment.Keys)) {
+    if ($key -like 'WINSMUX_ORCHESTRA_*' -or $key -eq 'WINSMUX_CONTROL_PIPE_TOKEN' -or $key -eq 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS') { [void]$startInfo.Environment.Remove($key) }
+}
+$startInfo.Environment['WINSMUX_BIN'] = $releaseCli
+$startInfo.Environment['WINSMUX_DESKTOP_TEST_PROFILE'] = 'public-smoke'
+$startInfo.Environment['WINSMUX_DESKTOP_REMOTE_DEBUG_PORT'] = [string]$DebugPort
+$startInfo.Environment['WEBVIEW2_USER_DATA_FOLDER'] = $webviewUserData
+$startInfo.Environment['NO_COLOR'] = '1'
 $launcherProcess = $null
-$app = $null
+$owned = $null
+$page = $null
+$cleanup = [pscustomobject]@{ requested = $false; processPreserved = $true; normalExitComplete = $false; reason = 'not needed' }
+function Get-ExactOwnedDesktop {
+    if ($null -eq $owned) { return $null }
+    $process = Get-Process -Id $owned.pid -ErrorAction SilentlyContinue
+    if ($null -eq $process) { return $null }
+    if ($process.StartTime.ToUniversalTime().Ticks -ne $owned.creationTicks -or -not $process.Path.Equals($owned.exe, [StringComparison]::OrdinalIgnoreCase)) { throw 'Owned PID identity changed. Process preserved.' }
+    return $process
+}
 try {
-    $launcherProcess = Start-Process -FilePath $releaseApp -ArgumentList @('--project-dir', $resolvedProjectDir) -WorkingDirectory $RepoRoot -PassThru
-    $app = Wait-RepoWinsmuxDesktopApp -ExpectedProcessId ([int]$launcherProcess.Id)
+    $launcherProcess = [System.Diagnostics.Process]::Start($startInfo)
+    $owned = [pscustomobject]@{ pid = $launcherProcess.Id; creationTicks = $launcherProcess.StartTime.ToUniversalTime().Ticks; exe = [IO.Path]::GetFullPath($releaseApp) }
     $page = Assert-ProductionDesktopPage -Port $DebugPort
-    $operatorControlPipe = Assert-DesktopOperatorControlPipe
-    $metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)
-    if (-not $NoMoveToExtendedDisplay) {
-        $metricsAfterMove = Move-WindowToVisibleWorkspace -ProcessId ([int]$app.ProcessId) -Width $VisibleWidth -Height $VisibleHeight
-    } else {
-        $metricsAfterMove = $metricsBeforeMove
-    }
-
-    if ([int]$metricsAfterMove.width -lt $VisibleWidth -or [int]$metricsAfterMove.height -lt $VisibleHeight) {
-        throw "winsmux desktop window is smaller than required after launch: $($metricsAfterMove.width)x$($metricsAfterMove.height)"
-    }
-    $visibleWindows = Assert-NoVisibleDesktopHelperWindows -RootProcessId ([int]$launcherProcess.Id) -MainProcessId ([int]$app.ProcessId) -MainWindowHandle ([Int64]$metricsAfterMove.handle)
+    $app = Get-ExactOwnedDesktop
+    if ($null -eq $app) { throw 'Owned app exited before verification.' }
+    $metricsBeforeMove = Get-WindowMetrics -ProcessId $owned.pid
+    $metricsAfterMove = if (-not $NoMoveToExtendedDisplay) { Move-WindowToVisibleWorkspace -ProcessId $owned.pid -Width $VisibleWidth -Height $VisibleHeight } else { $metricsBeforeMove }
+    if ([int]$metricsAfterMove.width -lt $VisibleWidth -or [int]$metricsAfterMove.height -lt $VisibleHeight) { throw 'Desktop window is smaller than required.' }
+    $visibleWindows = Assert-NoVisibleDesktopHelperWindows -RootProcessId $owned.pid -MainProcessId $owned.pid -MainWindowHandle ([Int64]$metricsAfterMove.handle)
+    $result = [pscustomobject]@{ ok = $true; launch = 'production-desktop'; launcherPid = $owned.pid; appPid = $owned.pid; owned = $owned; projectDir = $resolvedProjectDir; projectPackPath = Join-Path $projectTaskDir 'benchmark-pack.json'; releaseCli = $releaseCli; releaseApp = $releaseApp; desktopFreshness = $desktopFreshness; debugPort = $DebugPort; page = $page; workspaceSurface = $page.workspaceSurface; windowBeforeMove = $metricsBeforeMove; windowAfterMove = $metricsAfterMove; visibleWindows = $visibleWindows; preflight = $preflight }
 } catch {
     $reason = $_.Exception.Message
-    Stop-RepoWinsmuxDesktopTree
-    throw "winsmux desktop launch failed before a usable operator UI was verified. The repo-built desktop process tree was stopped to avoid leaving a frozen WebView window. Reason: $reason"
+    try {
+        $app = Get-ExactOwnedDesktop
+        if ($null -eq $app -and $null -ne $owned) { $cleanup.processPreserved = $false; $cleanup.normalExitComplete = $true }
+        elseif ($null -ne $app) {
+            # CloseMainWindow sends the normal window close once. Rust 870 remains the sole coordinator.
+            $cleanup.requested = $app.CloseMainWindow()
+            $cleanup.reason = if ($cleanup.requested) { 'Normal close requested once; refusal or uncertainty preserves the app.' } else { 'Normal close unavailable; app preserved.' }
+            $remaining = Get-ExactOwnedDesktop
+            $cleanup.processPreserved = $null -ne $remaining
+            $cleanup.normalExitComplete = $null -eq $remaining
+        }
+    } catch { $cleanup.reason = $_.Exception.Message }
+    $result = [pscustomobject]@{ ok = $false; launch = 'unconfirmed'; reason = $reason; owned = $owned; cleanup = $cleanup; projectDir = $resolvedProjectDir; releaseApp = $releaseApp; debugPort = $DebugPort; preflight = $preflight }
+} finally {
+    # A running app retains its private profile; no other process/profile is reclaimed.
+    if ($null -eq $owned -or ($null -eq (Get-Process -Id $owned.pid -ErrorAction SilentlyContinue))) {
+        $profileTarget = [IO.Path]::GetFullPath($webviewUserData)
+        $profileParent = [IO.Path]::GetFullPath((Join-Path $RepoRoot '.winsmux\tmp')) + [IO.Path]::DirectorySeparatorChar
+        if ($profileTarget.StartsWith($profileParent, [StringComparison]::OrdinalIgnoreCase)) { Remove-Item -LiteralPath $profileTarget -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
-
-$result = [pscustomobject]@{
-    ok = $true
-    launch = 'production-desktop'
-    launcherPid = [int]$launcherProcess.Id
-    appPid = [int]$app.ProcessId
-    projectDir = $resolvedProjectDir
-    projectPackPath = Join-Path $projectTaskDir 'benchmark-pack.json'
-    releaseCli = $releaseCli
-    releaseApp = $releaseApp
-    desktopFreshness = $desktopFreshness
-    debugPort = $DebugPort
-    page = $page
-    operatorControlPipe = $operatorControlPipe
-    windowBeforeMove = $metricsBeforeMove
-    windowAfterMove = $metricsAfterMove
-    visibleWindows = $visibleWindows
-    attachMode = $env:WINSMUX_ORCHESTRA_ATTACH_MODE
-    powershellAttach = 'disabled'
-    preflight = $preflight
-}
-if ($Json) {
-    $result | ConvertTo-Json -Depth 100
-} else {
-    Write-Output "winsmux Harness Bench desktop path is ready."
-    Write-Output "launch: production desktop"
-    Write-Output "app pid: $($result.appPid)"
-    Write-Output "version: $version"
-    Write-Output "pack: $($result.projectPackPath)"
-    Write-Output "window: $($metricsAfterMove.width)x$($metricsAfterMove.height)"
-    Write-Output "preflight: $($preflight.check_count) checks, $($preflight.failed_count) failures"
-}
+if ($Json) { $result | ConvertTo-Json -Depth 100 }
+else { Write-Output ('winsmux workspace launch: ' + $result.launch); Write-Output ('project: ' + $resolvedProjectDir); if (-not $result.ok) { Write-Output ('reason: ' + $result.reason) } }
+if (-not $result.ok) { exit 1 }

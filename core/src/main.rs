@@ -476,6 +476,21 @@ fn global_prefix_command_is(args: &[String], scan: GlobalPrefixScan, expected: &
         .is_some_and(|command| command == expected)
 }
 
+fn global_prefix_contains_target(args: &[String], scan: GlobalPrefixScan) -> bool {
+    let Some(command_index) = scan.command_index else {
+        return false;
+    };
+    let mut index = 1;
+    while index < command_index {
+        match args[index].as_str() {
+            "-t" => return true,
+            "-L" | "-S" | "-f" => index += 2,
+            _ => index += 1,
+        }
+    }
+    false
+}
+
 fn command_args_from_global_prefix(
     args: &[String],
     scan: GlobalPrefixScan,
@@ -502,8 +517,30 @@ mod tests {
     use super::{
         bare_session_headless_server_config, is_winsmux_core_bridge_command,
         command_args_from_global_prefix, resolve_attach_session_name_from_parts,
-        scan_global_prefix, winsmux_core_script_candidates, workspace_plan_skips_startup_cleanup,
+        global_prefix_contains_target, scan_global_prefix, winsmux_core_script_candidates,
+        workspace_plan_skips_startup_cleanup,
     };
+
+    #[test]
+    fn workspace_target_prefix_is_rejected_without_confusing_flag_values() {
+        let targeted = vec!["winsmux", "-L", "ops", "-t", "old", "workspace", "host"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(global_prefix_contains_target(
+            &targeted,
+            scan_global_prefix(&targeted)
+        ));
+
+        let target_as_value = vec!["winsmux", "-L", "-t", "workspace", "host"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(!global_prefix_contains_target(
+            &target_as_value,
+            scan_global_prefix(&target_as_value)
+        ));
+    }
 
     #[test]
     fn workers_command_is_forwarded_to_core_bridge() {
@@ -946,6 +983,11 @@ fn decode_cli_args() -> io::Result<Vec<String>> {
 fn run_main() -> io::Result<()> {
     let args = decode_cli_args()?;
 
+    #[cfg(windows)]
+    if args.len() == 2 && args[1] == "--winsmux-internal-git-reader" {
+        std::process::exit(winsmux_workspace::run_internal_git_reader());
+    }
+
     // Private, side-effect-free bridge used by the PowerShell settings writer.
     // Handle it before runtime cleanup so rendering cannot mutate session state.
     if args.get(1).map(String::as_str) == Some("project-settings-render") {
@@ -953,6 +995,26 @@ fn run_main() -> io::Result<()> {
     }
 
     let global_prefix = scan_global_prefix(&args);
+
+    // The workspace host owns a separate Windows runtime and authorization
+    // boundary. Dispatch it before legacy session cleanup and environment-based
+    // target resolution. A legacy -t selector is rejected rather than silently
+    // becoming a workspace target.
+    if global_prefix_command_is(&args, global_prefix, "workspace") {
+        let command_index = global_prefix
+            .command_index
+            .expect("workspace command has an index");
+        let workspace_arguments = if global_prefix_contains_target(&args, global_prefix) {
+            Vec::new()
+        } else {
+            args[command_index + 1..].to_vec()
+        };
+        let code = winsmux_workspace::run_cli(&workspace_arguments);
+        if code == 0 {
+            return Ok(());
+        }
+        std::process::exit(code);
+    }
 
     // Public workspace-plan is a read-only preview. It must not mutate session
     // state before dispatch, including while resolving runtime global options.
