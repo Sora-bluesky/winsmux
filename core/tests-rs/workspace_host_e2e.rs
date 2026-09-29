@@ -602,6 +602,9 @@ impl InteractiveResources {
                 false
             };
             if should_reap {
+                // TerminateProcess starts shutdown; wait on the owned process handle
+                // before releasing it, even when the PTY child's wait returns early.
+                let _ = unsafe { WaitForSingleObject(target, INFINITE) };
                 let _ = child.wait();
             }
         }

@@ -241,7 +241,7 @@ function Assert-PrivateSnapshotSecurity {
 }
 
 function Get-ItemProof {
-    param([string] $Path, [switch] $Directory)
+    param([string] $Path, [switch] $Directory, [switch] $SavedEmpty)
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     if ($item.PSIsContainer -ne [bool]$Directory -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         throw "Workspace object type changed: $Path expected_directory=$([bool]$Directory) actual_directory=$($item.PSIsContainer) attributes=$($item.Attributes)"
@@ -250,35 +250,54 @@ function Get-ItemProof {
     $acl = if ($Directory) { Assert-PrivateAcl $Path } else {
         Assert-PrivateSnapshotSecurity (Get-Acl -LiteralPath $Path -ErrorAction Stop)
     }
-    $proof = @{ identity = $identity; acl = $acl; bytes = $null; sha256 = $null }
+    $proof = @{ identity = $identity; acl = $acl; bytes = $null; sha256 = $null;
+        generation = $null; topology_revision = $null }
     if (-not $Directory) {
         $bytes = [IO.File]::ReadAllBytes($Path)
         $proof.bytes = $bytes.Length
         $proof.sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
         $value = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json -AsHashtable
         $keys = @('schema_version','generation','topology_revision','projects','panes','layouts','selected_project_id','selected_pane_id')
+        $validCounters = $value.generation -is [long] -and $value.topology_revision -is [long] -and
+            $value.generation -ge 0 -and $value.generation -le 9007199254740991 -and
+            $value.topology_revision -ge 0 -and $value.topology_revision -le 9007199254740991
         if ($value.Count -ne $keys.Count -or @($keys | Where-Object { -not $value.ContainsKey($_) }).Count -ne 0 -or
-            $value.schema_version -ne 1 -or $value.generation -ne 0 -or $value.topology_revision -ne 0 -or
+            $value.schema_version -isnot [long] -or $value.schema_version -ne 1 -or -not $validCounters -or
+            (-not $SavedEmpty -and ($value.generation -ne 0 -or $value.topology_revision -ne 0)) -or
+            $value.projects -isnot [array] -or $value.panes -isnot [array] -or $value.layouts -isnot [array] -or
             $value.projects.Count -ne 0 -or $value.panes.Count -ne 0 -or $value.layouts.Count -ne 0 -or
             $null -ne $value.selected_project_id -or $null -ne $value.selected_pane_id) {
             throw 'Store snapshot is not schema-1 logical empty'
         }
+        $proof.generation = $value.generation
+        $proof.topology_revision = $value.topology_revision
     }
     return $proof
 }
 
 function Assert-StoreInvariant {
-    param([string[]] $Paths, [hashtable] $Before)
+    param([string[]] $Paths, [hashtable] $Before, [switch] $SavedEmpty)
     if ($Paths.Count -ne 5) { throw 'Store proof inventory is incomplete' }
+    $afterProof = @{}
     for ($index = 0; $index -lt $Paths.Count; $index++) {
         $path = $Paths[$index]
         Assert-NormalPath $path
-        $after = Get-ItemProof -Path $path -Directory:($index -lt 3)
+        $after = Get-ItemProof -Path $path -Directory:($index -lt 3) -SavedEmpty:$SavedEmpty
+        $afterProof[$path] = $after
         if (($index -lt 3 -and $Before[$path].identity -cne $after.identity) -or
             ($index -lt 3 -and $Before[$path].acl -cne $after.acl) -or
-            $Before[$path].bytes -ne $after.bytes -or
-            $Before[$path].sha256 -cne $after.sha256) {
+            (-not $SavedEmpty -and ($Before[$path].bytes -ne $after.bytes -or
+                $Before[$path].sha256 -cne $after.sha256))) {
             throw 'Store parent identity, ACL, or snapshot bytes changed'
+        }
+    }
+    if ($SavedEmpty) {
+        $confirmed = $afterProof[$Paths[3]]
+        $backup = $afterProof[$Paths[4]]
+        if ($confirmed.generation -ne 0 -or $backup.generation -ne 0 -or
+            $confirmed.topology_revision -le $Before[$Paths[3]].topology_revision -or
+            $backup.topology_revision -ne $confirmed.topology_revision) {
+            throw 'Saved store counters do not match the owner stop snapshot'
         }
     }
 }
@@ -443,6 +462,33 @@ if ($SelfTest) {
         catch { $rejected = $_.Exception.Message -ceq 'Store parent identity, ACL, or snapshot bytes changed' }
         if (-not $rejected) { throw 'Different snapshot bytes accepted' }
         [IO.File]::WriteAllBytes($confirmedPath, $bytes)
+        Assert-StoreInvariant -Paths $proofPaths -Before $baseline
+
+        $savedConfirmed = [Text.Encoding]::UTF8.GetBytes('{"schema_version":1,"generation":0,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}')
+        $savedBackup = [Text.Encoding]::UTF8.GetBytes('{"schema_version":1,"generation":0,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}')
+        [IO.File]::WriteAllBytes($confirmedPath, $savedConfirmed)
+        [IO.File]::WriteAllBytes($backupPath, $savedBackup)
+        Assert-StoreInvariant -Paths $proofPaths -Before $baseline -SavedEmpty
+        $wrongBackup = [Text.Encoding]::UTF8.GetBytes('{"schema_version":1,"generation":0,"topology_revision":1,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}')
+        [IO.File]::WriteAllBytes($backupPath, $wrongBackup)
+        $rejected = $false
+        try { Assert-StoreInvariant -Paths $proofPaths -Before $baseline -SavedEmpty }
+        catch { $rejected = $_.Exception.Message -ceq 'Saved store counters do not match the owner stop snapshot' }
+        if (-not $rejected) { throw 'Stale backup revision accepted' }
+        [IO.File]::WriteAllBytes($backupPath, $savedBackup)
+        foreach ($invalid in @(
+            '{"schema_version":2,"generation":0,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}',
+            '{"schema_version":1,"generation":0.5,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}',
+            '{"schema_version":1,"generation":0,"topology_revision":2,"projects":[{}],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}'
+        )) {
+            [IO.File]::WriteAllText($confirmedPath, $invalid, [Text.UTF8Encoding]::new($false))
+            $rejected = $false
+            try { Assert-StoreInvariant -Paths $proofPaths -Before $baseline -SavedEmpty }
+            catch { $rejected = $_.Exception.Message -ceq 'Store snapshot is not schema-1 logical empty' }
+            if (-not $rejected) { throw 'Invalid saved store accepted' }
+        }
+        [IO.File]::WriteAllBytes($confirmedPath, $bytes)
+        [IO.File]::WriteAllBytes($backupPath, $bytes)
         Assert-StoreInvariant -Paths $proofPaths -Before $baseline
 
         $weakened = [IO.FileSystemAclExtensions]::GetAccessControl(
@@ -621,13 +667,13 @@ if ($results.Count -ne 1 -or $results[0].status -cne 'pass' -or $results[0].cand
     $results[0].native_test_sha256 -cne $hashes[$native]) {
     throw 'Non-PTY result absent or mismatched'
 }
-foreach ($label in @('host', 'mcp', 'native')) {
+foreach ($label in @('host', 'mcp', 'preopen', 'native')) {
     $base = "$receipt.runner-$label"
     $start = Get-Content -LiteralPath "$base.start.json" -Raw | ConvertFrom-Json -AsHashtable
     $exit = Get-Content -LiteralPath "$base.exit.json" -Raw | ConvertFrom-Json -AsHashtable
     $eof = Get-Content -LiteralPath "$base.eof.json" -Raw | ConvertFrom-Json -AsHashtable
     $expected = if ($label -eq 'host') { $hashes[$cli] } elseif ($label -eq 'mcp') { $hashes[$mcp] } else { $hashes[$native] }
-    $code = if ($label -eq 'native') { 0 } else { 2 }
+    $code = if ($label -eq 'native') { 0 } elseif ($label -eq 'preopen') { 101 } else { 2 }
     if ($start.stage -cne 'started' -or $exit.stage -cne 'exited' -or $eof.stage -cne 'streams_eof' -or
         $start.pid -ne $exit.pid -or $start.pid -ne $eof.pid -or
         $start.creation_filetime_utc -ne $exit.creation_filetime_utc -or
@@ -639,7 +685,7 @@ foreach ($label in @('host', 'mcp', 'native')) {
 foreach ($path in @($cli, $mcp, $debugMcp, $native)) {
     if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ine $hashes[$path]) { throw 'Executable changed after run' }
 }
-Assert-StoreInvariant -Paths $paths -Before $before
+Assert-StoreInvariant -Paths $paths -Before $before -SavedEmpty
 if ((& git -C $repo rev-parse 'HEAD^{tree}').Trim().ToLowerInvariant() -cne $tree) {
     throw 'Checkout tree changed during runner execution'
 }

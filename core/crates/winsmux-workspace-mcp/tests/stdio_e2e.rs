@@ -1601,7 +1601,7 @@ mod native {
         file.write_all(&serde_json::to_vec(&value).unwrap()).unwrap();file.flush().unwrap();
         std::process::exit(if result.is_ok(){0}else{1});
     }
-    fn cleanup_owner(owner:&mut CliOwner,project:Option<&str>,pane:Option<&str>,run:Option<&str>,recovery:&Handle,recovery_name:&str,serve_provider_wait:bool) {
+    fn cleanup_owner(owner:&mut CliOwner,project:Option<&str>,pane:Option<&str>,run:Option<&str>,recovery:&Handle,recovery_name:&str,serve_provider_wait:bool,persist_for_success:bool) {
         if owner.pseudoconsole==0 {return;}
         if unsafe {WaitForSingleObject(owner.process.0,0)}==WAIT_OBJECT_0 {owner.collect_terminated();return;}
         if let Some(run)=run {
@@ -1629,7 +1629,31 @@ mod native {
             owner.success("project.forget",json!({"project_id":project}));
         }
         let cleared=owner.success("project.list",json!({}));assert!(cleared["result"]["data"]["projects"].as_array().unwrap().is_empty());
+        let store=std::path::PathBuf::from(std::env::var_os("TASK875_STORE_ROOT").expect("native store root"));
+        if persist_for_success {
+            execution(json!({"stage":"pre-stop layout save requested","successful_journey":true}));
+            let saved=owner.success("layout.save",json!({}));
+            assert_eq!(saved["result"]["data"]["generation"],0);
+            assert!(saved["result"]["data"]["saved_topology_revision"].as_u64().is_some_and(|revision|revision>0));
+            execution(json!({"stage":"pre-stop layout save accepted","generation":0,"topology_revision":saved["result"]["data"]["saved_topology_revision"]}));
+        }
+        let pre_stop_confirmed=std::fs::read(store.join("confirmed.json")).unwrap();
+        logical_empty(&pre_stop_confirmed);
         owner.finish(recovery,recovery_name,serve_provider_wait);
+        let post_stop_backup=std::fs::read(store.join("backup.json")).unwrap();
+        assert_eq!(post_stop_backup,pre_stop_confirmed,"backup must contain exact pre-stop confirmed bytes");
+        let post_stop_confirmed=std::fs::read(store.join("confirmed.json")).unwrap();
+        logical_empty(&post_stop_confirmed);
+        if persist_for_success {
+            let previous:Value=serde_json::from_slice(&pre_stop_confirmed).unwrap();
+            let confirmed:Value=serde_json::from_slice(&post_stop_confirmed).unwrap();
+            let backup:Value=serde_json::from_slice(&post_stop_backup).unwrap();
+            assert_eq!(previous["generation"],0);assert_eq!(confirmed["generation"],0);assert_eq!(backup["generation"],0);
+            assert!(previous["topology_revision"].as_u64().is_some_and(|revision|revision>0));
+            assert_eq!(confirmed["topology_revision"],previous["topology_revision"]);
+            assert_eq!(backup["topology_revision"],previous["topology_revision"]);
+        }
+        println!("{}",json!({"class":"native store save","backup_matches_pre_stop_confirmed":true,"post_stop_confirmed_logical_empty":true,"positive_advanced_equal_revision":persist_for_success}));
     }
     fn recover_cleanup(owner:&mut CliOwner,pipe:&Handle,name:&str,project:Option<&str>,pane:Option<&str>,run:Option<&str>) {
         // The fixture keeps its ConPTY input/output ownership alive. Parent can send
@@ -1648,7 +1672,7 @@ mod native {
                 continue;
             }
             let clean=&command[..count as usize]==b"cleanup\n";
-            let success=clean&&std::panic::catch_unwind(std::panic::AssertUnwindSafe(||cleanup_owner(owner,project,pane,run,pipe,name,false))).is_ok();
+            let success=clean&&std::panic::catch_unwind(std::panic::AssertUnwindSafe(||cleanup_owner(owner,project,pane,run,pipe,name,false,false))).is_ok();
             let response=json!({"cleanup_complete":success,"owner":process_identity(owner.process.0),"project_id":project,"pane_id":pane,"run_id":run,"only_owned_public_cleanup":true});
             let mut bytes=serde_json::to_vec(&response).unwrap();bytes.push(b'\n');write_bytes(pipe,&bytes);assert_ne!(unsafe {FlushFileBuffers(pipe.raw())},0);
             unsafe {DisconnectNamedPipe(pipe.0);}
@@ -1773,6 +1797,10 @@ mod native {
         let mut owned_project=None;let mut owned_pane=None;let mut owned_run=None;let mut owned_processes=Vec::new();let mut owner_loss_adapter=None;
         let outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let initial=owner.success("project.list",json!({}));assert!(initial["result"]["data"]["projects"].as_array().unwrap().is_empty());
+        if isolated_scope=="preopen-failure" {
+            execution(json!({"stage":"pre-open failure injected","original_failure":"TASK875_PREOPEN_INJECTED","topology_mutated":false}));
+            panic!("TASK875_PREOPEN_INJECTED");
+        }
         let opened=owner.success("project.open",json!({"path":fixture.to_string_lossy()}));
         let project=opened["result"]["data"]["project_id"].as_str().unwrap().to_owned();
         owned_project=Some(project.clone());execution(json!({"stage":"owned project opened","project_id":project,"owner":process_identity(owner.process.0)}));
@@ -1839,7 +1867,7 @@ mod native {
         assert_eq!(unsafe {WaitForSingleObject(owner.canary.as_ref().unwrap().0,0)},WAIT_TIMEOUT);
         }));
         if outcome.is_err(){execution(json!({"stage":"native family failed","original_failure_preserved":true,"owner":process_identity(owner.process.0),"project_id":owned_project,"pane_id":owned_pane,"run_id":owned_run,"recovery_pipe":recovery_name}));}
-        let cleanup=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||cleanup_owner(&mut owner,owned_project.as_deref(),owned_pane.as_deref(),owned_run.as_deref(),&recovery,&recovery_name,true)));
+        let cleanup=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||cleanup_owner(&mut owner,owned_project.as_deref(),owned_pane.as_deref(),owned_run.as_deref(),&recovery,&recovery_name,true,outcome.is_ok())));
         let cleanup_error=cleanup.err();
         if cleanup_error.is_some(){execution(json!({"stage":"owned cleanup failed; fixture retains owner and recovery route","owner":process_identity(owner.process.0),"recovery_pipe":recovery_name}));recover_cleanup(&mut owner,&recovery,&recovery_name,owned_project.as_deref(),owned_pane.as_deref(),owned_run.as_deref());}
         let owner_loss_outcome=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

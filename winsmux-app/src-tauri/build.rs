@@ -17,4 +17,7 @@ fn main() {
     )
     .expect("write companion hash");
     tauri_build::build();
+    if triple.contains("-windows-") {
+        println!("cargo:rustc-link-arg-tests={}", out.join("resource.lib").display());
+    }
 }

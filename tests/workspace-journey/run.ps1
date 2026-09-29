@@ -233,9 +233,11 @@ function Assert-ProductReceipt {
     $adapters = @($rows | Where-Object { $_.stage -eq 'adapter spawned' -and $_.normal_binary -eq $true -and $_.binary_sha256 -eq $McpHash -and [IO.Path]::GetFullPath($_.binary) -ieq $McpPath })
     $control = @($rows | Where-Object { $_.stage -eq 'actual MCP owned control pane run created' })
     $shellExit = @($rows | Where-Object { $_.stage -eq 'actual MCP owned control shell actual exit' -and $_.public_run_interrupt -eq $true })
+    $preStopSave = @($rows | Where-Object { $_.stage -eq 'pre-stop layout save accepted' -and
+        $_.generation -eq 0 -and $_.topology_revision -gt 0 })
     $cleanup = @($rows | Where-Object { $_.stage -eq 'owned family cleanup terminated' -and $_.original_test_passed -eq $true -and $_.force_kill -eq $false -and $_.default_logical_preserved -eq $true -and $_.lease_released -eq $true })
     if ($start.Count -ne 1 -or $owner.Count -ne 1 -or $adapters.Count -lt 1 -or
-        $control.Count -ne 1 -or $shellExit.Count -ne 1 -or $cleanup.Count -ne 1) {
+        $control.Count -ne 1 -or $shellExit.Count -ne 1 -or $preStopSave.Count -ne 1 -or $cleanup.Count -ne 1) {
         throw 'Native identity, control, or cleanup receipt did not match'
     }
     return $rows.Count
@@ -411,10 +413,18 @@ $backupBefore = Assert-LogicalEmpty -Path $backup
 # create an owner, discovery, project, pane, or any persistent workspace state.
 $hostResult = Invoke-NonPty -Executable $cli -Arguments @('workspace', 'host') -ExpectedSha256 $CliSha256 -ReceiptBase "$ReceiptPath.runner-host"
 Assert-Result -Actual $hostResult -ExitCode 2 -Stderr 'winsmux workspace: interactive_required'
+if ((Assert-LogicalEmpty -Path $confirmed) -cne $confirmedBefore -or
+    (Assert-LogicalEmpty -Path $backup) -cne $backupBefore) {
+    throw 'Non-PTY host refusal changed the default store'
+}
 
 # The MCP process rejects malformed startup arguments before opening transport.
 $mcpResult = Invoke-NonPty -Executable $mcp -Arguments @() -ExpectedSha256 $McpSha256 -ReceiptBase "$ReceiptPath.runner-mcp"
 Assert-Result -Actual $mcpResult -ExitCode 2 -Stderr 'winsmux workspace mcp: usage'
+if ((Assert-LogicalEmpty -Path $confirmed) -cne $confirmedBefore -or
+    (Assert-LogicalEmpty -Path $backup) -cne $backupBefore) {
+    throw 'Invalid MCP startup changed the default store'
+}
 
 $nativeEnvironment = @{
     TEMP = [IO.Path]::GetFullPath($FixtureParentRoot)
@@ -428,6 +438,35 @@ $nativeEnvironment = @{
     TASK875_EXECUTION_RECEIPT = [IO.Path]::GetFullPath($ReceiptPath)
     TASK875_CHECKPOINT_SHA256 = $CandidateTree.ToLowerInvariant()
 }
+$preopenFixture = Assert-FreshDirectChild -ParentRoot $FixtureParentRoot -ChildPath (Join-Path $FixtureParentRoot 'workspace-journey-preopen')
+$preopenReceipt = "$ReceiptPath.preopen.jsonl"
+if (Test-Path -LiteralPath $preopenReceipt) { throw 'Pre-open receipt path is not fresh' }
+$preopenEnvironment = $nativeEnvironment.Clone()
+$preopenEnvironment.TASK875_NATIVE_CLASS = 'preopen-failure'
+$preopenEnvironment.TASK875_NATIVE_PROJECT_PATH = $preopenFixture
+$preopenEnvironment.TASK875_EXECUTION_RECEIPT = $preopenReceipt
+$preopenResult = Invoke-NonPty -Executable $nativeTest -Arguments @() -ExpectedSha256 $NativeTestSha256 -ReceiptBase "$ReceiptPath.runner-preopen" -Environment $preopenEnvironment
+if ($preopenResult.ExitCode -ne 101) { throw "Pre-open failure did not preserve the test failure: $($preopenResult.ExitCode)" }
+$preopenRows = @(Get-Content -LiteralPath $preopenReceipt -Encoding utf8 | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
+$injected = @($preopenRows | Where-Object { $_.stage -eq 'pre-open failure injected' -and
+    $_.original_failure -ceq 'TASK875_PREOPEN_INJECTED' -and $_.topology_mutated -eq $false })
+$preopenExit = @($preopenRows | Where-Object { $_.stage -eq 'owner terminated' -and
+    $_.exit_code -eq 0 -and $_.force_kill -eq $false })
+$preopenCleanup = @($preopenRows | Where-Object { $_.stage -eq 'owned family cleanup terminated' -and
+    $_.original_test_passed -eq $false -and $_.lease_released -eq $true -and
+    $_.root_identity_preserved -eq $true -and $_.force_kill -eq $false })
+$preopenSave = @($preopenRows | Where-Object { $_.stage -eq 'pre-stop layout save requested' })
+if ($injected.Count -ne 1 -or $preopenExit.Count -ne 1 -or $preopenCleanup.Count -ne 1 -or
+    $preopenSave.Count -ne 0 -or (Test-Path -LiteralPath $preopenFixture)) {
+    throw 'Pre-open failure did not complete owned recovery without a preparatory save'
+}
+foreach ($path in @($confirmed, $backup)) {
+    Assert-LogicalEmpty -Path $path | Out-Null
+    $snapshot = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable
+    if ($snapshot.generation -ne 0 -or $snapshot.topology_revision -ne 0) {
+        throw 'Pre-open cleanup advanced the empty store'
+    }
+}
 $nativeResult = Invoke-NonPty -Executable $nativeTest -Arguments @() -ExpectedSha256 $NativeTestSha256 -ReceiptBase "$ReceiptPath.runner-native" -Environment $nativeEnvironment
 if ($nativeResult.ExitCode -ne 0) { throw "Native product-control exited $($nativeResult.ExitCode); receipt retained for diagnosis" }
 if (-not [string]::IsNullOrWhiteSpace($nativeResult.Stderr)) { throw 'Native product-control wrote unexpected stderr' }
@@ -436,19 +475,22 @@ $nativeRows = @($nativeResult.Stdout -split "`r?`n" | Where-Object { $_ -match '
 $nativeStart = @($nativeRows | Where-Object { $_.class -eq 'actual CLI/ConPTY native start' -and $_.default_logical_empty -eq $true })
 $nativeEnd = @($nativeRows | Where-Object { $_.class -eq 'native family termination' -and
     $_.default_logical_preserved -eq $true -and $_.lease_released -eq $true -and $_.owner_normal_exit -eq $true })
+$nativeSave = @($nativeRows | Where-Object { $_.class -eq 'native store save' -and
+    $_.backup_matches_pre_stop_confirmed -eq $true -and $_.post_stop_confirmed_logical_empty -eq $true -and
+    $_.positive_advanced_equal_revision -eq $true })
 $controlOutput = @($nativeRows |
     Where-Object { $_.class -eq 'normal MCP actual operator-granted pane run resize input output and cleanup' -and
         $_.MCP_pane_close -eq $true -and $_.MCP_run_interrupt_actual_exit -eq $true -and
         $_.actual_console_cols -eq 100 -and $_.actual_console_rows -eq 28 -and
         $_.self_approval -eq $false -and $_.unrelated_canary_preserved -eq $true })
-if ($nativeStart.Count -ne 1 -or $controlOutput.Count -ne 1 -or $nativeEnd.Count -ne 1) {
-    throw 'Native stdout lacks start, control, or owned termination result'
+if ($nativeStart.Count -ne 1 -or $controlOutput.Count -ne 1 -or $nativeEnd.Count -ne 1 -or $nativeSave.Count -ne 1) {
+    throw 'Native stdout lacks start, control, store save, or owned termination result'
 }
 $receiptLines = Assert-ProductReceipt -Path $ReceiptPath -Tree $CandidateTree.ToLowerInvariant() -CliHash $CliSha256.ToLowerInvariant() -McpPath $nativeMcp -McpHash $NativeMcpSha256.ToLowerInvariant()
-if ((Assert-LogicalEmpty -Path $confirmed) -ne $confirmedBefore -or
-    (Assert-LogicalEmpty -Path $backup) -ne $backupBefore -or
-    (Test-Path -LiteralPath $fixture)) {
-    throw 'Native journey did not preserve the default store or remove its owned fixture'
+Assert-LogicalEmpty -Path $confirmed | Out-Null
+Assert-LogicalEmpty -Path $backup | Out-Null
+if (Test-Path -LiteralPath $fixture) {
+    throw 'Native journey did not remove its owned fixture'
 }
 
 @{
