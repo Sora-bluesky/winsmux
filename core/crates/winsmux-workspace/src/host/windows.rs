@@ -713,15 +713,16 @@ fn run_launcher_inner(
         // console session alive until the child has also been collected.
         drop(owner.take());
         let child_result = child.wait().map_err(map_io);
-        combine_launcher_results(
+        #[cfg(debug_assertions)]
+        let combined = combine_launcher_results(
             request_result,
             child_result,
-            #[cfg(debug_assertions)]
             startup_stage.get(),
-            #[cfg(debug_assertions)]
-            std::env::var("WINSMUX_TASK876_STARTUP_TRACE").as_deref()
-                == Ok("1"),
-        )
+            std::env::var("WINSMUX_TASK876_STARTUP_TRACE").as_deref() == Ok("1"),
+        );
+        #[cfg(not(debug_assertions))]
+        let combined = combine_launcher_results(request_result, child_result);
+        combined
     })();
     session.finish(result)
 }
