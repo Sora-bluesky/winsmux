@@ -87,6 +87,39 @@ fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
             .any(|window| window == needle)
 }
 
+fn without_csi_sequences(bytes: &[u8]) -> Vec<u8> {
+    let mut visible = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'[') {
+            let mut final_byte = index + 2;
+            while final_byte < bytes.len() && (0x20..=0x3f).contains(&bytes[final_byte]) {
+                final_byte += 1;
+            }
+            if final_byte < bytes.len() && (0x40..=0x7e).contains(&bytes[final_byte]) {
+                index = final_byte + 1;
+                continue;
+            }
+        }
+        visible.push(bytes[index]);
+        index += 1;
+    }
+    visible
+}
+
+#[test]
+fn task876_stage_marker_survives_conpty_control_sequences() {
+    let captured = b"TASK876_CHILD_STARTUP stage=\x1b[?9001l\x1b[?1004lcapability";
+    assert_eq!(
+        without_csi_sequences(captured),
+        b"TASK876_CHILD_STARTUP stage=capability"
+    );
+    assert_ne!(
+        without_csi_sequences(b"TASK876_CHILD_STARTUP stage=capability-extra"),
+        b"TASK876_CHILD_STARTUP stage=capability"
+    );
+}
+
 struct OwnedTestHandle(HANDLE);
 
 impl OwnedTestHandle {
@@ -2933,8 +2966,9 @@ fn host_startup_fails_closed_before_discovery_when_security_primitives_fail() {
             "{injection}: {}",
             String::from_utf8_lossy(&exit.output)
         );
+        let visible_output = without_csi_sequences(&exit.output);
         assert!(
-            String::from_utf8_lossy(&exit.output)
+            String::from_utf8_lossy(&visible_output)
                 .contains(&format!("TASK876_CHILD_STARTUP stage={stage}")),
             "{injection}: {}",
             String::from_utf8_lossy(&exit.output)

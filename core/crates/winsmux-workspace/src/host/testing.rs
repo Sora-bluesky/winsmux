@@ -35,8 +35,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use windows_sys::Win32::Foundation::{
     CompareObjectHandles, GetHandleInformation, GetLastError, SetHandleInformation,
-    ERROR_ACCESS_DENIED, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_ABANDONED,
-    WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_ACCESS_DENIED, ERROR_INVALID_HANDLE, HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Security::{
     CreateRestrictedToken, ImpersonateAnonymousToken, ImpersonateLoggedOnUser, LogonUserW,
@@ -136,6 +136,143 @@ pub(crate) struct InheritanceProbe {
     child: Option<ChildProcess>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SentinelObservation {
+    Absent,
+    Present,
+}
+
+fn classify_sentinel_observation(
+    result: Result<(), u32>,
+) -> Result<SentinelObservation, HostError> {
+    if result.is_ok() {
+        Ok(SentinelObservation::Present)
+    } else if result == Err(ERROR_INVALID_HANDLE) {
+        Ok(SentinelObservation::Absent)
+    } else {
+        Err(HostError::Startup)
+    }
+}
+
+fn observe_sentinel_handle(handle: HANDLE) -> Result<SentinelObservation, HostError> {
+    let mut flags = 0u32;
+    if unsafe { GetHandleInformation(handle, &mut flags) } != 0 {
+        return Ok(SentinelObservation::Present);
+    }
+    let error = unsafe { GetLastError() };
+    classify_sentinel_observation(Err(error))
+}
+
+fn verify_sentinel_not_inherited<Opened, Observe, Open, Same>(
+    observe: Observe,
+    open: Open,
+    same_object: Same,
+) -> Result<(), HostError>
+where
+    Observe: FnOnce() -> Result<SentinelObservation, HostError>,
+    Open: FnOnce() -> Result<Opened, HostError>,
+    Same: FnOnce(&Opened) -> bool,
+{
+    // Observe before opening by name: OpenEventW may reuse an absent handle's value.
+    let observation = observe()?;
+    let opened = open()?;
+    if observation == SentinelObservation::Present && same_object(&opened) {
+        return Err(HostError::Startup);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod inheritance_probe_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn sentinel_observation_distinguishes_absence_from_failure() {
+        assert!(matches!(
+            classify_sentinel_observation(Ok(())),
+            Ok(SentinelObservation::Present)
+        ));
+        assert!(matches!(
+            classify_sentinel_observation(Err(ERROR_INVALID_HANDLE)),
+            Ok(SentinelObservation::Absent)
+        ));
+        assert!(classify_sentinel_observation(Err(ERROR_ACCESS_DENIED)).is_err());
+        assert!(classify_sentinel_observation(Err(0)).is_err());
+    }
+
+    #[test]
+    fn sentinel_check_observes_before_open_and_handles_numeric_reuse() {
+        for (observation, opened_value, reject, compare) in [
+            (SentinelObservation::Absent, 0x100usize, false, false),
+            (SentinelObservation::Present, 0x100usize, true, true),
+            (SentinelObservation::Present, 0x200usize, false, true),
+        ] {
+            let calls = RefCell::new(Vec::new());
+            let result = verify_sentinel_not_inherited(
+                || {
+                    calls.borrow_mut().push("observe");
+                    Ok(observation)
+                },
+                || {
+                    calls.borrow_mut().push("open");
+                    Ok(opened_value)
+                },
+                |opened| {
+                    calls.borrow_mut().push("compare");
+                    *opened == 0x100
+                },
+            );
+            assert_eq!(result.is_err(), reject);
+            let expected = if compare {
+                vec!["observe", "open", "compare"]
+            } else {
+                vec!["observe", "open"]
+            };
+            assert_eq!(*calls.borrow(), expected);
+        }
+    }
+
+    #[test]
+    fn sentinel_check_fails_closed_when_observation_or_name_open_fails() {
+        let calls = RefCell::new(Vec::new());
+        let observation_failed = verify_sentinel_not_inherited(
+            || {
+                calls.borrow_mut().push("observe");
+                Err(HostError::Startup)
+            },
+            || {
+                calls.borrow_mut().push("open");
+                Ok(0x100usize)
+            },
+            |_| {
+                calls.borrow_mut().push("compare");
+                true
+            },
+        );
+        assert!(observation_failed.is_err());
+        assert_eq!(*calls.borrow(), vec!["observe"]);
+
+        calls.borrow_mut().clear();
+        let name_open_failed = verify_sentinel_not_inherited(
+            || {
+                calls.borrow_mut().push("observe");
+                Ok(SentinelObservation::Absent)
+            },
+            || {
+                calls.borrow_mut().push("open");
+                Err::<usize, _>(HostError::Startup)
+            },
+            |_| {
+                calls.borrow_mut().push("compare");
+                true
+            },
+        );
+        assert!(name_open_failed.is_err());
+        assert_eq!(*calls.borrow(), vec!["observe", "open"]);
+    }
+}
+
 impl InheritanceProbe {
     pub(crate) fn start(owner: HANDLE) -> Result<Option<Self>, HostError> {
         if std::env::var(HANDLE_PROBE_REQUEST).as_deref() != Ok("1") {
@@ -149,17 +286,20 @@ impl InheritanceProbe {
             .parse::<u32>()
             .map_err(|_| HostError::Startup)?;
 
-        let sentinel_by_name = unsafe {
-            OwnedHandle::from_raw(OpenEventW(
-                EVENT_MODIFY_STATE,
-                0,
-                wide(&sentinel_name).as_ptr(),
-            ))
-        }
-        .map_err(|_| HostError::Startup)?;
-        if unsafe { CompareObjectHandles(sentinel_raw, sentinel_by_name.raw()) } != 0 {
-            return Err(HostError::Startup);
-        }
+        verify_sentinel_not_inherited(
+            || observe_sentinel_handle(sentinel_raw),
+            || {
+                unsafe {
+                    OwnedHandle::from_raw(OpenEventW(
+                        EVENT_MODIFY_STATE,
+                        0,
+                        wide(&sentinel_name).as_ptr(),
+                    ))
+                }
+                .map_err(|_| HostError::Startup)
+            },
+            |opened| unsafe { CompareObjectHandles(sentinel_raw, opened.raw()) } != 0,
+        )?;
         let mut owner_flags = 0u32;
         if unsafe { GetHandleInformation(owner, &mut owner_flags) } == 0
             || owner_flags & HANDLE_FLAG_INHERIT != 0
