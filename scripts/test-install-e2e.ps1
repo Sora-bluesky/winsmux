@@ -7,6 +7,7 @@ param(
     [string]$Version = '',
     [string]$ScratchRoot = '',
     [string]$SourceCommit = '',
+    [string]$CandidateDirectory = '',
     [switch]$AllowRedirectedLocal,
     [string]$RedirectNonce = ''
 )
@@ -110,27 +111,12 @@ $npmCache = Join-Path $scratch 'npm-cache'
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
 }
 
-$env:HOME = $fixtureHome
-$env:USERPROFILE = $fixtureHome
-$env:HOMEDRIVE = [System.IO.Path]::GetPathRoot($fixtureHome).TrimEnd('\')
-$env:HOMEPATH = $fixtureHome.Substring($env:HOMEDRIVE.Length)
 $env:TEMP = $temp
 $env:TMP = $temp
-$env:LOCALAPPDATA = $localAppData
-$env:APPDATA = $appData
 $env:npm_config_prefix = $npmPrefix
 $env:npm_config_cache = $npmCache
 $env:npm_config_userconfig = Join-Path $scratch 'npmrc'
-$env:WINSMUX_RELEASE_TAG = "v$Version"
-$env:WINSMUX_INSTALL_PROFILE = 'full'
-if ($isGitHubRunner) {
-    $env:WINSMUX_INSTALL_E2E = 'true'
-    $env:WINSMUX_INSTALL_SOURCE_REF = $SourceCommit
-} else {
-    $env:WINSMUX_INSTALL_E2E = 'redirected'
-    $env:WINSMUX_INSTALL_STATE_ROOT = Join-Path $fixtureHome '.winsmux-install-state'
-    $env:WINSMUX_INSTALL_SOURCE_REF = $SourceCommit
-}
+$repositoryPreparationOpen = $true
 
 function Invoke-CapturedProcess {
     param(
@@ -140,6 +126,7 @@ function Invoke-CapturedProcess {
         [ValidateRange(1, 1800)][int]$TimeoutSeconds = 900,
         [switch]$IncludeGitHubAccess,
         [switch]$IncludeTargetInstallerBootstrapMarker,
+        [switch]$RepositoryPreparation,
         [switch]$OmitReleaseTagSelection
     )
 
@@ -161,6 +148,10 @@ function Invoke-CapturedProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
+    if ($RepositoryPreparation -and (-not $repositoryPreparationOpen -or $FilePath -notin @($node, $npm))) {
+        throw 'Repository preparation is limited to Node/npm before installer HOME isolation.'
+    }
+    if (-not $RepositoryPreparation) {
     $startInfo.Environment.Clear()
     foreach ($name in @(
         'SystemRoot', 'WINDIR', 'ComSpec', 'PATH', 'PATHEXT', 'PSModulePath',
@@ -176,6 +167,7 @@ function Invoke-CapturedProcess {
         }
         $value = [Environment]::GetEnvironmentVariable($name)
         if ($null -ne $value) { $startInfo.Environment[$name] = $value }
+    }
     }
     if ($IncludeGitHubAccess -and $isGitHubRunner) {
         $gitHubAccess = [Environment]::GetEnvironmentVariable('WINSMUX_INSTALL_E2E_GITHUB_ACCESS')
@@ -215,6 +207,82 @@ $pwsh = (Get-Command pwsh -ErrorAction Stop | Select-Object -First 1).Source
 $node = (Get-Command node -ErrorAction Stop | Select-Object -First 1).Source
 $npm = (Get-Command npm.cmd -ErrorAction Stop | Select-Object -First 1).Source
 $installerPath = Join-Path $repoRoot 'install.ps1'
+$candidateFixture = -not [string]::IsNullOrWhiteSpace($CandidateDirectory)
+$fixtureProof = $null
+if ($candidateFixture) {
+    if ($Route -eq 'DefectDetection' -or -not [string]::IsNullOrWhiteSpace($env:WINSMUX_INSTALL_E2E_RELEASE_TAG)) {
+        throw 'Private candidate fixture must not use a public release override or the historical defect route.'
+    }
+    $fixtureResult = Invoke-CapturedProcess -FilePath $node -RepositoryPreparation -Arguments @(
+        (Join-Path $repoRoot 'scripts/prepare-install-e2e-fixture.mjs'),
+        [IO.Path]::GetFullPath($CandidateDirectory), $SourceCommit, $Version, (Join-Path $scratch 'fixture')
+    )
+    if ($fixtureResult.ExitCode -ne 0) { throw "Candidate transport preparation failed:`n$($fixtureResult.Combined)" }
+    $fixtureProof = $fixtureResult.StdOut | ConvertFrom-Json -Depth 20
+    if ($fixtureProof.schema -cne 'install-e2e-fixture/v1' -or -not $fixtureProof.product_body_unchanged -or
+        $fixtureProof.public_release_acquisition_proven -or $fixtureProof.source_commit -cne $SourceCommit) {
+        throw 'Invalid private candidate transport receipt.'
+    }
+    $installerPath = $fixtureProof.installer
+}
+
+# Cargo resolves the complete locked graph in the ordinary repository context.
+# No Rust home or compiler settings are passed to the isolated installer child.
+$tarball = $null
+if ($Route -eq 'Npm') {
+    $stage = Join-Path $scratch 'stage'
+    $stageResult = Invoke-CapturedProcess -FilePath $node -RepositoryPreparation -Arguments @(
+        (Join-Path $repoRoot 'scripts/stage-npm-release.mjs'), '--version', $Version, '--out', $stage
+    )
+    if ($stageResult.ExitCode -ne 0) { throw "npm stage failed:`n$($stageResult.Combined)" }
+    $pristine = Join-Path $scratch 'pristine-package'
+    [void][IO.Directory]::CreateDirectory($pristine)
+    $packResult = Invoke-CapturedProcess -FilePath $npm -RepositoryPreparation -Arguments @('pack', '--json', '--pack-destination', $pristine) -WorkingDirectory $stage
+    if ($packResult.ExitCode -ne 0) { throw "npm pack failed:`n$($packResult.Combined)" }
+    $pack = $packResult.StdOut | ConvertFrom-Json -Depth 10
+    $tarball = Join-Path $pristine $pack[0].filename
+    $packageEvidence = [ordered]@{
+        pristine_tarball_sha256 = (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLowerInvariant()
+        pristine_installer_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage 'install.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+        index_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage 'index.mjs') -Algorithm SHA256).Hash.ToLowerInvariant()
+        metadata_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage 'package.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+        transport_projected = $candidateFixture
+        public_release_acquisition_proven = $false
+    }
+    if ($candidateFixture) {
+        if ($packageEvidence.pristine_installer_sha256 -cne $fixtureProof.original_installer_sha256) { throw 'Pristine npm installer differs from the candidate Git source.' }
+        Copy-Item -LiteralPath $installerPath -Destination (Join-Path $stage 'install.ps1') -Force
+        $fixturePack = Join-Path $scratch 'fixture-package'
+        [void][IO.Directory]::CreateDirectory($fixturePack)
+        $projectedPack = Invoke-CapturedProcess -FilePath $npm -RepositoryPreparation -Arguments @('pack', '--json', '--pack-destination', $fixturePack) -WorkingDirectory $stage
+        if ($projectedPack.ExitCode -ne 0) { throw "Fixture npm pack failed:`n$($projectedPack.Combined)" }
+        $projected = $projectedPack.StdOut | ConvertFrom-Json -Depth 10
+        $tarball = Join-Path $fixturePack $projected[0].filename
+        $packageEvidence.fixture_tarball_sha256 = (Get-FileHash -LiteralPath $tarball -Algorithm SHA256).Hash.ToLowerInvariant()
+        $packageEvidence.fixture_installer_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage 'install.ps1') -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($packageEvidence.fixture_installer_sha256 -cne $fixtureProof.fixture_installer_sha256 -or
+            $packageEvidence.index_sha256 -cne (Get-FileHash -LiteralPath (Join-Path $stage 'index.mjs') -Algorithm SHA256).Hash.ToLowerInvariant() -or
+            $packageEvidence.metadata_sha256 -cne (Get-FileHash -LiteralPath (Join-Path $stage 'package.json') -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Fixture npm projection changed its index, metadata, or declared installer.' }
+    }
+    $packageEvidence | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $scratch 'npm-package-evidence.json') -Encoding utf8NoBOM
+}
+$repositoryPreparationOpen = $false
+$env:HOME = $fixtureHome
+$env:USERPROFILE = $fixtureHome
+$env:HOMEDRIVE = [System.IO.Path]::GetPathRoot($fixtureHome).TrimEnd('\')
+$env:HOMEPATH = $fixtureHome.Substring($env:HOMEDRIVE.Length)
+$env:LOCALAPPDATA = $localAppData
+$env:APPDATA = $appData
+$env:WINSMUX_RELEASE_TAG = "v$Version"
+$env:WINSMUX_INSTALL_PROFILE = 'full'
+if ($isGitHubRunner) {
+    $env:WINSMUX_INSTALL_E2E = 'true'
+    $env:WINSMUX_INSTALL_SOURCE_REF = $SourceCommit
+} else {
+    $env:WINSMUX_INSTALL_E2E = 'redirected'
+    $env:WINSMUX_INSTALL_STATE_ROOT = Join-Path $fixtureHome '.winsmux-install-state'
+    $env:WINSMUX_INSTALL_SOURCE_REF = $SourceCommit
+}
 
 function Invoke-IrmInstaller {
     param(
@@ -328,7 +396,7 @@ if ($Route -eq 'DefectDetection') {
 
 $taglessInstallVerified = $false
 if ($Route -eq 'Direct' -and $isGitHubRunner) {
-    $taglessResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'tagless-direct-server') -IncludeGitHubAccess -OmitReleaseTagSelection
+    $taglessResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'tagless-direct-server') -IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture) -OmitReleaseTagSelection
     if ($taglessResult.ExitCode -ne 0 -or $taglessResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
         throw "Tagless direct install did not stay on the fixed main installer:`n$($taglessResult.Combined)"
     }
@@ -343,21 +411,13 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
 $installResult = $null
 if ($Route -eq 'Npm') {
     $stage = Join-Path $scratch 'stage'
-    $stageResult = Invoke-CapturedProcess -FilePath $node -Arguments @(
-        (Join-Path $repoRoot 'scripts\stage-npm-release.mjs'), '--version', $Version, '--out', $stage
-    )
-    if ($stageResult.ExitCode -ne 0) { throw "npm stage failed:`n$($stageResult.Combined)" }
-    $packResult = Invoke-CapturedProcess -FilePath $npm -Arguments @('pack', '--json') -WorkingDirectory $stage
-    if ($packResult.ExitCode -ne 0) { throw "npm pack failed:`n$($packResult.Combined)" }
-    $pack = $packResult.StdOut | ConvertFrom-Json -Depth 10
-    $tarball = Join-Path $stage $pack[0].filename
     $npmInstall = Invoke-CapturedProcess -FilePath $npm -Arguments @('install', '--global', '--prefix', $npmPrefix, $tarball)
     if ($npmInstall.ExitCode -ne 0) { throw "npm global install failed:`n$($npmInstall.Combined)" }
     $npmShim = Join-Path $npmPrefix 'winsmux.cmd'
     if (-not (Test-Path -LiteralPath $npmShim -PathType Leaf)) { throw "npm shim missing: $npmShim" }
-    $installResult = Invoke-CapturedProcess -FilePath $npmShim -Arguments @('install', '--profile', 'full') -IncludeGitHubAccess:$isGitHubRunner
+    $installResult = Invoke-CapturedProcess -FilePath $npmShim -Arguments @('install', '--profile', 'full') -IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture)
 } else {
-    $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server') -IncludeGitHubAccess:$isGitHubRunner
+    $installResult = Invoke-IrmInstaller -SourceInstaller $installerPath -ServerDirectory (Join-Path $scratch 'direct-server') -IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture)
 }
 if ($installResult.ExitCode -ne 0) { throw "$Route full install failed:`n$($installResult.Combined)" }
 if ($installResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
@@ -490,7 +550,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
         $lockedUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
             '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
             'update', '-ReleaseTag', $expectedReleaseTag, '-InstallProfile', 'full'
-        ) -IncludeGitHubAccess:$isGitHubRunner
+        ) -IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture)
         if ($lockedUpdate.ExitCode -ne 0) {
             throw "update could not replace a running native executable:`n$($lockedUpdate.Combined)"
         }
@@ -514,7 +574,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
     $cleanupUpdate = Invoke-CapturedProcess -FilePath $pwsh -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $installedInstaller,
         'update', '-ReleaseTag', $expectedReleaseTag, '-InstallProfile', 'full'
-    ) -IncludeGitHubAccess:$isGitHubRunner
+    ) -IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture)
     if ($cleanupUpdate.ExitCode -ne 0) {
         throw "follow-up update could not clean rotation residue:`n$($cleanupUpdate.Combined)"
     }
@@ -555,6 +615,8 @@ if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace
 [ordered]@{
     schema_version = 1
     route = $Route
+    private_candidate_transport = $candidateFixture
+    public_release_acquisition_proven = $false
     package_version = $Version
     native_asset_version = $expectedNativeVersion
     install_exit_code = $installResult.ExitCode

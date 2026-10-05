@@ -164,10 +164,10 @@ sourcePackage.winsmuxReleaseTag = release.releaseTag;
 delete sourcePackage.private;
 files.set("package.json", Buffer.from(`${JSON.stringify(sourcePackage, null, 2)}\n`));
 files.set("LICENSE", fs.readFileSync(path.join(repoRoot, "LICENSE")));
-const installer = fs.readFileSync(path.join(repoRoot, "install.ps1"), "utf8");
-const assignment = /^\s*\$VERSION\s*=\s*"[^"]+"\s*$/gmu;
-if ([...installer.matchAll(assignment)].length !== 1) { throw new Error("Installer version assignment is ambiguous."); }
-files.set("install.ps1", Buffer.from(installer.replace(assignment, `$VERSION      = "${release.nativeVersion}"`)));
+// The canonical version gate already requires one installer VERSION assignment
+// equal to the selected native version. Preserve its verified bytes verbatim;
+// package repair tags change package metadata, not the native installer body.
+files.set("install.ps1", fs.readFileSync(path.join(repoRoot, "install.ps1")));
 fs.mkdirSync(path.dirname(targetDir), { recursive: true });
 const lock = fs.openSync(lockPath, "wx");
 try {

@@ -180,6 +180,8 @@ $whitelistPatterns = @(
     'scripts/validate-pester-reduction-plan.ps1',
     'scripts/validate-legacy-compat-inventory.ps1',
     'scripts/stage-npm-release.mjs',
+    'scripts/prepare-install-e2e-fixture.mjs',
+    'tests/workspace-package/install-transport.test.mjs',
     '.githooks/**',
     '.gitattributes',
     'tests/PublicSurfacePolicy.Tests.ps1',

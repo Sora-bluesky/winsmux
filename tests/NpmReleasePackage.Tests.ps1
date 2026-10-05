@@ -318,8 +318,9 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match '\$startInfo\.Environment\[''WINSMUX_INSTALL_E2E_GITHUB_ACCESS''\] = \$gitHubAccess'
         $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller -ServerDirectory \(Join-Path \$scratch ''pre-fix-server''\) -IncludeTargetInstallerBootstrapMarker\r?\n'
         $installE2e | Should -Not -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller[^\r\n]+-IncludeGitHubAccess'
-        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
-        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
+        $installE2e | Should -Match ([regex]::Escape('-IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture)'))
+        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess:'
+        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess:'
         $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
         $installE2e | Should -Match 'wrapper_raw_command_forwarding_verified'
         $installE2e | Should -Match 'wrapper_update_dispatch_verified'
@@ -376,6 +377,30 @@ Describe 'winsmux npm release package contract' {
         $installer | Should -Match 'Get-InstallUserPath'
         $installer | Should -Match 'Get-InstallPowerShellProfilePath'
         $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)
+    }
+
+    It 'prepares npm before HOME isolation and keeps private transport separate from public release evidence' {
+        $source = [IO.File]::ReadAllText($script:InstallE2ePath)
+        $stageOffset = $source.IndexOf("'scripts/stage-npm-release.mjs'", [StringComparison]::Ordinal)
+        $isolationOffset = $source.IndexOf('$env:HOME = $fixtureHome', [StringComparison]::Ordinal)
+        $stageOffset | Should -BeGreaterThan 0
+        $stageOffset | Should -BeLessThan $isolationOffset
+        $source | Should -Match ([regex]::Escape('$repositoryPreparationOpen = $false'))
+        $source | Should -Match ([regex]::Escape('$FilePath -notin @($node, $npm)'))
+        $source | Should -Match 'pristine_tarball_sha256'
+        $source | Should -Match 'fixture_tarball_sha256'
+        $source | Should -Match 'Pristine npm installer differs from the candidate Git source'
+        $source | Should -Match 'Fixture npm projection changed its index, metadata, or declared installer'
+        $source | Should -Match 'Private candidate fixture must not use a public release override'
+        $source | Should -Match 'public_release_acquisition_proven = \$false'
+        $workflow = [IO.File]::ReadAllText($script:TestWorkflowPath)
+        $candidate = [regex]::Match($workflow, '(?ms)^  fresh-install-candidate:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)').Groups['body'].Value
+        $candidate | Should -Match 'setup-windows-distribution-toolchain'
+        $candidate | Should -Match 'node scripts/build-core-candidate.mjs x86_64-pc-windows-msvc'
+        $candidate | Should -Not -Match 'contents: write|npm publish|action-gh-release'
+        $workflow | Should -Match ([regex]::Escape('fresh-install-candidate-${{ github.sha }}'))
+        $workflow | Should -Match ([regex]::Escape('-CandidateDirectory "${{ runner.temp }}/fresh-install-candidate"'))
+        $workflow | Should -Not -Match 'WINSMUX_INSTALL_E2E_RELEASE_TAG: v0\.36\.28'
     }
 
     It 'classifies saved and in-memory installer inputs under strict mode: <Mode>' -TestCases @(
@@ -917,8 +942,8 @@ switch ($Mode) {
         $stageScript = Get-Content -LiteralPath $script:StageScriptPath -Raw -Encoding UTF8
 
         Test-Path -LiteralPath (Join-Path $script:PackageRoot 'install.ps1') | Should -BeFalse
-        $stageScript | Should -Match 'fs\.readFileSync\(path\.join\(repoRoot, "install\.ps1"\), "utf8"\)'
-        $stageScript | Should -Match 'files\.set\("install\.ps1", Buffer\.from\(installer\.replace'
+        $stageScript | Should -Match 'files\.set\("install\.ps1", fs\.readFileSync\(path\.join\(repoRoot, "install\.ps1"\)\)\)'
+        $stageScript | Should -Not -Match 'installer\.replace'
         $stageScript | Should -Match 'verifyFiles\(stageDir, files\)'
         $stageScript | Should -Match 'publishGeneration\(targetDir, stageDir, backupDir, pendingPath, files\)'
         $packageReadme | Should -Match 'source directory is not the publish artifact'
@@ -945,6 +970,27 @@ switch ($Mode) {
             $result.StdErr | Should -Match 'npm package is not enabled for release preparation'
             Test-Path -LiteralPath $script:OutputRoot | Should -Be $false
             (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash | Should -Be $originalPackageHash
+    }
+
+    It 'preserves installer bytes across native and package repair preparation entrances' {
+        foreach ($ending in @("`n", "`r`n")) {
+            foreach ($repair in @($false, $true)) {
+                $fixture = New-NpmReleaseFixture '0.23.0'
+                $installerPath = Join-Path $fixture 'install.ps1'
+                $body = [IO.File]::ReadAllText($installerPath).Replace("`r`n", "`n")
+                $body = $body.Replace('$VERSION = "0.23.0"', "`t`$VERSION `t= `"0.23.0`" `t")
+                $body = $body.Replace("`n", $ending)
+                Write-TestFileUtf8 $installerPath $body
+                $originalHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash
+                $selection = if ($repair) { @('--release-tag', 'v0.23.0.1') } else { @('--version', '0.23.0') }
+                $result = Invoke-NodeProcess -Arguments (@($script:StageScriptPath) + $selection + @('--out', 'output/npm-release/winsmux')) -WorkingDirectory $fixture
+                $result.ExitCode | Should -Be 0 -Because "the verified source version is unchanged ($repair; $($ending.Length) byte newline)"
+                (Get-FileHash -LiteralPath (Join-Path $script:OutputRoot 'install.ps1') -Algorithm SHA256).Hash | Should -BeExactly $originalHash
+                $package = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'package.json') -Raw | ConvertFrom-Json
+                $package.version | Should -BeExactly $(if ($repair) { '0.23.0-pkgfix.1' } else { '0.23.0' })
+                Remove-StagedReleaseOutput
+            }
+        }
     }
 
     It 'stages a release-ready package when the publish gate is open' {

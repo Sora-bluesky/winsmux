@@ -51,9 +51,9 @@ jobs:
         working-directory: winsmux-app
         run: npm run build
 
-      - name: Stage companion CLI sidecar
+      - name: Stage complete licensed companion generation
         working-directory: winsmux-app
-        run: npm run prepare:companion-cli
+        run: npm run prepare:companion-cli:release
 
       - name: Prepare pinned older CLI for native version-pair proof
         shell: pwsh

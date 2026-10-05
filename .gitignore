@@ -318,6 +318,7 @@ core/target/
 !tests/workspace-package/version-contract.ps1
 !tests/workspace-package/npm-version.test.mjs
 !tests/workspace-package/barrier-fault.ps1
+!tests/workspace-package/install-transport.test.mjs
 
 # Local verification and regenerated companion output
 /verification-evidence/

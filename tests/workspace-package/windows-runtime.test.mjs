@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readRustcIdentity, verifyWindowsDistributionCompiler } from '../../scripts/assert-windows-distribution-toolchain.mjs';
 import { assertWindowsRuntime } from '../../scripts/assert-windows-runtime.mjs';
@@ -17,6 +18,28 @@ const request = { repoRoot, target, targetRoot: path.join(repoRoot, 'target'),
 const measuredCommit = 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96';
 const compilerResult = text => ({ status: 0, signal: null,
   stdout: Buffer.from(text ?? `host: ${target}\ncommit-hash: ${measuredCommit}\n`) });
+
+test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enabled', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
+  t.after(() => fs.rmSync(root, { recursive: true }));
+  const files = new Map([
+    ['winsmux-app/src-tauri/nsis/installer.nsi', '1b691a6d9d526a312f95a156e5b52503bd37aa993173e366ebef9db0b66ba9a9'],
+    ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '9e2259d2226398ff4e69c1b322ce480ccb51df5d65525ac706b2179bd1db92c4'],
+  ]);
+  const attributes = spawnSync('git', ['check-attr', 'text', '--', ...files.keys()], { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
+  assert.equal(attributes.status, 0, attributes.stderr);
+  assert.deepEqual(attributes.stdout.trim().split(/\r?\n/u), [...files.keys()].map(file => `${file}: text: unset`));
+  const checkout = spawnSync('git', ['-c', 'core.autocrlf=true', 'checkout-index',
+    '--prefix=' + root.replaceAll('\\', '/') + '/', '--', ...files.keys()], { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
+  assert.equal(checkout.status, 0, checkout.stderr);
+  for (const [file, expected] of files) {
+    const bytes = fs.readFileSync(path.join(root, file));
+    const blob = spawnSync('git', ['cat-file', 'blob', `HEAD:${file}`], { cwd: repoRoot, windowsHide: true });
+    assert.equal(blob.status, 0, blob.stderr.toString());
+    assert.deepEqual(bytes, blob.stdout, file);
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, file);
+  }
+});
 
 test('compiler identity refuses unsuccessful observations and malformed captured bytes', () => {
   assert.deepEqual(readRustcIdentity(compilerResult()), { host: target, rustcCommit: measuredCommit });

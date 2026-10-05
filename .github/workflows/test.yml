@@ -64,10 +64,38 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/audit-public-surface.ps1
 
+  fresh-install-candidate:
+    name: Private Core Candidate for Fresh Install
+    runs-on: windows-2025
+    needs: public-surface
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
+      - name: Build same-commit private Core candidate
+        id: candidate
+        shell: pwsh
+        run: |
+          $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+          node scripts/build-core-candidate.mjs x86_64-pc-windows-msvc "$env:GITHUB_SHA" "v$version"
+          if ($LASTEXITCODE -ne 0) { throw 'Private install candidate build failed.' }
+      - name: Verify candidate transport refusal and source projection
+        run: node --test tests/workspace-package/install-transport.test.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: fresh-install-candidate-${{ github.sha }}
+          path: ${{ steps.candidate.outputs.artifact_path }}
+          if-no-files-found: error
+
   install-e2e:
     name: Fresh Install E2E (${{ matrix.route }})
     runs-on: windows-2025
-    needs: public-surface
+    needs: [public-surface, fresh-install-candidate]
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -88,10 +116,24 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run fresh install route
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.route == 'Npm'
+
+      - uses: actions/download-artifact@v8
+        if: matrix.route != 'DefectDetection'
+        with:
+          name: fresh-install-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/fresh-install-candidate
+
+      - name: Run fresh install route against the private candidate
+        if: matrix.route != 'DefectDetection'
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/test-install-e2e.ps1 -Route "${{ matrix.route }}" -RepositoryRoot . -SourceCommit "${{ github.sha }}" -CandidateDirectory "${{ runner.temp }}/fresh-install-candidate"
+
+      - name: Detect the historical missing-source defect
+        if: matrix.route == 'DefectDetection'
         shell: pwsh
         env:
-          WINSMUX_INSTALL_E2E_RELEASE_TAG: v0.36.28
           WINSMUX_INSTALL_E2E_GITHUB_ACCESS: ${{ github.token }}
         run: pwsh -NoProfile -File scripts/test-install-e2e.ps1 -Route "${{ matrix.route }}" -RepositoryRoot . -SourceCommit "${{ github.sha }}"
 
@@ -639,9 +681,9 @@ jobs:
         working-directory: winsmux-app
         run: npm run build
 
-      - name: Stage companion CLI sidecar
+      - name: Stage complete licensed companion generation
         working-directory: winsmux-app
-        run: npm run prepare:companion-cli
+        run: npm run prepare:companion-cli:release
 
       - name: Prepare pinned older CLI for native version-pair proof
         shell: pwsh

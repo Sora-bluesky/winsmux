@@ -75,7 +75,7 @@ Describe 'winsmux version surface' {
         $binding.rustc_commit | Should -BeExactly 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96'
         $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $script:DistributionWorkflows)
         @($producers.id | Sort-Object) -join ',' | Should -BeExactly (
-            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-nsis-lifecycle')
+            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-nsis-lifecycle,test.yml::fresh-install-candidate')
         Test-MeasuredWindowsProducerToolchains -Workflows $script:DistributionWorkflows | Should -BeTrue
         $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
         Test-MeasuredWindowsToolchainAction $action | Should -BeTrue
@@ -126,6 +126,23 @@ Describe 'winsmux version surface' {
         }
         $additional['new-producer.yml'] = "jobs:`n  ordinary:`n    runs-on: windows-latest`n    steps:`n      - uses: dtolnay/rust-toolchain@stable`n      - run: cargo test`n      - run: npm run test`n      - run: npm pack`n"
         Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
+    }
+
+    It 'prepares required licensed resources before the first Tauri backend test' {
+        foreach ($producer in @(
+            @{ File = 'build-desktop.yml'; Job = 'build' },
+            @{ File = 'test.yml'; Job = 'desktop-build-test' }
+        )) {
+            $job = [regex]::Match($script:DistributionWorkflows[$producer.File],
+                ('(?ms)^  {0}:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)' -f [regex]::Escape($producer.Job)))
+            $job.Success | Should -BeTrue
+            $preparation = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: npm run prepare:companion-cli:release\s*\r?$')
+            $backend = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml\s*\r?$')
+            $preparation.Count | Should -Be 1
+            $backend.Count | Should -Be 1
+            $preparation[0].Index | Should -BeLessThan $backend[0].Index
+            $job.Groups['body'].Value | Should -Not -Match '(?m)^        run: npm run prepare:companion-cli\s*\r?$'
+        }
     }
 
     It 'keeps release-critical product versions aligned' {
