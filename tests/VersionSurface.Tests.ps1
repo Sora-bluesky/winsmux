@@ -31,12 +31,18 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'version = \$ResolvedVersion'
         $installScript | Should -Match '\$ResolvedVersion \| Set-Content \$VERSION_FILE'
         $installScript | Should -Match 'function Get-WinsmuxCommandVersion'
-        $installScript | Should -Match 'does not match release version'
-        $installScript | Should -Match 'Reinstalling release binary'
-        $installScript | Should -Match 'SHA256SUMS asset not found in release'
-        $installScript | Should -Match 'Cannot verify release asset'
+        $installScript | Should -Match 'Installed executable version does not match the selected release'
+        $installScript | Should -Match '\$state\.Detected\.Version -ceq \$script:ResolvedVersion'
+        $installScript | Should -Match ([regex]::Escape("`$state.Snapshots.exe.Files[''] -ceq `$checksums[`$assetName]"))
+        $installScript | Should -Match ([regex]::Escape("Get-UniqueWinsmuxReleaseAsset `$release 'SHA256SUMS'"))
+        $installScript | Should -Match 'Missing or ambiguous paired release asset'
+        $installScript | Should -Match ([regex]::Escape('Read-WinsmuxReleaseChecksums $checksumsPath @($assetName, $sidecarName)'))
+        $installScript | Should -Match 'Executable staging checksum mismatch'
+        $installScript | Should -Match 'Release checksum is missing the exact paired asset'
         $installScript | Should -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$downloadPath -ErrorAction Stop'
-        $installScript | Should -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
+        $installScript | Should -Match ([regex]::Escape('Install-VerifiedWinsmuxGeneration $lease $state $downloadPath $sidecar $lifecycle'))
+        $installScript | Should -Match ([regex]::Escape('Assert-WinsmuxInstalledGeneration $stage $Sidecar'))
+        $installScript | Should -Not -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
         $installScript | Should -Not -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$winsmuxExe'
         $installScript | Should -Not -Match 'Skipping checksum verification'
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
@@ -84,7 +90,9 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match '\$UseLatestRelease\s*=\s*\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\) -and \(\$releaseAction -eq ''install'' -or \$releaseAction -eq ''update''\)'
         $installScript | Should -Not -Match '\$UseLatestRelease\s*=.*\$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
         $installScript | Should -Match '\$RELEASE_API_URL = "https://api\.github\.com/repos/Sora-bluesky/winsmux/releases/latest"'
-        $installScript | Should -Match '\$script:ResolvedReleaseTag = \[string\]\$release\.tag_name'
+        $installScript | Should -Match ([regex]::Escape("Assert-WinsmuxLicenseObjectKeys `$release @{ tag_name='string'; assets='array' } -AllowExtra"))
+        $installScript | Should -Match 'Assert-WinsmuxReleaseTag \$release\.tag_name'
+        $installScript | Should -Match '\$script:ResolvedReleaseTag = \$release\.tag_name'
         $installScript | Should -Match '\$script:ResolvedVersion = Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag \$script:ResolvedReleaseTag'
         $installScript | Should -Match '\$keepPipedMainScripts = \$script:releaseAction -eq ''install'' -and \$script:isPipedInstaller -and \[string\]::IsNullOrWhiteSpace\(\$script:requestedReleaseTag\)'
         $installScript | Should -Match '\$script:BASE_URL = if \(\[string\]::IsNullOrWhiteSpace\(\$script:installSourceRef\) -and -not \$keepPipedMainScripts\)'
@@ -138,8 +146,30 @@ Describe 'winsmux version surface' {
         $sourcePackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'packages\winsmux\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $sourcePackage.version | Should -Be '0.0.0-development'
 
-        & node $stageScript --version $script:ProductVersion --out $outputRoot
-        $LASTEXITCODE | Should -Be 0
+        # The staging gate requires preparation TEMP to be a sibling of protected outputs.
+        # Configure only this child; the runner and user's environment stay unchanged.
+        $childTemp = Join-Path $TestDrive 'npm-preparation-temp'
+        New-Item -ItemType Directory -Path $childTemp -ErrorAction Stop | Out-Null
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+        $start.WorkingDirectory = $script:RepoRoot
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in @($stageScript, '--version', $script:ProductVersion, '--out', $outputRoot)) {
+            $start.ArgumentList.Add($argument)
+        }
+        $start.Environment['TEMP'] = $childTemp
+        $start.Environment['TMP'] = $childTemp
+        $child = [Diagnostics.Process]::Start($start)
+        try {
+            $stdout = $child.StandardOutput.ReadToEndAsync()
+            $stderr = $child.StandardError.ReadToEndAsync()
+            $child.WaitForExit()
+            $child.ExitCode | Should -Be 0 -Because $stderr.GetAwaiter().GetResult()
+            $stdout.GetAwaiter().GetResult() | Should -Match 'staged'
+        } finally { $child.Dispose() }
 
         $stagedPackage = Get-Content -LiteralPath (Join-Path $outputRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $stagedInstaller = Get-Content -LiteralPath (Join-Path $outputRoot 'install.ps1') -Raw -Encoding UTF8
@@ -250,7 +280,11 @@ Describe 'winsmux version surface' {
         $releaseWorkflow | Should -Match '(?ms)^  build-helper:\r?\n    runs-on: ubuntu-24\.04\s'
         $releaseWorkflow | Should -Match '(?m)^    needs: \[build, build-helper\]\s*$'
         $releaseWorkflow | Should -Match 'winsmux-remote-helper-linux-x64'
-        $releaseWorkflow | Should -Match 'sha256sum winsmux-arm64\.exe winsmux-remote-helper-linux-x64 winsmux-x64\.exe > SHA256SUMS'
+        $releaseWorkflow | Should -Match 'node scripts/collect-core-candidates\.mjs collect'
+        $collector = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\collect-core-candidates.mjs') -Raw -Encoding UTF8
+        $collector | Should -Match ([regex]::Escape("const expected = [asset, asset + '.licenses.zip', 'SHA256SUMS']"))
+        $collector | Should -Match ([regex]::Escape("files.set('SHA256SUMS', Buffer.from(checksums))"))
+        $collector | Should -Match 'requireCore\(own\.get\(''SHA256SUMS''\)\.equals'
         $preCommitWhitelist | Should -Match "(?m)^    'scripts/package-remote-helper\.sh',\r?$"
         $preCommitWhitelist | Should -Match "(?m)^    'scripts/test-public-remote-helper\.sh',\r?$"
     }

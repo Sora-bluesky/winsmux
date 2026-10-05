@@ -82,6 +82,10 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   let snapshot = initial;
   let epoch = 0; let disposed = false; let ticketSequence = 0;
   let pending: { ticket: number; intent: ControlIntent; disposition: 'pending' | 'unknown'; message?: string } | null = null;
+  let completionFocus: { origin: HTMLElement; instanceId: string; generation: string } | null = null;
+  let shortcutOrigin: HTMLElement | null = null;
+  const focusChanged = (event: FocusEvent) => { if (completionFocus && event.target !== main) completionFocus = null; };
+  doc.addEventListener('focusin', focusChanged);
   let localMessage = ''; let errorDismissed = false;
   type CloseModal = { target: PaneTarget; returnTo: HTMLElement } & (
     | { phase: 'confirmable' }
@@ -93,11 +97,15 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   const panes = new Map<PaneId, PaneElements>();
   const projects = new Map<ProjectId, HTMLButtonElement>();
   const searchResults = new Map<HTMLButtonElement, HTMLButtonElement>();
+  const shortcutControl = (control: HTMLButtonElement | undefined) => {
+    shortcutOrigin = doc.activeElement instanceof HTMLElement && root.contains(doc.activeElement) ? doc.activeElement : null;
+    try { control?.click(); } finally { shortcutOrigin = null; }
+  };
   const removeShortcuts=installWorkspaceShortcuts(root,{
     enabled:()=>!disposed&&shortcuts.checked,composing:()=>callbacks.composing?.()??false,
     search:()=>showSearch(doc.activeElement instanceof HTMLElement?doc.activeElement:search),
-    create:()=>{if(!modal)create.click();},
-    close:()=>{const selected=snapshot.panes?.selected_pane_id;if(selected)panes.get(selected)?.buttons.get('close-pane')?.click();},
+    create:()=>{if(!modal)shortcutControl(create);},
+    close:()=>{const selected=snapshot.panes?.selected_pane_id;if(selected)shortcutControl(panes.get(selected)?.buttons.get('close-pane'));},
   });
   const context = (): Context => ({ instanceId: snapshot.instanceId, topologyRevision: snapshot.topologyRevision, generation: snapshot.generation });
   const selectedProject = () => snapshot.projects.projects.find(p => p.project_id === snapshot.projects.selected_project_id);
@@ -158,7 +166,16 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
     if (capturedEpoch !== epoch || !canControl()) return;
     if ('projectId' in intent && !targetValid(intent)) return;
     if (intent.instanceId !== snapshot.instanceId || intent.generation !== snapshot.generation || intent.topologyRevision !== snapshot.topologyRevision) return;
-    const ticket = ++ticketSequence; pending = { ticket, intent, disposition: 'pending' }; localMessage = ''; onAdmitted?.(ticket); updateAdmission();
+    const ticket = ++ticketSequence; pending = { ticket, intent, disposition: 'pending' }; localMessage = ''; onAdmitted?.(ticket);
+    // Keep focus inside the workspace while its originating control is disabled.
+    // A later explicit focus choice cancels the return, including a newer dialog.
+    const origin = shortcutOrigin ?? doc.activeElement;
+    completionFocus = null;
+    if (!dialog.open && !operations.open && origin instanceof HTMLElement && root.contains(origin) && (shortcutOrigin || origin instanceof HTMLButtonElement)) {
+      completionFocus = { origin, instanceId: snapshot.instanceId, generation: snapshot.generation };
+      main.focus();
+    }
+    updateAdmission();
     try {
       Promise.resolve(callbacks.control(intent, ticket)).then(result => {
         if (result && typeof result === 'object') settle(ticket, result); else settle(ticket, { disposition: 'unknown' });
@@ -237,6 +254,12 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
       }
     }
     if (operations.open) refreshSearch();
+    if (completionFocus && !pending && !snapshot.busy) {
+      const saved = completionFocus; completionFocus = null;
+      if (saved.instanceId === snapshot.instanceId && saved.generation === snapshot.generation && doc.activeElement === main && !dialog.open && !operations.open) {
+        restoreWorkspaceFocus(saved.origin, [main]);
+      }
+    }
   }
   function paneElements(pane: PaneSummary) {
     const found = panes.get(pane.pane_id); if (found) return found;
@@ -262,6 +285,10 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   function render(next: ViewSnapshot) {
     if (disposed) return;
     if (next.instanceId !== initial.instanceId) throw new Error('Host replacement requires a new view instance');
+    // Capture before removals/reparenting: browser focus may otherwise become BODY.
+    // This also covers a topology update arriving after its request settled.
+    const renderOrigin = doc.activeElement instanceof HTMLElement && root.contains(doc.activeElement) && !dialog.open && !operations.open ? doc.activeElement : null;
+    const renderGeneration = snapshot.generation;
     snapshot = next; epoch++; errorDismissed = false;
     root.dataset.instanceId = snapshot.instanceId; root.dataset.generation = snapshot.generation;
     root.dataset.topologyRevision = String(snapshot.topologyRevision); root.dataset.availability = snapshot.availability;
@@ -327,9 +354,7 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
         const split = make('div'); split.className = `workspace-split workspace-${node.axis}`;
         split.style.setProperty('--first-ratio', String(node.ratio)); split.style.setProperty('--second-ratio', String(1 - node.ratio)); split.append(draw(node.first), draw(node.second)); return split;
       };
-      const focused = doc.activeElement instanceof HTMLElement && layout.contains(doc.activeElement) ? doc.activeElement : null;
       layout.replaceChildren(...(valid && data?.root ? [draw(data.root)] : []));
-      if (focused?.isConnected) focused.focus();
     }
     if (valid && data) for (const pane of data.panes) {
       const el = panes.get(pane.pane_id);
@@ -345,6 +370,9 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
     details.hidden = !selected || !valid; detailText.textContent = selected ? `プロジェクト ${selected.project_id} / ペイン ${selected.pane_id} / 実行 ${selected.current_run_id ?? '未起動'} / ${selected.path ?? '作業場所は未確認'}` : '';
     if (details.hidden && details.contains(doc.activeElement)) main.focus();
     updateAdmission();
+    if (renderOrigin && doc.activeElement === doc.body && !dialog.open && !operations.open) {
+      restoreWorkspaceFocus(renderGeneration === snapshot.generation ? renderOrigin : null, [main]);
+    }
   }
   render(initial);
   return {
@@ -361,6 +389,7 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
     dispose() {
       if (disposed) return; disposed = true; epoch++;
       removeShortcuts();if (dialog.open) dialog.close(); if (operations.open) operations.close();
+      completionFocus = null; doc.removeEventListener('focusin', focusChanged);
       for (const el of root.querySelectorAll('button')) el.onclick = null;
       query.oninput = null; searchResults.clear(); for (const pane of panes.values()) pane.unmount?.(); root.remove();
     },

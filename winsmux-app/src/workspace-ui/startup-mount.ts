@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { listen } from '@tauri-apps/api/event';
-import { openWorkspaceSession, workspaceRequest, getWorkspaceDiscovery, getWorkspaceHostStatus, forceExitUncertainWorkspace, type WorkspaceSession, type WorkspaceHostStatus } from '../workspaceClient';
+import { openWorkspaceSession, workspaceRequest, getWorkspaceDiscovery, copyWorkspaceDiscovery, getWorkspaceHostStatus, forceExitUncertainWorkspace, type WorkspaceSession, type WorkspaceHostStatus } from '../workspaceClient';
 import { createProjectPaneController, runReadData, type OwnerKey } from './project-pane-controller';
 import { createProjectPaneView, type ViewSnapshot } from './project-pane';
 import { mountProjectPaneTerminal } from './project-pane-terminal';
@@ -322,7 +322,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       else connectionOwner.bind(connectionPort);
       connectionView = mountConnectionView(connectionMount, connectionOwner, {
         discovery: () => getWorkspaceDiscovery(session.instance_id),
-        async copy(text) { try { await navigator.clipboard.writeText(text); return true; } catch { return false; } },
+        copy: value => copyWorkspaceDiscovery(ownerKey.ownerGeneration, value),
         current,
       });
       async function query(operation: OperationName, params: object): Promise<Response> {
@@ -376,7 +376,9 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           const lease = reserveControl(session.instance_id, 'agent', ticket);
           if (!lease || !agentBinding || !agentBinding.submit(intent as AgentCommandIntent, ticket)) {
             if (lease) admission.release(lease);
-            agentView.settle(ticket, intent, 'refused'); return false;
+            agentView.settle(ticket, intent, 'refused', !lease
+              ? '変換・配送・別の操作、またはホストの受付状態を確認できないため、要求を送信していません。'
+              : 'この画面と操作元の対応を確認できないため、要求を送信していません。'); return false;
           }
           agentLease = lease; schedule(); return true;
         },
@@ -386,7 +388,8 @@ export async function mountWorkspaceMain(root: HTMLElement) {
             const snap = controller.getSnapshot();
             void controller.inspect({ kind: 'inspect-installation', instanceId: snap.instanceId, generation: snap.generation, topologyRevision: snap.topologyRevision });
           } else if (intent.kind === 'focus-terminal') {
-            root.querySelector<HTMLElement>('textarea[data-workspace-terminal-input]')?.focus();
+            const paneId = controller.getSnapshot().panes?.selected_pane_id;
+            if (paneId) terminals.get(paneId)?.focus();
           } else status.textContent = 'CodexまたはClaude Codeの公式CLIヘルプは、選択中のターミナルで確認してください。';
         },
         restoreFocus(_target, origin) { restoreWorkspaceFocus(origin, [agentMount.querySelector<HTMLElement>('[data-action="launch"]') ?? undefined]); },
@@ -400,7 +403,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           if (key && project && pane) agentBinding = agentOwner.bind(project.project_id, pane.pane_id, notice => {
             if (!current()) return;
             if (notice.kind === 'settlement') {
-              agentView.settle(notice.result.ticket, notice.result.target, notice.result.phase);
+              agentView.settle(notice.result.ticket, notice.result.target, notice.result.phase, notice.result.message);
               if ((notice.result.phase === 'completed' || notice.result.phase === 'refused') && agentLease) {
                 admission.release(agentLease); agentLease = null;
               }

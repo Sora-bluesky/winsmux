@@ -200,6 +200,21 @@ jobs:
             }
           }
 
+      - name: Stage final integrated Desktop artifact
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        id: integrated
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path output/ci-desktop-artifacts -ErrorAction Stop | Out-Null
+          node scripts/stage-integrated-ci-artifact.mjs --surface desktop --source output/desktop-release --namespace output/ci-desktop-artifacts --source-commit "$env:GITHUB_SHA" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT"
+          if ($LASTEXITCODE -ne 0) { throw 'Final integrated Desktop artifact staging failed.' }
+      - name: Upload final integrated Desktop artifact
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.integrated.outputs.artifact_name }}
+          path: ${{ steps.integrated.outputs.artifact_path }}/
+          if-no-files-found: error
       - name: Upload desktop artifact
         uses: actions/upload-artifact@v7
         with:

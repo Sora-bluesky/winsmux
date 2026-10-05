@@ -2875,6 +2875,21 @@ function Test-Throws {
 }
 
 function Invoke-SelfTest {
+    # GetNewClosure captures factory-local values, not inherited script parameters.
+    # Pin the normalized coordinates for every surface and every fixture callback.
+    $Version = $script:Version
+    $ReleaseTag = $script:ReleaseTag
+    # Preserve the original function session state inside dynamic fixture modules.
+    $selfTestFunctions = @{
+        'Assert-Condition' = (Get-Command -Name 'Assert-Condition' -CommandType Function).ScriptBlock
+        'Get-DesktopTeardownDiagnosis' = (Get-Command -Name 'Get-DesktopTeardownDiagnosis' -CommandType Function).ScriptBlock
+        'Invoke-VerifiedDesktopUninstaller' = (Get-Command -Name 'Invoke-VerifiedDesktopUninstaller' -CommandType Function).ScriptBlock
+        'New-DesktopCdpProbeRecord' = (Get-Command -Name 'New-DesktopCdpProbeRecord' -CommandType Function).ScriptBlock
+        'New-DesktopLifecycleContext' = (Get-Command -Name 'New-DesktopLifecycleContext' -CommandType Function).ScriptBlock
+        'Set-DesktopLifecyclePhase' = (Get-Command -Name 'Set-DesktopLifecyclePhase' -CommandType Function).ScriptBlock
+        'Start-DesktopLifecycle' = (Get-Command -Name 'Start-DesktopLifecycle' -CommandType Function).ScriptBlock
+        'Stop-OwnedProcessTree' = (Get-Command -Name 'Stop-OwnedProcessTree' -CommandType Function).ScriptBlock
+    }
     $caseIds = [Collections.Generic.List[string]]::new()
     $evidence = [ordered]@{}
     if ($Surface -eq 'Npm') {
@@ -3189,10 +3204,12 @@ function Invoke-SelfTest {
                     [Parameter(Mandatory)]$PreState,
                     [Parameter(Mandatory)]$PostState
                 )
+                # This factory creates another dynamic module; capture its helpers locally too.
+                $selfTestFunctions = $selfTestFunctions
                 $record = [pscustomobject]@{ phases = [Collections.Generic.List[string]]::new() }
                 $invoke = {
                     param($ObservedInstallRoot, $Phase)
-                    Assert-Condition (-not [string]::IsNullOrWhiteSpace([string]$ObservedInstallRoot)) 'Desktop protected-state probe observed an empty install root.'
+                    & $selfTestFunctions['Assert-Condition'] (-not [string]::IsNullOrWhiteSpace([string]$ObservedInstallRoot)) 'Desktop protected-state probe observed an empty install root.'
                     $record.phases.Add([string]$Phase) | Out-Null
                     switch ([string]$Phase) {
                         'pre_uninstall' { return $PreState }
@@ -3204,10 +3221,10 @@ function Invoke-SelfTest {
                 return [pscustomobject]@{ record = $record; invoke = $invoke }
             }.GetNewClosure()
             $newMaterializedContext = {
-                $candidateContext = New-DesktopLifecycleContext -OwnedRoot $root -InstallRoot $installRoot -ExpectedVersion $Version
-                Start-DesktopLifecycle -Context $candidateContext -PreflightState $emptyState
-                Set-DesktopLifecyclePhase -Context $candidateContext -NextPhase 'installer_started'
-                Set-DesktopLifecyclePhase -Context $candidateContext -NextPhase 'materialized_verified'
+                $candidateContext = & $selfTestFunctions['New-DesktopLifecycleContext'] -OwnedRoot $root -InstallRoot $installRoot -ExpectedVersion $Version
+                & $selfTestFunctions['Start-DesktopLifecycle'] -Context $candidateContext -PreflightState $emptyState
+                & $selfTestFunctions['Set-DesktopLifecyclePhase'] -Context $candidateContext -NextPhase 'installer_started'
+                & $selfTestFunctions['Set-DesktopLifecyclePhase'] -Context $candidateContext -NextPhase 'materialized_verified'
                 return $candidateContext
             }.GetNewClosure()
             $uninstallCapture = [pscustomobject]@{
@@ -3364,7 +3381,7 @@ function Invoke-SelfTest {
             $uninstallFailureUninstallInvoker = {
                 param($Context, $Environment)
                 $uninstallFailureCalls.uninstall += 1
-                Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment -ProcessInvoker $nonzeroProcessInvoker -ProtectedStateProbe $uninstallFailureStateProbe.invoke | Out-Null
+                & $selfTestFunctions['Invoke-VerifiedDesktopUninstaller'] -Context $Context -Environment $Environment -ProcessInvoker $nonzeroProcessInvoker -ProtectedStateProbe $uninstallFailureStateProbe.invoke | Out-Null
             }.GetNewClosure()
             $uninstallFailureResidueInvoker = { $uninstallFailureCalls.residue += 1 }.GetNewClosure()
             $uninstallFailureRootRemover = { $uninstallFailureCalls.root += 1 }.GetNewClosure()
@@ -3389,7 +3406,7 @@ function Invoke-SelfTest {
             $registrationUninstallInvoker = {
                 param($Context, $Environment)
                 $registrationCalls.uninstall += 1
-                Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment -ProcessInvoker $processInvoker -ProtectedStateProbe $registrationStateProbe.invoke | Out-Null
+                & $selfTestFunctions['Invoke-VerifiedDesktopUninstaller'] -Context $Context -Environment $Environment -ProcessInvoker $processInvoker -ProtectedStateProbe $registrationStateProbe.invoke | Out-Null
             }.GetNewClosure()
             $registrationResidueInvoker = { $registrationCalls.residue += 1 }.GetNewClosure()
             $registrationRootRemover = { $registrationCalls.root += 1 }.GetNewClosure()
@@ -3533,13 +3550,13 @@ function Invoke-SelfTest {
                 }
             }
             $newObservationContext = {
-                $candidate = New-DesktopLifecycleContext -OwnedRoot $root -InstallRoot $installRoot -ExpectedVersion $Version
-                Start-DesktopLifecycle -Context $candidate -PreflightState $emptyState
-                Set-DesktopLifecyclePhase -Context $candidate -NextPhase 'installer_started'
-                Set-DesktopLifecyclePhase -Context $candidate -NextPhase 'materialized_verified'
+                $candidate = & $selfTestFunctions['New-DesktopLifecycleContext'] -OwnedRoot $root -InstallRoot $installRoot -ExpectedVersion $Version
+                & $selfTestFunctions['Start-DesktopLifecycle'] -Context $candidate -PreflightState $emptyState
+                & $selfTestFunctions['Set-DesktopLifecyclePhase'] -Context $candidate -NextPhase 'installer_started'
+                & $selfTestFunctions['Set-DesktopLifecyclePhase'] -Context $candidate -NextPhase 'materialized_verified'
                 return $candidate
             }.GetNewClosure()
-            $observerStop = { param($OwnedProcess) Stop-OwnedProcessTree -RootProcess $OwnedProcess }.GetNewClosure()
+            $observerStop = { param($OwnedProcess) & $selfTestFunctions['Stop-OwnedProcessTree'] -RootProcess $OwnedProcess }.GetNewClosure()
             $observerUninstall = { param($Context, $Environment) }.GetNewClosure()
             $observerResidue = { param($Context) }.GetNewClosure()
             $observerRoot = { param($OwnedRoot) }.GetNewClosure()
@@ -3936,11 +3953,11 @@ try {
                 -ListenerSnapshot $typedListenerSnapshot
             $typedPageProbe = {
                 param($Authority, $OwnedProcess)
-                Assert-Condition ([string]$Authority.state -ceq 'authority_ready') 'Typed page probe received an incomplete authority.'
-                Assert-Condition ([string]$Authority.host -ceq '127.0.0.1') 'Typed page probe received a non-loopback host.'
-                Assert-Condition ([int]$Authority.port -eq $typedPort) 'Typed page probe received a foreign port.'
-                Assert-Condition ([string]$Authority.browser_path -ceq $typedBrowserPath) 'Typed page probe received a foreign browser path.'
-                return (New-DesktopCdpProbeRecord -State 'page_ready' -PageUrl 'tauri://localhost/' -Port $typedPort -PathAuthority 'cross_checked')
+                & $selfTestFunctions['Assert-Condition'] ([string]$Authority.state -ceq 'authority_ready') 'Typed page probe received an incomplete authority.'
+                & $selfTestFunctions['Assert-Condition'] ([string]$Authority.host -ceq '127.0.0.1') 'Typed page probe received a non-loopback host.'
+                & $selfTestFunctions['Assert-Condition'] ([int]$Authority.port -eq $typedPort) 'Typed page probe received a foreign port.'
+                & $selfTestFunctions['Assert-Condition'] ([string]$Authority.browser_path -ceq $typedBrowserPath) 'Typed page probe received a foreign browser path.'
+                return (& $selfTestFunctions['New-DesktopCdpProbeRecord'] -State 'page_ready' -PageUrl 'tauri://localhost/' -Port $typedPort -PathAuthority 'cross_checked')
             }.GetNewClosure()
             $typedProcessProvider = { param($OwnedProcess) return $typedProcessSnapshot }.GetNewClosure()
             $typedListenerProvider = { param($Port, $OwnedProcess) return $typedListenerSnapshot }.GetNewClosure()
@@ -4081,7 +4098,7 @@ try {
                     if ([string]$Authority.state -cne 'authority_ready' -or [int]$Authority.port -ne $typedPort -or [string]$Authority.browser_path -cne $typedBrowserPath) {
                         $requestCounts.premature += 1
                     }
-                    return (New-DesktopCdpProbeRecord -State ([string]$definition.page_state) -PageUrl $null -Port $typedPort)
+                    return (& $selfTestFunctions['New-DesktopCdpProbeRecord'] -State ([string]$definition.page_state) -PageUrl $null -Port $typedPort)
                 }.GetNewClosure()
                 $rejectProbe = Get-DesktopWebViewAuthorityProbe `
                     -OwnedProcess $typedRootProcess `
@@ -4315,7 +4332,7 @@ try {
             $diagnosisEscaped = Test-Throws ({
                 try {
                     $invalidProbeTable = [ordered]@{ invalid_probe = @{ Script = $null; Argument = $null } }
-                    $diagnosisGuard.value = Get-DesktopTeardownDiagnosis -UserDataFolder $diagnosisRoot -ProbeTable $invalidProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
+                    $diagnosisGuard.value = & $selfTestFunctions['Get-DesktopTeardownDiagnosis'] -UserDataFolder $diagnosisRoot -ProbeTable $invalidProbeTable -ProbeTimeoutMilliseconds 100 -TotalBudgetMilliseconds 500
                 } catch {
                     $diagnosisGuard.value = $null
                 }

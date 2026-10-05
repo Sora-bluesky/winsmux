@@ -47,6 +47,10 @@ try {
       holdNextOperationGet: false, lateOperationGet: null,
       holdNextCapabilities: false, lateCapabilities: null,
       holdNextDetailsOperation: null, lateDetails: null, holdNextProject: false, lateProject: null };
+    Object.assign(f, { discoveryCalls: 0, copyCalls: [], copyWrites: 0, holdDiscovery: false, lateDiscovery: null,
+      holdCopy: false, lateCopy: null, copyError: null, copyReceipt: null, browserCopies: 0 });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true,
+      value: { writeText: async () => { f.browserCopies++; throw Error('browser clipboard intentionally unavailable'); } } });
     f.invoke = async (name, args) => {
       if (name === 'startup_main_policy_ready' || name === 'startup_main_show') return null;
       if (name === 'workspace_session_open') {
@@ -61,6 +65,21 @@ try {
           f.releaseStatus = value => resolve(value); f.rejectStatus = reject;
         });
         return next ?? { instance_id: f.instanceId, generation: f.ownerGeneration, revision: String(f.revision), phase: f.host }; }
+      if (name === 'workspace_discovery_get') {
+        f.discoveryCalls++;
+        const value = { instance_id: f.instanceId, pipe_name: '\\\\.\\pipe\\winsmux-workspace-v1-fixture', schema_version: 1 };
+        if (f.holdDiscovery) { f.holdDiscovery = false; return new Promise(resolve => { f.lateDiscovery = () => resolve(value); }); }
+        return value;
+      }
+      if (name === 'workspace_discovery_copy') {
+        const request = JSON.parse(args.requestJson); f.copyCalls.push(request);
+        if (f.host !== 'Ready' || request.owner_generation !== f.ownerGeneration || request.discovery.instance_id !== f.instanceId) throw 'protocol_failed';
+        if (f.copyError) { const error = f.copyError; f.copyError = null; throw error; }
+        f.copyWrites++;
+        const receipt = f.copyReceipt ?? request; f.copyReceipt = null;
+        if (f.holdCopy) { f.holdCopy = false; return new Promise(resolve => { f.lateCopy = () => resolve(receipt); }); }
+        return receipt;
+      }
       if (name === 'desktop_initial_project_dir') return null;
       if (name === 'workspace_input_guard_register' || name === 'workspace_input_guard_status') {
         const status = structuredClone(f.guardStatus ?? { lease: f.guardLease, revision: '1', fence: null, resume_allowed: false, admission_error: null });
@@ -172,6 +191,55 @@ try {
       await globalThis.pressTask876Key('Enter'); before.remove();
     };
     const module = await import(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+    for (const scenario of ['success', 'occupied', 'old-generation', 'forged-receipt', 'dispose-discovery', 'blocked-discovery', 'dispose-copy']) {
+      Object.assign(f, { calls: [], withRun: false, host: 'Ready', guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', discoveryCalls: 0, copyCalls: [], copyWrites: 0,
+        holdDiscovery: false, lateDiscovery: null, holdCopy: false, lateCopy: null, browserCopies: 0 });
+      f.revision++; f.rows = [row(A, 'pending')];
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame(); await opening;
+      const section = root.querySelector('.workspace-connections');
+      const button = [...section.querySelectorAll('button')].find(value => value.textContent === '現在の接続情報をコピー');
+      const status = button.nextElementSibling;
+      check(scenario + ' actual connection copy available', !!button && !button.disabled);
+      if (scenario === 'occupied') f.copyError = 'clipboard_unavailable';
+      if (scenario === 'forged-receipt') f.copyReceipt = { owner_generation: '2', discovery: {
+        instance_id: I, pipe_name: '\\\\.\\pipe\\winsmux-workspace-v1-fixture', schema_version: 1 } };
+      if (['dispose-discovery', 'blocked-discovery', 'old-generation'].includes(scenario)) f.holdDiscovery = true;
+      if (scenario === 'dispose-copy') f.holdCopy = true;
+      button.click(); button.click(); await tick();
+      check(scenario + ' repeated click has one discovery request', f.discoveryCalls === 1);
+      if (scenario === 'dispose-discovery') {
+        mounted.dispose(); f.lateDiscovery(); await tick();
+        check('disposed discovery never dispatches native copy', f.copyCalls.length === 0 && !status.textContent.includes('コピーしました'));
+      } else if (scenario === 'blocked-discovery') {
+        f.host = 'Unknown'; f.revision++; f.failNextList = true;
+        [...section.querySelectorAll('button')].find(value => value.textContent === '接続一覧を読み直す').click();
+        await tick();
+        check('discovery pre-write host block is established', button.disabled && section.textContent.includes('接続'));
+        f.lateDiscovery(); await tick();
+        check('blocked discovery never dispatches native copy', f.copyCalls.length === 0 && !status.textContent.includes('コピーしました'));
+      } else if (scenario === 'old-generation') {
+        f.ownerGeneration = '2'; f.lateDiscovery(); await tick();
+        check('native refuses old owner generation before clipboard write', f.copyWrites === 0 && !status.textContent.includes('コピーしました'));
+      } else if (scenario === 'dispose-copy') {
+        check('copy in flight cannot submit a second write', f.copyCalls.length === 1 && button.disabled);
+        mounted.dispose(); f.lateCopy(); await tick();
+        check('retired copy receipt never paints success', !status.textContent.includes('コピーしました'));
+      } else if (scenario === 'success') {
+        const request = f.copyCalls[0];
+        check('copy uses native exact current owner and three-field discovery', f.copyWrites === 1 && request.owner_generation === '1'
+          && Object.keys(request).sort().join() === 'discovery,owner_generation'
+          && Object.keys(request.discovery).sort().join() === 'instance_id,pipe_name,schema_version'
+          && request.discovery.instance_id === I && status.textContent.includes('コピーしました'));
+      } else {
+        check(scenario + ' never reports successful copy', !status.textContent.includes('コピーしました') && status.textContent.length > 0);
+        check(scenario + ' keeps live connections and permits retry', !!root.querySelector('.workspace-connections') && !button.disabled);
+      }
+      check(scenario + ' never uses browser clipboard', f.browserCopies === 0);
+      mounted.dispose(); root.remove(); frames.length = 0; f.ownerGeneration = '1'; f.host = 'Ready'; f.revision++;
+    }
     {
       f.calls = []; f.withRun = false; f.host = 'Ready'; f.guardLease = '1'; f.revision++;
       f.rows = [row(A, 'pending'), row(B, 'granted')]; f.enforceGuardOpen = true;

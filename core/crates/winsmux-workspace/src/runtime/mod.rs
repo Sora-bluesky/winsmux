@@ -167,12 +167,63 @@ impl RuntimeService {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn testing_install_ready_providers(&self) {
+        assert!(self.provider_probes.set(ProbeRegistry::testing_ready()).is_ok());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_provider_observation_counts(&self) -> [usize; 4] {
+        self.provider_probes.get().unwrap().testing_observation_counts()
+    }
+
     pub fn start_provider_probes(&self) {
         self.provider_probes.get_or_init(ProbeRegistry::start);
     }
 
     pub fn ready_provider(&self, provider: Provider) -> Option<ReadyProvider> {
         self.provider_probes.get()?.ready(provider)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_install_provider_join_gate(&self) -> std::sync::mpsc::Sender<()> {
+        let (registry, release) = ProbeRegistry::testing_join_gate();
+        assert!(self.provider_probes.set(registry).is_ok());
+        release
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_install_provider_join_gate_result(&self, fail: bool) -> std::sync::mpsc::Sender<()> {
+        let (registry, release) = ProbeRegistry::testing_join_gate_result(fail);
+        assert!(self.provider_probes.set(registry).is_ok());
+        release
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_install_provider_join_failure(&self) {
+        assert!(self.provider_probes.set(ProbeRegistry::testing_join_failure()).is_ok());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_provider_registry_started(&self) -> bool {
+        self.provider_probes.get().is_some()
+    }
+
+    pub(crate) fn refresh_provider_probes(&self, force: bool) {
+        if let Some(probes) = self.provider_probes.get() {
+            probes.refresh(Provider::Codex, force);
+            probes.refresh(Provider::Claude, force);
+        }
+    }
+
+    pub(crate) fn invalidate_provider(&self, provider: Provider) {
+        if let Some(probes) = self.provider_probes.get() { probes.invalidate(provider); }
+    }
+
+    pub(crate) fn is_provider_ready(&self, provider: Provider) -> bool {
+        self.provider_probes
+            .get()
+            .is_some_and(|probes| probes.is_ready(provider))
     }
 
     pub fn cancel_provider_probes(&self) -> bool {
@@ -1240,6 +1291,14 @@ mod owner_api_tests {
     use super::*;
     use crate::contract::{ErrorCode, PaneId, ProjectId, RunId};
     use spawn::issue_pending_overlapped_write;
+
+    #[test]
+    fn readiness_observation_does_not_initialize_provider_probes() {
+        let runtime = RuntimeService::new();
+        assert!(!runtime.is_provider_ready(Provider::Codex));
+        assert!(!runtime.is_provider_ready(Provider::Claude));
+        assert!(runtime.provider_probes.get().is_none());
+    }
 
     #[test]
     fn testing_install_write_is_pinned_not_teardown() {

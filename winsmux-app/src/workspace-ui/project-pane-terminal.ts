@@ -53,6 +53,15 @@ export function mountProjectPaneTerminal(slot: HTMLElement, projectId: string, p
   const observer = new ResizeObserver(() => { if (!disposed && slot.isConnected) { fit.fit(); offerResize(); } }); observer.observe(slot);
   return {
     sync,
+    focus() {
+      if (disposed || !slot.isConnected) return false;
+      sync();
+      const snapshot = options.snapshot();
+      if (snapshot.projects.selected_project_id !== projectId || snapshot.panes?.project_id !== projectId || snapshot.panes.selected_pane_id !== paneId || !target()) return false;
+      const destination = codec ? terminal.textarea : slot;
+      destination?.focus();
+      return slot.ownerDocument.activeElement === destination;
+    },
     readTarget() { sync(); return disposed || runId === null ? null : { runId, cursor, epoch }; },
     append(captured: { runId: string; cursor: string | null; epoch: number }, data: OutputReadData) {
       sync(); if (disposed || captured.epoch !== epoch || captured.runId !== runId || captured.cursor !== cursor || data.run_id !== runId) return;

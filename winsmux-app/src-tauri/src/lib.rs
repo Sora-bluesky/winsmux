@@ -15,6 +15,7 @@ pub mod workspace_transport;
 pub mod workspace_input_guard;
 mod startup_secondary_native;
 mod webview_accelerators;
+mod workspace_clipboard;
 
 use control_pipe::{
     control_pipe_ui_is_enabled, revoke_control_pipe_token_on_exit, start_control_pipe_server,
@@ -2235,6 +2236,7 @@ pub fn run() {
             workspace_transport::workspace_session_open,
             workspace_transport::workspace_request,
             workspace_transport::workspace_discovery_get,
+            workspace_transport::workspace_discovery_copy,
             workspace_transport::workspace_host_status,
             workspace_transport::workspace_session_close,
             workspace_transport::workspace_force_exit,

@@ -216,6 +216,9 @@ fn capabilities_and_connection_state_follow_the_frozen_decision_table() {
     let harness = Harness::new(vec![project_a, project_b]);
     let client = harness.connect("client.exe");
 
+    let denied_refresh=client.request(&request("capabilities.get",None,json!({"refresh":true}))).unwrap();
+    assert_error(&denied_refresh,"permission_denied");
+
     let capabilities = client
         .request(&request("capabilities.get", None, json!({})))
         .expect("capabilities response");
@@ -223,6 +226,9 @@ fn capabilities_and_connection_state_follow_the_frozen_decision_table() {
     assert_eq!(
         capabilities["result"]["data"]["operations"],
         json!([
+            "artifact.choice.list",
+            "artifact.choose",
+            "artifact.diff",
             "artifact.list",
             "artifact.read",
             "artifact.register",
@@ -231,6 +237,7 @@ fn capabilities_and_connection_state_follow_the_frozen_decision_table() {
             "connection.list",
             "connection.request",
             "connection.revoke",
+            "diagnostics.get",
             "events.wait",
             "host.stop",
             "input.key",

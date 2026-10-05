@@ -306,7 +306,7 @@ if ($Route -eq 'DefectDetection') {
         throw 'Could not construct the pre-fix installer fixture.'
     }
     $broken = $source.Replace($anchor, $anchor + [Environment]::NewLine + [Environment]::NewLine + '    Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")')
-    $binaryInstallCall = '(?m)^[ \t]*Install-WinsmuxBinary[ \t]*\r?$'
+    $binaryInstallCall = '(?m)^[ \t]*Install-WinsmuxBinary(?:[ \t]+-Lease[ \t]+\$lease)?[ \t]*\r?$'
     if ([regex]::Matches($broken, $binaryInstallCall).Count -ne 1) {
         throw 'Could not isolate the pre-fix download defect from release binary acquisition.'
     }
@@ -334,7 +334,7 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
     }
     $taglessInstallerText = Get-Content -LiteralPath (Join-Path $fixtureHome '.winsmux\bin\install.ps1') -Raw -Encoding UTF8
     $taglessCoreText = Get-Content -LiteralPath (Join-Path $fixtureHome '.winsmux\bin\winsmux-core.ps1') -Raw -Encoding UTF8
-    if ($taglessInstallerText -notmatch 'Test-ShouldBootstrapTargetInstaller' -or $taglessCoreText -notmatch '\$sourceRoot') {
+    if ($taglessInstallerText -notmatch 'Get-WinsmuxExecutingInstallerSource' -or $taglessInstallerText -notmatch 'Publish-WinsmuxLifecycle' -or $taglessCoreText -notmatch '\$sourceRoot') {
         throw 'Tagless direct install replaced the fixed main scripts with the previous release scripts.'
     }
     $taglessInstallVerified = $true

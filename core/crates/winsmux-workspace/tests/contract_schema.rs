@@ -1284,6 +1284,10 @@ struct Case {
 }
 fn positive_cases() -> Vec<Case> {
     let mut cases = Vec::new();
+    for refresh in [false,true] {
+        cases.push(Case { name:format!("request_provider_refresh_{refresh}"),kind:"request",request:None,
+            value:request("capabilities.get",json!({"refresh":refresh})),expectation:Expectation::Accepted });
+    }
     let cleanup_request = request("run.get", json!({"run_id":RUN,"include_cleanup":true}));
     cases.push(Case {
         name: "request_cleanup_run_get".into(),
@@ -1753,6 +1757,7 @@ fn structural_expectation(c: &Case, path: &str, mutant: &Value) -> Expectation {
         ("request", "/params", Some("pane.close" | "shell.launch" | "agent.launch"), _) =>
             "expected_current_run_id",
         ("request", "/params", Some("run.get"), _) => "include_cleanup",
+        ("request", "/params", Some("capabilities.get"), _) => "refresh",
         ("response", "/result/data", _, Some("run.get")) => "cleanup_complete",
         _ => return Expectation::RejectedShape,
     };

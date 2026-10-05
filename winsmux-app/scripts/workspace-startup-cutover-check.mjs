@@ -242,12 +242,91 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
  const main=await page.evaluate(async code=>{const f=globalThis.fixture;f.native=true;f.label='main';f.initial=f.root;f.calls=[];f.frames=[];const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));const promise=module.mountWorkspaceMain(document.querySelector('main'));const mount=await f.awaitMount(promise);for(let n=0;n<12;n++)await new Promise(resolve=>setTimeout(resolve,0));const root=document.querySelector('main');const before={state:root.dataset.startupState,outcome:root.dataset.initialOutcome,created:root.dataset.initialCreated,session:root.dataset.session,shows:f.shows,calls:structuredClone(f.calls),frames:f.frames.length};f.listeners.get('workspace-close-refused')?.();const retained=root.dataset.startupState==='mounted';const secondaryRequest={session:JSON.parse(root.dataset.session),generation:root.dataset.generation,payload:{mode:'editor',path:'normal.ts',worktree:'',summary:'fixture',origin:'context',modified:false,content:'normal facade'}};const owned=await root.openSecondarySurface(secondaryRequest);const sameFacade=root.inspectSecondarySurface;const beforeDispose=sameFacade(owned.requestId);mount.dispose();const afterDispose=sameFacade(owned.requestId);if(!owned.submitted||beforeDispose.outcome!=='unconfirmed'||!afterDispose.parentInvalidated||globalThis.fixture.sdkOptions.label!==owned.label)throw Error('normal mount facade creator lifetime');localStorage.removeItem(owned.key);localStorage.removeItem(owned.key+'.creation-request');const after={state:root.dataset.startupState,listeners:f.listeners.size};return{before,retained,after};},outputs['startup-mount']);
  const names=main.before.calls.map(c=>c.name),ops=main.before.calls.filter(c=>c.name==='workspace_request').map(c=>JSON.parse(c.args.requestJson).operation);
  if(main.before.state!=='mounted'||main.before.outcome!=='completed'||main.before.created!=='false'||names.filter(n=>n==='workspace_session_open').length!==1||ops.filter(n=>n==='project.open').length!==1||ops.includes('pane.create')||ops.includes('shell.launch')||!main.retained||main.after.state!=='disposed'||main.after.listeners)throw Error('Production main restoration/lifetime invariant');checks.push('production main real controller fixture: one open session, explicit same-ticket folder, existing no launch, close refusal retains, actual dispose releases');
+ console.log(JSON.stringify({fixture_stage:'agent-live-state'}));
+ const agentLiveProof=await page.evaluate(async code=>{
+  const f=globalThis.fixture,original=f.invoke,results=[];
+  const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+  const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
+  for(const provider of ['codex','claude']){
+   const I='11111111-1111-4111-8111-111111111111',P='22222222-2222-4222-8222-222222222222',N=crypto.randomUUID(),R=crypto.randomUUID();
+   const root=document.createElement('main');document.body.append(root);
+   const state={seq:1,process:'running',providers:[{provider,version:'1.2.3'}],requests:[],guardRevision:'1',guardError:null};
+   const run=()=>({run_id:R,pane_id:N,current:true,process:state.process,work:state.process==='exited'?'interrupted':'unknown',evidence:state.process==='exited'?'process_exit':'unavailable',exit_code:state.process==='exited'?0:null,observed_at:'2026-10-05T00:00:00Z'});
+   f.native=true;f.label='main';f.initial=null;f.frames=[];
+   f.invoke=async(name,args)=>{
+    if(name==='workspace_input_guard_status')return{lease:'1',revision:state.guardRevision,fence:null,resume_allowed:false,admission_error:state.guardError};
+    if(name!=='workspace_request')return original(name,args);
+    const q=JSON.parse(args.requestJson);state.requests.push(q.operation);let data;
+    switch(q.operation){
+     case'capabilities.get':data={schema_version:1,operations:['capabilities.get','project.list','pane.list','run.get','run.interrupt','agent.launch','operation.get','events.wait','output.read','pane.resize','connection.list'],max_message_bytes:1048576,providers:structuredClone(state.providers),shell_profile_ids:['pwsh'],replay_capacity:{retained_bytes:134217728,active_bytes:268435456}};break;
+     case'project.list':data={projects:[{project_id:P,path:f.root,display_name:'Fixture',root_state:'verified'}],selected_project_id:P};break;
+     case'pane.list':data={project_id:P,selected_pane_id:N,root:{kind:'leaf',pane_id:N},panes:[{pane_id:N,project_id:P,path:f.root,display_name:'Terminal',current_run_id:R,observation:run()}]};break;
+     case'run.get':data={run:run(),...(q.params.include_cleanup?{cleanup_complete:state.process==='exited'}:{})};break;
+     case'events.wait':data={events:[],next_event_seq:state.seq,status:'no_change'};break;
+     case'output.read':data={run_id:R,text:'',next_cursor:'fixture-cursor',gap:false,truncated:false};break;
+     case'connection.list':data={connections:[]};break;
+     case'pane.resize':data=structuredClone(q.params);break;
+     case'run.interrupt':state.process='exited';state.seq++;data={run_id:R,phase:'accepted'};break;
+     case'operation.get':data={operation:{operation_id:q.params.operation_id,phase:'completed',outcome:'succeeded',error_code:null}};break;
+     default:throw Error('agent fixture unmodeled '+q.operation);
+    }
+    return{schema_version:1,instance_id:I,operation_id:q.operation_id,accepted:true,topology_revision:1,event_seq:state.seq,result:{operation:q.operation,data},error:null};
+   };
+   const mount=await f.awaitMount(module.mountWorkspaceMain(root));
+   const pump=async()=>{const callback=f.frames.shift();if(callback)callback(0);for(let n=0;n<8;n++)await tick();};
+   await new Promise(resolve=>setTimeout(resolve,32));await pump();await pump();
+   const select=root.querySelector('[aria-label="AIを選択"]');select.value=provider;select.dispatchEvent(new Event('change'));
+   const interrupt=root.querySelector('[data-action="interrupt"]');
+   const before={enabled:!interrupt.disabled,state:root.querySelector('[data-field="state"]').textContent};
+   interrupt.click();for(let n=0;n<8;n++)await tick();await pump();
+   const settled={admission:root.querySelector('[data-field="admission"]').textContent,process:root.querySelector('[data-field="process"]').textContent};
+   state.providers=[{provider,version:'2.3.4'}];await pump();
+   results.push({provider,before,interrupts:state.requests.filter(x=>x==='run.interrupt').length,...settled,updatedCli:root.querySelector('[data-field="cli"]').textContent,updatedProcess:root.querySelector('[data-field="process"]').textContent,requests:[...state.requests]});
+   mount.dispose();root.remove();
+  }
+  f.invoke=original;f.frames=[];return results;
+ },outputs['startup-mount']);
+ writeFileSync(resolve(evidence,'agent-live-state.json'),JSON.stringify(agentLiveProof,null,2)+'\n');
+ for(const proof of agentLiveProof){if(!proof.before.enabled||proof.interrupts!==1||!proof.process.includes('終了を観測'))throw Error('Actual mounted first '+proof.provider+' interrupt: '+JSON.stringify(proof));checks.push('production main first '+proof.provider+' interrupt dispatches once and displays actual exit');if(!proof.updatedCli.includes('2.3.4')||!proof.updatedProcess.includes('終了を観測'))throw Error('Actual mounted '+proof.provider+' detection update at same runtime sequence: '+JSON.stringify(proof));checks.push('production main '+proof.provider+' detection update at unchanged runtime event preserves exit');}
+ console.log(JSON.stringify({fixture_stage:'selected-terminal-focus'}));
+ await page.setContent('<main id="workspace-startup"></main>');
+ const selectedTerminalChecks=await page.evaluate(async code=>{
+  const f=globalThis.fixture,passed=[],check=(name,ok)=>{if(!ok)throw Error(name);passed.push(name);};
+  f.native=true;f.label='main';f.initial=f.root;f.calls=[];f.frames=[];
+  const first=crypto.randomUUID(),second=crypto.randomUUID(),invoke=f.invoke;
+  f.invoke=async(name,args)=>{
+   const result=await invoke(name,args);
+   if(name==='workspace_request'&&JSON.parse(args.requestJson).operation==='pane.list') {
+    const projectId=result.result.data.project_id;
+    result.result.data={project_id:projectId,selected_pane_id:second,
+     root:{kind:'split',axis:'horizontal',ratio:0.5,first:{kind:'leaf',pane_id:first},second:{kind:'leaf',pane_id:second}},
+     panes:[first,second].map(pane_id=>({pane_id,project_id:projectId,display_name:pane_id,path:f.root,current_run_id:null,observation:null}))};
+   }
+   return result;
+  };
+  let mount;
+  try {
+   const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
+   mount=await f.awaitMount(module.mountWorkspaceMain(document.querySelector('main')));
+   for(let n=0;n<12;n++)await new Promise(resolve=>setTimeout(resolve,0));
+   const root=document.querySelector('main'),button=root.querySelector('[data-action="focus-terminal"]');
+   const slots=[first,second].map(id=>root.querySelector(`[data-pane-id="${id}"] .workspace-terminal`));
+   check('two dormant terminal mounts are present',slots.every(Boolean)&&!button.disabled);
+   button.focus();button.click();
+   check('return to terminal selects the second canonical pane instead of the first DOM pane',document.activeElement===slots[1]);
+   const calls=f.calls.length;button.focus();button.click();
+   check('return to terminal sends no workspace input or command',f.calls.length===calls);
+   slots[1].remove();button.focus();button.click();
+   check('removed selected terminal does not focus a sibling pane',document.activeElement===button);
+  } finally {mount?.dispose();f.invoke=invoke;}
+  return passed;
+ },outputs['startup-mount']);checks.push(...selectedTerminalChecks);
  console.log(JSON.stringify({fixture_stage:'terminal-output'}));
  const terminalChecks=await page.evaluate(async code=>{
   const passed=[],check=(n,ok)=>{if(!ok)throw Error(n);passed.push(n)},f=globalThis.fixture;
   const observers=[];globalThis.ResizeObserver=class{constructor(fn){this.fn=fn;observers.push(this)}observe(){}disconnect(){this.disconnected=true}};
   const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));const slot=document.createElement('div');document.body.append(slot);
-  let snapshot={instanceId:'instance',generation:'generation',topologyRevision:7,availability:'available',busy:false,projects:{selected_project_id:'project'},panes:{project_id:'project',panes:[{pane_id:'pane',current_run_id:'R1'}]}};const resized=[];
+  let snapshot={instanceId:'instance',generation:'generation',topologyRevision:7,availability:'available',busy:false,projects:{selected_project_id:'project'},panes:{project_id:'project',selected_pane_id:'pane',panes:[{pane_id:'pane',current_run_id:'R1'}]}};const resized=[];
   const terminal=module.mountProjectPaneTerminal(slot,'project','pane',{snapshot:()=>snapshot,resize:value=>{resized.push(value);return false}});const instance=f.terminals.at(-1),target=terminal.readTarget();
   terminal.append(target,{run_id:'R1',text:'one',next_cursor:'c1',gap:true,truncated:false});check('terminal exact cursor and gap explicit',slot.textContent==='one'&&terminal.readTarget().cursor==='c1'&&slot.previousElementSibling.textContent.includes('取得'));
   snapshot.panes.panes[0].current_run_id='R2';terminal.append(target,{run_id:'R1',text:'old',next_cursor:'old',gap:false,truncated:false});check('terminal R1 late reply never reaches R2',slot.textContent===''&&terminal.readTarget().runId==='R2'&&terminal.readTarget().cursor===null);
@@ -255,7 +334,23 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
   for(const value of [0,32768,1.5]){instance.rows=value;instance.resize();terminal.flushResize()}check('terminal invalid dimensions no resize',resized.length===1);
   snapshot.busy=true;instance.rows=24;instance.cols=80;instance.resize();instance.cols=100;instance.resize();terminal.flushResize();check('busy coalesces only unadmitted dimensions',resized.length===1);snapshot.busy=false;terminal.flushResize();check('coalesced captured dimensions admitted once',resized.length===2&&resized[1].cols===100);
   snapshot.busy=true;instance.cols=120;instance.resize();snapshot.generation='replacement';snapshot.busy=false;terminal.flushResize();check('queued old generation resize discarded',resized.length===2);
+  slot.tabIndex=0;check('terminal without input owner focuses its selected readonly slot',terminal.focus()&&document.activeElement===slot);
+  const origin=document.createElement('button');document.body.append(origin);origin.focus();
+  snapshot.panes.selected_pane_id='sibling';check('unselected terminal leaves focus at the invoker',!terminal.focus()&&document.activeElement===origin);
+  snapshot.panes.selected_pane_id='pane';snapshot.projects.selected_project_id='other';check('terminal from a different selected project refuses focus',!terminal.focus()&&document.activeElement===origin);
+  snapshot.projects.selected_project_id='project';snapshot.panes.panes=[];check('removed canonical pane refuses focus',!terminal.focus()&&document.activeElement===origin);
+  snapshot.panes.panes=[{pane_id:'pane',current_run_id:'R2'}];
   const late=terminal.readTarget();terminal.dispose();terminal.append(late,{run_id:'R2',text:'late',next_cursor:'late',gap:false,truncated:false});terminal.flushResize();check('terminal disposal releases observer callback and effects',observers[0].disconnected&&instance.disposed&&instance.resize===null&&resized.length===2&&slot.textContent==='');check('terminal stdin disabled input responsibility stays separate',instance.options.disableStdin===true);
+  check('disposed terminal leaves focus at the invoker',!terminal.focus()&&document.activeElement===origin);
+  const inputSlot=document.createElement('div');document.body.append(inputSlot);const offered=[];
+  const input={produce:target=>({target,canAccept:()=>true,pending:()=>true,offer:text=>{offered.push(text);return true;},retire(){}}),explain(){}};
+  const inputTerminal=module.mountProjectPaneTerminal(inputSlot,'project','pane',{snapshot:()=>snapshot,resize:()=>false,input});
+  const inputInstance=f.terminals.at(-1);
+  check('selected live terminal focuses its installed input textarea',inputTerminal.focus()&&document.activeElement===inputInstance.textarea);
+  check('terminal focus emits no input bytes',offered.length===0);
+  snapshot.panes.panes[0].current_run_id=null;
+  check('stopped terminal focuses its readonly slot',inputTerminal.focus()&&document.activeElement===inputSlot);
+  inputTerminal.dispose();inputSlot.remove();origin.remove();
   return passed;
  },outputs['project-pane-terminal']);checks.push(...terminalChecks);
   console.log(JSON.stringify({fixture_stage:'entry'}));

@@ -20,12 +20,12 @@ on:
       release_tag:
         description: Release tag for smoke helper
         required: false
-        default: v0.36.38
+        default: v0.38.0
         type: string
       version:
         description: Version for smoke helper
         required: false
-        default: 0.36.38
+        default: 0.38.0
         type: string
 
 permissions:

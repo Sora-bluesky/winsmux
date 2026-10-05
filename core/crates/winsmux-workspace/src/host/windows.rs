@@ -1507,6 +1507,8 @@ fn accept_loop(
         let worker_name = pipe_name.clone();
         let connection_cancel = Arc::new(CancelEvent::new()?);
         let worker_connection_cancel = connection_cancel.clone();
+        // Both Spawned and normal Refused continue the listener. Only real
+        // supervisor errors leave this loop and close the host generation.
         supervisor
             .spawn(connection_cancel, move |lease| {
                 handle_public_connection(
@@ -2439,5 +2441,199 @@ fn open_client_pipe(name: &str) -> Result<OwnedHandle, HostError> {
         Err(HostError::Startup)
     } else {
         unsafe { OwnedHandle::from_raw(client) }.map_err(map_io)
+    }
+}
+
+#[cfg(test)]
+mod close_authentication_tests {
+    use super::*;
+    use crate::auth::testing::Harness;
+    use crate::contract::ErrorCode;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    fn request(h: &Harness, operation: &str) -> Request {
+        crate::contract::parse_request(&serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"instance_id":h.instance_id(),
+            "operation_id":uuid::Uuid::new_v4().to_string(),"expected_topology_revision":null,
+            "operation":operation,"params":{}
+        })).unwrap()).unwrap()
+    }
+
+    fn harness() -> Harness {
+        let h = Harness::new(Vec::new());
+        let root = std::env::temp_dir().join(format!("winsmux-close-native-{}", uuid::Uuid::new_v4()));
+        assert!(h.authorization().testing_install_isolated_layout(&root));
+        h
+    }
+
+    fn stop(h: &Harness, fail: bool) -> (mpsc::Sender<()>, JoinHandle<Response>) {
+        let auth = h.authorization();
+        let release = auth.testing_install_stop_join_gate(fail);
+        let stopping = h.clone();
+        let command = request(h, "host.stop");
+        let thread = std::thread::spawn(move || stopping.owner(&command));
+        let start = Instant::now();
+        while !auth.testing_stop_is_reserved() {
+            assert!(start.elapsed() < Duration::from_secs(30), "stop reservation missing");
+            std::thread::yield_now();
+        }
+        (release, thread)
+    }
+
+    struct Gate {
+        target: ConnectionCheckpoint,
+        reached: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        trace: Arc<Mutex<Vec<ConnectionCheckpoint>>>,
+    }
+    impl ConnectionObserver for Gate {
+        fn reached(&mut self, checkpoint: ConnectionCheckpoint) {
+            self.trace.lock().unwrap().push(checkpoint);
+            if checkpoint == self.target {
+                self.reached.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(30)).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn native_managed_and_fixture_stages_obey_stop_reservation() {
+        use ConnectionCheckpoint::*;
+        for managed in [false, true] {
+            for fail in [false, true] {
+                for target in [BeforeAuthenticationPermit, AfterAuthenticationPermit,
+                    BeforeProofPermit, AfterProofPermit, BeforeAttach] {
+                    let h = harness();
+                    let auth = h.authorization();
+                    let existing = h.connect("existing-reply");
+                    let before = auth.testing_connection_snapshot(&existing.connection_id());
+                    let charges = auth.allocations().snapshot().active_public;
+                    let tables = auth.testing_connection_owned_bytes().0;
+                    let identity = Identity::current().unwrap();
+                    let key = Arc::new(ServerKey::generate().unwrap());
+                    let discovery = Discovery::for_server(&identity, h.instance_id(), key.fingerprint()).unwrap();
+                    let capability = ServerCapabilityToken::create(&identity).unwrap();
+                    let server = create_public_pipe(&discovery.pipe_name, &identity, true, &capability).unwrap();
+                    let client = open_client_pipe(&discovery.pipe_name).unwrap();
+                    connect_overlapped(server.raw(), &[]).unwrap();
+                    let challenge = random_challenge().unwrap();
+                    write_frame(client.raw(), &encode_request(&challenge), &[]).unwrap();
+                    let host_cancel = Arc::new(CancelEvent::new().unwrap());
+                    let supervisor = ConnectionSupervisor::new(auth.clone(), host_cancel.clone()).unwrap();
+                    let (at, reached) = mpsc::channel();
+                    let (resume, resume_wait) = mpsc::channel();
+                    let trace = Arc::new(Mutex::new(Vec::new()));
+                    let mut observer = Gate { target, reached: at, release: resume_wait, trace: trace.clone() };
+                    let worker_auth = auth.clone();
+                    let worker_cancel = host_cancel.clone();
+                    let connection_cancel = Arc::new(CancelEvent::new().unwrap());
+                    let worker_connection_cancel = connection_cancel.clone();
+                    let body = move |lease: Option<crate::auth::ConnectionLease>| {
+                        handle_public_connection_inner(server, identity, key, discovery.instance_id,
+                            discovery.pipe_name, worker_auth, worker_cancel,
+                            lease.map(|lease| (worker_connection_cancel, lease)), &mut observer);
+                    };
+                    let worker = if managed {
+                        supervisor.spawn(connection_cancel, move |lease| body(Some(lease))).unwrap();
+                        None
+                    } else { Some(std::thread::spawn(move || body(None))) };
+                    reached.recv_timeout(Duration::from_secs(30)).unwrap();
+                    let (release, stopping) = stop(&h, fail);
+                    resume.send(()).unwrap();
+                    if let Some(worker) = worker { worker.join().unwrap(); }
+                    else {
+                        assert_eq!(unsafe { WaitForSingleObject(supervisor.completion_raw(), 30_000) }, WAIT_OBJECT_0);
+                        assert_eq!(supervisor.reap_completed(), Ok(1));
+                        assert_eq!(supervisor.reap_completed(), Ok(0));
+                    }
+                    let observed = trace.lock().unwrap().clone();
+                    assert!(!observed.contains(&AfterAttach), "new Unpaired publication: {managed}/{fail}/{target:?}");
+                    assert_eq!(observed.contains(&AfterAuthenticationRead), target != BeforeAuthenticationPermit);
+                    assert_eq!(observed.contains(&AfterProofWrite), matches!(target, AfterProofPermit | BeforeAttach));
+                    assert_eq!(auth.record_count(), 1, "worker record did not retire");
+                    let (current_tables, stacks) = auth.testing_connection_owned_bytes();
+                    assert_eq!(stacks, 0, "retired native worker retained a stack charge");
+                    // Existing live fixtures keep the explicitly charged table's
+                    // grown capacity. Every worker-owned byte must still return.
+                    assert_eq!(auth.allocations().snapshot().active_public - current_tables,
+                        charges - tables, "worker-owned charge did not return");
+                    assert_eq!(auth.testing_connection_snapshot(&existing.connection_id()), before);
+                    assert!(existing.send_if_current() && auth.generation_is_open());
+                    release.send(()).unwrap();
+                    let stopped = stopping.join().unwrap();
+                    if fail {
+                        assert_eq!(stopped.error.0.as_ref().unwrap().code(), ErrorCode::RuntimeFailed);
+                        assert!(auth.generation_is_open() && existing.send_if_current());
+                        assert_eq!(auth.testing_connection_snapshot(&existing.connection_id()), before);
+                    } else { assert!(stopped.accepted && !auth.generation_is_open()); }
+                    assert_eq!(supervisor.close_and_reap(), Ok(0));
+                    drop(client);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_accept_refusal_keeps_listener_and_existing_reply_alive() {
+        for fail in [false, true] {
+            let h = harness();
+            let auth = h.authorization();
+            let existing = h.connect("existing-reply");
+            let before = auth.testing_connection_snapshot(&existing.connection_id());
+            let charges = auth.allocations().snapshot().active_public;
+            let identity = Identity::current().unwrap();
+            let key = Arc::new(ServerKey::generate().unwrap());
+            let discovery = Discovery::for_server(&identity, h.instance_id(), key.fingerprint()).unwrap();
+            let capability = ServerCapabilityToken::create(&identity).unwrap();
+            let listener = create_public_pipe(&discovery.pipe_name, &identity, true, &capability).unwrap();
+            let cancel = Arc::new(CancelEvent::new().unwrap());
+            let supervisor = ConnectionSupervisor::new(auth.clone(), cancel.clone()).unwrap();
+            let accept_auth = auth.clone();
+            let accept_cancel = cancel.clone();
+            let accept_supervisor = supervisor.clone();
+            let accept_discovery = discovery.clone();
+            let accept_identity = identity.clone();
+            let accept = std::thread::spawn(move || run_supervised_accept_guarded(
+                &accept_auth, &accept_cancel, &accept_supervisor,
+                || accept_loop(accept_discovery.pipe_name, accept_identity, capability, key,
+                    accept_discovery.instance_id, accept_auth.clone(), accept_cancel.clone(),
+                    accept_supervisor.clone(), listener)));
+            let (release, stopping) = stop(&h, fail);
+            // Capacity exhaustion must not hide the normal reservation refusal.
+            let fill = auth.allocations().claim(AllocationPool::ActivePublic,
+                super::super::admission::ACTIVE_PUBLIC_BYTES - charges).unwrap();
+            let client = open_client_pipe(&discovery.pipe_name).unwrap();
+            assert_eq!(read_frame(client.raw(), &[cancel.raw()]), Err(IoError::Eof));
+            drop(fill);
+            assert_eq!(unsafe { WaitForSingleObject(cancel.raw(), 0) }, WAIT_TIMEOUT);
+            assert!(!accept.is_finished());
+            assert!(auth.generation_is_open() && existing.send_if_current());
+            assert_eq!(auth.testing_connection_snapshot(&existing.connection_id()), before);
+            assert_eq!(auth.record_count(), 1);
+            assert_eq!(auth.allocations().snapshot().active_public, charges);
+            release.send(()).unwrap();
+            let stopped = stopping.join().unwrap();
+            if fail {
+                assert_eq!(stopped.error.0.as_ref().unwrap().code(), ErrorCode::RuntimeFailed);
+                assert!(auth.generation_is_open());
+                // The same real listener must still authenticate a fresh attempt.
+                let fresh = open_client_pipe(&discovery.pipe_name).unwrap();
+                let challenge = random_challenge().unwrap();
+                write_frame(fresh.raw(), &encode_request(&challenge), &[cancel.raw()]).unwrap();
+                let proof = read_frame(fresh.raw(), &[cancel.raw()]).unwrap();
+                verify_response(&proof, discovery.validate_for(&identity).unwrap(),
+                    &discovery.instance_id, &discovery.pipe_name, &challenge,
+                    unsafe { GetCurrentProcessId() }, unsafe { GetCurrentProcessId() }).unwrap();
+                let command = request(&h, "capabilities.get");
+                write_frame(fresh.raw(), &serde_json::to_vec(&command).unwrap(), &[cancel.raw()]).unwrap();
+                let response = parse_response(&command, &read_frame(fresh.raw(), &[cancel.raw()]).unwrap()).unwrap();
+                assert!(response.accepted);
+                drop(fresh);
+            } else { assert!(stopped.accepted); }
+            cancel.signal();
+            assert_eq!(accept.join().unwrap(), Ok(()));
+            assert_eq!(supervisor.reap_completed(), Ok(0));
+        }
     }
 }

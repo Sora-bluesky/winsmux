@@ -8,9 +8,14 @@ const validCounter = (value: number) => Number.isSafeInteger(value) && value >= 
 const selection = (frame: Pick<AgentControlsSnapshot, 'project' | 'pane'>) =>
   JSON.stringify([frame.project?.project_id ?? null, frame.pane?.pane_id ?? null, frame.pane?.current_run_id ?? null]);
 const identity = (run: RunObservation | null | undefined) => run ? [run.run_id, run.pane_id, run.current, run.process, run.work, run.evidence, run.exit_code] : null;
-const canonical = (frame: AgentObservationInput) => JSON.stringify([
+// Provider probes finish independently of the host runtime event stream.
+// Only runtime facts must remain identical at one runtime event sequence.
+const runtimeCanonical = (frame: AgentObservationInput) => JSON.stringify([
   frame.project && [frame.project.project_id, frame.project.display_name, frame.project.path, frame.project.root_state],
   frame.pane && [frame.pane.pane_id, frame.pane.project_id, frame.pane.display_name, frame.pane.path, frame.pane.current_run_id, identity(frame.pane.observation)],
+]);
+const canonical = (frame: AgentObservationInput) => JSON.stringify([
+  runtimeCanonical(frame),
   frame.capabilities.state, frame.capabilities.providers?.map(row => [row.provider, row.version]) ?? null,
 ]);
 const copy = <T>(value: T): T => structuredClone(value);
@@ -70,7 +75,7 @@ export function createAgentObservation(initial: AgentControlsSnapshot) {
         selection(value) !== ticket.selection || !validCounter(value.eventSeq) || value.availability !== 'available') return null;
       settled = ticket.attempt;
       if (value.eventSeq < hostSeq) return null;
-      const nextState = canonical(value);
+      const nextState = runtimeCanonical(value);
       if (value.eventSeq === hostSeq && hostSelection === ticket.selection && hostState !== nextState) return uncertain();
       if (sameRun(frame.pane, value.pane) && frame.pane?.observation?.process === 'exited' && value.pane?.observation?.process !== 'exited') return uncertain();
       if (value.pane?.current_run_id !== null && (!value.pane?.observation || value.pane.observation.run_id !== value.pane.current_run_id || !value.pane.observation.current || value.pane.observation.pane_id !== value.pane.pane_id)) return uncertain();
@@ -79,7 +84,7 @@ export function createAgentObservation(initial: AgentControlsSnapshot) {
       hostSelection = ticket.selection;
       const { eventSeq: _eventSeq, ...display } = copy(value);
       const candidate: AgentControlsSnapshot = { ...display, observationRevision: frame.observationRevision };
-      if (frame.availability === 'available' && nextState === canonical({ ...frame, eventSeq: hostSeq })) return null;
+      if (frame.availability === 'available' && canonical(value) === canonical({ ...frame, eventSeq: hostSeq })) return null;
       return next(candidate);
     },
     retire() { retired = true; },

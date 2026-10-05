@@ -575,6 +575,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Assert workspace efficiency measurement contract
+        shell: pwsh
+        run: pwsh -NoLogo -NoProfile -NonInteractive -File tests/workspace-efficiency/run.ps1 -SelfTest
+
       - name: Assert isolated Windows workspace journey
         shell: pwsh
         env:

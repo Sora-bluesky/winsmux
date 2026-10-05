@@ -89,7 +89,7 @@ pub enum OperationClass {
     S,
 }
 operations! {
- CapabilitiesGet=>("capabilities.get",Q,Empty,CapabilitiesData),
+ CapabilitiesGet=>("capabilities.get",Q,CapabilitiesGetParams,CapabilitiesData),
  ConnectionRequest=>("connection.request",A,ConnectionRequestParams,ConnectionRequestData),
  ConnectionList=>("connection.list",A,Empty,ConnectionListData),
  ConnectionDecide=>("connection.decide",A,ConnectionDecideParams,ConnectionDecideData),

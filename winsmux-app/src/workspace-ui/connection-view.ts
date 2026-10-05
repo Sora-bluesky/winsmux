@@ -13,7 +13,7 @@ function operationText(record: NonNullable<ReturnType<Controller['snapshot']>['o
 
 export function mountConnectionView(root: HTMLElement, controller: Controller, options: {
   discovery(): Promise<WorkspaceDiscovery>;
-  copy(text: string): Promise<boolean>;
+  copy(value: WorkspaceDiscovery): Promise<WorkspaceDiscovery>;
   current(): boolean;
 }) {
   const doc = root.ownerDocument;
@@ -36,18 +36,25 @@ export function mountConnectionView(root: HTMLElement, controller: Controller, o
   let copiedInstance: string | null = null;
   let renderedSelectionId: string | null = null;
   let disposed = false;
+  let copying = false;
+  const copyCurrent = () => !disposed && options.current() && !controller.snapshot().blocked;
+  function updateCopyButton() { discovery.disabled = copying || !copyCurrent(); }
   discovery.onclick = async () => {
-    discovered.textContent = '';
-    if (disposed || !options.current() || controller.snapshot().blocked) return;
+    if (copying || !copyCurrent()) return;
+    copying = true;
+    copiedInstance = null; discovered.textContent = '';
+    updateCopyButton();
     try {
       const value = await options.discovery();
-      if (disposed || !options.current() || value.instance_id !== controller.snapshot().instanceId || controller.snapshot().blocked) throw new Error('世代が変わりました。');
-      const text = JSON.stringify({ instance_id: value.instance_id, pipe_name: value.pipe_name, schema_version: value.schema_version });
-      if (!await options.copy(text)) throw new Error('クリップボードへコピーできませんでした。');
-      if (disposed || !options.current() || controller.snapshot().blocked) throw new Error('世代が変わりました。');
+      if (!copyCurrent() || value.instance_id !== controller.snapshot().instanceId) return;
+      const receipt = await options.copy(value);
+      if (!copyCurrent() || receipt.instance_id !== value.instance_id || value.instance_id !== controller.snapshot().instanceId
+        || receipt.pipe_name !== value.pipe_name || receipt.schema_version !== value.schema_version) return;
       copiedInstance = value.instance_id;
       discovered.textContent = `現在の世代 ${value.instance_id} の接続情報をコピーしました。`;
-    } catch (error) { copiedInstance = null; discovered.textContent = error instanceof Error ? error.message : '接続情報を取得できませんでした。'; }
+    } catch (error) {
+      if (copyCurrent()) { copiedInstance = null; discovered.textContent = error instanceof Error ? error.message : '接続情報を取得できませんでした。'; }
+    } finally { copying = false; if (!disposed) updateCopyButton(); }
   };
   refresh.onclick = () => { void controller.refresh(); };
   recheck.onclick = () => { void controller.recheck(); };
@@ -65,7 +72,7 @@ export function mountConnectionView(root: HTMLElement, controller: Controller, o
   const unsubscribe = controller.observe(state => {
     if (disposed) return;
     if (copiedInstance && copiedInstance !== state.instanceId || state.blocked) { copiedInstance = null; discovered.textContent = ''; }
-    discovery.disabled = state.blocked || !options.current();
+    updateCopyButton();
     refresh.disabled = state.busy || state.blocked;
     recheck.hidden = !state.original;
     recheck.disabled = state.busy || state.blocked;

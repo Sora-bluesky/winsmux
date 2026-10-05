@@ -1,4 +1,6 @@
 pub(crate) mod ingress;
+mod capabilities;
+pub use capabilities::CapabilitiesGetParams;
 mod operations;
 pub mod projection;
 mod scalar;

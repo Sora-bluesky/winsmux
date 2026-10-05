@@ -15,11 +15,23 @@ pub struct WorkspaceSession {
     instance_id: String,
     schema_version: u64,
 }
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceDiscovery {
     instance_id: String,
     pipe_name: String,
     schema_version: u64,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiscoveryCopyRequest {
+    owner_generation: String,
+    discovery: WorkspaceDiscovery,
+}
+#[derive(serde::Serialize)]
+pub struct DiscoveryCopyReceipt {
+    owner_generation: String,
+    discovery: WorkspaceDiscovery,
 }
 #[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct WorkspaceHostStatus {
@@ -989,6 +1001,9 @@ impl WorkspaceManager {
     }
     fn discovery_for_gui(&self) -> Result<WorkspaceDiscovery, &'static str> {
         let state = self.state.lock().map_err(|_| "transport_uncertain")?;
+        Self::live_discovery(&state)
+    }
+    fn live_discovery(state: &Lifecycle) -> Result<WorkspaceDiscovery, &'static str> {
         state.admission()?;
         if state.phase != Phase::Ready || state.flight.is_some() || state.completion.is_some() {
             return Err("session_closed");
@@ -1002,6 +1017,19 @@ impl WorkspaceManager {
             pipe_name: live.pipe_name().to_owned(),
             schema_version: live.schema_version().get(),
         })
+    }
+    // Validation and the non-waiting owner reservation share one lifecycle lock.
+    // This is the copy acceptance point; a later close waits for this ordinary flight.
+    fn discovery_copy_lease(self: &Arc<Self>, expected: &DiscoveryCopyRequest)
+        -> Result<(OwnerLease, DiscoveryCopyReceipt), &'static str>
+    {
+        let mut state = self.state.lock().map_err(|_| "transport_uncertain")?;
+        let live = Self::live_discovery(&state)?;
+        validate_discovery_copy(state.generation, &live, expected)?;
+        let session = state.session.take().ok_or("session_closed")?;
+        let flight = state.new_flight(IoKind::Ordinary, None);
+        let receipt = DiscoveryCopyReceipt { owner_generation: state.generation.to_string(), discovery: live };
+        Ok((OwnerLease { manager: self.clone(), flight, session: Some(session), armed: true }, receipt))
     }
     pub fn has_session(&self) -> bool {
         self.state
@@ -1216,14 +1244,21 @@ fn verify_companion(executable: &std::path::Path, expected_sha256: &str) -> Resu
 }
 
 pub(crate) fn main_local_webview(window: &WebviewWindow, invocation: &ipc::Request<'_>) -> bool {
-    if window.label() != "main" {
+    let Some(origin) = invocation.headers().get("origin").and_then(|value| value.to_str().ok()) else {
         return false;
-    }
+    };
+    main_local_webview_origin(window, origin)
+}
+fn main_local_webview_origin(window: &WebviewWindow, origin: &str) -> bool {
     let Ok(page) = window.url() else { return false };
+    main_local_origin(window.label(), &page, origin, cfg!(debug_assertions))
+}
+fn main_local_origin(label: &str, page: &tauri::Url, origin: &str, development: bool) -> bool {
+    if label != "main" { return false; }
     let local = matches!(
         (page.scheme(), page.host_str(), page.port()),
         ("http", Some("tauri.localhost"), None) | ("tauri", Some("localhost"), None)
-    ) || (cfg!(debug_assertions)
+    ) || (development
         && matches!(
             (page.scheme(), page.host_str(), page.port()),
             ("http", Some("localhost"), Some(1420))
@@ -1231,14 +1266,29 @@ pub(crate) fn main_local_webview(window: &WebviewWindow, invocation: &ipc::Reque
     if !local {
         return false;
     }
-    let Some(origin) = invocation
-        .headers()
-        .get("origin")
-        .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
     origin == page.origin().ascii_serialization()
+}
+
+fn validate_discovery_copy(generation: u64, live: &WorkspaceDiscovery, expected: &DiscoveryCopyRequest)
+    -> Result<(), &'static str>
+{
+    if expected.owner_generation != generation.to_string() || &expected.discovery != live {
+        return Err("protocol_failed");
+    }
+    Ok(())
+}
+
+fn execute_discovery_copy(
+    lease: OwnerLease,
+    receipt: DiscoveryCopyReceipt,
+    writer: impl FnOnce(&str) -> Result<(), &'static str>,
+) -> Result<DiscoveryCopyReceipt, &'static str> {
+    let result = serde_json::to_string(&receipt.discovery)
+        .map_err(|_| "protocol_failed")
+        .and_then(|text| writer(&text));
+    // Clipboard failures are known local outcomes, never uncertain host IO.
+    lease.publish(Outcome::Known);
+    result.map(|()| receipt)
 }
 
 async fn main_lane<T: Send + 'static>(
@@ -1437,6 +1487,34 @@ pub fn workspace_discovery_get(
         return Err("wrong_window");
     }
     manager.discovery_for_gui()
+}
+#[tauri::command]
+pub async fn workspace_discovery_copy(
+    window: WebviewWindow,
+    invocation: ipc::Request<'_>,
+    manager: tauri::State<'_, Arc<WorkspaceManager>>,
+    request_json: String,
+) -> Result<DiscoveryCopyReceipt, &'static str> {
+    if !main_local_webview(&window, &invocation) { return Err("wrong_window"); }
+    let origin = invocation.headers().get("origin").and_then(|value| value.to_str().ok())
+        .ok_or("wrong_window")?.to_owned();
+    let expected: DiscoveryCopyRequest = serde_json::from_str(&request_json).map_err(|_| "protocol_failed")?;
+    let manager = Arc::clone(manager.inner());
+    let app = window.app_handle().clone();
+    let (hwnd, lease, receipt) = main_lane(&app, move || {
+        // Recheck the page after queuing, before creating any owner permit.
+        if !main_local_webview_origin(&window, &origin) { return Err("wrong_window"); }
+        #[cfg(windows)]
+        let hwnd = window.hwnd().map_err(|_| "clipboard_unavailable")?.0 as usize;
+        #[cfg(not(windows))]
+        let hwnd = 0;
+        if hwnd == 0 { return Err("clipboard_unavailable"); }
+        let (lease, receipt) = manager.discovery_copy_lease(&expected)?;
+        Ok((hwnd, lease, receipt))
+    }).await??;
+    tauri::async_runtime::spawn_blocking(move || {
+        execute_discovery_copy(lease, receipt, |text| crate::workspace_clipboard::write_discovery(hwnd, text))
+    }).await.map_err(|_| "transport_uncertain")?
 }
 #[tauri::command]
 pub fn workspace_host_status(
@@ -1860,6 +1938,120 @@ mod input_guard_tests {
             state.phase = Phase::Unknown;
         }
         assert_eq!(manager.discovery_for_gui().err(), Some("transport_uncertain"));
+    }
+    fn copy_request() -> DiscoveryCopyRequest {
+        DiscoveryCopyRequest { owner_generation: "7".into(), discovery: WorkspaceDiscovery {
+            instance_id: "11111111-1111-4111-8111-111111111111".into(),
+            pipe_name: r"\\.\pipe\winsmux-workspace-v1-fixture".into(), schema_version: 1,
+        } }
+    }
+    #[test]
+    fn copy_request_denies_arbitrary_payload_and_noncanonical_owner() {
+        let request = copy_request();
+        let live = request.discovery.clone();
+        assert_eq!(validate_discovery_copy(7, &live, &request), Ok(()));
+        for generation in ["6", "8", "07", "7.0", "", "18446744073709551616"] {
+            let wrong = DiscoveryCopyRequest { owner_generation: generation.into(), discovery: live.clone() };
+            assert_eq!(validate_discovery_copy(7, &live, &wrong), Err("protocol_failed"));
+        }
+        for field in ["instance_id", "pipe_name", "schema_version"] {
+            let mut value = serde_json::to_value(&live).unwrap();
+            value[field] = if field == "schema_version" { serde_json::json!(2) } else { serde_json::json!("other") };
+            let wrong = DiscoveryCopyRequest { owner_generation: "7".into(), discovery: serde_json::from_value(value).unwrap() };
+            assert_eq!(validate_discovery_copy(7, &live, &wrong), Err("protocol_failed"));
+        }
+        let base = serde_json::json!({"owner_generation":"7","discovery":live});
+        for at_root in [false, true] {
+            for key in ["text", "grant", "path", "secret", "extra"] {
+                let mut value = base.clone();
+                if at_root { value[key] = serde_json::json!("arbitrary"); }
+                else { value["discovery"][key] = serde_json::json!("arbitrary"); }
+                assert!(serde_json::from_value::<DiscoveryCopyRequest>(value).is_err());
+            }
+        }
+    }
+    #[test]
+    fn discovery_copy_origin_is_main_local_and_exact_without_external_or_secondary_fallback() {
+        for (page, origin, development, expected) in [
+            ("http://tauri.localhost/", "http://tauri.localhost", false, true),
+            // url::Origin keeps the existing custom-scheme origin opaque.
+            ("tauri://localhost/", "null", false, true),
+            ("tauri://localhost/", "tauri://localhost", false, false),
+            ("http://localhost:1420/", "http://localhost:1420", true, true),
+            ("http://localhost:1420/", "http://localhost:1420", false, false),
+            ("http://tauri.localhost:1420/", "http://tauri.localhost:1420", false, false),
+            ("http://tauri.localhost/", "", false, false),
+            ("http://tauri.localhost/", "null", false, false),
+            ("http://tauri.localhost/", "https://example.com", false, false),
+            ("http://tauri.localhost/", "http://tauri.localhost/", false, false),
+            ("https://example.com/", "https://example.com", true, false),
+            ("http://127.0.0.1:1420/", "http://127.0.0.1:1420", true, false),
+        ] {
+            let page = tauri::Url::parse(page).unwrap();
+            assert_eq!(main_local_origin("main", &page, origin, development), expected, "{page} / {origin}");
+            for label in ["secondary", "", "main-other"] {
+                assert!(!main_local_origin(label, &page, origin, development));
+            }
+        }
+    }
+    #[test]
+    fn copy_without_a_ready_live_owner_never_reserves_or_waits() {
+        let manager = Arc::new(WorkspaceManager::default());
+        for phase in [Phase::Empty, Phase::Opening, Phase::Ready, Phase::Busy, Phase::Stopping,
+            Phase::Unknown, Phase::ForcePrompt, Phase::Finishing, Phase::FailedClosed, Phase::MainClosed, Phase::ExitReleased] {
+            let mut state = manager.state.lock().unwrap();
+            state.phase = phase; state.generation = 7;
+            let before = (state.sequence, state.phase, state.generation);
+            drop(state);
+            assert!(manager.discovery_copy_lease(&copy_request()).is_err());
+            let state = manager.state.lock().unwrap();
+            assert_eq!((state.sequence, state.phase, state.generation), before);
+            assert!(state.session.is_none() && state.flight.is_none());
+        }
+    }
+    #[test]
+    fn copy_receipt_requires_writer_success_and_known_failures_release_the_flight() {
+        for error in [None, Some("clipboard_unavailable"), Some("clipboard_write_failed")] {
+            let manager = Arc::new(WorkspaceManager::default());
+            let flight = manager.state.lock().unwrap().new_flight(IoKind::Ordinary, None);
+            let lease = OwnerLease { manager: manager.clone(), flight: flight.clone(), session: None, armed: true };
+            let request = copy_request();
+            let result = execute_discovery_copy(lease, DiscoveryCopyReceipt {
+                owner_generation: request.owner_generation, discovery: request.discovery.clone(),
+            }, |text| {
+                let value: serde_json::Value = serde_json::from_str(text).unwrap();
+                assert_eq!(value.as_object().unwrap().len(), 3);
+                assert_eq!(serde_json::from_value::<WorkspaceDiscovery>(value).unwrap(), request.discovery);
+                error.map_or(Ok(()), Err)
+            });
+            assert_eq!(result.is_ok(), error.is_none());
+            let state = manager.state.lock().unwrap();
+            // A coordinator-only fixture has no live Session; Known returns it to
+            // Empty rather than inventing a Ready owner. The live path is verified in GUI E2E.
+            assert_eq!(state.phase, Phase::Empty);
+            assert!(state.flight.is_none());
+            assert_eq!(*flight.terminal.lock().unwrap(), Some(Outcome::Known));
+        }
+    }
+    #[test]
+    fn close_waits_for_accepted_copy_but_close_first_denies_copy() {
+        let manager = Arc::new(WorkspaceManager::default());
+        let mut state = manager.state.lock().unwrap();
+        let flight = state.new_flight(IoKind::Ordinary, None);
+        let (ticket, _) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(matches!(state.advance(&ticket), Advance::Await(f) if Arc::ptr_eq(&f, &flight)));
+        let before = state.sequence;
+        drop(state);
+        assert!(manager.discovery_copy_lease(&copy_request()).is_err());
+        assert_eq!(manager.state.lock().unwrap().sequence, before);
+        let lease = OwnerLease { manager: manager.clone(), flight, session: None, armed: true };
+        let request = copy_request();
+        execute_discovery_copy(lease, DiscoveryCopyReceipt {
+            owner_generation: request.owner_generation, discovery: request.discovery,
+        }, |_| Ok(())).unwrap();
+        let mut state = manager.state.lock().unwrap();
+        assert!(matches!(state.advance(&ticket), Advance::Stopped));
+        assert_eq!(state.phase, Phase::Finishing);
     }
     fn intent_update(path: &str) -> Intent {
         Intent::Update(crate::PreparedDesktopUpdate { installer_path:path.into(), expected_sha256:"a".repeat(64) })

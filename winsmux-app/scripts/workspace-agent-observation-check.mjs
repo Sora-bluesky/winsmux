@@ -44,6 +44,25 @@ check('latest failed Q keeps state uncertain', observed.failure(failed) === null
 observed.retire();
 check('retired display cannot commit', observed.begin() === null);
 
+const capabilities = createAgentObservation(initial);
+capabilities.setLocal({ project, pane, busy: false, availability: 'available' });
+capabilities.commit(capabilities.begin(), value(10, { capabilities: { state: 'known', providers: [] } }));
+check('asynchronous provider discovery at unchanged runtime sequence commits', capabilities.commit(capabilities.begin(), value(10))?.capabilities.providers?.[0]?.version === '1' && capabilities.getFrame().availability === 'available');
+const upgraded = { state: 'known', providers: [{ provider: 'codex', version: '2' }, { provider: 'claude', version: '3' }] };
+check('updated CLI version and sibling provider commit without runtime event', capabilities.commit(capabilities.begin(), value(10, { capabilities: upgraded }))?.capabilities.providers?.length === 2);
+check('unchanged runtime and capabilities remain stable', capabilities.commit(capabilities.begin(), value(10, { capabilities: upgraded })) === null);
+const oldCapabilityAttempt = capabilities.begin(), currentCapabilityAttempt = capabilities.begin();
+capabilities.commit(currentCapabilityAttempt, value(10, { capabilities: upgraded }));
+check('older asynchronous discovery attempt cannot roll back CLI version', capabilities.commit(oldCapabilityAttempt, value(10)) === null && capabilities.getFrame().capabilities.providers?.[0]?.version === '2');
+check('older runtime sequence cannot roll back capabilities', capabilities.commit(capabilities.begin(), value(9)) === null && capabilities.getFrame().capabilities.providers?.[0]?.version === '2');
+check('capability update cannot conceal contradictory runtime at same sequence', capabilities.commit(capabilities.begin(), value(10, { pane: { ...pane, observation: { ...run, work: 'failed' } } }))?.availability === 'uncertain' && capabilities.getFrame().capabilities.providers?.[0]?.version === '2');
+check('latest unchanged runtime reread restores correlation with updated capabilities', capabilities.commit(capabilities.begin(), value(10, { capabilities: upgraded }))?.availability === 'available');
+check('probe becoming unavailable clears capabilities without inventing runtime event', capabilities.commit(capabilities.begin(), value(10, { capabilities: { state: 'unknown', providers: null } }))?.capabilities.state === 'unknown');
+check('same sequence recovery from unavailable probe renders detection again', capabilities.commit(capabilities.begin(), value(10, { capabilities: upgraded }))?.capabilities.providers?.[0]?.version === '2');
+capabilities.commit(capabilities.begin(), value(11, { pane: { ...pane, observation: exited }, capabilities: upgraded }));
+check('capability change cannot conceal terminal run regression', capabilities.commit(capabilities.begin(), value(12))?.availability === 'uncertain' && capabilities.getFrame().pane?.observation?.process === 'exited');
+capabilities.retire();
+
 let held = 0, released = 0, frozen = false, inputAllows = true;
 const input = { inspect: () => ({ frozen }), admitControl: () => inputAllows ? (held++, () => { released++; }) : null };
 const admission = createControlAdmission(input);

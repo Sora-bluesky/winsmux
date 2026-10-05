@@ -11,7 +11,8 @@ pub fn ledger_class(operation: OperationName) -> LedgerClass {
     match operation {
         OperationName::CapabilitiesGet
         | OperationName::ProjectList
-        | OperationName::ConnectionList => LedgerClass::CurrentObservation,
+        | OperationName::ConnectionList
+        | OperationName::DiagnosticsGet => LedgerClass::CurrentObservation,
         OperationName::PaneList
         | OperationName::RunGet
         | OperationName::OutputRead

@@ -261,7 +261,7 @@ impl Session {
             id,
             json!({"protocolVersion":PROTOCOL_VERSION,
                 "capabilities":{"tools":{}},
-                "serverInfo":{"name":"winsmux-workspace-mcp","version":"0.38.0"}}),
+                "serverInfo":{"name":"winsmux-workspace-mcp","version":env!("CARGO_PKG_VERSION")}}),
         ))
     }
 
@@ -636,6 +636,16 @@ mod receipt_tests {
 #[cfg(test)]
 mod notification_admission_tests {
     use super::*;
+
+    #[test]
+    fn initialize_reports_the_compiled_package_version() {
+        let mut session = Session::new();
+        let Effect::Reply(bytes) = session.on_line(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"version-proof","version":"1"}}}"#) else {
+            panic!("valid initialize must reply");
+        };
+        let response: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(response["result"]["serverInfo"]["version"], env!("CARGO_PKG_VERSION"));
+    }
 
     fn active(phase: usize, id: Value) -> Active {
         let request = parse_request(br#"{"schema_version":1,"instance_id":"10000000-0000-4000-8000-000000000000","operation_id":"20000000-0000-4000-8000-000000000000","expected_topology_revision":null,"operation":"capabilities.get","params":{}}"#).unwrap();

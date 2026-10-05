@@ -22,39 +22,60 @@ jobs:
             artifact: winsmux-windows-arm64
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           targets: ${{ matrix.target }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - name: Build
-        run: cargo build --release --manifest-path core/Cargo.toml --target ${{ matrix.target }}
+        id: candidate
+        shell: pwsh
+        run: node scripts/build-core-candidate.mjs "${{ matrix.target }}" "$env:GITHUB_SHA" "$env:GITHUB_REF_NAME"
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/winsmux.exe
+          path: ${{ steps.candidate.outputs.artifact_path }}
+          if-no-files-found: error
 
   build-helper:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Package supported remote helper
-        run: bash ./scripts/package-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
-      - name: Test packaged remote helper
-        run: bash ./scripts/test-public-remote-helper.sh remote-helper-dist/winsmux-remote-helper-linux-x64
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
+      - uses: dtolnay/rust-toolchain@1.96.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Package and test supported remote helper
+        id: candidate
+        run: node scripts/collect-core-candidates.mjs helper "$GITHUB_SHA" "$GITHUB_REF_NAME" "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT"
       - name: Upload helper artifact
         uses: actions/upload-artifact@v7
         with:
           name: winsmux-remote-helper-linux-x64
-          path: remote-helper-dist/winsmux-remote-helper-linux-x64
+          path: ${{ steps.candidate.outputs.artifact_path }}
+          if-no-files-found: error
 
   release:
     needs: [build, build-helper]
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        env:
+          GIT_CONFIG_COUNT: "1"
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: "false"
         with:
           fetch-depth: 0
       - uses: actions/setup-node@v6
@@ -63,6 +84,8 @@ jobs:
           cache: npm
           cache-dependency-path: winsmux-app/package-lock.json
       - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
       - name: Bootstrap repo hooks
         shell: pwsh
         run: ./scripts/bootstrap-git-guard.ps1
@@ -73,26 +96,39 @@ jobs:
         working-directory: winsmux-app
         run: npm run test:common-contract-package
       - name: Create Release Assets
-        run: |
-          mkdir -p release
-          cp winsmux-windows-x64/winsmux.exe release/winsmux-x64.exe
-          cp winsmux-windows-arm64/winsmux.exe release/winsmux-arm64.exe
-          cp winsmux-remote-helper-linux-x64/winsmux-remote-helper-linux-x64 release/winsmux-remote-helper-linux-x64
-          cd release
-          sha256sum winsmux-arm64.exe winsmux-remote-helper-linux-x64 winsmux-x64.exe > SHA256SUMS
+        id: collection
+        shell: pwsh
+        run: node scripts/collect-core-candidates.mjs collect "$env:GITHUB_WORKSPACE/artifacts" "$env:GITHUB_SHA" "$env:GITHUB_REF_NAME" "$env:GITHUB_RUN_ID.$env:GITHUB_RUN_ATTEMPT"
       - name: Generate Release Body
         shell: pwsh
-        run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"
+        run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath ".winsmux/build/core-release-body.md"
       - name: Check Release Body Quality
         shell: pwsh
-        run: ./scripts/assert-release-notes-quality.ps1 -ReleaseNotesPath "release/release-body.md"
+        run: ./scripts/assert-release-notes-quality.ps1 -ReleaseNotesPath ".winsmux/build/core-release-body.md"
       - name: Audit Release Public Surface
         shell: pwsh
-        run: ./scripts/audit-public-surface.ps1 -ReleaseNotesPath "release/release-body.md"
+        run: ./scripts/audit-public-surface.ps1 -ReleaseNotesPath ".winsmux/build/core-release-body.md"
+      - name: Stage final integrated Core artifact
+        if: github.ref_name == 'v0.38.0'
+        id: integrated
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .winsmux/build/ci-core-artifacts -ErrorAction Stop | Out-Null
+          node scripts/stage-integrated-ci-artifact.mjs --surface core --source '${{ steps.collection.outputs.release_path }}' --release-body .winsmux/build/core-release-body.md --namespace .winsmux/build/ci-core-artifacts --source-commit "$env:GITHUB_SHA" --run-id "$env:GITHUB_RUN_ID" --run-attempt "$env:GITHUB_RUN_ATTEMPT"
+          if ($LASTEXITCODE -ne 0) { throw 'Final integrated Core artifact staging failed.' }
+      - name: Upload final integrated Core artifact
+        if: github.ref_name == 'v0.38.0'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.integrated.outputs.artifact_name }}
+          path: ${{ steps.integrated.outputs.artifact_path }}/
+          if-no-files-found: error
+      - name: Require integrated publication gate
+        run: node scripts/assert-core-publication-ready.mjs
       - uses: softprops/action-gh-release@v3
         with:
-          body_path: release/release-body.md
-          files: release/*
+          body_path: .winsmux/build/core-release-body.md
+          files: ${{ steps.collection.outputs.release_path }}/*
 
   smoke-public-core:
     needs: release

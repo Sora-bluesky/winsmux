@@ -6453,7 +6453,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux"
-version = "0.36.38"
+version = "0.38.0"
 dependencies = [
  "chrono",
  "crossterm",
@@ -6479,7 +6479,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux-app"
-version = "0.36.38"
+version = "0.38.0"
 dependencies = [
  "chrono",
  "portable-pty",
@@ -6502,7 +6502,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux-remote-helper"
-version = "0.36.38"
+version = "0.38.0"
 dependencies = [
  "libc",
  "serde",
@@ -6529,7 +6529,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux-workspace-mcp"
-version = "0.1.0"
+version = "0.38.0"
 dependencies = [
  "serde",
  "serde_json",

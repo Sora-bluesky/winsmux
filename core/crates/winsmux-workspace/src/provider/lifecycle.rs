@@ -10,9 +10,10 @@ use std::fs::File;
 use std::io::Read;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle as StdRawHandle};
 use std::ptr::{null, null_mut};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::thread;
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, WAIT_OBJECT_0};
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND};
@@ -44,6 +45,27 @@ struct FileIdentity {
     index: u64,
 }
 
+// An observation owns no filesystem handles. Only the creation/resume boundary
+// holds an ExecutablePin, so a completed probe cannot block the CLI updater.
+#[derive(Clone)]
+struct ExecutableSnapshot {
+    alias_path: String,
+    path: String,
+    identities: Vec<FileIdentity>,
+    digest: [u8; 32],
+    #[cfg(debug_assertions)]
+    revalidate_hook: Arc<Mutex<Option<Arc<dyn Fn() + Send + Sync>>>>,
+}
+
+impl ExecutableSnapshot {
+    fn matches(&self, pin: &ExecutablePin) -> bool {
+        self.alias_path.eq_ignore_ascii_case(&pin.alias_path)
+            && self.path.eq_ignore_ascii_case(&pin.path)
+            && self.identities == pin.identities
+            && self.digest == pin.digest
+    }
+}
+
 pub(crate) struct ExecutablePin {
     alias_path: String,
     path: String,
@@ -59,6 +81,16 @@ pub(crate) struct ExecutablePin {
 }
 
 impl ExecutablePin {
+    fn snapshot(&self) -> ExecutableSnapshot {
+        ExecutableSnapshot {
+            alias_path: self.alias_path.clone(),
+            path: self.path.clone(),
+            identities: self.identities.clone(),
+            digest: self.digest,
+            #[cfg(debug_assertions)]
+            revalidate_hook: Arc::new(Mutex::new(None)),
+        }
+    }
     pub(crate) fn discover(provider: Provider) -> Result<Self, PinError> {
         let name = match provider {
             Provider::Codex => "codex.exe",
@@ -299,11 +331,47 @@ fn file_identity(file: &File) -> Result<FileIdentity, PinError> {
 
 pub(crate) struct ReadyProvider {
     pub(crate) version: String,
-    pub(crate) pin: Arc<ExecutablePin>,
+    snapshot: ExecutableSnapshot,
+}
+
+impl ReadyProvider {
+    pub(crate) fn pin(&self, provider: Provider) -> Result<ExecutablePin, PinError> {
+        let pin = ExecutablePin::discover(provider)?;
+        if !self.snapshot.matches(&pin) {
+            return Err(PinError::Changed);
+        }
+        #[cfg(debug_assertions)]
+        if let Some(hook) = self.snapshot.revalidate_hook.lock().ok()
+            .and_then(|hook| hook.as_ref().cloned()) {
+            pin.set_revalidate_hook(hook);
+        }
+        Ok(pin)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(crate) fn set_revalidate_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) -> bool {
+        let Ok(mut slot) = self.snapshot.revalidate_hook.lock() else { return false; };
+        *slot = Some(hook);
+        true
+    }
+}
+
+struct ProbeRequest {
+    pending: bool,
+    force: bool,
+    busy: bool,
 }
 
 struct ProbeSlot {
     state: Mutex<ProbeState>,
+    request: Mutex<ProbeRequest>,
+    wake: Condvar,
+    closing: AtomicBool,
+    last_observed: Mutex<Option<ExecutableSnapshot>>,
+    #[cfg(test)]
+    detail_reads: AtomicUsize,
+    #[cfg(test)]
+    refresh_requests: AtomicUsize,
     #[cfg(test)]
     checkpoint: Mutex<Option<Arc<dyn Fn(ProbeCheckpoint) + Send + Sync>>>,
     #[cfg(test)]
@@ -336,6 +404,7 @@ pub(crate) struct ProbeRegistry {
     claude: Arc<ProbeSlot>,
     codex_worker: Mutex<Option<thread::JoinHandle<()>>>,
     claude_worker: Mutex<Option<thread::JoinHandle<()>>>,
+    join_failed: AtomicBool,
 }
 
 impl ProbeRegistry {
@@ -349,6 +418,7 @@ impl ProbeRegistry {
             claude,
             codex_worker: Mutex::new(codex_worker),
             claude_worker: Mutex::new(claude_worker),
+            join_failed: AtomicBool::new(false),
         }
     }
 
@@ -356,11 +426,29 @@ impl ProbeRegistry {
         self.slot(provider).ready()
     }
 
+    pub(crate) fn is_ready(&self, provider: Provider) -> bool {
+        self.slot(provider).is_ready()
+    }
+
+    pub(crate) fn refresh(&self, provider: Provider, force: bool) {
+        self.slot(provider).request(force);
+    }
+
+    pub(crate) fn invalidate(&self, provider: Provider) {
+        let slot = self.slot(provider);
+        if let Ok(mut state) = slot.state.lock() {
+            if matches!(&*state, ProbeState::Ready(_)) {
+                *state = ProbeState::Failed;
+            }
+        }
+        slot.request(true);
+    }
+
     pub(crate) fn cancel_all(&self) -> bool {
         self.codex.cancel();
         self.claude.cancel();
-        let codex = self.join_finished(&self.codex_worker, &self.codex);
-        let claude = self.join_finished(&self.claude_worker, &self.claude);
+        let codex = self.was_joined(&self.codex_worker, &self.codex);
+        let claude = self.was_joined(&self.claude_worker, &self.claude);
         codex && claude
     }
 
@@ -372,19 +460,15 @@ impl ProbeRegistry {
         codex && claude
     }
 
-    fn join_finished(
+    fn was_joined(
         &self,
         worker: &Mutex<Option<thread::JoinHandle<()>>>,
         slot: &ProbeSlot,
     ) -> bool {
-        let Ok(mut guard) = worker.lock() else {
+        let Ok(guard) = worker.try_lock() else {
             return false;
         };
-        if guard.as_ref().is_some_and(|handle| !handle.is_finished()) {
-            return false;
-        }
-        let joined = guard.take().is_none_or(|handle| handle.join().is_ok());
-        joined && slot.is_terminal()
+        guard.is_none() && !self.join_failed.load(Ordering::Acquire) && slot.is_terminal()
     }
 
     fn join_worker(
@@ -393,10 +477,12 @@ impl ProbeRegistry {
         slot: &ProbeSlot,
     ) -> bool {
         let Ok(mut guard) = worker.lock() else {
+            self.join_failed.store(true, Ordering::Release);
             return false;
         };
         let joined = guard.take().is_none_or(|handle| handle.join().is_ok());
-        joined && slot.is_terminal()
+        if !joined { self.join_failed.store(true, Ordering::Release); }
+        !self.join_failed.load(Ordering::Acquire) && slot.is_terminal()
     }
 
     fn slot(&self, provider: Provider) -> &ProbeSlot {
@@ -404,6 +490,72 @@ impl ProbeRegistry {
             Provider::Codex => &self.codex,
             Provider::Claude => &self.claude,
         }
+    }
+}
+
+#[cfg(test)]
+impl ProbeRegistry {
+    // Immutable Ready observations without OS handles or probe workers.
+    // A fixture cannot spawn a CLI; counters also detect any attempted refresh.
+    pub(crate) fn testing_ready() -> Self {
+        let slot = || {
+            let slot = ProbeSlot::probing();
+            *slot.request.lock().unwrap() =
+                ProbeRequest { pending: false, force: false, busy: false };
+            *slot.state.lock().unwrap() = ProbeState::Ready(ReadyProvider {
+                version: "9.999.0".to_owned(),
+                snapshot: ExecutableSnapshot {
+                    alias_path: "C:/fixture-private/provider.exe".to_owned(),
+                    path: "C:/fixture-private/provider.exe".to_owned(),
+                    identities: vec![FileIdentity { volume: 1, index: 1 }],
+                    digest: [42; 32],
+                    #[cfg(debug_assertions)]
+                    revalidate_hook: Arc::new(Mutex::new(None)),
+                },
+            });
+            Arc::new(slot)
+        };
+        Self {
+            codex: slot(), claude: slot(),
+            codex_worker: Mutex::new(None), claude_worker: Mutex::new(None),
+            join_failed: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn testing_observation_counts(&self) -> [usize; 4] {
+        [
+            self.codex.detail_reads.load(Ordering::SeqCst),
+            self.claude.detail_reads.load(Ordering::SeqCst),
+            self.codex.refresh_requests.load(Ordering::SeqCst),
+            self.claude.refresh_requests.load(Ordering::SeqCst),
+        ]
+    }
+
+    pub(crate) fn testing_join_gate() -> (Self, std::sync::mpsc::Sender<()>) {
+        Self::testing_join_gate_result(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_join_gate_result(fail: bool) -> (Self, std::sync::mpsc::Sender<()>) {
+        let registry = Self::testing_ready();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let slot = Arc::clone(&registry.codex);
+        *registry.codex_worker.lock().unwrap() = Some(thread::spawn(move || {
+            let _ = rx.recv();
+            slot.finish(None);
+            assert!(!fail, "synthetic gated worker join failure");
+        }));
+        (registry, tx)
+    }
+
+    pub(crate) fn testing_join_failure() -> Self {
+        let registry = Self::testing_ready();
+        let slot = Arc::clone(&registry.codex);
+        *registry.codex_worker.lock().unwrap() = Some(thread::spawn(move || {
+            slot.finish(None);
+            panic!("synthetic worker join failure");
+        }));
+        registry
     }
 }
 
@@ -417,7 +569,7 @@ impl Clone for ReadyProvider {
     fn clone(&self) -> Self {
         Self {
             version: self.version.clone(),
-            pin: Arc::clone(&self.pin),
+            snapshot: self.snapshot.clone(),
         }
     }
 }
@@ -434,6 +586,14 @@ impl ProbeSlot {
                 cancelled: false,
                 job: None,
             }),
+            request: Mutex::new(ProbeRequest { pending: true, force: false, busy: false }),
+            wake: Condvar::new(),
+            closing: AtomicBool::new(false),
+            last_observed: Mutex::new(None),
+            #[cfg(test)]
+            detail_reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            refresh_requests: AtomicUsize::new(0),
             #[cfg(test)]
             checkpoint: Mutex::new(None),
             #[cfg(test)]
@@ -456,6 +616,9 @@ impl ProbeSlot {
     }
 
     fn ready(&self) -> Option<ReadyProvider> {
+        #[cfg(test)]
+        self.detail_reads.fetch_add(1, Ordering::SeqCst);
+        if self.closing.load(Ordering::Acquire) { return None; }
         let guard = self.state.lock().ok()?;
         match &*guard {
             ProbeState::Ready(ready) => Some(ready.clone()),
@@ -463,7 +626,16 @@ impl ProbeSlot {
         }
     }
 
+    fn is_ready(&self) -> bool {
+        if self.closing.load(Ordering::Acquire) { return false; }
+        self.state
+            .lock()
+            .ok()
+            .is_some_and(|state| matches!(&*state, ProbeState::Ready(_)))
+    }
+
     fn cancelled(&self) -> bool {
+        if self.closing.load(Ordering::Acquire) { return true; }
         let Ok(guard) = self.state.lock() else {
             return true;
         };
@@ -500,6 +672,10 @@ impl ProbeSlot {
     }
 
     fn cancel(&self) -> bool {
+        let request = self.request.lock();
+        self.closing.store(true, Ordering::Release);
+        drop(request);
+        self.wake.notify_all();
         let Ok(mut guard) = self.state.lock() else {
             return false;
         };
@@ -520,7 +696,7 @@ impl ProbeSlot {
             return;
         };
         if let ProbeState::Probing { cancelled, .. } = &*guard {
-            if !*cancelled {
+            if !*cancelled && !self.closing.load(Ordering::Acquire) {
                 if let Some(ready) = ready {
                     *guard = ProbeState::Ready(ready);
                     return;
@@ -529,6 +705,19 @@ impl ProbeSlot {
         }
         *guard = ProbeState::Failed;
     }
+
+    fn request(&self, force: bool) {
+        #[cfg(test)]
+        self.refresh_requests.fetch_add(1, Ordering::SeqCst);
+        let Ok(mut request) = self.request.lock() else { return; };
+        if self.closing.load(Ordering::Acquire) { return; }
+        // A request already being verified owns this work; observation polls do
+        // not build an unbounded queue or repeatedly execute the version CLI.
+        if request.busy && !force { return; }
+        request.pending = true;
+        request.force |= force;
+        self.wake.notify_one();
+    }
 }
 
 fn spawn_probe(slot: Arc<ProbeSlot>, provider: Provider) -> Option<thread::JoinHandle<()>> {
@@ -536,10 +725,24 @@ fn spawn_probe(slot: Arc<ProbeSlot>, provider: Provider) -> Option<thread::JoinH
     match thread::Builder::new()
         .name(format!("winsmux-version-{}", provider.wire()))
         .spawn(move || {
-            let result = std::panic::catch_unwind(|| probe_version(&worker, provider))
-                .ok()
-                .flatten();
-            worker.finish(result);
+            loop {
+                let Ok(mut request) = worker.request.lock() else { worker.finish(None); return; };
+                while !request.pending && !worker.closing.load(Ordering::Acquire) {
+                    let Ok(next) = worker.wake.wait(request) else { worker.finish(None); return; };
+                    request = next;
+                }
+                if worker.closing.load(Ordering::Acquire) { worker.finish(None); return; }
+                let force = request.force;
+                request.pending = false;
+                request.force = false;
+                request.busy = true;
+                drop(request);
+                if std::panic::catch_unwind(|| refresh_provider(&worker, provider, force)).is_err() {
+                    worker.finish(None);
+                }
+                let Ok(mut request) = worker.request.lock() else { worker.finish(None); return; };
+                request.busy = false;
+            }
         })
     {
         Ok(handle) => Some(handle),
@@ -548,6 +751,33 @@ fn spawn_probe(slot: Arc<ProbeSlot>, provider: Provider) -> Option<thread::JoinH
             None
         }
     }
+}
+
+fn refresh_provider(slot: &ProbeSlot, provider: Provider, force: bool) {
+    if slot.closing.load(Ordering::Acquire) { return; }
+    let pin = ExecutablePin::discover(provider).ok();
+    if let (Some(ready), Some(pin)) = (slot.ready(), pin.as_ref()) {
+        if ready.snapshot.matches(pin) { return; }
+    }
+    let same_failed = slot.state.lock().ok().is_some_and(|state| matches!(&*state, ProbeState::Failed))
+        && slot.last_observed.lock().ok().is_some_and(|last| match (last.as_ref(), pin.as_ref()) {
+            (Some(last), Some(pin)) => last.matches(pin),
+            (None, None) => true,
+            _ => false,
+        });
+    if same_failed && !force { return; }
+    if let Ok(mut state) = slot.state.lock() {
+        if slot.closing.load(Ordering::Acquire) { return; }
+        *state = ProbeState::Probing { cancelled: false, job: None };
+    } else { return; }
+    if let Ok(mut last) = slot.last_observed.lock() {
+        *last = pin.as_ref().map(ExecutablePin::snapshot);
+    }
+    let ready = pin.and_then(|pin| {
+        if slot.cancelled() || pin.revalidate(provider).is_err() { return None; }
+        probe_version_from_verified_pin(slot, provider, pin)
+    });
+    slot.finish(ready);
 }
 
 struct ProbeLease<'a> {
@@ -690,12 +920,14 @@ fn probe_version_from_verified_pin(
     }
     #[cfg(test)]
     slot.checkpoint(ProbeCheckpoint::AfterJob);
-    if slot.cancelled() {
+    if slot.cancelled() || pin.revalidate(provider).is_err() {
         return None;
     }
+    let snapshot = pin.snapshot();
     if resume_once(lease.child().thread.0) != 1 {
         return None;
     }
+    drop(pin);
     let output = RawHandle(lease.child_mut().output.take());
     lease.reader = thread::Builder::new()
         .name("winsmux-version-output".to_owned())
@@ -724,9 +956,11 @@ fn probe_version_from_verified_pin(
         return None;
     }
     let version = parse_version(provider, &bytes?)?;
+    let current = ExecutablePin::discover(provider).ok()?;
+    if !snapshot.matches(&current) || slot.cancelled() { return None; }
     Some(ReadyProvider {
         version,
-        pin: Arc::new(pin),
+        snapshot,
     })
 }
 
@@ -847,6 +1081,151 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    struct TestPath(Option<std::ffi::OsString>);
+    impl TestPath {
+        fn only(path: &Path) -> Self {
+            let previous=std::env::var_os("PATH");
+            std::env::set_var("PATH",path);
+            Self(previous)
+        }
+    }
+    impl Drop for TestPath {
+        fn drop(&mut self) {
+            if let Some(path)=&self.0 { std::env::set_var("PATH",path); }
+            else { std::env::remove_var("PATH"); }
+        }
+    }
+
+    fn version_fixture(root: &Path) -> std::path::PathBuf {
+        fs::create_dir_all(root).unwrap();
+        let src=root.join("fixture.rs");
+        fs::write(&src,r#"use std::io::Write;
+fn main() {
+    let exe=std::env::current_exe().unwrap();let root=exe.parent().unwrap();
+    let name=exe.file_stem().unwrap().to_str().unwrap();
+    let mut log=std::fs::OpenOptions::new().create(true).append(true).open(root.join(format!("{name}.count"))).unwrap();
+    writeln!(log,"probe").unwrap();
+    let v=std::fs::read_to_string(root.join("version.txt")).unwrap();
+    if name=="codex" { println!("codex-cli {}",v.trim()); }
+    else { println!("{} (Claude Code)",v.trim()); }
+}"#).unwrap();
+        let out=root.join("fixture.exe");
+        use std::os::windows::process::CommandExt;
+        assert!(Command::new("rustc").args(["--edition","2021","--crate-name","provider_update_fixture","-o"])
+            .arg(&out).arg(&src).creation_flags(0x08000000).status().unwrap().success());
+        out
+    }
+
+    fn settle(registry: &ProbeRegistry, provider: Provider) {
+        let slot=registry.slot(provider);
+        let start=std::time::Instant::now();
+        loop {
+            let request=slot.request.lock().unwrap();
+            if !request.pending && !request.busy && slot.is_terminal() { return; }
+            drop(request);
+            assert!(start.elapsed()<Duration::from_secs(30),"fixture probe did not settle");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn provider_updates_reuse_versions_release_handles_and_recover_installations() {
+        let root=std::env::temp_dir().join(format!("winsmux-provider-update-{}",uuid::Uuid::new_v4()));
+        let source=version_fixture(&root);
+        fs::write(root.join("version.txt"),"0.999.1").unwrap();
+        let path=TestPath::only(&root);
+        let registry=ProbeRegistry::start();
+        for provider in [Provider::Codex,Provider::Claude] {
+            settle(&registry,provider);assert!(!registry.is_ready(provider));
+            let name=match provider { Provider::Codex=>"codex",Provider::Claude=>"claude" };
+            let exe=root.join(format!("{name}.exe"));
+            fs::copy(&source,&exe).unwrap();registry.refresh(provider,false);settle(&registry,provider);
+            let old=registry.ready(provider).unwrap();assert_eq!(old.version,"0.999.1");
+            let count=root.join(format!("{name}.count"));
+            assert_eq!(fs::read_to_string(&count).unwrap().lines().count(),1);
+            registry.refresh(provider,false);settle(&registry,provider);
+            assert_eq!(fs::read_to_string(&count).unwrap().lines().count(),1,"unchanged observation executed CLI");
+            // Cached Ready survives, but owns no handle that prevents replacement.
+            let previous=root.join(format!("{name}-old.exe"));
+            fs::rename(&exe,&previous).unwrap();fs::copy(&source,&exe).unwrap();
+            fs::write(root.join("version.txt"),"1.999.2").unwrap();
+            assert!(old.pin(provider).is_err(),"old snapshot accepted a replacement identity");
+            registry.refresh(provider,false);settle(&registry,provider);
+            let current=registry.ready(provider).unwrap();assert_eq!(current.version,"1.999.2");
+            let pin=current.pin(provider).unwrap();
+            assert!(fs::write(&exe,b"mutation").is_err(),"short pin did not protect critical section");
+            drop(pin);
+            // Same inode/length: a byte change must invalidate the snapshot too.
+            let mut bytes=fs::read(&exe).unwrap();bytes.push(0);fs::write(&exe,&bytes).unwrap();
+            registry.refresh(provider,false);settle(&registry,provider);
+            let old=registry.ready(provider).unwrap();
+            use std::os::windows::fs::MetadataExt;
+            let write_time=fs::metadata(&exe).unwrap().last_write_time();
+            *bytes.last_mut().unwrap()=1;fs::write(&exe,&bytes).unwrap();
+            let file=fs::OpenOptions::new().write(true).open(&exe).unwrap();
+            let time=windows_sys::Win32::Foundation::FILETIME { dwLowDateTime:write_time as u32,dwHighDateTime:(write_time>>32) as u32 };
+            assert_ne!(unsafe { windows_sys::Win32::Storage::FileSystem::SetFileTime(file.as_raw_handle() as HANDLE,null(),null(),&time) },0);
+            drop(file);
+            assert_eq!(fs::metadata(&exe).unwrap().last_write_time(),write_time);
+            assert!(old.pin(provider).is_err(),"same-size bytes change was missed");
+            registry.refresh(provider,false);settle(&registry,provider);assert!(registry.ready(provider).is_some());
+            fs::remove_file(&exe).unwrap();registry.refresh(provider,false);settle(&registry,provider);
+            assert!(!registry.is_ready(provider));
+            fs::copy(&source,&exe).unwrap();registry.refresh(provider,false);settle(&registry,provider);
+            assert!(registry.is_ready(provider));
+            // Restore the first version for the next provider's initial observation.
+            fs::write(root.join("version.txt"),"0.999.1").unwrap();
+        }
+        assert!(registry.cancel_and_join());drop(registry);drop(path);
+        let moved=root.with_extension("moved");fs::rename(&root,&moved).unwrap();
+        fs::remove_dir_all(moved).unwrap();
+    }
+
+    #[test]
+    fn same_fingerprint_failed_probe_retries_only_with_explicit_refresh() {
+        let root=std::env::temp_dir().join(format!("winsmux-provider-retry-{}",uuid::Uuid::new_v4()));
+        let source=version_fixture(&root);
+        fs::copy(&source,root.join("codex.exe")).unwrap();
+        fs::write(root.join("version.txt"),"unrecognized").unwrap();
+        let path=TestPath::only(&root);let registry=ProbeRegistry::start();
+        settle(&registry,Provider::Codex);assert!(!registry.is_ready(Provider::Codex));
+        fs::write(root.join("version.txt"),"9.999.3").unwrap();
+        registry.refresh(Provider::Codex,false);settle(&registry,Provider::Codex);
+        assert!(!registry.is_ready(Provider::Codex));
+        assert_eq!(fs::read_to_string(root.join("codex.count")).unwrap().lines().count(),1);
+        registry.refresh(Provider::Codex,true);settle(&registry,Provider::Codex);
+        assert_eq!(registry.ready(Provider::Codex).unwrap().version,"9.999.3");
+        assert_eq!(fs::read_to_string(root.join("codex.count")).unwrap().lines().count(),2);
+        assert!(registry.cancel_and_join());drop(registry);drop(path);fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn refresh_requests_coalesce_and_closing_rejects_pending_and_inflight_results() {
+        let root=std::env::temp_dir().join(format!("winsmux-provider-close-{}",uuid::Uuid::new_v4()));
+        let source=version_fixture(&root);
+        fs::write(root.join("version.txt"),"3.999.1").unwrap();
+        let path=TestPath::only(&root);let registry=ProbeRegistry::start();
+        settle(&registry,Provider::Codex);settle(&registry,Provider::Claude);
+        let (entered_tx,entered_rx)=mpsc::sync_channel(1);
+        let (release_tx,release_rx)=mpsc::sync_channel(1);
+        let release_rx=Mutex::new(release_rx);
+        *registry.codex.checkpoint.lock().unwrap()=Some(Arc::new(move |point| {
+            if point==ProbeCheckpoint::AfterReader {
+                entered_tx.send(()).unwrap();release_rx.lock().unwrap().recv().unwrap();
+            }
+        }));
+        fs::copy(&source,root.join("codex.exe")).unwrap();registry.refresh(Provider::Codex,false);
+        entered_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        for _ in 0..20 { registry.refresh(Provider::Codex,false);registry.refresh(Provider::Codex,true); }
+        assert!(!registry.cancel_all(),"held worker cleanup must remain pending");
+        release_tx.send(()).unwrap();assert!(registry.cancel_and_join());
+        assert!(!registry.is_ready(Provider::Codex));
+        registry.refresh(Provider::Codex,true);
+        assert!(!registry.codex.request.lock().unwrap().busy);
+        assert!(registry.codex_worker.lock().unwrap().is_none());
+        drop(registry);drop(path);fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn failed_state_cannot_claim_probe_worker_was_joined() {
         let codex = Arc::new(ProbeSlot::probing());
@@ -863,10 +1242,40 @@ mod tests {
             claude,
             codex_worker: Mutex::new(Some(worker)),
             claude_worker: Mutex::new(None),
+            join_failed: AtomicBool::new(false),
         };
         assert!(!registry.cancel_all(), "terminal state preceded worker join");
         release_tx.send(()).expect("release worker");
         assert!(registry.cancel_and_join(), "both workers must be joined");
+    }
+
+    #[test]
+    fn cancellation_before_first_refresh_reaches_terminal_without_spawning() {
+        let codex = Arc::new(ProbeSlot::probing());
+        let claude = Arc::new(ProbeSlot::probing());
+        codex.cancel(); claude.cancel();
+        let registry = ProbeRegistry {
+            codex_worker: Mutex::new(spawn_probe(Arc::clone(&codex), Provider::Codex)),
+            claude_worker: Mutex::new(spawn_probe(Arc::clone(&claude), Provider::Claude)),
+            codex, claude, join_failed: AtomicBool::new(false),
+        };
+        assert!(registry.cancel_and_join());
+        assert!(registry.codex.is_terminal() && registry.claude.is_terminal());
+        assert!(registry.cancel_all());
+        assert!(!registry.is_ready(Provider::Codex) && !registry.is_ready(Provider::Claude));
+    }
+
+    #[test]
+    fn join_failure_is_sticky_for_both_providers_and_every_later_drain() {
+        for provider in [Provider::Codex, Provider::Claude] {
+            let registry = ProbeRegistry::testing_ready();
+            let slot = Arc::clone(match provider { Provider::Codex => &registry.codex, Provider::Claude => &registry.claude });
+            let handle = thread::spawn(move || { slot.finish(None); panic!("synthetic worker join failure"); });
+            *match provider { Provider::Codex => &registry.codex_worker, Provider::Claude => &registry.claude_worker }.lock().unwrap() = Some(handle);
+            assert!(!registry.cancel_and_join());
+            assert!(!registry.cancel_all());
+            assert!(!registry.cancel_and_join(), "consumed handle must not erase join failure");
+        }
     }
 
     #[test]
@@ -893,18 +1302,38 @@ mod tests {
         let claude = Arc::new(ProbeSlot::probing());
         claude.finish(Some(ReadyProvider {
             version: "fixture".to_owned(),
-            pin: Arc::new(pin),
+            snapshot: pin.snapshot(),
         }));
+        drop(pin);
         let registry = ProbeRegistry {
             codex,
             claude,
             codex_worker: Mutex::new(None),
             claude_worker: Mutex::new(None),
+            join_failed: AtomicBool::new(false),
         };
         assert!(registry.ready(Provider::Codex).is_none());
         assert_eq!(registry.ready(Provider::Claude).unwrap().version, "fixture");
+        assert!(!registry.is_ready(Provider::Codex));
+        assert!(registry.is_ready(Provider::Claude));
         drop(registry);
         fs::remove_dir_all(root).expect("remove provider fixture");
+    }
+
+    #[test]
+    fn readiness_observation_denies_probing_cancelled_failed_and_poisoned() {
+        let slot = ProbeSlot::probing();
+        assert!(!slot.is_ready());
+        assert!(!slot.cancel(), "a probing worker is not yet terminal");
+        assert!(!slot.is_ready());
+        slot.finish(None);
+        assert!(!slot.is_ready());
+        let poisoned = ProbeSlot::probing();
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = poisoned.state.lock().unwrap();
+            panic!("synthetic poisoned probe state");
+        });
+        assert!(!poisoned.is_ready());
     }
 
     fn cancel_at_probe_checkpoint(point: ProbeCheckpoint) {
@@ -914,6 +1343,7 @@ mod tests {
         let source = Path::new(&system).join("System32").join("cmd.exe");
         let executable = root.join("codex.exe");
         fs::copy(source, &executable).expect("probe fixture executable");
+        let _path=TestPath::only(&root);
         let pin = ExecutablePin::open(executable.to_str().unwrap(), "codex.exe")
             .expect("fixture pin");
         let slot = Arc::new(ProbeSlot::probing());
@@ -997,6 +1427,7 @@ mod tests {
             claude,
             codex_worker: Mutex::new(Some(worker)),
             claude_worker: Mutex::new(None),
+            join_failed: AtomicBool::new(false),
         };
         entered_rx
             .recv_timeout(Duration::from_secs(15))

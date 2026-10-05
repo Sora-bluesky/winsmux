@@ -23,3 +23,6 @@ core/crates/winsmux-workspace/schema/request.schema.json text eol=lf
 core/crates/winsmux-workspace/schema/response.schema.json text eol=lf
 core/crates/winsmux-workspace/schema/snapshot.schema.json text eol=lf
 winsmux-app/src/generated/workspace-contract.ts text eol=lf
+
+# Frozen license documents, inventories and source archives bind their raw bytes.
+distribution/windows-licenses/** -text

@@ -2465,6 +2465,14 @@ fn optional_artifact_sidecar_failures_keep_real_owner_generation_usable() {
         )), "artifact.register");
         let artifact_id = registered["result"]["data"]["artifact"]["artifact_id"].as_str().unwrap();
 
+        let before_failure = assert_success(&host.transact(&request(
+            "capabilities.get", Some(instance), json!({}),
+        )), "capabilities.get");
+        let stable_operations = |response: &Value| {
+            response["result"]["data"]["operations"].as_array().unwrap()
+                .iter().filter(|operation| operation.as_str() != Some("agent.launch"))
+                .cloned().collect::<Vec<_>>()
+        };
         let unavailable = request(
             "artifact.choice.list", Some(instance), json!({"project_id":project_id}),
         );
@@ -2473,7 +2481,8 @@ fn optional_artifact_sidecar_failures_keep_real_owner_generation_usable() {
             "capabilities.get", Some(instance), json!({}),
         )), "capabilities.get");
         assert_eq!(capabilities["instance_id"], instance, "{fault}: host generation changed");
-        assert_eq!(capabilities["result"]["data"]["operations"].as_array().unwrap().len(), 29);
+        assert_eq!(stable_operations(&capabilities), stable_operations(&before_failure),
+            "{fault}: optional sidecar failure changed implemented operations");
         assert!(contains_bytes(
             &host.resources.output.as_ref().unwrap().captured(),
             b"winsmux workspace: protocol_failed",

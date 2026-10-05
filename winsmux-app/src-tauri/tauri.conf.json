@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "winsmux",
-  "version": "0.36.38",
+  "version": "0.38.0",
   "identifier": "io.github.sora-bluesky.winsmux",
   "build": {
     "beforeDevCommand": "npm run prepare:companion-cli && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run prepare:companion-cli:release && npm run build",
+    "beforeBundleCommand": "node ./src-tauri/scripts/check-bundled-distribution.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -29,12 +30,11 @@
   "bundle": {
     "active": true,
     "externalBin": [
-      "binaries/winsmux"
+      "binaries/winsmux",
+      "binaries/winsmux-workspace-mcp"
     ],
     "resources": {
-      "../../scripts/winsmux-core.ps1": "scripts/winsmux-core.ps1",
-      "../../winsmux-core/scripts/*": "winsmux-core/scripts",
-      "../../winsmux-core/router/*": "winsmux-core/router"
+      "binaries/licenses": "licenses"
     },
     "targets": "all",
     "icon": [
@@ -63,6 +63,7 @@
         ]
       },
       "nsis": {
+        "template": "nsis/installer.nsi",
         "installerHooks": "nsis-installer-hooks.nsh",
         "languages": [
           "English",

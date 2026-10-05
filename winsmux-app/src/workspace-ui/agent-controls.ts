@@ -204,14 +204,14 @@ export function createAgentControls(container: HTMLElement, initial: AgentContro
       if (!validRevision(next.observationRevision) || next.observationRevision <= snapshot.observationRevision) return false;
       snapshot = copySnapshot(next); render(); return true;
     },
-    settle(ticket: string, original: AgentTarget, phase: AgentSettlementPhase): boolean {
+    settle(ticket: string, original: AgentTarget, phase: AgentSettlementPhase, reason?: string): boolean {
       if (disposed || retired || !pending || pending.ticket !== ticket || !sameTarget(pending.intent, original)) return false;
       if (phase === 'awaiting' || phase === 'unknown') {
         if (pending.phase === phase) return false;
         pending.phase = phase; render(); return true;
       }
       if (phase !== 'completed' && phase !== 'refused') return false;
-      pending = null; message = phase === 'completed' ? '要求の処理を確認しました。実行状態は観測の根拠で確認してください。' : '要求は拒否されました。対象と設定を再確認してください。'; render(); return true;
+      pending = null; message = reason || (phase === 'completed' ? '要求の処理を確認しました。実行状態は観測の根拠で確認してください。' : '要求は拒否されました。対象と設定を再確認してください。'); render(); return true;
     },
     dispose() {
       if (disposed) return;

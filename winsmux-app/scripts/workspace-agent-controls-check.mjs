@@ -82,6 +82,17 @@ try {
       check('unknown duplicate inert', !settle('unknown'));
       check('correlated refusal releases only admission', settle('refused') && !button('launch').disabled && field('work').includes('未確認'));
       check('settlement duplicate inert', !settle('completed'));
+      reset(); choose(); button('interrupt').click();
+      const refusalReason='選択・占有・導入版・作業フォルダーを確認できないため送信していません。';
+      const originalInterrupt=calls[0];
+      for(const key of ['instanceId','generation','projectId','paneId','runId'])check(`foreign ${key} reason cannot alter pending display`,!view.settle(originalInterrupt.ticket,{...originalInterrupt.intent,[key]:'wrong'},'refused',refusalReason)&&!field('admission').includes(refusalReason));
+      check('foreign ticket reason cannot alter pending display',!view.settle('foreign-ticket',originalInterrupt.intent,'refused',refusalReason)&&!field('admission').includes(refusalReason));
+      check('correlated refusal preserves actual reason without fabricating run exit',view.settle(originalInterrupt.ticket,originalInterrupt.intent,'refused',refusalReason)&&field('admission')===refusalReason&&field('process')==='プロセス: 稼働中'&&field('work')==='作業: 未確認');
+      check('duplicate result cannot replace preserved refusal reason',!view.settle(originalInterrupt.ticket,originalInterrupt.intent,'completed','different')&&field('admission')===refusalReason);
+      reset(); choose('claude'); launch();
+      const plainReason='<b>要求の処理を確認しました。</b> 実行状態は観測の根拠で確認してください。';
+      check('correlated reason renders as plain text and cannot assert work completion',view.settle(calls[0].ticket,calls[0].intent,'completed',plainReason)&&field('admission')===plainReason&&!host.querySelector('[data-field="admission"] b')&&field('work')==='作業: 未確認');
+      reset(); choose('claude'); launch(); settle('refused');
       launch(); check('new explicit request gets new UUID', calls.length === 2 && calls[0].ticket !== calls[1].ticket);
       reset(); choose(); host.querySelector('details').open = true;
       const values = ['  exact\n日本語🧪  ', ' ']; const textareas = host.querySelectorAll('textarea'); textareas[0].value = values[0]; textareas[1].value = values[1]; choose('claude');
@@ -111,7 +122,7 @@ try {
         check(`${availability} blocks mutations no current success`, calls.length === 0 && field('state').includes('現在の状態を確認できません') && field('process').includes('未確認'));
       }
       reset(); choose(); update(s => { s.busy = true; }); launch(); button('interrupt').click(); check('caller busy blocks mutations', calls.length === 0);
-      for (const change of [s => { s.pane.current_run_id = 'new'; s.pane.observation.run_id = 'new'; }, s => { s.pane.pane_id = 'other'; s.pane.observation.pane_id = 'other'; }, s => { s.project.project_id = 'other'; s.pane.project_id = 'other'; }, s => { s.capabilities.providers[0].version = 'changed'; }, s => { s.capabilities.state = 'unknown'; }, s => { s.project.root_state = 'changed'; }, s => { s.project.path = 'C:\\別の場所'; }, s => { s.availability = 'uncertain'; }]) {
+      for (const change of [s => { s.pane.current_run_id = 'new'; s.pane.observation.run_id = 'new'; }, s => { s.pane.pane_id = 'other'; s.pane.observation.pane_id = 'other'; }, s => { s.project.project_id = 'other'; s.pane.project_id = 'other'; }, s => { s.capabilities.providers[0].version = 'changed'; }, s => { s.capabilities.providers = []; }, s => { s.capabilities.state = 'unknown'; }, s => { s.project.root_state = 'changed'; }, s => { s.project.path = 'C:\\別の場所'; }, s => { s.availability = 'uncertain'; }]) {
         reset(); choose(); open(); const before = field('confirmation'); update(change); button('confirm-launch').click();
         check('captured confirmation invalidated never retargeted', calls.length === 0 && button('confirm-launch').disabled && field('confirmation') === before);
         button('confirm-back').click(); check('invalidated confirmation still safely returns', !host.querySelector('dialog').open && restores.length === 1 && restores[0].target.runId === 'run-1');

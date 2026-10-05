@@ -1,7 +1,7 @@
 use super::{
     admit_owner_effect, bump_topology, close_open_connections, publish_connection_state,
     publish_topology_change, reserve_forget_drains, seal_terminal, take_unsignaled_cancellations,
-    topology_denial, write_error, write_success_data, Authorization, EventCredit, GenerationState,
+    topology_denial, validated_key, write_error, write_success_data, Authorization, EventCredit, GenerationState,
     MetadataEvent, OwnerDispatch, RecordState, State,
 };
 use crate::contract::{
@@ -443,12 +443,34 @@ pub(crate) fn dispatch_owner_host_stop(
     {
         return deny(auth, &state, request, out, ErrorCode::ResourceExhausted);
     }
-    if !state.runtime.cancel_provider_probes() {
-        return fail_retained(auth, &mut state, request, out, ErrorCode::OperationConflict);
-    }
     if let Err(code) = save_current_layout(auth, &mut state) {
         return fail_retained(auth, &mut state, request, out, code);
     }
+    let key = validated_key(request.operation_id.as_str());
+    let saved_topology = state.topology_revision;
+    state.stop_reserved = Some(key);
+    let runtime = std::sync::Arc::clone(&state.runtime);
+    // Notification is not completion. The same registry owns both joins, outside
+    // the authorization mutex so existing replies and recovery can still proceed.
+    runtime.cancel_provider_probes();
+    drop(state);
+    let joined = runtime.drain_provider_probes();
+    let mut state = auth.shared.inner.lock().ok()?;
+    if state.generation != GenerationState::Open || state.stop_reserved != Some(key) {
+        return fail_retained(auth, &mut state, request, out, ErrorCode::StateUnknown);
+    }
+    state.stop_reserved = None;
+    if !joined {
+        return fail_retained(auth, &mut state, request, out, ErrorCode::RuntimeFailed);
+    }
+    if state.topology_revision != saved_topology || host_stop_blocked(&state) {
+        return fail_retained(auth, &mut state, request, out, ErrorCode::OperationConflict);
+    }
+    let (generation, topology) = layout_identity(&state).ok()?;
+    write_success_data(out, request, &auth.shared.instance_id, state.event_seq(),
+        state.topology_revision, Success::HostStop(HostStopData {
+            stopped: True, saved_generation: generation, saved_topology_revision: topology,
+        }))?;
     seal_terminal(&mut state, request, out, false)?;
     state.generation = GenerationState::Closing;
     state.artifacts.invalidate_all();
@@ -519,7 +541,7 @@ mod tests {
     use super::super::testing::Harness;
     use super::*;
     use crate::contract::{
-        Action, Empty, Nullable, OperationId, OperationParams, OperationPhase, Outcome, PaneId,
+        Action, CapabilitiesGetParams, Empty, Nullable, OperationId, OperationParams, OperationPhase, Outcome, PaneId,
         ProjectId, RunId, Version,
     };
     use crate::store::layout::LayoutStoreFault;
@@ -835,6 +857,9 @@ mod tests {
     fn host_stop_clean_commits_closing_and_refuses_admission() {
         let harness = Harness::new(Vec::new());
         isolate(&harness);
+        let auth = harness.authorization();
+        let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
+        assert!(!runtime.testing_provider_registry_started());
         let request = owner_request(&harness, 1, Action::HostStop(Empty {}), None);
         let stopped = harness.owner(&request);
         assert!(stopped.accepted);
@@ -851,6 +876,8 @@ mod tests {
         );
         assert!(!harness.authorization().generation_is_open());
         assert!(!harness.authentication_permitted());
+        harness.start_provider_probes();
+        assert!(!runtime.testing_provider_registry_started(), "late start created old-generation workers");
         assert!(harness.try_connect("pwsh").is_none());
         assert!(harness
             .try_owner(&owner_request(&harness, 2, Action::LayoutSave(Empty {}), None))
@@ -858,6 +885,230 @@ mod tests {
         assert!(harness
             .try_owner(&owner_request(&harness, 3, Action::ProjectList(Empty {}), None))
             .is_none());
+    }
+
+    fn json_request(h: &Harness, operation: &str, params: serde_json::Value) -> Request {
+        crate::contract::parse_request(&serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"instance_id":h.instance_id(),
+            "operation_id":uuid::Uuid::new_v4().to_string(),"expected_topology_revision":null,
+            "operation":operation,"params":params
+        })).unwrap()).unwrap()
+    }
+
+    fn grant_metadata(h: &Harness, c: &super::super::testing::Client) {
+        assert!(c.request(&json_request(h, "connection.request", serde_json::json!({
+            "project_ids":[],"scopes":["metadata"]
+        }))).unwrap().accepted);
+        assert!(h.owner(&json_request(h, "connection.decide", serde_json::json!({
+            "connection_id":c.connection_id(),"decision":"allow","project_ids":[],"scopes":["metadata"]
+        }))).accepted);
+    }
+
+    #[test]
+    fn host_stop_waits_outside_auth_lock_preserves_sends_and_reserves_new_work() {
+        let h = std::sync::Arc::new(Harness::new(Vec::new()));
+        let root = isolate(&h);
+        let client = h.connect("existing-client");
+        grant_metadata(&h, &client);
+        let before = h.authorization().testing_connection_snapshot(&client.connection_id());
+        let auth = h.authorization();
+        let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
+        let release = runtime.testing_install_provider_join_gate();
+        let request = owner_request(&h, 1, Action::HostStop(Empty {}), None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let owner = std::sync::Arc::clone(&h); let stopping = request.clone();
+        let worker = std::thread::spawn(move || { tx.send(owner.owner(&stopping)).unwrap(); });
+        let start = std::time::Instant::now();
+        loop {
+            if auth.shared.inner.try_lock().ok().is_some_and(|s| s.stop_reserved.is_some()) { break; }
+            assert!(start.elapsed()<std::time::Duration::from_secs(30));
+            std::thread::yield_now();
+        }
+        assert!(rx.try_recv().is_err(), "success before worker join");
+        let saved = fs::read(root.join("confirmed.json")).unwrap();
+        assert_eq!(error_of(&h.owner(&request)), ErrorCode::InProgress);
+        let mut changed = request.clone(); changed.action = Action::LayoutSave(Empty {});
+        assert_eq!(error_of(&h.owner(&changed)), ErrorCode::OperationConflict);
+        assert_eq!(error_of(&client.request(&request).unwrap()), ErrorCode::PermissionDenied);
+        let another = owner_request(&h, 2, Action::HostStop(Empty {}), None);
+        assert_eq!(error_of(&h.owner(&another)), ErrorCode::OperationConflict);
+        let fresh = json_request(&h, "capabilities.get", serde_json::json!({}));
+        assert_eq!(error_of(&client.request(&fresh).unwrap()), ErrorCode::OperationConflict);
+        assert!(client.send_if_current(), "reservation revoked existing reply permit");
+        assert_eq!(auth.testing_connection_snapshot(&client.connection_id()), before);
+        assert!(!h.authentication_permitted());
+        assert!(h.try_connect("new-client").is_none());
+        assert_eq!(fs::read(root.join("confirmed.json")).unwrap(), saved);
+        assert!(!runtime.is_provider_ready(crate::contract::Provider::Codex));
+        release.send(()).unwrap();
+        let result = rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        worker.join().unwrap();
+        assert!(result.accepted && h.generation_is_closed());
+        assert_eq!(fs::read(root.join("confirmed.json")).unwrap(), saved);
+        assert!(auth.drain_provider_probes());
+    }
+
+    #[test]
+    fn host_stop_join_failure_replays_failure_and_keeps_existing_connection_usable() {
+        let h = Harness::new(Vec::new()); isolate(&h);
+        let client = h.connect("existing-client");
+        grant_metadata(&h, &client);
+        let auth = h.authorization();
+        let before = auth.testing_connection_snapshot(&client.connection_id());
+        let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
+        runtime.testing_install_provider_join_failure();
+        let request = owner_request(&h, 1, Action::HostStop(Empty {}), None);
+        let first = h.owner(&request);
+        assert_eq!(error_of(&first), ErrorCode::RuntimeFailed);
+        assert!(auth.generation_is_open() && h.authentication_permitted());
+        assert_eq!(h.owner(&request), first);
+        assert_eq!(error_of(&h.owner(&owner_request(&h, 2, Action::HostStop(Empty {}), None))), ErrorCode::RuntimeFailed);
+        assert!(!auth.drain_provider_probes(), "final drain erased a failed join");
+        assert_eq!(auth.testing_connection_snapshot(&client.connection_id()), before);
+        assert!(client.send_if_current());
+        assert!(client.request(&json_request(&h, "capabilities.get", serde_json::json!({}))).unwrap().accepted);
+        assert!(client.request(&json_request(&h, "diagnostics.get", serde_json::json!({}))).unwrap().accepted);
+        assert!(h.owner(&owner_request(&h, 3, Action::ProjectList(Empty {}), None)).accepted);
+        assert!(!runtime.is_provider_ready(crate::contract::Provider::Codex));
+        assert!(!runtime.is_provider_ready(crate::contract::Provider::Claude));
+    }
+
+    #[test]
+    fn host_stop_public_admission_and_preauth_share_the_reservation_gate() {
+        use crate::host::admission::ConnectionSupervisor;
+        use crate::host::io::CancelEvent;
+        let h = std::sync::Arc::new(Harness::new(Vec::new()));
+        isolate(&h);
+        let client = h.connect("existing-client");
+        grant_metadata(&h, &client);
+        let auth = h.authorization();
+        let before = auth.testing_connection_snapshot(&client.connection_id());
+        let generation_cancel = std::sync::Arc::new(CancelEvent::new().unwrap());
+        let supervisor = ConnectionSupervisor::new(auth.clone(), generation_cancel).unwrap();
+        let (lease_tx, lease_rx) = std::sync::mpsc::channel();
+        let (worker_release, worker_wait) = std::sync::mpsc::channel();
+        supervisor.spawn(std::sync::Arc::new(CancelEvent::new().unwrap()), move |lease| {
+            lease_tx.send(lease).unwrap();
+            let _ = worker_wait.recv();
+        }).unwrap();
+        let lease = lease_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+        assert!(auth.begin_worker_authentication(&lease).is_some());
+        let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
+        let release = runtime.testing_install_provider_join_gate();
+        let request = owner_request(&h, 1, Action::HostStop(Empty {}), None);
+        let owner = h.clone();
+        let stopping = std::thread::spawn(move || owner.owner(&request));
+        let start = std::time::Instant::now();
+        loop {
+            if auth.shared.inner.try_lock().ok().is_some_and(|s| s.stop_reserved.is_some()) { break; }
+            assert!(start.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::yield_now();
+        }
+        let counts_before = (auth.record_count(), auth.allocations().snapshot().active_public);
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_ran = ran.clone();
+        let admission = supervisor.spawn(std::sync::Arc::new(CancelEvent::new().unwrap()), move |_| {
+            worker_ran.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let refused_without_fatal = admission.is_ok();
+        let no_new_auth = auth.begin_worker_authentication(&lease).is_none();
+        let no_new_proof = auth.begin_worker_proof_send(&lease).is_none();
+        let name = super::super::charge_executable_name(auth.allocations(),
+            crate::contract::NonEmpty::new("reservation-test").unwrap()).unwrap();
+        let no_publication = !auth.mark_verified(&lease, name);
+        let counts_after = (auth.record_count(), auth.allocations().snapshot().active_public);
+        let preserved = auth.testing_connection_snapshot(&client.connection_id()) == before
+            && client.send_if_current() && auth.generation_is_open();
+        worker_release.send(()).unwrap();
+        release.send(()).unwrap();
+        let stopped = stopping.join().unwrap();
+        supervisor.close_and_reap().unwrap();
+        assert!(refused_without_fatal, "reservation became a fatal supervisor error");
+        assert!(no_new_auth && no_new_proof && no_publication,
+            "pre-admitted worker crossed the authentication reservation gate");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(counts_after, counts_before, "refused admission changed charged ownership");
+        assert!(preserved && stopped.accepted);
+    }
+
+    #[test]
+    fn host_stop_join_cannot_reopen_or_succeed_after_external_generation_end() {
+        for failed in [false, true] {
+            let h = std::sync::Arc::new(Harness::new(Vec::new())); isolate(&h);
+            let auth = h.authorization();
+            let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
+            let release = runtime.testing_install_provider_join_gate();
+            let request = owner_request(&h, 1, Action::HostStop(Empty {}), None);
+            let owner = std::sync::Arc::clone(&h);
+            let worker = std::thread::spawn(move || owner.owner(&request));
+            let start = std::time::Instant::now();
+            loop {
+                if auth.shared.inner.try_lock().ok().is_some_and(|s| s.stop_reserved.is_some()) { break; }
+                assert!(start.elapsed()<std::time::Duration::from_secs(30));
+                std::thread::yield_now();
+            }
+            if failed { auth.fail_generation().signal_cancellations(); } else { h.close_generation(); }
+            release.send(()).unwrap();
+            let response = worker.join().unwrap();
+            assert!(!response.accepted && response.result.0.is_none());
+            assert_eq!(error_of(&response), ErrorCode::StateUnknown);
+            let state = auth.shared.inner.lock().unwrap();
+            assert_eq!(state.generation, if failed { GenerationState::Failed } else { GenerationState::Closing });
+        }
+    }
+
+    #[test]
+    fn host_stop_failed_join_distinguishes_living_and_finished_authentication() {
+        use crate::host::admission::ConnectionSupervisor;
+        use crate::host::io::CancelEvent;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        for finished in [false, true] {
+            let h = std::sync::Arc::new(Harness::new(Vec::new())); isolate(&h);
+            let auth = h.authorization();
+            let existing = h.connect("existing-client"); grant_metadata(&h, &existing);
+            let before = auth.testing_connection_snapshot(&existing.connection_id());
+            let supervisor = ConnectionSupervisor::new(auth.clone(),
+                std::sync::Arc::new(CancelEvent::new().unwrap())).unwrap();
+            let (lease_tx, lease_rx) = std::sync::mpsc::channel();
+            let (finish, finish_wait) = std::sync::mpsc::channel();
+            supervisor.spawn(std::sync::Arc::new(CancelEvent::new().unwrap()), move |lease| {
+                lease_tx.send(lease).unwrap(); let _ = finish_wait.recv();
+            }).unwrap();
+            let lease = lease_rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            let release = auth.testing_install_stop_join_gate(true);
+            let command = owner_request(&h, 1, Action::HostStop(Empty {}), None);
+            let owner = h.clone(); let stopping = std::thread::spawn(move || owner.owner(&command));
+            let start = std::time::Instant::now();
+            while !auth.testing_stop_is_reserved() {
+                assert!(start.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::yield_now();
+            }
+            assert!(auth.begin_worker_authentication(&lease).is_none());
+            assert!(auth.begin_worker_proof_send(&lease).is_none());
+            let mut finish = Some(finish);
+            if finished {
+                finish.take().unwrap().send(()).unwrap();
+                assert_eq!(unsafe { WaitForSingleObject(supervisor.completion_raw(), 30_000) }, WAIT_OBJECT_0);
+            }
+            release.send(()).unwrap();
+            assert_eq!(error_of(&stopping.join().unwrap()), ErrorCode::RuntimeFailed);
+            assert!(auth.generation_is_open());
+            assert_eq!(auth.begin_worker_authentication(&lease).is_some(), !finished);
+            assert_eq!(auth.begin_worker_proof_send(&lease).is_some(), !finished);
+            let name = super::super::charge_executable_name(auth.allocations(),
+                crate::contract::NonEmpty::new("living-attempt").unwrap()).unwrap();
+            assert_eq!(auth.mark_verified(&lease, name), !finished);
+            assert_eq!(auth.testing_connection_snapshot(&existing.connection_id()), before);
+            assert!(existing.send_if_current());
+            if let Some(finish) = finish { finish.send(()).unwrap(); }
+            assert_eq!(unsafe { WaitForSingleObject(supervisor.completion_raw(), 30_000) }, WAIT_OBJECT_0);
+            assert_eq!(supervisor.reap_completed(), Ok(1));
+            assert_eq!(supervisor.reap_completed(), Ok(0));
+            assert!(auth.begin_worker_authentication(&lease).is_none());
+            assert_eq!(auth.testing_connection_owned_bytes().1, 0);
+            supervisor.close_and_reap().unwrap();
+        }
     }
 
     #[test]
@@ -905,7 +1156,7 @@ mod tests {
         let reused = harness.owner(&owner_request(
             &harness,
             1,
-            Action::CapabilitiesGet(Empty {}),
+            Action::CapabilitiesGet(CapabilitiesGetParams::default()),
             None,
         ));
         assert!(reused.accepted, "a pre-effect denial did not reserve the ID");
@@ -1003,6 +1254,12 @@ mod tests {
                 ));
                 assert!(saved.accepted);
             }
+            let auth = harness.authorization();
+            let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
+            runtime.testing_install_ready_providers();
+            let client = harness.connect("save-failure-client");
+            grant_metadata(&harness, &client);
+            let grants = auth.testing_connection_snapshot(&client.connection_id());
             let confirmed = root.join("confirmed.json");
             let backup = root.join("backup.json");
             let c_before = fs::read(&confirmed).ok();
@@ -1018,6 +1275,13 @@ mod tests {
             );
             assert!(harness.authorization().generation_is_open());
             assert!(!harness.generation_is_closed());
+            assert!(runtime.is_provider_ready(crate::contract::Provider::Codex));
+            assert!(runtime.is_provider_ready(crate::contract::Provider::Claude));
+            runtime.refresh_provider_probes(true);
+            assert!(runtime.is_provider_ready(crate::contract::Provider::Codex));
+            assert!(harness.authentication_permitted());
+            assert!(client.send_if_current());
+            assert_eq!(auth.testing_connection_snapshot(&client.connection_id()), grants);
             let c_after = fs::read(&confirmed).ok();
             let b_after = fs::read(&backup).ok();
             if fault == LayoutStoreFault::TempWrite {

@@ -12,6 +12,7 @@ use crate::contract::{
 use crate::host::admission::{
     AllocationAuthority, AllocationError, AllocationPool, CapacityCharge, ChargedValue, ChargedVec,
     ACTIVE_BYTES, RETAINED_BYTES,
+    PUBLIC_WORKER_STACK_BYTES,
 };
 use crate::runtime::CompleteSessionQuiescence;
 use crate::service::output as output_service;
@@ -52,6 +53,12 @@ pub(crate) struct AuthenticationIoPermit {
 /// A one-stage right to write the server authentication proof.
 pub(crate) struct ProofSendPermit {
     _private: (),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkerAdmissionError {
+    Exhausted,
+    State,
 }
 
 impl ConnectionLease {
@@ -1536,6 +1543,8 @@ type GenerationCancel = (Arc<dyn CancelSignal>, Arc<Mutex<()>>);
 
 struct State {
     generation: GenerationState,
+    // Stop reserves new work without revoking existing leases or reply permits.
+    stop_reserved: Option<[u8; 36]>,
     events: EventAccounting,
     topology_revision: u64,
     workspace: WorkspaceService,
@@ -1737,7 +1746,9 @@ pub struct Authorization {
 impl Authorization {
     pub(crate) fn start_provider_probes(&self) {
         if let Ok(state) = self.shared.inner.lock() {
-            state.runtime.start_provider_probes();
+            if generation_open(&state) {
+                state.runtime.start_provider_probes();
+            }
         }
     }
 
@@ -1768,6 +1779,7 @@ impl Authorization {
             git_supervisor: crate::service::git_reader::GitSupervisor::new(),
             inner: Mutex::new(State {
                 generation: GenerationState::Open,
+                stop_reserved: None,
                 events,
                 topology_revision: 0,
                 workspace,
@@ -1811,29 +1823,54 @@ impl Authorization {
 
     pub(crate) fn begin_authentication(&self) -> Option<AuthenticationIoPermit> {
         let state = self.shared.inner.lock().ok()?;
-        (state.generation == GenerationState::Open)
+        (generation_open(&state))
             .then_some(AuthenticationIoPermit { _private: () })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_install_stop_join_gate(&self, fail: bool) -> std::sync::mpsc::Sender<()> {
+        let state = self.shared.inner.lock().unwrap();
+        state.runtime.testing_install_provider_join_gate_result(fail)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_stop_is_reserved(&self) -> bool {
+        self.shared.inner.lock().unwrap().stop_reserved.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn testing_connection_owned_bytes(&self) -> (usize, usize) {
+        let state = self.shared.inner.lock().unwrap();
+        let tables = state.connections.capacity_bytes() + state.connection_index.capacity_bytes()
+            + state.cancel_drain.capacity_bytes();
+        let stacks = state.connections.iter().filter_map(|record| record._stack_charge.as_ref())
+            .map(CapacityCharge::bytes).sum();
+        (tables, stacks)
     }
 
     pub(crate) fn begin_proof_send(&self) -> Option<ProofSendPermit> {
         let state = self.shared.inner.lock().ok()?;
-        (state.generation == GenerationState::Open).then_some(ProofSendPermit { _private: () })
+        generation_open(&state).then_some(ProofSendPermit { _private: () })
     }
 
     pub(crate) fn admit_worker(
         &self,
         cancel: Arc<dyn CancelSignal>,
-        stack_charge: CapacityCharge,
-    ) -> Option<ConnectionLease> {
-        let mut state = self.shared.inner.lock().ok()?;
-        if state.generation != GenerationState::Open {
-            return None;
+    ) -> Result<Option<ConnectionLease>, WorkerAdmissionError> {
+        let mut state = self.shared.inner.lock().map_err(|_| WorkerAdmissionError::State)?;
+        if !generation_open(&state) {
+            return Ok(None);
         }
+        // Refusal is an authorization state, not a capacity failure. Gate first
+        // under the same lock before reserving stack, recovery, or record bytes.
+        let stack_charge = self.shared.allocations
+            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
+            .map_err(|_| WorkerAdmissionError::Exhausted)?;
         let connection_key = unique_connection_key(&state);
         let recovery_credit = state
             .replay
             .reserve_recovery(&self.shared.allocations, &connection_key)
-            .ok()?;
+            .map_err(|_| WorkerAdmissionError::Exhausted)?;
         let lease = insert_connection(
             &mut state,
             &self.shared.allocations,
@@ -1844,16 +1881,23 @@ impl Authorization {
             WorkerOwnership::AwaitingHandle,
             recovery_credit,
             Some(stack_charge),
-        )?;
+        );
+        let Some(lease) = lease else {
+            // Admission owns the whole reservation transaction. A record or
+            // index allocation failure cannot orphan its unspawned credit.
+            state.replay.release_unspawned(&recovery_credit)
+                .map_err(|_| WorkerAdmissionError::State)?;
+            return Err(WorkerAdmissionError::Exhausted);
+        };
         match owner_list_bytes(&state) {
-            Ok(bytes) if bytes <= MAX_MESSAGE_BYTES => Some(lease),
+            Ok(bytes) if bytes <= MAX_MESSAGE_BYTES => Ok(Some(lease)),
             _ => {
                 let recovery = connection(&state, lease.connection_key())
                     .expect("inserted connection")
                     .recovery_credit;
                 let _ = state.replay.release_unspawned(&recovery);
                 remove_connection(&mut state, &self.shared.allocations, lease.connection_key());
-                None
+                Err(WorkerAdmissionError::Exhausted)
             }
         }
     }
@@ -1863,10 +1907,7 @@ impl Authorization {
         lease: &ConnectionLease,
     ) -> Option<AuthenticationIoPermit> {
         let state = self.shared.inner.lock().ok()?;
-        let current = connection(&state, lease.connection_key())?;
-        (state.generation == GenerationState::Open
-            && current.state == RecordState::Authenticating
-            && Arc::ptr_eq(&current.token, &lease.token))
+        authentication_attempt_current(&state, lease)
         .then_some(AuthenticationIoPermit { _private: () })
     }
 
@@ -1886,14 +1927,7 @@ impl Authorization {
         let Ok(mut state) = self.shared.inner.lock() else {
             return false;
         };
-        if state.generation != GenerationState::Open {
-            return false;
-        }
-        let Some(record) = connection(&state, lease.connection_key()) else {
-            return false;
-        };
-        if record.state != RecordState::Authenticating || !Arc::ptr_eq(&record.token, &lease.token)
-        {
+        if !authentication_attempt_current(&state, lease) {
             return false;
         }
         // Authenticating is not a wire EventData state; Unpaired is the first publication.
@@ -1930,7 +1964,7 @@ impl Authorization {
         cancel: Arc<dyn CancelSignal>,
     ) -> Option<ConnectionLease> {
         let mut state = self.shared.inner.lock().ok()?;
-        if state.generation != GenerationState::Open {
+        if !generation_open(&state) {
             return None;
         }
         let connection_key = unique_connection_key(&state);
@@ -2222,8 +2256,47 @@ impl Authorization {
             )?;
             return Some(ClientDispatch { observation: None });
         }
+        if state.stop_reserved.is_some() {
+            write_error(out, request, &self.shared.instance_id, state.event_seq(), topology,
+                ErrorCode::OperationConflict)?;
+            return Some(ClientDispatch { observation: None });
+        }
 
         match &request.action {
+            Action::DiagnosticsGet(_) => {
+                let record = connection(&state, lease.connection_key())?;
+                if record.state != RecordState::Granted
+                    || !record.granted_scopes.contains(&Scope::Metadata)
+                {
+                    write_error(
+                        out,
+                        request,
+                        &self.shared.instance_id,
+                        state.event_seq(),
+                        topology,
+                        ErrorCode::PermissionDenied,
+                    )?;
+                    return Some(ClientDispatch { observation: None });
+                }
+                let hold = occupy_observation(
+                    &mut state,
+                    request,
+                    canonical,
+                    false,
+                    Some(lease.connection_key()),
+                )?;
+                write_success(
+                    out,
+                    request,
+                    &self.shared.instance_id,
+                    state.event_seq(),
+                    topology,
+                    |sink| write_diagnostics(sink, &state.runtime),
+                )?;
+                Some(ClientDispatch {
+                    observation: Some(hold),
+                })
+            }
             Action::CapabilitiesGet(_) => {
                 let hold = occupy_observation(
                     &mut state,
@@ -2236,6 +2309,13 @@ impl Authorization {
                     record.state == RecordState::Granted
                         && record.granted_scopes.contains(&Scope::Metadata)
                 });
+                let refresh = match &request.action { Action::CapabilitiesGet(p) => p.refresh, _ => false };
+                if refresh && !rich {
+                    write_error(out, request, &self.shared.instance_id, state.event_seq(), topology,
+                        ErrorCode::PermissionDenied)?;
+                    return Some(ClientDispatch { observation: Some(hold) });
+                }
+                if rich { state.runtime.refresh_provider_probes(refresh); }
                 write_success(
                     out,
                     request,
@@ -2606,9 +2686,32 @@ impl Authorization {
             });
         }
 
+        if state.stop_reserved.is_some() {
+            write_error(out, request, &self.shared.instance_id, state.event_seq(), topology,
+                ErrorCode::OperationConflict)?;
+            return Some(owner_ok());
+        }
         match &request.action {
-            Action::CapabilitiesGet(_) => {
+            Action::DiagnosticsGet(_) => {
                 let hold = occupy_observation(&mut state, request, canonical, true, None)?;
+                write_success(
+                    out,
+                    request,
+                    &self.shared.instance_id,
+                    state.event_seq(),
+                    topology,
+                    |sink| write_diagnostics(sink, &state.runtime),
+                )?;
+                Some(OwnerDispatch {
+                    cancellation: None,
+                    forget_drains: None,
+                    observation: Some(hold),
+                    stop_after_reply: false,
+                })
+            }
+            Action::CapabilitiesGet(params) => {
+                let hold = occupy_observation(&mut state, request, canonical, true, None)?;
+                state.runtime.refresh_provider_probes(params.refresh);
                 write_success(
                     out,
                     request,
@@ -3932,11 +4035,13 @@ fn relock_after_observe<'a>(
     };
     let generation_open = state.generation == GenerationState::Open;
     let actor_ok = owner || lease.is_some_and(|lease| lease_matches(&state, lease));
-    if generation_open && actor_ok {
+    if generation_open && actor_ok && state.stop_reserved.is_none() {
         return Ok(state);
     }
     let topology = state.topology_revision;
-    let code = if generation_open {
+    let code = if generation_open && state.stop_reserved.is_some() {
+        ErrorCode::OperationConflict
+    } else if generation_open {
         ErrorCode::PermissionDenied
     } else {
         ErrorCode::StateUnknown
@@ -5069,7 +5174,13 @@ fn write_success_data(
 }
 
 fn generation_open(state: &State) -> bool {
-    state.generation == GenerationState::Open
+    state.generation == GenerationState::Open && state.stop_reserved.is_none()
+}
+
+fn authentication_attempt_current(state: &State, lease: &ConnectionLease) -> bool {
+    generation_open(state) && connection(state, lease.connection_key()).is_some_and(|record| {
+        record.state == RecordState::Authenticating && Arc::ptr_eq(&record.token, &lease.token)
+    })
 }
 
 fn dummy_observation(
@@ -9111,20 +9222,39 @@ fn spawn_pane(
     let _ = runtime.attach_root(&run_id, observed);
     drop(state);
 
+    let agent_pin = match &kind {
+        SpawnKind::Agent { ready: Some(ready), .. } => {
+            let provider = match &request.action {
+                Action::AgentLaunch(params) => params.provider,
+                _ => unreachable!("agent pin"),
+            };
+            match ready.pin(provider) {
+                Ok(pin) => Some(pin),
+                Err(_) => {
+                    runtime.invalidate_provider(provider);
+                    let mut state = auth.shared.inner.lock().ok()?;
+                    return spawn_fail(auth, &mut state, request, out, Some(&run_id),
+                        Some(&project_id), Some(credit), ErrorCode::RuntimeFailed);
+                }
+            }
+        }
+        _ => None,
+    };
     let child_result = match &kind {
         SpawnKind::Agent {
-            ready: Some(ready),
+            ready: Some(_),
             arguments: Ok(arguments),
             ..
         } => {
-            if ready.pin.revalidate(match &request.action {
+            if agent_pin.as_ref()?.revalidate(match &request.action {
                 Action::AgentLaunch(params) => params.provider,
                 _ => unreachable!("agent spawn"),
             }).is_err() {
+                if let Action::AgentLaunch(params) = &request.action { runtime.invalidate_provider(params.provider); }
                 Err(ErrorCode::RuntimeFailed)
             } else {
                 let refs: Vec<&str> = arguments.iter().map(String::as_str).collect();
-                crate::runtime::spawn::spawn_suspended(&cwd, ready.pin.path(), &refs)
+                crate::runtime::spawn::spawn_suspended(&cwd, agent_pin.as_ref()?.path(), &refs)
                     .map_err(|_| ErrorCode::RuntimeFailed)
             }
         }
@@ -9195,13 +9325,14 @@ fn spawn_pane(
             state = auth.shared.inner.lock().ok()?;
         }
     }
-    if let SpawnKind::Agent { ready: Some(ready), .. } = &kind {
+    if let SpawnKind::Agent { ready: Some(_), .. } = &kind {
         let provider = match &request.action {
             Action::AgentLaunch(params) => params.provider,
             _ => unreachable!("agent resume"),
         };
         drop(state);
-        let pin_valid = ready.pin.revalidate(provider).is_ok();
+        let pin_valid = agent_pin.as_ref()?.revalidate(provider).is_ok();
+        if !pin_valid { runtime.invalidate_provider(provider); }
         state = auth.shared.inner.lock().ok()?;
         if !pin_valid {
             return spawn_fail(
@@ -9280,7 +9411,9 @@ fn spawn_pane(
     }
     #[cfg(debug_assertions)]
     { state.testing_spawn_counts.1 += 1; }
-    match runtime.resume_and_observe(&run_id) {
+    let activation = runtime.resume_and_observe(&run_id);
+    drop(agent_pin);
+    match activation {
         Ok(crate::runtime::Activation::Published {
             process,
             work,
@@ -10330,13 +10463,9 @@ mod replay_storage_tests {
     fn connection_admission_releases_spawn_failure_and_unused_join_credit() {
         let authorization = Authorization::new(Vec::<ProjectId>::new());
         authorization.allocations().fail_after_allocations(0);
-        let stack = authorization
-            .allocations()
-            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
-            .expect("stack reservation");
         assert!(authorization
-            .admit_worker(Arc::new(NoopCancel), stack)
-            .is_none());
+            .admit_worker(Arc::new(NoopCancel))
+            .is_err());
         {
             let state = authorization
                 .shared
@@ -10349,13 +10478,10 @@ mod replay_storage_tests {
         }
         assert_eq!(authorization.allocations().snapshot().active_public, 0);
 
-        let stack = authorization
-            .allocations()
-            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
-            .expect("stack reservation");
         let lease = authorization
-            .admit_worker(Arc::new(NoopCancel), stack)
-            .expect("admit worker after failure");
+            .admit_worker(Arc::new(NoopCancel))
+            .expect("admit worker after failure")
+            .expect("worker accepted");
         assert_eq!(authorization.record_count(), 1);
         assert!(matches!(
             authorization.publish_worker(&lease, std::thread::spawn(|| {}), || true, || true),
@@ -10376,6 +10502,50 @@ mod replay_storage_tests {
             .expect("authorization state");
         assert!(state.replay.slots.is_empty());
         assert_eq!(state.replay.reserved_indexes, 0);
+    }
+}
+
+#[cfg(test)]
+mod admission_transaction_tests {
+    use super::*;
+    struct NoopCancel;
+    impl CancelSignal for NoopCancel {
+        fn cancel(&self) {}
+    }
+
+    #[test]
+    fn connection_admission_every_allocator_boundary_releases_unspawned_credit() {
+        for fail_after in 0.. {
+            let authorization = Authorization::new(Vec::<ProjectId>::new());
+            authorization.allocations().fail_after_allocations(fail_after);
+            let admitted = authorization.admit_worker(Arc::new(NoopCancel));
+            match admitted {
+                Err(WorkerAdmissionError::Exhausted) => {
+                    let state = authorization.shared.inner.lock().unwrap();
+                    assert!(state.connections.is_empty());
+                    assert!(state.connection_index.is_empty());
+                    assert!(state.replay.slots.is_empty(), "orphan recovery credit at allocator boundary {fail_after}");
+                    assert_eq!(state.replay.reserved_indexes, 0);
+                    assert_eq!(state.event_seq(), 0);
+                    let tables = state.connections.capacity_bytes() + state.connection_index.capacity_bytes()
+                        + state.cancel_drain.capacity_bytes();
+                    assert_eq!(authorization.allocations().snapshot().active_public, tables,
+                        "orphan worker-owned charge at allocator boundary {fail_after}");
+                }
+                Ok(Some(lease)) => {
+                    assert!(matches!(authorization.publish_worker(&lease,
+                        std::thread::spawn(|| {}), || true, || true), WorkerPublish::Published));
+                    assert!(authorization.finish_worker(&lease, || true));
+                    let join = authorization.claim_next_ready().unwrap();
+                    join.handle.join().unwrap();
+                    assert!(authorization.retire_worker(&join.connection_key, &join.token));
+                    assert_eq!(authorization.allocations().snapshot().active_public, 0);
+                    assert!(authorization.shared.inner.lock().unwrap().replay.slots.is_empty());
+                    break;
+                }
+                _ => panic!("allocator failure changed into a normal refusal or state error"),
+            }
+        }
     }
 }
 
@@ -10487,13 +10657,10 @@ mod event_accounting_authority_tests {
     #[test]
     fn finish_worker_publishes_one_revoked_and_finished_does_not_take_second_seq() {
         let authorization = Authorization::new(Vec::<ProjectId>::new());
-        let stack = authorization
-            .allocations()
-            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
-            .expect("stack reservation");
         let lease = authorization
-            .admit_worker(Arc::new(NoopCancel), stack)
-            .expect("admit worker");
+            .admit_worker(Arc::new(NoopCancel))
+            .expect("admit worker")
+            .expect("worker accepted");
         assert_eq!(authorization.event_seq(), 0);
         assert!(matches!(
             authorization.publish_worker(&lease, std::thread::spawn(|| {}), || true, || true),
@@ -10514,13 +10681,10 @@ mod event_accounting_authority_tests {
     #[test]
     fn mark_verified_publishes_unpaired_and_max_seq_fails_closed() {
         let authorization = Authorization::new(Vec::<ProjectId>::new());
-        let stack = authorization
-            .allocations()
-            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
-            .expect("stack reservation");
         let lease = authorization
-            .admit_worker(Arc::new(NoopCancel), stack)
-            .expect("admit worker");
+            .admit_worker(Arc::new(NoopCancel))
+            .expect("admit worker")
+            .expect("worker accepted");
         let charged = charge_executable_name(
             authorization.allocations(),
             NonEmpty::new("pwsh").expect("name"),
@@ -10531,13 +10695,10 @@ mod event_accounting_authority_tests {
         assert_eq!(authorization.testing_outstanding_credits(), 0);
 
         authorization.set_event_seq_to_max();
-        let stack = authorization
-            .allocations()
-            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
-            .expect("stack reservation");
         let lease = authorization
-            .admit_worker(Arc::new(NoopCancel), stack)
-            .expect("admit worker at max seq");
+            .admit_worker(Arc::new(NoopCancel))
+            .expect("admit worker at max seq")
+            .expect("worker accepted");
         let charged = charge_executable_name(
             authorization.allocations(),
             NonEmpty::new("pwsh").expect("name"),
@@ -10609,22 +10770,90 @@ fn write_success(
     write_success_suffix(&mut sink, topology).ok()
 }
 
+// Both public inventories describe the operations implemented by this host.
+// Provider readiness changes only whether agent.launch can currently succeed.
+fn write_implemented_operations(
+    sink: &mut impl Sink,
+    agent_ready: bool,
+) -> Result<(), AllocationError> {
+    sink.bytes(b"[")?;
+    let mut previous: Option<&str> = None;
+    while let Some(current) = OperationName::ALL
+        .iter()
+        .filter(|operation| {
+            crate::service::replay::ledger_class(**operation)
+                != crate::service::replay::LedgerClass::Unsupported
+                && (agent_ready || **operation != OperationName::AgentLaunch)
+        })
+        .map(|operation| operation.wire())
+        .filter(|wire| previous.is_none_or(|previous| *wire > previous))
+        .min()
+    {
+        if previous.is_some() {
+            sink.bytes(b",")?;
+        }
+        json_string(sink, current)?;
+        previous = Some(current);
+    }
+    sink.bytes(b"]")
+}
+
+fn write_diagnostics(
+    sink: &mut impl Sink,
+    runtime: &crate::runtime::RuntimeService,
+) -> Result<(), AllocationError> {
+    let agent_ready = runtime.is_provider_ready(crate::contract::Provider::Codex)
+        || runtime.is_provider_ready(crate::contract::Provider::Claude);
+    sink.bytes(b"{\"data\":{\"capabilities\":")?;
+    write_implemented_operations(sink, agent_ready)?;
+    // This is the caller's diagnostic authority and the public error catalogue,
+    // never a projection of other connections or recent private failures.
+    sink.bytes(b",\"connection_state\":\"granted\",\"failure_codes\":[")?;
+    let mut previous: Option<&str> = None;
+    for _ in 0..ErrorCode::ALL.len() {
+        let current = ErrorCode::ALL
+            .iter()
+            .map(|code| code.wire())
+            .filter(|value| previous.is_none_or(|previous| *value > previous))
+            .min()
+            .ok_or(AllocationError::Exhausted)?;
+        if previous.is_some() {
+            sink.bytes(b",")?;
+        }
+        json_string(sink, current)?;
+        previous = Some(current);
+    }
+    sink.bytes(b"],\"product_version\":")?;
+    crate::contract::ProductVersion::V0380.write_canonical(sink)?;
+    sink.bytes(b",\"protocol_version\":1},\"operation\":\"diagnostics.get\"}")
+}
+
 fn write_capabilities(
     sink: &mut impl Sink,
     rich: bool,
     runtime: &crate::runtime::RuntimeService,
 ) -> Result<(), AllocationError> {
-    let codex = runtime.ready_provider(crate::contract::Provider::Codex);
-    let claude = runtime.ready_provider(crate::contract::Provider::Claude);
+    // Decide visibility before obtaining owned version/identity snapshots.
+    // Public observation borrows readiness only; it never clones private metadata.
+    let (codex, claude) = if rich {
+        (runtime.ready_provider(crate::contract::Provider::Codex),
+         runtime.ready_provider(crate::contract::Provider::Claude))
+    } else {
+        (None, None)
+    };
+    let agent_ready = if rich {
+        codex.is_some() || claude.is_some()
+    } else {
+        runtime.is_provider_ready(crate::contract::Provider::Codex)
+            || runtime.is_provider_ready(crate::contract::Provider::Claude)
+    };
     sink.bytes(b"{\"data\":{\"max_message_bytes\":")?;
     crate::contract::MessageLimit::new(MAX_MESSAGE_BYTES as u64)
         .expect("wire limit")
         .write_canonical(sink)?;
-    sink.bytes(b",\"operations\":[")?;
-    if codex.is_some() || claude.is_some() {
-        sink.bytes(b"\"agent.launch\",")?;
-    }
-    sink.bytes(b"\"artifact.list\",\"artifact.read\",\"artifact.register\",\"capabilities.get\",\"connection.decide\",\"connection.list\",\"connection.request\",\"connection.revoke\",\"events.wait\",\"host.stop\",\"input.key\",\"input.write\",\"layout.restore\",\"layout.save\",\"operation.get\",\"output.read\",\"pane.close\",\"pane.create\",\"pane.list\",\"pane.resize\",\"pane.select\",\"pane.split\",\"project.forget\",\"project.list\",\"project.open\",\"project.select\",\"run.get\",\"run.interrupt\",\"shell.launch\"],\"providers\":")?;
+    sink.bytes(b",\"operations\":")?;
+    write_implemented_operations(sink, agent_ready)?;
+    sink.bytes(b",\"providers\":")?;
     if rich {
         sink.bytes(b"[")?;
         if let Some(ready) = &claude {
@@ -10659,6 +10888,140 @@ fn write_capabilities(
         sink.bytes(b"null")?;
     }
     sink.bytes(b"},\"operation\":\"capabilities.get\"}")
+}
+
+#[cfg(test)]
+mod capability_visibility_tests {
+    use super::*;
+    use super::testing::Harness;
+    use serde_json::{json, Value};
+
+    const PROJECT: &str = "30000000-0000-4000-8000-000000000877";
+
+    fn request(h: &Harness, operation: &str, params: Value) -> Request {
+        crate::contract::parse_request(&serde_json::to_vec(&json!({
+            "schema_version":1, "instance_id":h.instance_id(),
+            "operation_id":uuid::Uuid::new_v4().to_string(),
+            "expected_topology_revision":null, "operation":operation, "params":params
+        })).unwrap()).unwrap()
+    }
+
+    fn fixture() -> (Harness, Arc<crate::runtime::RuntimeService>) {
+        let h = Harness::new(vec![ProjectId::new(PROJECT).unwrap()]);
+        let runtime = Arc::clone(&h.authorization().shared.inner.lock().unwrap().runtime);
+        runtime.testing_install_ready_providers();
+        assert!(runtime.is_provider_ready(crate::contract::Provider::Codex));
+        assert!(runtime.is_provider_ready(crate::contract::Provider::Claude));
+        assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+        (h, runtime)
+    }
+
+    fn value(response: &Response) -> Value {
+        serde_json::to_value(response).unwrap()
+    }
+
+    #[test]
+    fn ready_public_capabilities_never_read_details_or_enqueue_probes() {
+        let (h, runtime) = fixture();
+        for scope in [None, Some("metadata"), Some("control"), Some("read_output")] {
+            let c = h.connect("private-observer");
+            if let Some(scope) = scope {
+                c.request(&request(&h, "connection.request",
+                    json!({"project_ids":[PROJECT],"scopes":[scope]}))).unwrap();
+                // Metadata remains pending; the other scopes are granted.
+                if scope != "metadata" {
+                    h.owner(&request(&h, "connection.decide", json!({
+                        "connection_id":c.connection_id(),"decision":"allow",
+                        "project_ids":[PROJECT],"scopes":[scope]
+                    })));
+                }
+            }
+            for params in [json!({}), json!({"refresh":false})] {
+                let got = value(&c.request(&request(&h, "capabilities.get", params)).unwrap());
+                assert_eq!(got["accepted"], true, "{got}");
+                assert_eq!(got["result"]["data"]["providers"], Value::Null);
+                assert_eq!(got["result"]["data"]["shell_profile_ids"], Value::Null);
+                assert!(got["result"]["data"]["operations"].as_array().unwrap()
+                    .iter().any(|operation| operation == "agent.launch"));
+                assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+            }
+            let denied = value(&c.request(&request(&h, "capabilities.get",
+                json!({"refresh":true}))).unwrap());
+            assert_eq!(denied["error"]["code"], "permission_denied");
+            assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+        }
+        // Denied and revoked connections cannot regain observation authority.
+        for decision in ["deny", "revoke"] {
+            let c = h.connect("private-observer");
+            c.request(&request(&h, "connection.request",
+                json!({"project_ids":[PROJECT],"scopes":["metadata"]}))).unwrap();
+            if decision == "deny" {
+                h.owner(&request(&h, "connection.decide", json!({
+                    "connection_id":c.connection_id(),"decision":"deny",
+                    "project_ids":[],"scopes":[]
+                })));
+            } else {
+                h.owner(&request(&h, "connection.decide", json!({
+                    "connection_id":c.connection_id(),"decision":"allow",
+                    "project_ids":[PROJECT],"scopes":["metadata"]
+                })));
+                h.owner(&request(&h, "connection.revoke",
+                    json!({"connection_id":c.connection_id()})));
+            }
+            assert!(c.request(&request(&h, "capabilities.get", json!({}))).is_none());
+            assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+        }
+        h.close_generation();
+        assert!(h.try_owner(&request(&h, "capabilities.get", json!({}))).is_none());
+        assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+    }
+
+    #[test]
+    fn ready_details_require_metadata_while_diagnostics_only_borrows() {
+        let (h, runtime) = fixture();
+        let c = h.connect("metadata-observer");
+        c.request(&request(&h, "connection.request",
+            json!({"project_ids":[PROJECT],"scopes":["metadata"]}))).unwrap();
+        h.owner(&request(&h, "connection.decide", json!({
+            "connection_id":c.connection_id(),"decision":"allow",
+            "project_ids":[PROJECT],"scopes":["metadata"]
+        })));
+        let diagnostic = value(&c.request(&request(&h, "diagnostics.get", json!({}))).unwrap());
+        assert_eq!(diagnostic["accepted"], true);
+        assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+        for owner in [false, true] {
+            let before = runtime.testing_provider_observation_counts();
+            let q = request(&h, "capabilities.get", json!({"refresh":true}));
+            let response = if owner { h.owner(&q) } else { c.request(&q).unwrap() };
+            let got = value(&response);
+            assert_eq!(got["accepted"], true, "{got}");
+            assert_eq!(got["result"]["data"]["providers"], json!([
+                {"provider":"claude","version":"9.999.0"},
+                {"provider":"codex","version":"9.999.0"}
+            ]));
+            let after = runtime.testing_provider_observation_counts();
+            assert!(after[0] > before[0] && after[1] > before[1]);
+            assert_eq!(after[2], before[2] + 1);
+            assert_eq!(after[3], before[3] + 1);
+        }
+    }
+
+    #[test]
+    fn public_projection_borrows_ready_and_closing_without_detail_reads() {
+        let (_h, runtime) = fixture();
+        let mut measure = crate::contract::ingress::Measure(0);
+        write_capabilities(&mut measure, false, &runtime).unwrap();
+        write_diagnostics(&mut measure, &runtime).unwrap();
+        assert!(measure.0 > 0);
+        assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+        assert!(runtime.drain_provider_probes());
+        assert!(!runtime.is_provider_ready(crate::contract::Provider::Codex));
+        let mut closing = crate::contract::ingress::Measure(0);
+        write_capabilities(&mut closing, false, &runtime).unwrap();
+        write_diagnostics(&mut closing, &runtime).unwrap();
+        assert!(closing.0 < measure.0);
+        assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
+    }
 }
 
 fn write_uuid_set(sink: &mut impl Sink, values: &[[u8; 36]]) -> Result<(), AllocationError> {
@@ -10970,7 +11333,7 @@ impl PhaseHold {
 }
 
 #[cfg(debug_assertions)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestingConnectionSnapshot {
     pub connection_id: String,
     pub state: &'static str,
@@ -11240,19 +11603,12 @@ pub mod testing {
                     "connect_managed requires every existing worker ownership to be Fixture"
                 );
             }
-            let stack = self
-                .auth
-                .allocations()
-                .claim(
-                    AllocationPool::ActivePublic,
-                    crate::host::admission::PUBLIC_WORKER_STACK_BYTES,
-                )
-                .expect("stack reservation");
             let cancellation = Arc::new(TestCancel::new());
             let lease = self
                 .auth
-                .admit_worker(cancellation.clone(), stack)
-                .expect("admit managed worker");
+                .admit_worker(cancellation.clone())
+                .expect("admit managed worker")
+            .expect("worker accepted");
             let mut guard = ManagedClientGuard {
                 client: Client {
                     auth: self.auth.clone(),
@@ -11328,7 +11684,7 @@ pub mod testing {
             };
             runtime
                 .ready_provider(provider)
-                .is_some_and(|ready| ready.pin.set_revalidate_hook(hook))
+                .is_some_and(|ready| ready.set_revalidate_hook(hook))
         }
 
         pub fn allocations(&self) -> &AllocationAuthority {

@@ -406,7 +406,7 @@ export function createProjectPaneController(options: ControllerOptions) {
     if (disposed || intent.instanceId !== options.instanceId || intent.generation !== options.generation || intent.topologyRevision !== snapshot.topologyRevision) return;
     if (intent.kind === 'reread') { await refresh(); return; }
     const epoch = readEpoch;
-    const result = await serial(() => exchange(request('capabilities.get', {}, snapshot.topologyRevision)));
+    const result = await serial(() => exchange(request('capabilities.get', { refresh: true }, snapshot.topologyRevision)));
     if (disposed || epoch !== readEpoch) return;
     options.installation(result?.accepted && result.result?.operation === 'capabilities.get' ? result.result.data : null, result?.accepted ? undefined : '導入状況を確認できません。');
   }

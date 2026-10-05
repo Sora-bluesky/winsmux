@@ -1,175 +1,74 @@
 # トラブルシューティング
 
-winsmux のインストール、起動、ペイン、資格情報、リリース確認が期待どおりに動かない時に使います。
+このガイドはv0.38.0のworkspace画面と共通CLI/MCP用です。旧版のオペレーター画面や `winsmux init` / `winsmux launch` とは入口が異なります。使用中の版と、対応する配布物・ガイドを先に確認してください。
 
-## 起動時の問題
+## 起動できない・画面が空白
 
-この章の `winsmux launch` は npm/CLI パッケージ経路のコマンドです。管理対象の
-Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。
-画面上の管制面を確認する場合は、インストール済みのデスクトップアプリを直接開きます。
+インストール済みのwinsmuxをスタートメニューから開きます。CLIの `winsmux workspace connect` は、デスクトップ画面を起動するコマンドではありません。
 
-### デスクトップアプリが localhost 接続エラー、空白画面、またはフリーズになる
+接続エラー、空白画面、別のコンソールだけが表示される場合は、次を確認します。
 
-通常のグラフィカルな入口はデスクトップアプリです。[最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) の
-Assets から `winsmux_..._x64-setup.exe` をインストールし、スタートメニューまたは
-デスクトップショートカットから `winsmux` アプリを開きます。`winsmux launch` は
-CLI の入口であり、デスクトップアプリは開きません。
+1. 起動したアプリの版とインストール先を確認します。開発用のWebサーバーを、インストール済みアプリの復旧方法として起動しないでください。
+2. 画面が操作できる場合は「状態を読み直す」「導入状況を確認」を使います。
+3. 終了する場合は稼働中のペインを確認し、必要なファイルを保存してから通常の閉じる操作を使います。閉鎖が拒否された、または結果が不明なら、終了済みと扱わないでください。
+4. 再現する場合は、版、発生した操作、表示された固定のエラー分類を記録します。画面を共有する前に、私的なパス・入力・出力を確認してください。
 
-インストール後は、Windows 検索で `winsmux` というアプリ名が見つかれば十分です。
-Windows 検索にバージョン番号が出る必要はありません。インストール情報を確認する場合は、
-Windows の「設定」>「アプリ」>「インストールされているアプリ」を確認します。
-
-デスクトップアプリが localhost 接続エラー、空白画面、または応答なしになる場合:
-
-1. `winsmux` デスクトップウィンドウを閉じます。
-2. 古いデスクトッププロセスが残っていないか確認します。
-
-   ```powershell
-   Get-Process winsmux-app -ErrorAction SilentlyContinue |
-     Select-Object Id,ProcessName,Path,StartTime
-   ```
-
-3. 表示されたプロセスが、いま開いたインストール済みの winsmux デスクトップアプリであると確認できる場合だけ、Windows タスク マネージャーから終了して、もう一度 winsmux を開きます。
-4. デスクトップアプリと一緒に黒い PowerShell、Windows Terminal、または WebView2 のコンソールウィンドウが出る場合は、winsmux を閉じて Issue を作成してください。通常のデスクトップ起動で見えるウィンドウは winsmux 本体だけです。
-5. Windows 再起動後も再現する場合、通常の復旧では [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) のデスクトップインストーラーを再インストールします。特定バージョンの不具合を再現している場合は、その対象リリースのインストーラーを使います。`.winsmux/startup-journal.log`、`.winsmux/manifest.yaml`、インストーラーのバージョン、スクリーンショットを添えて報告してください。
-
-### `Orchestra already starting (lock exists)`
-
-原因: 前回の起動がロックファイルを消す前に終了しました。
-
-対処:
-
-```powershell
-winsmux list
-Get-Process winsmux-app -ErrorAction SilentlyContinue |
-  Select-Object Id,ProcessName,Path,StartTime
-```
-
-このプロジェクトの winsmux セッションが生きておらず、同じプロジェクトを使っているデスクトップアプリも起動していないと確認できた場合だけ、ロックを削除します。
-
-```powershell
-Remove-Item .winsmux/orchestra.lock -Force
-```
-
-その後、CLI ワークスペースを再起動します。
-
-```powershell
-winsmux launch
-```
-
-### ペインが空、またはエージェントが起動しない
-
-原因: ペインの shell が準備できる前に、エージェントの起動コマンドを送った可能性があります。
-
-対処:
-
-```powershell
-winsmux doctor
-winsmux launch
-```
-
-特定のペインだけが怪しい場合は、次の指示を送る前に出力を確認します。
-
-```powershell
-winsmux read <pane> 60
-```
-
-### `pwsh.exe` が `0xc0000142` で失敗する
-
-これは Windows status `STATUS_DLL_INIT_FAILED` です。`pwsh.exe` が必要とする DLL を Windows が初期化できなかったことを示します。単体の PowerShell は動くのに winsmux の起動だけ失敗する場合、特定の起動経路、親プロセス、プロファイル、環境変数、Windows Terminal のペイン起動コマンドが原因になっている可能性があります。
-
-まず単体の PowerShell を確認します。
-
-```powershell
-where.exe pwsh
-pwsh -NoProfile -NoLogo -Command "Write-Output `$PSVersionTable.PSVersion"
-```
-
-winsmux の診断を確認します。
-
-```powershell
-winsmux doctor
-```
-
-直近の Windows application error を確認します。
-
-```powershell
-Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddHours(-6)} |
-  Where-Object { $_.Message -match 'pwsh.exe|0xc0000142' -or $_.ProviderName -match 'Application Error|Windows Error Reporting' } |
-  Select-Object -First 20 TimeCreated,ProviderName,Id,LevelDisplayName,Message
-```
-
-単体の PowerShell も失敗する場合は、PowerShell 7 の修復または再インストールを行い、Windows を再起動してください。単体では動く場合は、Windows Terminal プロファイルのコマンドラインと、winsmux のペイン起動ログを確認してください。
-
-## ペインとサンドボックスの問題
-
-### Codex が毎回承認を求める
-
-原因: Codex が権限の強い Windows サンドボックスに設定されている可能性があります。
-
-対処:
-
-```toml
-[windows]
-sandbox = "unelevated"
-```
-
-### Codex ペイン内でファイル書き込みや git コマンドが失敗する
-
-症状:
-
-- `.git/worktrees/*/index.lock` を作れず、`git add` や `git commit` が失敗する。
-- PowerShell が Constrained Language Mode になっている。
-- `Set-Content`、`Out-File`、`[IO.File]::*` が失敗する。
-
-対処:
-
-- ペイン内では編集と限定的な確認に留める。
-- リポジトリ単位の `git add`、`git commit`、`git push` は通常のシェルから実行する。
-- ペイン内でのファイル書き込みは `apply_patch` または `cmd /c` を使う。
-
-### デスクトップの子プロセス回収を確認する
-
-デスクトップアプリを閉じると、winsmux はサマリーストリームを止め、実行中のネイティブ音声キャプチャを止めます。さらに、PTY ペイン登録を空にし、ワーカーペインの子プロセスを終了させ、短時間だけ終了完了を待ちます。終了が重く見える場合は、数秒待ってからプロセス状態を確認してください。
-
-漏れを調べる場合は、停止する前に winsmux が起動したプロセスだけを確認してください。
+プロセスを確認する場合は、停止せずに一覧を読み取れます。
 
 ```powershell
 Get-Process winsmux-app -ErrorAction SilentlyContinue |
-  Select-Object Id,ProcessName,Path,StartTime
+  Select-Object Id,ProcessName,StartTime
 ```
 
-現在の winsmux デスクトップセッションだと判断できるプロセスだけを停止してください。無関係なターミナル、パッケージマネージャー、他プロジェクトの開発ツールは停止しないでください。
+同名プロセスの一覧だけでは、どの作業を所有しているかは確定できません。ロックや保存配置の削除、全PowerShellの終了は復旧手順ではありません。
 
-## 資格情報の問題
+## プロジェクト・ペインの状態が未確認
 
-### vault のキーが見つからない
+「状態を読み直す」で対象と実行の状態を再確認します。「稼働中」はプロセスの状態であり、AIの仕事が完了したという意味ではありません。作業状態、根拠、観測時刻を併せて確認してください。
 
-原因: Windows Credential Manager にキーが保存されていません。
+作業場所が変わった、消失した、またはアクセスできない場合は、現在のフォルダーを確認します。表示名が同じ別フォルダーを、元の対象として扱わないでください。「一覧から外す（ファイルは保持）」は登録を外す操作で、ファイル削除ではありません。
 
-対処:
+操作結果が未確認の間は、同じ操作を繰り返す前に元の対象・結果を読み直します。CLI/MCPでは `accepted`、`result`、`error` を確認してください。応答がないことを成功や安全な再送の根拠にしないでください。
 
-```powershell
-winsmux vault set <name>
-winsmux vault inject <name> <pane>
-```
+## 日本語入力・ショートカット
 
-winsmux は他の CLI からトークンを取り出しません。詳しくは [認証方針](authentication-support.ja.md) を参照してください。
+ターミナル内をクリックし、IMEで入力してスペースで変換、Enterで確定します。コマンド実行用のEnterとIME確定用のEnterを区別してください。
 
-## 診断コマンド
+アプリの Ctrl+Shift+P/T/W が作業と競合する場合は「アプリのショートカットを使う」を外せます。入力の受付・送信結果が未確認と表示された場合は、その内容を確認し、同じ入力を重ねて送らないでください。
 
-```powershell
-winsmux doctor
-winsmux version
-winsmux list
-winsmux read <pane> 60
-```
+## Codex・Claude Codeが起動しない
 
-`winsmux read` の最後の数値は、読み取る末尾行数です。
+「導入状況を再確認」で公式CLIの検出状態と版を読み直します。CLIは更新されるため、検出済みであることだけでは、認証や指定モデル・推論設定の対応まで確認できたことにはなりません。
 
-主なローカルログ:
+- 実行ファイルが見つからない場合は、使用したい公式CLIのインストール先を確認します。
+- 認証が必要な場合は、対象の公式CLIの案内に従います。別CLIの認証情報をコピーしないでください。
+- 設定が受け付けられない場合は、表示された理由と公式CLIの対応を確認します。別のAIへ自動的に切り替わったと仮定しないでください。
+- CLI自身の承認要求は、公式CLIの設定と要求した操作を確認します。winsmuxの接続許可とは別のものです。承認を減らすために安全制御を無効化する手順は、このガイドでは案内しません。
 
-| ファイル | 用途 |
-| ---- | ------- |
-| `.winsmux/startup-journal.log` | 起動失敗の履歴 |
-| `.winsmux/manifest.yaml` | 現在のワークスペース状態 |
+中断は「現在の実行を中断」を使い、対象の終了を観測できたか確認します。送信やボタン押下だけで中断完了とは扱いません。
+
+## CLI・MCPの接続が拒否される
+
+GUIの「現在の接続情報をコピー」から、現在のhostの情報を明示的に渡します。hostを再起動した後に、以前の接続情報・許可を再利用しないでください。
+
+「接続一覧を読み直す」で対象接続を選び、要求するプロジェクトと許可を確認します。構成情報、出力の閲覧、操作は別の権限です。構成情報だけの許可では、端末の本文を読むことはできません。
+
+必要な範囲を選んで「選択内容を許可」を使います。不要な要求は「要求を拒否」、既存の許可を止める場合は「許可を失効」を使います。接続を許可しても、公式AIサービスへのログインを代行することはありません。
+
+## 成果物・配置を確認できない
+
+成果物は一覧を読み直し、対象ファイルを確認してから本文・差分を読みます。消失したファイルの古い本文を現在の結果として使わないでください。バイナリの本文非表示や、表示範囲の制限は、内容を完全に確認できたことを意味しません。
+
+「配置だけを復元」は保存した配置を戻す操作です。以前のプロセスを自動実行しません。保存・復元が失敗した場合に、保存ファイルを手で空にしたり、schemaを変更したりしないでください。
+
+## 診断を共有する
+
+「診断」の「診断を確認」で共有可能な五項目を表示し、「診断をコピー」を使います。共有する前にコピー結果を確認してください。
+
+端末全文、CLIの引数・環境変数、認証ファイル、私的な接続情報、保存配置を、そのまま不具合報告へ添付しないでください。追加情報が必要な場合は、生成した非秘密の再現例と、秘密を除いたエラー分類を用意します。
+
+## 旧版・更新・アンインストール
+
+旧版の設定をv0.38.0の保存配置へ手で変換しないでください。旧版で作業中の場合は、元の設定とプロセスを保持し、新しい画面ではフォルダーを選んで配置を作ります。復旧に使う元の配布物と設定を保全してください。
+
+更新や削除の対象は、使用したインストール経路と版を確認してから選びます。npmの更新・削除とデスクトップアプリの更新・削除を混同しないでください。[インストール](installation.ja.md)と、対象版のリリース情報を参照してください。

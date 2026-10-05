@@ -79,11 +79,11 @@ fn split_node(
     node: &LayoutNode,
     target: &PaneId,
     new_pane: &PaneId,
-    axis: Axis,
+    requested_axis: Axis,
 ) -> Option<LayoutNode> {
     match &*node.node {
         Node::Leaf { pane_id } if pane_id.as_str() == target.as_str() => LayoutNode::split(
-            axis,
+            requested_axis,
             default_ratio(),
             LayoutNode::leaf(pane_id.clone()),
             LayoutNode::leaf(new_pane.clone()),
@@ -96,9 +96,9 @@ fn split_node(
             first,
             second,
         } => {
-            if let Some(replaced) = split_node(first, target, new_pane, *axis) {
+            if let Some(replaced) = split_node(first, target, new_pane, requested_axis) {
                 LayoutNode::split(*axis, *ratio, replaced, clone_layout(second)).ok()
-            } else if let Some(replaced) = split_node(second, target, new_pane, *axis) {
+            } else if let Some(replaced) = split_node(second, target, new_pane, requested_axis) {
                 LayoutNode::split(*axis, *ratio, clone_layout(first), replaced).ok()
             } else {
                 None
@@ -160,5 +160,73 @@ fn clone_layout(node: &LayoutNode) -> LayoutNode {
             second,
         } => LayoutNode::split(*axis, *ratio, clone_layout(first), clone_layout(second))
             .expect("cloned layout keeps valid depth"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pane(n: usize) -> PaneId {
+        PaneId::new(format!("00000000-0000-4000-8000-{n:012x}")).unwrap()
+    }
+
+    #[test]
+    fn split_preserves_requested_axis_and_every_untouched_branch() {
+        let target = pane(1);
+        let added = pane(2);
+        for depth in 0..=4 {
+            for path in 0..(1 << depth) {
+                for ancestor_axis in [Axis::Horizontal, Axis::Vertical] {
+                    let mut original = LayoutNode::leaf(target.clone());
+                    let mut branches = Vec::new();
+                    for level in 0..depth {
+                        let sibling = LayoutNode::split(
+                            ancestor_axis,
+                            Ratio::new(0.3).unwrap(),
+                            LayoutNode::leaf(pane(10 + level * 2)),
+                            LayoutNode::leaf(pane(11 + level * 2)),
+                        ).unwrap();
+                        let side = if path & (1 << level) == 0 { "first" } else { "second" };
+                        branches.push(side);
+                        original = if side == "first" {
+                            LayoutNode::split(ancestor_axis, Ratio::new(0.7).unwrap(), original, sibling)
+                        } else {
+                            LayoutNode::split(ancestor_axis, Ratio::new(0.7).unwrap(), sibling, original)
+                        }.unwrap();
+                    }
+                    let unchanged = serde_json::to_value(&original).unwrap();
+                    for requested_axis in [Axis::Horizontal, Axis::Vertical] {
+                        let mut expected = unchanged.clone();
+                        let mut replacement = &mut expected;
+                        for side in branches.iter().rev() { replacement = &mut replacement[*side]; }
+                        *replacement = serde_json::to_value(LayoutNode::split(
+                            requested_axis, default_ratio(),
+                            LayoutNode::leaf(target.clone()), LayoutNode::leaf(added.clone()),
+                        ).unwrap()).unwrap();
+                        let actual = split_replace_leaf(&original, &target, added.clone(), requested_axis).unwrap();
+                        assert_eq!(serde_json::to_value(&actual).unwrap(), expected,
+                            "depth={depth}, path={path}, ancestor={ancestor_axis:?}, requested={requested_axis:?}");
+                        assert_eq!(count_leaves(&actual), count_leaves(&original) + 1);
+                        assert_eq!(serde_json::to_value(close_leaf(&actual, &added).unwrap().unwrap()).unwrap(), unchanged);
+                        assert_eq!(serde_json::to_value(&original).unwrap(), unchanged);
+                    }
+                    assert!(split_replace_leaf(&original, &pane(100), added.clone(), ancestor_axis).is_none());
+                    assert_eq!(serde_json::to_value(&original).unwrap(), unchanged);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn split_refuses_excess_depth_without_changing_existing_tree() {
+        let target = pane(1);
+        let mut root = LayoutNode::leaf(target.clone());
+        for level in 1..crate::contract::JSON_DEPTH {
+            root = LayoutNode::split(Axis::Horizontal, default_ratio(), root, LayoutNode::leaf(pane(10 + level))).unwrap();
+        }
+        let original = serde_json::to_value(&root).unwrap();
+        assert!(split_replace_leaf(&root, &target, pane(2), Axis::Vertical).is_none());
+        assert_eq!(serde_json::to_value(&root).unwrap(), original);
     }
 }

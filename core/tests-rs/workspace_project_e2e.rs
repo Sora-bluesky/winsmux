@@ -2335,10 +2335,17 @@ fn consoles_are_shared(launched_pid: u32) -> bool {
 }
 
 fn write_cua_acquire_evidence(value: &Value) {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("verification-evidence")
-        .join("cua-acquire-last.json");
+    let directory = std::env::var_os("WINSMUX_TEST_EVIDENCE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("verification-evidence")
+        });
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let path = directory.join("cua-acquire-last.json");
     if let Ok(bytes) = serde_json::to_vec_pretty(value) {
         let _ = fs::write(path, bytes);
     }

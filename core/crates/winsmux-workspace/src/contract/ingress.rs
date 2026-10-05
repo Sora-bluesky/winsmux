@@ -519,6 +519,16 @@ pub(crate) struct RawValue<'a> {
     bytes: &'a [u8],
 }
 
+impl DecodeOwned for bool {
+    fn decode_owned(_context: &mut DecodeContext<'_>, raw: RawValue<'_>) -> Result<Self, DecodeFailure> {
+        match raw.bytes {
+            b"true" => Ok(true),
+            b"false" => Ok(false),
+            _ => Err(DecodeFailure::Contract(ContractError::InvalidShape)),
+        }
+    }
+}
+
 impl<'a> RawValue<'a> {
     fn from_span(bytes: &'a [u8], span: Span) -> Self {
         Self {
@@ -2033,7 +2043,7 @@ mod tests {
 
     #[test]
     fn response_allocator_failure_is_closed_and_releases_the_claim() {
-        let request = request(Action::CapabilitiesGet(Empty {}));
+        let request = request(Action::CapabilitiesGet(CapabilitiesGetParams::default()));
         let response = response_with(
             Some(Success::CapabilitiesGet(CapabilitiesData {
                 schema_version: Version::new(1).expect("schema version"),

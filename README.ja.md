@@ -1,186 +1,70 @@
 [English](README.md) | [日本語](README.ja.md)
 
-<p align="center">
-  <img src="docs/brand-hero.svg" alt="winsmux: One control desk for every AI coding agent on Windows" width="100%">
-</p>
-
 # winsmux
 
-`winsmux` は、**Windows 上で動くあらゆる AI コーディングエージェントのための 1 つの管制デスク**です。複数のコーディング CLI を同時に動かす人が、1 人で全体を見て判断するためのコックピットです。
+winsmuxは、公式CLIを通じて複数のAIエージェントと作業するための、Windows専用・モデル非依存のハーネスです。プロジェクト、ターミナルのペイン、実行、成果物を一つのローカルworkspaceで扱い、作業を指示して結果を確認できます。
 
-エージェントをブラックボックス化せず、各ワーカーを実際のペインで見せ、ファイル変更を git worktree で分離し、必要なペインへ指示を送り、中断できます。完了後は、変更ファイルの重なり、レビュー状態、検証状態、チェックポイントなどの証跡を見ながら、どの結果を採用するか決められます。
+このREADMEはv0.38.0を説明します。旧版ではオペレーター／ワーカーの画面と起動コマンドが異なるため、インストールした版に付属するガイドを使ってください。
 
-Claude Code、Codex、Antigravity、Grok Build、または既存の Gemini CLI セッションを 1 つずつ手で眺める段階を越えたい。ただし、クラウド任せにも、特定ベンダー任せにもしたくない。`winsmux` はそのためのローカル管制面です。
+## プロジェクトとペインで作業する
 
-たとえば、同じタスクを 2 つのエージェントに並走させ、両方のペインを見ながら、逸れた片方だけを止め、最後に証跡を比較して採用する結果を選べます。
+- ローカルのプロジェクトフォルダーを選び、作業場所を確認する。
+- ターミナルのペインを作成・選択・分割・サイズ変更・閉鎖する。
+- CodexまたはClaude Codeを選んで起動し、必要ならモデルと推論設定を指定する。
+- プロセスの状態と作業の状態を区別し、根拠と観測時刻を確認する。
+- 選択した実行を中断し、対象の終了が観測されたか確認する。
+- 成果物を登録し、本文やGit差分を読む。端末出力を命令の実行許可として扱わない。
+- 保存したペイン配置を復元する。以前のシェルやAIは自動実行しない。
 
-`winsmux` が AI サービスへ代理ログインすることはありません。各 CLI エージェントは、それぞれ自分のログイン状態や API キー設定を使います。
+GUI・CLI・MCPは共通のworkspaceを操作します。外部接続にはプロジェクトと権限の明示許可が必要で、構成情報・出力の閲覧・操作は別の権限です。
 
-## なぜ必要か
+## デスクトップアプリから始める
 
-既存の道具は、この作業の一部だけを解決します。
+1. [リリース一覧](https://github.com/Sora-bluesky/winsmux/releases)で使用する版を選びます。
+2. 自分のCPUに対応するWindowsインストーラーを選び、その版の検証情報で確認します。
+3. インストールしてwinsmuxを開き、「プロジェクトを開く」でフォルダーを選びます。
+4. 選択したプロジェクトを確認し、ペインを作って使用する公式CLIを選びます。
 
-- ターミナルマルチプレクサはペインを並べられますが、どのエージェントがどのファイルを変えたかまでは扱いません。
-- IDE のチャット画面は 1 つの会話には便利ですが、複数の公式 CLI を束ねる管制面にはなりません。
-- エージェントフレームワークは自動化に強い一方で、作業がコードやクラウド側へ寄りやすく、人間のオペレーターが途中で見て止める前提にはなりにくいです。
+画面での一連の手順は[クイックスタート](docs/quickstart.ja.md)、導入経路・版の対応・更新・削除は[インストール](docs/installation.ja.md)を参照してください。
 
-`winsmux` はその中間にあります。公式 CLI エージェントを見える状態で動かし、作業を独立した作業ディレクトリに分け、証跡を残し、最後に何を採用するかは人間が決めます。
+Windows、ペインのPowerShellランタイム、使用するエージェントの公式CLIが必要です。デスクトップ画面はMicrosoft Edge WebView2を使います。対応するWindowsビルドとCPUは、対象版の動作要件を確認してください。RustやWindowsのC++ビルドツールはソースからビルドするためのもので、配布済みの実行ファイルを使うための前提ではありません。
 
-## 何ができるか
+## CLI・MCPで使う
 
-- 複数の CLI エージェント用に、管理された Windows Terminal ワークスペースを起動します。
-- オペレーターがペインを読み、ペインへ送信し、ペインを中断し、状態を確認できます。
-- 既定で 6 つの管理ワーカースロットを作成します。ローカル、Codex、Antigravity、Grok Build、OpenRouter 経由の外部 API モデル、仮置きのワーカーバックエンドを区別できます。生成される最初のスロットは Codex レビュー用で、残りのスロットは選択したワーカーバックエンドに従います。
-- ワークツリー分離を有効にすると、ワーカーごとに別々の git ワークツリーを使えます。
-- 記録済みの実行結果を比較し、採用する結果を選ぶ前に両方で変更されたファイルを確認できます。
-- 記録済みの実行について、レビュー、検証、アーキテクチャ、チェックポイント、後続作業などの証跡を確認できます。
-- 生の端末ログやローカル環境固有のパスを保存せず、実行終了時の構造化スナップショットを残せます。
-- Agent Vault で記録済みセッションを検索し、選んだ実行をワーカーペインへドラッグして復元できます。
-- Feed と通知の状態をワーカーペインにつなぎ、View メニューからワーカーステータス表示を切り替えられます。
-- 選択した資格情報を Windows DPAPI で保護し、リポジトリに `.env` ファイルを置かずに扱えます。
-- レビューや監査に使う検証証跡を残せます。
+ネイティブCLIのworkspace操作は `winsmux workspace` の名前空間を使います。旧版の `winsmux init` / `winsmux launch` によるWindows Terminalの起動手順とは異なります。
 
-## 向いている場面
+デスクトップアプリから現在の公開接続情報を取得し、CLI/MCPへ明示的に渡します。必要なプロジェクトと権限を要求し、GUIで対象接続を許可してください。hostを起動し直した場合は、新しい接続情報と許可が必要です。
 
-Windows PC で複数のコーディングエージェントを動かしつつ、制御を 1 人のオペレーターに集約したい時に使います。
+npmパッケージはインストール用の入口で、workspace要求を扱うのはネイティブランタイムです。npmのコマンドとネイティブのworkspace操作を混同しないでください。[CLIパッケージの導入](docs/installation.ja.md#cli-パッケージでのインストール)を参照してください。
 
-特に次の用途に向いています。
-
-- 異なるエージェントやプロバイダーの結果を比較したい。
-- ワーカーごとのファイル変更を分けたい。
-- 最終要約を待たず、実行中のペインを直接見たい。
-- 変更を受け入れる前にレビュー証跡を確認したい。
-- 後から再開または比較できる形で、実行の文脈を残したい。
-- 特定のモデル提供元に運用を縛られたくない。
-
-ターミナルマルチプレクサとしてだけ使いたい場合は、[`core/docs`](core/docs) を参照してください。
-
-## 動作要件
-
-- Windows 10 または Windows 11
-- PowerShell 7+
-- Windows Terminal
-- 実行したい公式エージェント CLI。例: Claude Code、Codex、Antigravity CLI、Grok Build
-
-Rust は、ランタイムをソースからビルドする時だけ必要です。
-
-## 始め方
-
-通常はデスクトップアプリから始めます。まず [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) を開き、Assets から `winsmux_..._x64-setup.exe` という名前のインストーラーをダウンロードして実行します。インストール後は Windows の `winsmux` アプリを開き、エージェントに作業させたいプロジェクトフォルダーを選択します。過去版が必要な場合は [Releases 一覧](https://github.com/Sora-bluesky/winsmux/releases) から対象の版を選びます。
-
-CLI 中心、スクリプト実行、ヘッドレス運用で使う場合だけ npm パッケージを使います。この経路は `npm install -g winsmux` で始め、続けて `winsmux install --profile full` を実行します。管理対象の Windows Terminal ワークスペースを起動しますが、デスクトップアプリは開きません。初めて使う人がアプリを開く前にプロジェクト初期化コマンドを実行しないよう、デスクトップの初回手順と CLI の設定手順は分けています。
-
-初回の流れは [クイックスタート](docs/quickstart.ja.md) を参照してください。
-推奨するデスクトップインストーラー経路、CLI プロファイル、更新、アンインストールは [インストール](docs/installation.ja.md) にまとめています。
-起動プリセット、ワークツリー方針、スロット、資格情報、デスクトップ設定は [カスタマイズ](docs/customization.ja.md) を参照してください。
-`v1.0.0` 以降の公開配布と再配布の境界は [公開配布の境界](docs/source-access.ja.md) を参照してください。
-
-## 主要コマンド
+この導入経路を使う場合は、対象リリースに対応する公開済みパッケージの版を選び、次のプレースホルダーを置き換えます。
 
 ```powershell
-winsmux list
-winsmux read worker-1 30
-winsmux send worker-2 "最新の認証変更をレビューしてください。"
-winsmux health-check
-winsmux workers status
-winsmux workers doctor
-winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
-winsmux workers sandbox baseline w2 --run-id demo-1 --json
-winsmux workers broker baseline w2 --run-id demo-1 --endpoint https://broker.example.invalid/worker --json
-winsmux workers broker token issue w2 --run-id demo-1 --ttl-seconds 900 --json
-winsmux workers policy baseline w2 --run-id demo-1 --network broker-only --write workspace-artifacts --provider configured --json
-winsmux review-pack <run_id> --json
-winsmux compare runs <left_run_id> <right_run_id>
-winsmux compare preflight <left_ref> <right_ref>
-winsmux compare promote <run_id>
-winsmux meta-plan --task "この変更を計画して" --json
-winsmux meta-plan --task "この変更を計画して" --roles .winsmux/meta-plan-roles.yaml --review-rounds 2 --json
-winsmux skills --json
+npm install -g winsmux@<published-version>
+winsmux install --profile core
 ```
 
-| コマンド | 用途 |
-| ------- | ------- |
-| `winsmux init` | 既定のプロジェクト設定を作成 |
-| `winsmux launch` | CLI の確認を通し、管理対象の Windows Terminal ワークスペースを起動。デスクトップアプリは開きません |
-| `winsmux launcher presets` | 起動プリセットとペア構成テンプレートを表示 |
-| `winsmux launcher lifecycle` | ワークスペースのライフサイクル方針を選択 |
-| `winsmux workers status` | ワーカースロットのバックエンド、状態、プロバイダー、モデル、直近コマンドを表示 |
-| `winsmux workers doctor` | ワーカー設定、外部 API メタデータ、Antigravity CLI、認証、uv、状態ファイルの場所を診断 |
-| `winsmux workers exec` | OpenAI 互換 API 経由の `api_llm` タスク、または Antigravity CLI の一回実行ワーカーを実行する。API key の環境変数がない場合は通信前に停止する |
-| `winsmux workers logs` | `api_llm` または Antigravity ワーカー実行の保存済みログを読む |
-| `winsmux workers sandbox baseline` | 準備済み隔離実行に `restricted_token` と ACL 境界の土台を定義 |
-| `winsmux workers broker baseline` | 準備済み隔離実行に、単一の外部ブローカーノード契約を定義 |
-| `winsmux workers broker token` | 短命ブローカー実行トークンを発行または確認。値は出力しない |
-| `winsmux workers policy baseline` | 準備済み隔離実行に、プロンプト外の企業向け実行ポリシーを定義 |
-| `winsmux review-pack` | 変更ファイル、テスト結果、リスク、実行コマンド、成果物参照だけを含むレビュー用パケットを書き出す |
-| `winsmux compare runs` | 2 つの記録済み実行について、証跡と信頼度を比較 |
-| `winsmux compare preflight` | マージ前や比較レビュー前に 2 つの git 参照を確認 |
-| `winsmux compare promote` | 成功した実行結果を、次の実行で使う入力として書き出す |
-| `winsmux meta-plan` | 実行前に読み取り専用で、複数ロールでの計画を作成 |
-| `winsmux skills` | エージェントが読めるコマンド仕様を出力 |
-| `winsmux read` | 操作前にペイン出力を読む |
-| `winsmux send` | ペインへテキストを送る |
-| `winsmux vault set` | 資格情報を Windows DPAPI で保護して保存 |
-| `winsmux vault inject` | 保存済み資格情報を対象ペインへ差し込む |
+スクリプトのインストーラーでは、全支援コンポーネントを含む `winsmux install --profile full` も選べます。任意の支援コンポーネントは[旧操作方式のカスタマイズガイド](docs/customization.ja.md)を参照してください。v0.38.0のデスクトップworkspaceの操作には、この版のクイックスタートを使います。
 
-`winsmux conflict-preflight` は、`winsmux compare preflight` の互換コマンドとして引き続き利用できます。
+旧実行ファイル名 `psmux`・`pmux`・`tmux` は配布しません。`winsmux` を使用してください。残るtmux互換設定の対応範囲は[ランタイム互換性](core/docs/compatibility.md)を参照してください。
 
-## 認証方針
+## 認証とデータ
 
-| ツール | 認証方式 | winsmux での扱い |
-| ------- | ------- | ------- |
-| Claude Code | API key / ドキュメント化された企業向け認証 | 公式に対応 |
-| Claude Code | Pro / Max OAuth | 当該 PC での対話利用のみ |
-| Codex | API key | 公式に対応 |
-| Codex | ChatGPT OAuth | この PC での対話利用のみ |
-| Antigravity CLI | 公式 Antigravity CLI のサインイン | 当該 PC での対話利用のみ |
-| Grok Build | Grok Build の headless（ローカル） | 当該 PC での対話利用のみ |
-| OpenRouter（クラウドモデル） | `OPENROUTER_API_KEY` による API key | 公式に対応 |
-| Gemini | Gemini API key | 公式に対応 |
-| Gemini | Vertex AI の Gemini API | 公式に対応 |
-| Gemini | Google OAuth | 互換目的 / tier 制限あり、この PC のみ |
+認証は各公式CLIが扱います。winsmuxが別CLIのトークンを取り出したり、代理ログインしたりすることはありません。CLIの検出だけでは認証や指定モデルの対応は確認できないため、公式CLIの実際の結果を確認します。
 
-Google の公開移行案内では、Gemini CLI と Gemini Code Assist IDE 拡張は、Gemini Code Assist for individuals、Google AI Pro、Google AI Ultra からのリクエスト提供を 2026-06-18 に停止し、対象ユーザーは Antigravity CLI へ移行するとされています。winsmux では、Google AI Standard と Enterprise はこの sunset 対象として扱いません。
+プロジェクトや端末には私的な情報が含まれます。不具合報告には共有可能な診断を使い、画面を共有する前にも内容を確認してください。未加工の入力・出力・環境変数・私的な接続情報・保存配置を添付しないでください。
 
-詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
-[プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md) では、クラウドと将来のローカル LLM ランタイムの扱いを説明しています。
-[CLI comparison bakeoff](docs/cli-comparison-bakeoff.md) では、Claude Code、Codex、Antigravity CLI の比較証跡ゲートを説明しています。
-[外部コントロールプレーン API](docs/external-control-plane.ja.md) では、外部自動化クライアント向けのローカル named pipe JSON-RPC 契約を説明しています。
+workspaceの認可は、同じWindowsユーザー権限で動く任意のコードに対するOSサンドボックスではありません。AIの結果は、変更・成果物・検証結果を確認してから採用します。
 
-## 安全に使うための注意
+## 利用ガイド
 
-- 指示を送る前に、`winsmux read` で送り先ペインの出力を確認してください。
-- 受け入れ可否の最終判断は、1 人のオペレーターが担ってください。
-- 複数のエージェントが並列で編集する時は、既定の管理ワークツリー方針を維持してください。
-- API キーをペインのチャットや Issue コメントへ貼らないでください。
-- ペインへ資格情報を渡す必要がある時は、`winsmux vault` を使ってください。
-- 比較結果やリリース証跡は、レビュー材料として扱ってください。自動承認には使わないでください。
-
-互換用の旧コマンド名 `psmux`、`pmux`、`tmux` は配布しません。
-スクリプトやドキュメントでは `winsmux` を使ってください。tmux 互換の設定、ターゲット、コマンドは、ドキュメントで明記した範囲で引き続き利用できます。
-
-## 関連ドキュメント
-
-- [オペレーターモデル](docs/operator-model.md)（英語のみ）
-- [ドキュメント一覧](docs/README.ja.md)
 - [クイックスタート](docs/quickstart.ja.md)
 - [インストール](docs/installation.ja.md)
-- [カスタマイズ](docs/customization.ja.md)
-- [認証方針](docs/authentication-support.ja.md)
-- [プロバイダーとモデルの対応方針](docs/provider-and-model-support.ja.md)
-- [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md)
-- [外部コントロールプレーン API](docs/external-control-plane.ja.md)
 - [トラブルシューティング](docs/TROUBLESHOOTING.ja.md)
-- [リポジトリの公開面ポリシー](docs/repo-surface-policy.md)（英語のみ）
-- [ランタイム機能](core/docs/features.md)（英語のみ）
-- [ランタイム設定](core/docs/configuration.md)（英語のみ）
-- [tmux 互換性](core/docs/compatibility.md)（英語のみ）
-
-開発者向け、コントリビューター向けの運用ルールは、この README には載せません。リポジトリ自体を変更する場合は、まず [リポジトリの公開面ポリシー](docs/repo-surface-policy.md) を参照してください。
 
 ## ライセンス
 
-Apache License 2.0 です。
+Apache License 2.0です。
 
-一部のランタイム互換コードには、上流プロジェクト由来の MIT ライセンス表示が `core/LICENSE` に残ります。
-詳しくは [サードパーティライセンス](THIRD_PARTY_NOTICES.md) を参照してください。
+一部のランタイム互換コードには、上流プロジェクト由来のMITライセンス表示が `core/LICENSE` に残ります。
+詳しくは[サードパーティライセンス](THIRD_PARTY_NOTICES.md)を参照してください。

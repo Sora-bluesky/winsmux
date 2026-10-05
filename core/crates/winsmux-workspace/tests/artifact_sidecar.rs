@@ -17,7 +17,11 @@ fn public_capabilities(host: &ProductHost) {
     let response = client.transact(&request).expect("ordinary public request");
     assert!(response.accepted);
     let value = serde_json::to_value(response).unwrap();
-    assert_eq!(value["result"]["data"]["operations"].as_array().unwrap().len(), 29);
+    let operations = value["result"]["data"]["operations"].as_array().unwrap();
+    assert_eq!(operations.len(), 33);
+    for name in ["artifact.choose", "artifact.diff", "artifact.choice.list", "diagnostics.get"] {
+        assert!(operations.contains(&json!(name)), "missing supported operation: {name}");
+    }
 }
 
 #[test]

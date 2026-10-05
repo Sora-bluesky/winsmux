@@ -84,9 +84,13 @@ fn instance_of(host: &ProductHost) -> String {
 }
 
 fn evidence_dir() -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("verification-evidence");
+    let dir = std::env::var_os("WINSMUX_TEST_EVIDENCE_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("verification-evidence")
+        });
     fs::create_dir_all(&dir).expect("evidence dir");
     dir
 }

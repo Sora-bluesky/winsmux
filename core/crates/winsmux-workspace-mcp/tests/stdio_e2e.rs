@@ -1720,6 +1720,27 @@ mod native {
         let execution_path=PathBuf::from(std::env::var_os("TASK875_EXECUTION_RECEIPT").expect("formal runner execution receipt"));
         std::fs::OpenOptions::new().create_new(true).write(true).open(&execution_path).unwrap();
         let isolated_scope=std::env::var("TASK875_NATIVE_CLASS").unwrap_or_default();
+        if isolated_scope=="distribution-initialize" {
+            let actual=PathBuf::from(std::env::var_os("TASK875_RELEASE_MCP_BIN").expect("exact distribution MCP binary"));
+            let expected=std::env::var("TASK879_MCP_SHA256").expect("fixed distribution MCP SHA-256");
+            assert!(actual.is_absolute());
+            let sha:String=Sha256::digest(std::fs::read(&actual).unwrap()).iter().map(|b|format!("{b:02x}")).collect();
+            assert_eq!(sha,expected);
+            let server=ValidProofServer::start_mode(ProofPeerMode::AuthOnly);
+            let (input,writer)=anonymous();
+            let mut adapter=Adapter::start(actual.to_str().unwrap(),&server.discovery,PipePair{input,writer},None);
+            adapter.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"distribution-version-proof","version":"1"}}}));
+            let response=adapter.reply();
+            assert_eq!(response["id"],1);
+            assert_eq!(response["result"]["protocolVersion"],"2025-11-25");
+            assert_eq!(response["result"]["serverInfo"],json!({"name":"winsmux-workspace-mcp","version":env!("CARGO_PKG_VERSION")}));
+            adapter.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+            adapter.finish(0,None);let peer=server.finish();
+            let after:String=Sha256::digest(std::fs::read(&actual).unwrap()).iter().map(|b|format!("{b:02x}")).collect();
+            assert_eq!(sha,after);
+            execution(json!({"stage":"distribution MCP initialization verified","sha256":sha,"server_info":response["result"]["serverInfo"],"peer":peer,"known_folder_used":false,"product_host":false,"whole_task_completed":false}));
+            return;
+        }
         request_shape_classes();
         malformed_request_classes();
         owner_terminal_reply_classes();

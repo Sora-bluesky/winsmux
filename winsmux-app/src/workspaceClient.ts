@@ -47,6 +47,38 @@ export async function getWorkspaceDiscovery(instanceId: InstanceId): Promise<Wor
   return discovery;
 }
 
+function exactDiscovery(value: unknown, expected: WorkspaceDiscovery): value is WorkspaceDiscovery {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = value as Record<string, unknown>;
+  return Object.keys(actual).length === 3 && actual.instance_id === expected.instance_id
+    && actual.pipe_name === expected.pipe_name && actual.schema_version === expected.schema_version;
+}
+
+// The native command validates the live owner and writes its own three-field projection.
+// A successful receipt is tied to this mount's owner generation, not browser focus.
+export async function copyWorkspaceDiscovery(ownerGeneration: string, discovery: WorkspaceDiscovery): Promise<WorkspaceDiscovery> {
+  if (!currentInstance || discovery.instance_id !== currentInstance || !/^[1-9][0-9]*$/.test(ownerGeneration)) {
+    throw new Error('世代が変わりました。');
+  }
+  let result: unknown;
+  try {
+    result = await invoke('workspace_discovery_copy', { requestJson: JSON.stringify({
+      owner_generation: ownerGeneration,
+      discovery: { instance_id: discovery.instance_id, pipe_name: discovery.pipe_name, schema_version: discovery.schema_version },
+    }) });
+  } catch (error) {
+    if (error === 'clipboard_unavailable' || error === 'clipboard_write_failed') {
+      throw new Error('クリップボードへコピーできませんでした。もう一度お試しください。');
+    }
+    throw new Error('現在の接続情報をコピーできませんでした。接続状態を確認してください。');
+  }
+  const receipt = result as { owner_generation?: unknown; discovery?: unknown } | null;
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) || Object.keys(receipt).length !== 2
+    || receipt.owner_generation !== ownerGeneration || currentInstance !== discovery.instance_id
+    || !exactDiscovery(receipt.discovery, discovery)) throw new Error('世代が変わりました。');
+  return receipt.discovery;
+}
+
 export async function closeWorkspaceSession(): Promise<Response> {
   const response = await invoke<Response>("workspace_session_close");
   if (response.accepted) currentInstance = null;

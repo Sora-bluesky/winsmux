@@ -13,6 +13,7 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::auth::{
     CancelSignal, ClosingWorkerStep, ConnectionLease, WorkerLifecycleError, WorkerPublish,
+    WorkerAdmissionError,
 };
 
 pub const RETAINED_BYTES: usize = 128 * 1024 * 1024;
@@ -687,6 +688,13 @@ pub enum ConnectionSupervisorError {
     State,
 }
 
+/// A normal admission refusal never enters the fatal supervisor error path.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConnectionAdmission {
+    Spawned,
+    Refused,
+}
+
 struct ManualResetEvent {
     handle: HANDLE,
     #[cfg(test)]
@@ -799,7 +807,7 @@ impl ConnectionSupervisor {
         &self,
         cancel: Arc<dyn CancelSignal>,
         body: impl FnOnce(ConnectionLease) + Send + 'static,
-    ) -> Result<(), ConnectionSupervisorError> {
+    ) -> Result<ConnectionAdmission, ConnectionSupervisorError> {
         self.spawn_before_publish(cancel, body, || {})
     }
 
@@ -808,18 +816,19 @@ impl ConnectionSupervisor {
         cancel: Arc<dyn CancelSignal>,
         body: impl FnOnce(ConnectionLease) + Send + 'static,
         before_publish: impl FnOnce(),
-    ) -> Result<(), ConnectionSupervisorError> {
-        let stack_charge = self
+    ) -> Result<ConnectionAdmission, ConnectionSupervisorError> {
+        let admission = self
             .0
             .authorization
-            .allocations()
-            .claim(AllocationPool::ActivePublic, PUBLIC_WORKER_STACK_BYTES)
-            .map_err(|_| ConnectionSupervisorError::Exhausted)?;
-        let lease = self
-            .0
-            .authorization
-            .admit_worker(cancel.clone(), stack_charge)
-            .ok_or(ConnectionSupervisorError::Exhausted)?;
+            .admit_worker(cancel.clone())
+            .map_err(|error| match error {
+                WorkerAdmissionError::Exhausted => ConnectionSupervisorError::Exhausted,
+                WorkerAdmissionError::State => ConnectionSupervisorError::State,
+            })?;
+        let Some(lease) = admission else {
+            // Dropping the unused body also drops its newly accepted pipe.
+            return Ok(ConnectionAdmission::Refused);
+        };
         let worker_lease = lease.clone();
         let worker_supervisor = self.clone();
         let handle = match std::thread::Builder::new()
@@ -851,7 +860,7 @@ impl ConnectionSupervisor {
             || self.0.completion.set(),
             || self.0.progress.set(),
         ) {
-            WorkerPublish::Published => Ok(()),
+            WorkerPublish::Published => Ok(ConnectionAdmission::Spawned),
             WorkerPublish::GenerationFailed => {
                 self.fail_generation();
                 Err(ConnectionSupervisorError::Signal)
@@ -1371,6 +1380,44 @@ mod tests {
     }
 
     #[test]
+    fn reservation_does_not_reject_finished_worker_handle_publication() {
+        let h = crate::auth::testing::Harness::new(Vec::new());
+        let auth = h.authorization();
+        let root = std::env::temp_dir().join(format!("winsmux-close-publication-{}", uuid::Uuid::new_v4()));
+        assert!(auth.testing_install_isolated_layout(&root));
+        let release = auth.testing_install_stop_join_gate(false);
+        let supervisor = ConnectionSupervisor::new(auth.clone(), Arc::new(TestCancel::new())).unwrap();
+        let (resume, wait) = std::sync::mpsc::channel();
+        let body_auth = auth.clone();
+        let completion = supervisor.clone();
+        let command = crate::contract::parse_request(&serde_json::to_vec(&serde_json::json!({
+            "schema_version":1,"instance_id":h.instance_id(),"operation_id":uuid::Uuid::new_v4().to_string(),
+            "expected_topology_revision":null,"operation":"host.stop","params":{}
+        })).unwrap()).unwrap();
+        let mut stopping = None;
+        assert_eq!(supervisor.spawn_before_publish(Arc::new(TestCancel::new()), move |lease| {
+            wait.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            assert!(body_auth.begin_worker_authentication(&lease).is_none());
+        }, || {
+            stopping = Some(std::thread::spawn(move || h.owner(&command)));
+            let start = std::time::Instant::now();
+            while !auth.testing_stop_is_reserved() {
+                assert!(start.elapsed() < std::time::Duration::from_secs(30));
+                std::thread::yield_now();
+            }
+            resume.send(()).unwrap();
+            assert!(completion.0.completion.wait());
+        }), Ok(ConnectionAdmission::Spawned));
+        assert_eq!(supervisor.reap_completed(), Ok(1));
+        assert_eq!(supervisor.reap_completed(), Ok(0));
+        assert_eq!(auth.record_count(), 0);
+        assert_eq!(auth.allocations().snapshot().active_public, 0);
+        release.send(()).unwrap();
+        assert!(stopping.unwrap().join().unwrap().accepted);
+        assert_eq!(supervisor.close_and_reap(), Ok(0));
+    }
+
+    #[test]
     fn completion_reset_failure_closes_generation_and_reaps_without_rewaiting_it() {
         let (authorization, supervisor, generation_cancel) = supervisor();
         let completion = supervisor.clone();
@@ -1390,7 +1437,7 @@ mod tests {
         assert!(generation_cancel.signaled.load(Ordering::SeqCst));
         assert_eq!(
             supervisor.spawn(Arc::new(TestCancel::new()), |_| {}),
-            Err(ConnectionSupervisorError::Exhausted)
+            Ok(ConnectionAdmission::Refused)
         );
         assert_eq!(supervisor.close_and_reap(), Ok(1));
         assert_eq!(authorization.record_count(), 0);

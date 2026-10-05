@@ -305,10 +305,10 @@ const CLASS_DECISION_TABLE: &[ClassRow] = &[
     },
     ClassRow {
         operation: OperationName::DiagnosticsGet,
-        class: LedgerClass::Unsupported,
-        owner_first: FirstKind::Error("unsupported_capability"),
+        class: LedgerClass::CurrentObservation,
+        owner_first: FirstKind::ObservationOk,
         owner_record: IdRecord::Vacant,
-        public_first: FirstKind::Error("unsupported_capability"),
+        public_first: FirstKind::ObservationOk,
         public_record: IdRecord::Vacant,
     },
 ];

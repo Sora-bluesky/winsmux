@@ -1,0 +1,74 @@
+{
+  "schema": "windows-license-build-binding/v1",
+  "version": "0.38.0",
+  "host": "x86_64-pc-windows-msvc",
+  "rustc_commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+  "sources": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "26d1bef4c5a4fc47330468a719d8ff59e0fb85e483aa84d0e0752bba99d85c30"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "3c50db3d0d7650d46dd3342eef78c678c1261a2b3f75dce6d79b1d648a30b5a3"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "42de20501ab3d7f329da2c2f3ab396ba15c2b2dbbb4fea0c1b8da00c46f3935c"
+    },
+    {
+      "path": "core/Cargo.toml",
+      "sha256": "a52039539867a3fcdaa3e0fdf8a5a0eea670d0ba5ff0445c046e63d60bd8085d"
+    },
+    {
+      "path": "core/LICENSE",
+      "sha256": "542683c8ff5476bac7b73f802f8ebd4bc110d1063a97bb0f98407c1b2e188431"
+    },
+    {
+      "path": "core/crates/portable-pty-winsmux/Cargo.toml",
+      "sha256": "2c5b61c3848c71504034ad4a97db2ecedb5f972090c8f3d557fe7962a4ae7c57"
+    },
+    {
+      "path": "core/crates/vt100-winsmux/Cargo.toml",
+      "sha256": "8dc4bb5c5b1ee0354eff6152b0cd21f3604aa54ba93fac9b7f8816771d9b142b"
+    },
+    {
+      "path": "core/crates/winsmux-remote-helper/Cargo.toml",
+      "sha256": "20093100054c4b92c9544f92184e4410721afd6424b593778f92fedd4b28b598"
+    },
+    {
+      "path": "core/crates/winsmux-workspace-mcp/Cargo.toml",
+      "sha256": "bb068fd08647908cf4d4574329ea1b4a0af15e156dba5b32dcbe450e62f61a39"
+    },
+    {
+      "path": "core/crates/winsmux-workspace/Cargo.toml",
+      "sha256": "ac2601c622573e15a7bf2daf17c2229e392b7812cd271f8b18faa1255fc63194"
+    },
+    {
+      "path": "git-graph/Cargo.toml",
+      "sha256": "b0a95ce9092da4af9a720d80dea5094b8d8053f230308bda9f5689d84879fa99"
+    },
+    {
+      "path": "winsmux-app/package-lock.json",
+      "sha256": "75c3b2d53f253a1598ad791dc986ccc7c43f377583fc5cac8358bb3fa2651368"
+    },
+    {
+      "path": "winsmux-app/package.json",
+      "sha256": "f5c9c3e752ef70755a864a31e10934a17402d23a3caf5490839f2ffd81f32398"
+    },
+    {
+      "path": "winsmux-app/src-tauri/Cargo.toml",
+      "sha256": "0030979e72f6c92691ea72472f122f5e5f89720ab28268ba45e9076fea3c5660"
+    }
+  ],
+  "policy_sha256": "d9972240138ab56696de6bd593527759561d3456e7c82452380f114fd7ad4696",
+  "input_sha256": "10fc69a449c098c9a54d58165ccb2ccb20ae428d3e1b4cfb8c86d7423f478be0",
+  "catalog_sha256": "0f8389572d939bf0d8a46ca8bafa7207ecd9cab22ce781fd2a350a159a7fa4d8",
+  "plugin": {
+    "source_commit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
+    "rustc_commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+    "lock_sha256": "3fa07bf1380a99df96624ccee17820445a789fffec16cae9c8663183c320de9c",
+    "dll_sha256": "2d89d7912884d34fc385c79a398d53c8da945eec9e6ceb7f7632c0e90398d43e"
+  },
+  "source_normalization": "utf8-crlf-to-lf"
+}

@@ -89,6 +89,16 @@
       ],
       "type": "string"
     },
+    "CapabilitiesGetParams": {
+      "additionalProperties": false,
+      "description": "Empty parameters remain a passive observation; refresh explicitly retries a failed version probe. False and omission share the original canonical {}.",
+      "properties": {
+        "refresh": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
     "CleanupRunGetParams": {
       "additionalProperties": false,
       "properties": {
@@ -736,7 +746,7 @@
           "$ref": "#/definitions/OperationId"
         },
         "params": {
-          "$ref": "#/definitions/Empty"
+          "$ref": "#/definitions/CapabilitiesGetParams"
         },
         "schema_version": {
           "$ref": "#/definitions/Version"

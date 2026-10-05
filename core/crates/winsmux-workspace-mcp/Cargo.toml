@@ -1,6 +1,6 @@
 [package]
 name = "winsmux-workspace-mcp"
-version = "0.1.0"
+version = "0.38.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "MCP stdio adapter for the authenticated winsmux workspace client"

@@ -47,12 +47,13 @@ try {
         first: { kind: 'leaf', pane_id: 'pane-1' }, second: { kind: 'split', axis: 'vertical', ratio: .7, first: { kind: 'leaf', pane_id: 'pane-2' }, second: { kind: 'leaf', pane_id: 'pane-3' } } },
         panes: [1, 2, 3].map(n => ({ pane_id: `pane-${n}`, project_id: 'project-1', display_name: `端末${n}`, path: 'C:\\作業\\日本語', current_run_id: `run-${n}`,
           observation: { pane_id: `pane-${n}`, run_id: `run-${n}`, current: true, process: 'running', work: 'unknown', evidence: 'unavailable', exit_code: null, observed_at: '2026-09-26T01:00:00Z' } })) } });
-    let current, view, calls, inspections, mounts, releases, mode, resolvers;
+    let current, view, calls, inspections, mounts, releases, mode, resolvers, composing;
     const host = document.querySelector('#view');
     const reset = (snapshot = fixture(), nextMode = 'unknown') => {
-      view?.dispose(); current = snapshot; calls = []; inspections = []; mounts = []; releases = []; resolvers = []; mode = nextMode;
+      view?.dispose(); current = snapshot; calls = []; inspections = []; mounts = []; releases = []; resolvers = []; mode = nextMode; composing = false;
       view = createProjectPaneView(host, current, {
         control: (intent, ticket) => { calls.push({ intent, ticket }); if (mode === 'sync-settle') { view.settle(ticket, { disposition: 'completed' }); return { disposition: 'completed' }; } if (mode === 'throw') throw new Error('started'); if (mode === 'reject') return Promise.reject(new Error('started')); if (mode === 'defer') return new Promise(resolve => resolvers.push(resolve)); return { disposition: mode }; },
+        composing: () => composing,
         inspect: intent => inspections.push(intent), mountTerminal: (slot, target) => { if (!slot.isConnected) throw new Error(`Disconnected mount ${target.paneId}`); mounts.push({ slot, target }); return () => releases.push(target); },
       });
     };
@@ -222,9 +223,93 @@ try {
     reset(); view.dispose();
     check('disposed view rejects both callables', !view.requestOpenFolder() && !view.requestPaneResize(captured) && calls.length === 0);
     reset(); click(global('toggle-projects'));
+    // A disabled origin cannot receive focus after a topology move. Preserve the
+    // keyboard lane until settlement, without overriding a newer focus choice.
+    for (const name of ['create-pane', 'select-pane', 'split-horizontal', 'split-vertical', 'interrupt-run', 'resize-pane']) {
+      for (const disposition of ['completed', 'refused']) {
+        reset(fixture(), 'defer');
+        const origin = name === 'create-pane' ? global(name) : action(name);
+        origin.focus(); click(origin);
+        check(`${name} pending retains keyboard lane`, document.activeElement.tagName === 'MAIN' && calls.length === 1);
+        if (name.startsWith('split-') || name === 'create-pane') { current.panes.root = { ...current.panes.root, ratio: .4 }; render(); }
+        check(`${name} pending render retains keyboard lane`, document.activeElement.tagName === 'MAIN');
+        settle(disposition);
+        check(`${name} ${disposition} returns to enabled origin`, document.activeElement === origin && !origin.disabled);
+      }
+    }
+    reset(fixture(), 'defer'); const splitOrigin = action('split-horizontal'); splitOrigin.focus(); click(splitOrigin); settle('unknown');
+    check('unknown mutation retains focus without retry', document.activeElement.tagName === 'MAIN' && calls.length === 1);
+    global('inspect-installation').focus(); const newerFocus = document.activeElement; settle('completed');
+    check('late mutation settlement preserves newer focus', document.activeElement === newerFocus && calls.length === 1);
+    reset(fixture(), 'defer'); action('split-horizontal').focus(); click(action('split-horizontal')); current.generation = 'g2'; render(); settle('completed');
+    check('changed generation cannot return to old origin', document.activeElement.tagName === 'MAIN');
+    for (const originKind of ['terminal', 'dimension', 'main']) {
+      reset(fixture(), 'defer');
+      const origin = document.querySelector(originKind === 'terminal' ? '.workspace-terminal' : originKind === 'dimension' ? '.workspace-pane input' : '.workspace-project-pane main');
+      origin.focus(); origin.dispatchEvent(new KeyboardEvent('keydown', { key: 'T', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+      check(`${originKind} create shortcut protects pending focus`, document.activeElement.tagName === 'MAIN' && calls.length === 1);
+      settle('refused'); check(`${originKind} create refusal restores origin`, document.activeElement === origin);
+    }
+    reset(fixture(), 'defer'); const composingOrigin = document.querySelector('.workspace-terminal'); composingOrigin.focus(); composing = true;
+    composingOrigin.dispatchEvent(new KeyboardEvent('keydown', { key: 'W', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+    check('composition prevents shortcut and retains terminal focus', calls.length === 0 && document.activeElement === composingOrigin);
+    view.requestPaneResize(captured);
+    check('automatic resize does not move composing terminal focus', calls.length === 1 && document.activeElement === composingOrigin);
+    settle('completed'); check('automatic resize settlement keeps composition focus', document.activeElement === composingOrigin);
+    reset(fixture(), 'defer'); action('split-horizontal').focus(); click(action('split-horizontal'));
+    const outside = document.createElement('button'); document.body.append(outside); outside.focus(); document.querySelector('main').focus(); settle('completed');
+    check('outside focus choice invalidates origin even after return to main', document.activeElement.tagName === 'MAIN'); outside.remove();
+    for (const state of ['unstarted', 'exited']) for (const order of ['render-first', 'settle-first']) {
+      reset(fixture(), 'defer');
+      if (state === 'unstarted') { current.panes.panes[0].current_run_id = null; current.panes.panes[0].observation = null; }
+      else { current.panes.panes[0].observation.process = 'exited'; current.panes.panes[0].observation.evidence = 'process_exit'; }
+      render();
+      const origin = document.querySelector('.workspace-terminal'); origin.focus();
+      origin.dispatchEvent(new KeyboardEvent('keydown', { key: 'W', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+      check(`${state} shortcut direct close retains workspace pending focus`, document.activeElement.tagName === 'MAIN' && calls.length === 1 && !document.querySelector('dialog').open);
+      if (order === 'settle-first') settle('completed');
+      current.panes.panes.shift(); current.panes.selected_pane_id = 'pane-2'; current.panes.root = current.panes.root.second; render();
+      check(`${state} ${order} target removal retains workspace focus`, document.activeElement.tagName === 'MAIN');
+      if (order === 'render-first') settle('completed');
+      check(`${state} ${order} close settles without replay`, document.activeElement.tagName === 'MAIN' && calls.length === 1);
+      document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true }));
+      check(`${state} ${order} next workspace shortcut remains reachable`, document.activeElement.type === 'search');
+    }
+    reset(fixture(), 'defer'); current.panes.panes[0].current_run_id = null; current.panes.panes[0].observation = null; render();
+    const unknownOrigin = document.querySelector('.workspace-terminal'); unknownOrigin.focus(); unknownOrigin.dispatchEvent(new KeyboardEvent('keydown', { key: 'W', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })); settle('unknown');
+    check('direct close unknown preserves keyboard lane without replay', document.activeElement.tagName === 'MAIN' && calls.length === 1);
+    global('operation-search').focus(); click(global('operation-search')); settle('completed');
+    check('new search dialog owns focus across late direct-close settlement', document.activeElement.type === 'search' && calls.length === 1);
+    globalThis.workspaceFocusTest = {
+      prepare(state) {
+        reset(fixture(), 'defer');
+        if (state === 'unstarted') { current.panes.panes[0].current_run_id = null; current.panes.panes[0].observation = null; }
+        else { current.panes.panes[0].observation.process = 'exited'; current.panes.panes[0].observation.evidence = 'process_exit'; }
+        render(); document.querySelector('.workspace-terminal').focus();
+      },
+      remove() { current.panes.panes.shift(); current.panes.selected_pane_id = 'pane-2'; current.panes.root = current.panes.root.second; render(); },
+      settle() { settle('completed'); },
+      observation() { return { tag: document.activeElement.tagName, type: document.activeElement.type, calls: calls.length }; },
+      reset() { reset(); click(global('toggle-projects')); },
+    };
+    reset(); click(global('toggle-projects'));
     // Leave the final fixture ready for the external keyboard and layout checks.
     return passed;
   }, moduleText);
+  for (const state of ['unstarted', 'exited']) for (const order of ['render-first', 'settle-first']) {
+    await page.evaluate(state => workspaceFocusTest.prepare(state), state);
+    await page.keyboard.press('Control+Shift+W');
+    let observed = await page.evaluate(() => workspaceFocusTest.observation());
+    if (observed.tag !== 'MAIN' || observed.calls !== 1) throw new Error(`actual ${state} close shortcut lost pending focus`);
+    await page.evaluate(order => { if (order === 'settle-first') workspaceFocusTest.settle(); workspaceFocusTest.remove(); if (order === 'render-first') workspaceFocusTest.settle(); }, order);
+    observed = await page.evaluate(() => workspaceFocusTest.observation());
+    if (observed.tag !== 'MAIN' || observed.calls !== 1) throw new Error(`actual ${state} ${order} removal lost focus or replayed`);
+    await page.keyboard.press('Control+Shift+P');
+    observed = await page.evaluate(() => workspaceFocusTest.observation());
+    if (observed.type !== 'search') throw new Error(`actual ${state} ${order} next shortcut unreachable`);
+    checks.push(`actual keyboard ${state} direct close ${order} retains next shortcut`);
+  }
+  await page.evaluate(() => workspaceFocusTest.reset());
   await page.locator('[data-action=toggle-projects]').focus();
   const keyboardTargets = [];
   for (let n = 0; n < 38; n++) {
