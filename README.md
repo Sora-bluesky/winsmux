@@ -52,6 +52,8 @@ The legacy binary aliases `psmux`, `pmux`, and `tmux` are no longer shipped. Use
 
 Authentication remains with each official agent CLI. winsmux does not extract another CLI's tokens or sign in on its behalf. A detected CLI version does not establish authentication or support for a requested model setting; inspect the CLI's actual result.
 
+See [Authentication support](docs/authentication-support.md) for the existing authentication-mode restrictions and compatibility policy.
+
 Projects and terminal contents can contain private data. Use the GUI's shareable diagnostics for a bug report and inspect screenshots before sharing them. Do not attach raw input, output, environment variables, private connection information or saved layouts.
 
 Workspace authorization is not an OS sandbox against arbitrary code running as the same Windows user. Review changes, artifacts and verification results before adopting agent output.

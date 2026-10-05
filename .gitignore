@@ -93,6 +93,10 @@ tests/workspace-efficiency/*
 !tests/workspace-efficiency/run.ps1
 !tests/workspace-package/
 tests/workspace-package/*
+!tests/workspace-package/windows-runtime.test.mjs
+!tests/workspace-package/fixture-pe.mjs
+!tests/workspace-package/install-lifecycle-source.test.ps1
+!tests/workspace-package/install-generation.test.ps1
 !tests/workspace-package/run.ps1
 !tests/workspace-package/fixture-child.ps1
 !tests/workspace-package/integrated-publication-contract.test.mjs

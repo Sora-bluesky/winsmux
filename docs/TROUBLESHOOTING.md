@@ -2,11 +2,13 @@
 
 This guide covers the v0.38.0 workspace UI and common CLI/MCP. The older operator screen and `winsmux init` / `winsmux launch` use different entry points. Check your installed version and its matching distribution and guide first.
 
-## Startup failure or blank screen
+## Desktop app opens to a localhost connection error
 
 Open the installed winsmux app from the Start menu. The CLI command `winsmux workspace connect` does not launch the desktop UI.
 
-For a connection error, blank screen, or a separate console without the app:
+For a connection error, blank screen, or a black PowerShell, Windows Terminal, or WebView2 console window without the app:
+
+Compare the installed version with its release assets. The [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest) may be a different version; do not substitute it without checking. An x64 installer is named `winsmux_..._x64-setup.exe`; select the actual asset for your version and CPU. Open the installed app from the Start menu or desktop shortcut. Before reinstalling, confirm normal exit and preserve the saved layout and project files; a refused close is not a completed exit.
 
 1. Check the app version and install location. Starting a development web server is not a recovery procedure for the installed app.
 2. If the UI responds, use **状態を読み直す** (Reread state) and **導入状況を確認** (Check installation).

@@ -95,8 +95,7 @@ jobs:
           cache: npm
           cache-dependency-path: winsmux-app/package-lock.json
 
-      - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
 
       - name: Install frontend dependencies
         working-directory: winsmux-app

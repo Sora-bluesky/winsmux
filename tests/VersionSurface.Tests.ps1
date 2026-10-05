@@ -9,6 +9,123 @@ Describe 'winsmux version surface' {
         }
 
         $script:ProductVersion = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
+
+        # Inventory the jobs that actually produce measured Windows distributions.
+        # Every Tauri build runs beforeBuildCommand, including --no-bundle.
+        function Get-MeasuredWindowsProducerJobs {
+            param([hashtable] $Workflows)
+            foreach ($file in @($Workflows.Keys | Sort-Object)) {
+                $body = [regex]::Match($Workflows[$file], '(?ms)^jobs:[ \t]*\r?\n(?<body>.*)$')
+                if (-not $body.Success) { throw "Workflow jobs are absent: $file" }
+                $jobs = [regex]::Matches($body.Groups['body'].Value,
+                    '(?ms)^  (?<id>[A-Za-z0-9_-]+):[ \t]*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*\r?$|\z)')
+                foreach ($job in $jobs) {
+                    $text = $job.Groups['body'].Value
+                    $commands = [regex]::Matches($text,
+                        '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run tauri -- build(?<args>[^\r\n]*)')
+                    $windows = $text -match '(?m)^    runs-on:[ \t]*windows-'
+                    $core = $windows -and $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?node scripts/build-core-candidate\.mjs(?:\s|$)'
+                    $companion = $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run prepare:companion-cli:release(?:\s|$)'
+                    if ($commands.Count -gt 0 -or $core -or $companion) {
+                        [pscustomobject]@{ id="${file}::$($job.Groups['id'].Value)"; windows=$windows; text=$text }
+                    }
+                }
+            }
+        }
+        function Test-MeasuredWindowsProducerToolchains {
+            param([hashtable] $Workflows)
+            $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $Workflows)
+            if ($producers.Count -eq 0) { return $false }
+            foreach ($producer in $producers) {
+                $text = $producer.text
+                $actions = [regex]::Matches($text, '(?m)^[ \t]*(?:-[ \t]*)?uses:[ \t]*\./\.github/actions/setup-windows-distribution-toolchain[ \t]*\r?$')
+                $nodes = [regex]::Matches($text, '(?m)^[ \t]*(?:-[ \t]*)?uses:[ \t]*actions/setup-node@[^\s#]+')
+                $firstCommand = [regex]::Match($text, '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?(?:cargo\s|npm run (?:tauri -- build|prepare:companion-cli:release)|node scripts/build-core-candidate\.mjs)')
+                if (-not $producer.windows -or $actions.Count -ne 1 -or $nodes.Count -ne 1 -or
+                    -not $firstCommand.Success -or $nodes[0].Index -ge $actions[0].Index -or
+                    $actions[0].Index -ge $firstCommand.Index -or
+                    $text -match '(?im)^[ \t]*(?:-[ \t]*)?uses:[ \t]*[^\r\n]*rust-toolchain@' -or
+                    $text -match '(?im)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?(?:cargo|rustc)\s+\+' -or
+                    $text -match '(?im)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?rustup\s+(?:default|override|toolchain)' -or
+                    $text -match '(?i)\bRUSTUP_TOOLCHAIN\b') { return $false }
+            }
+            return $true
+        }
+        function Test-MeasuredWindowsToolchainAction {
+            param([string] $Text)
+            $selections = [regex]::Matches($Text, '(?m)^    - uses: dtolnay/rust-toolchain@(?<ref>[^\s#]+)')
+            $verifiers = [regex]::Matches($Text, '(?m)^        node scripts/assert-windows-distribution-toolchain\.mjs\s*\r?$')
+            return $selections.Count -eq 1 -and $selections[0].Groups['ref'].Value -ceq '1.96.0' -and
+                $verifiers.Count -eq 1 -and $selections[0].Index -lt $verifiers[0].Index -and
+                $Text -match 'if \(\$LASTEXITCODE -ne 0\) \{ throw' -and
+                $Text -match ([regex]::Escape('targets: ${{ inputs.targets }}')) -and
+                $Text -notmatch '(?i)\bRUSTUP_TOOLCHAIN\b'
+        }
+        $script:DistributionWorkflows = @{}
+        foreach ($file in Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot '.github/workflows') -File |
+                Where-Object { $_.Extension -in @('.yml', '.yaml') }) {
+            $script:DistributionWorkflows[$file.Name] = [IO.File]::ReadAllText($file.FullName)
+        }
+    }
+
+    It 'keeps every Windows distribution producer on the measured compiler' {
+        $binding = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'distribution/windows-licenses/binding.json') -Raw |
+            ConvertFrom-Json
+        # This is the measured 1.96.0 commit, not an inferred grant or a moving channel.
+        $binding.rustc_commit | Should -BeExactly 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96'
+        $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $script:DistributionWorkflows)
+        @($producers.id | Sort-Object) -join ',' | Should -BeExactly (
+            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-nsis-lifecycle')
+        Test-MeasuredWindowsProducerToolchains -Workflows $script:DistributionWorkflows | Should -BeTrue
+        $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
+        Test-MeasuredWindowsToolchainAction $action | Should -BeTrue
+        @([regex]::Matches($action, 'uses: dtolnay/rust-toolchain@1\.96\.0\s')).Count | Should -Be 1
+        $action | Should -Match ([regex]::Escape('targets: ${{ inputs.targets }}'))
+        $action | Should -Match 'node scripts/assert-windows-distribution-toolchain\.mjs'
+        $action | Should -Match 'if \(\$LASTEXITCODE -ne 0\) \{ throw'
+        $script:DistributionWorkflows['release-core.yml'] | Should -Match ([regex]::Escape('targets: ${{ matrix.target }}'))
+        $tauri = [IO.File]::ReadAllText((Join-Path $script:RepoRoot 'winsmux-app/src-tauri/tauri.conf.json')) | ConvertFrom-Json
+        $tauri.build.beforeBuildCommand | Should -Match 'prepare:companion-cli:release'
+    }
+
+    It 'rejects stale missing and newly introduced unbound producer toolchains' {
+        $actionLine = '      - uses: ./.github/actions/setup-windows-distribution-toolchain'
+        $nodeLine = '      - uses: actions/setup-node@v6'
+        foreach ($producer in @(Get-MeasuredWindowsProducerJobs $script:DistributionWorkflows)) {
+            $file, $job = $producer.id.Split('::', [StringSplitOptions]::None)
+            foreach ($replacement in @('', '      - uses: dtolnay/rust-toolchain@stable',
+                "$actionLine`n$actionLine", "$actionLine`n      - run: cargo +stable build",
+                "$actionLine`n      - run: rustup default stable", "$actionLine`n      - run: rustc +stable -vV",
+                "$actionLine`n      - run: `$env:RUSTUP_TOOLCHAIN = 'stable'",
+                "$actionLine`n        env:`n          RUSTUP_TOOLCHAIN: stable",
+                "      - run: cargo build`n$actionLine")) {
+                $changed = $script:DistributionWorkflows.Clone()
+                $jobText = $producer.text.Replace($actionLine, $replacement)
+                $changed[$file] = $changed[$file].Replace($producer.text, $jobText)
+                Test-MeasuredWindowsProducerToolchains $changed | Should -BeFalse -Because $producer.id
+            }
+            $changed = $script:DistributionWorkflows.Clone()
+            $changed[$file] = $changed[$file].Replace($producer.text, ($producer.text -replace 'uses: actions/setup-node@v6', 'uses: example/no-node@v1'))
+            Test-MeasuredWindowsProducerToolchains $changed | Should -BeFalse -Because $producer.id
+        }
+        $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
+        foreach ($broken in @($action.Replace('@1.96.0', '@stable'),
+            $action.Replace('node scripts/assert-windows-distribution-toolchain.mjs', 'node example.mjs'),
+            $action.Replace('if ($LASTEXITCODE -ne 0)', 'if ($false)'),
+            ($action + "`n    - uses: dtolnay/rust-toolchain@stable`n"),
+            ($action + "`n        env:`n          RUSTUP_TOOLCHAIN: stable`n"))) {
+            Test-MeasuredWindowsToolchainAction $broken | Should -BeFalse
+        }
+        $additional = $script:DistributionWorkflows.Clone()
+        foreach ($command in @('npm run tauri -- build', 'npm run tauri -- build --no-bundle',
+            'npm run prepare:companion-cli:release', 'node scripts/build-core-candidate.mjs')) {
+            $additional['new-producer.yml'] = "jobs:`n  producer:`n    runs-on: windows-latest`n    steps:`n$nodeLine`n      - uses: dtolnay/rust-toolchain@stable`n      - run: $command`n"
+            Test-MeasuredWindowsProducerToolchains $additional | Should -BeFalse
+            $additional['new-producer.yml'] = $additional['new-producer.yml'].Replace('      - uses: dtolnay/rust-toolchain@stable', $actionLine)
+            Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
+        }
+        $additional['new-producer.yml'] = "jobs:`n  ordinary:`n    runs-on: windows-latest`n    steps:`n      - uses: dtolnay/rust-toolchain@stable`n      - run: cargo test`n      - run: npm run test`n      - run: npm pack`n"
+        Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
     }
 
     It 'keeps release-critical product versions aligned' {

@@ -14,6 +14,9 @@ const systemDlls = new Set(['kernel32.dll', 'ntdll.dll', 'advapi32.dll', 'user32
 // https://learn.microsoft.com/en-us/uwp/win32-and-com/win32-apis
 // Naming patterns cannot establish membership. Clean-host proof remains separate.
 systemDlls.add('api-ms-win-core-synch-l1-2-0.dll');
+// Windows handle API-set, documented since Windows 10.0.10240 in the same
+// Microsoft inventory and observed in the hosted Windows CLI release image.
+systemDlls.add('api-ms-win-core-handle-l1-1-0.dll');
 function requireValue(value, reason) { if (!value) throw new Error(reason); }
 
 /** Read-only image inspection. Both ordinary and delayed imports must be OS supplied.

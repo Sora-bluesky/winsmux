@@ -26,12 +26,12 @@ jobs:
           GIT_CONFIG_COUNT: "1"
           GIT_CONFIG_KEY_0: core.autocrlf
           GIT_CONFIG_VALUE_0: "false"
-      - uses: dtolnay/rust-toolchain@1.96.0
-        with:
-          targets: ${{ matrix.target }}
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
+        with:
+          targets: ${{ matrix.target }}
       - name: Build
         id: candidate
         shell: pwsh
