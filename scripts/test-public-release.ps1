@@ -2592,38 +2592,76 @@ function Get-DesktopWorkspaceRuntime {
  const uint=v=>Number.isSafeInteger(v)&&v>=0;
  const invoke=window.__TAURI__?.core?.invoke, label=window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
  const root=document.getElementById('workspace-startup'), view=root?.querySelector('.workspace-project-pane');
- const fail=()=>JSON.stringify({ok:false});
- if(!invoke||label!=='main'||window.top!==window||location.search||!/^https?:\/\/tauri\.localhost\/?$|^tauri:\/\/localhost\/?$/.test(location.href)||!root||!view||root.dataset.startupState!=='mounted'||view.dataset.availability!=='available')return fail();
- let session;try{session=JSON.parse(root.dataset.session);}catch{return fail();}
- if(!closed(session,['instance_id','schema_version'])||!uuid(session.instance_id)||session.schema_version!==1||session.instance_id!==view.dataset.instanceId||!uuid(root.dataset.generation)||root.dataset.generation!==view.dataset.generation)return fail();
+  const fail=stage=>JSON.stringify({ok:false,stage});
+  if(!invoke)return fail('invoke_unavailable');
+  if(label!=='main'||window.top!==window)return fail('window_binding_invalid');
+  if(location.search||!/^https?:\/\/tauri\.localhost\/?$|^tauri:\/\/localhost\/?$/.test(location.href))return fail('location_invalid');
+  if(!root)return fail('startup_root_missing');
+  if(!view)return fail('project_view_missing');
+  if(root.dataset.startupState!=='mounted')return fail('startup_not_mounted');
+  if(view.dataset.availability!=='available')return fail('project_view_unavailable');
+  let session;try{session=JSON.parse(root.dataset.session);}catch{return fail('session_json_invalid');}
+  if(!closed(session,['instance_id','schema_version'])||!uuid(session.instance_id)||session.schema_version!==1||session.instance_id!==view.dataset.instanceId||!uuid(root.dataset.generation)||root.dataset.generation!==view.dataset.generation)return fail('session_binding_invalid');
  const identity=JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId]);
  const stable=()=>root.isConnected&&view.isConnected&&root.dataset.startupState==='mounted'&&view.dataset.availability==='available'&&identity===JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId]);
- const revision=Number(view.dataset.topologyRevision);if(!uint(revision))return fail();
- async function read(operation){const request={schema_version:1,instance_id:session.instance_id,operation_id:crypto.randomUUID(),expected_topology_revision:null,operation,params:{}};
-  if(!stable())throw 0;const response=await invoke('workspace_request',{requestJson:JSON.stringify(request)});
-  if(!stable()||!closed(response,['schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error'])||response.schema_version!==1||response.instance_id!==session.instance_id||response.operation_id!==request.operation_id||response.accepted!==true||response.error!==null||!uint(response.event_seq)||response.topology_revision!==revision||!closed(response.result,['operation','data'])||response.result.operation!==operation)throw 0;return response.result.data;
- }
- try{const caps=await read('capabilities.get'), projects=await read('project.list');
-  if(!closed(caps,['max_message_bytes','operations','providers','replay_capacity','schema_version','shell_profile_ids'])||caps.schema_version!==1||!Array.isArray(caps.operations)||!caps.operations.includes('project.list')||!closed(projects,['projects','selected_project_id'])||!Array.isArray(projects.projects)||(projects.selected_project_id!==null&&!uuid(projects.selected_project_id))||(projects.selected_project_id??'')!==view.dataset.selectedProjectId||!projects.projects.every(p=>closed(p,['project_id','display_name','path','root_state'])&&uuid(p.project_id)&&(p.display_name===null||typeof p.display_name==='string')&&(p.path===null||typeof p.path==='string')&&['verified','unavailable','changed','unknown'].includes(p.root_state)))return fail();
-  const discovery=await invoke('workspace_discovery_get');
-  if(!stable()||!closed(discovery,['instance_id','pipe_name','schema_version'])||discovery.instance_id!==session.instance_id||discovery.schema_version!==1||typeof discovery.pipe_name!=='string'||!discovery.pipe_name)return fail();
+  const revision=Number(view.dataset.topologyRevision);if(!uint(revision))return fail('topology_revision_invalid');
+  let stage='unclassified';
+  async function read(operation){const request={schema_version:1,instance_id:session.instance_id,operation_id:crypto.randomUUID(),expected_topology_revision:null,operation,params:{}};
+   if(!stable()){stage='runtime_changed';throw 0;}stage=operation==='capabilities.get'?'capabilities_read_failed':'projects_read_failed';
+   const response=await invoke('workspace_request',{requestJson:JSON.stringify(request)});
+   if(!stable()){stage='runtime_changed';throw 0;}
+   if(!closed(response,['schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error'])||response.schema_version!==1||response.instance_id!==session.instance_id||response.operation_id!==request.operation_id||response.accepted!==true||response.error!==null||!uint(response.event_seq)||response.topology_revision!==revision||!closed(response.result,['operation','data'])||response.result.operation!==operation)throw 0;return response.result.data;
+  }
+  try{const caps=await read('capabilities.get'), projects=await read('project.list');
+   stage='capabilities_invalid';
+   if(!closed(caps,['max_message_bytes','operations','providers','replay_capacity','schema_version','shell_profile_ids'])||caps.schema_version!==1||!Array.isArray(caps.operations)||!caps.operations.includes('project.list'))return fail(stage);
+   stage='projects_invalid';
+   if(!closed(projects,['projects','selected_project_id'])||!Array.isArray(projects.projects)||(projects.selected_project_id!==null&&!uuid(projects.selected_project_id))||(projects.selected_project_id??'')!==view.dataset.selectedProjectId||!projects.projects.every(p=>closed(p,['project_id','display_name','path','root_state'])&&uuid(p.project_id)&&(p.display_name===null||typeof p.display_name==='string')&&(p.path===null||typeof p.path==='string')&&['verified','unavailable','changed','unknown'].includes(p.root_state)))return fail(stage);
+   stage='discovery_read_failed';
+   const discovery=await invoke('workspace_discovery_get');
+   if(!stable())return fail('runtime_changed');
+   if(!closed(discovery,['instance_id','pipe_name','schema_version'])||discovery.instance_id!==session.instance_id||discovery.schema_version!==1||typeof discovery.pipe_name!=='string'||!discovery.pipe_name)return fail('discovery_invalid');
   return JSON.stringify({ok:true,instance_id:session.instance_id,generation:root.dataset.generation,revision,discovery});
- }catch{return fail();}
+  }catch{return fail(stage);}
 })()
 '@
     $result = Invoke-DesktopRuntimeExpression -WebSocketUrl $ws.AbsoluteUri -Expression $expression
-    Assert-Condition ((Get-ObjectPropertyValue $result 'ok') -eq $true) 'desktop_workspace_read_unconfirmed'
+    try { Assert-Condition ((Get-ObjectPropertyValue $result 'ok') -eq $true) 'desktop_workspace_read_unconfirmed' }
+    catch {
+        if ($_.Exception.Message -ceq 'desktop_workspace_read_unconfirmed') {
+            $failure = $_.Exception
+            try {
+                # Read the property value directly: a pipeline-returned singleton
+                # array would otherwise become a string and pass the finite check.
+                $stage = $null
+                $stageProperty = $result.PSObject.Properties['stage']
+                if ($null -ne $stageProperty) { $stage = $stageProperty.Value }
+                $allowed = @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')
+                $failure.Data['winsmux_workspace_mount_stage'] = if ($stage -is [string] -and $stage -cin $allowed) { $stage } else { 'unclassified' }
+            } catch { }
+        }
+        throw
+    }
     return $result
 }
 
 function Wait-DesktopWorkspaceRuntime {
     param($Context, [int]$Port, [string]$UserDataFolder)
+    $lastStage = 'unclassified'
     $deadline = [DateTime]::UtcNow.AddMilliseconds($script:DesktopObservationTimeoutMilliseconds)
     do {
         try { return (Get-DesktopWorkspaceRuntime -Context $Context -Port $Port -UserDataFolder $UserDataFolder) }
-        catch { if ($_.Exception.Message -cne 'desktop_workspace_read_unconfirmed') { throw } }
+        catch {
+            if ($_.Exception.Message -cne 'desktop_workspace_read_unconfirmed') { throw }
+            try {
+                $stage = $_.Exception.Data['winsmux_workspace_mount_stage']
+                $allowed = @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')
+                $lastStage = if ($stage -is [string] -and $stage -cin $allowed) { $stage } else { 'unclassified' }
+            } catch { $lastStage = 'unclassified' }
+        }
         Start-Sleep -Milliseconds $script:DesktopObservationPollMilliseconds
     } while ([DateTime]::UtcNow -lt $deadline -and -not $Context.app_process.process.HasExited)
+    try { [Console]::Error.WriteLine('desktop_workspace_mount_probe stage=' + $lastStage) } catch { }
     throw 'desktop_workspace_mount_unconfirmed'
 }
 

@@ -36,6 +36,279 @@ BeforeAll {
     }
 }
 
+Describe 'Desktop workspace mount diagnostic contract' {
+    BeforeAll {
+        $script:MountStages = @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')
+        $getFunction = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-DesktopWorkspaceRuntime' }, $true)[0]
+        $waitFunction = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Wait-DesktopWorkspaceRuntime' }, $true)[0]
+        . ([scriptblock]::Create($getFunction.Extent.Text))
+        . ([scriptblock]::Create($waitFunction.Extent.Text))
+        # Execute the actual result boundary without opening a page websocket.
+        $boundary = $getFunction.Body.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $_.Extent.Text.StartsWith('try { Assert-Condition ((Get-ObjectPropertyValue $result') }
+        if (@($boundary).Count -ne 1) { throw 'Mount result boundary missing.' }
+        . ([scriptblock]::Create('function Test-MountResultBoundary { param($result) ' + $boundary.Extent.Text + '; return $result }'))
+        function New-MountStageFixture([string]$Kind) {
+            switch -CaseSensitive ($Kind) {
+                'missing' { return @{} }
+                'null' { return @{ stage = $null } }
+                'number' { return @{ stage = 42 } }
+                'array' { return @{ stage = @('projects_invalid') } }
+                'object' { return @{ stage = @{ private = 'synthetic_private_value' } } }
+                'case' { return @{ stage = 'PROJECTS_INVALID' } }
+                'unknown' { return @{ stage = 'synthetic_private_value' } }
+                'newline' { return @{ stage = "projects_invalid`nsynthetic_private_value" } }
+                'prefix' { return @{ stage = 'projects_invalid synthetic_private_value' } }
+                'empty' { return @{ stage = '' } }
+                default { return @{ stage = $Kind } }
+            }
+        }
+        function New-MountFailure($StageFixture) {
+            $failure = [InvalidOperationException]::new('desktop_workspace_read_unconfirmed')
+            if ($StageFixture.ContainsKey('stage')) { $failure.Data['winsmux_workspace_mount_stage'] = $StageFixture.stage }
+            return $failure
+        }
+        if ($null -eq ('MountDiagnosticThrowingWriter' -as [type])) {
+            Add-Type @'
+using System;using System.IO;using System.Text;
+public sealed class MountDiagnosticThrowingWriter : TextWriter {
+ public override Encoding Encoding { get { return Encoding.UTF8; } }
+ public override void WriteLine(string value) { throw new IOException("synthetic_private_writer_failure"); }
+}
+'@
+        }
+    }
+    It 'preserves the old JavaScript result exception boundaries and IPC order across 94 cases' {
+        # Keep this hash-bound baseline and paired worker in the existing test surface.
+        $workerSource = @'
+import fs from 'node:fs';
+import path from 'node:path';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+
+const root = process.argv[2];
+const baseline = {
+  "source_commit": "fb70779034b8b83014ff34fbbaf7d02b7ba9d820",
+  "source_blob_sha256": "1001f70de5e033c787d269e5ad112cf4d403970b1d7e9dd6ed7862ea958c9a35",
+  "expression_sha256": "9bf25c4b92029394880308d0f99a55ad36050dfbe776f28182483968f68f5284",
+  "expression": "(async () => {\n const closed=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===k.length&&k.every(x=>Object.hasOwn(v,x));\n const uuid=v=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);\n const uint=v=>Number.isSafeInteger(v)&&v>=0;\n const invoke=window.__TAURI__?.core?.invoke, label=window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;\n const root=document.getElementById('workspace-startup'), view=root?.querySelector('.workspace-project-pane');\n const fail=()=>JSON.stringify({ok:false});\n if(!invoke||label!=='main'||window.top!==window||location.search||!/^https?:\\/\\/tauri\\.localhost\\/?$|^tauri:\\/\\/localhost\\/?$/.test(location.href)||!root||!view||root.dataset.startupState!=='mounted'||view.dataset.availability!=='available')return fail();\n let session;try{session=JSON.parse(root.dataset.session);}catch{return fail();}\n if(!closed(session,['instance_id','schema_version'])||!uuid(session.instance_id)||session.schema_version!==1||session.instance_id!==view.dataset.instanceId||!uuid(root.dataset.generation)||root.dataset.generation!==view.dataset.generation)return fail();\n const identity=JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId]);\n const stable=()=>root.isConnected&&view.isConnected&&root.dataset.startupState==='mounted'&&view.dataset.availability==='available'&&identity===JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId]);\n const revision=Number(view.dataset.topologyRevision);if(!uint(revision))return fail();\n async function read(operation){const request={schema_version:1,instance_id:session.instance_id,operation_id:crypto.randomUUID(),expected_topology_revision:null,operation,params:{}};\n  if(!stable())throw 0;const response=await invoke('workspace_request',{requestJson:JSON.stringify(request)});\n  if(!stable()||!closed(response,['schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error'])||response.schema_version!==1||response.instance_id!==session.instance_id||response.operation_id!==request.operation_id||response.accepted!==true||response.error!==null||!uint(response.event_seq)||response.topology_revision!==revision||!closed(response.result,['operation','data'])||response.result.operation!==operation)throw 0;return response.result.data;\n }\n try{const caps=await read('capabilities.get'), projects=await read('project.list');\n  if(!closed(caps,['max_message_bytes','operations','providers','replay_capacity','schema_version','shell_profile_ids'])||caps.schema_version!==1||!Array.isArray(caps.operations)||!caps.operations.includes('project.list')||!closed(projects,['projects','selected_project_id'])||!Array.isArray(projects.projects)||(projects.selected_project_id!==null&&!uuid(projects.selected_project_id))||(projects.selected_project_id??'')!==view.dataset.selectedProjectId||!projects.projects.every(p=>closed(p,['project_id','display_name','path','root_state'])&&uuid(p.project_id)&&(p.display_name===null||typeof p.display_name==='string')&&(p.path===null||typeof p.path==='string')&&['verified','unavailable','changed','unknown'].includes(p.root_state)))return fail();\n  const discovery=await invoke('workspace_discovery_get');\n  if(!stable()||!closed(discovery,['instance_id','pipe_name','schema_version'])||discovery.instance_id!==session.instance_id||discovery.schema_version!==1||typeof discovery.pipe_name!=='string'||!discovery.pipe_name)return fail();\n  return JSON.stringify({ok:true,instance_id:session.instance_id,generation:root.dataset.generation,revision,discovery});\n }catch{return fail();}\n})()"
+};
+assert.equal(baseline.source_commit, 'fb70779034b8b83014ff34fbbaf7d02b7ba9d820');
+assert.equal(createHash('sha256').update(baseline.expression).digest('hex'), '9bf25c4b92029394880308d0f99a55ad36050dfbe776f28182483968f68f5284');
+const source = fs.readFileSync(path.join(root, 'scripts/test-public-release.ps1'), 'utf8');
+const body = source.split('function Get-DesktopWorkspaceRuntime {')[1].split(/\r?\nfunction /)[0];
+const current = body.match(/\$expression = @'\r?\n([\s\S]*?)\r?\n'@/)[1].replaceAll('\r\n', '\n');
+const allowed = new Set(['invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified']);
+const instance = '11111111-1111-4111-8111-111111111111';
+const generation = '22222222-2222-4222-8222-222222222222';
+const project = '33333333-3333-4333-8333-333333333333';
+const sentinel = 'SYNTHETIC_PRIVATE_SENTINEL\n';
+function fixture(change) {
+  const calls = [];
+  const state = {
+    calls, instance, generation, rootPresent: true, viewPresent: true,
+    root: {isConnected: true, dataset: {startupState: 'mounted', session: JSON.stringify({instance_id: instance, schema_version: 1}), generation}},
+    view: {isConnected: true, dataset: {availability: 'available', instanceId: instance, generation, topologyRevision: '0', selectedProjectId: ''}},
+    caps: {max_message_bytes: 65536, operations: ['project.list'], providers: null, replay_capacity: {}, schema_version: 1, shell_profile_ids: null},
+    projects: {projects: [], selected_project_id: null},
+    discovery: {instance_id: instance, pipe_name: 'synthetic-public-pipe', schema_version: 1},
+    location: {href: 'http://tauri.localhost/', search: ''},
+    before() {}, after() {}, cryptoHook() {},
+  };
+  const invoke = async (command, args) => {
+    const request = args ? JSON.parse(args.requestJson) : null;
+    const operation = request?.operation ?? command;
+    calls.push(operation); state.before(operation);
+    let value;
+    if (request) value = {schema_version: 1, instance_id: instance, operation_id: request.operation_id, accepted: true, topology_revision: 0, event_seq: 0, result: {operation, data: operation === 'capabilities.get' ? state.caps : state.projects}, error: null};
+    else value = state.discovery;
+    state.after(operation, value); return value;
+  };
+  state.window = {__TAURI__: {core: {invoke}}, __TAURI_INTERNALS__: {metadata: {currentWindow: {label: 'main'}}}};
+  state.window.top = state.window;
+  state.root.querySelector = () => state.viewPresent ? state.view : null;
+  state.document = {getElementById: () => state.rootPresent ? state.root : null};
+  state.crypto = {randomUUID() {state.cryptoHook(); return '44444444-4444-4444-8444-444444444444';}};
+  change(state); return state;
+}
+async function evaluate(expression, change) {
+  const state = fixture(change);
+  try {
+    const value = JSON.parse(await vm.runInNewContext(expression, {window:state.window, document:state.document, location:state.location, crypto:state.crypto}));
+    return {value, calls:state.calls, thrown:null};
+  } catch (error) {return {value:null, calls:state.calls, thrown:String(error)};}
+}
+const cases = [];
+function test(name, stage, change) {cases.push({name, stage, change});}
+test('empty workspace succeeds', null, () => {});
+test('registered project succeeds', null, s => {s.view.dataset.selectedProjectId = project; s.projects = {selected_project_id:project, projects:[{project_id:project, display_name:null, path:null, root_state:'verified'}]};});
+test('tauri scheme succeeds', null, s => {s.location.href='tauri://localhost/';});
+test('invoke absent', 'invoke_unavailable', s => {s.window.__TAURI__ = null;});
+test('wrong window', 'window_binding_invalid', s => {s.window.__TAURI_INTERNALS__.metadata.currentWindow.label=sentinel;});
+test('nested window', 'window_binding_invalid', s => {s.window.top={};});
+test('query present', 'location_invalid', s => {s.location.search=sentinel;});
+test('wrong location', 'location_invalid', s => {s.location.href=sentinel;});
+test('root absent', 'startup_root_missing', s => {s.rootPresent=false;});
+test('view absent', 'project_view_missing', s => {s.viewPresent=false;});
+test('startup unmounted', 'startup_not_mounted', s => {s.root.dataset.startupState=sentinel;});
+test('view unavailable', 'project_view_unavailable', s => {s.view.dataset.availability=sentinel;});
+test('session malformed', 'session_json_invalid', s => {s.root.dataset.session=sentinel;});
+for (const [name, value] of [['null',null],['array',[]],['extra',{instance_id:instance,schema_version:1,extra:sentinel}],['invalid instance',{instance_id:sentinel,schema_version:1}],['version',{instance_id:instance,schema_version:2}]]) test('session '+name,'session_binding_invalid',s=>{s.root.dataset.session=JSON.stringify(value);});
+test('session view mismatch','session_binding_invalid',s=>{s.view.dataset.instanceId=project;});
+test('generation invalid','session_binding_invalid',s=>{s.root.dataset.generation=sentinel;});
+test('generation mismatch','session_binding_invalid',s=>{s.view.dataset.generation=project;});
+for(const value of ['-1','0.5','NaN','9007199254740992']) test('invalid revision '+value,'topology_revision_invalid',s=>{s.view.dataset.topologyRevision=value;});
+for (const operation of ['capabilities.get','project.list']) {
+  const stage = operation === 'capabilities.get' ? 'capabilities_read_failed' : 'projects_read_failed';
+  test(operation+' rejects',stage,s=>{s.before=op=>{if(op===operation)throw new Error(sentinel);};});
+  for (const [name, mutate] of [
+    ['extra',v=>{v.extra=sentinel;}], ['version',v=>{v.schema_version=2;}], ['instance',v=>{v.instance_id=project;}],
+    ['operation id',v=>{v.operation_id=project;}], ['rejected',v=>{v.accepted=false;}], ['error',v=>{v.error={message:sentinel};}],
+    ['event',v=>{v.event_seq=-1;}], ['revision',v=>{v.topology_revision=1;}], ['result null',v=>{v.result=null;}],
+    ['result extra',v=>{v.result.extra=sentinel;}], ['operation mismatch',v=>{v.result.operation=sentinel;}],
+  ]) test(operation+' '+name,stage,s=>{s.after=(op,v)=>{if(op===operation)mutate(v);};});
+}
+for (const [name, mutate] of [
+  ['extra',s=>{s.caps.extra=sentinel;}],['version',s=>{s.caps.schema_version=2;}],['operations type',s=>{s.caps.operations=sentinel;}],['project operation absent',s=>{s.caps.operations=[];}]
+]) test('capabilities '+name,'capabilities_invalid',mutate);
+for(const [name, mutate] of [
+  ['extra',s=>{s.projects.extra=sentinel;}],['projects type',s=>{s.projects.projects=sentinel;}],['selected invalid',s=>{s.projects.selected_project_id=sentinel;}],['selected mismatch',s=>{s.projects.selected_project_id=project;}]
+]) test('projects '+name,'projects_invalid',mutate);
+for(const [key,value] of [['project_id',sentinel],['display_name',1],['path',1],['root_state',sentinel],['extra',sentinel]]) test('project field '+key,'projects_invalid',s=>{s.projects.projects=[{project_id:project,display_name:null,path:null,root_state:'verified',[key]:value}];});
+test('discovery rejects','discovery_read_failed',s=>{s.before=op=>{if(op==='workspace_discovery_get')throw new Error(sentinel);};});
+for(const [key,value] of [['instance_id',project],['schema_version',2],['pipe_name',''],['pipe_name',1],['extra',sentinel]]) test('discovery field '+key+String(value).slice(0,1),'discovery_invalid',s=>{s.discovery[key]=value;});
+for (const target of ['root connection','view connection','session','generation','revision','selection']) {
+  const mutate=s=>{if(target==='root connection')s.root.isConnected=false; if(target==='view connection')s.view.isConnected=false; if(target==='session')s.root.dataset.session=sentinel; if(target==='generation')s.root.dataset.generation=project; if(target==='revision')s.view.dataset.topologyRevision='1'; if(target==='selection')s.view.dataset.selectedProjectId=project;};
+  for(const operation of ['capabilities.get','project.list','workspace_discovery_get']) test(target+' after '+operation,'runtime_changed',s=>{s.after=op=>{if(op===operation)mutate(s);};});
+  test(target+' before first read','runtime_changed',s=>{s.cryptoHook=()=>mutate(s);});
+}
+test('preexisting outer getter exception stays exceptional', 'thrown', s=>{Object.defineProperty(s.view.dataset,'topologyRevision',{get(){throw new Error(sentinel);}});});
+test('preexisting caught project getter stays refused','projects_invalid',s=>{Object.defineProperty(s.projects,'projects',{get(){throw new Error(sentinel);},enumerable:true});});
+const seen=new Set();
+for (const item of cases) {
+  const old = await evaluate(baseline.expression,item.change), now = await evaluate(current,item.change);
+  assert.deepEqual(now.calls,old.calls,item.name+' changed IPC call order');
+  assert.equal(now.thrown,old.thrown,item.name+' changed exception boundary');
+  if(now.thrown){assert.equal(item.stage,'thrown');continue;}
+  const {stage,...projection}=now.value;
+  assert.deepEqual(projection,old.value,item.name+' changed the protected result');
+  if(item.stage===null){assert.equal(stage,undefined);assert.equal(now.value.ok,true);}
+  else {assert.equal(now.value.ok,false);assert.equal(stage,item.stage,item.name);assert(allowed.has(stage));assert.deepEqual(Object.keys(now.value).sort(),['ok','stage']);assert(!JSON.stringify(now.value).includes('SYNTHETIC_PRIVATE_SENTINEL'));seen.add(stage);}
+}
+for(const stage of allowed) if(stage!=='unclassified') assert(seen.has(stage),'unproved stage '+stage);
+console.log(JSON.stringify({baseline_sha256:baseline.expression_sha256,cases:cases.length,protected_results_and_call_order_equal:true,exception_boundaries_equal:true,fixed_stage_count:seen.size,raw_values_absent:true}));
+'@
+        $workerPath = Join-Path $TestDrive 'desktop-workspace-probe-equivalence.mjs'
+        [IO.File]::WriteAllText($workerPath, $workerSource, [Text.UTF8Encoding]::new($false))
+        $output = & node $workerPath $script:RepoRoot
+        $LASTEXITCODE | Should -Be 0
+        @($output).Count | Should -Be 1
+        $proof = $output | ConvertFrom-Json
+        $proof.cases | Should -Be 94
+        $proof.protected_results_and_call_order_equal | Should -BeTrue
+        $proof.exception_boundaries_equal | Should -BeTrue
+        $proof.fixed_stage_count | Should -Be 17
+        $proof.raw_values_absent | Should -BeTrue
+    }
+    It 'keeps the producer and consumer stage sets identical to the frozen finite contract' {
+        foreach ($name in @('Get-DesktopWorkspaceRuntime','Wait-DesktopWorkspaceRuntime')) {
+            $definition = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)[0]
+            $assignment = $definition.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$allowed' }, $true)
+            @($assignment).Count | Should -Be 1
+            $actual = & ([scriptblock]::Create($assignment.Right.Extent.Text))
+            @($actual) | Should -Be $script:MountStages
+        }
+    }
+    It 'keeps a successful result unchanged without attaching a failure stage' {
+        $result = [pscustomobject]@{ ok = $true; stage = 'synthetic_private_value'; instance_id = 'synthetic' }
+        [object]::ReferenceEquals((Test-MountResultBoundary $result), $result) | Should -BeTrue
+    }
+    It 'attaches only a fixed stage while preserving the original read failure for <kind>' -ForEach @(
+        foreach ($stage in @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')) { @{ kind = $stage; expected = $stage } }
+        foreach ($kind in @('missing','null','number','array','object','case','unknown','newline','prefix','empty')) { @{ kind = $kind; expected = 'unclassified' } }
+    ) {
+        $fixture = New-MountStageFixture $kind
+        $fixture.ok = $false
+        $fixture = $fixture | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        $failure = $null
+        try { Test-MountResultBoundary $fixture } catch { $failure = $_.Exception }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Message | Should -BeExactly 'desktop_workspace_read_unconfirmed'
+        $failure.Data['winsmux_workspace_mount_stage'] | Should -BeExactly $expected
+    }
+    It 'preserves the read failure when diagnostic attachment itself fails' {
+        $fixture = [pscustomobject]@{ ok = $false }
+        $fixture | Add-Member -MemberType ScriptProperty -Name stage -Value { throw 'synthetic_private_attachment_failure' }
+        { Test-MountResultBoundary $fixture } | Should -Throw -ExpectedMessage 'desktop_workspace_read_unconfirmed'
+    }
+    It 'emits exactly one fixed stage on terminal mount failure for <kind>' -ForEach @(
+        foreach ($stage in @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')) { @{ kind = $stage; expected = $stage } }
+        foreach ($kind in @('missing','null','number','array','object','case','unknown','newline','prefix','empty')) { @{ kind = $kind; expected = 'unclassified' } }
+    ) {
+        $script:MountFailure = New-MountFailure (New-MountStageFixture $kind)
+        Mock Get-DesktopWorkspaceRuntime { throw $script:MountFailure }
+        Mock Start-Sleep { }
+        $script:DesktopObservationTimeoutMilliseconds = 0
+        $script:DesktopObservationPollMilliseconds = 0
+        $writer = [IO.StringWriter]::new(); $previous = [Console]::Error
+        try {
+            [Console]::SetError($writer)
+            { Wait-DesktopWorkspaceRuntime -Context @{ app_process = @{ process = @{ HasExited = $false } } } -Port 1 -UserDataFolder 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed'
+        } finally { [Console]::SetError($previous) }
+        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=' + $expected + [Environment]::NewLine)
+        $writer.Dispose()
+        Should -Invoke Get-DesktopWorkspaceRuntime -Exactly -Times 1
+    }
+    It 'emits no mount diagnostic when a retry succeeds and returns the exact result' {
+        $script:MountFailure = New-MountFailure @{ stage = 'startup_not_mounted' }
+        $script:MountCalls = 0; $script:MountResult = [pscustomobject]@{ ok = $true; revision = 7 }
+        Mock Get-DesktopWorkspaceRuntime { $script:MountCalls++; if ($script:MountCalls -eq 1) { throw $script:MountFailure }; return $script:MountResult }
+        Mock Start-Sleep { }
+        $script:DesktopObservationTimeoutMilliseconds = 180000; $script:DesktopObservationPollMilliseconds = 0
+        $writer = [IO.StringWriter]::new(); $previous = [Console]::Error
+        try { [Console]::SetError($writer); $actual = Wait-DesktopWorkspaceRuntime -Context @{ app_process = @{ process = @{ HasExited = $false } } } -Port 1 -UserDataFolder 'synthetic' }
+        finally { [Console]::SetError($previous) }
+        [object]::ReferenceEquals($actual, $script:MountResult) | Should -BeTrue
+        $writer.ToString() | Should -BeExactly ''; $writer.Dispose()
+        Should -Invoke Get-DesktopWorkspaceRuntime -Exactly -Times 2
+    }
+    It 'does not reuse a previous call stage when the next call has no stage' {
+        $script:MountFailure = New-MountFailure @{ stage = 'projects_invalid' }
+        Mock Get-DesktopWorkspaceRuntime { throw $script:MountFailure }; Mock Start-Sleep { }
+        $script:DesktopObservationTimeoutMilliseconds = 0; $script:DesktopObservationPollMilliseconds = 0
+        $writer = [IO.StringWriter]::new(); $previous = [Console]::Error
+        try {
+            [Console]::SetError($writer)
+            $context = @{ app_process = @{ process = @{ HasExited = $false } } }
+            { Wait-DesktopWorkspaceRuntime $context 1 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed'
+            $script:MountFailure = New-MountFailure @{}
+            { Wait-DesktopWorkspaceRuntime $context 1 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed'
+        } finally { [Console]::SetError($previous) }
+        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=projects_invalid' + [Environment]::NewLine + 'desktop_workspace_mount_probe stage=unclassified' + [Environment]::NewLine)
+        $writer.Dispose()
+    }
+    It 'keeps an unrelated exception unchanged and emits no mount diagnostic' {
+        $script:MountFailure = [InvalidOperationException]::new('desktop_cdp_authority_unconfirmed')
+        Mock Get-DesktopWorkspaceRuntime { throw $script:MountFailure }
+        $writer = [IO.StringWriter]::new(); $previous = [Console]::Error; $failure = $null
+        try { [Console]::SetError($writer); try { Wait-DesktopWorkspaceRuntime @{ app_process = @{ process = @{ HasExited = $false } } } 1 'synthetic' } catch { $failure = $_.Exception } }
+        finally { [Console]::SetError($previous) }
+        [object]::ReferenceEquals($failure, $script:MountFailure) | Should -BeTrue
+        $failure.Message | Should -BeExactly 'desktop_cdp_authority_unconfirmed'
+        $writer.ToString() | Should -BeExactly ''; $writer.Dispose()
+    }
+    It 'preserves the terminal reason when the diagnostic writer throws' {
+        $script:MountFailure = New-MountFailure @{ stage = 'projects_invalid' }
+        Mock Get-DesktopWorkspaceRuntime { throw $script:MountFailure }; Mock Start-Sleep { }
+        $script:DesktopObservationTimeoutMilliseconds = 0; $script:DesktopObservationPollMilliseconds = 0
+        $writer = [MountDiagnosticThrowingWriter]::new(); $previous = [Console]::Error
+        try {
+            [Console]::SetError($writer)
+            { Wait-DesktopWorkspaceRuntime @{ app_process = @{ process = @{ HasExited = $false } } } 1 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed'
+        } finally { [Console]::SetError($previous); $writer.Dispose() }
+    }
+}
+
 Describe 'NSIS final-tail command contract' {
     BeforeAll {
         Initialize-DesktopNativeTypes
@@ -114,13 +387,17 @@ class WireFixture {
         $parsed.directory | Should -BeExactly $root
     }
 
-    It 'rejects unsafe or noncanonical directory tails before either native launch' -ForEach @(
+    It 'rejects unsafe or noncanonical directory tails before either native launch' -ForEach @(@(
         @{ root = 'relative\installed' }, @{ root = '\rooted\installed' }, @{ root = 'C:relative\installed' },
         @{ root = 'C:\owned\..\installed' }, @{ root = 'C:/owned/installed' },
         @{ root = 'C:\owned"\installed' }, @{ root = "C:\owned`0\installed" },
         @{ root = "C:\owned`n\installed" }, @{ root = "C:\owned`t\installed" },
         @{ root = ('C:\owned' + [char]0x85 + '\installed') }, @{ root = 'C:\owned _?=redirect\installed' }
-    ) {
+    ) | ForEach-Object {
+        # Keep XML report parameters printable while retaining every exact UTF-16 input.
+        @{ root_base64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($_.root)) }
+    }) {
+        $root = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($root_base64))
         foreach ($mode in @($false, $true)) {
             { $script:NsisBuilder.Invoke($null, @('C:\missing-fixture.exe', $root, $mode)) } | Should -Throw '*desktop_owner_nsis_root_invalid*'
             if ($mode) { { [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisUninstaller('C:\missing-fixture.exe', $root, @{}, 16384, 180000) } | Should -Throw '*desktop_owner_nsis_root_invalid*' }
