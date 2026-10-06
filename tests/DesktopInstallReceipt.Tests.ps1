@@ -5,7 +5,7 @@ BeforeAll {
     $script:HelperAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepoRoot 'scripts/test-public-release.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw 'Helper parse failed.' }
     $script:DesktopOwnerSourceRoot = Join-Path $script:RepoRoot 'scripts'
-    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
+    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
         $function = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)[0]
         . ([scriptblock]::Create($function.Extent.Text))
     }
@@ -167,6 +167,281 @@ Describe 'Normal Desktop close and MCP correlation' {
         $response = $response | ConvertTo-Json -Depth 8 | ConvertFrom-Json
         if ($fault -ceq 'none') { { Assert-DesktopMcpResponse $response 'expected' } | Should -Not -Throw }
         else { { Assert-DesktopMcpResponse $response 'expected' } | Should -Throw }
+    }
+}
+
+Describe 'Desktop failure diagnostic retention' {
+    BeforeAll {
+        function New-DiagnosticCapture {
+            return [pscustomobject]@{ exit_code = 7; stdout = 'synthetic-output'; stderr = 'synthetic-error'; stdout_metadata = [pscustomobject]@{ present = $true; bytes = 16; truncated = $false }; stderr_metadata = [pscustomobject]@{ present = $true; bytes = 15; truncated = $false }; native_observation = [pscustomobject]@{ root_exited = $true; root_exit_code = 7; active_members = 0; stdout_state = 'eof'; stderr_state = 'eof'; forced = $false } }
+        }
+        function Get-DiagnosticReceipt($Failure, $CleanupFailure = $null) {
+            return New-DesktopFailureReceipt -Failure $Failure -CleanupFailure $CleanupFailure -Version '0.38.0' -ReleaseTag 'v0.38.0' -Stage 'candidate_install' -CleanupStage 'not_started' -Phase 'preserve'
+        }
+        function Wrap-DiagnosticFailure($Failure, [string]$Graph) {
+            switch ($Graph) {
+                'wrapper' { return [InvalidOperationException]::new('synthetic private-token outer', $Failure) }
+                'double' { return [InvalidOperationException]::new('synthetic outer', [InvalidOperationException]::new('synthetic inner', $Failure)) }
+                'aggregate' { return [AggregateException]::new('synthetic aggregate', [Exception[]]@($Failure, $Failure.InnerException)) }
+                'cycle' { $Failure.Data['original_exception'] = $Failure; return $Failure }
+                'nested_data' { $outer = [InvalidOperationException]::new('synthetic private-token outer'); $outer.Data['original_exception'] = $Failure; return $outer }
+                'error_record' { return [Management.Automation.ErrorRecord]::new($Failure, 'synthetic', [Management.Automation.ErrorCategory]::NotSpecified, $null) }
+                default { return $Failure }
+            }
+        }
+    }
+    # Graph contract: breadth-first, role Data edges before InnerException/aggregate
+    # edges, visited identities once. The first present canonical slot wins, even
+    # when null. Missing roles fall back to caller roles; explicit null means none.
+    # native_result/process_result share one slot. Missing/null native facts never
+    # claim completion. Only safe reason tokens and observation metadata are emitted.
+    It 'preserves the cleanup-only lifecycle role declaration without inventing an operation failure' {
+        $cleanup = [InvalidOperationException]::new('desktop_normal_close_incomplete')
+        $cleanup.Data['operation_failure'] = $null
+        $cleanup.Data['cleanup_failure'] = $cleanup
+        $receipt = Get-DiagnosticReceipt $cleanup
+        $receipt.operation_failure | Should -BeExactly 'none'
+        $receipt.cleanup_failure | Should -BeExactly 'desktop_normal_close_incomplete'
+        $receipt.reason_code | Should -BeExactly 'desktop_normal_close_incomplete'
+        $receipt.ok | Should -BeFalse
+    }
+    It 'keeps a final cleanup-only caller separate from the absent operation input' {
+        $cleanup = [InvalidOperationException]::new('desktop_final_cleanup_failed')
+        $receipt = Get-DiagnosticReceipt $null $cleanup
+        $receipt.operation_failure | Should -BeExactly 'none'
+        $receipt.cleanup_failure | Should -BeExactly 'desktop_final_cleanup_failed'
+        $receipt.reason_code | Should -BeExactly 'desktop_final_cleanup_failed'
+    }
+    It 'passes the absent operation role from the actual final failure caller' {
+        $branch = $script:HelperAst.FindAll({ param($node)
+            $node -is [Management.Automation.Language.IfStatementAst] -and
+            $node.Extent.Text.StartsWith("if (`$Surface -ceq 'Desktop' -and `$Json -and")
+        }, $true)[0].Clauses[0].Item2.Statements
+        $receipt = & {
+            $operationError = $null
+            $cleanupError = [Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('desktop_final_cleanup_failed'), 'synthetic', [Management.Automation.ErrorCategory]::NotSpecified, $null)
+            . ([scriptblock]::Create($branch[0].Extent.Text))
+            . ([scriptblock]::Create($branch[2].Extent.Text))
+            Get-DiagnosticReceipt $exception $cleanupException
+        }
+        $receipt.operation_failure | Should -BeExactly 'none'
+        $receipt.cleanup_failure | Should -BeExactly 'desktop_final_cleanup_failed'
+    }
+    It 'retains role presence and value across <graph> with operation <operation> and cleanup <cleanup>' -ForEach @(
+        foreach ($graph in @('direct', 'wrapper', 'double', 'aggregate', 'cycle', 'nested_data', 'error_record')) {
+            foreach ($operation in @('missing', 'null', 'value')) {
+                foreach ($cleanup in @('missing', 'null', 'value')) { @{ graph = $graph; operation = $operation; cleanup = $cleanup } }
+            }
+        }
+    ) {
+        $later = [InvalidOperationException]::new('synthetic private-token later')
+        $carrier = [InvalidOperationException]::new('desktop_fixture_failed', $later)
+        foreach ($role in @('operation', 'cleanup')) {
+            $state = Get-Variable -Name $role -ValueOnly
+            if ($state -cne 'missing') {
+                $carrier.Data[$role + '_failure'] = if ($state -ceq 'value') { [InvalidOperationException]::new('desktop_' + $role + '_fixture_failed') } else { $null }
+                $later.Data[$role + '_failure'] = [InvalidOperationException]::new('desktop_later_' + $role + '_failed')
+            }
+        }
+        $failure = Wrap-DiagnosticFailure $carrier $graph
+        $externalCleanup = [InvalidOperationException]::new('desktop_external_cleanup_failed')
+        $evidence = Get-DesktopFailureEvidence $failure
+        $evidence.present.operation_failure | Should -Be ($operation -cne 'missing')
+        $evidence.present.cleanup_failure | Should -Be ($cleanup -cne 'missing')
+        $receipt = Get-DiagnosticReceipt $failure $externalCleanup
+        $expectedOperation = switch ($operation) { 'missing' { 'desktop_fixture_failed' }; 'null' { 'none' }; 'value' { 'desktop_operation_fixture_failed' } }
+        $expectedCleanup = switch ($cleanup) { 'missing' { 'desktop_external_cleanup_failed' }; 'null' { 'none' }; 'value' { 'desktop_cleanup_fixture_failed' } }
+        $receipt.operation_failure | Should -BeExactly $expectedOperation
+        $receipt.cleanup_failure | Should -BeExactly $expectedCleanup
+        $receipt.ok | Should -BeFalse
+        ($receipt | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match 'private-token|desktop_later_'
+    }
+    It 'retains <slot> as <state> without overwriting explicit null from a later Data node' -ForEach @(
+        foreach ($slot in @('native_result', 'process_result', 'observation', 'native_observation')) {
+            foreach ($state in @('missing', 'nested', 'null', 'available')) { @{ slot = $slot; state = $state } }
+        }
+    ) {
+        $later = [InvalidOperationException]::new('synthetic private-token later')
+        $carrier = [InvalidOperationException]::new('desktop_fixture_failed', $later)
+        $value = switch ($slot) {
+            'observation' { [pscustomobject]@{ exit_code = 9; stdout_bytes = 22; stderr_bytes = 23; state = 'exited' } }
+            'native_observation' { [pscustomobject]@{ root_exited = $false; root_exit_code = $null; active_members = 1; stdout_state = 'pending'; stderr_state = 'pending'; forced = $false } }
+            default { New-DiagnosticCapture }
+        }
+        if ($slot -ceq 'native_observation') { $carrier.Data['native_result'] = New-DiagnosticCapture }
+        if ($state -cin @('null', 'available')) { $carrier.Data[$slot] = if ($state -ceq 'available') { $value } else { $null } }
+        if ($state -cne 'missing') {
+            $laterSlot = if ($slot -ceq 'native_result') { 'process_result' } elseif ($slot -ceq 'process_result') { 'native_result' } else { $slot }
+            $later.Data[$laterSlot] = $value
+        }
+        $outer = [InvalidOperationException]::new('synthetic private-token outer')
+        $outer.Data['original_exception'] = $carrier
+        $carrier.Data['original_exception'] = $outer
+        $canonicalSlot = if ($slot -ceq 'process_result') { 'native_result' } else { $slot }
+        $evidence = Get-DesktopFailureEvidence $outer
+        $evidence.present[$canonicalSlot] | Should -Be ($state -cne 'missing')
+        if ($state -ceq 'null') { ($null -eq $evidence.$canonicalSlot) | Should -BeTrue }
+        elseif ($state -cin @('nested', 'available')) { [object]::ReferenceEquals($evidence.$canonicalSlot, $value) | Should -BeTrue }
+        $receipt = Get-DiagnosticReceipt $outer
+        if ($slot -ceq 'native_observation') {
+            $expectedStream = switch ($state) { 'missing' { 'eof' }; 'null' { 'unknown' }; default { 'pending' } }
+            $receipt.native_observation.stdout_state | Should -BeExactly $expectedStream
+            if ($state -ceq 'null') { ($null -eq $receipt.native_observation.root_exited) | Should -BeTrue }
+        } elseif ($state -cin @('missing', 'null')) {
+            ($null -eq $receipt.native_exit_code) | Should -BeTrue
+            ($null -eq $receipt.stdout_bytes) | Should -BeTrue
+            $receipt.native_observation.stdout_state | Should -BeExactly 'unknown'
+        } elseif ($slot -ceq 'observation') {
+            $receipt.native_exit_code | Should -Be 9
+            $receipt.stdout_bytes | Should -Be 22
+            $receipt.observation_state | Should -BeExactly 'exited'
+        } else {
+            $receipt.native_exit_code | Should -Be 7
+            $receipt.stdout_bytes | Should -Be 16
+        }
+        ($receipt | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match 'private-token|synthetic-output|synthetic-error'
+    }
+    It 'gives native_result explicit null precedence over its process_result alias on the same node' {
+        $failure = [InvalidOperationException]::new('desktop_fixture_failed')
+        $failure.Data['native_result'] = $null
+        $failure.Data['process_result'] = New-DiagnosticCapture
+        $receipt = Get-DiagnosticReceipt $failure
+        ($null -eq $receipt.native_exit_code) | Should -BeTrue
+        ($null -eq $receipt.stdout_bytes) | Should -BeTrue
+        $receipt.native_observation.stdout_state | Should -BeExactly 'unknown'
+    }
+    It 'projects only known native observation facts and keeps malformed or unobserved fields unknown' {
+        foreach ($valid in @($true, $false)) {
+            $failure = [InvalidOperationException]::new('desktop_fixture_failed')
+            $failure.Data['native_observation'] = if ($valid) {
+                [pscustomobject]@{ root_exited = $true; root_exit_code = 7; active_members = 0; stdout_state = 'eof'; stderr_state = 'failed'; forced = $false; raw_secret = 'private-token' }
+            } else {
+                [pscustomobject]@{ root_exited = 'false'; root_exit_code = 'private-token'; active_members = -1; stdout_state = 'private-token'; stderr_state = $null; forced = 'false'; raw_secret = 'private-token' }
+            }
+            $receipt = Get-DiagnosticReceipt $failure
+            @($receipt.native_observation.PSObject.Properties.Name | Sort-Object) | Should -Be @('active_members', 'forced', 'root_exit_code', 'root_exited', 'stderr_state', 'stdout_state')
+            if ($valid) {
+                $receipt.native_observation.root_exited | Should -BeTrue
+                $receipt.native_observation.root_exit_code | Should -Be 7
+                $receipt.native_observation.active_members | Should -Be 0
+                $receipt.native_observation.stdout_state | Should -BeExactly 'eof'
+                $receipt.native_observation.stderr_state | Should -BeExactly 'failed'
+                $receipt.native_observation.forced | Should -BeFalse
+            } else {
+                ($null -eq $receipt.native_observation.root_exited) | Should -BeTrue
+                ($null -eq $receipt.native_observation.root_exit_code) | Should -BeTrue
+                ($null -eq $receipt.native_observation.active_members) | Should -BeTrue
+                ($null -eq $receipt.native_observation.forced) | Should -BeTrue
+                $receipt.native_observation.stdout_state | Should -BeExactly 'unknown'
+                $receipt.native_observation.stderr_state | Should -BeExactly 'unknown'
+            }
+            ($receipt | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match 'private-token|raw_secret'
+        }
+    }
+    It 'preserves timeout Data and public metadata message through the public child wrapper' {
+        $script:DiagnosticCapture = New-DiagnosticCapture
+        $script:DiagnosticFailure = [TimeoutException]::new('desktop_owned_child_timeout')
+        $script:DiagnosticFailure.Data['process_result'] = $script:DiagnosticCapture
+        $script:DiagnosticFailure.Data['native_observation'] = [pscustomobject]@{ root_exited = $true; root_exit_code = 0; active_members = 1; stdout_state = 'pending'; stderr_state = 'pending'; forced = $false }
+        Mock Invoke-DesktopOwnedNativeProcess { throw $script:DiagnosticFailure }
+        $caught = $null
+        try { Invoke-PublicChildProcess -Operation desktop_installer -FilePath 'synthetic.exe' } catch { $caught = $_.Exception }
+        $caught.Message | Should -BeExactly (Format-PublicChildProcessDiagnostic -Operation desktop_installer -State timed_out -Result $script:DiagnosticCapture)
+        $evidence = Get-DesktopFailureEvidence $caught
+        [object]::ReferenceEquals($evidence.native_result, $script:DiagnosticCapture) | Should -BeTrue
+        $receipt = Get-DiagnosticReceipt $caught
+        $receipt.reason_code | Should -BeExactly 'desktop_owned_child_timeout'
+        $receipt.native_exit_code | Should -Be 7
+        $receipt.stdout_bytes | Should -Be 16
+        $receipt.stderr_bytes | Should -Be 15
+        $receipt.native_observation.active_members | Should -Be 1
+        $receipt.native_observation.stdout_state | Should -BeExactly 'pending'
+        $receipt.cleanup | Should -BeExactly 'preserve'
+        $receipt.ok | Should -BeFalse
+        ($receipt | ConvertTo-Json -Depth 8 -Compress) | Should -Not -Match 'synthetic-output|synthetic-error'
+    }
+    It 'retains a timeout with unknown capture without inventing native completion' {
+        Mock Invoke-DesktopOwnedNativeProcess { throw [TimeoutException]::new('desktop_owned_child_timeout') }
+        $caught = $null
+        try { Invoke-PublicChildProcess -Operation desktop_installer -FilePath 'synthetic.exe' } catch { $caught = $_.Exception }
+        $caught.Message | Should -BeExactly 'Timed-out child process did not provide a terminal output capture.'
+        $receipt = Get-DiagnosticReceipt $caught
+        $receipt.reason_code | Should -BeExactly 'desktop_owned_child_timeout'
+        ($null -eq $receipt.native_exit_code) | Should -BeTrue
+        ($null -eq $receipt.stdout_bytes) | Should -BeTrue
+        ($null -eq $receipt.native_observation.root_exited) | Should -BeTrue
+        ($null -eq $receipt.native_observation.active_members) | Should -BeTrue
+        $receipt.native_observation.stdout_state | Should -BeExactly 'unknown'
+    }
+    It 'extracts nonzero and cleanup evidence through double wrappers and aggregate siblings' {
+        $operation = [InvalidOperationException]::new('desktop_installer_exit_nonzero')
+        $operation.Data['native_result'] = New-DiagnosticCapture
+        $cleanup = [InvalidOperationException]::new('desktop_normal_close_incomplete')
+        $aggregate = [AggregateException]::new('synthetic aggregate', [Exception[]]@($operation, $cleanup))
+        $aggregate.Data['operation_failure'] = $operation
+        $aggregate.Data['cleanup_failure'] = $cleanup
+        $outer = [InvalidOperationException]::new('outer', [InvalidOperationException]::new('inner', $aggregate))
+        $receipt = Get-DiagnosticReceipt $outer
+        $receipt.reason_code | Should -BeExactly 'desktop_installer_exit_nonzero'
+        $receipt.operation_failure | Should -BeExactly 'desktop_installer_exit_nonzero'
+        $receipt.cleanup_failure | Should -BeExactly 'desktop_normal_close_incomplete'
+        $receipt.native_exit_code | Should -Be 7
+        $receipt.native_observation.stdout_state | Should -BeExactly 'eof'
+        $receipt.ok | Should -BeFalse
+    }
+    It 'keeps unavailable data unknown and visits an exception cycle only once' {
+        $failure = [InvalidOperationException]::new('synthetic generic failure')
+        $failure.Data['original_exception'] = $failure
+        $receipt = Get-DiagnosticReceipt $failure
+        $receipt.reason_code | Should -BeExactly 'desktop_operation_failed'
+        $receipt.cleanup_failure | Should -BeExactly 'none'
+        ($null -eq $receipt.native_exit_code) | Should -BeTrue
+        ($null -eq $receipt.stderr_bytes) | Should -BeTrue
+        $receipt.native_observation.stderr_state | Should -BeExactly 'unknown'
+    }
+    It 'observes root Job and EOF facts without treating pending failed or absent facts as completion' -ForEach @(
+        @{ state = 'pending' }, @{ state = 'failed' }, @{ state = 'eof' }, @{ state = 'unknown' }
+    ) {
+        $task = switch ($state) {
+            'pending' { [Threading.Tasks.TaskCompletionSource[string]]::new().Task }
+            'failed' { [Threading.Tasks.Task]::FromException([InvalidOperationException]::new('synthetic reader failure')) }
+            'eof' { [Threading.Tasks.Task]::FromResult(0) }
+            default { $null }
+        }
+        $owner = [pscustomobject]@{ HasExited = $false; ActiveMembers = 1; Forced = $false; StdoutTask = $task; StderrTask = $task }
+        $observation = Get-DesktopOwnedProcessObservation ([pscustomobject]@{ owner = $owner })
+        $observation.root_exited | Should -BeFalse
+        ($null -eq $observation.root_exit_code) | Should -BeTrue
+        $observation.active_members | Should -Be 1
+        $observation.stdout_state | Should -BeExactly $state
+        $observation.stderr_state | Should -BeExactly $state
+        (Get-DesktopOwnedProcessObservation ([pscustomobject]@{ owner = [pscustomobject]@{} })).root_exited | Should -BeNullOrEmpty
+    }
+    It 'passes a successful child capture through without turning it into a failure' {
+        $script:DiagnosticCapture = New-DiagnosticCapture
+        $script:DiagnosticCapture.exit_code = 0
+        Mock Invoke-DesktopOwnedNativeProcess { return $script:DiagnosticCapture }
+        $result = Invoke-PublicChildProcess -Operation desktop_installer -FilePath 'synthetic.exe'
+        [object]::ReferenceEquals($result, $script:DiagnosticCapture) | Should -BeTrue
+        $result.exit_code | Should -Be 0
+    }
+    It 'collects only the six current helper streams and excludes stray runner inputs' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github/workflows/test.yml') -Raw
+        $block = [regex]::Match($workflow, '(?ms)^      - name: Preserve available NSIS helper diagnostics\r?\n.*?        run: \|\r?\n(?<run>(?:          [^\r\n]*\r?\n|\r?\n)+)')
+        $block.Success | Should -BeTrue
+        $run = $block.Groups['run'].Value -replace '(?m)^          ', ''
+        $workspace = Join-Path $TestDrive 'diagnostic-workspace'; $runnerTemp = Join-Path $TestDrive 'diagnostic-temp'
+        New-Item -ItemType Directory -Path $workspace, $runnerTemp | Out-Null
+        $allowlist = @('task679-fresh.stdout', 'task679-fresh.stderr', 'task679-upgrade.stdout', 'task679-upgrade.stderr', 'task679-migration.stdout', 'task679-migration.stderr')
+        foreach ($name in ($allowlist + @('task679-fresh.secret', 'other.stdout'))) { [IO.File]::WriteAllText((Join-Path $runnerTemp $name), 'synthetic') }
+        $previousWorkspace = $env:GITHUB_WORKSPACE; $previousTemp = $env:RUNNER_TEMP
+        try { $env:GITHUB_WORKSPACE = $workspace; $env:RUNNER_TEMP = $runnerTemp; & ([scriptblock]::Create($run)) }
+        finally { $env:GITHUB_WORKSPACE = $previousWorkspace; $env:RUNNER_TEMP = $previousTemp }
+        $copied = @(Get-ChildItem -LiteralPath (Join-Path $workspace 'artifacts/task679-nsis-lifecycle/helper-logs') -File | Select-Object -ExpandProperty Name)
+        ($copied | Sort-Object) | Should -Be ($allowlist | Sort-Object)
+        $upload = [regex]::Match($workflow, '(?ms)name: task679-nsis-lifecycle-evidence\r?\n          path: \|\r?\n(?<paths>(?:            [^\r\n]*\r?\n)+)').Groups['paths'].Value
+        foreach ($name in $allowlist) { $upload | Should -Match ([regex]::Escape('helper-logs/' + $name)) }
+        $upload | Should -Not -Match '\*|RUNNER_TEMP|other\.stdout|fresh\.secret'
     }
 }
 

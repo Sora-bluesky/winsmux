@@ -11,7 +11,7 @@ import { assertIssuedPublicationBundle, revalidatePublicationBundle } from './in
 const repository = 'Sora-bluesky/winsmux';
 const base = 'https://api.github.com/repos/' + repository;
 const required = ['secret-scan', 'public-surface', 'install-e2e', 'native-lifecycle-source', 'common-contract-drift',
-  'pester', 'core-build-test', 'desktop-build-test', 'desktop-nsis-lifecycle', 'task811-receipt-bind',
+  'pester', 'core-build-test', 'desktop-build-test', 'desktop-release-process', 'desktop-nsis-lifecycle', 'task811-receipt-bind',
   'helper-linux-negatives', 'workspace-journey-native'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const demand = (value, reason) => { if (!value) throw new Error(reason); };

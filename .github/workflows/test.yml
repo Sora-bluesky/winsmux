@@ -708,6 +708,25 @@ jobs:
           TAURI_CONFIG: '{"build":{"devUrl":null}}'
         run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
 
+  desktop-release-process:
+    name: Desktop Release Build and Process Gate
+    runs-on: windows-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
       - name: Build desktop binary without bundling
         working-directory: winsmux-app
         run: npm run tauri -- build --no-bundle
@@ -1267,7 +1286,7 @@ jobs:
               $receipt = $lines[0] | ConvertFrom-Json -Depth 12
               if ($process.ExitCode -ne 0) {
                 . ./scripts/desktop-install-inventory.ps1
-                Assert-DesktopInventoryShape $receipt @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
+                Assert-DesktopInventoryShape $receipt @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'native_observation', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
                 if ($receipt.schema -cne 'winsmux-desktop-smoke-failure/v1' -or $receipt.ok -ne $false) { throw 'helper failure receipt invalid' }
                 $result.helper_failure = $receipt
                 return $result
@@ -1470,12 +1489,33 @@ jobs:
           path: artifacts/task876-integrated-candidate/*
           if-no-files-found: error
 
+      - name: Preserve available NSIS helper diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = Join-Path $env:GITHUB_WORKSPACE 'artifacts/task679-nsis-lifecycle/helper-logs'
+          foreach ($name in @('task679-fresh.stdout', 'task679-fresh.stderr', 'task679-upgrade.stdout', 'task679-upgrade.stderr', 'task679-migration.stdout', 'task679-migration.stderr')) {
+            $source = Join-Path $env:RUNNER_TEMP $name
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
+              New-Item -ItemType Directory -Path $destination -Force | Out-Null
+              Copy-Item -LiteralPath $source -Destination (Join-Path $destination $name)
+            }
+          }
+
       - name: Publish non-sensitive lifecycle evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: task679-nsis-lifecycle-evidence
-          path: artifacts/task679-nsis-lifecycle/evidence.json
+          path: |
+            artifacts/task679-nsis-lifecycle/evidence.json
+            artifacts/task679-nsis-lifecycle/helper-logs/task679-fresh.stdout
+            artifacts/task679-nsis-lifecycle/helper-logs/task679-fresh.stderr
+            artifacts/task679-nsis-lifecycle/helper-logs/task679-upgrade.stdout
+            artifacts/task679-nsis-lifecycle/helper-logs/task679-upgrade.stderr
+            artifacts/task679-nsis-lifecycle/helper-logs/task679-migration.stdout
+            artifacts/task679-nsis-lifecycle/helper-logs/task679-migration.stderr
           if-no-files-found: error
 
   task811-operator-infra:
@@ -1579,6 +1619,7 @@ jobs:
       - pester
       - core-build-test
       - desktop-build-test
+      - desktop-release-process
       - desktop-nsis-lifecycle
     steps:
       - name: Classify frozen flake classes
@@ -1901,6 +1942,7 @@ jobs:
       - pester
       - core-build-test
       - desktop-build-test
+      - desktop-release-process
       - desktop-nsis-lifecycle
       - task811-receipt-bind
       - helper-linux-negatives
@@ -1920,6 +1962,7 @@ jobs:
             "${{ needs.pester.result }}" \
             "${{ needs.core-build-test.result }}" \
             "${{ needs.desktop-build-test.result }}" \
+            "${{ needs.desktop-release-process.result }}" \
             "${{ needs.desktop-nsis-lifecycle.result }}" \
             "${{ needs.task811-receipt-bind.result }}" \
             "${{ needs.helper-linux-negatives.result }}" \

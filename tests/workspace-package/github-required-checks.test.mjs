@@ -36,8 +36,8 @@ const input = { sourceCommit: '1'.repeat(40), sourceTree: '2'.repeat(40), workfl
 let checks = 0;
 const check = action => { action(); checks++; };
 const validate = value => validateGithubRequiredChecksPayload(value ?? input);
-check(() => { const result = validate(); assert.equal(result.passed, true); assert.equal(result.required_categories, 12);
-  assert.equal(result.required_jobs, 41); assert.equal(result.publication_admitted, false);
+check(() => { const result = validate(); assert.equal(result.passed, true); assert.equal(result.required_categories, 13);
+  assert.equal(result.required_jobs, 42); assert.equal(result.publication_admitted, false);
   assert.equal(jobInventory.names.pester.length, 26); assert.equal(jobInventory.names['install-e2e'].length, 3);
   assert.equal(jobInventory.names['helper-linux-negatives'].length, 2); });
 for (let index = 0; index < names.length; index++) {
@@ -87,7 +87,7 @@ const mismatch = derive(workflowFile, '0'.repeat(64), 'wrong-workflow-sha');
 check(() => { assert.equal(mismatch.status, 1); assert.match(mismatch.stderr.toString('utf8'), /differs from observed/u); });
 for (const name of sourceNames) check(() => assert.equal(sha(fs.readFileSync(name)), sources[name]));
 const result = { observed_at: new Date().toISOString(), passed: true, checks, native_parser_exit_code: native.status,
-  required_categories: 12, required_jobs: 41, python_sha256: sha(fs.readFileSync(python)), source_sha256: sources,
-  publication_admitted: false, scope: 'Native frozen workflow parser and all 41 synthetic API job cases; missing matrix members, failed/skipped/in-progress states, source/attempt identity and JSON observation forgery refusals. No real hosted CI success or final-head approval.' };
+  required_categories: 13, required_jobs: 42, python_sha256: sha(fs.readFileSync(python)), source_sha256: sources,
+  publication_admitted: false, scope: 'Native frozen workflow parser and all 42 synthetic API job cases; missing matrix members, failed/skipped/in-progress states, source/attempt identity and JSON observation forgery refusals. No real hosted CI success or final-head approval.' };
 fs.writeFileSync(path.join(root, 'ci-observer-target-result.json'), JSON.stringify(result), { flag: 'wx' });
 console.log(JSON.stringify({ ...result, original_result_path: path.join(root, 'ci-observer-target-result.json') }));

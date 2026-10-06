@@ -17,7 +17,7 @@ for stream in (sys.stdout, sys.stderr):
 REQUIRED = (
     "secret-scan", "public-surface", "install-e2e", "native-lifecycle-source",
     "common-contract-drift", "pester", "core-build-test", "desktop-build-test",
-    "desktop-nsis-lifecycle", "task811-receipt-bind", "helper-linux-negatives",
+    "desktop-release-process", "desktop-nsis-lifecycle", "task811-receipt-bind", "helper-linux-negatives",
     "workspace-journey-native",
 )
 
@@ -44,7 +44,7 @@ def derive(raw):
     jobs = workflow["jobs"]
     needs = jobs["merge-gate"]["needs"]
     if not set(REQUIRED).issubset(jobs) or not isinstance(needs, list) or len(needs) != len(REQUIRED) or set(needs) != set(REQUIRED):
-        raise ValueError("Required twelve CI categories or aggregate dependencies differ")
+        raise ValueError("Required thirteen CI categories or aggregate dependencies differ")
     names = {}
     for job_id in (*REQUIRED, "merge-gate"):
         job = jobs[job_id]

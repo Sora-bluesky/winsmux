@@ -490,9 +490,94 @@ function Invoke-PublicChildProcess {
         return Invoke-NativeProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment -TimeoutSeconds $TimeoutSeconds
     } catch [TimeoutException] {
         $result = $_.Exception.Data['process_result']
-        Assert-Condition ($null -ne $result) 'Timed-out child process did not provide a terminal output capture.'
-        throw (Format-PublicChildProcessDiagnostic -Operation $Operation -State 'timed_out' -Result $result)
+        $message = if ($null -eq $result) { 'Timed-out child process did not provide a terminal output capture.' }
+            else { Format-PublicChildProcessDiagnostic -Operation $Operation -State 'timed_out' -Result $result }
+        $failure = [InvalidOperationException]::new($message, $_.Exception)
+        foreach ($key in $_.Exception.Data.Keys) { $failure.Data[$key] = $_.Exception.Data[$key] }
+        throw $failure
     }
+}
+
+function Get-DesktopFailureEvidence {
+    param([AllowNull()]$Failure)
+    $queue = [Collections.Generic.Queue[Exception]]::new()
+    $seen = [Collections.Generic.List[Exception]]::new()
+    if ($Failure -is [Management.Automation.ErrorRecord]) { $Failure = $Failure.Exception }
+    if ($Failure -is [Exception]) { $queue.Enqueue($Failure) }
+    $present = [ordered]@{ operation_failure = $false; cleanup_failure = $false; native_result = $false; observation = $false; native_observation = $false }
+    $evidence = [ordered]@{ reason_code = $(if ($null -eq $Failure) { 'none' } else { 'desktop_operation_failed' }); operation_failure = $null; cleanup_failure = $null; native_result = $null; observation = $null; native_observation = $null; present = $present }
+    while ($queue.Count -gt 0) {
+        $current = $queue.Dequeue()
+        $alreadySeen = $false
+        foreach ($visited in $seen) { if ([object]::ReferenceEquals($visited, $current)) { $alreadySeen = $true; break } }
+        if ($alreadySeen) { continue }
+        $seen.Add($current)
+        if ($evidence.reason_code -ceq 'desktop_operation_failed' -and $current.Message -cmatch '^desktop_[a-z_]+$') { $evidence.reason_code = $current.Message }
+        foreach ($key in @('operation_failure', 'cleanup_failure', 'native_result', 'observation', 'native_observation')) {
+            if (-not $present[$key] -and $current.Data.Contains($key)) { $evidence[$key] = $current.Data[$key]; $present[$key] = $true }
+        }
+        if (-not $present.native_result -and $current.Data.Contains('process_result')) { $evidence.native_result = $current.Data['process_result']; $present.native_result = $true }
+        foreach ($key in @('operation_failure', 'cleanup_failure', 'original_exception')) {
+            if ($current.Data.Contains($key) -and $current.Data[$key] -is [Exception]) { $queue.Enqueue($current.Data[$key]) }
+        }
+        if ($null -ne $current.InnerException) { $queue.Enqueue($current.InnerException) }
+        if ($current -is [AggregateException]) { foreach ($inner in $current.InnerExceptions) { $queue.Enqueue($inner) } }
+    }
+    return [pscustomobject]$evidence
+}
+
+function Get-DesktopOwnedProcessObservation {
+    param($OwnedProcess)
+    $observation = [ordered]@{ root_exited = $null; root_exit_code = $null; active_members = $null; stdout_state = 'unknown'; stderr_state = 'unknown'; forced = $null }
+    if ($null -eq $OwnedProcess -or $null -eq (Get-ObjectPropertyValue $OwnedProcess 'owner')) { return [pscustomobject]$observation }
+    try {
+        if ($null -eq $OwnedProcess.owner.PSObject.Properties['HasExited']) { throw 'unobserved' }
+        $observation.root_exited = [bool]$OwnedProcess.owner.HasExited
+        if ($observation.root_exited) { $observation.root_exit_code = [int]$OwnedProcess.owner.ExitCode }
+    } catch { }
+    try { if ($null -ne $OwnedProcess.owner.PSObject.Properties['ActiveMembers']) { $observation.active_members = [long]$OwnedProcess.owner.ActiveMembers } } catch { }
+    try { if ($null -ne $OwnedProcess.owner.PSObject.Properties['Forced']) { $observation.forced = [bool]$OwnedProcess.owner.Forced } } catch { }
+    foreach ($stream in @('stdout', 'stderr')) {
+        try {
+            $task = $OwnedProcess.owner.($stream.Substring(0,1).ToUpperInvariant() + $stream.Substring(1) + 'Task')
+            if ($null -ne $task) {
+                $observation[$stream + '_state'] = if (-not $task.IsCompleted) { 'pending' } elseif ($task.IsFaulted -or $task.IsCanceled) { 'failed' } else { 'eof' }
+            }
+        } catch { }
+    }
+    return [pscustomobject]$observation
+}
+
+function New-DesktopFailureReceipt {
+    param($Failure, $CleanupFailure, [string]$Version, [string]$ReleaseTag, [string]$Stage, [string]$CleanupStage, [string]$Phase)
+    $primaryFailure = if ($null -ne $Failure) { $Failure } else { $CleanupFailure }
+    $evidence = Get-DesktopFailureEvidence $primaryFailure
+    $originalOperation = if ($evidence.present.operation_failure) { $evidence.operation_failure } else { $Failure }
+    $originalCleanup = if ($evidence.present.cleanup_failure) { $evidence.cleanup_failure } else { $CleanupFailure }
+    $operation = Get-DesktopFailureEvidence $originalOperation
+    $cleanup = Get-DesktopFailureEvidence $originalCleanup
+    $nativeResult = if ($evidence.present.native_result) { $evidence.native_result } else { $cleanup.native_result }
+    $failedObservation = if ($evidence.present.observation) { $evidence.observation } else { $cleanup.observation }
+    $nativeObservation = if ($evidence.present.native_observation) { $evidence.native_observation } else { $cleanup.native_observation }
+    if (-not $evidence.present.native_observation -and -not $cleanup.present.native_observation -and $null -ne $nativeResult) { $nativeObservation = Get-ObjectPropertyValue $nativeResult 'native_observation' }
+    if ($null -eq $nativeObservation) { $nativeObservation = Get-DesktopOwnedProcessObservation $null }
+    $projectedObservation = Get-DesktopOwnedProcessObservation $null
+    foreach ($key in @('root_exited', 'forced', 'root_exit_code', 'active_members', 'stdout_state', 'stderr_state')) {
+        try {
+            $value = Get-ObjectPropertyValue $nativeObservation $key
+            if ($key -cin @('root_exited', 'forced') -and $value -is [bool]) { $projectedObservation.$key = $value }
+            elseif ($key -cin @('root_exit_code', 'active_members') -and ($value -is [int] -or $value -is [long]) -and ($key -cne 'active_members' -or $value -ge 0)) { $projectedObservation.$key = $value }
+            elseif ($key -cin @('stdout_state', 'stderr_state') -and $value -is [string] -and $value -cin @('unknown', 'pending', 'failed', 'eof')) { $projectedObservation.$key = $value }
+        } catch { }
+    }
+    $nativeObservation = $projectedObservation
+    $nativeExit = if ($null -ne $nativeResult) { Get-ObjectPropertyValue $nativeResult 'exit_code' } elseif ($null -ne $failedObservation) { Get-ObjectPropertyValue $failedObservation 'exit_code' } else { $null }
+    $stdoutMetadata = if ($null -ne $nativeResult) { Get-ObjectPropertyValue $nativeResult 'stdout_metadata' } else { $null }
+    $stderrMetadata = if ($null -ne $nativeResult) { Get-ObjectPropertyValue $nativeResult 'stderr_metadata' } else { $null }
+    $stdoutBytes = if ($null -ne $stdoutMetadata) { Get-ObjectPropertyValue $stdoutMetadata 'bytes' } elseif ($null -ne $failedObservation) { Get-ObjectPropertyValue $failedObservation 'stdout_bytes' } else { $null }
+    $stderrBytes = if ($null -ne $stderrMetadata) { Get-ObjectPropertyValue $stderrMetadata 'bytes' } elseif ($null -ne $failedObservation) { Get-ObjectPropertyValue $failedObservation 'stderr_bytes' } else { $null }
+    $state = if ($null -ne $failedObservation) { [string](Get-ObjectPropertyValue $failedObservation 'state') } else { 'unconfirmed' }
+    return [ordered]@{ schema = 'winsmux-desktop-smoke-failure/v1'; ok = $false; surface = 'Desktop'; version = $Version; release_tag = $ReleaseTag; stage = $Stage; reason_code = $evidence.reason_code; helper_exit_code = 1; native_exit_code = $nativeExit; stdout_bytes = $stdoutBytes; stderr_bytes = $stderrBytes; observation_state = $state; native_observation = $nativeObservation; operation_failure = $operation.reason_code; cleanup_failure = $cleanup.reason_code; cleanup_stage = $CleanupStage; cleanup = $Phase }
 }
 
 function Initialize-DesktopNativeTypes {
@@ -627,6 +712,7 @@ function Invoke-DesktopOwnedNativeProcess {
     try {
         if (-not $owned.owner.WaitTerminal(($TimeoutSeconds * 1000), $script:DesktopObservationPollMilliseconds)) {
             $failure = [TimeoutException]::new('desktop_owned_child_timeout')
+            $failure.Data['native_observation'] = Get-DesktopOwnedProcessObservation $owned
             try { $owned.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
             catch { $failure.Data['cleanup_failure'] = $_.Exception; throw $failure }
             $failure.Data['process_result'] = Get-OwnedProcessCapture $owned
@@ -635,6 +721,7 @@ function Invoke-DesktopOwnedNativeProcess {
         return (Get-OwnedProcessCapture $owned)
     } catch {
         $failure = $_.Exception
+        if (-not $failure.Data.Contains('native_observation')) { $failure.Data['native_observation'] = Get-DesktopOwnedProcessObservation $owned }
         if (-not $owned.owner.Forced -and (-not $owned.process.HasExited -or $owned.owner.ActiveMembers -ne 0)) {
             try { $owned.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
             catch { $failure.Data['cleanup_failure'] = $_.Exception }
@@ -656,6 +743,7 @@ function Get-OwnedProcessCapture {
     $encoding = [Text.UTF8Encoding]::new($false, $false)
     return [pscustomobject]@{
         exit_code = [int]$process.ExitCode
+        native_observation = Get-DesktopOwnedProcessObservation $OwnedProcess
         stdout = $encoding.GetString([byte[]]$stdoutResult.RetainedBytes)
         stderr = $encoding.GetString([byte[]]$stderrResult.RetainedBytes)
         stdout_metadata = [pscustomobject][ordered]@{
@@ -4969,23 +5057,10 @@ try {
 }
 
 if ($Surface -ceq 'Desktop' -and $Json -and ($null -ne $operationError -or $null -ne $cleanupError)) {
-    $exception = if ($null -ne $operationError) { $operationError.Exception } else { $cleanupError.Exception }
-    $originalOperation = if ($exception.Data.Contains('operation_failure')) { $exception.Data['operation_failure'] } else { $exception }
-    $originalCleanup = if ($exception.Data.Contains('cleanup_failure')) { $exception.Data['cleanup_failure'] } elseif ($null -ne $cleanupError) { $cleanupError.Exception } else { $null }
-    function Get-DesktopSafeFailureCode($Failure) {
-        if ($null -eq $Failure) { return 'none' }
-        if ($Failure.Message -cmatch '^desktop_[a-z_]+$') { return $Failure.Message }
-        return 'desktop_operation_failed'
-    }
-    $failedObservation = if ($null -ne $originalOperation -and $originalOperation.Data.Contains('observation')) { $originalOperation.Data['observation'] } else { $null }
-    $state = if ($null -ne $failedObservation) { [string]$failedObservation.state } else { 'unconfirmed' }
+    $exception = if ($null -ne $operationError) { $operationError.Exception } else { $null }
     $phase = if ($null -ne $script:DesktopLifecycle) { [string]$script:DesktopLifecycle.phase } else { 'not_created' }
-    $nativeResult = $null
-    foreach ($failure in @($originalOperation, $originalCleanup)) { if ($null -ne $failure -and $failure.Data.Contains('native_result')) { $nativeResult = $failure.Data['native_result']; break } }
-    $nativeExit = if ($null -ne $nativeResult) { [int]$nativeResult.exit_code } elseif ($null -ne $failedObservation -and $null -ne $failedObservation.exit_code) { [int]$failedObservation.exit_code } else { $null }
-    $stdoutBytes = if ($null -ne $nativeResult) { [long]$nativeResult.stdout_metadata.bytes } elseif ($null -ne $failedObservation) { [long]$failedObservation.stdout_bytes } else { [long]0 }
-    $stderrBytes = if ($null -ne $nativeResult) { [long]$nativeResult.stderr_metadata.bytes } elseif ($null -ne $failedObservation) { [long]$failedObservation.stderr_bytes } else { [long]0 }
-    [ordered]@{ schema = 'winsmux-desktop-smoke-failure/v1'; ok = $false; surface = 'Desktop'; version = $Version; release_tag = $ReleaseTag; stage = $script:DesktopFailureStage; reason_code = Get-DesktopSafeFailureCode $exception; helper_exit_code = 1; native_exit_code = $nativeExit; stdout_bytes = $stdoutBytes; stderr_bytes = $stderrBytes; observation_state = $state; operation_failure = Get-DesktopSafeFailureCode $originalOperation; cleanup_failure = Get-DesktopSafeFailureCode $originalCleanup; cleanup_stage = $script:DesktopCleanupStage; cleanup = $phase } | ConvertTo-Json -Depth 8 -Compress
+    $cleanupException = if ($null -ne $cleanupError) { $cleanupError.Exception } else { $null }
+    New-DesktopFailureReceipt -Failure $exception -CleanupFailure $cleanupException -Version $Version -ReleaseTag $ReleaseTag -Stage $script:DesktopFailureStage -CleanupStage $script:DesktopCleanupStage -Phase $phase | ConvertTo-Json -Depth 8 -Compress
     exit 1
 }
 if ($null -ne $operationError) {

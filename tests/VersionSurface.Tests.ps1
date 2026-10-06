@@ -159,7 +159,7 @@ Describe 'winsmux version surface' {
         $binding.rustc_commit | Should -BeExactly 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96'
         $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $script:DistributionWorkflows)
         @($producers.id | Sort-Object) -join ',' | Should -BeExactly (
-            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-nsis-lifecycle,test.yml::fresh-install-candidate')
+            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-nsis-lifecycle,test.yml::desktop-release-process,test.yml::fresh-install-candidate')
         Test-MeasuredWindowsProducerToolchains -Workflows $script:DistributionWorkflows | Should -BeTrue
         $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
         Test-MeasuredWindowsToolchainAction $action | Should -BeTrue
@@ -227,6 +227,36 @@ Describe 'winsmux version surface' {
             $preparation[0].Index | Should -BeLessThan $backend[0].Index
             $job.Groups['body'].Value | Should -Not -Match '(?m)^        run: npm run prepare:companion-cli:release\s*\r?$'
         }
+    }
+
+    It 'keeps the release app process proof independent of the debug backend job and required by Merge Gate' {
+        $workflow = $script:DistributionWorkflows['test.yml']
+        $jobs = @{}
+        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'desktop-nsis-lifecycle', 'merge-gate')) {
+            $match = [regex]::Match($workflow,
+                ('(?ms)^  {0}:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)' -f [regex]::Escape($id)))
+            $match.Success | Should -BeTrue -Because $id
+            $jobs[$id] = $match.Groups['body'].Value
+        }
+        $backend = $jobs['desktop-build-test']
+        $release = $jobs['desktop-release-process']
+        $backend | Should -Match 'run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml'
+        $backend | Should -Not -Match 'build --no-bundle|Run V03630 desktop debug process gate|test-results-desktop-debug-v03630.xml'
+        foreach ($body in @($backend, $release)) { $body | Should -Match '(?m)^    timeout-minutes: 35\s*\r?$' }
+        $release | Should -Not -Match '(?m)^    needs:'
+        $release | Should -Not -Match 'run: cargo test|run: npm run prepare:companion-cli\s*\r?$|prepare-legacy-cli.ps1'
+        $release | Should -Match 'run: npm run tauri -- build --no-bundle'
+        $release | Should -Match ([regex]::Escape("'target/release/winsmux-app.exe'"))
+        $release | Should -Match 'Run V03630 desktop debug process gate'
+        $release | Should -Match ([regex]::Escape("`$shardId = 'desktop-debug-process'"))
+        $release | Should -Match 'Upload V03630 desktop debug process results'
+        $release | Should -Match 'path: test-results-desktop-debug-v03630.xml'
+        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'desktop-nsis-lifecycle')) {
+            $jobs['merge-gate'] | Should -Match ('(?m)^      - {0}\s*\r?$' -f [regex]::Escape($id))
+            $jobs['merge-gate'] | Should -Match ([regex]::Escape('needs.' + $id + '.result'))
+        }
+        $jobs['desktop-nsis-lifecycle'] | Should -Match 'run: npm run tauri -- build --bundles nsis'
+        $jobs['desktop-nsis-lifecycle'] | Should -Not -Match '(?m)^    needs:'
     }
 
     It 'keeps release-critical product versions aligned' {
