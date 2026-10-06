@@ -5,7 +5,7 @@ BeforeAll {
     $script:HelperAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepoRoot 'scripts/test-public-release.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw 'Helper parse failed.' }
     $script:DesktopOwnerSourceRoot = Join-Path $script:RepoRoot 'scripts'
-    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Format-DesktopStartupDiagnostic', 'Get-DesktopStartupDiagnostic', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Wait-DesktopOwnedNativeProcess', 'Invoke-DesktopNsisProcess', 'Get-CanonicalPath', 'Test-CanonicalPathEqual', 'Assert-DesktopInstallRootOwnership', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
+    foreach ($name in @('Test-PathInsideRoot', 'New-PublicIsolatedProfile', 'Remove-OwnedRoot', 'Invoke-CoreSmoke', 'Get-CoreReleaseAssetNames', 'Invoke-PublicDownload', 'Get-ChecksumEntry', 'Assert-FileChecksum', 'Assert-CoreVersionResult', 'Invoke-NpmSmoke', 'Resolve-NpmPathPrecedenceToolchain', 'Invoke-NpmProcessOperation', 'Invoke-DesktopSmoke', 'New-DesktopLifecycleContext', 'Assert-DesktopRunner', 'Resolve-DesktopRouterInventoryPolicy', 'Get-DesktopProtectedState', 'Start-DesktopLifecycle', 'Assert-Condition', 'Get-ObjectPropertyValue', 'Format-DesktopStartupDiagnostic', 'Get-DesktopStartupDiagnostic', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Wait-DesktopOwnedNativeProcess', 'Invoke-DesktopNsisProcess', 'Get-CanonicalPath', 'Test-CanonicalPathEqual', 'Assert-DesktopInstallRootOwnership', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
         $function = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)[0]
         . ([scriptblock]::Create($function.Extent.Text))
     }
@@ -33,6 +33,125 @@ BeforeAll {
     }
     function New-ReceiptFixture {
         return ([ordered]@{ ok = $true; surface = 'Desktop'; version = '0.38.0'; release_tag = 'v0.38.0'; repository = 'example/winsmux'; evidence = @{ asset = 'winsmux_0.38.0_x64-setup.exe'; sha256 = 'f' * 64; version = '0.38.0'; page_url = 'tauri://localhost/' }; attempts = 6; retry_delay_seconds = 10; cleanup = 'clean'; installed_inventory = @{ schema = 'winsmux-desktop-installed-inventory/v1'; installer_sha256 = 'f' * 64; inventory_sha256 = 'c' * 64; generation_manifest_sha256 = 'b' * 64; source_commit = 'a' * 40; expected = 5; found = 5; sha256_match = 5; licenses = 3; pair_verified = $true; complete = $true }; desktop_runtime = @{ workspace_read_verified = $true; mcp_roundtrip_verified = $true; mcp_eof_exit_verified = $true; normal_close_requested = $true; owned_processes_exited = $true } } | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+    }
+}
+
+Describe 'Canonical isolated public profile contract' {
+    BeforeAll {
+        $script:OwnedRootPrefix = 'winsmux-public-release-'
+        $script:ProfileEnvironmentKeys = @('LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'USERPROFILE', 'HOME')
+    }
+    BeforeEach {
+        $script:ParentProfileBefore = @{}
+        foreach ($key in $script:ProfileEnvironmentKeys) { $script:ParentProfileBefore[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
+    }
+    AfterEach {
+        foreach ($key in $script:ProfileEnvironmentKeys) { [Environment]::GetEnvironmentVariable($key, 'Process') | Should -BeExactly $script:ParentProfileBefore[$key] }
+    }
+    It 'prepares canonical native folders and preserves Home and Temp for <Surface>' -ForEach @(
+        @{ Surface = 'Core'; ExpectedHome = 'core-profile\Home'; ExpectedTemp = 'core-profile\Temp' },
+        @{ Surface = 'Desktop'; ExpectedHome = 'profile\Home'; ExpectedTemp = 'profile\Temp' },
+        @{ Surface = 'Npm'; ExpectedHome = 'npm-home'; ExpectedTemp = 'npm-temp' }
+    ) {
+        $root = Join-Path $TestDrive ('winsmux-public-release-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root | Out-Null
+        try {
+            $environment = New-PublicIsolatedProfile -Root $root -Surface $Surface
+            @($environment.Keys | Sort-Object) -join ',' | Should -BeExactly 'APPDATA,HOME,LOCALAPPDATA,TEMP,TMP,USERPROFILE'
+            $environment.HOME | Should -BeExactly (Join-Path $root $ExpectedHome)
+            $environment.USERPROFILE | Should -BeExactly $environment.HOME
+            $environment.TEMP | Should -BeExactly (Join-Path $root $ExpectedTemp)
+            $environment.TMP | Should -BeExactly $environment.TEMP
+            $environment.LOCALAPPDATA | Should -BeExactly (Join-Path $environment.HOME 'AppData\Local')
+            $environment.APPDATA | Should -BeExactly (Join-Path $environment.HOME 'AppData\Roaming')
+            foreach ($value in $environment.Values) {
+                Test-PathInsideRoot -Path $value -Root $root | Should -BeTrue
+                Test-Path -LiteralPath $value -PathType Container | Should -BeTrue
+            }
+            Test-Path -LiteralPath (Join-Path $root 'LocalAppData') | Should -BeFalse
+        } finally { Remove-OwnedRoot -Root $root }
+        Test-Path -LiteralPath $root | Should -BeFalse
+    }
+    It 'rejects an unknown surface without creating profile entries' {
+        $root = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'unknown')
+        { New-PublicIsolatedProfile -Root $root.FullName -Surface 'Other' } | Should -Throw
+        @(Get-ChildItem -LiteralPath $root.FullName -Force).Count | Should -Be 0
+    }
+    It 'rejects a relative, missing, or file root without returning an environment' {
+        $leaf = Join-Path $TestDrive 'root-file'
+        [IO.File]::WriteAllText($leaf, 'sentinel')
+        foreach ($root in @('relative-profile-root', (Join-Path $TestDrive 'missing'), $leaf)) {
+            $returned = @()
+            try { $returned = @(New-PublicIsolatedProfile -Root $root -Surface 'Core') } catch { $_.Exception.Message | Should -BeExactly 'isolated_profile_root_invalid' }
+            $returned.Count | Should -Be 0
+        }
+        [IO.File]::ReadAllText($leaf) | Should -BeExactly 'sentinel'
+    }
+    It 'returns no environment after partial directory failure and permits owned cleanup for <Surface>' -ForEach @(
+        @{ Surface = 'Core'; ExpectedHome = 'core-profile\Home'; ExpectedTemp = 'core-profile\Temp' },
+        @{ Surface = 'Desktop'; ExpectedHome = 'profile\Home'; ExpectedTemp = 'profile\Temp' },
+        @{ Surface = 'Npm'; ExpectedHome = 'npm-home'; ExpectedTemp = 'npm-temp' }
+    ) {
+        $root = Join-Path $TestDrive ('winsmux-public-release-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $root | Out-Null
+        $tempPath = Join-Path $root $ExpectedTemp
+        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $tempPath))
+        [IO.File]::WriteAllText($tempPath, 'preserve-until-cleanup')
+        $returned = @(); $failed = $false
+        try { $returned = @(New-PublicIsolatedProfile -Root $root -Surface $Surface) } catch { $failed = $true }
+        $failed | Should -BeTrue
+        $returned.Count | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $root $ExpectedHome) -PathType Container | Should -BeTrue
+        [IO.File]::ReadAllText($tempPath) | Should -BeExactly 'preserve-until-cleanup'
+        Remove-OwnedRoot -Root $root
+        Test-Path -LiteralPath $root | Should -BeFalse
+    }
+}
+
+Describe 'Public profile preparation failure at every product child boundary' {
+    BeforeEach {
+        $Version = '0.38.0'; $ReleaseTag = 'v0.38.0'; $Repository = 'example/winsmux'
+        $CandidateInstallerPath = ''; $DesktopInventoryPath = ''; $PriorInstallerPath = ''
+        $script:ProfileCallerRoot = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:ProfileCallerRoot | Out-Null
+        Mock New-PublicIsolatedProfile { throw 'profile_preparation_failed' }
+        Mock Invoke-PublicChildProcess { throw 'product_child_must_not_start' }
+        Mock Invoke-NpmProcessOperation { throw 'npm_child_must_not_start' }
+        Mock Invoke-DesktopNsisProcess { throw 'installer_must_not_start' }
+        Mock Start-OwnedProcess { throw 'desktop_child_must_not_start' }
+        Mock Get-CoreReleaseAssetNames { return @('winsmux-x64.exe') }
+        Mock Invoke-PublicDownload { param($Uri, $Destination, $Root) [IO.File]::WriteAllText($Destination, 'fixture') }
+        Mock Get-ChecksumEntry { return ('a' * 64) }
+        Mock Assert-FileChecksum {}
+        Mock Resolve-NpmPathPrecedenceToolchain { return [pscustomobject]@{ node_path = 'node.exe'; npm_cli_path = 'npm-cli.js'; tar_path = 'tar.exe' } }
+    }
+    AfterEach {
+        Should -Invoke Invoke-PublicChildProcess -Times 0 -Exactly
+        Should -Invoke Invoke-NpmProcessOperation -Times 0 -Exactly
+        Should -Invoke Invoke-DesktopNsisProcess -Times 0 -Exactly
+        Should -Invoke Start-OwnedProcess -Times 0 -Exactly
+    }
+    It 'stops Core before its version process when profile preparation fails' {
+        { Invoke-CoreSmoke -Root $script:ProfileCallerRoot } | Should -Throw '*profile_preparation_failed*'
+        Should -Invoke New-PublicIsolatedProfile -Times 1 -Exactly -ParameterFilter { $Surface -ceq 'Core' }
+    }
+    It 'preserves npm toolchain selection and stops all npm processes when profile preparation fails' {
+        { Invoke-NpmSmoke -Root $script:ProfileCallerRoot -NodeCandidates @() -TarCandidates @() } | Should -Throw '*profile_preparation_failed*'
+        Should -Invoke Resolve-NpmPathPrecedenceToolchain -Times 1 -Exactly
+        Should -Invoke New-PublicIsolatedProfile -Times 1 -Exactly -ParameterFilter { $Surface -ceq 'Npm' }
+        Test-Path -LiteralPath (Join-Path $script:ProfileCallerRoot 'npm-cache') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $script:ProfileCallerRoot 'npmrc') | Should -BeFalse
+    }
+    It 'takes existing Desktop setup cleanup before starting the installer or app' {
+        Mock New-DesktopLifecycleContext { return [pscustomobject]@{ app_process = $null } }
+        Mock Assert-DesktopRunner {}
+        Mock Resolve-DesktopRouterInventoryPolicy { return [pscustomobject]@{ generation = 'legacy'; required = $false } }
+        Mock Get-DesktopProtectedState { return @{} }
+        Mock Start-DesktopLifecycle {}
+        Mock Invoke-DesktopCleanup { param($Context, $Environment, $OperationErrorMessage) $Environment.Count | Should -Be 0; $OperationErrorMessage | Should -BeExactly 'profile_preparation_failed' }
+        { Invoke-DesktopSmoke -Root $script:ProfileCallerRoot } | Should -Throw '*profile_preparation_failed*'
+        Should -Invoke New-PublicIsolatedProfile -Times 1 -Exactly -ParameterFilter { $Surface -ceq 'Desktop' }
+        Should -Invoke Invoke-DesktopCleanup -Times 1 -Exactly
     }
 }
 

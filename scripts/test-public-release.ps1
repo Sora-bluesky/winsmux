@@ -278,6 +278,36 @@ function Test-PathInsideRoot {
     return $fullPath.StartsWith($fullRoot, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function New-PublicIsolatedProfile {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][ValidateSet('Core', 'Desktop', 'Npm')][string]$Surface
+    )
+
+    Assert-Condition ([IO.Path]::IsPathFullyQualified($Root) -and (Test-Path -LiteralPath $Root -PathType Container)) 'isolated_profile_root_invalid'
+    $ownedRoot = Get-CanonicalPath -Path $Root
+    switch ($Surface) {
+        'Core' { $profileRoot = Join-Path $ownedRoot 'core-profile'; $homeRoot = Join-Path $profileRoot 'Home'; $tempRoot = Join-Path $profileRoot 'Temp' }
+        'Desktop' { $profileRoot = Join-Path $ownedRoot 'profile'; $homeRoot = Join-Path $profileRoot 'Home'; $tempRoot = Join-Path $profileRoot 'Temp' }
+        'Npm' { $homeRoot = Join-Path $ownedRoot 'npm-home'; $tempRoot = Join-Path $ownedRoot 'npm-temp' }
+    }
+    # Native flags0 resolves %USERPROFILE%\AppData\Local and requires it to exist.
+    $environment = @{
+        LOCALAPPDATA = Get-CanonicalPath -Path (Join-Path $homeRoot 'AppData\Local')
+        APPDATA = Get-CanonicalPath -Path (Join-Path $homeRoot 'AppData\Roaming')
+        TEMP = Get-CanonicalPath -Path $tempRoot
+        TMP = Get-CanonicalPath -Path $tempRoot
+        USERPROFILE = Get-CanonicalPath -Path $homeRoot
+        HOME = Get-CanonicalPath -Path $homeRoot
+    }
+    $directories = @($environment.HOME, $environment.TEMP, $environment.LOCALAPPDATA, $environment.APPDATA)
+    foreach ($directory in $directories) {
+        Assert-Condition (Test-PathInsideRoot -Path $directory -Root $ownedRoot) 'isolated_profile_path_outside_root'
+    }
+    New-Item -ItemType Directory -Path $directories -ErrorAction Stop | Out-Null
+    return $environment
+}
+
 function New-OwnedRoot {
     $base = if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
         $env:RUNNER_TEMP
@@ -2990,20 +3020,7 @@ function Invoke-CoreSmoke {
         Assert-FileChecksum -Path $assetPaths[$assetName] -ExpectedHash $expectedHashes[$assetName]
     }
 
-    $profileRoot = Join-Path $Root 'core-profile'
-    $localAppData = Join-Path $profileRoot 'LocalAppData'
-    $roamingAppData = Join-Path $profileRoot 'AppData'
-    $tempRoot = Join-Path $profileRoot 'Temp'
-    $homeRoot = Join-Path $profileRoot 'Home'
-    New-Item -ItemType Directory -Path $localAppData, $roamingAppData, $tempRoot, $homeRoot | Out-Null
-    $environment = @{
-        LOCALAPPDATA = $localAppData
-        APPDATA = $roamingAppData
-        TEMP = $tempRoot
-        TMP = $tempRoot
-        USERPROFILE = $homeRoot
-        HOME = $homeRoot
-    }
+    $environment = New-PublicIsolatedProfile -Root $Root -Surface 'Core'
     $executedAssetName = $coreAssetNames[0]
     Assert-Condition ($executedAssetName -ceq 'winsmux-x64.exe') 'Core executable inventory did not keep x64 as the runnable asset.'
     $expectedProgramName = [IO.Path]::GetFileNameWithoutExtension($executedAssetName)
@@ -3083,27 +3100,16 @@ function Invoke-NpmSmoke {
     $npmToolchain = Resolve-NpmPathPrecedenceToolchain -NodeCandidates $nodeCandidates -TarCandidates $tarCandidates
     $node = [string]$npmToolchain.node_path
     $npmCli = [string]$npmToolchain.npm_cli_path
-    $npmEnvironment = @{
-        NPM_CONFIG_CACHE = Join-Path $Root 'npm-cache'
-        NPM_CONFIG_PREFIX = Join-Path $Root 'npm-prefix'
-        NPM_CONFIG_USERCONFIG = Join-Path $Root 'npmrc'
-        NPM_CONFIG_AUDIT = 'false'
-        NPM_CONFIG_FUND = 'false'
-        NPM_CONFIG_UPDATE_NOTIFIER = 'false'
-        LOCALAPPDATA = Join-Path $Root 'npm-local-app-data'
-        APPDATA = Join-Path $Root 'npm-app-data'
-        TEMP = Join-Path $Root 'npm-temp'
-        TMP = Join-Path $Root 'npm-temp'
-        USERPROFILE = Join-Path $Root 'npm-home'
-        HOME = Join-Path $Root 'npm-home'
-    }
+    $npmEnvironment = New-PublicIsolatedProfile -Root $Root -Surface 'Npm'
+    $npmEnvironment.NPM_CONFIG_CACHE = Join-Path $Root 'npm-cache'
+    $npmEnvironment.NPM_CONFIG_PREFIX = Join-Path $Root 'npm-prefix'
+    $npmEnvironment.NPM_CONFIG_USERCONFIG = Join-Path $Root 'npmrc'
+    $npmEnvironment.NPM_CONFIG_AUDIT = 'false'
+    $npmEnvironment.NPM_CONFIG_FUND = 'false'
+    $npmEnvironment.NPM_CONFIG_UPDATE_NOTIFIER = 'false'
     New-Item -ItemType Directory -Path @(
         $npmEnvironment.NPM_CONFIG_CACHE,
-        $npmEnvironment.NPM_CONFIG_PREFIX,
-        $npmEnvironment.LOCALAPPDATA,
-        $npmEnvironment.APPDATA,
-        $npmEnvironment.TEMP,
-        $npmEnvironment.USERPROFILE
+        $npmEnvironment.NPM_CONFIG_PREFIX
     ) | Out-Null
     Set-Content -LiteralPath $npmEnvironment.NPM_CONFIG_USERCONFIG -Value 'registry=https://registry.npmjs.org/' -Encoding ascii
 
@@ -3273,23 +3279,11 @@ function Invoke-DesktopSmoke {
         }
 
         $childRoot = Join-Path $Root 'profile'
-        $localAppData = Join-Path $childRoot 'LocalAppData'
-        $roamingAppData = Join-Path $childRoot 'AppData'
-        $tempRoot = Join-Path $childRoot 'Temp'
-        $homeRoot = Join-Path $childRoot 'Home'
-        New-Item -ItemType Directory -Path $localAppData, $roamingAppData, $tempRoot, $homeRoot | Out-Null
-        $childEnvironment = @{
-            LOCALAPPDATA = $localAppData
-            APPDATA = $roamingAppData
-            TEMP = $tempRoot
-            TMP = $tempRoot
-            USERPROFILE = $homeRoot
-            HOME = $homeRoot
-            WINSMUX_ORCHESTRA_ATTACH_MODE = 'desktop-app'
-            WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH = '1'
-            WINSMUX_ORCHESTRA_DISABLE_WINDOWS_TERMINAL_ATTACH = '1'
-            WINSMUX_CODEX_LAUNCHER = ''
-        }
+        $childEnvironment = New-PublicIsolatedProfile -Root $Root -Surface 'Desktop'
+        $childEnvironment.WINSMUX_ORCHESTRA_ATTACH_MODE = 'desktop-app'
+        $childEnvironment.WINSMUX_ORCHESTRA_DISABLE_POWERSHELL_ATTACH = '1'
+        $childEnvironment.WINSMUX_ORCHESTRA_DISABLE_WINDOWS_TERMINAL_ATTACH = '1'
+        $childEnvironment.WINSMUX_CODEX_LAUNCHER = ''
 
         Set-DesktopLifecyclePhase -Context $context -NextPhase 'installer_started'
         $priorAppHash = ''
