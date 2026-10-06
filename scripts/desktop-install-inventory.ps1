@@ -7,9 +7,26 @@ function Assert-DesktopInventoryCondition {
 }
 
 function Assert-DesktopInventoryShape {
-    param($Value, [string[]]$Keys)
-    $actual = if ($Value -is [Collections.IDictionary]) { @($Value.Keys) } else { @($Value.PSObject.Properties.Name) }
-    Assert-DesktopInventoryCondition ($actual.Count -eq $Keys.Count -and @($actual | Where-Object { $_ -cnotin $Keys }).Count -eq 0) 'desktop_inventory_shape_invalid'
+    param($Value, [AllowEmptyCollection()][string[]]$Keys)
+    $reason = 'desktop_inventory_shape_invalid'
+    Assert-DesktopInventoryCondition ($null -ne $Value -and $null -ne $Keys) $reason
+    $dictionary = $Value -is [Collections.IDictionary]
+    Assert-DesktopInventoryCondition ($dictionary -or $Value.GetType() -eq [System.Management.Automation.PSCustomObject]) $reason
+    $actual = @(if ($dictionary) {
+        foreach ($entry in $Value.GetEnumerator()) {
+            Assert-DesktopInventoryCondition ($entry.Key -is [string]) $reason
+            $entry.Key
+        }
+    } else {
+        foreach ($property in $Value.PSObject.Properties) { $property.Name }
+    })
+    $expected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($key in $Keys) {
+        Assert-DesktopInventoryCondition ($null -ne $key -and $expected.Add($key)) $reason
+    }
+    $names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($key in $actual) { Assert-DesktopInventoryCondition $names.Add($key) $reason }
+    Assert-DesktopInventoryCondition ($names.SetEquals($expected)) $reason
 }
 
 function Read-DesktopStrictJson {
@@ -35,7 +52,10 @@ function ConvertFrom-DesktopStrictJsonText {
             foreach ($item in $Element.EnumerateArray()) { Assert-UniqueDesktopJson $item }
         }
     }
-    try { Assert-UniqueDesktopJson $document.RootElement } finally { $document.Dispose() }
+    try {
+        Assert-DesktopInventoryCondition ($document.RootElement.ValueKind -eq [Text.Json.JsonValueKind]::Object) 'desktop_inventory_shape_invalid'
+        Assert-UniqueDesktopJson $document.RootElement
+    } finally { $document.Dispose() }
     return ($Text | ConvertFrom-Json -Depth 30)
 }
 

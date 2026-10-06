@@ -1723,3 +1723,163 @@ console.log(JSON.stringify({cases:faults.length,positive:2,negative:faults.lengt
         $result.cases | Should -Be 18; $result.positive | Should -Be 2; $result.negative | Should -Be 16; $result.all_passed | Should -BeTrue
     }
 }
+
+Describe 'Closed Desktop object shape across codec and callers' {
+    BeforeAll {
+        function New-ShapeObject($Representation, $Names) {
+            $map = [ordered]@{}
+            foreach ($name in $Names) { $map.Add($name, $null) }
+            switch ($Representation) {
+                'ordered' { return ,$map }
+                'dictionary' { $result = @{}; foreach ($entry in $map.GetEnumerator()) { $result.Add($entry.Key, $entry.Value) }; return ,$result }
+                'json' { return (ConvertFrom-DesktopStrictJsonText ($map | ConvertTo-Json -Compress)) }
+            }
+        }
+    }
+    It 'accepts exact <Representation> names for <Cardinality> including metadata names without pipeline output' -ForEach @(
+        @{Representation='ordered';Cardinality='empty'}, @{Representation='ordered';Cardinality='one'}, @{Representation='ordered';Cardinality='many'},
+        @{Representation='dictionary';Cardinality='empty'}, @{Representation='dictionary';Cardinality='one'}, @{Representation='dictionary';Cardinality='many'},
+        @{Representation='json';Cardinality='empty'}, @{Representation='json';Cardinality='one'}, @{Representation='json';Cardinality='many'}
+    ) {
+        $names = @()
+        switch ($Cardinality) { 'one' { $names=@('Keys') }; 'many' { $names=@('Count','Name','GetEnumerator') } }
+        $value = New-ShapeObject $Representation $names
+        @(Assert-DesktopInventoryShape $value $names).Count | Should -Be 0
+    }
+    It 'rejects <Fault> names for <Representation> with a finite reason' -ForEach @(
+        @{Representation='ordered';Fault='missing'}, @{Representation='ordered';Fault='extra'}, @{Representation='ordered';Fault='case'}, @{Representation='ordered';Fault='different'},
+        @{Representation='dictionary';Fault='missing'}, @{Representation='dictionary';Fault='extra'}, @{Representation='dictionary';Fault='case'}, @{Representation='dictionary';Fault='different'},
+        @{Representation='json';Fault='missing'}, @{Representation='json';Fault='extra'}, @{Representation='json';Fault='case'}, @{Representation='json';Fault='different'}
+    ) {
+        $names = @()
+        switch ($Fault) { 'extra' { $names=@('Keys','extra') }; 'case' { $names=@('keys') }; 'different' { $names=@('Count') } }
+        $value = New-ShapeObject $Representation $names
+        { Assert-DesktopInventoryShape $value @('Keys') } | Should -Throw -ExpectedMessage 'desktop_inventory_shape_invalid'
+    }
+    It 'rejects nonobject <Kind> including wrapped scalars and arrays' -ForEach @(
+        @{Kind='null'}, @{Kind='empty_string'}, @{Kind='string'}, @{Kind='number'}, @{Kind='bool'},
+        @{Kind='empty_array'}, @{Kind='one_array'}, @{Kind='many_array'}, @{Kind='wrapped_string'}, @{Kind='wrapped_number'}, @{Kind='wrapped_array'}
+    ) {
+        $value = switch ($Kind) {
+            'null' { $null }; 'empty_string' { '' }; 'string' { 'text' }; 'number' { 1 }; 'bool' { $true }
+            'empty_array' { ,@() }; 'one_array' { ,@([pscustomobject]@{}) }; 'many_array' { ,@([pscustomobject]@{},[pscustomobject]@{}) }
+            'wrapped_string' { [pscustomobject]'text' }; 'wrapped_number' { [pscustomobject]1 }; 'wrapped_array' { ,([pscustomobject]@()) }
+        }
+        { Assert-DesktopInventoryShape $value @() } | Should -Throw -ExpectedMessage 'desktop_inventory_shape_invalid'
+    }
+    It 'rejects invalid expected names <Fault>' -ForEach @(@{Fault='null'},@{Fault='null_item'},@{Fault='duplicate'}) {
+        $keys = switch ($Fault) { 'null' { $null }; 'null_item' { ,@($null) }; 'duplicate' { ,@('Keys','Keys') } }
+        $value = switch ($Fault) { 'null' { [pscustomobject]@{} }; 'null_item' { @{''=$null} }; 'duplicate' { [pscustomobject]@{Keys=$null} } }
+        { Assert-DesktopInventoryShape $value $keys } | Should -Throw -ExpectedMessage 'desktop_inventory_shape_invalid'
+    }
+    It 'rejects nonstring dictionary keys before their coercion' {
+        { Assert-DesktopInventoryShape @{ 1 = $null } @('1') } | Should -Throw -ExpectedMessage 'desktop_inventory_shape_invalid'
+    }
+    It 'rejects nonobject JSON root <Text> before output enumeration' -ForEach @(
+        @{Text='[]'}, @{Text='[{}]'}, @{Text='[{"Keys":null}]'}, @{Text='[{},{}]'},
+        @{Text='null'}, @{Text='"text"'}, @{Text='1'}, @{Text='true'}
+    ) {
+        $output = @(); $caught = $false
+        try { $output = @(ConvertFrom-DesktopStrictJsonText $Text) }
+        catch { $caught = $true; $_.Exception.Message | Should -BeExactly 'desktop_inventory_shape_invalid' }
+        $caught | Should -BeTrue; $output.Count | Should -Be 0
+    }
+    It 'preserves object values and nested arrays in <Text>' -ForEach @(@{Text='{}'},@{Text='{"Keys":null}'},@{Text='{"items":[{},1,null]}'} ) {
+        $output = @(ConvertFrom-DesktopStrictJsonText $Text)
+        $output.Count | Should -Be 1
+        $output[0].GetType() | Should -Be ([System.Management.Automation.PSCustomObject])
+        ($output[0] | ConvertTo-Json -Depth 30 -Compress) | Should -BeExactly $Text
+    }
+    It 'retains recursive duplicate rejection for <Text>' -ForEach @(@{Text='{"a":1,"a":2}'},@{Text='{"items":[{"a":1,"a":2}]}'} ) {
+        { ConvertFrom-DesktopStrictJsonText $Text } | Should -Throw -ExpectedMessage 'desktop_inventory_duplicate_key'
+    }
+    It 'retains malformed JSON rejection' { { ConvertFrom-DesktopStrictJsonText '{' } | Should -Throw }
+    It 'retains the existing JSON conversion depth bound' {
+        $text = ('{"a":' * 40) + '{}' + ('}' * 40)
+        { ConvertFrom-DesktopStrictJsonText $text } | Should -Throw
+    }
+    It 'retains strict UTF8 rejection before JSON conversion' {
+        $path=Join-Path $TestDrive 'invalid.json';[IO.File]::WriteAllBytes($path,[byte[]]@(255))
+        { Read-DesktopStrictJson $path } | Should -Throw
+    }
+}
+
+Describe 'Installed Desktop MCP client through owned synthetic stdio' {
+    BeforeAll {
+        $function=$script:HelperAst.FindAll({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-DesktopInstalledMcp'},$true)[0]
+        . ([scriptblock]::Create($function.Extent.Text))
+        $script:Version='0.38.0';$script:DesktopObservationTimeoutMilliseconds=180000;$script:DesktopObservationPollMilliseconds=500;$script:DesktopMcpMessageLimitBytes=2097152
+        Initialize-DesktopNativeTypes
+        $script:McpPeerPath=Join-Path $TestDrive 'mcp-peer.ps1'
+        $peer=@'
+param([switch]$ArrayEnvelope)
+$ErrorActionPreference='Stop'
+[Console]::InputEncoding=[Text.UTF8Encoding]::new($false,$true)
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false,$true)
+while($null -ne ($line=[Console]::ReadLine())) {
+ $req=$line|ConvertFrom-Json
+ if($req.method -eq 'notifications/initialized'){continue}
+ switch($req.method) {
+  'initialize' {$result=@{protocolVersion='2025-11-25';capabilities=@{tools=@{}};serverInfo=@{name='winsmux-workspace-mcp';version='0.38.0'}}}
+  'tools/list' {$result=@{tools=@(@{name='winsmux_workspace_request';inputSchema=@{type='object'};outputSchema=@{type='object'}})}}
+  'tools/call' {
+   $a=$req.params.arguments
+   $r=[ordered]@{schema_version=1;instance_id=$a.instance_id;operation_id=$a.operation_id;accepted=$true;topology_revision=0;event_seq=0;result=@{operation='capabilities.get';data=@{}};error=$null}
+   $result=@{structuredContent=$r;content=@(@{type='text';text=($r|ConvertTo-Json -Depth 20 -Compress)});isError=$false}
+  }
+  default {throw 'unexpected_method'}
+ }
+ $response=@{jsonrpc='2.0';id=$req.id;result=$result}|ConvertTo-Json -Depth 20 -Compress
+ if($ArrayEnvelope -and $req.method -eq 'initialize'){$response='['+$response+']'}
+ [Console]::WriteLine($response)
+}
+exit 0
+'@
+        [IO.File]::WriteAllText($script:McpPeerPath,$peer,[Text.UTF8Encoding]::new($false))
+    }
+    It 'confirms normal MCP EOF or rejects singleton array before authority for <Mode>' -ForEach @(@{Mode='normal'},@{Mode='array'}) {
+        $script:McpPeerMode=$Mode
+        $script:McpObservedOwner=$null;$script:McpTerminalObservation=$null
+        Mock Start-OwnedProcess {
+            $FilePath | Should -BeExactly (Join-Path $TestDrive 'winsmux-workspace-mcp.exe')
+            $ArgumentList[0] | Should -BeExactly '--discovery-json'
+            $arguments=[string[]]@('-NoProfile','-NonInteractive','-File',$script:McpPeerPath)
+            if($script:McpPeerMode -eq 'array'){$arguments+= '-ArrayEnvelope'}
+            $owner=[Winsmux.DesktopNative.DesktopProcessOwner]::Start((Get-Process -Id $PID).Path,$arguments,@{},$true,16384,180000)
+            # Forward the real owner unchanged; retain finite terminal evidence at disposal.
+            $proxy=[pscustomobject]@{owner=$owner;StandardInput=$owner.StandardInput}
+            $proxy|Add-Member ScriptMethod ReadLineAsync {param($limit) return $this.owner.ReadLineAsync($limit)}
+            $proxy|Add-Member ScriptMethod FinishInputAndDrain {$this.owner.FinishInputAndDrain()}
+            $proxy|Add-Member ScriptMethod WaitTerminal {param($timeout,$poll) return $this.owner.WaitTerminal($timeout,$poll)}
+            $proxy|Add-Member ScriptMethod ForceFailureCleanup {param($timeout,$poll) $this.owner.ForceFailureCleanup($timeout,$poll)}
+            $proxy|Add-Member ScriptProperty HasExited {return $this.owner.HasExited}
+            $proxy|Add-Member ScriptProperty ActiveMembers {return $this.owner.ActiveMembers}
+            $proxy|Add-Member ScriptProperty CaptureCompleted {return $this.owner.CaptureCompleted}
+            $proxy|Add-Member ScriptProperty ExitCode {return $this.owner.ExitCode}
+            $proxy|Add-Member ScriptProperty Forced {return $this.owner.Forced}
+            $proxy|Add-Member ScriptProperty StdoutTask {return $this.owner.StdoutTask}
+            $proxy|Add-Member ScriptProperty StderrTask {return $this.owner.StderrTask}
+            $proxy|Add-Member ScriptMethod Dispose {$script:McpTerminalObservation=[ordered]@{root_exited=$this.owner.HasExited;exit_code=$this.owner.ExitCode;forced=$this.owner.Forced;active_members=$this.owner.ActiveMembers;capture_completed=$this.owner.CaptureCompleted;stdout_bytes=$this.owner.StdoutTask.GetAwaiter().GetResult().TotalBytes;stderr_bytes=$this.owner.StderrTask.GetAwaiter().GetResult().TotalBytes};$this.owner.Dispose()}
+            $script:McpObservedOwner=$owner
+            return [pscustomobject]@{owner=$proxy}
+        }
+        $workspace=[pscustomobject]@{instance_id='00000000-0000-4000-8000-000000000001';revision=0;discovery=[pscustomobject]@{instance_id='00000000-0000-4000-8000-000000000001';pipe_name='synthetic';schema_version=1}}
+        try {
+            if($Mode -eq 'normal') {
+                Invoke-DesktopInstalledMcp ([pscustomobject]@{install_root=$TestDrive}) @{} $workspace | Should -BeTrue
+                $script:McpTerminalObservation.exit_code | Should -Be 0
+                $script:McpTerminalObservation.forced | Should -BeFalse
+            } else {
+                {Invoke-DesktopInstalledMcp ([pscustomobject]@{install_root=$TestDrive}) @{} $workspace} | Should -Throw -ExpectedMessage 'desktop_inventory_shape_invalid'
+                $script:McpTerminalObservation.forced | Should -BeTrue
+            }
+            $script:McpTerminalObservation.root_exited | Should -BeTrue
+            $script:McpTerminalObservation.active_members | Should -Be 0
+            $script:McpTerminalObservation.capture_completed | Should -BeTrue
+            $script:McpTerminalObservation.stdout_bytes | Should -Be 0
+            $script:McpTerminalObservation.stderr_bytes | Should -Be 0
+        } finally {
+            if($null -ne $script:McpObservedOwner -and $null -eq $script:McpTerminalObservation){$script:McpObservedOwner.ForceFailureCleanup(180000,500);$script:McpObservedOwner.Dispose()}
+        }
+    }
+}
