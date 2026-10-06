@@ -33,6 +33,7 @@ export function integratedAssetPaths(contract) {
     'core/winsmux-remote-helper-linux-x64', 'core/winsmux-x64.exe', 'core/winsmux-x64.exe.licenses.zip',
     'desktop/SHA256SUMS-desktop', 'desktop/latest.json',
     'desktop/winsmux_0.38.0_x64-setup.exe', 'desktop/winsmux_0.38.0_x64-setup.exe.sig',
+    'desktop/winsmux_0.38.0_x64-setup.inventory.json',
     'desktop/winsmux_0.38.0_x64_en-US.msi', 'npm/winsmux-0.38.0.tgz', 'release-body.md',
   ].sort());
 }

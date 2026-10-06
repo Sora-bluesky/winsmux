@@ -272,7 +272,7 @@ jobs:
           - name: release-public
             result: release-public
             timeout_minutes: 20
-            paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1
+            paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1
           - name: shell-support
             result: shell-support
             timeout_minutes: 15
@@ -682,8 +682,19 @@ jobs:
         run: npm run build
 
       - name: Stage complete licensed companion generation
+        # Backend fault tests require the debug profile; publication remains release-only.
         working-directory: winsmux-app
-        run: npm run prepare:companion-cli:release
+        run: npm run prepare:companion-cli
+
+      - name: Verify companion profiles and generation preservation
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -File tests/workspace-package/run.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Companion generation transaction proof failed.' }
+          node tests/workspace-package/bundled-distribution.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Companion profile and bundled distribution proof failed.' }
+          node tests/workspace-package/nsis-generation.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS generation proof failed.' }
 
       - name: Prepare pinned older CLI for native version-pair proof
         shell: pwsh
@@ -1035,6 +1046,10 @@ jobs:
             $priorPath = Join-Path $stageRoot $priorAsset
             $migrationPriorPath = Join-Path $stageRoot $migrationPriorAsset
             Copy-Item -LiteralPath $candidateSource -Destination $candidatePath
+            . ./scripts/desktop-install-inventory.ps1
+            $candidateInventoryPath = Join-Path $stageRoot "winsmux_${version}_x64-setup.inventory.json"
+            New-DesktopInstallInventory -RepositoryRoot $env:GITHUB_WORKSPACE -InstallerPath $candidatePath -OutputPath $candidateInventoryPath | Out-Null
+            $candidateInventoryHash = (Get-FileHash -LiteralPath $candidateInventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
             $stage = 'prior_download'
             $priorUrl = "https://github.com/${{ github.repository }}/releases/download/$priorTag/$priorAsset"
@@ -1099,6 +1114,8 @@ jobs:
             $firewallRule = "winsmux-task679-outbound-${{ github.run_id }}-${{ github.run_attempt }}"
             $environmentLines = @(
               "TASK679_CANDIDATE_PATH=$candidatePath",
+              "TASK679_CANDIDATE_INVENTORY_PATH=$candidateInventoryPath",
+              "TASK679_CANDIDATE_INVENTORY_HASH=$candidateInventoryHash",
               "TASK679_CANDIDATE_HASH=$candidateHash",
               "TASK679_CANDIDATE_ASSET=$candidateAsset",
               "TASK679_VERSION=$version",
@@ -1216,6 +1233,7 @@ jobs:
               '-ReleaseTag', "v$env:TASK679_VERSION",
               '-Repository', '${{ github.repository }}',
               '-CandidateInstallerPath', $env:TASK679_CANDIDATE_PATH,
+              '-DesktopInventoryPath', $env:TASK679_CANDIDATE_INVENTORY_PATH,
               '-Json'
             )
             if ($Name -cne 'fresh') {
@@ -1233,8 +1251,8 @@ jobs:
               candidate_version_verified = $false
               candidate_hash_verified = $false
               packaged_page_observed = $false
-              router_inventory_verified = $false
-              router_manifest_resolvable = $false
+              installed_inventory_verified = $false
+              desktop_runtime_verified = $false
               cleanup_verified = $false
               installer_contract_verified = $false
               upgrade_payload_replacement_verified = $null
@@ -1242,27 +1260,34 @@ jobs:
               protected_inventory = $inventory
               failure = if ($process.ExitCode -eq 0) { 'receipt_invalid' } else { 'helper_exit_nonzero' }
             }
-            if ($process.ExitCode -ne 0) {
-              return $result
-            }
             try {
               $raw = [IO.File]::ReadAllText($stdoutPath) -replace "`r`n", "`n" -replace "`r", "`n"
               $lines = @($raw.TrimEnd("`n") -split "`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
               if ($lines.Count -ne 1) { throw 'helper stdout shape invalid' }
               $receipt = $lines[0] | ConvertFrom-Json -Depth 12
+              if ($process.ExitCode -ne 0) {
+                . ./scripts/desktop-install-inventory.ps1
+                Assert-DesktopInventoryShape $receipt @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
+                if ($receipt.schema -cne 'winsmux-desktop-smoke-failure/v1' -or $receipt.ok -ne $false) { throw 'helper failure receipt invalid' }
+                $result.helper_failure = $receipt
+                return $result
+              }
               $versionVerified = [string]$receipt.version -ceq $env:TASK679_VERSION -and [string]$receipt.evidence.version -ceq $env:TASK679_VERSION -and [string]$receipt.release_tag -ceq "v$env:TASK679_VERSION"
               $hashVerified = [string]$receipt.evidence.sha256 -ceq $env:TASK679_CANDIDATE_HASH -and [string]$receipt.evidence.asset -ceq $env:TASK679_CANDIDATE_ASSET
               $pageObserved = [string]$receipt.evidence.page_url -match '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)'
-              $routerInventoryVerified = [int]$receipt.router_inventory.found -eq 4 -and [int]$receipt.router_inventory.expected -eq 4 -and [int]$receipt.router_inventory.sha256_match -eq 4
-              $routerManifestResolvable = [bool]$receipt.router_inventory.manifest_resolvable
+              . ./scripts/desktop-install-inventory.ps1
+              $sourceCommit = (& git rev-parse HEAD | Out-String).Trim().ToLowerInvariant()
+              Assert-DesktopInstallReceipt -Receipt $receipt -Version $env:TASK679_VERSION -InstallerSha256 $env:TASK679_CANDIDATE_HASH -SourceCommit $sourceCommit -InventorySha256 $env:TASK679_CANDIDATE_INVENTORY_HASH | Out-Null
+              $installedInventoryVerified = $true
+              $desktopRuntimeVerified = $true
               $cleanupVerified = $receipt.ok -eq $true -and [string]$receipt.surface -ceq 'Desktop' -and [string]$receipt.cleanup -ceq 'clean'
-              $receiptValid = $versionVerified -and $hashVerified -and $pageObserved -and $routerInventoryVerified -and $routerManifestResolvable -and $cleanupVerified
+              $receiptValid = $versionVerified -and $hashVerified -and $pageObserved -and $installedInventoryVerified -and $desktopRuntimeVerified -and $cleanupVerified
               $result.receipt_valid = $receiptValid
               $result.candidate_version_verified = $versionVerified
               $result.candidate_hash_verified = $hashVerified
               $result.packaged_page_observed = $pageObserved
-              $result.router_inventory_verified = $routerInventoryVerified
-              $result.router_manifest_resolvable = $routerManifestResolvable
+              $result.installed_inventory_verified = $installedInventoryVerified
+              $result.desktop_runtime_verified = $desktopRuntimeVerified
               $result.cleanup_verified = $cleanupVerified
               $result.installer_contract_verified = $receiptValid
               if ($Name -cin @('upgrade', 'migration')) {
@@ -1425,6 +1450,10 @@ jobs:
           if ((Get-FileHash -LiteralPath $staged -Algorithm SHA256).Hash.ToLowerInvariant() -cne $hash) {
             throw 'Staged installer bytes differ from the tested installer.'
           }
+          $inventoryAsset = "winsmux_${version}_x64-setup.inventory.json"
+          $stagedInventory = Join-Path $target $inventoryAsset
+          Copy-Item -LiteralPath $env:TASK679_CANDIDATE_INVENTORY_PATH -Destination $stagedInventory
+          if ((Get-FileHash -LiteralPath $stagedInventory -Algorithm SHA256).Hash.ToLowerInvariant() -cne $env:TASK679_CANDIDATE_INVENTORY_HASH) { throw 'Tested installer inventory bytes changed.' }
           [ordered]@{
             schema = 'task876-integrated-candidate/v1'
             source_commit = $commit

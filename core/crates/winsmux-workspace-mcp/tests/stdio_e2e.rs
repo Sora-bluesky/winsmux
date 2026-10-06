@@ -206,6 +206,21 @@ mod native {
     // roles. None of their processes may be waited before an accepted stop.
     // Provider workers are owned by the backend and joined by host.stop itself;
     // a process tree snapshot never proves provider worker completion.
+    fn receive_owned_json(process:HANDLE,input:&mut Option<Handle>,pseudoconsole:&mut HPCON,output:&mut conpty_json::JsonOutput)->Result<Value,conpty_json::ChildExit> {
+        match output.next_json_with_process(process) {
+            Ok(value)=>Ok(value),
+            Err(exit) if exit.signaled=>{
+                // The final ConPTY chunk can arrive after the client exit signal.
+                // Reuse the host/runtime fixture's drain, only after actual exit.
+                execution(json!({"stage":"owned exited client final output drain","reason":exit.reason,"exit_code":exit.exit_code}));
+                input.take();
+                if *pseudoconsole!=0 {unsafe {ClosePseudoConsole(*pseudoconsole);}*pseudoconsole=0;}
+                output.join_nonpanic();
+                output.finish_json_after_reader_join().ok_or(exit)
+            },
+            Err(exit)=>Err(exit),
+        }
+    }
     struct CliOwner { process:Handle, backend:Handle, consoles:Vec<Handle>, canary:Option<Handle>, owned_projects:Vec<String>, owned_panes:Vec<String>, owned_directories:Vec<PathBuf>, pseudoconsole:HPCON, input:Option<Handle>, output:conpty_json::JsonOutput, discovery:Value, revision:u64, provider_observer:Option<JoinHandle<bool>>, provider_progress:Option<Arc<std::sync::atomic::AtomicU8>> }
     struct StartingCliOwner {
         baseline:Vec<Handle>,console:Option<Handle>,process:Option<Handle>,backend:Option<Handle>,
@@ -228,12 +243,13 @@ mod native {
         }
         fn request_stop_if_possible(&mut self) {
             if self.stop_attempted {return;}self.stop_attempted=true;
-            let (Some(process),Some(discovery),Some(input),Some(output))=(&self.process,&self.discovery,&self.input,&self.output) else {return;};
+            let (Some(process),Some(discovery),Some(input))=(&self.process,&self.discovery,&self.input) else {return;};
+            if self.output.is_none(){return;}
             let request=request(discovery["instance_id"].as_str(),Some(0),"host.stop",json!({}));
             let parsed=winsmux_workspace::contract::parse_request(&serde_json::to_vec(&request).unwrap()).unwrap();
             let mut bytes=winsmux_workspace::contract::canonical_request(&parsed).unwrap();bytes.extend_from_slice(b"\r\n");
             write_bytes(input,&bytes);
-            let response=output.next_json_with_process(process.0);
+            let response=receive_owned_json(process.0,&mut self.input,&mut self.pseudoconsole,self.output.as_mut().unwrap());
             let accepted=response.as_ref().ok().is_some_and(|value|value["accepted"]==true && winsmux_workspace::contract::parse_response(&parsed,&serde_json::to_vec(value).unwrap()).is_ok());
             execution(json!({"stage":"partial owner canonical stop attempted","owner":process_identity(process.0),"accepted":accepted,"reply":response.as_ref().ok(),"read_failure":response.as_ref().err().map(|error|format!("{error:?}"))}));
         }
@@ -323,7 +339,7 @@ mod native {
             execution(json!({"stage":"owner process created","owner":process_identity(pending.process.as_ref().unwrap().0),"exe_sha256":std::env::var("TASK875_CLI_SHA256").unwrap()}));
             pending.output=Some(conpty_json::JsonOutput::start(Box::new(PipeRead(parent_reader))));
             write_bytes(pending.input.as_ref().unwrap(),b"\x1b[1;1R");
-            let discovery=pending.output.as_ref().unwrap().next_json_with_process(pending.process.as_ref().unwrap().0)
+            let discovery=receive_owned_json(pending.process.as_ref().unwrap().0,&mut pending.input,&mut pending.pseudoconsole,pending.output.as_mut().unwrap())
                 .unwrap_or_else(|exit|panic!("CLI discovery before process exit: {exit:?}"));
             assert_eq!(discovery["schema_version"],1);assert_eq!(discovery.as_object().unwrap().len(),3);
             pending.discovery=Some(discovery);
@@ -348,7 +364,7 @@ mod native {
             let parsed=winsmux_workspace::contract::parse_request(&serde_json::to_vec(&request).unwrap()).unwrap();
             let mut bytes=winsmux_workspace::contract::canonical_request(&parsed).unwrap();bytes.extend_from_slice(b"\r\n");
             write_bytes(self.input.as_ref().unwrap(),&bytes);
-            let value=self.output.next_json_with_process(self.process.0).expect("actual correlated owner reply");
+            let value=receive_owned_json(self.process.0,&mut self.input,&mut self.pseudoconsole,&mut self.output).expect("actual correlated owner reply");
             if operation=="host.stop" {execution(json!({"stage":"owner stop response observed","request":request,"response":value}));}
             if operation=="connection.decide"||operation=="connection.revoke" {execution(json!({"stage":"actual owner authority decision observed","request":request,"response":value,"normal_parsed_before_send":true}));}
             winsmux_workspace::contract::parse_response(&parsed,&serde_json::to_vec(&value).unwrap()).expect("owner response correlation");
@@ -408,7 +424,7 @@ mod native {
             let mut code=0;assert_ne!(unsafe {GetExitCodeProcess(self.process.0,&mut code)},0);
             // Close the retained console even for an already exited owner. Its
             // output reader cannot finish while the fixture owns the HPCON.
-            self.input.take();unsafe {ClosePseudoConsole(self.pseudoconsole);}self.pseudoconsole=0;
+            self.input.take();if self.pseudoconsole!=0 {unsafe {ClosePseudoConsole(self.pseudoconsole);}self.pseudoconsole=0;}
             self.output.join();
             assert_eq!(unsafe {WaitForSingleObject(self.backend.0,INFINITE)},WAIT_OBJECT_0);
             for console in &self.consoles {assert_eq!(unsafe {WaitForSingleObject(console.0,INFINITE)},WAIT_OBJECT_0);}
@@ -1602,8 +1618,8 @@ mod native {
         std::process::exit(if result.is_ok(){0}else{1});
     }
     fn cleanup_owner(owner:&mut CliOwner,project:Option<&str>,pane:Option<&str>,run:Option<&str>,recovery:&Handle,recovery_name:&str,serve_provider_wait:bool,persist_for_success:bool) {
-        if owner.pseudoconsole==0 {return;}
         if unsafe {WaitForSingleObject(owner.process.0,0)}==WAIT_OBJECT_0 {owner.collect_terminated();return;}
+        assert_ne!(owner.pseudoconsole,0,"live owner must retain its ConPTY until cleanup");
         if let Some(run)=run {
             let observed=owner.transact("run.get",json!({"run_id":run}));
             if observed["accepted"]==true && observed["result"]["data"]["run"]["process"]!="exited" {

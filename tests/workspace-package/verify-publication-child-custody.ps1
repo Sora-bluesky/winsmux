@@ -22,6 +22,16 @@ function Assert-Refused([scriptblock]$Operation, [string]$Reason) {
     }
     Assert-Check $refused ('Expected refusal missing: ' + $Reason)
 }
+function Assert-SharingRefusal([scriptblock]$Operation) {
+    $denied = $false
+    try { & $Operation } catch {
+        $failure = $_.Exception
+        while ($failure.InnerException) { $failure = $failure.InnerException }
+        if ($failure -is [IO.IOException] -and ($failure.HResult -band 65535) -eq 32) { $denied = $true }
+        else { throw }
+    }
+    Assert-Check $denied 'Live descendant asset lost Windows sharing protection.'
+}
 function Persist-Original([string]$Path, [object]$Value) {
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 8 -Compress))
     $file = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
@@ -88,7 +98,7 @@ try {
     $rootResult = Get-Content -LiteralPath (Join-Path $fixture.fixture_root 'root-result.json') -Raw | ConvertFrom-Json
     $descendant = Get-Content -LiteralPath (Join-Path $fixture.fixture_root 'descendant-ready.json') -Raw | ConvertFrom-Json
     Assert-Check ($held.ExitCode($root) -eq 0 -and $held.ActiveMembers() -eq 1) 'Root exited but descendant not retained in Job.'
-    Assert-Check ($descendant.pid -eq $rootResult.descendant -and $rootResult.files_read -eq 13 -and $descendant.files_read -eq 13) 'Child reads or descendant identity differ.'
+    Assert-Check ($descendant.pid -eq $rootResult.descendant -and $rootResult.files_read -eq 14 -and $descendant.files_read -eq 14) 'Child reads or descendant identity differ.'
     Assert-Check (($rootResult.arguments | ConvertTo-Json -Compress) -ceq (@('space 日本語', 'quote"value', 'C:\ends with slash\', '') | ConvertTo-Json -Compress)) 'Native argument quoting differs.'
     $otherCustody = [IntegratedPublicationCustody]::new($fixture.bundle_root, [string[]]$fixture.names, [string[]]$fixture.hashes)
     try { Assert-Refused { $otherCustody.ResumeChild($root, $created) } 'Foreign or released custody child' } finally { $otherCustody.Dispose() }
@@ -106,13 +116,16 @@ try {
     Assert-Refused { $held.CreateChild($node, $nodeHash, $arguments, $fixture.fixture_root, $flight) } 'Child launch closed'
     Assert-Check ($held.NativeCreateCalls -eq 2) 'Sealed launch reached native creation.'
     Assert-Refused { $held.Dispose() } 'Keep custody'
-    $writeDenied = $false
-    try { $writer = [IO.File]::OpenWrite((Join-Path $fixture.bundle_root $fixture.names[0])); $writer.Dispose() } catch {
-        $failure = $_.Exception
-        while ($failure.InnerException) { $failure = $failure.InnerException }
-        if ($failure -is [IO.IOException] -and ($failure.HResult -band 65535) -eq 32) { $writeDenied = $true } else { throw }
+    foreach ($name in @($fixture.names[0], 'desktop/winsmux_0.38.0_x64-setup.inventory.json')) {
+        $index = [Array]::IndexOf([string[]]$fixture.names, $name)
+        Assert-Check ($index -ge 0) 'Required descendant asset missing.'
+        $assetPath = Join-Path $fixture.bundle_root $name
+        Assert-Check ((Get-FileHash -LiteralPath $assetPath -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $fixture.hashes[$index]) 'Live descendant could not read fixed bytes.'
+        Assert-SharingRefusal { $writer = [IO.File]::OpenWrite($assetPath); $writer.Dispose() }
+        Assert-SharingRefusal { [IO.File]::Delete($assetPath) }
+        Assert-SharingRefusal { [IO.File]::Move($assetPath, $assetPath + '.renamed') }
     }
-    Assert-Check ($writeDenied -and -not $held.Released) 'Root exit released file custody while descendant live.'
+    Assert-Check (-not $held.Released) 'Root exit released file custody while descendant live.'
     $npmWriteDenied = $false
     try { $writer = [IO.File]::OpenWrite($npmSource); $writer.Dispose() } catch {
         $failure = $_.Exception
@@ -142,12 +155,13 @@ $npmWriter = [IO.File]::OpenWrite($npmSource); $npmWriter.Dispose()
 Assert-Check ((Get-FileHash -LiteralPath $npmSource -Algorithm SHA256).Hash.ToLowerInvariant() -eq $npmHash) 'npm source bytes changed after release.'
 Assert-Check $true 'Post-exit write access missing.'
 for ($index = 0; $index -lt $fixture.names.Count; $index++) {
+    $writer = [IO.File]::OpenWrite((Join-Path $fixture.bundle_root $fixture.names[$index])); $writer.Dispose()
     Assert-Check ((Get-FileHash -LiteralPath (Join-Path $fixture.bundle_root $fixture.names[$index]) -Algorithm SHA256).Hash.ToLowerInvariant() -eq $fixture.hashes[$index]) 'Child custody changed fixture bytes.'
 }
 $result = [ordered]@{ observed_at = (Get-Date).ToUniversalTime().ToString('o'); passed = $true; checks = $script:checks;
     windows_version = [Environment]::OSVersion.Version.ToString(); powershell_version = $PSVersionTable.PSVersion.ToString();
     root_pid = $root.Pid; root_creation_filetime = $root.CreationFileTime; descendant_pid = $descendant.pid;
-    root_exit_code = 0; nonzero_root_exit_code = 37; all_exit_job_members = 0; held_files = 13; publication_admitted = $false;
+    root_exit_code = 0; nonzero_root_exit_code = 37; all_exit_job_members = 0; held_files = 14; publication_admitted = $false;
     candidate_identity = $fixture.candidate_identity; node_sha256 = $nodeHash;
     scope = 'Real Windows atomic Job, suspended root, parent persistence ordering, descendant lifetime and fixed synthetic file reads. No public dispatch or real distribution proof.' }
 $json = $result | ConvertTo-Json -Depth 8

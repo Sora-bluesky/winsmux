@@ -40,7 +40,8 @@ const initial = observe();
 check(() => {
   assert.strictEqual(assertIssuedPublicationBundle(initial), initial);
   assert.equal(initial.publication_admitted, false);
-  assert.equal(initial.assets.length, 13);
+  assert.equal(initial.assets.length, 14);
+  assert.ok(initial.assets.some(row => row.path === 'desktop/winsmux_0.38.0_x64-setup.inventory.json'));
   assert.equal(initial.identity.manifest_sha256, sha(serialize(manifest)));
 });
 reject(() => assertIssuedPublicationBundle(Object.freeze(structuredClone(initial))), /observed/);

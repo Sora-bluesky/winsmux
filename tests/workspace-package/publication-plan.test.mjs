@@ -13,11 +13,11 @@ const reject=(action,pattern)=>check(()=>assert.throws(action,pattern));
 const before=Object.fromEntries(bundle.assets.map(row=>[row.path,sha(fs.readFileSync(path.join(bundle.root,row.path)))]));
 const plan=publicationOperations(bundle,allAbsent());
 check(()=>assert.equal(plan.operations.length,3));
-check(()=>assert.equal(plan.missing_assets.length,13));
+check(()=>assert.equal(plan.missing_assets.length,14));
 check(()=>assert.deepEqual(plan.operations.map(row=>row.kind),['github_release_create','github_release_upload','npm_publish']));
 check(()=>assert.equal(plan.operations[0].arguments.at(-1),path.join(bundle.root,'release-body.md')));
 check(()=>assert.equal(plan.operations[0].arguments[plan.operations[0].arguments.indexOf('--target')+1],bundle.identity.source_commit));
-check(()=>assert.equal(plan.operations[1].assets.length,11));
+check(()=>assert.equal(plan.operations[1].assets.length,12));
 check(()=>assert.equal(plan.operations[2].arguments[1],path.join(bundle.root,'npm/winsmux-0.38.0.tgz')));
 for(const operation of plan.operations){
   check(()=>assert.equal(operation.arguments.some(value=>['--clobber','--force','--generate-notes'].includes(value)),false));
@@ -31,14 +31,14 @@ for(const asset of bundle.assets.filter(row=>row.path!=='release-body.md')){
   check(()=>assert.deepEqual(partial.missing_assets,[asset.path]));
   check(()=>assert.equal(partial.operations.length,1));
   check(()=>assert.deepEqual(partial.operations[0].assets,[asset]));
-  check(()=>assert.equal(partial.matched_assets,12));
+  check(()=>assert.equal(partial.matched_assets,13));
 }
 const invalids=[rows=>rows.pop(),rows=>rows.push(rows[0]),rows=>{rows[0]=rows[1];},
   rows=>{rows[0].state='unknown';},rows=>{rows[0].sha256='0'.repeat(64);},rows=>{rows[0].approved=true;},
   rows=>{rows[0].state='absent';}];
 for(const change of invalids){const rows=allMatching();change(rows);reject(()=>publicationOperations(bundle,rows),/rows|required|conflicting/);}
 const bodyOnly=allMatching();bodyOnly.find(row=>row.path==='release-body.md').state='absent';bodyOnly.find(row=>row.path==='release-body.md').sha256=null;
-reject(()=>publicationOperations(bundle,bodyOnly),/eleven/);
+reject(()=>publicationOperations(bundle,bodyOnly),/all fixed release assets/);
 reject(()=>publicationOperations(structuredClone(bundle),allAbsent()),/observed/);
 reject(()=>planObservedIntegratedPublication(contract,bundle,{passed:true,rows:allAbsent()}),/actual public origin/);
 reject(()=>revalidateObservedPublicationPlan(contract,bundle,plan),/Actual parent-observed/);

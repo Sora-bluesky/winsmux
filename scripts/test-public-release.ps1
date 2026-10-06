@@ -15,6 +15,8 @@ param(
 
     [string]$CandidateInstallerPath,
 
+    [string]$DesktopInventoryPath,
+
     [string]$PriorInstallerPath,
 
     [string]$PriorVersion,
@@ -29,6 +31,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:DesktopOwnerSourceRoot = $PSScriptRoot
 $script:RetryCount = 6
 $script:RetryDelaySeconds = 10
 $script:DesktopObservationTimeoutMilliseconds = 180000
@@ -36,15 +39,22 @@ $script:DesktopObservationPollMilliseconds = 500
 $script:DesktopTeardownProbeTimeoutMilliseconds = 5000
 $script:DesktopTeardownProbeTotalBudgetMilliseconds = 20000
 $script:DesktopOutputRetainLimitBytes = 16384
+# The stdio adapter's MAX_MCP_MESSAGE_BYTES = 2 * MAX_MESSAGE_BYTES.
+$script:DesktopMcpMessageLimitBytes = 2097152
 $script:OwnedRootPrefix = 'winsmux-public-release-'
 $script:DesktopLifecycle = $null
 $script:DesktopRouterInventory = $null
+$script:DesktopInstalledInventory = $null
+$script:DesktopRuntimeReceipt = $null
+$script:DesktopFailureStage = 'preflight'
+$script:DesktopCleanupStage = 'not_started'
 $script:DesktopFolderContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\shell\winsmux'
 $script:DesktopBackgroundContextPath = 'Registry::HKEY_CURRENT_USER\Software\Classes\Directory\Background\shell\winsmux'
 $script:DesktopProductPath = 'Registry::HKEY_CURRENT_USER\Software\github\winsmux'
 $script:DesktopUninstallPath = 'Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux'
 $script:DesktopSmokeEnvMarkerArgument = '--winsmux-smoke-env-marker'
 $script:RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+. (Join-Path $PSScriptRoot 'desktop-install-inventory.ps1')
 
 function Assert-Condition {
     param(
@@ -92,6 +102,10 @@ function Assert-DesktopInstallerRequest {
 Assert-DesktopInstallerRequest -RequestedSurface $Surface -CandidateVersion $Version -Arguments $PSBoundParameters
 if ($PSBoundParameters.ContainsKey('DesktopLegacyEnvMode')) {
     Assert-Condition ($Surface -eq 'Desktop') 'DesktopLegacyEnvMode requires -Surface Desktop; it is only valid for the Desktop surface.'
+}
+if ($PSBoundParameters.ContainsKey('DesktopInventoryPath')) {
+    Assert-Condition ($Surface -ceq 'Desktop') 'DesktopInventoryPath requires -Surface Desktop.'
+    Assert-Condition (-not [string]::IsNullOrEmpty($CandidateInstallerPath) -and (Test-Path -LiteralPath $DesktopInventoryPath -PathType Leaf)) 'DesktopInventoryPath requires an existing candidate installer and inventory pair.'
 }
 
 function Get-DesktopLegacyBrowserArgumentsValue {
@@ -158,28 +172,18 @@ function Resolve-DesktopRouterInventoryPolicy {
         [AllowEmptyString()][string]$CandidateInstallerPath
     )
 
-    if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
-        return [pscustomobject]@{
-            required = $true
-            treeish = 'HEAD'
-        }
+    if ($Version -ceq '0.38.0' -and $ReleaseTag -ceq 'v0.38.0') {
+        return [pscustomobject]@{ generation = 'workspace'; required = $false; treeish = $null }
     }
-
-    $versionMatch = [regex]::Match($Version, '^(?<core>\d+\.\d+\.\d+)(?:-|$)')
-    if (-not $versionMatch.Success) {
-        throw "Unsupported Desktop release version: $Version"
+    Assert-Condition ([string]::IsNullOrEmpty($CandidateInstallerPath)) 'desktop_legacy_candidate_unsupported'
+    if ($Version -ceq '0.36.38' -and $ReleaseTag -ceq 'v0.36.38') {
+        return [pscustomobject]@{ generation = 'legacy_router'; required = $true; treeish = $ReleaseTag }
     }
-    if ([version]$versionMatch.Groups['core'].Value -lt [version]'0.36.38') {
-        return [pscustomobject]@{
-            required = $false
-            treeish = $null
-        }
+    $legacyVersions = @('0.36.0','0.36.1','0.36.2','0.36.3','0.36.4','0.36.5','0.36.6','0.36.7','0.36.8','0.36.9','0.36.10','0.36.13','0.36.14','0.36.15','0.36.16','0.36.17','0.36.18','0.36.19','0.36.20','0.36.21','0.36.22','0.36.23','0.36.24','0.36.25','0.36.26','0.36.27','0.36.28','0.36.29','0.36.30','0.36.31','0.36.32','0.36.33','0.36.34','0.36.35','0.36.36','0.36.37')
+    if ($Version -cin $legacyVersions -and ($ReleaseTag -ceq "v$Version" -or ($Version -cin @('0.36.28','0.36.30') -and $ReleaseTag -ceq "v$Version.1"))) {
+        return [pscustomobject]@{ generation = 'legacy_pre_router'; required = $false; treeish = $null }
     }
-
-    return [pscustomobject]@{
-        required = $true
-        treeish = $ReleaseTag
-    }
+    throw 'desktop_distribution_generation_unknown'
 }
 
 function Get-DesktopRouterInventory {
@@ -480,6 +484,9 @@ function Invoke-PublicChildProcess {
     )
 
     try {
+        if ($Operation -cin @('desktop_installer', 'desktop_observer', 'desktop_uninstaller')) {
+            return Invoke-DesktopOwnedNativeProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment -TimeoutSeconds $TimeoutSeconds
+        }
         return Invoke-NativeProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment -TimeoutSeconds $TimeoutSeconds
     } catch [TimeoutException] {
         $result = $_.Exception.Data['process_result']
@@ -489,6 +496,9 @@ function Invoke-PublicChildProcess {
 }
 
 function Initialize-DesktopNativeTypes {
+    if ($null -eq ([Management.Automation.PSTypeName]'Winsmux.DesktopNative.DesktopProcessOwner').Type) {
+        Add-Type -Path (Join-Path $script:DesktopOwnerSourceRoot 'DesktopProcessOwner.cs') -ErrorAction Stop
+    }
     if ($null -ne ([Management.Automation.PSTypeName]'Winsmux.PublicRelease.BoundedStreamCapture').Type) {
         return
     }
@@ -497,6 +507,7 @@ function Initialize-DesktopNativeTypes {
 using System;
 using System.ComponentModel;
 using System.IO;
+using System.Text;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
@@ -517,6 +528,30 @@ namespace Winsmux.PublicRelease
 
     public static class BoundedStreamCapture
     {
+        public static async Task<string> ReadLineAsync(TextReader reader, int limit)
+        {
+            var text = new StringBuilder(); var one = new char[1];
+            while (true)
+            {
+                int count = await reader.ReadAsync(one, 0, 1).ConfigureAwait(false);
+                if (count == 0) return text.Length == 0 ? null : text.ToString();
+                if (one[0] == '\n') return text.ToString();
+                if (text.Length >= limit) throw new InvalidDataException("desktop_mcp_response_oversized");
+                text.Append(one[0]);
+            }
+        }
+
+        public static async Task<long> DrainTextAsync(TextReader reader)
+        {
+            var buffer = new char[4096]; long total = 0;
+            while (true)
+            {
+                int count = await reader.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                if (count == 0) return total;
+                total = checked(total + count);
+            }
+        }
+
         public static Task<BoundedCaptureResult> ReadAsync(Stream stream, int retainLimit)
         {
             if (stream == null) throw new ArgumentNullException(nameof(stream));
@@ -580,38 +615,33 @@ namespace Winsmux.PublicRelease
 }
 
 function Start-OwnedProcess {
-    param(
-        [Parameter(Mandatory)][string]$FilePath,
-        [string[]]$ArgumentList = @(),
-        [hashtable]$Environment = @{}
-    )
-
-    $info = [Diagnostics.ProcessStartInfo]::new()
-    $info.FileName = $FilePath
-    $info.UseShellExecute = $false
-    $info.CreateNoWindow = $true
-    $info.RedirectStandardOutput = $true
-    $info.RedirectStandardError = $true
-    foreach ($argument in @($ArgumentList)) {
-        $info.ArgumentList.Add([string]$argument)
-    }
-    foreach ($name in @($Environment.Keys)) {
-        $info.Environment[[string]$name] = [string]$Environment[$name]
-    }
+    param([Parameter(Mandatory)][string]$FilePath, [string[]]$ArgumentList = @(), [hashtable]$Environment = @{}, [switch]$Interactive)
     Initialize-DesktopNativeTypes
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $info
-    Assert-Condition $process.Start() "Unable to start owned process: $FilePath"
-    return [pscustomobject]@{
-        process = $process
-        stdout_task = [Winsmux.PublicRelease.BoundedStreamCapture]::ReadAsync(
-            $process.StandardOutput.BaseStream,
-            $script:DesktopOutputRetainLimitBytes
-        )
-        stderr_task = [Winsmux.PublicRelease.BoundedStreamCapture]::ReadAsync(
-            $process.StandardError.BaseStream,
-            $script:DesktopOutputRetainLimitBytes
-        )
+    $owner = [Winsmux.DesktopNative.DesktopProcessOwner]::Start($FilePath, [string[]]$ArgumentList, $Environment, [bool]$Interactive, $script:DesktopOutputRetainLimitBytes, $script:DesktopObservationTimeoutMilliseconds)
+    return [pscustomobject]@{ process = $owner; owner = $owner; stdout_task = $owner.StdoutTask; stderr_task = $owner.StderrTask }
+}
+
+function Invoke-DesktopOwnedNativeProcess {
+    param([string]$FilePath, [string[]]$ArgumentList, [hashtable]$Environment, [int]$TimeoutSeconds)
+    $owned = Start-OwnedProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment
+    try {
+        if (-not $owned.owner.WaitTerminal(($TimeoutSeconds * 1000), $script:DesktopObservationPollMilliseconds)) {
+            $failure = [TimeoutException]::new('desktop_owned_child_timeout')
+            try { $owned.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
+            catch { $failure.Data['cleanup_failure'] = $_.Exception; throw $failure }
+            $failure.Data['process_result'] = Get-OwnedProcessCapture $owned
+            throw $failure
+        }
+        return (Get-OwnedProcessCapture $owned)
+    } catch {
+        $failure = $_.Exception
+        if (-not $owned.owner.Forced -and (-not $owned.process.HasExited -or $owned.owner.ActiveMembers -ne 0)) {
+            try { $owned.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
+            catch { $failure.Data['cleanup_failure'] = $_.Exception }
+        }
+        throw $failure
+    } finally {
+        if ($owned.process.HasExited -and $owned.owner.ActiveMembers -eq 0 -and $owned.owner.CaptureCompleted) { $owned.owner.Dispose() }
     }
 }
 
@@ -620,9 +650,9 @@ function Get-OwnedProcessCapture {
 
     $process = $OwnedProcess.process
     Assert-Condition $process.HasExited 'Owned process output was requested before the process became terminal.'
-    $process.WaitForExit()
-    $stdoutResult = $OwnedProcess.stdout_task.GetAwaiter().GetResult()
-    $stderrResult = $OwnedProcess.stderr_task.GetAwaiter().GetResult()
+    Assert-Condition ($OwnedProcess.owner.WaitTerminal($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds)) 'desktop_owned_capture_incomplete'
+    $stdoutResult = $OwnedProcess.owner.StdoutTask.GetAwaiter().GetResult()
+    $stderrResult = $OwnedProcess.owner.StderrTask.GetAwaiter().GetResult()
     $encoding = [Text.UTF8Encoding]::new($false, $false)
     return [pscustomobject]@{
         exit_code = [int]$process.ExitCode
@@ -645,23 +675,11 @@ function Get-OwnedProcessCapture {
 
 function Stop-OwnedProcessTree {
     param($RootProcess)
-
-    if ($null -eq $RootProcess) {
-        return
-    }
-    $process = if ($null -ne (Get-ObjectPropertyValue -Object $RootProcess -Name 'process')) {
-        $RootProcess.process
-    } else {
-        $RootProcess
-    }
-    try {
-        if (-not $process.HasExited) {
-            $process.Kill($true)
-            $stopped = $process.WaitForExit(15000)
-            Assert-Condition $stopped "Timed out while stopping owned process tree $($process.Id)."
-        }
-    } catch {
-        throw "Unable to stop owned process tree $($process.Id): $($_.Exception.Message)"
+    if ($null -eq $RootProcess) { return }
+    Assert-Condition ($null -ne (Get-ObjectPropertyValue $RootProcess 'owner')) 'desktop_owner_missing'
+    # This is failure/fixture teardown. Its irreversible forced state never earns normal-close success.
+    if (-not $RootProcess.owner.WaitTerminal(0, $script:DesktopObservationPollMilliseconds)) {
+        $RootProcess.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds)
     }
 }
 
@@ -1155,7 +1173,9 @@ function Invoke-VerifiedDesktopUninstaller {
         & $ProcessInvoker $expectedUninstaller $arguments $Environment
     }
     if ($uninstall.exit_code -ne 0) {
-        throw (Format-PublicChildProcessDiagnostic -Operation 'desktop_uninstaller' -State 'exit_nonzero' -Result $uninstall)
+        $failure = [InvalidOperationException]::new('desktop_uninstaller_exit_nonzero')
+        $failure.Data['native_result'] = $uninstall
+        throw $failure
     }
 
     $postUninstallState = if ($null -eq $ProtectedStateProbe) {
@@ -1247,12 +1267,14 @@ function Invoke-DesktopCleanup {
 
         Assert-DesktopLifecyclePhase -Context $Context -ExpectedPhase 'materialized_verified'
         if ($null -eq $StopInvoker) {
-            Stop-OwnedProcessTree -RootProcess $Context.app_process
+            $script:DesktopCleanupStage = 'normal_close'
+            Stop-DesktopNormally -RootProcess $Context.app_process
         } else {
             & $StopInvoker $Context.app_process | Out-Null
         }
 
         if ($null -eq $UninstallInvoker) {
+            $script:DesktopCleanupStage = 'uninstall'
             Invoke-VerifiedDesktopUninstaller -Context $Context -Environment $Environment | Out-Null
         } else {
             & $UninstallInvoker $Context $Environment | Out-Null
@@ -1260,6 +1282,7 @@ function Invoke-DesktopCleanup {
         Set-DesktopLifecyclePhase -Context $Context -NextPhase 'uninstall_verified'
 
         if ($null -eq $ResidueInvoker) {
+            $script:DesktopCleanupStage = 'residue'
             Remove-DesktopOwnedResidue -Context $Context
         } else {
             & $ResidueInvoker $Context | Out-Null
@@ -1274,8 +1297,14 @@ function Invoke-DesktopCleanup {
         Set-DesktopLifecyclePhase -Context $Context -NextPhase 'clean'
         return $Context
     } catch {
-        Set-DesktopLifecyclePreserve -Context $Context -Message $_.Exception.Message
-        throw
+        $failure = $_.Exception
+        Set-DesktopLifecyclePreserve -Context $Context -Message $failure.Message
+        # Failure is established and the installation is preserved before owned Job recovery.
+        if ($null -ne $Context.app_process -and $null -ne (Get-ObjectPropertyValue $Context.app_process 'owner')) {
+            try { $Context.app_process.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
+            catch { $failure.Data['owned_process_cleanup_failure'] = $_.Exception }
+        }
+        throw $failure
     }
 }
 
@@ -2385,6 +2414,159 @@ function Wait-DesktopProcessObservation {
     }
 }
 
+function Invoke-DesktopRuntimeExpression {
+    param([string]$WebSocketUrl, [string]$Expression)
+    $socket = [Net.WebSockets.ClientWebSocket]::new()
+    $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($script:DesktopObservationTimeoutMilliseconds))
+    try {
+        $socket.ConnectAsync([uri]$WebSocketUrl, $cancel.Token).GetAwaiter().GetResult()
+        $id = 1
+        $request = @{ id = $id; method = 'Runtime.evaluate'; params = @{ expression = $Expression; returnByValue = $true; awaitPromise = $true } } | ConvertTo-Json -Depth 8 -Compress
+        $socket.SendAsync([ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($request)), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancel.Token).GetAwaiter().GetResult()
+        $buffer = [byte[]]::new(65536)
+        while (-not $cancel.IsCancellationRequested) {
+            $bytes = [Collections.Generic.List[byte]]::new()
+            do {
+                $part = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), $cancel.Token).GetAwaiter().GetResult()
+                Assert-Condition ($part.MessageType -eq [Net.WebSockets.WebSocketMessageType]::Text) 'desktop_cdp_response_invalid'
+                Assert-Condition (($bytes.Count + $part.Count) -le 65536) 'desktop_cdp_response_oversized'
+                for ($i = 0; $i -lt $part.Count; $i++) { $bytes.Add($buffer[$i]) }
+            } while (-not $part.EndOfMessage)
+            $response = ConvertFrom-DesktopStrictJsonText ([Text.UTF8Encoding]::new($false, $true).GetString($bytes.ToArray()))
+            if ([string](Get-ObjectPropertyValue $response 'id') -cne $id) { continue }
+            Assert-Condition ($null -eq (Get-ObjectPropertyValue $response 'error') -and $null -eq (Get-ObjectPropertyValue $response.result 'exceptionDetails')) 'desktop_cdp_evaluation_failed'
+            Assert-Condition ($response.result.result.type -ceq 'string') 'desktop_cdp_evaluation_invalid'
+            return ([string]$response.result.result.value | ConvertFrom-Json -Depth 30)
+        }
+        throw 'desktop_cdp_evaluation_timeout'
+    } finally { $socket.Dispose(); $cancel.Dispose() }
+}
+
+function Get-DesktopWorkspaceRuntime {
+    param($Context, [int]$Port, [string]$UserDataFolder)
+    # Recheck the listener ownership at action time before opening its page websocket.
+    $authority = Get-DesktopWebViewAuthorityProbe -OwnedProcess $Context.app_process -UserDataFolder $UserDataFolder -Port $Port
+    Assert-Condition ([string]$authority.state -ceq 'page_ready') 'desktop_cdp_authority_unconfirmed'
+    $handler = [Net.Http.HttpClientHandler]::new(); $handler.UseProxy = $false
+    $client = [Net.Http.HttpClient]::new($handler); $client.Timeout = [TimeSpan]::FromSeconds(5); $client.MaxResponseContentBufferSize = 65536
+    try { $pages = $client.GetStringAsync("http://127.0.0.1:$Port/json/list").GetAwaiter().GetResult() | ConvertFrom-Json -Depth 12 }
+    finally { $client.Dispose() }
+    $matching = @($pages | Where-Object { [string]$_.type -ceq 'page' -and [string]$_.url -match '^(?:tauri://localhost|https?://tauri\.localhost)/?$' })
+    Assert-Condition ($matching.Count -eq 1) 'desktop_main_page_ambiguous'
+    $ws = [uri][string]$matching[0].webSocketDebuggerUrl
+    Assert-Condition ($ws.Scheme -ceq 'ws' -and $ws.Host -ceq '127.0.0.1' -and $ws.Port -eq $Port -and $ws.AbsolutePath -match '^/devtools/page/[A-Za-z0-9-]+$' -and [string]::IsNullOrEmpty($ws.Query) -and [string]::IsNullOrEmpty($ws.Fragment) -and [string]::IsNullOrEmpty($ws.UserInfo)) 'desktop_page_websocket_invalid'
+    $expression = @'
+(async () => {
+ const closed=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===k.length&&k.every(x=>Object.hasOwn(v,x));
+ const uuid=v=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
+ const uint=v=>Number.isSafeInteger(v)&&v>=0;
+ const invoke=window.__TAURI__?.core?.invoke, label=window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
+ const root=document.getElementById('workspace-startup'), view=root?.querySelector('.workspace-project-pane');
+ const fail=()=>JSON.stringify({ok:false});
+ if(!invoke||label!=='main'||window.top!==window||location.search||!/^https?:\/\/tauri\.localhost\/?$|^tauri:\/\/localhost\/?$/.test(location.href)||!root||!view||root.dataset.startupState!=='mounted'||view.dataset.availability!=='available')return fail();
+ let session;try{session=JSON.parse(root.dataset.session);}catch{return fail();}
+ if(!closed(session,['instance_id','schema_version'])||!uuid(session.instance_id)||session.schema_version!==1||session.instance_id!==view.dataset.instanceId||!uuid(root.dataset.generation)||root.dataset.generation!==view.dataset.generation)return fail();
+ const identity=JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId]);
+ const stable=()=>root.isConnected&&view.isConnected&&root.dataset.startupState==='mounted'&&view.dataset.availability==='available'&&identity===JSON.stringify([root.dataset.session,root.dataset.generation,view.dataset.topologyRevision,view.dataset.selectedProjectId]);
+ const revision=Number(view.dataset.topologyRevision);if(!uint(revision))return fail();
+ async function read(operation){const request={schema_version:1,instance_id:session.instance_id,operation_id:crypto.randomUUID(),expected_topology_revision:null,operation,params:{}};
+  if(!stable())throw 0;const response=await invoke('workspace_request',{requestJson:JSON.stringify(request)});
+  if(!stable()||!closed(response,['schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error'])||response.schema_version!==1||response.instance_id!==session.instance_id||response.operation_id!==request.operation_id||response.accepted!==true||response.error!==null||!uint(response.event_seq)||response.topology_revision!==revision||!closed(response.result,['operation','data'])||response.result.operation!==operation)throw 0;return response.result.data;
+ }
+ try{const caps=await read('capabilities.get'), projects=await read('project.list');
+  if(!closed(caps,['max_message_bytes','operations','providers','replay_capacity','schema_version','shell_profile_ids'])||caps.schema_version!==1||!Array.isArray(caps.operations)||!caps.operations.includes('project.list')||!closed(projects,['projects','selected_project_id'])||!Array.isArray(projects.projects)||(projects.selected_project_id!==null&&!uuid(projects.selected_project_id))||(projects.selected_project_id??'')!==view.dataset.selectedProjectId||!projects.projects.every(p=>closed(p,['project_id','display_name','path','root_state'])&&uuid(p.project_id)&&(p.display_name===null||typeof p.display_name==='string')&&(p.path===null||typeof p.path==='string')&&['verified','unavailable','changed','unknown'].includes(p.root_state)))return fail();
+  const discovery=await invoke('workspace_discovery_get');
+  if(!stable()||!closed(discovery,['instance_id','pipe_name','schema_version'])||discovery.instance_id!==session.instance_id||discovery.schema_version!==1||typeof discovery.pipe_name!=='string'||!discovery.pipe_name)return fail();
+  return JSON.stringify({ok:true,instance_id:session.instance_id,generation:root.dataset.generation,revision,discovery});
+ }catch{return fail();}
+})()
+'@
+    $result = Invoke-DesktopRuntimeExpression -WebSocketUrl $ws.AbsoluteUri -Expression $expression
+    Assert-Condition ((Get-ObjectPropertyValue $result 'ok') -eq $true) 'desktop_workspace_read_unconfirmed'
+    return $result
+}
+
+function Wait-DesktopWorkspaceRuntime {
+    param($Context, [int]$Port, [string]$UserDataFolder)
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($script:DesktopObservationTimeoutMilliseconds)
+    do {
+        try { return (Get-DesktopWorkspaceRuntime -Context $Context -Port $Port -UserDataFolder $UserDataFolder) }
+        catch { if ($_.Exception.Message -cne 'desktop_workspace_read_unconfirmed') { throw } }
+        Start-Sleep -Milliseconds $script:DesktopObservationPollMilliseconds
+    } while ([DateTime]::UtcNow -lt $deadline -and -not $Context.app_process.process.HasExited)
+    throw 'desktop_workspace_mount_unconfirmed'
+}
+
+function Assert-DesktopMcpResponse {
+    param($Response, [string]$Id)
+    Assert-DesktopInventoryShape $Response @('jsonrpc', 'id', 'result')
+    Assert-Condition ($Response.jsonrpc -ceq '2.0' -and [string]$Response.id -ceq $Id -and $null -eq (Get-ObjectPropertyValue $Response 'error') -and $null -ne (Get-ObjectPropertyValue $Response 'result')) 'desktop_mcp_response_uncorrelated'
+}
+
+function Invoke-DesktopInstalledMcp {
+    param($Context, [hashtable]$Environment, $Workspace)
+    $owned = Start-OwnedProcess -FilePath (Join-Path $Context.install_root 'winsmux-workspace-mcp.exe') -ArgumentList @('--discovery-json', ($Workspace.discovery | ConvertTo-Json -Compress)) -Environment $Environment -Interactive
+    $process = $owned.owner
+    try {
+        function Send-DesktopMcp($Request) { $process.StandardInput.WriteLine(($Request | ConvertTo-Json -Depth 20 -Compress)); $process.StandardInput.Flush() }
+        function Read-DesktopMcp {
+            $task = $process.ReadLineAsync($script:DesktopMcpMessageLimitBytes)
+            Assert-Condition ($task.Wait($script:DesktopObservationTimeoutMilliseconds)) 'desktop_mcp_response_timeout'
+            $line = $task.GetAwaiter().GetResult()
+            Assert-Condition ($null -ne $line -and [Text.Encoding]::UTF8.GetByteCount($line) -le $script:DesktopMcpMessageLimitBytes) 'desktop_mcp_response_invalid'
+            return (ConvertFrom-DesktopStrictJsonText $line)
+        }
+        $initId = [Guid]::NewGuid().ToString('D')
+        Send-DesktopMcp @{ jsonrpc = '2.0'; id = $initId; method = 'initialize'; params = @{ protocolVersion = '2025-11-25'; capabilities = @{}; clientInfo = @{ name = 'winsmux-desktop-install-smoke'; version = '1' } } }
+        $init = Read-DesktopMcp; Assert-DesktopMcpResponse $init $initId
+        Assert-DesktopInventoryShape $init.result @('protocolVersion','capabilities','serverInfo')
+        Assert-DesktopInventoryShape $init.result.serverInfo @('name','version')
+        Assert-DesktopInventoryShape $init.result.capabilities @('tools')
+        Assert-DesktopInventoryShape $init.result.capabilities.tools @()
+        Assert-Condition ($init.result.protocolVersion -ceq '2025-11-25' -and $init.result.serverInfo.name -ceq 'winsmux-workspace-mcp' -and $init.result.serverInfo.version -ceq $Version -and $null -ne (Get-ObjectPropertyValue $init.result.capabilities 'tools')) 'desktop_mcp_initialize_invalid'
+        Send-DesktopMcp @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
+        $listId = [Guid]::NewGuid().ToString('D'); Send-DesktopMcp @{ jsonrpc = '2.0'; id = $listId; method = 'tools/list' }
+        $list = Read-DesktopMcp; Assert-DesktopMcpResponse $list $listId
+        Assert-DesktopInventoryShape $list.result @('tools')
+        Assert-Condition (@($list.result.tools).Count -eq 1 -and $list.result.tools[0].name -ceq 'winsmux_workspace_request' -and $list.result.tools[0].inputSchema.type -ceq 'object' -and $list.result.tools[0].outputSchema.type -ceq 'object') 'desktop_mcp_tools_invalid'
+        Assert-DesktopInventoryShape $list.result.tools[0] @('name','inputSchema','outputSchema')
+        $callId = [Guid]::NewGuid().ToString('D'); $operationId = [Guid]::NewGuid().ToString('D')
+        Send-DesktopMcp @{ jsonrpc = '2.0'; id = $callId; method = 'tools/call'; params = @{ name = 'winsmux_workspace_request'; arguments = @{ schema_version = 1; instance_id = $Workspace.instance_id; operation_id = $operationId; expected_topology_revision = $null; operation = 'capabilities.get'; params = @{} } } }
+        $call = Read-DesktopMcp; Assert-DesktopMcpResponse $call $callId; $response = $call.result.structuredContent
+        Assert-DesktopInventoryShape $call.result @('structuredContent','content','isError')
+        Assert-DesktopInventoryShape $response @('schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error')
+        Assert-DesktopInventoryShape $response.result @('operation','data')
+        Assert-Condition ($call.result.isError -eq $false -and $response.schema_version -eq 1 -and $response.instance_id -ceq $Workspace.instance_id -and $response.operation_id -ceq $operationId -and $response.accepted -eq $true -and $null -eq $response.error -and $response.result.operation -ceq 'capabilities.get' -and $response.topology_revision -eq $Workspace.revision) 'desktop_mcp_host_read_unconfirmed'
+        Assert-Condition (@($call.result.content).Count -eq 1 -and $call.result.content[0].type -ceq 'text') 'desktop_mcp_content_invalid'
+        Assert-DesktopInventoryShape $call.result.content[0] @('type','text')
+        $textResponse = ConvertFrom-DesktopStrictJsonText ([string]$call.result.content[0].text)
+        Assert-Condition (($textResponse | ConvertTo-Json -Depth 30 -Compress) -ceq ($response | ConvertTo-Json -Depth 30 -Compress)) 'desktop_mcp_content_mismatch'
+        $process.FinishInputAndDrain()
+        Assert-Condition ($process.WaitTerminal($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) -and $process.ExitCode -eq 0 -and -not $process.Forced) 'desktop_mcp_eof_exit_unconfirmed'
+        Assert-Condition ($process.StdoutTask.GetAwaiter().GetResult().TotalBytes -eq 0 -and $process.StderrTask.GetAwaiter().GetResult().TotalBytes -eq 0) 'desktop_mcp_terminal_output_invalid'
+        return $true
+    } catch {
+        $failure = $_.Exception
+        try { $process.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
+        catch { $failure.Data['cleanup_failure'] = $_.Exception }
+        throw $failure
+    } finally {
+        if ($process.HasExited -and $process.ActiveMembers -eq 0 -and $process.CaptureCompleted) { $process.Dispose() }
+    }
+}
+
+function Stop-DesktopNormally {
+    param($RootProcess)
+    if ($null -eq $RootProcess) { return }
+    Assert-Condition ($null -ne (Get-ObjectPropertyValue $RootProcess 'owner')) 'desktop_owner_missing'
+    $owner = $RootProcess.owner
+    Assert-Condition (-not $owner.HasExited) 'desktop_normal_close_app_already_exited'
+    Assert-Condition $owner.CloseMainWindow() 'desktop_normal_close_refused'
+    if ($null -ne $script:DesktopRuntimeReceipt) { $script:DesktopRuntimeReceipt.normal_close_requested = $true }
+    $owner.RequireNormalCompletion($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds)
+    if ($null -ne $script:DesktopRuntimeReceipt) { $script:DesktopRuntimeReceipt.owned_processes_exited = $true }
+}
+
 function Invoke-DesktopLifecycleOperation {
     param(
         [Parameter(Mandatory)]$Context,
@@ -2413,6 +2595,15 @@ function Invoke-DesktopLifecycleOperation {
             -MaxAttempts $MaxAttempts -PageProbe $PageProbe -AuthorityProbe $AuthorityProbe -DelayInvoker $DelayInvoker
         if ([string]$observation.state -cne 'page_ready') {
             $pendingObservationFailure = $true
+        }
+        if (-not $pendingObservationFailure -and $null -eq $PageProbe -and (Get-ObjectPropertyValue $Context 'workspace_generation') -eq $true) {
+            $script:DesktopFailureStage = 'workspace_runtime'
+            $workspace = Wait-DesktopWorkspaceRuntime -Context $Context -Port $Port -UserDataFolder $UserDataFolder
+            $script:DesktopFailureStage = 'mcp_runtime'
+            $mcp = Invoke-DesktopInstalledMcp -Context $Context -Environment $Environment -Workspace $workspace
+            $again = Get-DesktopWorkspaceRuntime -Context $Context -Port $Port -UserDataFolder $UserDataFolder
+            Assert-Condition ($again.instance_id -ceq $workspace.instance_id -and $again.generation -ceq $workspace.generation -and $again.discovery.pipe_name -ceq $workspace.discovery.pipe_name) 'desktop_workspace_generation_changed'
+            $script:DesktopRuntimeReceipt = [ordered]@{ workspace_read_verified = $true; mcp_roundtrip_verified = $true; mcp_eof_exit_verified = $true; normal_close_requested = $false; owned_processes_exited = $false }
         }
         if (-not [string]::IsNullOrWhiteSpace($UserDataFolder)) {
             try {
@@ -2484,6 +2675,8 @@ function Invoke-DesktopLifecycleOperation {
         throw $operationFailure
     }
     if ($null -ne $cleanupFailure) {
+        $cleanupFailure.Data['operation_failure'] = $null
+        $cleanupFailure.Data['cleanup_failure'] = $cleanupFailure
         throw $cleanupFailure
     }
     return $observation
@@ -2752,15 +2945,23 @@ function Invoke-DesktopSmoke {
     $childEnvironment = @{}
     $observation = $null
     $routerInventory = $null
-    $routerPolicy = Resolve-DesktopRouterInventoryPolicy -Version $Version -ReleaseTag $ReleaseTag -CandidateInstallerPath $CandidateInstallerPath
+    $routerPolicy = $null
+    $inventoryAsset = "winsmux_${Version}_x64-setup.inventory.json"
+    $inventoryPath = Join-Path $Root $inventoryAsset
+    $inventory = $null
+    $inventoryHash = ''
     $setupFailure = $null
     try {
         Assert-DesktopRunner
+        $routerPolicy = Resolve-DesktopRouterInventoryPolicy -Version $Version -ReleaseTag $ReleaseTag -CandidateInstallerPath $CandidateInstallerPath
+        $context | Add-Member -NotePropertyName workspace_generation -NotePropertyValue ($routerPolicy.generation -ceq 'workspace')
         $initial = Get-DesktopProtectedState -InstallRoot $installRoot
         Start-DesktopLifecycle -Context $context -PreflightState $initial
 
         if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) {
+            Assert-Condition (-not [string]::IsNullOrEmpty($DesktopInventoryPath)) 'desktop_candidate_inventory_missing'
             Copy-Item -LiteralPath $CandidateInstallerPath -Destination $setupPath
+            Copy-Item -LiteralPath $DesktopInventoryPath -Destination $inventoryPath
             $expectedHash = (Get-FileHash -LiteralPath $setupPath -Algorithm SHA256).Hash.ToLowerInvariant()
             if (-not [string]::IsNullOrEmpty($PriorInstallerPath)) {
                 Copy-Item -LiteralPath $PriorInstallerPath -Destination $priorSetupPath
@@ -2771,6 +2972,18 @@ function Invoke-DesktopSmoke {
             $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8
             $expectedHash = Get-ChecksumEntry -ManifestText $manifest -AssetName $assetName
             Assert-FileChecksum -Path $setupPath -ExpectedHash $expectedHash
+            if ($routerPolicy.generation -ceq 'workspace') {
+                Invoke-PublicDownload -Uri "$baseUrl/$inventoryAsset" -Destination $inventoryPath -Root $Root
+                Assert-FileChecksum -Path $inventoryPath -ExpectedHash (Get-ChecksumEntry -ManifestText $manifest -AssetName $inventoryAsset)
+            }
+        }
+        if ($routerPolicy.generation -ceq 'workspace') {
+            $script:DesktopFailureStage = 'generation_inventory'
+            $treeish = if (-not [string]::IsNullOrEmpty($CandidateInstallerPath)) { 'HEAD' } else { "$ReleaseTag^{commit}" }
+            $sourceCommit = (& git -C $script:RepositoryRoot rev-parse --verify $treeish | Out-String).Trim().ToLowerInvariant()
+            Assert-Condition ($LASTEXITCODE -eq 0 -and $sourceCommit -cmatch '^[a-f0-9]{40}$') 'desktop_inventory_source_unavailable'
+            $inventory = Assert-DesktopInstallInventory -Inventory (Read-DesktopStrictJson $inventoryPath) -Version $Version -InstallerSha256 $expectedHash -SourceCommit $sourceCommit
+            $inventoryHash = (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
         }
 
         $childRoot = Join-Path $Root 'profile'
@@ -2803,13 +3016,12 @@ function Invoke-DesktopSmoke {
         }
         $installerStages.Add([pscustomobject]@{ role = 'candidate'; path = $setupPath; context = $context }) | Out-Null
         foreach ($stage in $installerStages) {
+            $script:DesktopFailureStage = if ([string]$stage.role -ceq 'prior') { 'prior_install' } else { 'candidate_install' }
             $install = Invoke-PublicChildProcess -Operation 'desktop_installer' -FilePath ([string]$stage.path) -ArgumentList @('/S', "/D=$installRoot") -Environment $childEnvironment -TimeoutSeconds 180
             if ($install.exit_code -ne 0) {
-                $diagnostic = Format-PublicChildProcessDiagnostic -Operation 'desktop_installer' -State 'exit_nonzero' -Result $install
-                if ([string]$stage.role -ceq 'prior') {
-                    throw "Pinned prior Desktop installer failed: $diagnostic"
-                }
-                throw $diagnostic
+                $failure = [InvalidOperationException]::new('desktop_installer_exit_nonzero')
+                $failure.Data['native_result'] = $install
+                throw $failure
             }
             Assert-DesktopMaterializedOwnership -Context $stage.context
             if ([string]$stage.role -ceq 'prior') {
@@ -2825,6 +3037,10 @@ function Invoke-DesktopSmoke {
             if ($routerPolicy.required) {
                 $routerInventory = Get-DesktopRouterInventory -InstallRoot $installRoot -Treeish $routerPolicy.treeish
             }
+            if ($routerPolicy.generation -ceq 'workspace') {
+                $script:DesktopFailureStage = 'installed_inventory'
+                $script:DesktopInstalledInventory = Get-DesktopInstalledInventory -InstallRoot $installRoot -Inventory $inventory -InventorySha256 $inventoryHash
+            }
         }
 
         $webViewRoot = Join-Path $childRoot 'WebView2'
@@ -2836,6 +3052,7 @@ function Invoke-DesktopSmoke {
         $childEnvironment.WEBVIEW2_USER_DATA_FOLDER = $webViewRoot
 
         $context.app_process = Start-OwnedProcess -FilePath (Join-Path $installRoot 'winsmux-app.exe') -Environment $childEnvironment
+        $script:DesktopFailureStage = 'cdp_observation'
         $observation = Invoke-DesktopLifecycleOperation -Context $context -Environment $childEnvironment -Port ([int]$debugEndpoint.port) -UserDataFolder $webViewRoot
     } catch {
         $setupFailure = $_.Exception
@@ -2849,7 +3066,10 @@ function Invoke-DesktopSmoke {
             $setupCleanupFailure = $_.Exception
         }
         if ($null -ne $setupCleanupFailure) {
-            throw [AggregateException]::new('Desktop setup and cleanup failed.', [Exception[]]@($setupFailure, $setupCleanupFailure))
+            $aggregate = [AggregateException]::new('Desktop setup and cleanup failed.', [Exception[]]@($setupFailure, $setupCleanupFailure))
+            $aggregate.Data['operation_failure'] = $setupFailure
+            $aggregate.Data['cleanup_failure'] = $setupCleanupFailure
+            throw $aggregate
         }
         throw $setupFailure
     }
@@ -3605,7 +3825,7 @@ function Invoke-SelfTest {
             $raceContext.app_process = Start-OwnedProcess -FilePath $pwshPath -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep -Seconds 30')
             $racePage = {
                 param($Port, $Attempt, $OwnedProcess)
-                $OwnedProcess.process.Kill($true)
+                & $selfTestFunctions['Stop-OwnedProcessTree'] -RootProcess $OwnedProcess
                 [void]$OwnedProcess.process.WaitForExit(10000)
                 return 'tauri://localhost/'
             }.GetNewClosure()
@@ -4748,6 +4968,26 @@ try {
     }
 }
 
+if ($Surface -ceq 'Desktop' -and $Json -and ($null -ne $operationError -or $null -ne $cleanupError)) {
+    $exception = if ($null -ne $operationError) { $operationError.Exception } else { $cleanupError.Exception }
+    $originalOperation = if ($exception.Data.Contains('operation_failure')) { $exception.Data['operation_failure'] } else { $exception }
+    $originalCleanup = if ($exception.Data.Contains('cleanup_failure')) { $exception.Data['cleanup_failure'] } elseif ($null -ne $cleanupError) { $cleanupError.Exception } else { $null }
+    function Get-DesktopSafeFailureCode($Failure) {
+        if ($null -eq $Failure) { return 'none' }
+        if ($Failure.Message -cmatch '^desktop_[a-z_]+$') { return $Failure.Message }
+        return 'desktop_operation_failed'
+    }
+    $failedObservation = if ($null -ne $originalOperation -and $originalOperation.Data.Contains('observation')) { $originalOperation.Data['observation'] } else { $null }
+    $state = if ($null -ne $failedObservation) { [string]$failedObservation.state } else { 'unconfirmed' }
+    $phase = if ($null -ne $script:DesktopLifecycle) { [string]$script:DesktopLifecycle.phase } else { 'not_created' }
+    $nativeResult = $null
+    foreach ($failure in @($originalOperation, $originalCleanup)) { if ($null -ne $failure -and $failure.Data.Contains('native_result')) { $nativeResult = $failure.Data['native_result']; break } }
+    $nativeExit = if ($null -ne $nativeResult) { [int]$nativeResult.exit_code } elseif ($null -ne $failedObservation -and $null -ne $failedObservation.exit_code) { [int]$failedObservation.exit_code } else { $null }
+    $stdoutBytes = if ($null -ne $nativeResult) { [long]$nativeResult.stdout_metadata.bytes } elseif ($null -ne $failedObservation) { [long]$failedObservation.stdout_bytes } else { [long]0 }
+    $stderrBytes = if ($null -ne $nativeResult) { [long]$nativeResult.stderr_metadata.bytes } elseif ($null -ne $failedObservation) { [long]$failedObservation.stderr_bytes } else { [long]0 }
+    [ordered]@{ schema = 'winsmux-desktop-smoke-failure/v1'; ok = $false; surface = 'Desktop'; version = $Version; release_tag = $ReleaseTag; stage = $script:DesktopFailureStage; reason_code = Get-DesktopSafeFailureCode $exception; helper_exit_code = 1; native_exit_code = $nativeExit; stdout_bytes = $stdoutBytes; stderr_bytes = $stderrBytes; observation_state = $state; operation_failure = Get-DesktopSafeFailureCode $originalOperation; cleanup_failure = Get-DesktopSafeFailureCode $originalCleanup; cleanup_stage = $script:DesktopCleanupStage; cleanup = $phase } | ConvertTo-Json -Depth 8 -Compress
+    exit 1
+}
 if ($null -ne $operationError) {
     if ($null -ne $cleanupError) {
         throw "Public $Surface smoke failed: $($operationError.Exception.Message); cleanup also failed: $($cleanupError.Exception.Message)"
@@ -4771,6 +5011,11 @@ $result = [ordered]@{
 }
 if ($Surface -eq 'Desktop' -and $null -ne $script:DesktopRouterInventory) {
     $result.router_inventory = $script:DesktopRouterInventory
+}
+if ($Surface -ceq 'Desktop' -and $null -ne $script:DesktopInstalledInventory) {
+    $result.installed_inventory = $script:DesktopInstalledInventory
+    $result.desktop_runtime = $script:DesktopRuntimeReceipt
+    Assert-DesktopInstallReceipt -Receipt $result -Version $Version -InstallerSha256 $surfaceResult.sha256 -SourceCommit $script:DesktopInstalledInventory.source_commit -InventorySha256 $script:DesktopInstalledInventory.inventory_sha256 | Out-Null
 }
 if ($Json) {
     $result | ConvertTo-Json -Depth 10 -Compress

@@ -17,7 +17,7 @@ const repository='Sora-bluesky/winsmux';
 /** Pure operation graph builder; synthetic rows cannot become host plans. */
 export function publicationOperations(bundle, rows) {
   assertIssuedPublicationBundle(bundle);
-  demand(Array.isArray(rows) && rows.length===13 && same(rows.map(row=>row.path).sort(),bundle.assets.map(row=>row.path).sort()),
+  demand(Array.isArray(rows) && rows.length===bundle.assets.length && same(rows.map(row=>row.path).sort(),bundle.assets.map(row=>row.path).sort()),
     'All fixed public rows required before planning.');
   const missing=[];
   for(const row of rows) {
@@ -28,7 +28,8 @@ export function publicationOperations(bundle, rows) {
   }
   const bodyMissing=missing.some(row=>row.path==='release-body.md');
   const releaseAssets=missing.filter(row=>/^(core|desktop)\//u.test(row.path));
-  if(bodyMissing)demand(releaseAssets.length===11,'Absent release must have all eleven binary assets absent.');
+  if(bodyMissing)demand(releaseAssets.length===bundle.assets.filter(row=>/^(core|desktop)\//u.test(row.path)).length,
+    'Absent release must have all fixed release assets absent.');
   const file=relative=>path.join(bundle.root,relative);
   const effects=[];
   if(bodyMissing)effects.push({id:'github-release',kind:'github_release_create',program:'gh',
@@ -44,7 +45,7 @@ export function publicationOperations(bundle, rows) {
     arguments:['publish',file(npm.path),'--ignore-scripts','--registry=https://registry.npmjs.org','--tag','latest'],
     destination:'https://registry.npmjs.org/winsmux',assets:[npm]});
   return freeze({candidate_identity:bundle.identity,operations:effects,missing_assets:missing.map(row=>row.path).sort(),
-    matched_assets:13-missing.length,publication_admitted:false});
+    matched_assets:bundle.assets.length-missing.length,publication_admitted:false});
 }
 
 /** Actual-origin branded plan for a parent actor. Caller JSON cannot mint it. */

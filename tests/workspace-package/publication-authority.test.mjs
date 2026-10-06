@@ -104,7 +104,7 @@ if (process.argv[2] === 'actor') {
       const table=original.fixed_operation_table;
       assert.equal(table.publication_admitted,false);assert.equal(table.entries.length,3);
       const assets=table.entries.flatMap(entry=>entry.assets).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
-      assert.equal(new Set(assets.map(row=>row.path)).size,13);
+      assert.equal(new Set(assets.map(row=>row.path)).size,14);
       fixture.bundle_root=table.bundle_root;fixture.names=assets.map(row=>row.path);fixture.hashes=assets.map(row=>row.sha256);fixture.candidate_identity=table.candidate_identity;
       fs.writeFileSync(path.join(fixtureRoot,'custody-fixture.json'),JSON.stringify(fixture));
       fs.writeFileSync(path.join(fixtureRoot,'native-operation-table.json'),JSON.stringify(table),{flag:'wx'});

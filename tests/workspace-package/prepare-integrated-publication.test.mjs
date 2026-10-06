@@ -50,7 +50,7 @@ for (const change of [ value => { delete value.npmSources; }, value => value.npm
 }
 const first = prepare();
 check(() => {
-  assert.equal(first.publication_admitted, false); assert.equal(first.bundle.assets.length, 13);
+  assert.equal(first.publication_admitted, false); assert.equal(first.bundle.assets.length, 14);
   assert.equal(first.manifest_sha256, sha(fs.readFileSync(first.manifest_file)));
   assert.notEqual(first.bundle.root, bundle.root); revalidatePublicationBundle(first.bundle);
 });
@@ -71,5 +71,5 @@ check(() => assert.deepEqual(fs.readdirSync(path.join(namespaceRoot, 'v0.38.0'))
 check(() => assert.deepEqual(fs.readFileSync(marker.file), markerBytes));
 for (const [file, bytes] of originalFiles) check(() => assert.deepEqual(fs.readFileSync(file), bytes));
 check(() => { revalidatePublicationBundle(first.bundle); revalidatePublicationBundle(second.bundle); });
-console.log(JSON.stringify({ passed: true, checks, assets: 13, publication_admitted: false, npm_sha256: npmProof.npm_sha256,
-  scope: 'Actual Windows-verified npm tarball handed unchanged into fixed thirteen-asset bundle; other twelve assets/source coordinates are synthetic. Same source/run binding, prior preservation and post-effect preparation refusal. Real Core/Desktop producers/native permission/publication remain separate.' }));
+console.log(JSON.stringify({ passed: true, checks, assets: 14, publication_admitted: false, npm_sha256: npmProof.npm_sha256,
+  scope: 'Actual Windows-verified npm tarball handed unchanged into fixed fourteen-asset bundle; other thirteen assets/source coordinates are synthetic. Same source/run binding, prior preservation and post-effect preparation refusal. Real Core/Desktop producers/native permission/publication remain separate.' }));

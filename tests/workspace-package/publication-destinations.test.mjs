@@ -19,7 +19,7 @@ const assets = bundle.assets.filter(row => /^(core|desktop)\//u.test(row.path)).
   url: api + '/releases/assets/' + (index+1), digest: 'sha256:' + row.sha256,
   browser_download_url: 'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/' + path.posix.basename(row.path),
   created_at: '2026-10-03T00:00:00Z', updated_at: '2026-10-03T00:00:00Z' }));
-check(() => assert.equal(validatePublicReleaseInventory(bundle, release, bundle.identity.source_commit, assets).assets.length, 11));
+check(() => assert.equal(validatePublicReleaseInventory(bundle, release, bundle.identity.source_commit, assets).assets.length, 12));
 check(() => assert.equal(validatePublicReleaseInventory(bundle, null, null, []).release_present, false));
 check(() => assert.equal(validatePublicReleaseInventory(bundle, release, bundle.identity.source_commit, assets.slice(0,4)).assets.length, 4));
 reject(() => validatePublicReleaseInventory(structuredClone(bundle), release, bundle.identity.source_commit, assets), /observed/);
@@ -49,7 +49,7 @@ for (const change of [ value => value.push(value[0]), value => { value[1].id=val
 }
 check(() => {
   const withoutDigest=structuredClone(assets);withoutDigest.forEach(row => delete row.digest);
-  assert.equal(validatePublicReleaseInventory(bundle,release,bundle.identity.source_commit,withoutDigest).assets.length,11);
+  assert.equal(validatePublicReleaseInventory(bundle,release,bundle.identity.source_commit,withoutDigest).assets.length,12);
 });
 for (const row of bundle.assets) {
   check(() => assert.equal(validatePublicAssetBytes(bundle,row.path,files.get(row.path)).sha256,row.sha256));
@@ -76,11 +76,14 @@ const source=api+'/releases/assets/1';
 const cdn='https://release-assets.githubusercontent.com/github-production-release-asset/1/2?sig=synthetic';
 check(() => assert.equal(assertPublicBinaryRedirect(source,cdn,new Set([source])),cdn));
 check(() => assert.ok(assertPublicBinaryRedirect(source,'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/latest.json',new Set([source]))));
+check(() => assert.ok(assertPublicBinaryRedirect(source,'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/winsmux_0.38.0_x64-setup.inventory.json',new Set([source]))));
 for(const target of ['http://release-assets.githubusercontent.com/x','https://localhost/x',
   'https://release-assets.githubusercontent.com.evil.example/x','https://user@release-assets.githubusercontent.com/x',
   'https://release-assets.githubusercontent.com:8443/x','https://release-assets.githubusercontent.com/x#fragment',
   'https://github.com/other/winsmux/releases/download/v0.38.0/latest.json',
   'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/unknown',
+  'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/winsmux_0.38.1_x64-setup.inventory.json',
+  'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/winsmux_0.38.0_arm64-setup.inventory.json',
   'https://github.com/Sora-bluesky/winsmux/releases/download/v0.38.0/../latest.json'])
   reject(() => assertPublicBinaryRedirect(source,target,new Set()), /boundary|another release/);
 reject(() => assertPublicBinaryRedirect(source,cdn,new Set([cdn])), /cyclic/);

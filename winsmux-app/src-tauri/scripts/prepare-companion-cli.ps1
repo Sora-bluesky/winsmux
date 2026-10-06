@@ -1,8 +1,9 @@
-param([switch]$Release)
+param([switch]$Release, [switch]$SignCompanions)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 # Keep the quoted TOML config argument intact even when the caller uses Legacy.
 $PSNativeCommandArgumentPassing = 'Standard'
+if ($SignCompanions -and -not $Release) { throw 'Companion signing requires the release profile.' }
 
 function Assert-PlainPath([string]$Path) {
     $current = [IO.Path]::GetFullPath($Path)
@@ -119,6 +120,12 @@ try {
         $package = $verified.public_packages.$name
         $matches = @($artifacts | Where-Object { $_.package_id -ceq $package.id -and $_.target.name -ceq $name -and 'bin' -in $_.target.kind -and $null -ne $_.executable })
         if ($matches.Count -ne 1) { throw "Built companion artifact is missing or ambiguous: $name" }
+        if ($null -eq $matches[0].PSObject.Properties['profile'] -or
+            $null -eq $matches[0].profile.PSObject.Properties['debug_assertions'] -or
+            $matches[0].profile.debug_assertions -isnot [bool] -or
+            $matches[0].profile.debug_assertions -ne (-not [bool]$Release)) {
+            throw "Built companion debug assertions differ from the selected profile: $name"
+        }
         $expectedPath = [IO.Path]::GetFullPath((Join-Path (Join-Path (Join-Path $targetRoot $hostTriple) $profile) "$name.exe"))
         $actualPath = [IO.Path]::GetFullPath($matches[0].executable)
         $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
@@ -136,47 +143,57 @@ try {
     $generation = [Guid]::NewGuid().ToString('N')
     $stageDir = Join-Path $srcTauriDir "binaries.stage.$generation"
     $backupDir = Join-Path $srcTauriDir "binaries.backup.$generation"
-    if ($Release) {
-        # Prepare CLI, MCP, original license texts, covered sources and the owned NSIS inputs
-        # as one fresh generation. No old license subtree is copied into the new generation.
-        $requestFile = Join-Path $srcTauriDir "binaries.request.$generation.json"
-        # Cargo's executable may share an inode with its deps artifact. Freeze read-only
-        # build bytes in new single-link inputs before handing them to the strict producer.
-        $artifactInputs = Join-Path $srcTauriDir "binaries.inputs.$generation"
-        Assert-PlainPath $artifactInputs
-        New-Item -ItemType Directory -Path $artifactInputs | Out-Null
-        $frozenSources = @{}
-        foreach ($name in $companions) {
-            $inputFile = Join-Path $artifactInputs "$name.exe"
-            $expectedInputHash = (Get-FileHash -LiteralPath $sources[$name] -Algorithm SHA256).Hash
-            Copy-Item -LiteralPath $sources[$name] -Destination $inputFile
-            if ((Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash -cne $expectedInputHash) {
-                throw 'Frozen Cargo executable bytes differ.'
+    # Prepare CLI, MCP, original license texts, covered sources and the owned NSIS inputs
+    # as one fresh generation. No old license subtree is copied into the new generation.
+    $requestFile = Join-Path $srcTauriDir "binaries.request.$generation.json"
+    # Cargo's executable may share an inode with its deps artifact. Freeze read-only
+    # build bytes in new single-link inputs before handing them to the strict producer.
+    $artifactInputs = Join-Path $srcTauriDir "binaries.inputs.$generation"
+    Assert-PlainPath $artifactInputs
+    New-Item -ItemType Directory -Path $artifactInputs | Out-Null
+    $frozenSources = @{}; $cargoHashes = @{}; $frozenHashes = @{}
+    foreach ($name in $companions) {
+        $inputFile = Join-Path $artifactInputs "$name.exe"
+        $expectedInputHash = (Get-FileHash -LiteralPath $sources[$name] -Algorithm SHA256).Hash
+        $cargoHashes[$name] = $expectedInputHash
+        Copy-Item -LiteralPath $sources[$name] -Destination $inputFile
+        if ((Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash -cne $expectedInputHash) {
+            throw 'Frozen Cargo executable bytes differ.'
+        }
+        if ($SignCompanions) {
+            & (Join-Path $PSScriptRoot 'sign-windows-bundle.ps1') -AssetPath $inputFile
+            $runtimeOutput = @(& node (Join-Path $repoRoot 'scripts/assert-windows-runtime.mjs') $inputFile $hostTriple)
+            if ($LASTEXITCODE -ne 0 -or $runtimeOutput.Count -ne 1) { throw 'Signed companion runtime inspection failed.' }
+            $runtimeProof = $runtimeOutput[0] | ConvertFrom-Json
+            if ($runtimeProof.schema -cne 'windows-runtime-proof/v1' -or $runtimeProof.target -cne $hostTriple -or
+                $runtimeProof.sha256 -cne (Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash.ToLowerInvariant()) {
+                throw 'Signed companion runtime identity differs.'
             }
-            $frozenSources[$name] = $inputFile
         }
-        $request = @{repoRoot=$repoRoot; destination=$stageDir; host=$hostTriple;
-            version=$verified.version; rustcCommit=$rustcCommit; companions=@(
-                @{name='winsmux'; path=$frozenSources['winsmux']; sha256=(Get-FileHash -LiteralPath $frozenSources['winsmux'] -Algorithm SHA256).Hash.ToLowerInvariant()},
-                @{name='winsmux-workspace-mcp'; path=$frozenSources['winsmux-workspace-mcp']; sha256=(Get-FileHash -LiteralPath $frozenSources['winsmux-workspace-mcp'] -Algorithm SHA256).Hash.ToLowerInvariant()})}
-        [IO.File]::WriteAllText($requestFile, ($request | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
-        $stageResult = @(& node (Join-Path $repoRoot 'scripts/stage-bundled-distribution.mjs') $requestFile)
-        if ($LASTEXITCODE -ne 0 -or $stageResult.Count -ne 1) { throw 'Licensed distribution preparation failed; existing generation is preserved.' }
-        $stageProof = $stageResult[0] | ConvertFrom-Json
-        if ($stageProof.status -cne 'distribution_generation_staged' -or $stageProof.distribution_complete -ne $false) {
-            throw 'Licensed distribution preparation returned an invalid receipt.'
-        }
-        if ((Get-FileHash -LiteralPath (Join-Path $stageDir 'distribution-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $stageProof.manifest_sha256) {
-            throw 'Licensed distribution manifest differs from preparation receipt.'
-        }
-    } elseif (Test-Path -LiteralPath $binariesDir -PathType Container) {
-        [void](Read-Generation $binariesDir)
-        Copy-Item -LiteralPath $binariesDir -Destination $stageDir -Recurse
-    } else { New-Item -ItemType Directory -Path $stageDir | Out-Null }
+        $frozenHashes[$name] = (Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash
+        $frozenSources[$name] = $inputFile
+    }
+    $request = @{repoRoot=$repoRoot; destination=$stageDir; host=$hostTriple;
+        version=$verified.version; rustcCommit=$rustcCommit; buildProfile=$profile; companions=@(
+            @{name='winsmux'; path=$frozenSources['winsmux']; sha256=$frozenHashes['winsmux'].ToLowerInvariant()},
+            @{name='winsmux-workspace-mcp'; path=$frozenSources['winsmux-workspace-mcp']; sha256=$frozenHashes['winsmux-workspace-mcp'].ToLowerInvariant()})}
+    [IO.File]::WriteAllText($requestFile, ($request | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+    $stageResult = @(& node (Join-Path $repoRoot 'scripts/stage-bundled-distribution.mjs') $requestFile)
+    if ($LASTEXITCODE -ne 0 -or $stageResult.Count -ne 1) { throw 'Licensed distribution preparation failed; existing generation is preserved.' }
+    $stageProof = $stageResult[0] | ConvertFrom-Json
+    if ($stageProof.status -cne 'distribution_generation_staged' -or $stageProof.distribution_complete -ne $false) {
+        throw 'Licensed distribution preparation returned an invalid receipt.'
+    }
+    if ((Get-FileHash -LiteralPath (Join-Path $stageDir 'distribution-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $stageProof.manifest_sha256) {
+        throw 'Licensed distribution manifest differs from preparation receipt.'
+    }
     foreach ($name in $companions) {
         $destination = Join-Path $stageDir ("{0}-{1}.exe" -f $name, $hostTriple)
-        $expectedHash = (Get-FileHash -LiteralPath $sources[$name] -Algorithm SHA256).Hash
-        if (-not $Release) { Copy-Item -LiteralPath $sources[$name] -Destination $destination -Force }
+        if ((Get-FileHash -LiteralPath $sources[$name] -Algorithm SHA256).Hash -cne $cargoHashes[$name] -or
+            (Get-FileHash -LiteralPath $frozenSources[$name] -Algorithm SHA256).Hash -cne $frozenHashes[$name]) {
+            throw 'Cargo or frozen companion bytes changed during preparation.'
+        }
+        $expectedHash = $frozenHashes[$name]
         if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -cne $expectedHash) { throw "Companion staging hash differs: $name" }
     }
     # Bridge resources stay in tauri.conf.json; exclude the obsolete flat entry.

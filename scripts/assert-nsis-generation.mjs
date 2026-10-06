@@ -82,9 +82,10 @@ export function assertNsisGeneration({ srcTauri, projectOutput, manifestSha256, 
   const manifestBytes = plainFile(manifestFile);
   requireValue(digest(manifestBytes) === manifestSha256, 'Frozen generation manifest differs.');
   const manifest = parseStrictJson(manifestBytes);
-  requireValue((exact(manifest, ['schema', 'version', 'host', 'files', 'plugin'])
-    || exact(manifest, ['schema', 'version', 'host', 'files', 'plugin', 'retained_directories']))
+  requireValue((exact(manifest, ['schema', 'version', 'host', 'build_profile', 'files', 'plugin'])
+    || exact(manifest, ['schema', 'version', 'host', 'build_profile', 'files', 'plugin', 'retained_directories']))
     && manifest.schema === 'winsmux-distribution-generation/v1'
+    && ['debug', 'release'].includes(manifest.build_profile)
     && typeof manifest.version === 'string' && /^\d+\.\d+\.\d+$/u.test(manifest.version)
     && typeof manifest.host === 'string' && /^[A-Za-z0-9_-]+$/u.test(manifest.host)
     && Array.isArray(manifest.files), 'Invalid distribution generation manifest.');

@@ -227,6 +227,12 @@ jobs:
           if (-not (Test-Path -LiteralPath $installer)) {
             throw "Leg B failed: installer missing at $installer"
           }
+          . ./scripts/desktop-install-inventory.ps1
+          $inventoryPath = Join-Path $env:RUNNER_TEMP "winsmux_${version}_x64-setup.inventory.json"
+          New-DesktopInstallInventory -RepositoryRoot $env:GITHUB_WORKSPACE -InstallerPath $installer -OutputPath $inventoryPath | Out-Null
+          $inventoryHash = (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceCommit = (& git rev-parse HEAD | Out-String).Trim().ToLowerInvariant()
 
           $stdoutPath = Join-Path $env:RUNNER_TEMP 'leg-b-stdout.txt'
           $stderrPath = Join-Path $env:RUNNER_TEMP 'leg-b-stderr.txt'
@@ -241,6 +247,7 @@ jobs:
             '-ReleaseTag', $releaseTag,
             '-Repository', '${{ github.repository }}',
             '-CandidateInstallerPath', $installer,
+            '-DesktopInventoryPath', $inventoryPath,
             '-DesktopLegacyEnvMode', 'MarkerOnly',
             '-Json'
           ) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
@@ -253,26 +260,30 @@ jobs:
           $rawTrim = $raw.TrimEnd("`n")
 
           if ($proc.ExitCode -ne 0) {
-            $errText = ''
-            if (Test-Path -LiteralPath $stderrPath) {
-              $errText = [System.IO.File]::ReadAllText($stderrPath)
-            }
-            throw "Leg B failed: helper exit code $($proc.ExitCode). stderr=$errText stdout=$raw"
+            # Raw child output can contain private discovery/browser data. Publish only the safe failure receipt.
+            try {
+              $failure = $rawTrim | ConvertFrom-Json -Depth 12
+              Assert-DesktopInventoryShape $failure @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
+              if ($failure.schema -cne 'winsmux-desktop-smoke-failure/v1') { throw 'unexpected receipt' }
+              $failure | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'desktop-helper-failure.json') -Encoding utf8
+            } catch { Write-Host 'Desktop helper failure receipt unavailable.' }
+            throw "Leg B failed: helper exit code $($proc.ExitCode)."
           }
           Write-Host "LEG_B_EXIT PASS: exit code 0"
 
           $lines = @($rawTrim -split "`n" | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -ne '' })
           if ($lines.Count -ne 1) {
-            throw "Leg B failed: expected exactly one non-empty stdout line, got $($lines.Count). stdout=$raw"
+            throw "Leg B failed: expected exactly one non-empty stdout line, got $($lines.Count)."
           }
           Write-Host "LEG_B_STDOUT_LINES PASS: exactly one non-empty line"
 
           try {
             $json = $lines[0] | ConvertFrom-Json
           } catch {
-            throw "Leg B failed: stdout line is not valid JSON. line=$($lines[0])"
+            throw 'Leg B failed: stdout line is not valid JSON.'
           }
           Write-Host "LEG_B_JSON PASS: stdout parses as JSON"
+          Assert-DesktopInstallReceipt -Receipt $json -Version $version -InstallerSha256 $installerHash -SourceCommit $sourceCommit -InventorySha256 $inventoryHash | Out-Null
 
           if ($json.ok -ne $true) {
             throw "Leg B failed: ok is not true (value=$($json.ok))"
@@ -320,3 +331,10 @@ jobs:
           $line = "desktop-candidate-cdp-gate candidate_ref=$candidate resolved_commit=$resolvedCommit leg_a=$legAOutcome leg_b=$legBOutcome evidence.page_url=$pageUrl"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
           Write-Host $line
+          $failurePath = Join-Path $env:RUNNER_TEMP 'desktop-helper-failure.json'
+          if (Test-Path -LiteralPath $failurePath -PathType Leaf) {
+            . ./scripts/desktop-install-inventory.ps1
+            $failure = Read-DesktopStrictJson $failurePath
+            Assert-DesktopInventoryShape $failure @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($failure | ConvertTo-Json -Compress)
+          }

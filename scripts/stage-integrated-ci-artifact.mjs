@@ -11,7 +11,7 @@ const names = Object.freeze({
   core: ['SHA256SUMS', 'winsmux-arm64.exe', 'winsmux-arm64.exe.licenses.zip',
     'winsmux-remote-helper-linux-x64', 'winsmux-x64.exe', 'winsmux-x64.exe.licenses.zip'],
   desktop: ['SHA256SUMS-desktop', 'latest.json', 'winsmux_0.38.0_x64-setup.exe',
-    'winsmux_0.38.0_x64-setup.exe.sig', 'winsmux_0.38.0_x64_en-US.msi'],
+    'winsmux_0.38.0_x64-setup.exe.sig', 'winsmux_0.38.0_x64-setup.inventory.json', 'winsmux_0.38.0_x64_en-US.msi'],
   npm: ['winsmux-0.38.0.tgz', 'npm-candidate.json', 'help-stdout.txt', 'help-stderr.txt', 'version-stdout.txt', 'version-stderr.txt'],
 });
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');

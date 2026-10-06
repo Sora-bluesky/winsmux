@@ -43,10 +43,18 @@ function global:cargo {
             elseif ($Mode -ceq 'unknown_delay_api') { 'unknown-delay-api' }
             elseif ($Mode -ceq 'wrong_cpu') { 'wrong-cpu' } else { 'ok' }
         $nativeNode = Get-Command node -CommandType Application | Select-Object -First 1
-        & $nativeNode.Source (Join-Path $PSScriptRoot 'fixture-pe.mjs') (Join-Path $output "$name.exe") "new-$name" $peMode
+        & $nativeNode.Source (Join-Path $PSScriptRoot 'fixture-pe.mjs') (Join-Path $output "$name.exe") "new-$name-$profile" $peMode
         if ($LASTEXITCODE -ne 0) { throw 'PE fixture construction failed.' }
         $package = $global:fixtureMetadata.packages | Where-Object name -CEQ $name
-        $artifact = @{ reason='compiler-artifact'; package_id=$package.id; target=@{name=$name;kind=@('bin')}; executable=(Join-Path $output "$name.exe") }
+        $artifact = @{ reason='compiler-artifact'; package_id=$package.id; target=@{name=$name;kind=@('bin')}; executable=(Join-Path $output "$name.exe"); profile=@{debug_assertions=($profile -ceq 'debug')} }
+        $profileFault = $Mode -replace '_mcp$', ''
+        $faultTarget = if ($Mode.EndsWith('_mcp')) { 'winsmux-workspace-mcp' } else { 'winsmux' }
+        if ($name -ceq $faultTarget) {
+            if ($profileFault -ceq 'profile_missing') { $artifact.Remove('profile') }
+            if ($profileFault -ceq 'assertions_missing') { $artifact.profile.Remove('debug_assertions') }
+            if ($profileFault -ceq 'assertions_wrong') { $artifact.profile.debug_assertions = -not $artifact.profile.debug_assertions }
+            if ($profileFault -ceq 'assertions_nonbool') { $artifact.profile.debug_assertions = 'false' }
+        }
         if ($name -eq 'winsmux') {
             if ($env:COMPANION_TEST_MODE -eq 'wrong_package') { $artifact.package_id = 'unverified-package' }
             if ($env:COMPANION_TEST_MODE -eq 'wrong_path') { $artifact.executable = Join-Path $env:COMPANION_TEST_ROOT 'stale.exe' }
@@ -67,19 +75,26 @@ function global:node {
     # Synthetic staging collaborator for the existing transaction fault tests only.
     # The real Node producer and complete original license assets have their own executable proof.
     if ($args.Count -ne 2 -or [IO.Path]::GetFileName([string]$args[0]) -cne 'stage-bundled-distribution.mjs') { throw 'Unexpected fixture Node invocation' }
-    $input = Get-Content -LiteralPath $args[1] -Raw | ConvertFrom-Json
-    [void][IO.Directory]::CreateDirectory($input.destination)
-    $old = Join-Path $input.repoRoot 'winsmux-app/src-tauri/binaries'
-    if (Test-Path -LiteralPath $old) { Copy-Item -LiteralPath (Join-Path $old 'other-asset.txt') -Destination (Join-Path $input.destination 'other-asset.txt') }
-    foreach ($companion in $input.companions) {
-        Copy-Item -LiteralPath $companion.path -Destination (Join-Path $input.destination ($companion.name + '-' + $input.host + '.exe'))
+    $stageInput = Get-Content -LiteralPath $args[1] -Raw | ConvertFrom-Json
+    if ($Mode -ceq 'signed_changed') { [IO.File]::AppendAllText($stageInput.companions[0].path, 'changed') }
+    if ($Mode -ceq 'stage_fail') { $global:LASTEXITCODE = 7; return }
+    [void][IO.Directory]::CreateDirectory($stageInput.destination)
+    $old = Join-Path $stageInput.repoRoot 'winsmux-app/src-tauri/binaries'
+    if (Test-Path -LiteralPath $old) { Copy-Item -LiteralPath (Join-Path $old 'other-asset.txt') -Destination (Join-Path $stageInput.destination 'other-asset.txt') }
+    foreach ($companion in $stageInput.companions) {
+        Copy-Item -LiteralPath $companion.path -Destination (Join-Path $stageInput.destination ($companion.name + '-' + $stageInput.host + '.exe'))
     }
-    [void][IO.Directory]::CreateDirectory((Join-Path $input.destination 'licenses'))
-    [IO.File]::WriteAllText((Join-Path $input.destination 'licenses/manifest.json'), 'synthetic licensed transaction generation')
-    $manifest = Join-Path $input.destination 'distribution-manifest.json'
-    [IO.File]::WriteAllText($manifest, '{"synthetic":"transaction only"}')
+    [void][IO.Directory]::CreateDirectory((Join-Path $stageInput.destination 'licenses'))
+    [IO.File]::WriteAllText((Join-Path $stageInput.destination 'licenses/manifest.json'), 'synthetic licensed transaction generation')
+    $manifest = Join-Path $stageInput.destination 'distribution-manifest.json'
+    $files = @(Get-ChildItem -LiteralPath $stageInput.destination -File -Recurse | ForEach-Object {
+        @{path=[IO.Path]::GetRelativePath($stageInput.destination,$_.FullName).Replace('\','/');
+          sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}
+    })
+    [IO.File]::WriteAllText($manifest, (@{synthetic='transaction only'; build_profile=$stageInput.buildProfile; files=$files} | ConvertTo-Json -Depth 5))
     $global:LASTEXITCODE = 0
-    @{status='distribution_generation_staged'; distribution_complete=$false; manifest_sha256=(Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant()} | ConvertTo-Json -Compress
+    $manifestHash = if ($Mode -ceq 'manifest_fail') { '0' * 64 } else { (Get-FileHash -LiteralPath $manifest).Hash.ToLowerInvariant() }
+    @{status='distribution_generation_staged'; distribution_complete=$false; manifest_sha256=$manifestHash} | ConvertTo-Json -Compress
 }
 function global:Copy-Item {
     param([string]$LiteralPath, [string]$Destination, [switch]$Recurse, [switch]$Force)
@@ -119,8 +134,19 @@ function global:Remove-Item {
     Microsoft.PowerShell.Management\Remove-Item @PSBoundParameters
 }
 $scriptPath = Join-Path $PSScriptRoot 'winsmux-app/src-tauri/scripts/prepare-companion-cli.ps1'
+if ($Mode.StartsWith('signed_')) {
+    $env:WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH = Join-Path $PSScriptRoot 'synthetic.pfx'
+    $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = 'synthetic-fixture-only'
+    $env:WINSMUX_SIGNTOOL_EXE = Join-Path $PSScriptRoot 'synthetic-signtool.ps1'
+    function global:Get-PfxCertificate { param($LiteralPath,$Password,[switch]$NoPromptForPassword); [pscustomobject]@{RawData=[byte[]](1,2,3)} }
+    function global:Get-AuthenticodeSignature {
+        param($LiteralPath)
+        [pscustomobject]@{Status=$(if ($Mode -ceq 'signed_invalid') {'HashMismatch'} else {'Valid'});
+            SignerCertificate=[pscustomobject]@{RawData=$(if ($Mode -ceq 'signed_other_cert') {[byte[]](4,5,6)} else {[byte[]](1,2,3)})}}
+    }
+}
 try {
-    & $scriptPath -Release:$Release
+    & $scriptPath -Release:$Release -SignCompanions:($Mode.StartsWith('signed_'))
     # A fixture equivalent of the existing npm &&/beforeBuild continuation.
     [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'bundle-started'), 'yes')
     exit 0

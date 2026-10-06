@@ -162,8 +162,11 @@ jobs:
           $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
           $requiredAssets = @(
             "winsmux_${version}_x64-setup.exe",
+            "winsmux_${version}_x64-setup.inventory.json",
             "winsmux_${version}_x64_en-US.msi"
           )
+          . ./scripts/desktop-install-inventory.ps1
+          New-DesktopInstallInventory -RepositoryRoot $env:GITHUB_WORKSPACE -InstallerPath (Join-Path 'output/desktop-release' "winsmux_${version}_x64-setup.exe") -OutputPath (Join-Path 'output/desktop-release' "winsmux_${version}_x64-setup.inventory.json") | Out-Null
           if ($isReleaseUpload) {
             $requiredAssets += "latest.json"
           }

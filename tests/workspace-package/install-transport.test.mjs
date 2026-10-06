@@ -18,7 +18,7 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const literal = value => "'" + value.replaceAll("'", "''") + "'";
 
-test('private transport projects only HTTP and refuses stale, altered and ambiguous inputs', t => {
+function fixtureInputs(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-fixture-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const candidate = path.join(root, 'candidate'); fs.mkdirSync(candidate);
@@ -42,6 +42,11 @@ test('private transport projects only HTTP and refuses stale, altered and ambigu
   const receiptPath = path.join(candidate, 'core-candidate.json');
   const saveReceipt = value => fs.writeFileSync(receiptPath, JSON.stringify(value)); saveReceipt(receipt);
   const request = { candidateDirectory: candidate, sourceCommit, version: '0.38.0', output: path.join(root, 'fixture') };
+  return { root, candidate, sourceCommit, original, files, receipt, saveReceipt, request };
+}
+
+test('private transport projects only HTTP and refuses stale, altered and ambiguous inputs', t => {
+  const { candidate, sourceCommit, original, files, receipt, saveReceipt, request } = fixtureInputs(t);
   for (const change of [{ source_commit: '0'.repeat(40) }, { version: '0.38.1' }, { release_tag: 'v0.38.1' },
     { target: 'aarch64-pc-windows-msvc' }, { build_origin_verified: false }, { native_redistribution_verified: true },
     { publication_admitted: true }, { source_inventory_sha256: '0'.repeat(64) },
@@ -118,19 +123,24 @@ test('private transport projects only HTTP and refuses stale, altered and ambigu
 });
 
 test('real PowerShell fixture GET and HEAD use the same snapshot; unknown requests fail closed', { skip: process.platform !== 'win32' }, t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wm-http-'));
-  t.after(() => fs.rmSync(root, { recursive: true }));
-  const source = fs.readFileSync(path.join(repo, 'scripts/prepare-install-e2e-fixture.mjs'), 'utf8');
-  const begin = source.indexOf('function Read-WinsmuxFixtureResponse {');
-  const end = source.indexOf('\n`;\n', begin);
-  assert.ok(begin > 0 && end > begin);
-  const body = source.slice(begin, end);
+  const { root, original, request } = fixtureInputs(t);
+  const proof = prepareInstallFixture(request);
+  const projected = fs.readFileSync(proof.installer);
+  // Exercise the emitted PowerShell, independent of the JavaScript checkout's
+  // line endings. Removing exactly the inserted bytes must recover the source.
+  const position = original.indexOf(Buffer.from('\nfunction Assert-WinsmuxReleaseTag {'));
+  assert.ok(position > 0 && projected.length > original.length);
+  const end = position + projected.length - original.length;
+  assert.deepEqual(Buffer.concat([projected.subarray(0, position), projected.subarray(end)]), original);
+  const body = new TextDecoder('utf-8', { fatal: true }).decode(projected.subarray(position, end));
+  assert.match(body, /function Read-WinsmuxFixtureResponse \{/u);
+  assert.equal(hash(projected), proof.fixture_installer_sha256);
   const response = Buffer.from('raw source\r\n'); const responseFile = path.join(root, 'source'); fs.writeFileSync(responseFile, response);
   const uri = 'https://winsmux-fixture.invalid/known';
   const map = Buffer.from(JSON.stringify({ responses: { [uri]: { file: responseFile, bytes: response.length, sha256: hash(response), kind: 'text' }, [uri + '/missing']: { kind: 'missing' } } }));
   const mapFile = path.join(root, 'map.json'); fs.writeFileSync(mapFile, map);
   const script = path.join(root, 'probe.ps1'); const copied = path.join(root, 'copied');
-  fs.writeFileSync(script, `$ErrorActionPreference='Stop'\n$script:WinsmuxFixtureMapPath=${literal(mapFile)}\n$script:WinsmuxFixtureMapHash='${hash(map)}'\n${body}\n` +
+  fs.writeFileSync(script, `$ErrorActionPreference='Stop'\n${body}\n$script:WinsmuxFixtureMapPath=${literal(mapFile)}\n$script:WinsmuxFixtureMapHash='${hash(map)}'\n` +
     `Invoke-RestMethod -Uri '${uri}' -OutFile ${literal(copied)}\n` +
     `if ((Invoke-WebRequest -Uri '${uri}' -Method Head -UseBasicParsing).StatusCode -ne 200) { throw 'HEAD failed' }\n` +
     `foreach ($request in @('https://example.com/', '${uri}?changed')) { $refused=$false; try { Invoke-RestMethod -Uri $request } catch { $refused=$true }; if (-not $refused) { throw 'Unexpected external request accepted' } }\n` +

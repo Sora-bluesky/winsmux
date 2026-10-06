@@ -29,6 +29,37 @@ function Assert-SharingRefusal([scriptblock]$Operation, [bool]$DirectoryRename =
     }
     Assert-Check $denied 'Expected Windows sharing violation was not observed.'
 }
+$inventoryName = 'desktop/winsmux_0.38.0_x64-setup.inventory.json'
+$inventoryIndex = [Array]::IndexOf([string[]]$fixture.names, $inventoryName)
+Assert-Check ($fixture.names.Count -eq 14 -and $inventoryIndex -ge 0) 'Fixed inventory asset missing from issued JS bundle.'
+foreach ($replacement in @('', $inventoryName.ToUpperInvariant(),
+    'desktop/winsmux_0.38.1_x64-setup.inventory.json', $fixture.names[0], ($inventoryName + ':stream'))) {
+    $names = [string[]]$fixture.names.Clone()
+    $names[$inventoryIndex] = $replacement
+    if ($replacement -ceq '') { $names = [string[]]@($names | Where-Object { $_ -cne '' }) }
+    $rejected = $false
+    $observedFailure = 'none'
+    try { $invalid = [IntegratedPublicationCustody]::new($bundleRoot, $names, [string[]]$fixture.hashes); $invalid.Dispose() }
+    catch { $observedFailure = $_.Exception.GetBaseException().Message; $rejected = $observedFailure.Contains('Exact integrated asset paths') }
+    Assert-Check $rejected "Native inventory name refusal differed: replacement=[$replacement], failure=[$observedFailure]"
+}
+$inventoryPath = Join-Path $bundleRoot $inventoryName
+$parkedInventory = Join-Path $fixture.fixture_root 'parked-inventory.json'
+[IO.File]::Move($inventoryPath, $parkedInventory)
+try {
+    $rejected = $false
+    try { $invalid = [IntegratedPublicationCustody]::new($bundleRoot, [string[]]$fixture.names, [string[]]$fixture.hashes); $invalid.Dispose() }
+    catch { $rejected = $_.Exception.ToString().Contains('additional custody assets') }
+    Assert-Check $rejected 'Native custody accepted a missing installed inventory asset.'
+} finally { [IO.File]::Move($parkedInventory, $inventoryPath) }
+$extraInventory = Join-Path $bundleRoot 'desktop/winsmux_0.38.1_x64-setup.inventory.json'
+[IO.File]::WriteAllText($extraInventory, 'synthetic unknown sibling')
+try {
+    $rejected = $false
+    try { $invalid = [IntegratedPublicationCustody]::new($bundleRoot, [string[]]$fixture.names, [string[]]$fixture.hashes); $invalid.Dispose() }
+    catch { $rejected = $_.Exception.ToString().Contains('additional custody assets') }
+    Assert-Check $rejected 'Native custody accepted an extra inventory asset.'
+} finally { [IO.File]::Delete($extraInventory) }
 $custody = [IntegratedPublicationCustody]::new($bundleRoot, [string[]]$fixture.names, [string[]]$fixture.hashes)
 $npmSource = Join-Path $fixture.fixture_root 'npm-cli.js'
 [IO.File]::WriteAllText($npmSource, '// Synthetic npm interpreter source only', [Text.UTF8Encoding]::new($false))
@@ -48,7 +79,7 @@ try {
     $replacementRefused = $false
     try { $custody.HoldNpmCli($npmSource, $npmHash) } catch { $replacementRefused = $_.Exception.ToString().Contains('already fixed') }
     Assert-Check $replacementRefused 'Fixed npm source was replaced.'
-    Assert-Check ($custody.HeldFileCount -eq 13) 'Complete asset custody missing.'
+    Assert-Check ($custody.HeldFileCount -eq 14) 'Complete asset custody missing.'
     foreach ($name in $fixture.names) {
         $assetPath = Join-Path $bundleRoot $name
         Assert-Check ([IO.File]::ReadAllBytes($assetPath).Length -gt 0) 'Read-only consumer could not read.'
@@ -78,17 +109,21 @@ foreach ($name in $fixture.names) {
 }
 $names = [string[]]$fixture.names
 $hashes = [string[]]$fixture.hashes
-$changed = [string[]]$hashes.Clone()
-$changed[0] = '0' * 64
-$rejected = $false
-try { $invalid = [IntegratedPublicationCustody]::new($bundleRoot, $names, $changed); $invalid.Dispose() } catch { $rejected = $true }
-Assert-Check $rejected 'Changed expected asset hash accepted.'
-$writer = [IO.File]::Open((Join-Path $bundleRoot $names[0]), [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
-$writer.Dispose()
-Assert-Check $true 'Failed acquisition leaked a read lock.'
+foreach ($badIndex in @(0, $inventoryIndex)) {
+    $changed = [string[]]$hashes.Clone()
+    $changed[$badIndex] = '0' * 64
+    $rejected = $false
+    try { $invalid = [IntegratedPublicationCustody]::new($bundleRoot, $names, $changed); $invalid.Dispose() } catch { $rejected = $true }
+    Assert-Check $rejected 'Changed expected asset hash accepted.'
+    foreach ($name in $names) {
+        $writer = [IO.File]::Open((Join-Path $bundleRoot $name), [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        $writer.Dispose()
+        Assert-Check $true 'Failed acquisition leaked a read lock.'
+    }
+}
 $result = [ordered]@{ observed_at = (Get-Date).ToUniversalTime().ToString('o'); passed = $true; checks = $checks;
     windows_version = [Environment]::OSVersion.Version.ToString(); powershell_version = $PSVersionTable.PSVersion.ToString();
-    held_files = 13; native_sharing_violation_verified = $true; released_read_write_verified = $true;
+    held_files = 14; native_sharing_violation_verified = $true; released_read_write_verified = $true;
     candidate_identity = $fixture.candidate_identity; publication_admitted = $false;
     scope = 'Synthetic files, real Windows read/write/delete/rename custody. Child lifecycle and real publication are not claimed.' }
 $json = $result | ConvertTo-Json -Depth 8

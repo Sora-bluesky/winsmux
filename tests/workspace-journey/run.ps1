@@ -120,8 +120,17 @@ function Invoke-NonPty {
     $start.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
     foreach ($argument in $Arguments) { [void] $start.ArgumentList.Add($argument) }
     foreach ($key in $Environment.Keys) { $start.Environment[$key] = $Environment[$key] }
-    $process = [Diagnostics.Process]::Start($start)
+    $process = $null
+    $stdoutBuffer = $null
+    $stderrBuffer = $null
     try {
+        # Reserve fresh output files before launching a child. Bytes remain
+        # inspectable after interruption; only the EOF receipt proves completion.
+        $stdoutBuffer = [IO.FileStream]::new("$ReceiptBase.stdout.bin", [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read, 1, [IO.FileOptions]::Asynchronous)
+        $stderrBuffer = [IO.FileStream]::new("$ReceiptBase.stderr.bin", [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read, 1, [IO.FileOptions]::Asynchronous)
+        $process = [Diagnostics.Process]::Start($start)
         $started = @{
             stage = 'started'; pid = $process.Id
             creation_filetime_utc = [WorkspaceJourneyProcessTimes]::CreationFiletime($process.Handle)
@@ -129,44 +138,43 @@ function Invoke-NonPty {
             executable = $Executable
         }
         Write-AtomicReceipt -Path "$ReceiptBase.start.json" -Value $started
-        $stdoutBuffer = [IO.MemoryStream]::new()
-        $stderrBuffer = [IO.MemoryStream]::new()
-        try {
-            $process.StandardInput.Close()
-            $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutBuffer)
-            $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrBuffer)
-            $process.WaitForExit()
-            Write-AtomicReceipt -Path "$ReceiptBase.exit.json" -Value @{
-                stage = 'exited'; pid = $process.Id
-                creation_filetime_utc = $started.creation_filetime_utc
-                executable_sha256 = $started.executable_sha256
-                exit_code = $process.ExitCode
-            }
-            [void]($stdoutTask.GetAwaiter().GetResult())
-            [void]($stderrTask.GetAwaiter().GetResult())
-            $stdoutBytes = $stdoutBuffer.ToArray()
-            $stderrBytes = $stderrBuffer.ToArray()
-            Write-AtomicBytes -Path "$ReceiptBase.stdout.bin" -Bytes $stdoutBytes
-            Write-AtomicBytes -Path "$ReceiptBase.stderr.bin" -Bytes $stderrBytes
-            Write-AtomicReceipt -Path "$ReceiptBase.eof.json" -Value @{
-                stage = 'streams_eof'; pid = $process.Id
-                creation_filetime_utc = $started.creation_filetime_utc
-                stdout_bytes = $stdoutBytes.Length
-                stderr_bytes = $stderrBytes.Length
-                stdout_sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stdoutBytes)).ToLowerInvariant()
-                stderr_sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stderrBytes)).ToLowerInvariant()
-            }
-            Assert-CapturedStreams -ReceiptBase $ReceiptBase
-            $utf8 = [Text.UTF8Encoding]::new($false, $true)
-            return @{ ExitCode = $process.ExitCode; Stdout = $utf8.GetString($stdoutBytes);
-                Stderr = $utf8.GetString($stderrBytes); Pid = $process.Id;
-                CreationFiletimeUtc = $started.creation_filetime_utc }
-        } finally {
-            $stdoutBuffer.Dispose()
-            $stderrBuffer.Dispose()
+        $process.StandardInput.Close()
+        $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutBuffer)
+        $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrBuffer)
+        $process.WaitForExit()
+        Write-AtomicReceipt -Path "$ReceiptBase.exit.json" -Value @{
+            stage = 'exited'; pid = $process.Id
+            creation_filetime_utc = $started.creation_filetime_utc
+            executable_sha256 = $started.executable_sha256
+            exit_code = $process.ExitCode
         }
+        [void]($stdoutTask.GetAwaiter().GetResult())
+        [void]($stderrTask.GetAwaiter().GetResult())
+        $stdoutBuffer.Flush($true)
+        $stderrBuffer.Flush($true)
+        $stdoutBuffer.Dispose()
+        $stdoutBuffer = $null
+        $stderrBuffer.Dispose()
+        $stderrBuffer = $null
+        $stdoutBytes = [IO.File]::ReadAllBytes("$ReceiptBase.stdout.bin")
+        $stderrBytes = [IO.File]::ReadAllBytes("$ReceiptBase.stderr.bin")
+        Write-AtomicReceipt -Path "$ReceiptBase.eof.json" -Value @{
+            stage = 'streams_eof'; pid = $process.Id
+            creation_filetime_utc = $started.creation_filetime_utc
+            stdout_bytes = $stdoutBytes.Length
+            stderr_bytes = $stderrBytes.Length
+            stdout_sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stdoutBytes)).ToLowerInvariant()
+            stderr_sha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stderrBytes)).ToLowerInvariant()
+        }
+        Assert-CapturedStreams -ReceiptBase $ReceiptBase
+        $utf8 = [Text.UTF8Encoding]::new($false, $true)
+        return @{ ExitCode = $process.ExitCode; Stdout = $utf8.GetString($stdoutBytes);
+            Stderr = $utf8.GetString($stderrBytes); Pid = $process.Id;
+            CreationFiletimeUtc = $started.creation_filetime_utc }
     } finally {
-        $process.Dispose()
+        if ($null -ne $stdoutBuffer) { $stdoutBuffer.Dispose() }
+        if ($null -ne $stderrBuffer) { $stderrBuffer.Dispose() }
+        if ($null -ne $process) { $process.Dispose() }
     }
 }
 
@@ -349,6 +357,42 @@ if ($SelfTest) {
             throw 'Raw stdout or stderr was not preserved'
         }
         Assert-CapturedStreams -ReceiptBase $rawBase
+        $liveBase = Join-Path $testRoot 'live'
+        $liveCommand = @'
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::Out.Write('LIVE_日本語')
+[Console]::Out.Flush()
+[Console]::Error.Write('LIVE_ERROR')
+[Console]::Error.Flush()
+$capture = $env:WINSMUX_SELF_TEST_CAPTURE_BASE
+$deadline = [DateTime]::UtcNow.AddSeconds(30)
+do {
+    $matched = $true
+    foreach ($entry in @(@('stdout', 'LIVE_日本語'), @('stderr', 'LIVE_ERROR'))) {
+        $stream = [IO.FileStream]::new("$capture.$($entry[0]).bin", [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true))
+            try { $matched = $matched -and ($reader.ReadToEnd() -ceq $entry[1]) }
+            finally { $reader.Dispose() }
+        } finally { $stream.Dispose() }
+    }
+    if ($matched) { break }
+    Start-Sleep -Milliseconds 10
+} while ([DateTime]::UtcNow -lt $deadline)
+if (-not $matched) { throw 'Output was not inspectable while its producer was alive' }
+if ([IO.File]::Exists("$capture.exit.json") -or [IO.File]::Exists("$capture.eof.json")) {
+    throw 'Completion was claimed while its producer was alive'
+}
+'@
+        $live = Invoke-NonPty -Executable $fakeExe -Arguments @('-NoProfile', '-Command', $liveCommand) `
+            -ExpectedSha256 $fakeHash -ReceiptBase $liveBase `
+            -Environment @{ WINSMUX_SELF_TEST_CAPTURE_BASE = $liveBase }
+        if ($live.ExitCode -ne 0 -or $live.Stdout -cne 'LIVE_日本語' -or $live.Stderr -cne 'LIVE_ERROR') {
+            throw 'Self-test did not preserve live output before child exit'
+        }
+        Assert-CapturedStreams -ReceiptBase $liveBase
         $originalRaw = [IO.File]::ReadAllBytes("$rawBase.stdout.bin")
         Remove-Item -LiteralPath "$rawBase.stdout.bin" -Force
         $rejected = $false
@@ -368,7 +412,7 @@ if ($SelfTest) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force
     }
     @{ gate = 'workspace-journey/non-pty-boundaries'; self_test = 'pass'; sibling_prefix = 'rejected';
-        separate_temp_roots = 'pass'; raw_stdout = 'preserved';
+        separate_temp_roots = 'pass'; raw_stdout = 'preserved'; live_output_before_exit = 'pass';
         raw_stdout_missing = 'rejected'; raw_stdout_corrupt = 'rejected';
         junction = $junctionCheck } | ConvertTo-Json -Compress
     exit 0

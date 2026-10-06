@@ -61,6 +61,7 @@ export function assertCanonicalBundledDistribution({ repoRoot, host, version, ru
   const canonical = path.join(source, 'binaries');
   const manifestBytes = plain(path.join(canonical, 'distribution-manifest.json'));
   const manifest = parseStrictJson(manifestBytes);
+  requireValue(manifest.build_profile === 'release', 'Bundling requires a release companion generation.');
   requireValue(manifest.version === version && manifest.host === host
     && JSON.stringify(manifest.plugin) === JSON.stringify(binding.plugin), 'Published generation binding differs.');
   // The mutable outer inventory cannot redefine required license/source/notice bytes.
@@ -90,8 +91,9 @@ export function assertCanonicalBundledDistribution({ repoRoot, host, version, ru
 }
 
 /** Prepare one new owned generation. The existing canonical generation is never written here. */
-export function stageBundledDistribution({ repoRoot, destination, host, version, rustcCommit, companions }) {
+export function stageBundledDistribution({ repoRoot, destination, host, version, rustcCommit, buildProfile, companions }) {
   const { repo, source, assets, binding, dll, utils, hook } = checkedBuildInputs({ repoRoot, host, version, rustcCommit });
+  requireValue(buildProfile === 'debug' || buildProfile === 'release', 'Selected companion build profile is required.');
   const out = physicalPath(destination);
   requireValue(Array.isArray(companions) && companions.length === 2
     && companions[0]?.name === 'winsmux' && companions[1]?.name === 'winsmux-workspace-mcp',
@@ -142,7 +144,7 @@ export function stageBundledDistribution({ repoRoot, destination, host, version,
   }
   const files = [...inputs.map(row => ({ path: row.path, bytes: row.bytes.length, sha256: hash(row.bytes) })),
     ...licenseProof.files.map(row => ({ ...row, path: 'licenses/' + row.path }))].sort((a, b) => a.path.localeCompare(b.path));
-  const manifest = { schema: 'winsmux-distribution-generation/v1', version, host, files, plugin: binding.plugin };
+  const manifest = { schema: 'winsmux-distribution-generation/v1', version, host, build_profile: buildProfile, files, plugin: binding.plugin };
   if (retainedDirectories.length) {
     manifest.retained_directories = retainedDirectories.sort();
     for (const directory of retainedDirectories) fs.mkdirSync(path.join(out, directory), { recursive: true });

@@ -58,6 +58,20 @@ for (const surface of ['core', 'desktop', 'npm']) {
     const bytes = fs.readFileSync(checksum); fs.writeFileSync(checksum, 'wrong checksum\n');
     check(() => assert.throws(() => stageIntegratedCiArtifact(input), /checksums differ/u)); fs.writeFileSync(checksum, bytes);
   }
+  if (surface === 'desktop') {
+    const inventory = path.join(sourceDirectory, 'winsmux_0.38.0_x64-setup.inventory.json');
+    const bytes = fs.readFileSync(inventory);
+    fs.unlinkSync(inventory);
+    check(() => assert.throws(() => stageIntegratedCiArtifact(input), /Closed final producer directory/u));
+    fs.writeFileSync(inventory, bytes);
+    fs.writeFileSync(inventory, Buffer.concat([bytes, Buffer.from('changed')]));
+    check(() => assert.throws(() => stageIntegratedCiArtifact(input), /checksums differ/u));
+    fs.writeFileSync(inventory, bytes);
+    const sibling = path.join(sourceDirectory, 'winsmux_0.38.1_x64-setup.inventory.json');
+    fs.writeFileSync(sibling, bytes);
+    check(() => assert.throws(() => stageIntegratedCiArtifact(input), /Closed final producer directory/u));
+    fs.unlinkSync(sibling);
+  }
   const output = path.join(root, surface + '-github-output.txt'); fs.writeFileSync(output, '');
   const env = { ...process.env, GITHUB_OUTPUT: output };
   const args = ['scripts/stage-integrated-ci-artifact.mjs', '--surface', surface, '--source', sourceDirectory,

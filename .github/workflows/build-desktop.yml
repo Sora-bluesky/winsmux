@@ -53,7 +53,7 @@ jobs:
 
       - name: Stage complete licensed companion generation
         working-directory: winsmux-app
-        run: npm run prepare:companion-cli:release
+        run: npm run prepare:companion-cli
 
       - name: Prepare pinned older CLI for native version-pair proof
         shell: pwsh

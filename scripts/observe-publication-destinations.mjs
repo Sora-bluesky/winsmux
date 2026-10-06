@@ -127,7 +127,8 @@ export function assertPublicBinaryRedirect(from, to, visited) {
 function expectedFilename(name) {
   return ['SHA256SUMS','winsmux-arm64.exe','winsmux-arm64.exe.licenses.zip','winsmux-remote-helper-linux-x64',
     'winsmux-x64.exe','winsmux-x64.exe.licenses.zip','SHA256SUMS-desktop','latest.json',
-    'winsmux_0.38.0_x64-setup.exe','winsmux_0.38.0_x64-setup.exe.sig','winsmux_0.38.0_x64_en-US.msi'].includes(name);
+    'winsmux_0.38.0_x64-setup.exe','winsmux_0.38.0_x64-setup.exe.sig',
+    'winsmux_0.38.0_x64-setup.inventory.json','winsmux_0.38.0_x64_en-US.msi'].includes(name);
 }
 function request(url, { binary = false, expectedBytes = null, visited = new Set() } = {}) {
   demand(!visited.has(url), 'Cyclic public request.'); visited.add(url);
@@ -204,7 +205,8 @@ export async function observePublicationDestinations(contract, bundle, { namespa
       const batch = await json(`${api}/releases/${release.id}/assets?per_page=100&page=${page}`, `${label}-assets-${page}.json`);
       demand(Array.isArray(batch) && batch.length <= 100, 'Actual release pagination invalid.'); all.push(...batch);
       if (batch.length < 100) break;
-      demand(all.length <= 11, 'Unexpected public release assets exceed fixed set.');
+      demand(all.length <= bundle.assets.filter(row => /^(core|desktop)\//u.test(row.path)).length,
+        'Unexpected public release assets exceed fixed set.');
     }
     return all;
   };
@@ -244,7 +246,8 @@ export async function observePublicationDestinations(contract, bundle, { namespa
     if (npmAfter !== null) validatePublicNpmMetadata(bundle, npmAfter);
     demand(same(releaseCoordinates(release), releaseCoordinates(releaseAfter)) && same(inventory, inventoryAfter)
       && same(npmCoordinates(npm), npmCoordinates(npmAfter)), 'Public destination changed during complete observation.');
-    demand(rows.length === 13 && new Set(rows.map(row => row.path)).size === 13, 'All fixed public byte rows required.');
+    demand(rows.length === bundle.assets.length && new Set(rows.map(row => row.path)).size === bundle.assets.length,
+      'All fixed public byte rows required.');
     for (const original of originals) demand(fileHash(original.file) === original.sha256, 'Actual public original changed.');
     revalidatePublicationBundle(bundle);
   } catch (error) { failure = error.message; }
@@ -263,7 +266,7 @@ export function readObservedPublicationRows(contract, bundle, observation) {
   const original = issued.get(observation);
   demand(original && original.contract === contract && original.bundle === bundle && observation.passed === true,
     'Complete actual public origin required.');
-  demand(fileHash(original.resultFile) === original.resultSha256 && observation.rows.length === 13,
+  demand(fileHash(original.resultFile) === original.resultSha256 && observation.rows.length === bundle.assets.length,
     'Observed public result changed.');
   for (const row of observation.originals) demand(fileHash(row.file) === row.sha256, 'Observed public original changed.');
   return freeze(structuredClone(observation.rows));

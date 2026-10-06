@@ -1,6 +1,90 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+Describe 'Desktop companion signature boundary' {
+    BeforeAll {
+        $script:SigningRoot = (& git rev-parse --show-toplevel).Trim()
+        $script:SigningHelper = Join-Path $script:SigningRoot 'winsmux-app/src-tauri/scripts/sign-windows-bundle.ps1'
+    }
+    BeforeEach {
+        $script:SigningEnvironment = @{}
+        foreach ($key in @('WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH','WINDOWS_SIGNING_CERTIFICATE_PASSWORD','WINSMUX_SIGNTOOL_EXE','SIGNING_TEST_CALLS','SIGNING_TEST_STATUS','SIGNING_TEST_OTHER_CERT')) {
+            $script:SigningEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
+        }
+        $env:SIGNING_TEST_STATUS = 'Valid'; $env:SIGNING_TEST_OTHER_CERT = 'false'
+        $script:SigningAsset = Join-Path $TestDrive ([Guid]::NewGuid().ToString('N') + '.exe')
+        [IO.File]::WriteAllBytes($script:SigningAsset, [byte[]](8,9,10))
+        $env:WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH = Join-Path $TestDrive 'mock-only.pfx'
+        $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = 'fixture-value'
+        $env:SIGNING_TEST_CALLS = $script:SigningAsset + '.calls.txt'
+        $env:WINSMUX_SIGNTOOL_EXE = Join-Path $TestDrive 'synthetic-signtool.ps1'
+        [IO.File]::WriteAllText($env:WINSMUX_SIGNTOOL_EXE, @'
+[IO.File]::AppendAllText($env:SIGNING_TEST_CALLS, ([string]$args[0]) + "`n")
+if ($args[0] -ceq 'sign') { [IO.File]::AppendAllText([string]$args[-1], 'synthetic-signature') }
+$global:LASTEXITCODE = 0
+'@)
+        Mock Get-PfxCertificate { [pscustomobject]@{RawData=[byte[]](1,2,3)} }
+        Mock Get-AuthenticodeSignature {
+            [pscustomobject]@{Status=$env:SIGNING_TEST_STATUS; SignerCertificate=[pscustomobject]@{
+                RawData=[byte[]]$(if ($env:SIGNING_TEST_OTHER_CERT -ceq 'true') {4,5,6} else {1,2,3})}}
+        }
+    }
+    AfterEach {
+        foreach ($key in $script:SigningEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key,$script:SigningEnvironment[$key]) }
+    }
+    It 'verifies without signing or changing the file' {
+        $before = (Get-FileHash $script:SigningAsset).Hash
+        & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly
+        (Get-FileHash $script:SigningAsset).Hash | Should -BeExactly $before
+        @(Get-Content $env:SIGNING_TEST_CALLS) | Should -Be @('verify')
+    }
+    It 'checks the signed bytes with the expected certificate and native policy' {
+        & $script:SigningHelper -AssetPath $script:SigningAsset
+        @(Get-Content $env:SIGNING_TEST_CALLS) | Should -Be @('sign','verify')
+        [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($script:SigningAsset)) | Should -Match 'synthetic-signature$'
+    }
+    It 'refuses an invalid existing signature without modifying it' {
+        $env:SIGNING_TEST_STATUS = 'HashMismatch'; $before = (Get-FileHash $script:SigningAsset).Hash
+        { & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly } | Should -Throw '*signature or expected signer differs*'
+        (Get-FileHash $script:SigningAsset).Hash | Should -BeExactly $before
+        Test-Path $env:SIGNING_TEST_CALLS | Should -BeFalse
+    }
+    It 'refuses a valid signature from a different certificate' {
+        $env:SIGNING_TEST_OTHER_CERT = 'true'
+        { & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly } | Should -Throw '*signature or expected signer differs*'
+        Test-Path $env:SIGNING_TEST_CALLS | Should -BeFalse
+    }
+    It 'requires credentials even on the read-only signed route' {
+        $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = $null
+        { & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly } | Should -Throw '*PASSWORD is required*'
+        Test-Path $env:SIGNING_TEST_CALLS | Should -BeFalse
+    }
+    It 'selects signing before GUI compilation and checks direct bundling' {
+        $config = Get-Content (Join-Path $script:SigningRoot 'winsmux-app/src-tauri/tauri.ci.conf.json') -Raw | ConvertFrom-Json
+        $config.build.beforeBuildCommand | Should -BeExactly 'node ./src-tauri/scripts/prepare-companion-cli.mjs --release --sign-companions && npm run build'
+        $config.build.beforeBundleCommand | Should -BeExactly 'node ./src-tauri/scripts/check-bundled-distribution.mjs --signed-companions'
+        $config.bundle.windows.signCommand | Should -Not -Match 'SKIP|no-sign'
+    }
+    It 'rejects signing without release, unknown, empty, reversed or repeated preparation options before starting a child' {
+        $wrapper = Join-Path $script:SigningRoot 'winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs'
+        foreach ($arguments in @(@('--sign-companions'),@('--unknown'),@(''),@('--sign-companions','--release'),@('--release','--release'),@('--release','--sign-companions','--sign-companions'))) {
+            $start = [Diagnostics.ProcessStartInfo]::new((Get-Command node -CommandType Application | Select-Object -First 1).Source)
+            $start.ArgumentList.Add($wrapper)
+            foreach ($argument in $arguments) { $start.ArgumentList.Add($argument) }
+            $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+            $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+            $process=[Diagnostics.Process]::Start($start)
+            try {
+                $output=$process.StandardOutput.ReadToEndAsync(); $errorOutput=$process.StandardError.ReadToEndAsync()
+                $process.WaitForExit()
+                $process.ExitCode | Should -Not -Be 0
+                $output.GetAwaiter().GetResult() | Should -BeExactly ''
+                $errorOutput.GetAwaiter().GetResult() | Should -Match 'Companion preparation accepts'
+            } finally { $process.Dispose() }
+        }
+    }
+}
+
 Describe 'winsmux version surface' {
     BeforeAll {
         $script:RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
@@ -25,7 +109,7 @@ Describe 'winsmux version surface' {
                         '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run tauri -- build(?<args>[^\r\n]*)')
                     $windows = $text -match '(?m)^    runs-on:[ \t]*windows-'
                     $core = $windows -and $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?node scripts/build-core-candidate\.mjs(?:\s|$)'
-                    $companion = $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run prepare:companion-cli:release(?:\s|$)'
+                    $companion = $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run prepare:companion-cli(?::release)?(?:\s|$)'
                     if ($commands.Count -gt 0 -or $core -or $companion) {
                         [pscustomobject]@{ id="${file}::$($job.Groups['id'].Value)"; windows=$windows; text=$text }
                     }
@@ -40,7 +124,7 @@ Describe 'winsmux version surface' {
                 $text = $producer.text
                 $actions = [regex]::Matches($text, '(?m)^[ \t]*(?:-[ \t]*)?uses:[ \t]*\./\.github/actions/setup-windows-distribution-toolchain[ \t]*\r?$')
                 $nodes = [regex]::Matches($text, '(?m)^[ \t]*(?:-[ \t]*)?uses:[ \t]*actions/setup-node@[^\s#]+')
-                $firstCommand = [regex]::Match($text, '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?(?:cargo\s|npm run (?:tauri -- build|prepare:companion-cli:release)|node scripts/build-core-candidate\.mjs)')
+                $firstCommand = [regex]::Match($text, '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?(?:cargo\s|npm run (?:tauri -- build|prepare:companion-cli(?::release)?)|node scripts/build-core-candidate\.mjs)')
                 if (-not $producer.windows -or $actions.Count -ne 1 -or $nodes.Count -ne 1 -or
                     -not $firstCommand.Success -or $nodes[0].Index -ge $actions[0].Index -or
                     $actions[0].Index -ge $firstCommand.Index -or
@@ -118,7 +202,7 @@ Describe 'winsmux version surface' {
         }
         $additional = $script:DistributionWorkflows.Clone()
         foreach ($command in @('npm run tauri -- build', 'npm run tauri -- build --no-bundle',
-            'npm run prepare:companion-cli:release', 'node scripts/build-core-candidate.mjs')) {
+            'npm run prepare:companion-cli', 'npm run prepare:companion-cli:release', 'node scripts/build-core-candidate.mjs')) {
             $additional['new-producer.yml'] = "jobs:`n  producer:`n    runs-on: windows-latest`n    steps:`n$nodeLine`n      - uses: dtolnay/rust-toolchain@stable`n      - run: $command`n"
             Test-MeasuredWindowsProducerToolchains $additional | Should -BeFalse
             $additional['new-producer.yml'] = $additional['new-producer.yml'].Replace('      - uses: dtolnay/rust-toolchain@stable', $actionLine)
@@ -128,7 +212,7 @@ Describe 'winsmux version surface' {
         Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
     }
 
-    It 'prepares required licensed resources before the first Tauri backend test' {
+    It 'prepares licensed debug companions before the first debug Tauri backend test' {
         foreach ($producer in @(
             @{ File = 'build-desktop.yml'; Job = 'build' },
             @{ File = 'test.yml'; Job = 'desktop-build-test' }
@@ -136,12 +220,12 @@ Describe 'winsmux version surface' {
             $job = [regex]::Match($script:DistributionWorkflows[$producer.File],
                 ('(?ms)^  {0}:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)' -f [regex]::Escape($producer.Job)))
             $job.Success | Should -BeTrue
-            $preparation = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: npm run prepare:companion-cli:release\s*\r?$')
+            $preparation = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: npm run prepare:companion-cli\s*\r?$')
             $backend = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml\s*\r?$')
             $preparation.Count | Should -Be 1
             $backend.Count | Should -Be 1
             $preparation[0].Index | Should -BeLessThan $backend[0].Index
-            $job.Groups['body'].Value | Should -Not -Match '(?m)^        run: npm run prepare:companion-cli\s*\r?$'
+            $job.Groups['body'].Value | Should -Not -Match '(?m)^        run: npm run prepare:companion-cli:release\s*\r?$'
         }
     }
 
@@ -2001,7 +2085,7 @@ Resolve-DesktopWebSocketPathAuthority `
         $branchText | Should -Match 'Assert-FileChecksum'
     }
 
-    It 'T857-DESKTOP-ROUTER-COMPAT-01 requires router inventory only for candidates and releases at or after 0.36.38' {
+    It 'T857-DESKTOP-ROUTER-COMPAT-01 preserves the known router release and requires the explicit workspace generation for the current release' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $tokens = $null
         $parseErrors = $null
@@ -2016,14 +2100,14 @@ Resolve-DesktopWebSocketPathAuthority `
         $policyFunctions.Count | Should -Be 1
 
         $policyHarness = [scriptblock]::Create($policyFunctions[0].Extent.Text)
+        function Assert-Condition([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
         . $policyHarness
         $cases = @(
-            @{ name = 'candidate_old'; version = '0.36.30'; tag = 'v0.36.30.1'; candidate = 'candidate.exe'; required = $true; treeish = 'HEAD' },
-            @{ name = 'candidate_current'; version = '0.36.38'; tag = 'v0.36.38'; candidate = 'candidate.exe'; required = $true; treeish = 'HEAD' },
+            @{ name = 'candidate_current'; version = '0.38.0'; tag = 'v0.38.0'; candidate = 'candidate.exe'; required = $false; treeish = $null; generation = 'workspace' },
+            @{ name = 'public_current'; version = '0.38.0'; tag = 'v0.38.0'; candidate = ''; required = $false; treeish = $null; generation = 'workspace' },
             @{ name = 'public_recovery'; version = '0.36.30'; tag = 'v0.36.30.1'; candidate = ''; required = $false; treeish = $null },
             @{ name = 'public_before_cutover'; version = '0.36.37'; tag = 'v0.36.37'; candidate = ''; required = $false; treeish = $null },
-            @{ name = 'public_at_cutover'; version = '0.36.38'; tag = 'v0.36.38'; candidate = ''; required = $true; treeish = 'v0.36.38' },
-            @{ name = 'public_future'; version = '0.37.0'; tag = 'v0.37.0'; candidate = ''; required = $true; treeish = 'v0.37.0' }
+            @{ name = 'public_at_cutover'; version = '0.36.38'; tag = 'v0.36.38'; candidate = ''; required = $true; treeish = 'v0.36.38' }
         )
         foreach ($case in $cases) {
             $policy = Resolve-DesktopRouterInventoryPolicy `
@@ -2032,7 +2116,10 @@ Resolve-DesktopWebSocketPathAuthority `
                 -CandidateInstallerPath ([string]$case.candidate)
             $policy.required | Should -Be ([bool]$case.required) -Because ([string]$case.name)
             $policy.treeish | Should -Be $case.treeish -Because ([string]$case.name)
+            if ($case.ContainsKey('generation')) { $policy.generation | Should -Be $case.generation }
         }
+        { Resolve-DesktopRouterInventoryPolicy -Version '0.37.0' -ReleaseTag 'v0.37.0' -CandidateInstallerPath '' } | Should -Throw '*generation_unknown*'
+        { Resolve-DesktopRouterInventoryPolicy -Version '0.36.38' -ReleaseTag 'v0.36.38' -CandidateInstallerPath 'candidate.exe' } | Should -Throw '*legacy_candidate_unsupported*'
 
         $desktopSmoke = @($ast.FindAll({
             param($node)

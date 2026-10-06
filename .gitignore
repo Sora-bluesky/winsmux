@@ -94,6 +94,8 @@ tests/workspace-efficiency/*
 !tests/workspace-package/
 tests/workspace-package/*
 !tests/workspace-package/windows-runtime.test.mjs
+!tests/workspace-package/bundled-distribution.test.mjs
+!tests/workspace-package/nsis-generation.test.mjs
 !tests/workspace-package/fixture-pe.mjs
 !tests/workspace-package/install-lifecycle-source.test.ps1
 !tests/workspace-package/install-generation.test.ps1
@@ -177,6 +179,7 @@ tests/bridge/_helpers/*
 !tests/HarnessContract.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
+!tests/DesktopInstallReceipt.Tests.ps1
 !tests/V03618ReleaseHardening.Tests.ps1
 !tests/CliBakeoff.Tests.ps1
 !tests/ThreatModelContract.Tests.ps1

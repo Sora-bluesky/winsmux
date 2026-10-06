@@ -20,7 +20,8 @@ public sealed class IntegratedPublicationCustody : IDisposable {
         "core/SHA256SUMS", "core/winsmux-arm64.exe", "core/winsmux-arm64.exe.licenses.zip",
         "core/winsmux-remote-helper-linux-x64", "core/winsmux-x64.exe", "core/winsmux-x64.exe.licenses.zip",
         "desktop/SHA256SUMS-desktop", "desktop/latest.json", "desktop/winsmux_0.38.0_x64-setup.exe",
-        "desktop/winsmux_0.38.0_x64-setup.exe.sig", "desktop/winsmux_0.38.0_x64_en-US.msi",
+        "desktop/winsmux_0.38.0_x64-setup.exe.sig", "desktop/winsmux_0.38.0_x64-setup.inventory.json",
+        "desktop/winsmux_0.38.0_x64_en-US.msi",
         "npm/winsmux-0.38.0.tgz", "release-body.md"
     }.OrderBy(x => x, StringComparer.Ordinal).ToArray();
     [StructLayout(LayoutKind.Sequential)] struct FileTime { public uint Low, High; }
@@ -1004,7 +1005,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
     }
     string RuntimeTemp() {
         if (runtimeTemp != null) return runtimeTemp;
-        // Attempt-owned scratch is beside the immutable thirteen-asset bundle.
+        // Attempt-owned scratch is beside the immutable fixed-asset bundle.
         // Never reuse a global/user temp or put mutable output in the source tree.
         string target = root + ".runtime-" + Guid.NewGuid().ToString("N");
         if (Directory.Exists(target) || File.Exists(target)) throw new InvalidOperationException("Runtime temp already exists");

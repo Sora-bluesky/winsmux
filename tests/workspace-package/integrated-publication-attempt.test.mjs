@@ -67,12 +67,12 @@ for (const change of [ state => { state.actor_gone = false; }, state => { delete
 }
 check(() => assert.equal(publicQueries, 0));
 check(() => {
-  const actual = recover(); assert.equal(actual.observed_matching, 13); assert.deepEqual(actual.missing_operations, []);
+  const actual = recover(); assert.equal(actual.observed_matching, 14); assert.deepEqual(actual.missing_operations, []);
   assert.equal(actual.publication_admitted, false); assert.equal(actual.attempt_remains_frozen, true);
 });
 check(() => {
   const rows = publicMatching(); rows[0] = { path: rows[0].path, state: 'absent', sha256: null };
-  const actual = recover(nativeIdle, () => rows); assert.equal(actual.observed_matching, 12); assert.deepEqual(actual.missing_operations, [rows[0].path]);
+  const actual = recover(nativeIdle, () => rows); assert.equal(actual.observed_matching, 13); assert.deepEqual(actual.missing_operations, [rows[0].path]);
 });
 for (const change of [ rows => rows.pop(), rows => rows.push(rows[0]), rows => { rows[0] = rows[1]; },
   rows => { rows[0].state = 'unknown'; }, rows => { rows[0].state = 'different'; },
