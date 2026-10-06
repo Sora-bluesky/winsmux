@@ -1070,10 +1070,37 @@ Describe 'winsmux version surface' {
             $node -is [Management.Automation.Language.CommandAst] -and
             $node.GetCommandName() -ceq 'Invoke-PublicChildProcess'
         }, $true))
+        $nsisCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-DesktopNsisProcess'
+        }, $true))
         $nativeCalls.Count | Should -Be 2
-        $publicCalls.Count | Should -Be 4
-        $publicProcessOwner[0].Extent.Text | Should -Match "Data\['process_result'\]"
-        $publicProcessOwner[0].Extent.Text | Should -Match "-State 'timed_out'"
+        (@($publicCalls) + @($nsisCalls)).Count | Should -Be 4
+        foreach ($route in @(
+            @{ owner='Invoke-CoreSmoke'; entry='Invoke-PublicChildProcess'; operation="'core_version'" },
+            @{ owner='Invoke-NpmProcessOperation'; entry='Invoke-PublicChildProcess'; operation='$Operation' },
+            @{ owner='Invoke-DesktopSmoke'; entry='Invoke-DesktopNsisProcess'; operation="'desktop_installer'" },
+            @{ owner='Invoke-VerifiedDesktopUninstaller'; entry='Invoke-DesktopNsisProcess'; operation="'desktop_uninstaller'" }
+        )) {
+            $routeOwner = @($functions | Where-Object Name -CEQ $route.owner)
+            $routeOwner.Count | Should -Be 1
+            $routeCalls = @($routeOwner[0].FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq $route.entry
+            }, $true))
+            $routeCalls.Count | Should -Be 1
+            $routeCalls[0].Extent.Text | Should -Match ([regex]::Escape('-Operation ' + $route.operation))
+        }
+        $nsisProcessOwner = @($functions | Where-Object Name -CEQ 'Invoke-DesktopNsisProcess')
+        $nsisProcessOwner.Count | Should -Be 1
+        foreach ($owner in @($publicProcessOwner[0], $nsisProcessOwner[0])) {
+            $owner.Extent.Text | Should -Match "Data\['process_result'\]"
+            $owner.Extent.Text | Should -Match "Format-PublicChildProcessDiagnostic -Operation \`$Operation -State 'timed_out' -Result \`$result"
+            $owner.Extent.Text | Should -Match 'foreach \(\$key in \$_\.Exception\.Data\.Keys\)'
+        }
+        $nsisProcessOwner[0].Extent.Text | Should -Match 'Wait-DesktopOwnedNativeProcess -Owned \$owned -TimeoutSeconds 180'
         $desktopOwnerText = $desktopLifecycleOwner[0].Extent.Text
         $cleanupIndex = $desktopOwnerText.IndexOf('Invoke-DesktopCleanup', [StringComparison]::Ordinal)
         $captureIndex = $desktopOwnerText.IndexOf('Set-DesktopObservationCaptureMetadata', [StringComparison]::Ordinal)
@@ -1229,7 +1256,11 @@ Describe 'winsmux version surface' {
         $helper | Should -Match 'function Invoke-VerifiedDesktopUninstaller'
         $helper | Should -Match 'function Invoke-DesktopCleanup'
         $helper | Should -Match ([regex]::Escape('desktop_uninstall_argv_order'))
-        $helper | Should -Match ([regex]::Escape('_?=$installRoot'))
+        $helper | Should -Match 'function Invoke-DesktopNsisProcess'
+        $helper | Should -Match 'DesktopProcessOwner\]::StartNsisInstaller'
+        $helper | Should -Match 'DesktopProcessOwner\]::StartNsisUninstaller'
+        $helper | Should -Match 'Invoke-DesktopNsisProcess -Operation ''desktop_installer'' -FilePath \(\[string\]\$stage.path\) -Context \$stage.context'
+        $helper | Should -Match 'Invoke-DesktopNsisProcess -Operation ''desktop_uninstaller'' -FilePath \$expectedUninstaller -Context \$Context'
         $helper | Should -Match 'Invoke-VerifiedDesktopUninstaller -Context \$Context -Environment \$Environment'
         $helper | Should -Not -Match 'DesktopCleanupAuthorized|-AfterFailure'
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)

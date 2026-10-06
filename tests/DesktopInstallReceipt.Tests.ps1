@@ -5,7 +5,7 @@ BeforeAll {
     $script:HelperAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepoRoot 'scripts/test-public-release.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw 'Helper parse failed.' }
     $script:DesktopOwnerSourceRoot = Join-Path $script:RepoRoot 'scripts'
-    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
+    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Wait-DesktopOwnedNativeProcess', 'Invoke-DesktopNsisProcess', 'Get-CanonicalPath', 'Test-CanonicalPathEqual', 'Assert-DesktopInstallRootOwnership', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
         $function = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)[0]
         . ([scriptblock]::Create($function.Extent.Text))
     }
@@ -33,6 +33,143 @@ BeforeAll {
     }
     function New-ReceiptFixture {
         return ([ordered]@{ ok = $true; surface = 'Desktop'; version = '0.38.0'; release_tag = 'v0.38.0'; repository = 'example/winsmux'; evidence = @{ asset = 'winsmux_0.38.0_x64-setup.exe'; sha256 = 'f' * 64; version = '0.38.0'; page_url = 'tauri://localhost/' }; attempts = 6; retry_delay_seconds = 10; cleanup = 'clean'; installed_inventory = @{ schema = 'winsmux-desktop-installed-inventory/v1'; installer_sha256 = 'f' * 64; inventory_sha256 = 'c' * 64; generation_manifest_sha256 = 'b' * 64; source_commit = 'a' * 40; expected = 5; found = 5; sha256_match = 5; licenses = 3; pair_verified = $true; complete = $true }; desktop_runtime = @{ workspace_read_verified = $true; mcp_roundtrip_verified = $true; mcp_eof_exit_verified = $true; normal_close_requested = $true; owned_processes_exited = $true } } | ConvertTo-Json -Depth 12 | ConvertFrom-Json)
+    }
+}
+
+Describe 'NSIS final-tail command contract' {
+    BeforeAll {
+        Initialize-DesktopNativeTypes
+        $flags = [Reflection.BindingFlags]'NonPublic,Static'
+        $script:NsisBuilder = [Winsmux.DesktopNative.DesktopProcessOwner].GetMethod('BuildNsisCommand', $flags)
+        $script:CrtQuote = [Winsmux.DesktopNative.DesktopProcessOwner].GetMethod('Quote', $flags)
+        $script:NsisFixtureRoot = Join-Path $script:RepoRoot ('.evidence/nsis-arguments/native-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:NsisFixtureRoot -Force | Out-Null
+        $sourcePath = Join-Path $script:NsisFixtureRoot 'wire.cs'
+        $script:NsisWireExecutable = Join-Path $script:NsisFixtureRoot 'wire fixture.exe'
+        [IO.File]::WriteAllText($sourcePath, @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+class WireFixture {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetCommandLineW();
+    static void Main() { Console.Write(Convert.ToBase64String(Encoding.Unicode.GetBytes(Marshal.PtrToStringUni(GetCommandLineW())))); }
+}
+'@, [Text.UTF8Encoding]::new($false))
+        $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+        $compileOutput = @(& $compiler /nologo /target:exe "/out:$script:NsisWireExecutable" $sourcePath 2>&1)
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $script:NsisWireExecutable -PathType Leaf)) { throw "Wire fixture compile failed: $($compileOutput -join ' ')" }
+        function Read-Nsis311Command([string]$Command, [bool]$Uninstall) {
+            # ExeHead/Main.c v3.11, lines 238-286 and 326-345: quote seek,
+            # END_OF_ARG for /S, literal " /D=" and reverse literal " _?=".
+            $silent = $false; $directory = $null; $index = 0; $seek = ' '
+            if ($Command[0] -ceq '"') { $seek = '"'; $index++ }
+            while ($index -lt $Command.Length -and $Command[$index] -cne $seek) { $index++ }
+            $index++
+            while ($index -lt $Command.Length) {
+                while ($index -lt $Command.Length -and $Command[$index] -ceq ' ') { $index++ }
+                if ($index -ge $Command.Length) { break }
+                $seek = ' '
+                if ($Command[$index] -ceq '"') { $index++; $seek = '"' }
+                if ($index -lt $Command.Length -and $Command[$index] -ceq '/') {
+                    $index++
+                    if ($Command[$index] -ceq 'S' -and ($index + 1 -eq $Command.Length -or $Command[$index + 1] -ceq ' ')) { $silent = $true }
+                    if ($index -ge 2 -and $index + 2 -lt $Command.Length -and $Command.Substring($index - 2, 4) -ceq ' /D=') {
+                        $directory = $Command.Substring($index + 2); break
+                    }
+                }
+                while ($index -lt $Command.Length -and $Command[$index] -cne $seek) { $index++ }
+                if ($index -lt $Command.Length -and $Command[$index] -ceq '"') { $index++ }
+            }
+            if ($Uninstall) {
+                $tail = $Command.LastIndexOf(' _?=', [StringComparison]::Ordinal)
+                if ($tail -ge 0) { $directory = $Command.Substring($tail + 4) }
+            }
+            return [pscustomobject]@{ silent = $silent; directory = $directory }
+        }
+    }
+    AfterAll {
+        if (Test-Path -LiteralPath $script:NsisFixtureRoot) {
+            Remove-Item -LiteralPath (Join-Path $script:NsisFixtureRoot 'wire.cs')
+            Remove-Item -LiteralPath $script:NsisWireExecutable
+            Remove-Item -LiteralPath $script:NsisFixtureRoot
+        }
+    }
+
+    It 'proves old CRT wire fails and dedicated NSIS wire preserves the exact final directory' -ForEach @(
+        @{ uninstall = $false; suffix = 'plain' }, @{ uninstall = $true; suffix = 'plain' },
+        @{ uninstall = $false; suffix = 'space directory' }, @{ uninstall = $true; suffix = 'space directory' },
+        @{ uninstall = $false; suffix = '日本語 directory\' }, @{ uninstall = $true; suffix = '日本語 directory\' }
+    ) {
+        $exe = 'C:\fixture folder\setup.exe'
+        $root = 'C:\owned\' + $suffix
+        $switch = if ($uninstall) { '_?=' } else { '/D=' }
+        $old = $script:CrtQuote.Invoke($null, @($exe)) + ' ' + $script:CrtQuote.Invoke($null, @('/S')) + ' ' + $script:CrtQuote.Invoke($null, @($switch + $root))
+        $oldParsed = Read-Nsis311Command $old $uninstall
+        $oldParsed.silent | Should -BeFalse
+        $oldParsed.directory | Should -BeNullOrEmpty
+        $wire = $script:NsisBuilder.Invoke($null, @($exe, $root, $uninstall))
+        $wire | Should -BeExactly ('"' + $exe + '" /S ' + $switch + $root)
+        $parsed = Read-Nsis311Command $wire $uninstall
+        $parsed.silent | Should -BeTrue
+        $parsed.directory | Should -BeExactly $root
+    }
+
+    It 'rejects unsafe or noncanonical directory tails before either native launch' -ForEach @(
+        @{ root = 'relative\installed' }, @{ root = '\rooted\installed' }, @{ root = 'C:relative\installed' },
+        @{ root = 'C:\owned\..\installed' }, @{ root = 'C:/owned/installed' },
+        @{ root = 'C:\owned"\installed' }, @{ root = "C:\owned`0\installed" },
+        @{ root = "C:\owned`n\installed" }, @{ root = "C:\owned`t\installed" },
+        @{ root = ('C:\owned' + [char]0x85 + '\installed') }, @{ root = 'C:\owned _?=redirect\installed' }
+    ) {
+        foreach ($mode in @($false, $true)) {
+            { $script:NsisBuilder.Invoke($null, @('C:\missing-fixture.exe', $root, $mode)) } | Should -Throw '*desktop_owner_nsis_root_invalid*'
+            if ($mode) { { [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisUninstaller('C:\missing-fixture.exe', $root, @{}, 16384, 180000) } | Should -Throw '*desktop_owner_nsis_root_invalid*' }
+            else { { [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisInstaller('C:\missing-fixture.exe', $root, @{}, 16384, 180000) } | Should -Throw '*desktop_owner_nsis_root_invalid*' }
+        }
+    }
+
+    It 'delivers the dedicated wire through the native owner with natural root exit, Job zero and drained streams' -ForEach @(
+        @{ uninstall = $false }, @{ uninstall = $true }
+    ) {
+        $root = Join-Path $script:NsisFixtureRoot '日本語 space directory\'
+        $owner = if ($uninstall) { [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisUninstaller($script:NsisWireExecutable, $root, @{}, 16384, 180000) }
+            else { [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisInstaller($script:NsisWireExecutable, $root, @{}, 16384, 180000) }
+        try {
+            $owner.WaitTerminal(180000, 10) | Should -BeTrue
+            $owner.ResumeCount | Should -Be 1; $owner.ExitCode | Should -Be 0; $owner.ActiveMembers | Should -Be 0
+            $owner.Forced | Should -BeFalse; $owner.CaptureCompleted | Should -BeTrue
+            $owner.StderrTask.Result.TotalBytes | Should -Be 0
+            $encoded = [Text.Encoding]::UTF8.GetString($owner.StdoutTask.Result.RetainedBytes)
+            $wire = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+            $wire | Should -BeExactly ($script:NsisBuilder.Invoke($null, @([string]$script:NsisWireExecutable, [string]$root, [bool]$uninstall)))
+            $parsed = Read-Nsis311Command $wire $uninstall
+            $parsed.silent | Should -BeTrue; $parsed.directory | Should -BeExactly $root
+        } finally { $owner.Dispose() }
+    }
+
+    It 'checks actual run ownership immediately before every installer and uninstaller invocation' -ForEach @(
+        @{ operation = 'desktop_installer' }, @{ operation = 'desktop_uninstaller' }
+    ) {
+        $script:DesktopRunOwnedRoot = Join-Path $TestDrive ('winsmux-public-release-' + ('a' * 32))
+        $installed = Join-Path $script:DesktopRunOwnedRoot 'installed'
+        $capture = @{ count = 0; arguments = @() }
+        $invoke = { param($FilePath, $Arguments, $Environment) $capture.count++; $capture.arguments = $Arguments; return @{ exit_code = 0 } }.GetNewClosure()
+        $context = [pscustomobject]@{ owned_root = $script:DesktopRunOwnedRoot; install_root = $installed }
+        (Invoke-DesktopNsisProcess -Operation $operation -FilePath 'C:\missing-fixture.exe' -Context $context -ProcessInvoker $invoke).exit_code | Should -Be 0
+        $capture.count | Should -Be 1
+        $capture.arguments | Should -Be @('/S', $(if ($operation -ceq 'desktop_installer') { "/D=$installed" } else { "_?=$installed" }))
+        foreach ($mutation in @('foreign_owned', 'foreign_install', 'relative_owned', 'relative_install', 'noncanonical')) {
+            $changed = $context.PSObject.Copy()
+            switch ($mutation) {
+                foreign_owned { $changed.owned_root = Join-Path $TestDrive ('winsmux-public-release-' + ('b' * 32)) }
+                foreign_install { $changed.install_root = Join-Path (Join-Path $TestDrive ('winsmux-public-release-' + ('b' * 32))) 'installed' }
+                relative_owned { $changed.owned_root = 'relative' }
+                relative_install { $changed.install_root = 'installed' }
+                noncanonical { $changed.install_root = Join-Path $script:DesktopRunOwnedRoot 'other\..\installed' }
+            }
+            { Invoke-DesktopNsisProcess -Operation $operation -FilePath 'C:\missing-fixture.exe' -Context $changed -ProcessInvoker $invoke } | Should -Throw
+            $capture.count | Should -Be 1
+        }
     }
 }
 

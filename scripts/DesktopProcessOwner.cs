@@ -101,6 +101,24 @@ namespace Winsmux.DesktopNative {
         public static DesktopProcessOwner Start(string executable,string[] arguments,IDictionary overlay,bool interactive,int retainLimit,int cleanupMilliseconds) {
             return Create(executable,arguments,overlay,interactive,retainLimit,cleanupMilliseconds,null);
         }
+        public static DesktopProcessOwner StartNsisInstaller(string executable,string installRoot,IDictionary overlay,int retainLimit,int cleanupMilliseconds) {
+            return CreateNsis(executable,installRoot,overlay,retainLimit,cleanupMilliseconds,false);
+        }
+        public static DesktopProcessOwner StartNsisUninstaller(string executable,string installRoot,IDictionary overlay,int retainLimit,int cleanupMilliseconds) {
+            return CreateNsis(executable,installRoot,overlay,retainLimit,cleanupMilliseconds,true);
+        }
+        static string BuildNsisCommand(string executable,string installRoot,bool uninstall) {
+            if(String.IsNullOrEmpty(installRoot) || installRoot.Any(c=>c=='"' || Char.IsControl(c)) ||
+                installRoot.IndexOf(" _?=",StringComparison.Ordinal)>=0 || !Path.IsPathFullyQualified(installRoot) ||
+                !String.Equals(installRoot,Path.GetFullPath(installRoot),StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("desktop_owner_nsis_root_invalid");
+            // NSIS consumes the unquoted directory as the complete final command-line tail.
+            return Quote(executable)+" /S "+(uninstall?"_?=":"/D=")+installRoot;
+        }
+        static DesktopProcessOwner CreateNsis(string executable,string installRoot,IDictionary overlay,int retainLimit,int cleanupMilliseconds,bool uninstall) {
+            executable=Path.GetFullPath(executable);
+            return CreateCommand(executable,BuildNsisCommand(executable,installRoot,uninstall),overlay,false,retainLimit,cleanupMilliseconds,null);
+        }
         // Deterministic pre-resume fault injection for the executable native class proof only.
         public static DesktopProcessOwner StartForProof(string executable,string[] arguments,IDictionary overlay,bool interactive,int retainLimit,int cleanupMilliseconds,string fault) {
             if(fault!="assignment" && fault!="membership" && fault!="resume" && fault!="eof") throw new ArgumentException("desktop_owner_proof_fault_invalid");
@@ -110,6 +128,10 @@ namespace Winsmux.DesktopNative {
             if(retainLimit<0 || cleanupMilliseconds<0 || arguments==null) throw new ArgumentException("desktop_owner_configuration_invalid");
             executable=Path.GetFullPath(executable);
             string command=Quote(executable)+" "+String.Join(" ",arguments.Select(Quote));
+            return CreateCommand(executable,command,overlay,interactive,retainLimit,cleanupMilliseconds,fault);
+        }
+        static DesktopProcessOwner CreateCommand(string executable,string command,IDictionary overlay,bool interactive,int retainLimit,int cleanupMilliseconds,string fault) {
+            if(retainLimit<0 || cleanupMilliseconds<0) throw new ArgumentException("desktop_owner_configuration_invalid");
             if(command.Length>=32767) throw new ArgumentException("desktop_owner_command_too_long");
             var owner=new DesktopProcessOwner { Interactive=interactive };
             IntPtr inRead=IntPtr.Zero,inWrite=IntPtr.Zero,outRead=IntPtr.Zero,outWrite=IntPtr.Zero,errRead=IntPtr.Zero,errWrite=IntPtr.Zero;

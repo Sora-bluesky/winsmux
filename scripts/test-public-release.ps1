@@ -709,6 +709,53 @@ function Start-OwnedProcess {
 function Invoke-DesktopOwnedNativeProcess {
     param([string]$FilePath, [string[]]$ArgumentList, [hashtable]$Environment, [int]$TimeoutSeconds)
     $owned = Start-OwnedProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment
+    return Wait-DesktopOwnedNativeProcess -Owned $owned -TimeoutSeconds $TimeoutSeconds
+}
+
+function Invoke-DesktopNsisProcess {
+    param(
+        [Parameter(Mandatory)][ValidateSet('desktop_installer', 'desktop_uninstaller')][string]$Operation,
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)]$Context,
+        [hashtable]$Environment = @{},
+        [scriptblock]$ProcessInvoker
+    )
+
+    Initialize-DesktopNativeTypes
+    $runRoot = [string]$script:DesktopRunOwnedRoot
+    Assert-Condition ([IO.Path]::IsPathFullyQualified($runRoot)) 'desktop_nsis_run_root_invalid'
+    $runRoot = Get-CanonicalPath -Path $runRoot
+    $installRoot = Join-Path $runRoot 'installed'
+    Assert-DesktopInstallRootOwnership -InstallRoot $installRoot
+    Assert-Condition (Test-CanonicalPathEqual -ActualPath ([string]$Context.owned_root) -ExpectedPath $runRoot) 'desktop_nsis_owned_root_mismatch'
+    Assert-Condition (Test-CanonicalPathEqual -ActualPath ([string]$Context.install_root) -ExpectedPath $installRoot) 'desktop_nsis_install_root_mismatch'
+    # Validate the exact NSIS tail even when a SelfTest invoker replaces native execution.
+    Assert-Condition ([IO.Path]::IsPathFullyQualified([string]$Context.owned_root) -and [IO.Path]::IsPathFullyQualified([string]$Context.install_root)) 'desktop_nsis_context_root_invalid'
+    Assert-Condition ([string]$Context.install_root -ceq $installRoot) 'desktop_nsis_install_root_not_canonical'
+    Assert-Condition ($installRoot -notmatch '[\x00-\x1f\x7f-\x9f"]| _\?=') 'desktop_nsis_install_root_invalid'
+    if ($null -ne $ProcessInvoker) {
+        $arguments = if ($Operation -ceq 'desktop_installer') { @('/S', "/D=$installRoot") } else { @('/S', "_?=$installRoot") }
+        return (& $ProcessInvoker $FilePath $arguments $Environment)
+    }
+    $owner = if ($Operation -ceq 'desktop_installer') {
+        [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisInstaller($FilePath, $installRoot, $Environment, $script:DesktopOutputRetainLimitBytes, $script:DesktopObservationTimeoutMilliseconds)
+    } else {
+        [Winsmux.DesktopNative.DesktopProcessOwner]::StartNsisUninstaller($FilePath, $installRoot, $Environment, $script:DesktopOutputRetainLimitBytes, $script:DesktopObservationTimeoutMilliseconds)
+    }
+    $owned = [pscustomobject]@{ process = $owner; owner = $owner; stdout_task = $owner.StdoutTask; stderr_task = $owner.StderrTask }
+    try { return Wait-DesktopOwnedNativeProcess -Owned $owned -TimeoutSeconds 180 }
+    catch [TimeoutException] {
+        $result = $_.Exception.Data['process_result']
+        $message = if ($null -eq $result) { 'Timed-out child process did not provide a terminal output capture.' }
+            else { Format-PublicChildProcessDiagnostic -Operation $Operation -State 'timed_out' -Result $result }
+        $failure = [InvalidOperationException]::new($message, $_.Exception)
+        foreach ($key in $_.Exception.Data.Keys) { $failure.Data[$key] = $_.Exception.Data[$key] }
+        throw $failure
+    }
+}
+
+function Wait-DesktopOwnedNativeProcess {
+    param([Parameter(Mandatory)]$Owned, [int]$TimeoutSeconds)
     try {
         if (-not $owned.owner.WaitTerminal(($TimeoutSeconds * 1000), $script:DesktopObservationPollMilliseconds)) {
             $failure = [TimeoutException]::new('desktop_owned_child_timeout')
@@ -1254,12 +1301,7 @@ function Invoke-VerifiedDesktopUninstaller {
     }
     Assert-DesktopPreUninstallOwnedState -State $preUninstallState
 
-    $arguments = @('/S', "_?=$InstallRoot")
-    $uninstall = if ($null -eq $ProcessInvoker) {
-        Invoke-PublicChildProcess -Operation 'desktop_uninstaller' -FilePath $expectedUninstaller -ArgumentList $arguments -Environment $Environment -TimeoutSeconds 180
-    } else {
-        & $ProcessInvoker $expectedUninstaller $arguments $Environment
-    }
+    $uninstall = Invoke-DesktopNsisProcess -Operation 'desktop_uninstaller' -FilePath $expectedUninstaller -Context $Context -Environment $Environment -ProcessInvoker $ProcessInvoker
     if ($uninstall.exit_code -ne 0) {
         $failure = [InvalidOperationException]::new('desktop_uninstaller_exit_nonzero')
         $failure.Data['native_result'] = $uninstall
@@ -3021,6 +3063,7 @@ function Invoke-NpmSmoke {
 function Invoke-DesktopSmoke {
     param([Parameter(Mandatory)][string]$Root)
 
+    $script:DesktopRunOwnedRoot = Get-CanonicalPath -Path $Root
     $installRoot = Join-Path $Root 'installed'
     $context = New-DesktopLifecycleContext -OwnedRoot $Root -InstallRoot $installRoot -ExpectedVersion $Version
     $script:DesktopLifecycle = $context
@@ -3105,7 +3148,7 @@ function Invoke-DesktopSmoke {
         $installerStages.Add([pscustomobject]@{ role = 'candidate'; path = $setupPath; context = $context }) | Out-Null
         foreach ($stage in $installerStages) {
             $script:DesktopFailureStage = if ([string]$stage.role -ceq 'prior') { 'prior_install' } else { 'candidate_install' }
-            $install = Invoke-PublicChildProcess -Operation 'desktop_installer' -FilePath ([string]$stage.path) -ArgumentList @('/S', "/D=$installRoot") -Environment $childEnvironment -TimeoutSeconds 180
+            $install = Invoke-DesktopNsisProcess -Operation 'desktop_installer' -FilePath ([string]$stage.path) -Context $stage.context -Environment $childEnvironment
             if ($install.exit_code -ne 0) {
                 $failure = [InvalidOperationException]::new('desktop_installer_exit_nonzero')
                 $failure.Data['native_result'] = $install
@@ -3223,6 +3266,7 @@ function Invoke-SelfTest {
     }
 
     $root = New-OwnedRoot
+    $script:DesktopRunOwnedRoot = $root
     try {
 
         if ($Surface -eq 'Core') {
