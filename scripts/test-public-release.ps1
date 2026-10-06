@@ -2176,7 +2176,8 @@ function Get-VerifiedRemoteDebugPage {
     param(
         [Parameter(Mandatory)][ValidateSet('127.0.0.1', '[::1]')][string]$HostName,
         [Parameter(Mandatory)][ValidateRange(1, 65535)][int]$Port,
-        [AllowNull()][string]$BrowserPath
+        [AllowNull()][string]$BrowserPath,
+        [DateTime]$Deadline = [DateTime]::MinValue
     )
 
     $handler = [Net.Http.HttpClientHandler]::new()
@@ -2186,11 +2187,20 @@ function Get-VerifiedRemoteDebugPage {
     $versionDocument = $null
     $listResponse = $null
     $listDocument = $null
+    $cancel = $null
     try {
+        if ($Deadline -ne [DateTime]::MinValue) {
+            $remaining = ($Deadline - [DateTime]::UtcNow).TotalMilliseconds
+            if ($remaining -le 0) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
+            $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($remaining))
+        }
         $client.Timeout = [TimeSpan]::FromSeconds(5)
         $client.MaxResponseContentBufferSize = 65536
         try {
-            $versionResponse = $client.GetAsync("http://${HostName}:$Port/json/version").GetAwaiter().GetResult()
+            if ($null -ne $cancel) {
+                if ([DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
+                $versionResponse = $client.GetAsync("http://${HostName}:$Port/json/version", $cancel.Token).GetAwaiter().GetResult()
+            } else { $versionResponse = $client.GetAsync("http://${HostName}:$Port/json/version").GetAwaiter().GetResult() }
         } catch {
             return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port)
         }
@@ -2199,7 +2209,7 @@ function Get-VerifiedRemoteDebugPage {
         }
 
         try {
-            $versionPayload = $versionResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $versionPayload = if ($null -ne $cancel) { $versionResponse.Content.ReadAsStringAsync($cancel.Token).GetAwaiter().GetResult() } else { $versionResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult() }
             $versionDocument = [Text.Json.JsonDocument]::Parse($versionPayload)
             if ($versionDocument.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Object) {
                 return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port)
@@ -2220,7 +2230,10 @@ function Get-VerifiedRemoteDebugPage {
         }
 
         try {
-            $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list").GetAwaiter().GetResult()
+            if ($null -ne $cancel) {
+                if ([DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
+                $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list", $cancel.Token).GetAwaiter().GetResult()
+            } else { $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list").GetAwaiter().GetResult() }
         } catch {
             return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
@@ -2228,7 +2241,7 @@ function Get-VerifiedRemoteDebugPage {
             return (New-DesktopCdpProbeRecord -State 'http_error' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
         try {
-            $listPayload = $listResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $listPayload = if ($null -ne $cancel) { $listResponse.Content.ReadAsStringAsync($cancel.Token).GetAwaiter().GetResult() } else { $listResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult() }
             $listDocument = [Text.Json.JsonDocument]::Parse($listPayload)
             if ($listDocument.RootElement.ValueKind -ne [Text.Json.JsonValueKind]::Array) {
                 return (New-DesktopCdpProbeRecord -State 'payload_invalid' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
@@ -2257,6 +2270,7 @@ function Get-VerifiedRemoteDebugPage {
         if ($null -ne $versionDocument) { $versionDocument.Dispose() }
         if ($null -ne $versionResponse) { $versionResponse.Dispose() }
         $client.Dispose()
+        if ($null -ne $cancel) { $cancel.Dispose() }
     }
 }
 
@@ -2268,10 +2282,13 @@ function Get-DesktopWebViewAuthorityProbe {
         [scriptblock]$PortFileSnapshotProvider,
         [scriptblock]$ProcessSnapshotProvider,
         [scriptblock]$ListenerSnapshotProvider,
-        [scriptblock]$PageProbe
+        [scriptblock]$PageProbe,
+        [DateTime]$Deadline = [DateTime]::MinValue
     )
 
+    if ($Deadline -ne [DateTime]::MinValue -and [DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
     $portRecord = Read-DesktopDevToolsActivePort -UserDataFolder $UserDataFolder -SnapshotProvider $PortFileSnapshotProvider
+    if ($Deadline -ne [DateTime]::MinValue -and [DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
     $portState = [string](Get-ObjectPropertyValue -Object $portRecord -Name 'state')
     $browserPath = $null
     if ($portState -ceq 'authority_ready') {
@@ -2288,12 +2305,14 @@ function Get-DesktopWebViewAuthorityProbe {
     } else {
         & $ListenerSnapshotProvider $Port $OwnedProcess
     }
+    if ($Deadline -ne [DateTime]::MinValue -and [DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
     Assert-Condition ($null -ne $listenerSnapshot) 'Desktop listener snapshot envelope was absent.'
     $processSnapshot = if ($null -eq $ProcessSnapshotProvider) {
         Get-DesktopProcessSnapshot
     } else {
         & $ProcessSnapshotProvider $OwnedProcess
     }
+    if ($Deadline -ne [DateTime]::MinValue -and [DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
     Assert-Condition ($null -ne $processSnapshot) 'Desktop process snapshot envelope was absent.'
     $authority = Resolve-DesktopWebViewListenerAuthority `
         -RootProcessId ([int64]$OwnedProcess.process.Id) `
@@ -2306,8 +2325,10 @@ function Get-DesktopWebViewAuthorityProbe {
         return (New-DesktopCdpProbeRecord -State $authorityState -PageUrl $null)
     }
 
+    if ($Deadline -ne [DateTime]::MinValue -and [DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
     $probe = if ($null -eq $PageProbe) {
-        Get-VerifiedRemoteDebugPage -HostName ([string]$authority.host) -Port ([int]$authority.port) -BrowserPath ([string]$authority.browser_path)
+        if ($Deadline -ne [DateTime]::MinValue) { Get-VerifiedRemoteDebugPage -HostName ([string]$authority.host) -Port ([int]$authority.port) -BrowserPath ([string]$authority.browser_path) -Deadline $Deadline }
+        else { Get-VerifiedRemoteDebugPage -HostName ([string]$authority.host) -Port ([int]$authority.port) -BrowserPath ([string]$authority.browser_path) }
     } else {
         & $PageProbe $authority $OwnedProcess
     }
@@ -2545,9 +2566,15 @@ function Wait-DesktopProcessObservation {
 }
 
 function Invoke-DesktopRuntimeExpression {
-    param([string]$WebSocketUrl, [string]$Expression)
+    param([string]$WebSocketUrl, [string]$Expression, [DateTime]$Deadline = [DateTime]::MinValue)
+    $timeout = $script:DesktopObservationTimeoutMilliseconds
+    if ($Deadline -ne [DateTime]::MinValue) {
+        $remaining = ($Deadline - [DateTime]::UtcNow).TotalMilliseconds
+        if ($remaining -le 0) { throw 'desktop_cdp_evaluation_timeout' }
+        $timeout = [Math]::Min($timeout, $remaining)
+    }
     $socket = [Net.WebSockets.ClientWebSocket]::new()
-    $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($script:DesktopObservationTimeoutMilliseconds))
+    $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($timeout))
     try {
         [void]$socket.ConnectAsync([uri]$WebSocketUrl, $cancel.Token).GetAwaiter().GetResult()
         $id = 1
@@ -2572,8 +2599,92 @@ function Invoke-DesktopRuntimeExpression {
     } finally { $socket.Dispose(); $cancel.Dispose() }
 }
 
+function Format-DesktopStartupDiagnostic {
+    param($Value)
+    $fallback = 'startup=missing view=absent host=unavailable attempt=unknown stability=unavailable'
+    try {
+        $sets = [ordered]@{
+            startup = @('root_missing','missing','invalid','connecting','mounted','unconfirmed','unknown','recovering','disposed')
+            view = @('root_missing','absent','present')
+            host = @('unavailable','invalid','Empty','Opening','Ready','Busy','Stopping','Unknown','ForcePrompt','Finishing','FailedClosed','MainClosed','ExitReleased')
+            attempt = @('unknown','zero','nonzero')
+            stability = @('unavailable','changed','stable')
+        }
+        if ($Value -is [string]) {
+            $parts = $Value.Split(' ')
+            if ($parts.Count -ne $sets.Count) { return $fallback }
+            $index = 0
+            foreach ($key in $sets.Keys) {
+                $pair = $parts[$index++].Split('=')
+                if ($pair.Count -ne 2 -or $pair[0] -cne $key -or $pair[1] -cnotin $sets[$key]) { return $fallback }
+            }
+            return $Value
+        }
+        if ($Value -isnot [pscustomobject]) { return $fallback }
+        $properties = @($Value.PSObject.Properties)
+        if ($properties.Count -ne $sets.Count) { return $fallback }
+        foreach ($key in $sets.Keys) {
+            $property = $Value.PSObject.Properties[$key]
+            if ($properties.Name -cnotcontains $key -or $null -eq $property -or $property.MemberType -ne 'NoteProperty' -or $property.Value -isnot [string] -or $property.Value -cnotin $sets[$key]) { return $fallback }
+        }
+        $tokens = foreach ($key in $sets.Keys) { $key + '=' + $Value.PSObject.Properties[$key].Value }
+        return ($tokens -join ' ')
+    } catch { return $fallback }
+}
+
+function Get-DesktopStartupDiagnostic {
+    param($Context, [int]$Port, [string]$UserDataFolder, [DateTime]$Deadline = [DateTime]::MinValue)
+    if ($Deadline -eq [DateTime]::MinValue -or [DateTime]::UtcNow -ge $Deadline) { return $null }
+    $authority = Get-DesktopWebViewAuthorityProbe -OwnedProcess $Context.app_process -UserDataFolder $UserDataFolder -Port $Port -Deadline $Deadline
+    if ([string]$authority.state -cne 'page_ready' -or [DateTime]::UtcNow -ge $Deadline) { return $null }
+    $handler = [Net.Http.HttpClientHandler]::new(); $handler.UseProxy = $false
+    $client = [Net.Http.HttpClient]::new($handler); $cancel = $null
+    try {
+        $remaining = ($Deadline - [DateTime]::UtcNow).TotalMilliseconds
+        if ($remaining -le 0) { return $null }
+        $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($remaining))
+        $client.Timeout = [TimeSpan]::FromSeconds(5); $client.MaxResponseContentBufferSize = 65536
+        $pages = $client.GetStringAsync("http://127.0.0.1:$Port/json/list", $cancel.Token).GetAwaiter().GetResult() | ConvertFrom-Json -Depth 12
+    } finally { $client.Dispose(); if ($null -ne $cancel) { $cancel.Dispose() } }
+    if ([DateTime]::UtcNow -ge $Deadline) { return $null }
+    $matching = @($pages | Where-Object { [string]$_.type -ceq 'page' -and [string]$_.url -match '^(?:tauri://localhost|https?://tauri\.localhost)/?$' })
+    Assert-Condition ($matching.Count -eq 1) 'desktop_main_page_ambiguous'
+    $ws = [uri][string]$matching[0].webSocketDebuggerUrl
+    Assert-Condition ($ws.Scheme -ceq 'ws' -and $ws.Host -ceq '127.0.0.1' -and $ws.Port -eq $Port -and $ws.AbsolutePath -match '^/devtools/page/[A-Za-z0-9-]+$' -and [string]::IsNullOrEmpty($ws.Query) -and [string]::IsNullOrEmpty($ws.Fragment) -and [string]::IsNullOrEmpty($ws.UserInfo)) 'desktop_page_websocket_invalid'
+    $expression = @'
+(async () => {
+ const phases=['Empty','Opening','Ready','Busy','Stopping','Unknown','ForcePrompt','Finishing','FailedClosed','MainClosed','ExitReleased'];
+ const startupStates=['connecting','mounted','unconfirmed','unknown','recovering','disposed'];
+ const closed=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===k.length&&k.every(x=>Object.hasOwn(v,x));
+ const uuid=v=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
+ const u64=v=>typeof v==='string'&&/^(0|[1-9][0-9]{0,19})$/.test(v)&&BigInt(v)<=18446744073709551615n;
+ const result={startup:'missing',view:'absent',host:'unavailable',attempt:'unknown',stability:'unavailable'};
+ const finish=()=>JSON.stringify(result);
+ const invoke=window.__TAURI__?.core?.invoke,label=window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label;
+ if(typeof invoke!=='function'||label!=='main'||window.top!==window||location.search||!/^https?:\/\/tauri\.localhost\/?$|^tauri:\/\/localhost\/?$/.test(location.href))return finish();
+ const snapshot=()=>{
+  const root=document.getElementById('workspace-startup'),view=root?.querySelector('.workspace-project-pane')??null;
+  return {root,view,rootConnected:root?.isConnected,viewConnected:view?.isConnected,startup:root?.dataset.startupState,session:root?.dataset.session,generation:root?.dataset.generation,viewGeneration:view?.dataset?.generation,viewInstance:view?.dataset?.instanceId};
+ };
+ const before=snapshot();
+ result.startup=!before.root?'root_missing':before.startup===undefined?'missing':typeof before.startup==='string'&&startupStates.includes(before.startup)?before.startup:'invalid';
+ result.view=!before.root?'root_missing':before.view?'present':'absent';
+ try {
+  const host=await invoke('workspace_host_status');
+  if(!closed(host,['instance_id','generation','revision','phase'])||(host.instance_id!==null&&!uuid(host.instance_id))||!u64(host.generation)||!u64(host.revision)||typeof host.phase!=='string'||!phases.includes(host.phase))result.host='invalid';
+  else {result.host=host.phase;result.attempt=host.generation==='0'?'zero':'nonzero';}
+ } catch { }
+ const after=snapshot();
+ result.stability=Object.keys(before).every(k=>before[k]===after[k])?'stable':'changed';
+ return finish();
+})()
+'@
+    if ([DateTime]::UtcNow -ge $Deadline) { return $null }
+    return (Invoke-DesktopRuntimeExpression -WebSocketUrl $ws.AbsoluteUri -Expression $expression -Deadline $Deadline)
+}
+
 function Get-DesktopWorkspaceRuntime {
-    param($Context, [int]$Port, [string]$UserDataFolder)
+    param($Context, [int]$Port, [string]$UserDataFolder, [DateTime]$DiagnosticDeadline = [DateTime]::MinValue)
     # Recheck the listener ownership at action time before opening its page websocket.
     $authority = Get-DesktopWebViewAuthorityProbe -OwnedProcess $Context.app_process -UserDataFolder $UserDataFolder -Port $Port
     Assert-Condition ([string]$authority.state -ceq 'page_ready') 'desktop_cdp_authority_unconfirmed'
@@ -2639,6 +2750,10 @@ function Get-DesktopWorkspaceRuntime {
                 $allowed = @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')
                 $failure.Data['winsmux_workspace_mount_stage'] = if ($stage -is [string] -and $stage -cin $allowed) { $stage } else { 'unclassified' }
             } catch { }
+            try {
+                $diagnostic = Get-DesktopStartupDiagnostic -Context $Context -Port $Port -UserDataFolder $UserDataFolder -Deadline $DiagnosticDeadline
+                $failure.Data['winsmux_workspace_startup_diagnostic'] = Format-DesktopStartupDiagnostic $diagnostic
+            } catch { }
         }
         throw
     }
@@ -2648,11 +2763,13 @@ function Get-DesktopWorkspaceRuntime {
 function Wait-DesktopWorkspaceRuntime {
     param($Context, [int]$Port, [string]$UserDataFolder)
     $lastStage = 'unclassified'
+    $lastDiagnostic = Format-DesktopStartupDiagnostic $null
     $deadline = [DateTime]::UtcNow.AddMilliseconds($script:DesktopObservationTimeoutMilliseconds)
     do {
-        try { return (Get-DesktopWorkspaceRuntime -Context $Context -Port $Port -UserDataFolder $UserDataFolder) }
+        try { return (Get-DesktopWorkspaceRuntime -Context $Context -Port $Port -UserDataFolder $UserDataFolder -DiagnosticDeadline $deadline) }
         catch {
             if ($_.Exception.Message -cne 'desktop_workspace_read_unconfirmed') { throw }
+            $lastDiagnostic = Format-DesktopStartupDiagnostic $_.Exception.Data['winsmux_workspace_startup_diagnostic']
             try {
                 $stage = $_.Exception.Data['winsmux_workspace_mount_stage']
                 $allowed = @('invoke_unavailable','window_binding_invalid','location_invalid','startup_root_missing','project_view_missing','startup_not_mounted','project_view_unavailable','session_json_invalid','session_binding_invalid','topology_revision_invalid','runtime_changed','capabilities_read_failed','projects_read_failed','capabilities_invalid','projects_invalid','discovery_read_failed','discovery_invalid','unclassified')
@@ -2661,7 +2778,7 @@ function Wait-DesktopWorkspaceRuntime {
         }
         Start-Sleep -Milliseconds $script:DesktopObservationPollMilliseconds
     } while ([DateTime]::UtcNow -lt $deadline -and -not $Context.app_process.process.HasExited)
-    try { [Console]::Error.WriteLine('desktop_workspace_mount_probe stage=' + $lastStage) } catch { }
+    try { [Console]::Error.WriteLine('desktop_workspace_mount_probe stage=' + $lastStage + ' ' + $lastDiagnostic) } catch { }
     throw 'desktop_workspace_mount_unconfirmed'
 }
 

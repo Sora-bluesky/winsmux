@@ -5,7 +5,7 @@ BeforeAll {
     $script:HelperAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $script:RepoRoot 'scripts/test-public-release.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors.Count) { throw 'Helper parse failed.' }
     $script:DesktopOwnerSourceRoot = Join-Path $script:RepoRoot 'scripts'
-    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Wait-DesktopOwnedNativeProcess', 'Invoke-DesktopNsisProcess', 'Get-CanonicalPath', 'Test-CanonicalPathEqual', 'Assert-DesktopInstallRootOwnership', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
+    foreach ($name in @('Assert-Condition', 'Get-ObjectPropertyValue', 'Format-DesktopStartupDiagnostic', 'Get-DesktopStartupDiagnostic', 'Test-DesktopProcessDescendant', 'Stop-DesktopNormally', 'Assert-DesktopMcpResponse', 'Initialize-DesktopNativeTypes', 'Start-OwnedProcess', 'Get-OwnedProcessCapture', 'Stop-OwnedProcessTree', 'Invoke-DesktopOwnedNativeProcess', 'Wait-DesktopOwnedNativeProcess', 'Invoke-DesktopNsisProcess', 'Get-CanonicalPath', 'Test-CanonicalPathEqual', 'Assert-DesktopInstallRootOwnership', 'Format-PublicChildProcessDiagnostic', 'Invoke-NativeProcess', 'Invoke-PublicChildProcess', 'Get-DesktopFailureEvidence', 'Get-DesktopOwnedProcessObservation', 'New-DesktopFailureReceipt', 'Assert-DesktopLifecyclePhase', 'Set-DesktopLifecyclePhase', 'Set-DesktopLifecyclePreserve', 'Invoke-DesktopCleanup')) {
         $function = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)[0]
         . ([scriptblock]::Create($function.Extent.Text))
     }
@@ -255,7 +255,7 @@ console.log(JSON.stringify({baseline_sha256:baseline.expression_sha256,cases:cas
             [Console]::SetError($writer)
             { Wait-DesktopWorkspaceRuntime -Context @{ app_process = @{ process = @{ HasExited = $false } } } -Port 1 -UserDataFolder 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed'
         } finally { [Console]::SetError($previous) }
-        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=' + $expected + [Environment]::NewLine)
+        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=' + $expected + ' ' + 'startup=missing view=absent host=unavailable attempt=unknown stability=unavailable' + [Environment]::NewLine)
         $writer.Dispose()
         Should -Invoke Get-DesktopWorkspaceRuntime -Exactly -Times 1
     }
@@ -284,7 +284,7 @@ console.log(JSON.stringify({baseline_sha256:baseline.expression_sha256,cases:cas
             $script:MountFailure = New-MountFailure @{}
             { Wait-DesktopWorkspaceRuntime $context 1 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed'
         } finally { [Console]::SetError($previous) }
-        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=projects_invalid' + [Environment]::NewLine + 'desktop_workspace_mount_probe stage=unclassified' + [Environment]::NewLine)
+        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=projects_invalid' + ' ' + 'startup=missing view=absent host=unavailable attempt=unknown stability=unavailable' + [Environment]::NewLine + 'desktop_workspace_mount_probe stage=unclassified' + ' ' + 'startup=missing view=absent host=unavailable attempt=unknown stability=unavailable' + [Environment]::NewLine)
         $writer.Dispose()
     }
     It 'keeps an unrelated exception unchanged and emits no mount diagnostic' {
@@ -353,7 +353,7 @@ server.on('upgrade',(req,socket,head)=>{
   assert.deepEqual(Object.keys(request.params).sort(),['awaitPromise','expression','returnByValue']);
   assert.equal(request.params.returnByValue,true);assert.equal(request.params.awaitPromise,true);
   const mode=request.params.expression;
-  const modes=['success','refusal','fragmented','unrelated','boundary','error','exception','nonstring','malformed','duplicate','utf8','oversized','binary','close','cancel'];
+  const modes=['success','refusal','fragmented','unrelated','boundary','error','exception','nonstring','malformed','duplicate','utf8','oversized','binary','close','cancel','deadline_cancel'];
   assert(modes.includes(mode));assert(!seen.includes(mode));seen.push(mode);sent=true;
   let reply=response(mode==='refusal'?{ok:false,stage:'projects_invalid'}:value);
   if(mode==='error')reply.error={code:-1,message:'synthetic'};
@@ -368,7 +368,7 @@ server.on('upgrade',(req,socket,head)=>{
    reply.padding='';const base=Buffer.byteLength(JSON.stringify(reply));
    reply.padding='x'.repeat(target-base);bytes=Buffer.from(JSON.stringify(reply));assert.equal(bytes.length,target);
   }
-  if(mode==='cancel')return;
+  if(mode==='cancel'||mode==='deadline_cancel')return;
   if(mode==='close'){socket.end(frame(Buffer.alloc(0),8));return;}
   if(mode==='unrelated')socket.write(frame(Buffer.from(JSON.stringify({id:2,result:{result:{type:'string',value:'{}'}}}))));
   if(mode==='fragmented'){socket.write(frame(bytes.subarray(0,7),1,false));socket.write(frame(bytes.subarray(7),0,true));}
@@ -419,7 +419,8 @@ server.listen(0,'127.0.0.1',()=>process.stdout.write(JSON.stringify({port:server
                 $receipt = $remaining | ConvertFrom-Json
                 $receipt.active_peers | Should -Be 0
                 $receipt.closed | Should -Be $receipt.upgraded
-                @($receipt.requests | Where-Object { $_ -cne 'cancel' }).Count | Should -Be 14
+                @($receipt.requests | Where-Object { $_ -cnotin @('cancel','deadline_cancel') }).Count | Should -Be 14
+                @($receipt.requests | Where-Object { $_ -ceq 'deadline_cancel' }).Count | Should -Be 1
             } finally {
                 if (-not $script:RuntimeWireProcess.HasExited) { $script:RuntimeWireProcess.Kill(); $script:RuntimeWireProcess.WaitForExit() }
                 $script:RuntimeWireProcess.Dispose()
@@ -462,6 +463,21 @@ server.listen(0,'127.0.0.1',()=>process.stdout.write(JSON.stringify({port:server
         $failure.GetBaseException().GetType().FullName | Should -BeExactly $type
         if ($reason) { $failure.Message | Should -BeExactly $reason }
     }
+    It 'cancels an actual peer using the shared deadline and emits no partial result' {
+        $seen = [Collections.Generic.List[object]]::new(); $failure = $null
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        try { Invoke-DesktopRuntimeExpression -WebSocketUrl $script:RuntimeWireUrl -Expression 'deadline_cancel' -Deadline ([DateTime]::UtcNow.AddMilliseconds(300)) | ForEach-Object { $seen.Add($_) } }
+        catch { $failure = $_.Exception }
+        $clock.Stop()
+        $canceled = $false; $item = $failure; while ($null -ne $item) { if ($item -is [OperationCanceledException]) { $canceled = $true }; $item = $item.InnerException }
+        $failure | Should -Not -BeNullOrEmpty
+        ($canceled -or $failure.Message -ceq 'desktop_cdp_evaluation_timeout') | Should -BeTrue
+        $seen.Count | Should -Be 0
+        $clock.ElapsedMilliseconds | Should -BeLessThan 5000
+    }
+    It 'refuses an expired deadline before opening a peer' {
+        { Invoke-DesktopRuntimeExpression -WebSocketUrl $script:RuntimeWireUrl -Expression 'never_sent' -Deadline ([DateTime]::UtcNow.AddTicks(-1)) } | Should -Throw -ExpectedMessage 'desktop_cdp_evaluation_timeout'
+    }
     It 'keeps cancellation exceptional without emitting completion output' {
         $seen = [Collections.Generic.List[object]]::new(); $failure = $null
         $previous = $script:DesktopObservationTimeoutMilliseconds
@@ -473,6 +489,189 @@ server.listen(0,'127.0.0.1',()=>process.stdout.write(JSON.stringify({port:server
         $failure | Should -Not -BeNullOrEmpty
         ($failure.GetBaseException() -is [OperationCanceledException] -or $failure.Message -ceq 'desktop_cdp_evaluation_timeout') | Should -BeTrue
         $seen.Count | Should -Be 0
+    }
+}
+
+Describe 'Desktop startup boundary diagnostic contract' {
+    BeforeAll {
+        foreach ($name in @('Format-DesktopStartupDiagnostic','Get-DesktopStartupDiagnostic','Get-DesktopWorkspaceRuntime','Wait-DesktopWorkspaceRuntime','Invoke-DesktopRuntimeExpression','Get-DesktopWebViewAuthorityProbe','Get-VerifiedRemoteDebugPage','Assert-ProductionPageUrl','New-DesktopCdpProbeRecord','Resolve-DesktopWebSocketPathAuthority','Read-DesktopDevToolsActivePort','Get-DesktopListenerSnapshot','Get-DesktopProcessSnapshot','Resolve-DesktopWebViewListenerAuthority')) {
+            $definition = @($script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
+            if ($definition.Count -ne 1) { throw 'Exact startup helper missing.' }
+            . ([scriptblock]::Create($definition[0].Extent.Text))
+        }
+        $script:StartupFallback = 'startup=missing view=absent host=unavailable attempt=unknown stability=unavailable'
+        $get = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-DesktopWorkspaceRuntime' }, $true)[0]
+        $boundary = $get.Body.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $_.Extent.Text.StartsWith('try { Assert-Condition ((Get-ObjectPropertyValue $result') }
+        . ([scriptblock]::Create('function Test-StartupResultBoundary { param($result,$Context,[int]$Port,[string]$UserDataFolder,[DateTime]$DiagnosticDeadline) ' + $boundary.Extent.Text + '; return $result }'))
+    }
+    It 'executes the production JavaScript across startup, owner, teardown and privacy boundaries' {
+        $definition = $script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-DesktopStartupDiagnostic' }, $true)[0]
+        $match = [regex]::Match($definition.Extent.Text, "(?s)\`$expression = @'\r?\n(?<js>.*?)\r?\n'@")
+        $match.Success | Should -BeTrue
+        $expressionPath = Join-Path $TestDrive 'startup-diagnostic.js'; $workerPath = Join-Path $TestDrive 'startup-diagnostic.mjs'
+        [IO.File]::WriteAllText($expressionPath,$match.Groups['js'].Value,[Text.UTF8Encoding]::new($false))
+        $worker = @'
+import fs from 'node:fs';import vm from 'node:vm';import assert from 'node:assert/strict';
+const expression=fs.readFileSync(process.argv[2],'utf8'),secret='SYNTHETIC_PRIVATE_SENTINEL\n';let cases=0;
+const phases=['Empty','Opening','Ready','Busy','Stopping','Unknown','ForcePrompt','Finishing','FailedClosed','MainClosed','ExitReleased'];
+const states=['connecting','mounted','unconfirmed','unknown','recovering','disposed'];
+async function test(change,expected){
+ const calls=[],view={isConnected:true,dataset:{generation:secret,instanceId:secret}},root={isConnected:true,dataset:{startupState:'connecting',session:secret,generation:secret},querySelector:()=>state.view};
+ const state={root,view:null,host:{instance_id:null,generation:'0',revision:'0',phase:'Empty'},mutate:()=>{},fail:false,calls};
+ const window={__TAURI__:{core:{invoke:async command=>{calls.push(command);assert.equal(command,'workspace_host_status');state.mutate();if(state.fail)throw secret;return state.host;}}},__TAURI_INTERNALS__:{metadata:{currentWindow:{label:'main'}}}};window.top=window;
+ const location={href:'tauri://localhost/',search:''};Object.assign(state,{window,location,originalRoot:root,originalView:view});change(state);
+ const value=JSON.parse(await vm.runInNewContext(expression,{window,location,document:{getElementById:id=>{assert.equal(id,'workspace-startup');return state.root;}}}));
+ assert.deepEqual(Object.keys(value).sort(),['attempt','host','stability','startup','view']);
+ assert(!JSON.stringify(value).includes('SYNTHETIC_PRIVATE_SENTINEL'));for(const [key,v] of Object.entries(expected))assert.equal(value[key],v,key);
+ assert(calls.length<=1);cases++;
+}
+for(const startup of states)await test(s=>{s.root.dataset.startupState=startup;},{startup,host:'Empty',attempt:'zero',view:'absent',stability:'stable'});
+for(const phase of phases)await test(s=>{s.host.phase=phase;s.host.generation='18446744073709551615';},{host:phase,attempt:'nonzero'});
+await test(s=>{s.root=null;},{startup:'root_missing',view:'root_missing',stability:'stable'});
+await test(s=>{delete s.root.dataset.startupState;},{startup:'missing'});
+for(const raw of [secret,'Mounted','mounted '+secret,['mounted'],{},null,7])await test(s=>{s.root.dataset.startupState=raw;},{startup:'invalid'});
+await test(s=>{s.view=s.originalView;s.host.phase='Ready';s.host.generation='1';},{host:'Ready',attempt:'nonzero',view:'present'});
+await test(s=>{s.host.phase='Ready';s.host.generation='1';},{host:'Ready',attempt:'nonzero',view:'absent'});
+await test(s=>{s.root.dataset.startupState='unconfirmed';s.host.generation='1';},{startup:'unconfirmed',host:'Empty',attempt:'nonzero'});
+for(const change of [s=>{s.host.extra=secret;},s=>{delete s.host.revision;},s=>{s.host=[];},s=>{s.host=null;},s=>{s.host.phase=secret;},s=>{s.host.phase=['Ready'];},s=>{s.host.instance_id=secret;},s=>{s.host.instance_id=['11111111-1111-4111-8111-111111111111'];}])await test(change,{host:'invalid',attempt:'unknown'});
+for(const key of ['generation','revision'])for(const raw of ['-1','01','1.0','18446744073709551616','0 '+secret,0,['0'],{},null])await test(s=>{s.host[key]=raw;},{host:'invalid',attempt:'unknown'});
+await test(s=>{s.host.instance_id='11111111-1111-4111-8111-111111111111';},{host:'Empty'});
+await test(s=>{s.fail=true;},{host:'unavailable',attempt:'unknown',stability:'stable'});
+for(const mutate of [s=>{s.root={...s.root};},s=>{s.root=null;},s=>{s.view=s.originalView;},s=>{s.root.isConnected=false;},s=>{s.root.dataset.startupState='recovering';},s=>{s.root.dataset.session='changed';},s=>{s.root.dataset.generation='changed';}])await test(s=>{s.mutate=()=>mutate(s);},{stability:'changed'});
+await test(s=>{s.view=s.originalView;s.mutate=()=>{s.view=null;};},{view:'present',stability:'changed'});
+for(const key of ['generation','instanceId'])await test(s=>{s.view=s.originalView;s.mutate=()=>{s.view.dataset[key]='changed';};},{stability:'changed'});
+for(const change of [s=>{s.window.__TAURI__=null;},s=>{s.window.top={};},s=>{s.window.__TAURI_INTERNALS__.metadata.currentWindow.label=secret;},s=>{s.location.href=secret;},s=>{s.location.search=secret;}])await test(change,{host:'unavailable',stability:'unavailable'});
+console.log(JSON.stringify({cases,finite_values_only:true,readonly_command_only:true}));
+'@
+        [IO.File]::WriteAllText($workerPath,$worker,[Text.UTF8Encoding]::new($false))
+        $output = @(& node $workerPath $expressionPath); $LASTEXITCODE | Should -Be 0; $output.Count | Should -Be 1
+        $proof = $output[0] | ConvertFrom-Json; $proof.cases | Should -Be 72; $proof.finite_values_only | Should -BeTrue; $proof.readonly_command_only | Should -BeTrue
+    }
+    It 'validates each finite token without coercion or partial matching' {
+        $valid = [pscustomobject]@{startup='unconfirmed';view='absent';host='Empty';attempt='nonzero';stability='stable'}
+        $text = Format-DesktopStartupDiagnostic $valid
+        $text | Should -BeExactly 'startup=unconfirmed view=absent host=Empty attempt=nonzero stability=stable'
+        Format-DesktopStartupDiagnostic $text | Should -BeExactly $text
+        foreach ($key in @('startup','view','host','attempt','stability')) {
+            foreach ($bad in @(@('stable'),@{private='synthetic'},42,$null,'','STABLE',"stable`nSYNTHETIC_PRIVATE_SENTINEL",'stable SYNTHETIC_PRIVATE_SENTINEL')) {
+                $fixture = $valid | ConvertTo-Json | ConvertFrom-Json; $fixture.$key = $bad
+                Format-DesktopStartupDiagnostic $fixture | Should -BeExactly $script:StartupFallback
+            }
+        }
+        foreach ($bad in @($text+' extra=private',$text.Replace('Empty','Empty private'),$text.Replace('view=absent','view=absent  '),@($text))) { Format-DesktopStartupDiagnostic $bad | Should -BeExactly $script:StartupFallback }
+        $wrongCase = [pscustomobject]@{STARTUP='unconfirmed';view='absent';host='Empty';attempt='nonzero';stability='stable'}
+        Format-DesktopStartupDiagnostic $wrongCase | Should -BeExactly $script:StartupFallback
+        $valid | Add-Member NoteProperty private 'SYNTHETIC_PRIVATE_SENTINEL'
+        Format-DesktopStartupDiagnostic $valid | Should -BeExactly $script:StartupFallback
+    }
+    It 'preserves the captured failure when the diagnostic throws and skips diagnostics on success' {
+        Mock Get-DesktopStartupDiagnostic { throw 'SYNTHETIC_PRIVATE_SENTINEL' }
+        $result = [pscustomobject]@{ok=$true}
+        [object]::ReferenceEquals((Test-StartupResultBoundary $result),$result) | Should -BeTrue
+        Should -Invoke Get-DesktopStartupDiagnostic -Times 0 -Exactly
+        { Test-StartupResultBoundary ([pscustomobject]@{ok=$false;stage='project_view_missing'}) -DiagnosticDeadline ([DateTime]::UtcNow.AddMinutes(1)) } | Should -Throw -ExpectedMessage 'desktop_workspace_read_unconfirmed'
+        Should -Invoke Get-DesktopStartupDiagnostic -Times 1 -Exactly
+    }
+    It 'does not start authority or CDP when no diagnostic time remains' {
+        Mock Get-DesktopWebViewAuthorityProbe { throw 'authority must not start' }
+        Mock Invoke-DesktopRuntimeExpression { throw 'CDP must not start' }
+        Get-DesktopStartupDiagnostic -Deadline ([DateTime]::UtcNow.AddTicks(-1)) | Should -BeNullOrEmpty
+        Should -Invoke Get-DesktopWebViewAuthorityProbe -Times 0 -Exactly
+        Should -Invoke Invoke-DesktopRuntimeExpression -Times 0 -Exactly
+    }
+    It 'stops subsequent authority steps when <boundary> consumes the shared deadline' -ForEach @(@{boundary='port'},@{boundary='listener'},@{boundary='process'}) {
+        Mock Get-DesktopListenerSnapshot { throw 'unexpected listener' }
+        Mock Get-DesktopProcessSnapshot { throw 'unexpected process' }
+        Mock Resolve-DesktopWebViewListenerAuthority { throw 'unexpected resolve' }
+        Mock Get-VerifiedRemoteDebugPage { throw 'unexpected HTTP' }
+        $script:ExpiredBoundary = $boundary
+        $portProvider = { if ($script:ExpiredBoundary -ceq 'port') { Start-Sleep -Milliseconds 250 }; return [pscustomobject]@{state='authority_ready';port=1;browser_path='/devtools/browser/synthetic'} }
+        $listenerProvider = { if ($script:ExpiredBoundary -ceq 'listener') { Start-Sleep -Milliseconds 250 }; return [pscustomobject]@{synthetic=$true} }
+        $processProvider = { if ($script:ExpiredBoundary -ceq 'process') { Start-Sleep -Milliseconds 250 }; return [pscustomobject]@{synthetic=$true} }
+        $result = Get-DesktopWebViewAuthorityProbe -OwnedProcess @{process=@{Id=1}} -UserDataFolder 'synthetic' -Port 1 -PortFileSnapshotProvider $portProvider -ListenerSnapshotProvider $listenerProvider -ProcessSnapshotProvider $processProvider -Deadline ([DateTime]::UtcNow.AddMilliseconds(200))
+        $result.state | Should -BeExactly 'transport_unavailable'
+        Should -Invoke Resolve-DesktopWebViewListenerAuthority -Times 0 -Exactly
+        Should -Invoke Get-VerifiedRemoteDebugPage -Times 0 -Exactly
+        Should -Invoke Get-DesktopListenerSnapshot -Times 0 -Exactly
+        Should -Invoke Get-DesktopProcessSnapshot -Times 0 -Exactly
+    }
+    It 'shares a real HTTP deadline through <mode> and releases the peer normally' -ForEach @(@{mode='ready'},@{mode='version_wait'},@{mode='content_wait'},@{mode='list_wait'},@{mode='diagnostic_list_wait'}) {
+        $worker = @'
+import http from 'node:http';import assert from 'node:assert/strict';
+const mode=process.argv[2],peers=new Set(),requests=[];
+const server=http.createServer((req,res)=>{
+ requests.push(req.url);
+ if(req.url==='/json/version'){
+  if(mode==='version_wait')return;
+  if(mode==='content_wait'){res.writeHead(200,{'Content-Length':400,'Content-Type':'application/json'});res.write('{');return;}
+  res.end(JSON.stringify({webSocketDebuggerUrl:`ws://127.0.0.1:${server.address().port}/devtools/browser/synthetic`}));return;
+ }
+ assert.equal(req.url,'/json/list');if(mode==='list_wait'||mode==='diagnostic_list_wait')return;
+ res.end(JSON.stringify([{type:'page',url:'tauri://localhost/',webSocketDebuggerUrl:`ws://127.0.0.1:${server.address().port}/devtools/page/synthetic`}]));
+});
+server.on('connection',s=>{peers.add(s);s.on('close',()=>peers.delete(s));s.on('error',()=>{});});
+process.stdin.resume();process.stdin.on('end',()=>server.close(()=>{assert.equal(peers.size,0);console.log(JSON.stringify({requests,active_peers:0,normal_exit:true}));}));
+server.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:server.address().port})));
+'@
+        $workerPath = Join-Path $TestDrive ('startup-http-' + $mode + '.mjs'); [IO.File]::WriteAllText($workerPath,$worker,[Text.UTF8Encoding]::new($false))
+        $start = [Diagnostics.ProcessStartInfo]::new('node'); $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+        $start.RedirectStandardInput=$true; $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+        $start.ArgumentList.Add($workerPath); $start.ArgumentList.Add($mode)
+        $peer = [Diagnostics.Process]::new(); $peer.StartInfo=$start; $started=$false
+        try {
+            $started=$peer.Start(); $started | Should -BeTrue
+            $stderr=$peer.StandardError.ReadToEndAsync(); $readyTask=$peer.StandardOutput.ReadLineAsync()
+            $readyTask.Wait(180000) | Should -BeTrue; $readyLine=$readyTask.GetAwaiter().GetResult(); if ($null -eq $readyLine) { [IO.File]::WriteAllText((Join-Path $TestDrive ('startup-http-' + $mode + '.stderr.txt')),$stderr.GetAwaiter().GetResult()); throw 'startup_http_fixture_readiness_missing' }; $ready=$readyLine | ConvertFrom-Json
+            $deadline=[DateTime]::UtcNow.AddMilliseconds(300)
+            if ($mode -ceq 'diagnostic_list_wait') {
+                Mock Get-DesktopWebViewAuthorityProbe { return [pscustomobject]@{state='page_ready'} }
+                Mock Invoke-DesktopRuntimeExpression { throw 'CDP must not start' }
+                $failure = $null
+                try { Test-StartupResultBoundary ([pscustomobject]@{ok=$false;stage='project_view_missing'}) -Context @{app_process=@{process=@{Id=1}}} -Port $ready.port -UserDataFolder 'synthetic' -DiagnosticDeadline $deadline } catch { $failure=$_.Exception }
+                $failure.Message | Should -BeExactly 'desktop_workspace_read_unconfirmed'
+                $failure.Data['winsmux_workspace_mount_stage'] | Should -BeExactly 'project_view_missing'
+                Format-DesktopStartupDiagnostic $failure.Data['winsmux_workspace_startup_diagnostic'] | Should -BeExactly $script:StartupFallback
+                Should -Invoke Invoke-DesktopRuntimeExpression -Times 0 -Exactly
+            } else {
+                $result=Get-VerifiedRemoteDebugPage -HostName '127.0.0.1' -Port $ready.port -BrowserPath '/devtools/browser/synthetic' -Deadline $deadline
+                $result.state | Should -BeExactly $(if ($mode -ceq 'ready') {'page_ready'} else {'transport_unavailable'})
+                if ($mode -ceq 'ready') {
+                    Mock Get-DesktopWebViewAuthorityProbe { return [pscustomobject]@{state='page_ready'} }
+                    Mock Invoke-DesktopRuntimeExpression { return [pscustomobject]@{startup='connecting';view='absent';host='Opening';attempt='nonzero';stability='stable'} }
+                    $script:ExpectedDiagnosticDeadline=[DateTime]::UtcNow.AddMilliseconds(300)
+                    $diagnostic=Get-DesktopStartupDiagnostic -Context @{app_process=@{process=@{Id=1}}} -Port $ready.port -UserDataFolder 'synthetic' -Deadline $script:ExpectedDiagnosticDeadline
+                    Format-DesktopStartupDiagnostic $diagnostic | Should -BeExactly 'startup=connecting view=absent host=Opening attempt=nonzero stability=stable'
+                    Should -Invoke Invoke-DesktopRuntimeExpression -Times 1 -Exactly -ParameterFilter {$Deadline -eq $script:ExpectedDiagnosticDeadline}
+                }
+            }
+            $peer.StandardInput.Close(); $peer.WaitForExit(180000) | Should -BeTrue; $peer.ExitCode | Should -Be 0
+            $stderr.GetAwaiter().GetResult() | Should -BeExactly ''
+            $receipt=$peer.StandardOutput.ReadToEnd() | ConvertFrom-Json; $receipt.normal_exit | Should -BeTrue; $receipt.active_peers | Should -Be 0
+            @($receipt.requests) | Should -Be $(if ($mode -ceq 'ready') {@('/json/version','/json/list','/json/list')} elseif ($mode -ceq 'list_wait') {@('/json/version','/json/list')} elseif ($mode -ceq 'diagnostic_list_wait') {@('/json/list')} else {@('/json/version')})
+        } finally {
+            if ($started -and -not $peer.HasExited) { $peer.Kill(); $peer.WaitForExit() }
+            $peer.Dispose()
+        }
+    }
+    It 'emits the last validated diagnostic and retains the terminal reason for <kind>' -ForEach @(@{kind='valid'},@{kind='corrupt'}) {
+        $script:FinalDiagnosticFailure = [InvalidOperationException]::new('desktop_workspace_read_unconfirmed')
+        $script:FinalDiagnosticFailure.Data['winsmux_workspace_mount_stage']='project_view_missing'
+        $expected='startup=unconfirmed view=absent host=Empty attempt=nonzero stability=stable'
+        if ($kind -ceq 'valid') { $script:FinalDiagnosticFailure.Data['winsmux_workspace_startup_diagnostic']=$expected }
+        else { $script:FinalDiagnosticFailure.Data['winsmux_workspace_startup_diagnostic']=@($expected); ($script:FinalDiagnosticFailure.Data['winsmux_workspace_startup_diagnostic'] -is [array]) | Should -BeTrue }
+        Mock Get-DesktopWorkspaceRuntime { throw $script:FinalDiagnosticFailure }; Mock Start-Sleep { }
+        $script:DesktopObservationTimeoutMilliseconds=0; $script:DesktopObservationPollMilliseconds=0
+        $writer=[IO.StringWriter]::new(); $previous=[Console]::Error
+        try { [Console]::SetError($writer); { Wait-DesktopWorkspaceRuntime -Context @{app_process=@{process=@{HasExited=$false}}} -Port 1 -UserDataFolder 'synthetic' } | Should -Throw -ExpectedMessage 'desktop_workspace_mount_unconfirmed' }
+        finally { [Console]::SetError($previous) }
+        $writer.ToString() | Should -BeExactly ('desktop_workspace_mount_probe stage=project_view_missing ' + $(if($kind -ceq 'valid'){$expected}else{$script:StartupFallback}) + [Environment]::NewLine)
+        $writer.Dispose()
+    }
+    It 'stops after authority consumes the shared deadline' {
+        Mock Get-DesktopWebViewAuthorityProbe { Start-Sleep -Milliseconds 20; return [pscustomobject]@{state='page_ready'} }
+        Mock Invoke-DesktopRuntimeExpression { throw 'CDP must not start' }
+        Get-DesktopStartupDiagnostic -Context @{app_process=@{process=@{Id=1}}} -UserDataFolder 'synthetic' -Port 1 -Deadline ([DateTime]::UtcNow.AddMilliseconds(10)) | Should -BeNullOrEmpty
+        Should -Invoke Invoke-DesktopRuntimeExpression -Times 0 -Exactly
     }
 }
 
