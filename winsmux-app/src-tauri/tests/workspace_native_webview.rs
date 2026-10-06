@@ -479,21 +479,33 @@ async fn native_choose_force_dialog(
     confirm: bool,
     proof: tauri::State<'_, ForceExitProof>,
 ) -> Result<(), &'static str> {
+    native_force_phase("driver_begin");
     if confirm {
         proof.confirmed.store(true, Ordering::SeqCst);
     } else {
         proof.cancelled.store(true, Ordering::SeqCst);
     }
-    let chosen = tauri::async_runtime::spawn_blocking(move || choose_owned_force_dialog(confirm))
-        .await
-        .map_err(|_| "force dialog driver failed")??;
+    let chosen = match tauri::async_runtime::spawn_blocking(move || choose_owned_force_dialog(confirm)).await {
+        Ok(Ok(chosen)) => chosen,
+        Ok(Err(error)) => {
+            native_force_phase("driver_operation_error");
+            return Err(error);
+        }
+        Err(_) => {
+            native_force_phase("driver_worker_error");
+            return Err("force dialog driver failed");
+        }
+    };
     if !chosen {
+        native_force_phase("driver_not_found");
         return Err("force dialog not found");
     }
+    native_force_phase("driver_chosen");
     Ok(())
 }
 
 fn choose_owned_force_dialog(confirm: bool) -> Result<bool, &'static str> {
+    native_force_phase("blocking_begin");
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::System::Threading::GetCurrentProcessId;
     #[link(name = "user32")]
@@ -548,35 +560,45 @@ fn choose_owned_force_dialog(confirm: bool) -> Result<bool, &'static str> {
             EnumWindows(Some(find), &mut target as *mut _ as isize);
         }
         if !target.window.is_null() {
+            native_force_phase("owned_dialog_found");
             let mut texts = Vec::<String>::new();
             unsafe {
                 EnumChildWindows(target.window, Some(collect), &mut texts as *mut _ as isize);
             }
             let warning = texts.join(" ");
-            let warning_verified = (warning.contains("Saving could not be confirmed")
-                && warning.contains("last durable snapshot may be older"))
+            let win32_warning_verified = warning.contains("Saving could not be confirmed")
+                && warning.contains("last durable snapshot may be older");
+            native_force_phase(if win32_warning_verified { "win32_warning_verified" } else { "uia_warning_selected" });
+            let warning_verified = win32_warning_verified
                 || owned_dialog_warning_via_automation(target.window as usize, target.pid);
             if !warning_verified {
+                native_force_phase("warning_unverified");
                 return Err("force dialog warning content missing");
             }
             eprintln!("TASK870_NATIVE_FORCE_DIALOG_PROOF own_pid=true title=true warning=true confirm={confirm}");
             if !confirm {
+                native_force_phase("capture_hold_begin");
                 capture_hold(
                     "warning",
                     target.window as usize,
                     "Workspace state is uncertain",
                 )?;
+                native_force_phase("capture_hold_return");
             }
             // TaskDialog's standard Yes/No IDs, sent only to this test's verified dialog.
+            native_force_phase(if confirm { "choice_confirm_begin" } else { "choice_cancel_begin" });
             if unsafe { PostMessageW(target.window, 0x0400 + 102, if confirm { 6 } else { 7 }, 0) }
                 == 0
             {
+                native_force_phase("choice_dispatch_failed");
                 return Err("force dialog choice dispatch failed");
             }
+            native_force_phase("choice_dispatched");
             return Ok(true);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    native_force_phase("dialog_search_exhausted");
     Ok(false)
 }
 
@@ -615,17 +637,114 @@ async fn native_capture_unknown(window: tauri::WebviewWindow) -> Result<(), &'st
         .map_err(|_| "capture worker failed")?
 }
 
+fn native_force_phase(phase: &'static str) {
+    let _ = writeln!(std::io::stderr().lock(), "TASK870_NATIVE_FORCE_PHASE phase={phase}");
+}
+
+#[tauri::command]
+fn native_force_tail_phase(phase: String, rejected: bool) {
+    if matches!(phase.as_str(), "report_begin" | "report_return" | "force_begin" | "choose_begin" | "choose_return" | "force_return") {
+        let _ = writeln!(std::io::stderr().lock(), "TASK870_NATIVE_FORCE_TAIL phase={phase} promise_rejected={rejected}");
+    }
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct NativeObservedFileTime {
+    low: u32,
+    high: u32,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    fn DuplicateHandle(source_process: *mut std::ffi::c_void, source: *mut std::ffi::c_void, target_process: *mut std::ffi::c_void, target: *mut *mut std::ffi::c_void, access: u32, inherit: i32, options: u32) -> i32;
+    fn GetProcessTimes(process: *mut std::ffi::c_void, creation: *mut NativeObservedFileTime, exit: *mut NativeObservedFileTime, kernel: *mut NativeObservedFileTime, user: *mut NativeObservedFileTime) -> i32;
+    fn QueryFullProcessImageNameW(process: *mut std::ffi::c_void, flags: u32, name: *mut u16, size: *mut u32) -> i32;
+    fn WaitForSingleObject(object: *mut std::ffi::c_void, milliseconds: u32) -> u32;
+    fn GetExitCodeProcess(process: *mut std::ffi::c_void, code: *mut u32) -> i32;
+    fn CloseHandle(object: *mut std::ffi::c_void) -> i32;
+}
+
+struct NativeObservedProcess(*mut std::ffi::c_void);
+
+// Only this non-inheritable duplicate is transferred; the original Child stays
+// with wait_with_output. The observer never opens a process by its numeric PID.
+unsafe impl Send for NativeObservedProcess {}
+
+impl Drop for NativeObservedProcess {
+    fn drop(&mut self) {
+        unsafe { CloseHandle(self.0); }
+    }
+}
+
+fn native_observe_uia_root(held: NativeObservedProcess, pid: u32) {
+    let signaled = unsafe { WaitForSingleObject(held.0, u32::MAX) } == 0;
+    let mut exit = 0;
+    let available = signaled && unsafe { GetExitCodeProcess(held.0, &mut exit) } != 0;
+    let _ = writeln!(std::io::stderr().lock(), "TASK870_NATIVE_UIA_ROOT pid={pid} signaled={signaled} exit_available={available} exit={exit}");
+}
+
+fn native_start_uia_observer(child: &Child) {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    let mut duplicate = std::ptr::null_mut();
+    let process = unsafe { GetCurrentProcess() };
+    // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, non-inheritable.
+    if unsafe { DuplicateHandle(process, child.as_raw_handle(), process, &mut duplicate, 0x0010_1000, 0, 0) } == 0 {
+        native_force_phase("uia_observer_handle_unavailable");
+        return;
+    }
+    let held = NativeObservedProcess(duplicate);
+    let pid = child.id();
+    let mut creation = NativeObservedFileTime::default();
+    let mut exit = NativeObservedFileTime::default();
+    let mut kernel = NativeObservedFileTime::default();
+    let mut user = NativeObservedFileTime::default();
+    let time_available = unsafe { GetProcessTimes(held.0, &mut creation, &mut exit, &mut kernel, &mut user) } != 0;
+    let created = (u64::from(creation.high) << 32) | u64::from(creation.low);
+    let mut name = vec![0u16; 32768];
+    let mut size = name.len() as u32;
+    let image_sha = if unsafe { QueryFullProcessImageNameW(held.0, 0, name.as_mut_ptr(), &mut size) } != 0 {
+        let path = PathBuf::from(std::ffi::OsString::from_wide(&name[..size as usize]));
+        std::fs::read(path).ok().map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+    } else { None };
+    let image_sha = match image_sha.as_deref() { Some(value) => value, None => "unavailable" };
+    let _ = writeln!(std::io::stderr().lock(), "TASK870_NATIVE_UIA_IDENTITY pid={pid} creation_available={time_available} creation={created} image_sha256={image_sha}");
+    // No join: this observation lives until natural root exit or harness exit.
+    if std::thread::Builder::new().name("native-uia-observer".to_owned()).spawn(move || native_observe_uia_root(held, pid)).is_err() {
+        native_force_phase("uia_observer_worker_unavailable");
+    }
+}
+
 fn owned_dialog_warning_via_automation(window: usize, process_id: u32) -> bool {
     use std::os::windows::process::CommandExt;
     let script = format!(
         r#"$ErrorActionPreference='Stop'; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $target=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]{window}); if ($target.Current.ProcessId -ne {process_id}) {{ exit 2 }}; $nodes=$target.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition); $names=foreach ($item in $nodes) {{ $item.Current.Name }}; $warning=$names -join ' '; if ($warning.Contains('Saving could not be confirmed') -and $warning.Contains('last durable snapshot may be older')) {{ [Console]::Write('warning_verified'); exit 0 }}; exit 3"#
     );
-    let Some(windows_root)=std::env::var_os("SystemRoot") else{return false;};
-    Command::new(PathBuf::from(windows_root).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+    let Some(windows_root)=std::env::var_os("SystemRoot") else{native_force_phase("uia_image_unavailable");return false;};
+    native_force_phase("uia_spawn_begin");
+    let child = Command::new(PathBuf::from(windows_root).join("System32/WindowsPowerShell/v1.0/powershell.exe"))
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .creation_flags(0x08000000)
-        .output()
-        .is_ok_and(|output| output.status.success() && output.stdout == b"warning_verified")
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn();
+    let child = match child {
+        Ok(child) => child,
+        Err(_) => { native_force_phase("uia_spawn_failed"); return false; }
+    };
+    native_force_phase("uia_spawned");
+    native_start_uia_observer(&child);
+    native_force_phase("uia_output_wait_begin");
+    match child.wait_with_output() {
+        Ok(output) => {
+            let _ = writeln!(std::io::stderr().lock(), "TASK870_NATIVE_UIA_OUTPUT collected=true stdout_bytes={} stderr_bytes={}", output.stdout.len(), output.stderr.len());
+            let verified = output.status.success() && output.stdout == b"warning_verified";
+            native_force_phase(if verified { "uia_warning_verified" } else { "uia_warning_unverified" });
+            verified
+        }
+        Err(_) => { native_force_phase("uia_output_unconfirmed"); false }
+    }
 }
 
 fn confirmed_snapshot_path(inputs: &NativeInputs) -> PathBuf {
@@ -1619,6 +1738,7 @@ fn main() {
             native_lifecycle_release,
             native_lifecycle_report,
             native_report,
+            native_force_tail_phase,
             native_nonowner_report,
             native_nonowner_status,
             native_request_window_close,
@@ -2459,8 +2579,23 @@ fn main() {
                     output.unrelatedAfterUnknown = await invoke('native_unrelated_cli_alive');
                     await invoke('native_unrelated_cli_close');
                 } catch (error) { output.failure = String(error); }
-                if (invoke && await invoke('native_report', {value: output})) {
-                    const force=invoke('workspace_force_exit');await invoke('native_choose_force_dialog',{confirm:true});await force;
+                if (invoke) {
+                    let phase='report_begin';
+                    const observe=(rejected=false)=>{try {void invoke('native_force_tail_phase',{phase,rejected}).catch(()=>{});} catch {}};
+                    try {
+                        observe();
+                        const reported=await invoke('native_report', {value: output});
+                        phase='report_return';observe();
+                        if (reported) {
+                            phase='force_begin';observe();
+                            const force=invoke('workspace_force_exit');
+                            phase='choose_begin';observe();
+                            await invoke('native_choose_force_dialog',{confirm:true});
+                            phase='choose_return';observe();
+                            await force;
+                            phase='force_return';observe();
+                        }
+                    } catch (error) { observe(true);throw error; }
                 }
             })();"#.replace("__PROJECT_PATH_JSON__", &project_literal);
             webview.eval(&script).expect("invoke registered commands in actual WebView2");
