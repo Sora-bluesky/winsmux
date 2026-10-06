@@ -309,6 +309,173 @@ console.log(JSON.stringify({baseline_sha256:baseline.expression_sha256,cases:cas
     }
 }
 
+Describe 'Desktop runtime expression transport contract' {
+    BeforeAll {
+        $definition = @($script:HelperAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-DesktopRuntimeExpression' }, $true))
+        if ($definition.Count -ne 1) { throw 'Exact runtime expression helper required.' }
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+        $script:DesktopObservationTimeoutMilliseconds = 180000
+        # An actual websocket peer exercises the production PowerShell/.NET await
+        # boundary. No substitute transport or transformed function is used.
+        $workerSource = @'
+import http from 'node:http';
+import {createHash} from 'node:crypto';
+import assert from 'node:assert/strict';
+const peers=new Set(),seen=[];
+let upgraded=0,closed=0;
+const server=http.createServer((req,res)=>{res.writeHead(404);res.end();});
+function frame(bytes,opcode=1,fin=true){
+ let header;
+ if(bytes.length<126)header=Buffer.from([(fin?128:0)|opcode,bytes.length]);
+ else if(bytes.length<65536){header=Buffer.alloc(4);header[0]=(fin?128:0)|opcode;header[1]=126;header.writeUInt16BE(bytes.length,2);}
+ else{header=Buffer.alloc(10);header[0]=(fin?128:0)|opcode;header[1]=127;header.writeBigUInt64BE(BigInt(bytes.length),2);}
+ return Buffer.concat([header,bytes]);
+}
+const value={ok:true,instance_id:'11111111-1111-4111-8111-111111111111',revision:0};
+const response=v=>({id:1,result:{result:{type:'string',value:JSON.stringify(v)}}});
+server.on('upgrade',(req,socket,head)=>{
+ assert.equal(req.url,'/devtools/page/synthetic');assert.equal(head.length,0);
+ const accept=createHash('sha1').update(req.headers['sec-websocket-key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
+ socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+'\r\n\r\n');
+ upgraded++;peers.add(socket);let input=Buffer.alloc(0),sent=false;
+ socket.on('data',part=>{
+  if(sent){if((part[0]&15)===8)socket.end(frame(Buffer.alloc(0),8));return;}
+  input=Buffer.concat([input,part]);if(input.length<2)return;
+  assert.equal(input[0],0x81);assert.equal(input[1]&128,128);
+  let length=input[1]&127,offset=2;
+  if(length===126){if(input.length<4)return;length=input.readUInt16BE(2);offset=4;}
+  assert(length<65536&&length!==127);if(input.length<offset+4+length)return;
+  const mask=input.subarray(offset,offset+4),body=Buffer.from(input.subarray(offset+4,offset+4+length));
+  for(let i=0;i<body.length;i++)body[i]^=mask[i%4];
+  const request=JSON.parse(body.toString('utf8'));
+  assert.deepEqual(Object.keys(request).sort(),['id','method','params']);
+  assert.equal(request.id,1);assert.equal(request.method,'Runtime.evaluate');
+  assert.deepEqual(Object.keys(request.params).sort(),['awaitPromise','expression','returnByValue']);
+  assert.equal(request.params.returnByValue,true);assert.equal(request.params.awaitPromise,true);
+  const mode=request.params.expression;
+  const modes=['success','refusal','fragmented','unrelated','boundary','error','exception','nonstring','malformed','duplicate','utf8','oversized','binary','close','cancel'];
+  assert(modes.includes(mode));assert(!seen.includes(mode));seen.push(mode);sent=true;
+  let reply=response(mode==='refusal'?{ok:false,stage:'projects_invalid'}:value);
+  if(mode==='error')reply.error={code:-1,message:'synthetic'};
+  if(mode==='exception')reply.result.exceptionDetails={text:'synthetic'};
+  if(mode==='nonstring')reply.result.result={type:'number',value:7};
+  let bytes=Buffer.from(JSON.stringify(reply));
+  if(mode==='malformed')bytes=Buffer.from('{');
+  if(mode==='duplicate')bytes=Buffer.from('{"id":1,"id":1}');
+  if(mode==='utf8')bytes=Buffer.from([0xff]);
+  if(mode==='boundary'||mode==='oversized'){
+   const target=mode==='boundary'?65536:65537;
+   reply.padding='';const base=Buffer.byteLength(JSON.stringify(reply));
+   reply.padding='x'.repeat(target-base);bytes=Buffer.from(JSON.stringify(reply));assert.equal(bytes.length,target);
+  }
+  if(mode==='cancel')return;
+  if(mode==='close'){socket.end(frame(Buffer.alloc(0),8));return;}
+  if(mode==='unrelated')socket.write(frame(Buffer.from(JSON.stringify({id:2,result:{result:{type:'string',value:'{}'}}}))));
+  if(mode==='fragmented'){socket.write(frame(bytes.subarray(0,7),1,false));socket.write(frame(bytes.subarray(7),0,true));}
+  else socket.write(frame(bytes,mode==='binary'?2:1));
+ });
+ socket.on('error',error=>{assert(sent&&error.code==='ECONNRESET');});
+ socket.on('end',()=>socket.end());
+ socket.on('close',()=>{peers.delete(socket);closed++;});
+});
+process.stdin.resume();process.stdin.on('end',()=>server.close(()=>{
+ assert.equal(peers.size,0);assert.equal(closed,upgraded);
+ for(const mode of ['success','refusal','fragmented','unrelated','boundary','error','exception','nonstring','malformed','duplicate','utf8','oversized','binary','close'])assert(seen.includes(mode));
+ process.stdout.write(JSON.stringify({requests:seen,upgraded,closed,active_peers:peers.size})+'\n');
+}));
+server.listen(0,'127.0.0.1',()=>process.stdout.write(JSON.stringify({port:server.address().port,loopback_only:true})+'\n'));
+'@
+        $workerPath = Join-Path $TestDrive 'desktop-runtime-expression-wire.mjs'
+        [IO.File]::WriteAllText($workerPath, $workerSource, [Text.UTF8Encoding]::new($false))
+        $start = [Diagnostics.ProcessStartInfo]::new('node')
+        $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+        $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+        $start.ArgumentList.Add($workerPath)
+        $script:RuntimeWireProcess = [Diagnostics.Process]::new(); $script:RuntimeWireProcess.StartInfo = $start
+        $started = $false
+        try {
+            if (-not $script:RuntimeWireProcess.Start()) { throw 'Runtime peer failed to start.' }
+            $started = $true
+            $script:RuntimeWireError = $script:RuntimeWireProcess.StandardError.ReadToEndAsync()
+            $readyTask = $script:RuntimeWireProcess.StandardOutput.ReadLineAsync()
+            if (-not $readyTask.Wait($script:DesktopObservationTimeoutMilliseconds)) { throw 'Runtime peer readiness missing.' }
+            $ready = $readyTask.GetAwaiter().GetResult() | ConvertFrom-Json
+            if ($ready.loopback_only -ne $true -or $ready.port -le 0) { throw 'Runtime peer binding invalid.' }
+            $script:RuntimeWireUrl = 'ws://127.0.0.1:' + $ready.port + '/devtools/page/synthetic'
+        } catch {
+            if ($started -and -not $script:RuntimeWireProcess.HasExited) { $script:RuntimeWireProcess.Kill(); $script:RuntimeWireProcess.WaitForExit() }
+            $script:RuntimeWireProcess.Dispose(); $script:RuntimeWireProcess = $null; throw
+        }
+    }
+    AfterAll {
+        if ($script:RuntimeWireProcess) {
+            try {
+                $script:RuntimeWireProcess.StandardInput.Close()
+                if (-not $script:RuntimeWireProcess.WaitForExit($script:DesktopObservationTimeoutMilliseconds)) { throw 'Runtime peer normal exit missing.' }
+                $remaining = $script:RuntimeWireProcess.StandardOutput.ReadToEnd()
+                $stderr = $script:RuntimeWireError.GetAwaiter().GetResult()
+                $script:RuntimeWireProcess.ExitCode | Should -Be 0
+                $stderr | Should -BeExactly ''
+                $receipt = $remaining | ConvertFrom-Json
+                $receipt.active_peers | Should -Be 0
+                $receipt.closed | Should -Be $receipt.upgraded
+                @($receipt.requests | Where-Object { $_ -cne 'cancel' }).Count | Should -Be 14
+            } finally {
+                if (-not $script:RuntimeWireProcess.HasExited) { $script:RuntimeWireProcess.Kill(); $script:RuntimeWireProcess.WaitForExit() }
+                $script:RuntimeWireProcess.Dispose()
+            }
+        }
+    }
+    It 'returns exactly the existing object without transport completion output for <mode>' -ForEach @(
+        @{ mode = 'success' }, @{ mode = 'refusal' }, @{ mode = 'fragmented' }, @{ mode = 'unrelated' }, @{ mode = 'boundary' }
+    ) {
+        $actual = @(Invoke-DesktopRuntimeExpression -WebSocketUrl $script:RuntimeWireUrl -Expression $mode)
+        $actual.Count | Should -Be 1
+        $actual[0] | Should -BeOfType [pscustomobject]
+        if ($mode -ceq 'refusal') {
+            $actual[0].ok | Should -BeFalse
+            $actual[0].stage | Should -BeExactly 'projects_invalid'
+            @($actual[0].PSObject.Properties.Name | Sort-Object) | Should -Be @('ok','stage')
+        } else {
+            $actual[0].ok | Should -BeTrue
+            $actual[0].instance_id | Should -BeExactly '11111111-1111-4111-8111-111111111111'
+            $actual[0].revision | Should -Be 0
+            @($actual[0].PSObject.Properties.Name | Sort-Object) | Should -Be @('instance_id','ok','revision')
+        }
+    }
+    It 'preserves failure and emits no partial transport result for <mode>' -ForEach @(
+        @{ mode = 'error'; reason = 'desktop_cdp_evaluation_failed'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'exception'; reason = 'desktop_cdp_evaluation_failed'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'nonstring'; reason = 'desktop_cdp_evaluation_invalid'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'duplicate'; reason = 'desktop_inventory_duplicate_key'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'oversized'; reason = 'desktop_cdp_response_oversized'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'binary'; reason = 'desktop_cdp_response_invalid'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'close'; reason = 'desktop_cdp_response_invalid'; type = 'System.Management.Automation.RuntimeException' },
+        @{ mode = 'malformed'; reason = $null; type = 'System.Text.Json.JsonReaderException' },
+        @{ mode = 'utf8'; reason = $null; type = 'System.Net.WebSockets.WebSocketException' }
+    ) {
+        $seen = [Collections.Generic.List[object]]::new(); $failure = $null
+        try { Invoke-DesktopRuntimeExpression -WebSocketUrl $script:RuntimeWireUrl -Expression $mode | ForEach-Object { $seen.Add($_) } }
+        catch { $failure = $_.Exception }
+        $failure | Should -Not -BeNullOrEmpty
+        $seen.Count | Should -Be 0
+        $failure.GetBaseException().GetType().FullName | Should -BeExactly $type
+        if ($reason) { $failure.Message | Should -BeExactly $reason }
+    }
+    It 'keeps cancellation exceptional without emitting completion output' {
+        $seen = [Collections.Generic.List[object]]::new(); $failure = $null
+        $previous = $script:DesktopObservationTimeoutMilliseconds
+        try {
+            $script:DesktopObservationTimeoutMilliseconds = 0
+            try { Invoke-DesktopRuntimeExpression -WebSocketUrl $script:RuntimeWireUrl -Expression 'cancel' | ForEach-Object { $seen.Add($_) } }
+            catch { $failure = $_.Exception }
+        } finally { $script:DesktopObservationTimeoutMilliseconds = $previous }
+        $failure | Should -Not -BeNullOrEmpty
+        ($failure.GetBaseException() -is [OperationCanceledException] -or $failure.Message -ceq 'desktop_cdp_evaluation_timeout') | Should -BeTrue
+        $seen.Count | Should -Be 0
+    }
+}
+
 Describe 'NSIS final-tail command contract' {
     BeforeAll {
         Initialize-DesktopNativeTypes

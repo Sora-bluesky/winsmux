@@ -2549,10 +2549,10 @@ function Invoke-DesktopRuntimeExpression {
     $socket = [Net.WebSockets.ClientWebSocket]::new()
     $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($script:DesktopObservationTimeoutMilliseconds))
     try {
-        $socket.ConnectAsync([uri]$WebSocketUrl, $cancel.Token).GetAwaiter().GetResult()
+        [void]$socket.ConnectAsync([uri]$WebSocketUrl, $cancel.Token).GetAwaiter().GetResult()
         $id = 1
         $request = @{ id = $id; method = 'Runtime.evaluate'; params = @{ expression = $Expression; returnByValue = $true; awaitPromise = $true } } | ConvertTo-Json -Depth 8 -Compress
-        $socket.SendAsync([ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($request)), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancel.Token).GetAwaiter().GetResult()
+        [void]$socket.SendAsync([ArraySegment[byte]]::new([Text.Encoding]::UTF8.GetBytes($request)), [Net.WebSockets.WebSocketMessageType]::Text, $true, $cancel.Token).GetAwaiter().GetResult()
         $buffer = [byte[]]::new(65536)
         while (-not $cancel.IsCancellationRequested) {
             $bytes = [Collections.Generic.List[byte]]::new()
