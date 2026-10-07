@@ -15,6 +15,17 @@
   "entries": [
     {
       "class": "intentional-shim",
+      "owner": "Windows distribution notices",
+      "surface": "copies of the documented legacy compatibility notice",
+      "reason": "These source notice files reproduce the classified THIRD_PARTY_NOTICES.md explanation of retained compatibility code and removed binary aliases; they do not restore an executable alias.",
+      "target": "keep these source notices while their classified source notice is included in the distribution",
+      "paths": [
+        "distribution/windows-licenses/texts/a964fdbc37fc916ad295db204b58c558e0b608cd36c0b6ebea492bfa72bf00c8",
+        "distribution/windows-licenses/texts/cfb5cdc302385038de1ac3f4cb8c68932aca7325f2489fbf3a7670bfacb7aa8f"
+      ]
+    },
+    {
+      "class": "intentional-shim",
       "owner": "operator startup safety",
       "surface": "legacy probe denial rules and tests",
       "reason": "These references block old psmux startup probes and keep operators on winsmux startup checks.",

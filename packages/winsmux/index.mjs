@@ -44,7 +44,6 @@ if (!fs.existsSync(installerPath)) {
   process.exit(1);
 }
 
-const shell = process.env.ComSpec || "cmd.exe";
 const command = [
   "pwsh",
   "-NoProfile",
@@ -58,9 +57,10 @@ const command = [
   ...installerArgs,
 ];
 
-const result = spawnSync(shell, ["/d", "/s", "/c", command.map(quoteWindowsArg).join(" ")], {
+const result = spawnSync(command[0], command.slice(1), {
   stdio: "inherit",
   env: process.env,
+  windowsHide: true,
 });
 
 if (result.error) {
@@ -68,14 +68,6 @@ if (result.error) {
 }
 
 process.exit(result.status ?? 1);
-
-function quoteWindowsArg(value) {
-  if (!/[ \t"]/u.test(value)) {
-    return value;
-  }
-
-  return `"${value.replace(/"/gu, '""')}"`;
-}
 
 function toInstallerArgs(values) {
   const result = [];

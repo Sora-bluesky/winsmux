@@ -1,193 +1,76 @@
 # Troubleshooting
 
-Use this guide when winsmux install, launch, panes, credentials, or release checks do not behave as expected.
+This guide covers the v0.38.0 workspace UI and common CLI/MCP. The older operator screen and `winsmux init` / `winsmux launch` use different entry points. Check your installed version and its matching distribution and guide first.
 
-## Startup problems
+## Desktop app opens to a localhost connection error
 
-The `winsmux launch` commands in this section refer to the npm/CLI package path.
-They start the managed Windows Terminal workspace. They do not open the desktop
-app; use the installed desktop app directly when troubleshooting the graphical
-control surface.
+Open the installed winsmux app from the Start menu. The CLI command `winsmux workspace connect` does not launch the desktop UI.
 
-### Desktop app opens to a localhost connection error, blank page, or frozen window
+For a connection error, blank screen, or a black PowerShell, Windows Terminal, or WebView2 console window without the app:
 
-The desktop app is the recommended graphical entrypoint. Open the installed
-`winsmux` app from the Start menu or desktop shortcut after installing the
-`winsmux_..._x64-setup.exe` asset from the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest).
-`winsmux launch` is a CLI entrypoint and does not open the desktop app.
+Compare the installed version with its release assets. The [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest) may be a different version; do not substitute it without checking. An x64 installer is named `winsmux_..._x64-setup.exe`; select the actual asset for your version and CPU. Open the installed app from the Start menu or desktop shortcut. Before reinstalling, confirm normal exit and preserve the saved layout and project files; a refused close is not a completed exit.
 
-After installation, Windows Search should find the app by the name `winsmux`.
-Windows Search does not have to show the version number. When you need install
-metadata, check Windows Settings > Apps > Installed apps.
+1. Check the app version and install location. Starting a development web server is not a recovery procedure for the installed app.
+2. If the UI responds, use **状態を読み直す** (Reread state) and **導入状況を確認** (Check installation).
+3. To exit, inspect running panes, save required files, and use the normal close action. A refused or unverified close is not a confirmed exit.
+4. Record the version, the action that triggered the problem, and the fixed error classification shown. Inspect screenshots for private paths, input and output before sharing them.
 
-If the desktop app opens but shows a localhost connection error, a blank page, or
-stops responding:
-
-1. Close the `winsmux` desktop window.
-2. Check whether an old desktop process is still running:
-
-   ```powershell
-   Get-Process winsmux-app -ErrorAction SilentlyContinue |
-     Select-Object Id,ProcessName,Path,StartTime
-   ```
-
-3. If the listed process is the installed winsmux desktop app you just opened,
-   close it from Windows Task Manager and open winsmux again.
-4. If a black PowerShell, Windows Terminal, or WebView2 console window appears
-   with the desktop app, close winsmux and file an issue. A normal desktop
-   startup should show the winsmux window only.
-5. If the issue repeats after a reboot, reinstall the desktop installer from
-   the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest)
-   for normal recovery. If you are reproducing a bug tied to a specific version,
-   reinstall that exact release instead. Attach `.winsmux/startup-journal.log`,
-   `.winsmux/manifest.yaml`, the installer version, and a screenshot.
-
-### `Orchestra already starting (lock exists)`
-
-Cause: a previous startup ended before removing the lock file.
-
-Fix:
-
-```powershell
-winsmux list
-Get-Process winsmux-app -ErrorAction SilentlyContinue |
-  Select-Object Id,ProcessName,Path,StartTime
-```
-
-Only remove the lock when there is no live winsmux session for this project and
-no running desktop app using it:
-
-```powershell
-Remove-Item .winsmux/orchestra.lock -Force
-```
-
-Then run the CLI workspace startup again:
-
-```powershell
-winsmux launch
-```
-
-### Empty pane or agent does not start
-
-Cause: the pane shell may not have been ready when the agent was sent its startup command.
-
-Fix:
-
-```powershell
-winsmux doctor
-winsmux launch
-```
-
-If only one pane is affected, read the pane before sending another instruction:
-
-```powershell
-winsmux read <pane> 60
-```
-
-The final number for `winsmux read` is the number of tail lines to capture.
-
-### `pwsh.exe` fails with `0xc0000142`
-
-This is Windows status `STATUS_DLL_INIT_FAILED`: Windows could not initialize a DLL required by `pwsh.exe`. If bare PowerShell works but winsmux launch fails, the issue is likely tied to a specific launch path, parent process, profile, environment, or Windows Terminal pane command.
-
-Check bare PowerShell:
-
-```powershell
-where.exe pwsh
-pwsh -NoProfile -NoLogo -Command "Write-Output `$PSVersionTable.PSVersion"
-```
-
-Check winsmux diagnostics:
-
-```powershell
-winsmux doctor
-```
-
-Check recent Windows application errors:
-
-```powershell
-Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddHours(-6)} |
-  Where-Object { $_.Message -match 'pwsh.exe|0xc0000142' -or $_.ProviderName -match 'Application Error|Windows Error Reporting' } |
-  Select-Object -First 20 TimeCreated,ProviderName,Id,LevelDisplayName,Message
-```
-
-If bare PowerShell fails, repair or reinstall PowerShell 7 and reboot Windows. If bare PowerShell works, check the Windows Terminal profile command line and the winsmux pane startup logs.
-
-## Pane and sandbox problems
-
-### Codex asks for approval on every command
-
-Cause: Codex may be configured for an elevated Windows sandbox.
-
-Fix:
-
-```toml
-[windows]
-sandbox = "unelevated"
-```
-
-### File writes or git commands fail inside a Codex pane
-
-Symptoms:
-
-- `git add` or `git commit` fails because `.git/worktrees/*/index.lock` cannot be created.
-- PowerShell is in Constrained Language Mode.
-- `Set-Content`, `Out-File`, or `[IO.File]::*` fails.
-
-Fix:
-
-- keep editing and focused verification inside the pane
-- run repository-level `git add`, `git commit`, and `git push` from a regular shell
-- use `apply_patch` or `cmd /c` for pane-side file writes
-
-### Verify desktop child-process cleanup
-
-Closing the desktop app requests the summary stream to stop, stops native voice
-capture when active, drains the PTY pane registry, and waits briefly after
-killing worker-pane child processes. If the desktop feels slow to exit, wait a
-few seconds before checking process state.
-
-When debugging a suspected leak, check for winsmux-owned processes before
-killing anything:
+You can inspect process state without terminating anything:
 
 ```powershell
 Get-Process winsmux-app -ErrorAction SilentlyContinue |
-  Select-Object Id,ProcessName,Path,StartTime
+  Select-Object Id,ProcessName,StartTime
 ```
 
-Stop only the process you can identify as the current winsmux desktop session.
-Do not stop unrelated terminals, package manager processes, or other projects'
-development tools.
+A list of processes with the same name does not establish which work they own. Deleting locks or saved layouts, or terminating every PowerShell process, is not a recovery procedure.
 
-## Credential problems
+## Unverified project or pane state
 
-### Vault key not found
+Use **状態を読み直す** to recheck the target and run. A running process does not prove completed AI work. Inspect the work state, evidence and observation time together.
 
-Cause: the key is not stored in Windows Credential Manager.
+If the working directory changed, disappeared, or is inaccessible, inspect the current folder. A different folder with the same display name is not the original target. **一覧から外す（ファイルは保持）** removes a registration, not the files.
 
-Fix:
+When an operation result is unverified, inspect the original target and result before repeating it. In CLI/MCP responses, inspect `accepted`, `result` and `error`. A missing response does not prove success or justify a safe retry.
 
-```powershell
-winsmux vault set <name>
-winsmux vault inject <name> <pane>
-```
+## Japanese input and shortcuts
 
-winsmux does not extract tokens from other CLIs. See [Authentication support](authentication-support.md).
+Click inside the terminal, type with the IME, convert with Space, and commit with Enter. Distinguish committing a composition from pressing Enter to execute a command.
 
-## Diagnostics
+If Ctrl+Shift+P/T/W conflicts with your work, uncheck **アプリのショートカットを使う**. When input admission or delivery is unverified, inspect the displayed information before sending duplicate input.
 
-```powershell
-winsmux doctor
-winsmux version
-winsmux list
-winsmux read <pane> 60
-```
+## Codex or Claude Code does not start
 
-The final number for `winsmux read` is the number of tail lines to capture.
+Use **導入状況を再確認** (Recheck installation) to refresh the detected official CLI and version. CLIs change over time. Detection alone does not verify authentication or support for a requested model or reasoning setting.
 
-Important local logs:
+- If the executable is missing, check the install location of the official CLI you intend to use.
+- If authentication is needed, follow that CLI's own instructions. Do not copy credentials from another CLI.
+- If a setting is rejected, inspect the reason and the official CLI's supported settings. Do not assume another AI was selected automatically.
+- For an approval requested by an official CLI, inspect its configuration and the requested action. This is separate from winsmux connection authorization. This guide does not prescribe disabling safety controls to reduce prompts.
 
-| File | Purpose |
-| ---- | ------- |
-| `.winsmux/startup-journal.log` | startup failures |
-| `.winsmux/manifest.yaml` | current workspace state |
+Use **現在の実行を中断** (Interrupt current run) and check whether termination of the target is observed. Sending an interruption or pressing the button alone is not proof of completion.
+
+## CLI or MCP connection is refused
+
+Use **現在の接続情報をコピー** (Copy current connection information) in the GUI and explicitly pass the information for the current host. Do not reuse old connection information or grants after restarting the host.
+
+Use **接続一覧を読み直す** (Refresh connections), select the connection, and inspect its requested projects and scopes. Metadata, output reading and control are separate permissions. Metadata permission alone does not permit reading terminal content.
+
+Select the required scope and use **選択内容を許可** (Allow selection). Use **要求を拒否** (Deny request) for unwanted requests or **許可を失効** (Revoke permission) to stop an existing grant. Connection authorization does not sign in to an AI service.
+
+## Artifacts or layout cannot be read
+
+Refresh the artifact list and check the target before reading its content or diff. Do not use a disappeared file's previous body as current content. A binary body being hidden, or a limited display range, does not mean the complete content was inspected.
+
+**配置だけを復元** restores the saved layout without automatically running previous processes. If save or restore fails, do not empty the saved file or manually modify its schema.
+
+## Share diagnostics
+
+Use **診断を確認** (Check diagnostics) in **診断** (Diagnostics) to display the five shareable fields, then **診断をコピー** (Copy diagnostics). Check the copied result before sharing it.
+
+Do not attach raw terminal transcripts, CLI arguments or environment variables, authentication files, private connection information, or saved layouts to bug reports. If more detail is needed, prepare a generated reproduction with no secrets and the sanitized error classification.
+
+## Older versions, updates and uninstall
+
+Do not manually convert an older version's configuration into the v0.38.0 saved layout. Preserve ongoing work and configuration in the old version; select the folder and create a layout in the new UI. Retain the original distribution and configuration needed for recovery.
+
+Choose update or uninstall actions for the actual installation method and version. npm package maintenance and desktop app maintenance are separate. See [Installation](installation.md) and the release information for your version.

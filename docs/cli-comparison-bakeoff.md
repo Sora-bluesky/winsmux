@@ -46,7 +46,7 @@ That directory is intentionally not committed.
 
 ## One-command desktop preparation
 
-Use the desktop preparation entrypoint before any official six-pane run:
+The desktop preparation entrypoint now launches the v0.38 project workspace:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/start-cli-bakeoff-desktop.ps1
@@ -55,9 +55,32 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/start-cli-bakeoff-desktop.
 The script builds the current release CLI and desktop app, copies the tracked
 task pack into the local benchmark project, verifies that the release binaries
 match the repository version and Git head, launches the production desktop app,
-and moves the visible window to the test display. It does not use the Start menu,
+and moves the visible window to the test display. It confirms the mounted native
+main view using its captured session and readonly canonical capabilities,
+project, pane and run observations. It does not open or reopen a workspace
+session, start another owner, or launch a missing run to satisfy observation.
+An existing project with no current run is a valid restoration.
+It does not use the Start menu,
 installed shortcuts, stale installed binaries, or the Tauri dev server unless the
 caller explicitly edits the command.
+
+`-ProjectDir` is delivered once through the workspace view's folder-open request.
+The launcher preserves pack copying, candidate identity checks, `-SkipBuild`,
+`-NoLaunch`, and window metrics. `-NoLaunch` reports `launch: skipped` and provides
+no native startup evidence. The app uses the existing public-smoke remote-debug
+gate. The workspace store remains at its Windows KnownFolder location; changing
+the child profile environment does not isolate that store. A busy app or debug
+port stops preparation.
+If verification fails, cleanup requests one normal close only from the exact
+PID, creation identity and executable started by this invocation. Refused or
+unconfirmed closure preserves the app; another app or child is never force killed.
+
+The retired six-worker operator bakeoff is a separate consumer. Its ready-check,
+composer and PTY-capture route has not been migrated to the new workspace.
+`winsmux-app/scripts/run-cli-bakeoff.mjs` returns `unsupported` before those
+effects when it sees the workspace startup or cannot identify its legacy
+operator surface. A successful project launch does not prove a six-worker
+benchmark run. Final removal of that legacy runner belongs to the later cleanup.
 
 For a dry run that proves the pack and binary identity without launching the
 desktop app:

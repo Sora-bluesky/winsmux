@@ -1611,11 +1611,8 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.compare",
                     "desktop.run.promote",
                     "desktop.run.pick_winner",
-                    "desktop.workers.status",
-                    "desktop.workers.start",
                     "desktop.provider.switch",
                     "desktop.provider.capabilities",
-                    "desktop.runtime.roles.apply",
                     "desktop.voice.capture_status",
                     "desktop.dogfood.event",
                     "desktop.session.restore_candidates",
@@ -1784,26 +1781,9 @@ pub fn handle_desktop_json_rpc(
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
-        "desktop.workers.status" => {
-            let target = get_optional_string_param(params.as_ref(), &["target", "slot"])
-                .unwrap_or_else(|| "all".to_string());
-            match load_desktop_workers_status(transport, target, resolved_project_dir) {
-                Ok(result) => json_rpc_result(request_id, result),
-                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
-            }
-        }
-        "desktop.workers.start" => {
-            let target = match get_required_string_param(params.as_ref(), &["target", "slot"]) {
-                Ok(value) => value,
-                Err(err) => {
-                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
-                }
-            };
-            match start_desktop_worker(transport, target, resolved_project_dir) {
-                Ok(result) => json_rpc_result(request_id, result),
-                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
-            }
-        }
+        "desktop.workers.status" | "desktop.workers.start" | "desktop.runtime.roles.apply" =>
+            json_rpc_error(request_id, JSON_RPC_METHOD_NOT_FOUND,
+                "この旧Desktop操作は v0.38.0では利用できません。workspace操作を使用してください。"),
         "desktop.team_profile.settings_view" => {
             return desktop_team_profile::json_rpc_settings_view(
                 transport,
@@ -1866,36 +1846,6 @@ pub fn handle_desktop_json_rpc(
                 clear,
                 resolved_project_dir,
             ) {
-                Ok(result) => json_rpc_result(request_id, result),
-                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
-            }
-        }
-        "desktop.runtime.roles.apply" => {
-            let roles = match params
-                .as_ref()
-                .and_then(|value| value.as_object())
-                .and_then(|object| object.get("roles"))
-            {
-                Some(value) => value.clone(),
-                None => {
-                    return json_rpc_error(
-                        request_id,
-                        JSON_RPC_INVALID_PARAMS,
-                        "Missing required params field: roles",
-                    );
-                }
-            };
-            let roles_json = match serde_json::to_string(&roles) {
-                Ok(value) => value,
-                Err(err) => {
-                    return json_rpc_error(
-                        request_id,
-                        JSON_RPC_INVALID_PARAMS,
-                        format!("Failed to serialize runtime role preferences: {err}"),
-                    );
-                }
-            };
-            match apply_desktop_runtime_roles(transport, roles_json, resolved_project_dir) {
                 Ok(result) => json_rpc_result(request_id, result),
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
@@ -5468,7 +5418,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_desktop_json_rpc_contract_advertises_runtime_roles_apply() {
+    fn handle_desktop_json_rpc_contract_excludes_retired_bridge_methods() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response: serde_json::json!({}),
@@ -5492,9 +5442,6 @@ mod tests {
                     .as_array()
                     .expect("contract methods must be an array");
                 for required_method in [
-                    "desktop.runtime.roles.apply",
-                    "desktop.workers.status",
-                    "desktop.workers.start",
                     "desktop.provider.switch",
                     "desktop.provider.capabilities",
                     "desktop.dogfood.event",
@@ -5505,11 +5452,50 @@ mod tests {
                         .iter()
                         .any(|method| method.as_str() == Some(required_method)));
                 }
+                for retired in ["desktop.workers.status", "desktop.workers.start", "desktop.runtime.roles.apply"] {
+                    assert!(!methods.iter().any(|method| method.as_str() == Some(retired)));
+                }
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
             }
         }
+    }
+
+    #[test]
+    fn retired_bridge_rpc_family_never_reaches_transport_for_any_params() {
+        struct NoBridgeTransport;
+        impl DesktopCommandTransport for NoBridgeTransport {
+            fn request_json(&self, _: &DesktopCommand) -> Result<Value, String> {
+                panic!("retired Desktop IPC reached child transport");
+            }
+        }
+        let parameters = [None, Some(Value::Null), Some(serde_json::json!({})),
+            Some(serde_json::json!({"target":"worker-2","slot":"all","roles":[{"role_id":"worker"}],
+                "projectDir":r"C:\old bridge source\project"})),
+            Some(serde_json::json!(["invalid"])), Some(serde_json::json!(false))];
+        let mut checked = 0;
+        for retired in ["desktop.workers.status", "desktop.workers.start", "desktop.runtime.roles.apply"] {
+            for method in [retired.to_string(), retired.to_uppercase(), format!("{retired} ")] {
+                for params in &parameters {
+                    for id in [Value::Null, serde_json::json!(7), serde_json::json!("retired-request")] {
+                        let response = handle_desktop_json_rpc(&NoBridgeTransport,
+                            DesktopJsonRpcRequest { jsonrpc: "2.0".to_string(), id: id.clone(),
+                                method: method.clone(), params: params.clone() },
+                            Some(r"C:\old bridge HOME\project".to_string()));
+                        match response {
+                            DesktopJsonRpcResponse::Success { .. } => panic!("retired IPC succeeded"),
+                            DesktopJsonRpcResponse::Error { id: actual, error, .. } => {
+                                assert_eq!(actual, id);
+                                assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
+                            }
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 162);
     }
 
     #[test]
@@ -5555,7 +5541,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_desktop_json_rpc_routes_workers_status() {
+    fn handle_desktop_json_rpc_refuses_retired_workers_status() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response: serde_json::json!({
@@ -5584,22 +5570,17 @@ mod tests {
         );
 
         match response {
-            DesktopJsonRpcResponse::Success { id, result, .. } => {
+            DesktopJsonRpcResponse::Success { .. } => panic!("retired method succeeded"),
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
                 assert_eq!(id, serde_json::json!("req-workers-status"));
-                assert_eq!(result["workers"][0]["slot_id"], "worker-2");
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
+                assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
             }
         }
-        assert_eq!(
-            transport.requests.borrow().as_slice(),
-            ["workers status worker-2 --json"]
-        );
+        assert!(transport.requests.borrow().is_empty());
     }
 
     #[test]
-    fn handle_desktop_json_rpc_routes_workers_start() {
+    fn handle_desktop_json_rpc_refuses_retired_workers_start() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response: serde_json::json!({
@@ -5626,18 +5607,13 @@ mod tests {
         );
 
         match response {
-            DesktopJsonRpcResponse::Success { id, result, .. } => {
+            DesktopJsonRpcResponse::Success { .. } => panic!("retired method succeeded"),
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
                 assert_eq!(id, serde_json::json!("req-workers-start"));
-                assert_eq!(result["results"][0]["status"], "started");
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
+                assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
             }
         }
-        assert_eq!(
-            transport.requests.borrow().as_slice(),
-            ["workers start worker-2 --json"]
-        );
+        assert!(transport.requests.borrow().is_empty());
     }
 
     #[test]
@@ -5888,8 +5864,8 @@ mod tests {
         match response {
             DesktopJsonRpcResponse::Success { .. } => panic!("expected error"),
             DesktopJsonRpcResponse::Error { error, .. } => {
-                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
-                assert!(error.message.contains("target"));
+                assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
+                assert!(error.message.contains("workspace"));
             }
         }
         assert!(transport.requests.borrow().is_empty());
@@ -5930,7 +5906,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_desktop_json_rpc_routes_runtime_roles_apply() {
+    fn handle_desktop_json_rpc_refuses_retired_runtime_roles_apply() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response: serde_json::json!({
@@ -5967,19 +5943,13 @@ mod tests {
         );
 
         match response {
-            DesktopJsonRpcResponse::Success { id, result, .. } => {
+            DesktopJsonRpcResponse::Success { .. } => panic!("retired method succeeded"),
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
                 assert_eq!(id, serde_json::json!("req-runtime"));
-                assert_eq!(result["roles"]["worker"]["agent"], "codex");
-            }
-            DesktopJsonRpcResponse::Error { error, .. } => {
-                panic!("expected success, got {:?}", error);
+                assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
             }
         }
-        let requests = transport.requests.borrow();
-        assert_eq!(requests.len(), 1);
-        assert!(requests[0].starts_with("runtime-roles apply --roles-json "));
-        assert!(requests[0].contains("\"role_id\":\"worker\""));
-        assert!(requests[0].ends_with(" --json"));
+        assert!(transport.requests.borrow().is_empty());
     }
 
     #[test]

@@ -12,6 +12,11 @@ Describe 'CLI bakeoff evidence harness' {
         $script:DesktopStartScript = Join-Path $script:RepoRoot 'scripts\start-cli-bakeoff-desktop.ps1'
         $script:SessionReadinessScript = Join-Path $script:RepoRoot 'scripts\test-v03623-session-readiness.ps1'
         $script:PackPath = Join-Path $script:RepoRoot 'tasks\cli-bakeoff\v1\benchmark-pack.json'
+        $legacyMainSpec = '2e46363ddf11143c0840db5d6816591a02772471:winsmux-app/src/main.ts'
+        $script:LegacyDesktopMain = (& git -C $script:RepoRoot show $legacyMainSpec) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($script:LegacyDesktopMain)) {
+            throw 'Fixed v0.36.38 Desktop source is unavailable.'
+        }
 
         function Copy-TrackedBakeoffPack {
             Get-Content -LiteralPath $script:PackPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
@@ -389,7 +394,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'treats low Codex usage remaining notices as non-blocking readiness warnings' {
-        $mainTs = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\main.ts') -Raw -Encoding UTF8
+        $mainTs = $script:LegacyDesktopMain
         $blockerFunction = [regex]::Match(
             $mainTs,
             '(?s)function detectWorkerReadinessBlocker\(text: string\) \{.*?\r?\n\}',
@@ -409,7 +414,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'keeps the operator runtime model and next startup setting distinct in the composer UI' {
-        $mainTs = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\main.ts') -Raw -Encoding UTF8
+        $mainTs = $script:LegacyDesktopMain
         $detectIndex = $mainTs.IndexOf('function detectComposerModelFromOperatorText')
         $observeIndex = $mainTs.IndexOf('function updateObservedOperatorRuntimeModelFromOutput')
         $displayIndex = $mainTs.IndexOf('function getComposerModelControlDisplay')
@@ -503,22 +508,25 @@ Describe 'CLI bakeoff evidence harness' {
         $result.repoRoot | Should -Match '^[A-Z]:\\'
     }
 
-    It 'stops an existing repo desktop before rebuilding the release desktop executable' {
+    It 'refuses to rebuild while a repo or external desktop is running' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
         $buildBlockIndex = $scriptText.IndexOf('if (-not $SkipBuild) {')
         $toolCheckIndex = $scriptText.IndexOf('$desktopBuildTools = Assert-DesktopBuildToolsAvailable', $buildBlockIndex)
-        $buildStopIndex = $scriptText.IndexOf('Stop-RepoWinsmuxDesktopTree', $buildBlockIndex)
+        $repoGuardIndex = $scriptText.IndexOf('Assert-NoRepoWinsmuxDesktopApp', $buildBlockIndex)
+        $externalGuardIndex = $scriptText.IndexOf('Assert-NoExternalWinsmuxDesktopApp', $buildBlockIndex)
         $cargoBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'cargo'", $buildBlockIndex)
         $tauriBuildIndex = $scriptText.IndexOf("Invoke-CheckedCommand -FilePath 'npm'", $buildBlockIndex)
 
         ($buildBlockIndex -ge 0) | Should -BeTrue
         ($toolCheckIndex -gt $buildBlockIndex) | Should -BeTrue
-        ($toolCheckIndex -lt $buildStopIndex) | Should -BeTrue
+        ($toolCheckIndex -lt $repoGuardIndex) | Should -BeTrue
+        ($repoGuardIndex -lt $cargoBuildIndex) | Should -BeTrue
+        ($externalGuardIndex -lt $cargoBuildIndex) | Should -BeTrue
         ($cargoBuildIndex -ge 0) | Should -BeTrue
         ($tauriBuildIndex -ge 0) | Should -BeTrue
-        ($buildStopIndex -gt $buildBlockIndex) | Should -BeTrue
-        ($buildStopIndex -lt $cargoBuildIndex) | Should -BeTrue
-        ($buildStopIndex -lt $tauriBuildIndex) | Should -BeTrue
+        $scriptText | Should -Match 'Existing repo desktop app is busy'
+        $scriptText | Should -Match 'External winsmux desktop app is already running'
+        $scriptText | Should -Not -Match 'Stop-RepoWinsmuxDesktopTree'
     }
 
     It 'fails the desktop build gate before release compilation when Tauri CLI is unavailable' {
@@ -541,7 +549,7 @@ Describe 'CLI bakeoff evidence harness' {
         $freshnessFunctionIndex = $scriptText.IndexOf('function Assert-DesktopExecutableFreshForDist')
         $freshnessCallIndex = $scriptText.IndexOf('$desktopFreshness = Assert-DesktopExecutableFreshForDist -DesktopExecutable $releaseApp')
         $preflightArgsIndex = $scriptText.IndexOf('$preflightArgs = @(')
-        $launchIndex = $scriptText.IndexOf('$launcherProcess = Start-Process -FilePath $releaseApp')
+        $launchIndex = $scriptText.IndexOf('$launcherProcess = [System.Diagnostics.Process]::Start($startInfo)')
 
         ($freshnessFunctionIndex -ge 0) | Should -BeTrue
         ($freshnessCallIndex -gt $freshnessFunctionIndex) | Should -BeTrue
@@ -596,9 +604,10 @@ Describe 'CLI bakeoff evidence harness' {
 
         $viteConfig | Should -Match 'base:\s*"\./"'
         $indexHtml | Should -Not -Match '(?:src|href)="/(?:assets/|src/|startup\.css|favicon\.|apple-touch-icon\.png)'
-        $indexHtml | Should -Match 'href="\./startup\.css"'
-        $indexHtml | Should -Match 'href="\./src/styles\.css"'
-        $indexHtml | Should -Match 'src="\./src/main\.ts"'
+        $indexHtml | Should -Match 'src="\./src/workspace-ui/startup-entry\.ts"'
+        $entry = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\workspace-ui\startup-entry.ts') -Raw -Encoding UTF8
+        $entry | Should -Match "import './startup\.css'"
+        $entry | Should -Match "import\('../styles\.css'\)"
         $scriptText | Should -Match 'function Assert-DesktopDistAssetIntegrity'
         $scriptText | Should -Match 'root-anchored asset URLs'
         $scriptText | Should -Match 'references missing packaged assets'
@@ -613,7 +622,7 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'winsmux desktop DevTools endpoint returned no page URLs'
     }
 
-    It 'reads WebView operator surface results without direct dynamic property assumptions' {
+    It 'reads WebView workspace results without direct dynamic property assumptions' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
 
         $scriptText | Should -Match 'function Get-ObjectPropertyValue'
@@ -622,9 +631,9 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match '\[void\]\$socket\.CloseAsync'
         $scriptText | Should -Match '\[void\]\$chunks\.Add\(\$receiveBytes\[\$index\]\)'
         $scriptText | Should -Match 'JSON\.stringify'
-        $scriptText | Should -Match 'ConvertFrom-Json -Depth 20'
-        $scriptText | Should -Match 'Get-ObjectPropertyValue -Object \$surface -Name ''ok'''
-        $scriptText | Should -Match 'did not return an ok property'
+        $scriptText | Should -Match 'ConvertFrom-Json -Depth 100'
+        $scriptText | Should -Match 'Get-ObjectPropertyValue \$surface ''ok'''
+        $scriptText | Should -Match 'Workspace observation unconfirmed:'
         $scriptText | Should -Not -Match '\$surface\.ok'
     }
 
@@ -635,65 +644,70 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'allowDevServer: !RELEASE_POPOUT_ONLY'
     }
 
-    It 'stops the repo desktop when launch readiness fails before the operator UI is usable' {
+    It 'requests normal closure only for the exact owned desktop when launch readiness fails' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
-        $launchIndex = $scriptText.IndexOf('$launcherProcess = Start-Process -FilePath $releaseApp')
+        $launchIndex = $scriptText.IndexOf('$launcherProcess = [System.Diagnostics.Process]::Start($startInfo)')
         $pageCheckIndex = $scriptText.IndexOf('$page = Assert-ProductionDesktopPage -Port $DebugPort', $launchIndex)
-        $readinessCatchIndex = $scriptText.IndexOf('winsmux desktop launch failed before a usable operator UI was verified', $pageCheckIndex)
-        $cleanupIndex = $scriptText.IndexOf('Stop-RepoWinsmuxDesktopTree', $pageCheckIndex)
-        $resultIndex = $scriptText.IndexOf('$result = [pscustomobject]@{', $pageCheckIndex)
+        $catchIndex = $scriptText.IndexOf('} catch {', $pageCheckIndex)
+        $ownedCheckIndex = $scriptText.IndexOf('$app = Get-ExactOwnedDesktop', $catchIndex)
+        $cleanupIndex = $scriptText.IndexOf('$cleanup.requested = $app.CloseMainWindow()', $catchIndex)
+        $resultIndex = $scriptText.IndexOf('$result = [pscustomobject]@{', $catchIndex)
 
         ($launchIndex -ge 0) | Should -BeTrue
         ($pageCheckIndex -gt $launchIndex) | Should -BeTrue
-        ($readinessCatchIndex -gt $pageCheckIndex) | Should -BeTrue
-        ($cleanupIndex -gt $pageCheckIndex) | Should -BeTrue
+        ($catchIndex -gt $pageCheckIndex) | Should -BeTrue
+        ($ownedCheckIndex -gt $catchIndex) | Should -BeTrue
+        ($cleanupIndex -gt $ownedCheckIndex) | Should -BeTrue
         ($cleanupIndex -lt $resultIndex) | Should -BeTrue
-        $scriptText | Should -Match 'frozen WebView window'
+        $scriptText | Should -Match 'Owned PID identity changed\. Process preserved\.'
+        $scriptText | Should -Match 'Normal close unavailable; app preserved\.'
+        $scriptText | Should -Not -Match 'Stop-Process -Force'
     }
 
-    It 'requires a rendered operator surface before desktop launch readiness passes' {
+    It 'requires the mounted main workspace before desktop launch readiness passes' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
         $devToolsFunctionIndex = $scriptText.IndexOf('function Invoke-WebViewDevToolsRuntimeExpression')
         $runtimeEvalIndex = $scriptText.IndexOf("method = 'Runtime.evaluate'", $devToolsFunctionIndex)
-        $surfaceFunctionIndex = $scriptText.IndexOf('function Test-DesktopOperatorSurface')
+        $surfaceFunctionIndex = $scriptText.IndexOf('function Test-DesktopWorkspaceSurface')
         $surfaceRuntimeCallIndex = $scriptText.IndexOf('Invoke-WebViewDevToolsRuntimeExpression -WebSocketDebuggerUrl $webSocketDebuggerUrl -Expression $expression', $surfaceFunctionIndex)
-        $surfaceCallIndex = $scriptText.IndexOf('$operatorSurface = Test-DesktopOperatorSurface -Page $productionPage')
-        $windowMetricsIndex = $scriptText.IndexOf('$metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)')
-
+        $surfaceCallIndex = $scriptText.IndexOf('$workspaceSurface = Test-DesktopWorkspaceSurface -Page $productionPage')
         ($devToolsFunctionIndex -ge 0) | Should -BeTrue
         ($runtimeEvalIndex -gt $devToolsFunctionIndex) | Should -BeTrue
         ($surfaceFunctionIndex -ge 0) | Should -BeTrue
         ($surfaceRuntimeCallIndex -gt $surfaceFunctionIndex) | Should -BeTrue
         ($surfaceCallIndex -gt $surfaceRuntimeCallIndex) | Should -BeTrue
-        ($surfaceCallIndex -lt $windowMetricsIndex) | Should -BeTrue
-        $scriptText | Should -Match '#operator-terminal-panel'
-        $scriptText | Should -Match '#composer-input'
-        $scriptText | Should -Match 'tauriInvokeAvailable'
+        $scriptText | Should -Match "getElementById\('workspace-startup'\)"
+        $scriptText | Should -Match 'workspace-project-pane'
+        $scriptText | Should -Match "label !== 'main'"
+        $scriptText | Should -Match "root\.dataset\.startupState !== 'mounted'"
+        $scriptText | Should -Match "view\.dataset\.availability !== 'available'"
         $scriptText | Should -Match 'ERR_CONNECTION_REFUSED'
         $scriptText | Should -Match 'browserError='
-        $scriptText | Should -Match 'operatorSurface = \$operatorSurface'
+        $scriptText | Should -Match 'workspaceSurface = \$page\.workspaceSurface'
     }
 
-    It 'requires desktop operator API reachability before desktop launch readiness passes' {
+    It 'requires canonical read-only workspace API responses before launch readiness passes' {
         $scriptText = Get-Content -LiteralPath $script:DesktopStartScript -Raw -Encoding UTF8
-        $launchIndex = $scriptText.IndexOf('$launcherProcess = Start-Process -FilePath $releaseApp')
-        $tokenEnvIndex = $scriptText.IndexOf('$env:WINSMUX_CONTROL_PIPE_TOKEN =')
+        $launchIndex = $scriptText.IndexOf('$launcherProcess = [System.Diagnostics.Process]::Start($startInfo)')
         $pageCheckIndex = $scriptText.IndexOf('$page = Assert-ProductionDesktopPage -Port $DebugPort', $launchIndex)
-        $controlFunctionIndex = $scriptText.IndexOf('function Assert-DesktopOperatorControlPipe')
-        $snapshotMethodIndex = $scriptText.IndexOf('operator-snapshot', $controlFunctionIndex)
-        $controlCheckIndex = $scriptText.IndexOf('$operatorControlPipe = Assert-DesktopOperatorControlPipe', $pageCheckIndex)
-        $windowMetricsIndex = $scriptText.IndexOf('$metricsBeforeMove = Get-WindowMetrics -ProcessId ([int]$app.ProcessId)', $controlCheckIndex)
+        $surfaceFunctionIndex = $scriptText.IndexOf('function Test-DesktopWorkspaceSurface')
+        $readIndex = $scriptText.IndexOf("async function read(operation, params)", $surfaceFunctionIndex)
+        $capabilitiesIndex = $scriptText.IndexOf("await read('capabilities.get',{})", $readIndex)
+        $projectIndex = $scriptText.IndexOf("await read('project.list',{})", $capabilitiesIndex)
+        $paneIndex = $scriptText.IndexOf("await read('pane.list'", $projectIndex)
+        $runIndex = $scriptText.IndexOf("await read('run.get'", $paneIndex)
 
         ($launchIndex -ge 0) | Should -BeTrue
-        ($tokenEnvIndex -ge 0) | Should -BeTrue
-        ($launchIndex -gt $tokenEnvIndex) | Should -BeTrue
         ($pageCheckIndex -gt $launchIndex) | Should -BeTrue
-        ($controlFunctionIndex -ge 0) | Should -BeTrue
-        ($snapshotMethodIndex -gt $controlFunctionIndex) | Should -BeTrue
-        ($controlCheckIndex -gt $pageCheckIndex) | Should -BeTrue
-        ($controlCheckIndex -lt $windowMetricsIndex) | Should -BeTrue
-        $scriptText | Should -Match 'desktop operator API was not reachable'
-        $scriptText | Should -Match 'operatorControlPipe = \$operatorControlPipe'
+        ($readIndex -gt $surfaceFunctionIndex) | Should -BeTrue
+        ($capabilitiesIndex -gt $readIndex) | Should -BeTrue
+        ($projectIndex -gt $capabilitiesIndex) | Should -BeTrue
+        ($paneIndex -gt $projectIndex) | Should -BeTrue
+        ($runIndex -gt $paneIndex) | Should -BeTrue
+        $scriptText | Should -Match "invoke\('workspace_request'"
+        $scriptText | Should -Match 'expected_topology_revision:null'
+        $scriptText | Should -Match 'canonical read unconfirmed'
+        $scriptText | Should -Match 'generation or revision changed'
     }
 
     It 'rejects visible helper windows and WebView console logging before desktop readiness passes' {
@@ -701,17 +715,15 @@ Describe 'CLI bakeoff evidence harness' {
         $windowEnumerationIndex = $scriptText.IndexOf('function Get-VisibleTopLevelWindowsForProcessTree')
         $helperFunctionIndex = $scriptText.IndexOf('function Assert-NoVisibleDesktopHelperWindows')
         $helperHandleParamIndex = $scriptText.IndexOf('[Parameter(Mandatory = $true)][Int64]$MainWindowHandle', $helperFunctionIndex)
-        $webviewArgsIndex = $scriptText.IndexOf('$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS =')
-        $webviewArgGuardIndex = $scriptText.IndexOf('Assert-WebViewArgumentsDoNotOpenConsole', $webviewArgsIndex)
-        $moveIndex = $scriptText.IndexOf('$metricsAfterMove = Move-WindowToVisibleWorkspace')
+        $webviewArgsScrubIndex = $scriptText.IndexOf('$key -eq ''WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS''')
+        $moveIndex = $scriptText.IndexOf('Move-WindowToVisibleWorkspace -ProcessId $owned.pid')
         $helperCheckIndex = $scriptText.IndexOf('$visibleWindows = Assert-NoVisibleDesktopHelperWindows', $moveIndex)
         $resultIndex = $scriptText.IndexOf('$result = [pscustomobject]@{', $helperCheckIndex)
 
         ($windowEnumerationIndex -ge 0) | Should -BeTrue
         ($helperFunctionIndex -gt $windowEnumerationIndex) | Should -BeTrue
         ($helperHandleParamIndex -gt $helperFunctionIndex) | Should -BeTrue
-        ($webviewArgsIndex -ge 0) | Should -BeTrue
-        ($webviewArgGuardIndex -gt $webviewArgsIndex) | Should -BeTrue
+        ($webviewArgsScrubIndex -ge 0) | Should -BeTrue
         ($moveIndex -ge 0) | Should -BeTrue
         ($helperCheckIndex -gt $moveIndex) | Should -BeTrue
         ($helperCheckIndex -lt $resultIndex) | Should -BeTrue
@@ -721,7 +733,7 @@ Describe 'CLI bakeoff evidence harness' {
         $scriptText | Should -Match 'Tao Thread Event Target'
         $scriptText | Should -Match 'bounds=\$\(\$_.x\),\$\(\$_.y\),\$\(\$_.width\)x\$\(\$_.height\)'
         $scriptText | Should -Match '-MainWindowHandle \(\[Int64\]\$metricsAfterMove\.handle\)'
-        $scriptText | Should -Match 'msedgewebview2|pwsh|powershell|windowsterminal|conhost|cmd'
+        $scriptText | Should -Match '-not \$isExpectedMainWindow -and -not \$isMainTaoEventTarget'
         $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--enable-logging'
         $scriptText | Should -Not -Match 'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS\s*=\s*".*--v='
         $scriptText | Should -Match 'visibleWindows = \$visibleWindows'
@@ -769,48 +781,34 @@ Describe 'CLI bakeoff evidence harness' {
         $troubleshootingJa | Should -Not -Match '\\target\\'
         $publicInstallDocs | Should -Not -Match '(?i)target[\\/](release|debug)([\\/]|\\b)'
         $publicInstallDocs | Should -Not -Match '(?i)\\.local[\\/ ]*bin'
-        $installation | Should -Match 'External automation against the desktop operator'
-        $installation | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
-        $installation | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
-        $installation | Should -Match 'winsmux launch.*does not open\s+the desktop app'
-        $installation | Should -Match 'Windows Search'
-        $installation | Should -Match 'Installed apps'
-        $installation | Should -Match 'does not need to show a version number'
-        $installation | Should -Match 'builds starting with `v0\.36\.23` check GitHub Releases'
-        $installation | Should -Match 'shows a compact update action'
-        $installation | Should -Match 'verifies the checksum when release metadata provides'
-        $installation | Should -Not -Match 'The `v0\.36\.23` release cannot ship until'
-        $installation | Should -Match 'Published\s+builds before `v0\.36\.23`'
-        $installationJa | Should -Match 'Windows 検索'
-        $installationJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
-        $installationJa | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
-        $installationJa | Should -Match 'インストールされているアプリ'
-        $installationJa | Should -Match 'バージョン番号が出る必要はありません'
-        $installationJa | Should -Match '`v0\.36\.23` 以降で GitHub Releases にある新しい Windows セットアップインストーラーを確認します'
-        $installationJa | Should -Match 'アプリ下部に小さな更新アクションを表示'
-        $installationJa | Should -Match 'チェックサムがある場合は検証'
-        $installationJa | Should -Not -Match '`v0\.36\.23` は、この実装と検証が終わるまでリリースしません'
-        $readme | Should -Match 'For most users, start with the desktop app'
-        $readme | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
-        $readme | Should -Match 'Use the npm package only when you want a CLI-first'
-        $readmeBeforeCommands | Should -Not -Match 'winsmux init'
-        $readmeBeforeCommands | Should -Not -Match 'winsmux launch'
-        $readmeJa | Should -Match '通常はデスクトップアプリから始めます'
-        $readmeJa | Should -Match 'CLI 中心、スクリプト実行、ヘッドレス運用で使う場合だけ'
-        $readmeJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
-        $readmeJaBeforeCommands | Should -Not -Match 'winsmux init'
-        $readmeJaBeforeCommands | Should -Not -Match 'winsmux launch'
+        $installation | Should -Match 'Windows installer for your architecture'
+        $installation | Should -Match 'Check the actual release assets'
+        $installation | Should -Match 'three executables from the same distribution'
+        $installation | Should -Match 'Save work and normally close the workspace before replacing the app'
+        $installation | Should -Match 'If closing is refused or unverified, inspect the run state first'
+        $installation | Should -Match 'Do not delete project data or authentication storage'
+        $installation | Should -Match 'Desktop maintenance and maintenance of another CLI installation are separate'
+        $installationJa | Should -Match 'CPUに対応するWindowsインストーラー'
+        $installationJa | Should -Match '対象版の配布物を確認'
+        $installationJa | Should -Match '同じ配布物'
+        $installationJa | Should -Match 'workspaceを通常終了してから置き換え'
+        $installationJa | Should -Match '閉鎖が拒否された、または未確認なら、先に実行状態を確認'
+        $installationJa | Should -Match 'プロジェクトや認証保存先を削除しない'
+        $readme | Should -Match 'Start with the desktop app'
+        $readme | Should -Match 'winsmux/releases'
+        $readme | Should -Match 'プロジェクトを開く'
+        $readme | Should -Match 'winsmux workspace'
+        $readme | Should -Match 'External connections require explicit project and scope permission'
+        $readmeJa | Should -Match 'デスクトップアプリから始める'
+        $readmeJa | Should -Match 'winsmux/releases'
+        $readmeJa | Should -Match 'プロジェクトを開く'
+        $readmeJa | Should -Match 'winsmux workspace'
         $quickstart | Should -Match '# Quickstart: Desktop app'
-        $quickstart | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
         $quickstart | Should -Match 'You do not need to run CLI initialization commands by hand for the desktop path'
-        $quickstart | Should -Not -Match 'npm install -g winsmux|winsmux init|winsmux launch|Create project settings'
         $quickstartJa | Should -Match '# クイックスタート: デスクトップアプリ'
-        $quickstartJa | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
         $quickstartJa | Should -Match 'CLI 用の初期化コマンドを手で実行する必要はありません'
-        $quickstartJa | Should -Not -Match 'npm install -g winsmux|winsmux init|winsmux launch|プロジェクト設定を作る'
         $publicInstallDocs | Should -Not -Match 'winsmux_0\.\d+\.\d+_x64-setup\.exe'
         $packageReadme | Should -Match 'It does not install or open the desktop app'
-        $packageReadme | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
         $packageReadme | Should -Match 'CLI package path'
         $releaseGate | Should -Match 'Windows Search finds the app by'
         $releaseGate | Should -Match 'Installed apps'
@@ -851,7 +849,7 @@ Describe 'CLI bakeoff evidence harness' {
         $tauriLib = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\src\lib.rs') -Raw -Encoding UTF8
         $cargoToml = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\Cargo.toml') -Raw -Encoding UTF8
         $desktopClient = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\desktopClient.ts') -Raw -Encoding UTF8
-        $mainTs = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\main.ts') -Raw -Encoding UTF8
+        $mainTs = $script:LegacyDesktopMain
         $styles = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src\styles.css') -Raw -Encoding UTF8
 
         $cargoToml | Should -Match 'sha2 = "0\.10"'

@@ -6,23 +6,6 @@ use crate::scrub_control_pipe_token_from_command;
 
 const WINSMUX_CORE_SCRIPT_ENV: &str = "WINSMUX_CORE_SCRIPT";
 
-pub(crate) fn companion_bridge_script_path(companion: &Path) -> Option<PathBuf> {
-    let dir = companion.parent()?;
-    [
-        dir.join("resources")
-            .join("scripts")
-            .join("winsmux-core.ps1"),
-        dir.join("scripts").join("winsmux-core.ps1"),
-        dir.join("resources").join("winsmux-core.ps1"),
-        dir.join("resources")
-            .join("binaries")
-            .join("winsmux-core.ps1"),
-        dir.join("winsmux-core.ps1"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-}
-
 pub(crate) fn build_companion_ledger_command(
     companion: &Path,
     effective_project_dir: &Path,
@@ -32,9 +15,9 @@ pub(crate) fn build_companion_ledger_command(
     let mut command = Command::new(companion);
     command.args(args).current_dir(effective_project_dir);
     apply_desktop_winsmux_child_env(&mut command, Some(companion), app_pid);
-    if let Some(script) = companion_bridge_script_path(companion) {
-        command.env(WINSMUX_CORE_SCRIPT_ENV, script);
-    }
+    // Desktop no longer supplies or inherits a PowerShell bridge. The retired
+    // bridge-dependent IPC methods are refused before this child is constructed.
+    command.env_remove(WINSMUX_CORE_SCRIPT_ENV);
     hide_subprocess_window(&mut command);
     command
 }
@@ -396,46 +379,9 @@ panes:
             "beforeBuildCommand must stage the companion sidecar, got {before_build}"
         );
         let resources = &conf["bundle"]["resources"];
-        assert_eq!(
-            resources
-                .get("../../scripts/winsmux-core.ps1")
-                .and_then(|value| value.as_str()),
-            Some("scripts/winsmux-core.ps1"),
-            "map-form resources must land at $RESOURCE/scripts/winsmux-core.ps1 so $PSScriptRoot\\..\\winsmux-core\\scripts resolves; got {resources}"
-        );
-        assert_eq!(
-            resources
-                .get("../../winsmux-core/scripts/*")
-                .and_then(|value| value.as_str()),
-            Some("winsmux-core/scripts"),
-            "map-form resources must also stage the bridge module tree; got {resources}"
-        );
-        assert!(
-            resources.get("binaries/winsmux-core.ps1").is_none(),
-            "do not ship a flat $RESOURCE/winsmux-core.ps1 that cannot see ../winsmux-core/scripts; got {resources}"
-        );
-        let prepare = include_str!("../scripts/prepare-companion-cli.ps1");
-        assert!(
-            prepare.contains("tauri.conf.json") && prepare.contains("legacyFlat"),
-            "prepare-companion-cli.ps1 must leave the bridge tree to tauri resources, not a sidecar sibling"
-        );
-        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        assert!(
-            manifest.join("../../scripts/winsmux-core.ps1").is_file(),
-            "tauri resource source ../../scripts/winsmux-core.ps1 must exist"
-        );
-        assert!(
-            manifest
-                .join("../../winsmux-core/scripts/json-compat.ps1")
-                .is_file(),
-            "tauri resource source ../../winsmux-core/scripts/json-compat.ps1 must exist"
-        );
-        assert!(
-            manifest
-                .join("../../winsmux-core/scripts/settings.ps1")
-                .is_file(),
-            "tauri resource source ../../winsmux-core/scripts/settings.ps1 must exist"
-        );
+        assert_eq!(resources, &serde_json::json!({"binaries/licenses": "licenses"}),
+            "Desktop resources must retain licenses and exclude all old bridge layouts");
+        assert!(external_bin.iter().any(|value| value.as_str() == Some("binaries/winsmux-workspace-mcp")));
     }
 
     #[test]
@@ -597,7 +543,7 @@ panes:
     }
 
     #[test]
-    fn companion_ledger_command_pins_sidecar_bridge_script_when_present() {
+    fn companion_ledger_command_removes_bridge_even_when_script_is_present() {
         let dir = make_temp_project_dir("sidecar-bridge");
         let companion = dir.join("winsmux.exe");
         let script = dir.join("winsmux-core.ps1");
@@ -609,16 +555,17 @@ panes:
             &["desktop-summary".to_string(), "--json".to_string()],
             7,
         );
-        let pinned = command
+        let bridge_override = command
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("WINSMUX_CORE_SCRIPT"))
-            .and_then(|(_, value)| value.map(PathBuf::from));
-        assert_eq!(pinned.as_deref(), Some(script.as_path()));
+            .expect("inherited bridge must explicitly be removed");
+        assert!(bridge_override.1.is_none());
+        assert!(script.is_file(), "old input must be preserved");
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn companion_bridge_script_path_finds_tauri_resource_layouts() {
+    fn companion_command_ignores_all_old_tauri_resource_layouts() {
         let tree_dir = make_temp_project_dir("tauri-tree-resource");
         let tree_companion = tree_dir.join("winsmux.exe");
         let tree_script = tree_dir
@@ -637,10 +584,7 @@ panes:
         fs::write(&tree_script, []).expect("write tree resource bridge");
         fs::write(&tree_module, []).expect("write tree module");
         fs::write(&tree_trap, []).expect("write flat trap");
-        assert_eq!(
-            companion_bridge_script_path(&tree_companion).as_deref(),
-            Some(tree_script.as_path())
-        );
+        assert_companion_bridge_removed(&tree_companion, &tree_dir);
         let resolved_module = tree_script
             .parent()
             .unwrap()
@@ -660,10 +604,7 @@ panes:
         fs::create_dir_all(map_script.parent().unwrap()).expect("create map resource dir");
         fs::write(&map_companion, []).expect("write map companion stub");
         fs::write(&map_script, []).expect("write map resource bridge");
-        assert_eq!(
-            companion_bridge_script_path(&map_companion).as_deref(),
-            Some(map_script.as_path())
-        );
+        assert_companion_bridge_removed(&map_companion, &map_dir);
 
         let array_dir = make_temp_project_dir("tauri-array-resource");
         let array_companion = array_dir.join("winsmux.exe");
@@ -674,14 +615,22 @@ panes:
         fs::create_dir_all(array_script.parent().unwrap()).expect("create array resource dir");
         fs::write(&array_companion, []).expect("write array companion stub");
         fs::write(&array_script, []).expect("write array resource bridge");
-        assert_eq!(
-            companion_bridge_script_path(&array_companion).as_deref(),
-            Some(array_script.as_path())
-        );
+        assert_companion_bridge_removed(&array_companion, &array_dir);
 
         let _ = fs::remove_dir_all(&tree_dir);
         let _ = fs::remove_dir_all(&map_dir);
         let _ = fs::remove_dir_all(&array_dir);
+    }
+
+    fn assert_companion_bridge_removed(companion: &Path, project: &Path) {
+        let command = build_companion_ledger_command(companion, project,
+            &["desktop-summary".to_string(), "--json".to_string()], 7);
+        let (_, value) = command.get_envs()
+            .find(|(key, _)| *key == OsStr::new("WINSMUX_CORE_SCRIPT"))
+            .expect("bridge override must explicitly be removed");
+        assert!(value.is_none());
+        assert_eq!(command.get_program(), companion.as_os_str());
+        assert_eq!(command.get_current_dir(), Some(project));
     }
 
     fn expected_desktop_command_argv_head(command: &DesktopCommand) -> &'static str {

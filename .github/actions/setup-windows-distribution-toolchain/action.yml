@@ -1,0 +1,18 @@
+name: Measured Windows distribution toolchain
+description: Select and verify the compiler covered by the existing distribution binding
+inputs:
+  targets:
+    description: Optional output CPU targets; the compiler host remains the measured Windows host
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@1.96.0
+      with:
+        targets: ${{ inputs.targets }}
+    - name: Verify actual compiler against the shared measured binding
+      shell: pwsh
+      run: |
+        node scripts/assert-windows-distribution-toolchain.mjs
+        if ($LASTEXITCODE -ne 0) { throw 'Measured Windows distribution compiler was refused.' }

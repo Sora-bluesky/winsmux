@@ -499,6 +499,23 @@ async function main() {
     process.exit(EXIT_DESKTOP_NOT_UP);
   }
 
+  // Classify before ready-check, composer submission, PTY capture or evidence writes.
+  // This consumer remains dedicated to the retired six-worker operator surface.
+  let surface;
+  try {
+    surface = JSON.parse(await cdpEvaluate(args.port, `JSON.stringify({
+      native: Boolean(window.__TAURI__?.core?.invoke),
+      label: window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label || '',
+      href: location.href,
+      startup: Boolean(document.getElementById('workspace-startup')),
+      legacy: ['app-shell','workspace','operator-terminal-panel','composer','composer-input','panes-container'].every(id => Boolean(document.getElementById(id)))
+    })`));
+  } catch { surface = null; }
+  if (!surface || surface.startup || !surface.native || surface.label !== 'main' || !surface.legacy || !/^https?:\/\/tauri\.localhost\/?$|^tauri:\/\/localhost\/?$/.test(surface.href)) {
+    console.log(JSON.stringify({ result: 'unsupported', reason: 'The six-worker operator bakeoff requires an identified legacy operator surface. The v0.38 workspace startup is outside this runner contract.' }));
+    process.exit(EXIT_BAD_ARGS);
+  }
+
   // 2. Load benchmark pack + manifest.
   let packText;
   let manifestText;

@@ -1,194 +1,68 @@
 [English](README.md) | [日本語](README.ja.md)
 
-<p align="center">
-  <img src="docs/brand-hero.svg" alt="winsmux: One control desk for every AI coding agent on Windows" width="100%">
-</p>
-
 # winsmux
 
-`winsmux` is **one control desk for every AI coding agent on Windows** — a single human-run cockpit for people who already run multiple coding CLIs and need to keep the work accountable.
+winsmux is a Windows-native, model-independent harness for working with multiple AI agents through their official CLIs. It keeps projects, terminal panes, runs and artifacts in one local workspace so you can direct work and inspect the result.
 
-Instead of hiding agents behind a black-box orchestrator, `winsmux` opens each worker in a real pane, keeps file changes isolated in git worktrees, lets you send or interrupt instructions, and compares completed runs with evidence such as changed-file overlap, review state, verification state, and checkpoints before you decide what to keep.
+This README describes v0.38.0. Use the documentation shipped with the version you install; older releases have a different operator/worker interface and startup commands.
 
-Use it when one Claude Code, Codex, Antigravity CLI, Grok Build, or legacy Gemini session is not enough, but you still want one human operator, local credentials, and a review trail.
+## Work with projects and panes
 
-For example: run the same task through two agents, watch both panes live, stop the one going off track, then compare the recorded evidence before accepting either result.
+- Select a local project folder and check its working-directory identity.
+- Create, select, split, resize and close terminal panes.
+- Use the AI launch controls for Codex or Claude Code, with optional model and reasoning settings.
+- Inspect process state separately from work state, with evidence and observation time.
+- Interrupt the selected run and check that termination was observed.
+- Register artifacts and inspect text or Git diffs without treating terminal output as approval to execute instructions.
+- Restore saved pane layout without automatically restarting previous shells or agents.
 
-`winsmux` does not sign in to AI services for you. Each agent CLI keeps using its own official sign-in or API key setup.
+GUI, CLI and MCP operate on the same workspace contract. External connections require explicit project and scope permission; metadata, output reading and control are separate scopes.
 
-## Why It Exists
+## Start with the desktop app
 
-Most tools solve only one part of this workflow.
+1. Choose the release for the version you intend to use from [Releases](https://github.com/Sora-bluesky/winsmux/releases).
+2. Select the Windows installer for your architecture and verify it using that release's verification information.
+3. Install and open winsmux, then use **プロジェクトを開く** (Open project) to select a folder.
+4. Check the selected project, create a pane and choose the official CLI you want to run.
 
-- Terminal multiplexers show panes, but they do not know which agent changed which files.
-- IDE chat surfaces are good for one conversation, but they do not give you a control plane for several official CLIs.
-- Agent frameworks can automate agents, but they often move the work into code or cloud services instead of keeping a human operator in the loop.
+See [Quickstart](docs/quickstart.md) for the complete GUI flow and [Installation](docs/installation.md) for installation methods, version matching, updates and uninstall.
 
-`winsmux` sits between those categories: it keeps the official CLI agents visible, separates their work into independent working directories, records the evidence, and leaves the final choice with you.
+You need Windows, the pane's PowerShell runtime, and the official agent CLIs you want to use. Desktop rendering uses Microsoft Edge WebView2. See the matching release's requirements for supported Windows builds and architectures. Rust and the Windows C++ build tools are for source builds, not prerequisites for using a packaged executable.
 
-## What It Does
+## CLI and MCP
 
-- Starts a managed Windows Terminal workspace for multiple CLI agents.
-- Lets an operator read, send, interrupt, and check pane health.
-- Initializes six managed worker slots by default, with a worker backend
-  contract for local, Codex, Antigravity, Grok Build, hosted API models via OpenRouter,
-  and placeholder workers. The first generated slot is a Codex reviewer
-  slot; the remaining slots keep the selected worker backend.
-- Keeps worker agents in separate git worktrees when isolation is enabled.
-- Compares recorded runs and highlights shared changed files before you choose a winner.
-- Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.
-- Captures structured end-of-run snapshots without storing raw terminal transcripts or private local paths.
-- Searches recorded sessions in Agent Vault and restores a selected run by dragging it into a worker pane.
-- Links Feed and notification state to worker panes, with a View menu toggle for the worker status strip.
-- Stores selected credentials with Windows DPAPI instead of writing repository `.env` files.
-- Records review and verification evidence for later audit.
+The native workspace CLI uses the `winsmux workspace` namespace. It differs from the older `winsmux init` / `winsmux launch` Windows Terminal workflow.
 
-## When To Use It
+The desktop app can provide its current public connection information. Pass this information explicitly to a CLI/MCP client, request the required project scopes, and authorize the connection in the GUI. A new host requires fresh connection information and authorization.
 
-Use `winsmux` when you want to run more than one coding agent on a Windows PC and still keep a single operator in control.
+The npm package is an installer entry point, while the native runtime handles workspace requests. Do not assume an npm package command is a native workspace command. See [Installation](docs/installation.md#cli-package-install).
 
-It is especially useful when you want to:
-
-- Compare work from different agents or providers.
-- Keep each worker's file changes separated.
-- See live pane output instead of waiting for a final summary.
-- Require review evidence before accepting changes.
-- Preserve enough structured context to resume or compare runs later.
-- Avoid tying the workflow to one model vendor.
-
-If you only need a terminal multiplexer, see the runtime docs under [`core/docs`](core/docs).
-
-## Requirements
-
-- Windows 10 or Windows 11
-- PowerShell 7+
-- Windows Terminal
-- The official agent CLIs you want to run, such as Claude Code, Codex, Antigravity CLI, or Grok Build
-
-Rust is only needed when you build the runtime from source. On Windows, source
-builds also need Visual Studio Build Tools with the Desktop development with C++
-workload; see [Installation](docs/installation.md#source-build-prerequisites-on-windows)
-for the install command and shell notes.
-
-## Get Started
-
-For most users, start with the desktop app. Open the [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest), download the `winsmux_..._x64-setup.exe` asset, run it, open the installed `winsmux` app, and choose the project folder you want agents to work in. Use the [Releases page](https://github.com/Sora-bluesky/winsmux/releases) when you need a specific older version.
-
-Use the npm package only when you want a CLI-first, scripted, or headless setup.
-That path starts with `npm install -g winsmux`, then `winsmux install --profile full`.
-It starts a managed Windows Terminal workspace; it does not open the desktop app.
-Keep the desktop first-run flow and the CLI setup flow separate so new users do
-not run project initialization commands before they have opened the app.
-
-See [Quickstart](docs/quickstart.md) for a guided first run.
-See [Installation](docs/installation.md) for the recommended desktop installer path, CLI profiles, updates, and uninstall steps.
-See [Customization](docs/customization.md) for launcher presets, worktree policy, slots, credentials, and desktop settings.
-See [Public Distribution Boundary](docs/source-access.md) for the `v1.0.0` public distribution and redistribution boundary.
-See [External control plane API](docs/external-control-plane.md) for the local named-pipe JSON-RPC contract used by external automation clients.
-
-## Main Commands
+To use this installation route, select a published package version matching your desired release and replace the placeholder:
 
 ```powershell
-winsmux list
-winsmux read worker-1 30
-winsmux send worker-2 "Review the latest auth changes."
-winsmux health-check
-winsmux workers status
-winsmux workers doctor
-winsmux workers exec w1 --task-json tasks/api-worker-task.json --run-id api-demo-1 --json
-winsmux workers sandbox baseline w2 --run-id demo-1 --json
-winsmux workers broker baseline w2 --run-id demo-1 --endpoint https://broker.example.invalid/worker --json
-winsmux workers broker token issue w2 --run-id demo-1 --ttl-seconds 900 --json
-winsmux workers policy baseline w2 --run-id demo-1 --network broker-only --write workspace-artifacts --provider configured --json
-winsmux review-pack <run_id> --json
-winsmux compare runs <left_run_id> <right_run_id>
-winsmux compare preflight <left_ref> <right_ref>
-winsmux compare promote <run_id>
-winsmux meta-plan --task "Plan this change" --json
-winsmux meta-plan --task "Plan this change" --roles .winsmux/meta-plan-roles.yaml --review-rounds 2 --json
-winsmux workspace-plan --recipe-id bugfix-two-slot --workflow-id issue-1204 --json
-winsmux skills --json
+npm install -g winsmux@<published-version>
+winsmux install --profile core
 ```
 
-| Command | Purpose |
-| ------- | ------- |
-| `winsmux init` | Create the default project config |
-| `winsmux launch` | Run CLI checks and start the default managed Windows Terminal workspace; it does not open the desktop app |
-| `winsmux launcher presets` | Show launcher presets and pair templates |
-| `winsmux launcher lifecycle` | Choose the workspace lifecycle policy |
-| `winsmux workers status` | Show backend, state, provider, model, and last command for worker slots |
-| `winsmux workers doctor` | Diagnose worker config, hosted API metadata, Antigravity CLI, credentials, uv, and state paths |
-| `winsmux workers exec` | Run hosted `api_llm` tasks or Antigravity CLI one-shot workers; missing API key env vars stop before network access |
-| `winsmux workers logs` | Read the stored log for an `api_llm` or Antigravity worker run |
-| `winsmux workers sandbox baseline` | Define the restricted-token and ACL baseline for a prepared isolated run |
-| `winsmux workers broker baseline` | Define the single external broker node contract for a prepared isolated run |
-| `winsmux workers broker token` | Issue or check short-lived broker run tokens without printing token values |
-| `winsmux workers policy baseline` | Define enterprise execution policy outside prompts for a prepared isolated run |
-| `winsmux review-pack` | Write a bounded reviewer packet with changed files, test results, risks, commands, and artifact refs |
-| `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
-| `winsmux compare preflight` | Check two refs before merge or compare review |
-| `winsmux compare promote` | Export a successful run as input for the next run |
-| `winsmux meta-plan` | Draft a read-only multi-role planning packet before execution |
-| `winsmux workspace-plan` | Validate, resolve, and preview one declarative workspace recipe without creating panes or worktrees |
-| `winsmux skills` | Print agent-readable command skill contracts |
-| `winsmux read` | Read a pane before acting |
-| `winsmux send` | Send text to a pane |
-| `winsmux vault set` | Store a credential with Windows DPAPI |
-| `winsmux vault inject` | Inject a stored credential into a target pane |
+The script installer also accepts `winsmux install --profile full` to include all support components. The [customization guide for the older workflow](docs/customization.md) describes those optional components; use the v0.38.0 quickstart for the desktop workspace.
 
-`winsmux conflict-preflight` remains available as a compatibility command behind `winsmux compare preflight`.
+The legacy binary aliases `psmux`, `pmux`, and `tmux` are no longer shipped. Use `winsmux`; [runtime compatibility](core/docs/compatibility.md) describes the remaining tmux-compatible configuration support.
 
-Legacy binary aliases `psmux`, `pmux`, and `tmux` are no longer shipped.
-Use `winsmux` for scripts and docs. This does not remove tmux-compatible configuration, targets, or commands where documented.
+## Authentication and data
 
-## Authentication Support
+Authentication remains with each official agent CLI. winsmux does not extract another CLI's tokens or sign in on its behalf. A detected CLI version does not establish authentication or support for a requested model setting; inspect the CLI's actual result.
 
-| Tool | Authentication mode | winsmux support |
-| ------- | ------- | ------- |
-| Claude Code | API key or documented enterprise auth | Officially supported |
-| Claude Code | Pro / Max OAuth | This PC only, interactive use |
-| Codex | API key | Officially supported |
-| Codex | ChatGPT OAuth | This PC only, interactive use |
-| Antigravity CLI | Official Antigravity CLI sign-in | This PC only, interactive use |
-| Grok Build | Grok Build headless (local) | This PC only, interactive use |
-| OpenRouter (hosted models) | API key via `OPENROUTER_API_KEY` | Officially supported |
-| Gemini | Gemini API key | Officially supported |
-| Gemini | Gemini API in Vertex AI | Officially supported |
-| Gemini | Google OAuth | Legacy / tier-limited, this PC only |
+See [Authentication support](docs/authentication-support.md) for the existing authentication-mode restrictions and compatibility policy.
 
-Google's published migration notice says Gemini CLI and Gemini Code Assist IDE extensions stopped serving requests for Gemini Code Assist for individuals, Google AI Pro, and Google AI Ultra on 2026-06-18. Affected users should use Antigravity CLI; Google AI Standard and Enterprise tiers are not treated as sunset by this winsmux policy.
+Projects and terminal contents can contain private data. Use the GUI's shareable diagnostics for a bug report and inspect screenshots before sharing them. Do not attach raw input, output, environment variables, private connection information or saved layouts.
 
-See [Authentication Support](docs/authentication-support.md) for the full policy.
-See [Provider and Model Support](docs/provider-and-model-support.md) for hosted and future local LLM runtime policy.
-See [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md) for Claude Code, Codex, and Antigravity CLI evidence gates.
+Workspace authorization is not an OS sandbox against arbitrary code running as the same Windows user. Review changes, artifacts and verification results before adopting agent output.
 
-## Security Notes
+## Guides
 
-- Use `winsmux read` to check the target pane output before sending instructions.
-- Keep one human operator responsible for final accept or reject decisions.
-- Keep the managed worktree lifecycle enabled when agents edit files in parallel.
-- Do not paste API keys into pane chat or issue comments.
-- Use `winsmux vault` for credentials that must be injected into a pane.
-- Treat compare results and release evidence as review inputs, not automatic approval.
-
-## Related Docs
-
-- [Operator model](docs/operator-model.md)
-- [Documentation overview](docs/README.md)
 - [Quickstart](docs/quickstart.md)
 - [Installation](docs/installation.md)
-- [Customization](docs/customization.md)
-- [Authentication support](docs/authentication-support.md)
-- [Provider and model support](docs/provider-and-model-support.md)
-- [CLI comparison bakeoff](docs/cli-comparison-bakeoff.md)
-- [External control plane API](docs/external-control-plane.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Repository surface policy](docs/repo-surface-policy.md)
-- [Runtime features](core/docs/features.md)
-- [Runtime configuration](core/docs/configuration.md)
-- [tmux compatibility](core/docs/compatibility.md)
-
-Developer and contributor rules are intentionally kept out of this README. Start from [Repository surface policy](docs/repo-surface-policy.md) if you are changing the repository itself.
 
 ## License
 

@@ -24,6 +24,7 @@ Validate it with either command:
 - Legacy upstream tests remain governed by `TASK-407`; this task only prevents unclassified compatibility references from being added.
 - Operator startup guidance that forbids `psmux` probes is an intentional safety shim for older local installs and stale runbooks.
 - npm lockfile integrity hashes can contain legacy term substrings by chance; those hashes are classified as dependency metadata, not product compatibility surface.
+- The two named Windows distribution source notices are intentional shims because they reproduce the classified `THIRD_PARTY_NOTICES.md` explanation of retained compatibility code and removed binary aliases. Other distribution source files remain subject to the unclassified-reference gate. Generated companion license copies are build output; their bytes remain covered by the distribution packaging checks.
 
 ## Gate contract
 

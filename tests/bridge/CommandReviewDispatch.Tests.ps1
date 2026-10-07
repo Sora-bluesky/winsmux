@@ -1710,6 +1710,15 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
             return [pscustomobject]@{ Pid = [int]$PID; StartedAt = [string]$started }
         }
 
+        function script:Get-Task789WorkerProcessIds {
+            param([Parameter(Mandatory = $true)][int]$SupervisorPid)
+            if ($SupervisorPid -le 0) { throw 'TASK-789 fixture supervisor PID must be positive.' }
+            # Two synthetic workers must never alias the real supervisor process.
+            $available = @(4200, 4300, 4400) | Where-Object { $_ -ne $SupervisorPid } | Select-Object -First 2
+            return [pscustomobject]@{ Worker1Pid = [int]$available[0]; Worker2Pid = [int]$available[1] }
+        }
+        $script:task789WorkerProcessIds = script:Get-Task789WorkerProcessIds -SupervisorPid $PID
+
         function script:New-Task789V2Pane {
             param(
                 [Parameter(Mandatory = $true)][string]$Label,
@@ -1864,6 +1873,62 @@ Describe 'TASK-789 dispatch spawn and archive-pane' {
         }
     }
 
+    It 'keeps the dispatch resolver identities distinct when the supervisor occupies a worker PID' -ForEach @(
+        @{ supervisor_pid = 1000 }, @{ supervisor_pid = 4200 }, @{ supervisor_pid = 4300 },
+        @{ supervisor_pid = 4400 }, @{ supervisor_pid = 2147483647 }
+    ) {
+        $source = Join-Path (Split-Path -Parent $script:BridgeTestsRoot) 'tests\bridge\CommandReviewDispatch.Tests.ps1'
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
+        $errors.Count | Should -Be 0
+        $case = @($ast.FindAll({ param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'It' -and
+            $node.CommandElements[1].Extent.Text -ceq "'lets v2 dispatch runtime succeed after a spawned worker persists a bootstrap marker PID'"
+        }, $true))
+        $case.Count | Should -Be 1
+        $call = @($case[0].FindAll({ param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Test-WinsmuxRuntimeContext'
+        }, $true))[0]
+        $resolverNode = $null
+        for ($index = 0; $index -lt $call.CommandElements.Count; $index++) {
+            $parameter = $call.CommandElements[$index]
+            if ($parameter -is [Management.Automation.Language.CommandParameterAst] -and $parameter.ParameterName -ceq 'ProcessResolver') {
+                $resolverNode = $call.CommandElements[$index + 1]
+            }
+        }
+        $resolverNode | Should -BeOfType ([Management.Automation.Language.ScriptBlockExpressionAst])
+        $body = $resolverNode.ScriptBlock.Extent.Text
+        $resolver = [scriptblock]::Create($body.Substring(1, $body.Length - 2).Replace('$PID', '$script:task789CollisionSupervisorPid'))
+        $savedIds = $script:task789WorkerProcessIds
+        $savedStartVariable = Get-Variable -Name task789DispatchStartedAt -Scope Script -ErrorAction SilentlyContinue
+        $savedStartValue = if ($null -ne $savedStartVariable) { $savedStartVariable.Value } else { $null }
+        $script:task789CollisionSupervisorPid = $supervisor_pid
+        $script:task789DispatchStartedAt = '2026-10-06T00:00:00.0000000Z'
+        try {
+            $script:task789WorkerProcessIds = script:Get-Task789WorkerProcessIds -SupervisorPid $supervisor_pid
+            $script:task789WorkerProcessIds.Worker1Pid | Should -Not -Be $supervisor_pid
+            $script:task789WorkerProcessIds.Worker2Pid | Should -Not -Be $supervisor_pid
+            $script:task789WorkerProcessIds.Worker1Pid | Should -Not -Be $script:task789WorkerProcessIds.Worker2Pid
+            Test-WinsmuxStrictProcessIdentity -ProcessId $supervisor_pid -ExpectedStartTime $script:task789DispatchStartedAt -ProcessResolver $resolver | Should -BeTrue
+            Test-WinsmuxStrictProcessIdentity -ProcessId $script:task789WorkerProcessIds.Worker1Pid -ExpectedStartTime '2026-08-17T00:00:01.0000000Z' -ProcessResolver $resolver | Should -BeTrue
+            Test-WinsmuxStrictProcessIdentity -ProcessId $script:task789WorkerProcessIds.Worker2Pid -ExpectedStartTime '2026-08-17T00:00:02.0000000Z' -ProcessResolver $resolver | Should -BeTrue
+        } finally {
+            $script:task789WorkerProcessIds = $savedIds
+            if ($null -ne $savedStartVariable) {
+                Set-Variable -Name task789DispatchStartedAt -Scope Script -Value $savedStartValue
+            } else {
+                Remove-Variable -Name task789DispatchStartedAt -Scope Script -ErrorAction SilentlyContinue
+            }
+            Remove-Variable -Name task789CollisionSupervisorPid -Scope Script -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rejects a nonpositive supervisor PID before allocating fixture workers' -ForEach @(
+        @{ supervisor_pid = 0 }, @{ supervisor_pid = -1 }
+    ) {
+        { script:Get-Task789WorkerProcessIds -SupervisorPid $supervisor_pid } | Should -Throw '*supervisor PID must be positive*'
+    }
+
     It 'documents public archive-pane in usage and the command table' {
         $script:task789WinsmuxCoreContent | Should -Match 'archive-pane <slot>\s+'
         $script:task789WinsmuxCoreContent | Should -Match "'archive-pane'\s*\{\s*Invoke-WinsmuxArchivePaneCommand"
@@ -2012,7 +2077,7 @@ Write-Output 'ok'
         }
         $worker1Pane = [PSCustomObject]@{
             label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'
-            role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200
+            role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = $script:task789WorkerProcessIds.Worker1Pid
             bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = ''
         }
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
@@ -2074,7 +2139,7 @@ panes:
     It 'does not clamp an empty pane set to expected_pane_count 1' {
         $workerPane = [PSCustomObject]@{
             label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'
-            role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200
+            role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = $script:task789WorkerProcessIds.Worker1Pid
             bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = ''
         }
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
@@ -2316,7 +2381,7 @@ panes:
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $beforePanes = @((Read-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot).panes).Count
         Mock Get-OrchestraModeDocument {
@@ -2369,7 +2434,7 @@ panes:
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
         $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
@@ -2405,7 +2470,7 @@ panes:
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid 4100 `
             -SupervisorProcessStartedAt '2026-08-17T00:00:00.0000000Z' -ExpectedPaneCount 1 `
             -Panes @(
-                [PSCustomObject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = '' }
+                [PSCustomObject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = $script:task789WorkerProcessIds.Worker1Pid; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z'; marker_path = '' }
             )
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
@@ -2507,7 +2572,7 @@ panes:
             supervisor = [pscustomobject]@{ pid = 4100; process_started_at = '2026-08-17T00:00:00.0000000Z' }
             lease = [pscustomobject]@{ state = 'active'; expires_at = '2099-01-01T00:00:00.0000000Z' }
             panes = @(
-                [pscustomobject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z' }
+                [pscustomobject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = $script:task789WorkerProcessIds.Worker1Pid; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z' }
                 [pscustomobject]@{ label = 'worker-2'; slot_id = 'worker-2'; pane_id = '%5'; backend = 'codex'; role = 'worker'; title = 'worker-2'; state = 'live'; bootstrap_pid = 0; bootstrap_process_started_at = '' }
             )
         }) -ObservedServerSessionId '$9' -ObservedPanes @(
@@ -2542,7 +2607,7 @@ panes:
             backend = 'codex'
             role = 'worker'
             title = 'worker-2'
-            bootstrap_pid = 4300
+            bootstrap_pid = $script:task789WorkerProcessIds.Worker2Pid
             bootstrap_process_started_at = $startedAt
         } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
 
@@ -2603,7 +2668,7 @@ panes:
             param([int]$Id)
             switch ($Id) {
                 4100 { return [PSCustomObject]@{ Id = 4100; StartTime = [datetime]'2026-08-17T00:00:00Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
-                4300 { return [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-08-17T00:00:02Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                $script:task789WorkerProcessIds.Worker2Pid { return [PSCustomObject]@{ Id = $script:task789WorkerProcessIds.Worker2Pid; StartTime = [datetime]'2026-08-17T00:00:02Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
                 default { return $null }
             }
         }
@@ -2624,8 +2689,8 @@ panes:
             supervisor = [pscustomobject]@{ pid = 4100; process_started_at = '2026-08-17T00:00:00.0000000Z' }
             lease = [pscustomobject]@{ state = 'active'; expires_at = '2099-01-01T00:00:00.0000000Z' }
             panes = @(
-                [pscustomobject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = 4200; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z' }
-                [pscustomobject]@{ label = 'worker-2'; slot_id = 'worker-2'; pane_id = '%5'; backend = 'codex'; role = 'worker'; title = 'worker-2'; state = 'live'; bootstrap_pid = 4300; bootstrap_process_started_at = $startedAt }
+                [pscustomobject]@{ label = 'worker-1'; slot_id = 'worker-1'; pane_id = '%3'; backend = 'codex'; role = 'worker'; title = 'worker-1'; state = 'live'; bootstrap_pid = $script:task789WorkerProcessIds.Worker1Pid; bootstrap_process_started_at = '2026-08-17T00:00:01.0000000Z' }
+                [pscustomobject]@{ label = 'worker-2'; slot_id = 'worker-2'; pane_id = '%5'; backend = 'codex'; role = 'worker'; title = 'worker-2'; state = 'live'; bootstrap_pid = $script:task789WorkerProcessIds.Worker2Pid; bootstrap_process_started_at = $startedAt }
             )
         }) -ObservedServerSessionId '$9' -ObservedPanes @(
             [pscustomobject]@{ pane_id = '%1'; title = 'bootstrap' }
@@ -2823,7 +2888,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
 
         $script:task789Observed = @(
@@ -2892,7 +2957,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
         $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
@@ -2954,7 +3019,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $script:task789Observed = @(
             script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'
@@ -3012,8 +3077,8 @@ Write-Output 'reached-after-exit'
                 if ($Id -eq $PID) {
                     return [PSCustomObject]@{ Id = $PID; StartTime = $script:task789DispatchStartedAt; ParentProcessId = 1; Name = 'pwsh.exe' }
                 }
-                if ($Id -eq 4200) {
-                    return [PSCustomObject]@{ Id = 4200; StartTime = '2026-08-17T00:00:01.0000000Z'; ParentProcessId = 1; Name = 'pwsh.exe' }
+                if ($Id -eq $script:task789WorkerProcessIds.Worker1Pid) {
+                    return [PSCustomObject]@{ Id = $script:task789WorkerProcessIds.Worker1Pid; StartTime = '2026-08-17T00:00:01.0000000Z'; ParentProcessId = 1; Name = 'pwsh.exe' }
                 }
                 return $null
             } -Operation dispatch -Now ([datetime]::UtcNow.AddMinutes(1))
@@ -3035,7 +3100,7 @@ Write-Output 'reached-after-exit'
             backend = 'codex'
             role = 'worker'
             title = 'worker-2'
-            bootstrap_pid = 4300
+            bootstrap_pid = $script:task789WorkerProcessIds.Worker2Pid
             bootstrap_process_started_at = $startedAt
         } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
 
@@ -3047,7 +3112,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $script:task789Observed = @(
             script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'
@@ -3105,8 +3170,8 @@ Write-Output 'reached-after-exit'
                 param([int]$Id)
                 switch ($Id) {
                     $PID { return [PSCustomObject]@{ Id = $PID; StartTime = $script:task789DispatchStartedAt; ParentProcessId = 1; Name = 'pwsh.exe' } }
-                    4200 { return [PSCustomObject]@{ Id = 4200; StartTime = '2026-08-17T00:00:01.0000000Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
-                    4300 { return [PSCustomObject]@{ Id = 4300; StartTime = [datetime]'2026-08-17T00:00:02Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                    $script:task789WorkerProcessIds.Worker1Pid { return [PSCustomObject]@{ Id = $script:task789WorkerProcessIds.Worker1Pid; StartTime = '2026-08-17T00:00:01.0000000Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
+                    $script:task789WorkerProcessIds.Worker2Pid { return [PSCustomObject]@{ Id = $script:task789WorkerProcessIds.Worker2Pid; StartTime = [datetime]'2026-08-17T00:00:02Z'; ParentProcessId = 1; Name = 'pwsh.exe' } }
                     default { return $null }
                 }
             } -Operation dispatch -Now ([datetime]::UtcNow.AddMinutes(1))
@@ -3138,7 +3203,7 @@ Write-Output 'reached-after-exit'
             backend = 'codex'
             role = 'worker'
             title = 'worker-2'
-            bootstrap_pid = 4300
+            bootstrap_pid = $script:task789WorkerProcessIds.Worker2Pid
             bootstrap_process_started_at = '2026-08-17T00:00:02.0000000Z'
         } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
 
@@ -3151,7 +3216,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
         $beforeManifest = [System.IO.File]::ReadAllBytes($manifestPath)
@@ -3253,7 +3318,7 @@ Write-Output 'reached-after-exit'
             backend = 'openrouter'
             role = 'worker'
             title = 'worker-2'
-            bootstrap_pid = 4300
+            bootstrap_pid = $script:task789WorkerProcessIds.Worker2Pid
             bootstrap_process_started_at = '2026-08-17T00:00:02.0000000Z'
         } | ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
 
@@ -3339,8 +3404,8 @@ panes:
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 2 -LeaseSeconds 300 `
             -Panes @(
-                script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200
-                script:New-Task789V2RegistryPane -Label 'worker-2' -PaneId '%5' -BootstrapPid 4300
+                script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid
+                script:New-Task789V2RegistryPane -Label 'worker-2' -PaneId '%5' -BootstrapPid $script:task789WorkerProcessIds.Worker2Pid
             )
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $beforeRegistry = [System.IO.File]::ReadAllBytes($registryPath)
@@ -3379,8 +3444,8 @@ panes:
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 2 -LeaseSeconds 300 `
             -Panes @(
-                script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200
-                script:New-Task789V2RegistryPane -Label 'worker-2' -PaneId '%5' -BootstrapPid 4300
+                script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid
+                script:New-Task789V2RegistryPane -Label 'worker-2' -PaneId '%5' -BootstrapPid $script:task789WorkerProcessIds.Worker2Pid
             )
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $script:task789Observed = @(
@@ -4160,7 +4225,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $script:task789Observed = @(
             script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'
@@ -4252,7 +4317,7 @@ Write-Output 'reached-after-exit'
         $registry = New-WinsmuxRuntimeRegistryDocument -SessionName 'winsmux-orchestra' -ServerSessionId '$9' `
             -BootstrapPaneId '%1' -GenerationId 'generation-789' -SupervisorPid $supervisor.Pid `
             -SupervisorProcessStartedAt $supervisor.StartedAt -ExpectedPaneCount 1 -LeaseSeconds 300 `
-            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid 4200)
+            -Panes @(script:New-Task789V2RegistryPane -Label 'worker-1' -PaneId '%3' -BootstrapPid $script:task789WorkerProcessIds.Worker1Pid)
         Save-WinsmuxRuntimeRegistry -ProjectDir $script:task789FixRoot -Registry $registry | Out-Null
         $script:task789Observed = @(
             script:New-Task789ObservedPane -PaneId '%1' -Title 'bootstrap'

@@ -1,0 +1,17 @@
+{
+  "schema": "core-target-license-projections/v1",
+  "version": "0.38.0",
+  "compiler_host": "x86_64-pc-windows-msvc",
+  "rustc_commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
+  "binding_sha256": "7f3aa38a96cb9e5c1b6a0f5e1bccecd275f7c4c6e8edbece4e98a77bf2c0c0fe",
+  "targets": {
+    "x86_64-pc-windows-msvc": {
+      "packages": 243,
+      "sha256": "362410555ffda9ddaf79eb0d59cfdfdf87e8a6f7ea79f5fb2756b3fee1d72bcd"
+    },
+    "aarch64-pc-windows-msvc": {
+      "packages": 243,
+      "sha256": "362410555ffda9ddaf79eb0d59cfdfdf87e8a6f7ea79f5fb2756b3fee1d72bcd"
+    }
+  }
+}

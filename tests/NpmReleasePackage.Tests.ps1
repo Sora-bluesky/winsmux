@@ -22,8 +22,13 @@ Describe 'winsmux npm release package contract' {
         $script:RedirectedInstallSmokePath = Join-Path $script:RepoRoot 'scripts\test-install-redirected.ps1'
         $script:RootReadmePath = Join-Path $script:RepoRoot 'README.md'
         $script:RootReadmeJaPath = Join-Path $script:RepoRoot 'README.ja.md'
-        $script:OutputRoot = Join-Path $script:RepoRoot 'output\npm-release\winsmux'
+        $script:OutputRoot = Join-Path $TestDrive 'unused-output'
         $script:ProductVersion = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
+        # Pester TestDrive is normally inside TEMP. Give stage children a
+        # separate owned temporary root so the physical separation gate remains
+        # active for every positive and negative package fixture.
+        $script:StageTemp = Join-Path $script:RepoRoot ('.evidence/workspace-package/npm-contract-temp-' + [Guid]::NewGuid().ToString('N'))
+        [void][IO.Directory]::CreateDirectory($script:StageTemp)
 
         $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -eq $nodeCommand) {
@@ -89,6 +94,11 @@ Describe 'winsmux npm release package contract' {
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
 
+            if ($Arguments -contains $script:StageScriptPath) {
+                $startInfo.Environment['TEMP'] = $script:StageTemp
+                $startInfo.Environment['TMP'] = $script:StageTemp
+            }
+
             $process = [System.Diagnostics.Process]::Start($startInfo)
             try {
                 $stdout = $process.StandardOutput.ReadToEnd()
@@ -149,9 +159,40 @@ Describe 'winsmux npm release package contract' {
         }
 
         function Remove-StagedReleaseOutput {
+            $ownedRoot = [IO.Path]::GetFullPath($TestDrive).TrimEnd('\') + '\'
+            if (-not [IO.Path]::GetFullPath($script:OutputRoot).StartsWith($ownedRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Release fixture cleanup must stay inside TestDrive.'
+            }
             if (Test-Path -LiteralPath $script:OutputRoot) {
                 Remove-Item -LiteralPath $script:OutputRoot -Recurse -Force
             }
+        }
+
+        function New-NpmReleaseFixture([string]$Version) {
+            $fixture = Join-Path $TestDrive ([Guid]::NewGuid().ToString('N'))
+            $files = @{
+                'VERSION' = "$Version`n"
+                'Cargo.toml' = "[workspace]`nmembers = [`"core`", `"core/crates/winsmux-workspace-mcp`", `"winsmux-app/src-tauri`"]`nresolver = `"2`"`n"
+            }
+            $lock = "version = 4`n"
+            foreach ($package in @(@('winsmux', 'core'), @('winsmux-app', 'winsmux-app/src-tauri'), @('winsmux-workspace-mcp', 'core/crates/winsmux-workspace-mcp'))) {
+                $files[$package[1] + '/Cargo.toml'] = "[package]`nname = `"$($package[0])`"`nversion = `"$Version`"`nedition = `"2021`"`n"
+                $files[$package[1] + '/src/main.rs'] = "fn main() {}`n"
+                $lock += "`n[[package]]`nname = `"$($package[0])`"`nversion = `"$Version`"`n"
+            }
+            $files['Cargo.lock'] = $lock
+            $files['winsmux-app/package.json'] = ConvertTo-Json @{ version = $Version } -Compress
+            $files['winsmux-app/package-lock.json'] = ConvertTo-Json @{ version = $Version; packages = @{ '' = @{ version = $Version } } } -Depth 8 -Compress
+            $files['winsmux-app/src-tauri/tauri.conf.json'] = ConvertTo-Json @{ version = $Version } -Compress
+            foreach ($relative in @('scripts/stage-npm-release.mjs', 'scripts/assert-distribution-version.ps1', 'scripts/distribution-prelaunch.mjs',
+                'LICENSE', 'packages/winsmux/package.json', 'packages/winsmux/README.md', 'packages/winsmux/index.mjs')) {
+                $files[$relative] = [IO.File]::ReadAllText((Join-Path $script:RepoRoot $relative))
+            }
+            $productInstaller = [IO.File]::ReadAllText($script:InstallerPath)
+            $files['install.ps1'] = [regex]::Replace($productInstaller, '(?m)^\$VERSION\s*=\s*"[^"\r\n]+"', ('$VERSION = "' + $Version + '"'))
+            foreach ($relative in $files.Keys) { Write-TestFileUtf8 (Join-Path $fixture $relative) $files[$relative] }
+            $script:OutputRoot = Join-Path $fixture 'output/npm-release/winsmux'
+            return $fixture
         }
     }
 
@@ -248,7 +289,9 @@ Describe 'winsmux npm release package contract' {
         $testWorkflow | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS:\s+\$\{\{ github\.token \}\}'
         $testWorkflow | Should -Match 'needs:[\s\S]*?- install-e2e[\s\S]*?needs\.install-e2e\.result'
         $installer | Should -Not -Match 'Download-File "winsmux\.ps1"'
-        $installer | Should -Match 'Download-File "install\.ps1" \(Join-Path \$BIN_DIR "install\.ps1"\)'
+        $installer | Should -Match 'New-WinsmuxLifecycleState \$lease \(Get-WinsmuxExecutingInstallerSource\) \$script:ResolvedVersion'
+        $installer | Should -Match 'Publish-WinsmuxLifecycle \$lease \$lifecycle'
+        $installer | Should -Not -Match 'Download-File "install\.ps1" \(Join-Path \$BIN_DIR "install\.ps1"\)'
         $downloadDeclarations = @([regex]::Matches($installer, '(?m)^\s*Download-(?:Optional)?File\s+"(?<path>[^"]+)"\s+(?<destination>[^\r\n]+)$') | ForEach-Object {
             '{0}|{1}' -f $_.Groups['path'].Value, $_.Groups['destination'].Value.Trim()
         })
@@ -275,8 +318,9 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match '\$startInfo\.Environment\[''WINSMUX_INSTALL_E2E_GITHUB_ACCESS''\] = \$gitHubAccess'
         $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller -ServerDirectory \(Join-Path \$scratch ''pre-fix-server''\) -IncludeTargetInstallerBootstrapMarker\r?\n'
         $installE2e | Should -Not -Match 'Invoke-IrmInstaller -SourceInstaller \$brokenInstaller[^\r\n]+-IncludeGitHubAccess'
-        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
-        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess:\$isGitHubRunner'
+        $installE2e | Should -Match ([regex]::Escape('-IncludeGitHubAccess:($isGitHubRunner -and -not $candidateFixture)'))
+        $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$npmShim[^\r\n]+-IncludeGitHubAccess:'
+        $installE2e | Should -Match 'Invoke-IrmInstaller -SourceInstaller \$installerPath[^\r\n]+-IncludeGitHubAccess:'
         $installE2e | Should -Match 'wrapper_launch_project_dir_verified'
         $installE2e | Should -Match 'wrapper_raw_command_forwarding_verified'
         $installE2e | Should -Match 'wrapper_update_dispatch_verified'
@@ -296,17 +340,17 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match 'Tagless direct install did not stay on the fixed main installer'
         $installE2e | Should -Match 'Tagless direct install replaced the fixed main scripts with the previous release scripts'
         $installer | Should -Match 'keepPipedMainScripts'
-        $installer | Should -Match 'Test-IsPipedWinsmuxInstaller -InvocationPath \(\[string\]\$MyInvocation\.MyCommand\.Path\)'
+        $installer | Should -Match 'Test-IsPipedWinsmuxInstaller -InvocationPath \$installerInvocationPath'
         $installer | Should -Match "(?s)\`$requestedReleaseTag = if \(\`$releaseAction -notin @\('install', 'update'\)\).*?Assert-WinsmuxReleaseTag -ReleaseTag \`$requestedReleaseTag"
         $installer | Should -Match 'switch \(\$releaseAction\)'
         $installer | Should -Not -Match 'switch \(\$Action\.ToLower\(\)\)'
         $installE2e | Should -Match 'WT settings: not found'
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
-        $installE2e | Should -Not -Match "\$installResult\.Combined -match '404\|Not Found\|Failed to download'"
+        $installE2e | Should -Not -Match '\$installResult\.Combined -match ''404\|Not Found\|Failed to download'''
         $installE2e | Should -Match 'Defect fixture skips release binary acquisition'
-        $installE2e | Should -Match "Install-WinsmuxBinary\[ \\t\]\*\\r\?\$"
-        $installE2e | Should -Not -Match "\$result\.Combined -notmatch '404\|Not Found\|Failed to download'"
+        $installE2e | Should -Match 'Install-WinsmuxBinary.*-Lease.*lease.*\[ \\t\]\*\\r\?\$'
+        $installE2e | Should -Not -Match '\$result\.Combined -notmatch ''404\|Not Found\|Failed to download'''
         $installE2e | Should -Match '\[ValidateRange\(1, 1800\)\]\[int\]\$TimeoutSeconds = 900'
         $installE2e | Should -Match '\$process\.Kill\(\$true\)'
         $installE2e | Should -Match 'Child process exceeded \$\{TimeoutSeconds\}s and was terminated'
@@ -335,74 +379,75 @@ Describe 'winsmux npm release package contract' {
         $redirectedSmoke.IndexOf('$invariantErrors', [System.StringComparison]::Ordinal) | Should -BeLessThan $redirectedSmoke.IndexOf('$failureParts', [System.StringComparison]::Ordinal)
     }
 
-    It 're-executes the resolved target installer before a pinned install or update' {
+    It 'prepares npm before HOME isolation and keeps private transport separate from public release evidence' {
+        $source = [IO.File]::ReadAllText($script:InstallE2ePath)
+        $stageOffset = $source.IndexOf("'scripts/stage-npm-release.mjs'", [StringComparison]::Ordinal)
+        $isolationOffset = $source.IndexOf('$env:HOME = $fixtureHome', [StringComparison]::Ordinal)
+        $stageOffset | Should -BeGreaterThan 0
+        $stageOffset | Should -BeLessThan $isolationOffset
+        $source | Should -Match ([regex]::Escape('$repositoryPreparationOpen = $false'))
+        $source | Should -Match ([regex]::Escape('$FilePath -notin @($node, $npm)'))
+        $source | Should -Match 'pristine_tarball_sha256'
+        $source | Should -Match 'fixture_tarball_sha256'
+        $source | Should -Match 'Pristine npm installer differs from the candidate Git source'
+        $source | Should -Match 'Fixture npm projection changed its index, metadata, or declared installer'
+        $source | Should -Match 'Private candidate fixture must not use a public release override'
+        $source | Should -Match 'public_release_acquisition_proven = \$false'
+        $workflow = [IO.File]::ReadAllText($script:TestWorkflowPath)
+        $candidate = [regex]::Match($workflow, '(?ms)^  fresh-install-candidate:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)').Groups['body'].Value
+        $candidate | Should -Match 'setup-windows-distribution-toolchain'
+        $candidate | Should -Match 'node scripts/build-core-candidate.mjs x86_64-pc-windows-msvc'
+        $candidate | Should -Not -Match 'contents: write|npm publish|action-gh-release'
+        $workflow | Should -Match ([regex]::Escape('fresh-install-candidate-${{ github.sha }}'))
+        $workflow | Should -Match ([regex]::Escape('-CandidateDirectory "${{ runner.temp }}/fresh-install-candidate"'))
+        $workflow | Should -Not -Match 'WINSMUX_INSTALL_E2E_RELEASE_TAG: v0\.36\.28'
+    }
+
+    It 'classifies saved and in-memory installer inputs under strict mode: <Mode>' -TestCases @(
+        @{ Mode = 'saved'; ExpectedPiped = $false },
+        @{ Mode = 'saved-dot'; ExpectedPiped = $false },
+        @{ Mode = 'scriptblock'; ExpectedPiped = $true },
+        @{ Mode = 'scriptblock-dot'; ExpectedPiped = $true },
+        @{ Mode = 'piped'; ExpectedPiped = $true }
+    ) {
+        param($Mode, $ExpectedPiped)
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        $mainOffset = $installer.IndexOf('# Main', [StringComparison]::Ordinal)
+        $mainOffset | Should -BeGreaterThan 0
+        # The exact product prefix defines its functions without invoking an
+        # install/update/uninstall action. Run iex from a saved caller as well,
+        # so that the caller's PSCommandPath cannot masquerade as input identity.
+        $prefixPath = Join-Path $TestDrive ('invocation-' + $Mode + '.ps1')
+        Write-TestFileUtf8 -Path $prefixPath -Content ($installer.Substring(0, $mainOffset) +
+            "`nWrite-Output (ConvertTo-Json @{ piped = `$isPipedInstaller } -Compress)`n")
+        $callerPath = Join-Path $TestDrive ('caller-' + $Mode + '.ps1')
+        Write-TestFileUtf8 -Path $callerPath -Content @'
+param([string]$Mode, [string]$InputPath)
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+foreach ($key in @('GITHUB_ACTIONS', 'WINSMUX_INSTALL_E2E', 'WINSMUX_INSTALL_STATE_ROOT', 'WINSMUX_INSTALL_SOURCE_REF', 'WINSMUX_RELEASE_TAG')) {
+    [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+}
+switch ($Mode) {
+    'saved' { & $InputPath }
+    'saved-dot' { . $InputPath }
+    'scriptblock' { & ([scriptblock]::Create([IO.File]::ReadAllText($InputPath))) }
+    'scriptblock-dot' { . ([scriptblock]::Create([IO.File]::ReadAllText($InputPath))) }
+    'piped' { Get-Content -LiteralPath $InputPath -Raw | Invoke-Expression }
+}
+'@
+        $result = Invoke-PwshProcess -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $callerPath, $Mode, $prefixPath)
+        $result.ExitCode | Should -Be 0 -Because $result.StdErr
+        ($result.StdOut | ConvertFrom-Json).piped | Should -Be $ExpectedPiped
+    }
+
+    It 'persists the complete current consumer for saved and piped release actions' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installer | Should -Match '(?s)\$release\s*=\s*Resolve-WinsmuxRelease.*?\$headers\s*=\s*Get-WinsmuxReleaseHeaders.*?browser_download_url\s+-Headers\s+\$headers'
-        $installer | Should -Not -Match 'UpdateBootstrapComplete'
-        $installer | Should -Match 'WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'
-        $installer | Should -Match 'winsmux\.exe\.previous-'
-        $installE2e = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-install-e2e.ps1') -Raw -Encoding UTF8
-        $installE2e | Should -Match 'update could not replace a running native executable'
-        $installE2e | Should -Match "if \(\`$Route -eq 'Direct' -and \`$isGitHubRunner\)"
-        $installE2e | Should -Not -Match "if \(\`$Route -eq 'Direct'\) \{\s*\`$cmdFixture"
-        $installE2e | Should -Match "\`$startInfo.Environment\['WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'\] = '1'"
-        $installE2e | Should -Match 'Invoke-IrmInstaller .* -IncludeTargetInstallerBootstrapMarker'
-        $mainMarker = '# Main'
-        $mainOffset = $installer.IndexOf($mainMarker, [System.StringComparison]::Ordinal)
+        $installer | Should -Not -Match 'Invoke-TargetInstallerBootstrap|Test-ShouldBootstrapTargetInstaller|WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'
+        $mainOffset = $installer.IndexOf('# Main', [StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0
-        $definitions = $installer.Substring(0, $mainOffset)
-
-        $markerPath = Join-Path $TestDrive 'update-bootstrap.json'
-        $targetInstaller = Join-Path $TestDrive 'target-install.ps1'
-        $markerLiteral = $markerPath.Replace("'", "''")
-        Write-TestFileUtf8 -Path $targetInstaller -Content @"
-param(
-    [Parameter(Position=0)][string]`$Action,
-    [string]`$ReleaseTag,
-    [string]`$InstallProfile
-)
-@{ action = `$Action; release = `$ReleaseTag; profile = `$InstallProfile; bootstrapped = (`$env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -eq '1') } |
-    ConvertTo-Json -Compress | Set-Content -LiteralPath '$markerLiteral' -Encoding UTF8
-"@
-
-        . ([scriptblock]::Create($definitions))
-        function Resolve-InstallProfile { return 'orchestra' }
-        function Resolve-WinsmuxRelease {
-            throw 'A pinned release must not be replaced by a latest-release lookup.'
-        }
-        $UseLatestRelease = $false
-        $ResolvedReleaseTag = 'v0.36.28'
-        function Download-File {
-            param($relativeUrl, $destPath)
-            $relativeUrl | Should -Be 'install.ps1'
-            Copy-Item -LiteralPath $targetInstaller -Destination $destPath -Force
-        }
-
-        foreach ($targetAction in @('install', 'update')) {
-            $env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED = 'outer-value'
-            try {
-                Invoke-TargetInstallerBootstrap -TargetAction $targetAction
-            } finally {
-                $env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED | Should -Be 'outer-value'
-                Remove-Item Env:WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED -ErrorAction SilentlyContinue
-            }
-
-            $result = Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            $result.action | Should -Be $targetAction
-            $result.release | Should -Be 'v0.36.28'
-            $result.profile | Should -Be 'orchestra'
-            $result.bootstrapped | Should -BeTrue
-        }
-
-        $requestedReleaseTag = ''
-        $isPipedInstaller = $true
-        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeFalse
-        (Test-ShouldBootstrapTargetInstaller -TargetAction update) | Should -BeTrue
-        $isPipedInstaller = $false
-        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
-        $requestedReleaseTag = 'v0.36.28'
-        $isPipedInstaller = $true
-        (Test-ShouldBootstrapTargetInstaller -TargetAction install) | Should -BeTrue
+        . ([scriptblock]::Create($installer.Substring(0, $mainOffset)))
         (Test-IsPipedWinsmuxInstaller -InvocationPath '') | Should -BeTrue
         (Test-IsPipedWinsmuxInstaller -InvocationPath 'C:\saved\install.ps1') | Should -BeFalse
         (Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag 'v0.36.28') | Should -Be '0.36.28'
@@ -414,7 +459,17 @@ param(
         { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.29-preview.1' } | Should -Not -Throw
         { Assert-WinsmuxReleaseTag -ReleaseTag '../../attacker/repo/main' } | Should -Throw '*Invalid winsmux release tag*'
         { Assert-WinsmuxReleaseTag -ReleaseTag 'v0.36.28/../../main' } | Should -Throw '*Invalid winsmux release tag*'
-        $installer | Should -Match '-not \(Test-ShouldBootstrapTargetInstaller -TargetAction install\)'
+        $proofScript = Join-Path $script:RepoRoot 'tests/workspace-package/install-lifecycle-source.test.ps1'
+        $proofOutput = & pwsh -NoLogo -NoProfile -File $proofScript
+        $LASTEXITCODE | Should -Be 0
+        $summary = ($proofOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $proof = Get-Content -LiteralPath (Join-Path $summary.root 'result.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $proof.completed | Should -BeTrue
+        $proof.passed | Should -Be 20
+        $proof.failed | Should -Be 0
+        $main = $installer.Substring($mainOffset)
+        $main | Should -Match '"install"\s+\{ Invoke-Install \}'
+        $main | Should -Match '"update"\s+\{ Invoke-Install -IsUpdate \}'
     }
 
     It 'keeps non-release actions independent from a stale release tag' {
@@ -432,7 +487,7 @@ param(
         }
     }
 
-    It 'repairs installer-managed state without release assets when the installed binary already matches' {
+    It 'refuses missing paired release assets even when the installed binary already matches' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0
@@ -461,10 +516,10 @@ param(
                 return [PSCustomObject]@{ Version = '9.9.9'; Output = 'winsmux 9.9.9' }
             }
             function Get-PreferredReleaseAssetName {
-                throw 'Asset selection must not run when the installed binary already matches.'
+                return 'winsmux-x64.exe'
             }
 
-            { Install-WinsmuxBinary } | Should -Not -Throw
+            { Install-WinsmuxBinary } | Should -Throw '*Missing or ambiguous paired release asset*'
         } finally {
             $env:WINSMUX_INSTALL_E2E = $previousE2e
             $env:WINSMUX_INSTALL_STATE_ROOT = $previousStateRoot
@@ -567,63 +622,67 @@ param(
         $remainingProfile.Contains($fixtureBin, [System.StringComparison]::OrdinalIgnoreCase) | Should -BeFalse
     }
 
-    It 'recovers an interrupted binary rotation and rolls back a failed replacement validation' {
+    It 'preserves legacy evidence and restores the complete prior generation after replacement failure' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
-        $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)
-        $mainOffset | Should -BeGreaterThan 0
-        . ([scriptblock]::Create($installer.Substring(0, $mainOffset)))
+        $installer | Should -Not -Match 'function (Repair-WinsmuxBinaryRotation|Clear-WinsmuxBinaryRotation|Install-VerifiedWinsmuxBinary)'
+        $selection = 'prior-success,prior-fault-before-readback,absent-one-legacy,absent-two-legacy,invalid-no-legacy,invalid-with-legacy'
+        $proofScript = Join-Path $script:RepoRoot 'tests/workspace-package/install-generation.test.ps1'
+        $proofOutput = & pwsh -NoLogo -NoProfile -File $proofScript -SelectedCase $selection
+        $LASTEXITCODE | Should -Be 0
+        $summary = ($proofOutput | Select-Object -Last 1) | ConvertFrom-Json
+        $proof = Get-Content -LiteralPath $summary.result -Raw -Encoding UTF8 | ConvertFrom-Json
+        $proof.completed | Should -BeTrue
+        $proof.passed | Should -Be 6
+        $proof.failed | Should -Be 0
+        $proof.selection | Should -BeExactly $selection
+        @($proof.cases.name | Sort-Object) -join ',' | Should -BeExactly (($selection.Split(',') | Sort-Object) -join ',')
+    }
 
-        $localBin = Join-Path $TestDrive 'rotation-bin'
-        New-Item -ItemType Directory -Path $localBin -Force | Out-Null
-        $winsmuxExe = Join-Path $localBin 'winsmux.exe'
-        $interruptedPrevious = Join-Path $localBin 'winsmux.exe.previous-0123456789abcdef0123456789abcdef'
-        $unownedSibling = Join-Path $localBin 'winsmux.exe.previous-not-owned'
-        Write-TestFileUtf8 -Path $interruptedPrevious -Content 'previous-version'
-        Write-TestFileUtf8 -Path $unownedSibling -Content 'preserve-me'
+    It 'classifies download responses under strict mode: <StatusCode>' -TestCases @(
+        @{ StatusCode = 408; Retry = $true }, @{ StatusCode = 429; Retry = $true },
+        @{ StatusCode = 500; Retry = $true }, @{ StatusCode = 599; Retry = $true },
+        @{ StatusCode = 400; Retry = $false }, @{ StatusCode = 401; Retry = $false },
+        @{ StatusCode = 404; Retry = $false }, @{ StatusCode = 600; Retry = $false }
+    ) {
+        param($StatusCode, $Retry)
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        . ([scriptblock]::Create($installer.Substring(0, $installer.IndexOf('# Main', [StringComparison]::Ordinal))))
+        $response = [Net.Http.HttpResponseMessage]::new([Enum]::ToObject([Net.HttpStatusCode], $StatusCode))
+        try {
+            $exception = [Microsoft.PowerShell.Commands.HttpResponseException]::new('HTTP failure', $response)
+            $errorRecord = [Management.Automation.ErrorRecord]::new($exception, 'http-fixture', [Management.Automation.ErrorCategory]::InvalidOperation, $null)
+            Get-WinsmuxDownloadStatusCode $errorRecord | Should -Be $StatusCode
+            Test-RetryableDownloadFailure $errorRecord | Should -Be $Retry
+        } finally { $response.Dispose() }
+    }
 
-        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
-        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'previous-version'
-        Test-Path -LiteralPath $interruptedPrevious | Should -BeFalse
-        Test-Path -LiteralPath $unownedSibling | Should -BeTrue
-
-        function Get-WinsmuxCommandVersion {
-            param($CommandInfo)
-            $content = Get-Content -LiteralPath $CommandInfo.Source -Raw -Encoding UTF8
-            if ($content -eq 'previous-version') {
-                return [PSCustomObject]@{ Version = '1.0.0'; Output = 'winsmux 1.0.0' }
-            }
-            if ($content -eq 'unvalidated-replacement') {
-                return [PSCustomObject]@{ Version = '2.0.0'; Output = 'winsmux 2.0.0' }
-            }
-            return $null
+    It 'handles missing download response metadata without inventing an HTTP status: <Shape>' -TestCases @(
+        @{ Shape = 'absent'; Message = 'timeout'; Retry = $true },
+        @{ Shape = 'null'; Message = 'connection reset'; Retry = $true },
+        @{ Shape = 'no-status'; Message = '404 not found'; Retry = $false },
+        @{ Shape = 'invalid-status'; Message = 'permanent failure'; Retry = $false }
+    ) {
+        param($Shape, $Message, $Retry)
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        . ([scriptblock]::Create($installer.Substring(0, $installer.IndexOf('# Main', [StringComparison]::Ordinal))))
+        $exception = [Exception]::new($Message)
+        switch ($Shape) {
+            'null' { $exception | Add-Member NoteProperty Response $null }
+            'no-status' { $exception | Add-Member NoteProperty Response ([pscustomobject]@{ Other = 'fixture' }) }
+            'invalid-status' { $exception | Add-Member NoteProperty Response ([pscustomobject]@{ StatusCode = 'invalid' }) }
         }
+        $errorRecord = [Management.Automation.ErrorRecord]::new($exception, 'metadata-fixture', [Management.Automation.ErrorCategory]::InvalidOperation, $null)
+        Get-WinsmuxDownloadStatusCode $errorRecord | Should -BeNullOrEmpty
+        Test-RetryableDownloadFailure $errorRecord | Should -Be $Retry
+    }
 
-        $stalePrevious = Join-Path $localBin 'winsmux.exe.previous-fedcba9876543210fedcba9876543210'
-        Write-TestFileUtf8 -Path $stalePrevious -Content 'stale-version'
-        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
-        Test-Path -LiteralPath $stalePrevious | Should -BeTrue
-        Clear-WinsmuxBinaryRotation -LocalBin $localBin
-        Test-Path -LiteralPath $stalePrevious | Should -BeFalse
-
-        Write-TestFileUtf8 -Path $winsmuxExe -Content 'unvalidated-replacement'
-        $unvalidatedPrevious = Join-Path $localBin 'winsmux.exe.previous-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-        Write-TestFileUtf8 -Path $unvalidatedPrevious -Content 'previous-version'
-        Repair-WinsmuxBinaryRotation -LocalBin $localBin -WinsmuxExe $winsmuxExe
-        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
-        Test-Path -LiteralPath $unvalidatedPrevious | Should -BeTrue
-        Clear-WinsmuxBinaryRotation -LocalBin $localBin
-        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
-        Test-Path -LiteralPath $unvalidatedPrevious | Should -BeFalse
-
-        $downloadPath = Join-Path $TestDrive 'invalid-replacement.exe'
-        Write-TestFileUtf8 -Path $downloadPath -Content 'invalid-version'
-
-        {
-            Install-VerifiedWinsmuxBinary -DownloadPath $downloadPath -WinsmuxExe $winsmuxExe -LocalBin $localBin -ExpectedVersion '9.9.9'
-        } | Should -Throw '*Installed binary validation failed*'
-        (Get-Content -LiteralPath $winsmuxExe -Raw -Encoding UTF8) | Should -Be 'unvalidated-replacement'
-        @(Get-ChildItem -LiteralPath $localBin -File | Where-Object { $_.Name -match '^winsmux\.exe\.previous-[0-9a-f]{32}$' }).Count | Should -Be 0
-        Test-Path -LiteralPath $unownedSibling | Should -BeTrue
+    It 'handles missing response metadata for optional-file probes without masking the original failure' {
+        $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
+        . ([scriptblock]::Create($installer.Substring(0, $installer.IndexOf('# Main', [StringComparison]::Ordinal))))
+        Mock Invoke-WebRequest { throw '404 not found' }
+        Test-RemoteFileExists 'fixture' | Should -BeFalse
+        Mock Invoke-WebRequest { throw 'timeout' }
+        { Test-RemoteFileExists 'fixture' } | Should -Throw '*timeout*'
     }
 
     It 'retries transient download failures without replacing the destination until success' {
@@ -883,16 +942,21 @@ param(
         $stageScript = Get-Content -LiteralPath $script:StageScriptPath -Raw -Encoding UTF8
 
         Test-Path -LiteralPath (Join-Path $script:PackageRoot 'install.ps1') | Should -BeFalse
-        $stageScript | Should -Match 'installScriptSource = path\.join\(repoRoot, "install\.ps1"\)'
-        $stageScript | Should -Match 'fs\.writeFileSync\(path\.join\(targetDir, "install\.ps1"\), versionPatched\)'
+        $stageScript | Should -Match 'files\.set\("install\.ps1", fs\.readFileSync\(path\.join\(repoRoot, "install\.ps1"\)\)\)'
+        $stageScript | Should -Not -Match 'installer\.replace'
+        $stageScript | Should -Match 'verifyFiles\(stageDir, files\)'
+        $stageScript | Should -Match 'publishGeneration\(targetDir, stageDir, backupDir, pendingPath, files\)'
         $packageReadme | Should -Match 'source directory is not the publish artifact'
         $packageReadme | Should -Match 'published npm tarball is\s+produced by'
     }
 
-    It 'skips staging only if the package source is explicitly gated' {
-        $originalPackageJson = Backup-TestFile -Path $script:PackageJsonPath
-        try {
-            Set-PackagePrivateFlag -Private $true
+    It 'refuses staging when the package source is explicitly gated and preserves it' {
+            $fixture = New-NpmReleaseFixture '0.23.0'
+            $packagePath = Join-Path $fixture 'packages/winsmux/package.json'
+            $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
+            $package.private = $true
+            Write-TestFileUtf8 $packagePath (ConvertTo-Json $package -Depth 20)
+            $originalPackageHash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash
 
             $result = Invoke-NodeProcess -Arguments @(
                 $script:StageScriptPath,
@@ -900,29 +964,48 @@ param(
                 '0.23.0',
                 '--out',
                 'output/npm-release/winsmux'
-            )
+            ) -WorkingDirectory $fixture
 
-            $result.ExitCode | Should -Be 0
-            $result.StdErr | Should -Be ''
-            $result.StdOut | Should -Be 'winsmux npm package is still gated (private=true); skipping stage.'
+            $result.ExitCode | Should -Not -Be 0
+            $result.StdErr | Should -Match 'npm package is not enabled for release preparation'
             Test-Path -LiteralPath $script:OutputRoot | Should -Be $false
-        } finally {
-            Restore-TestFile -Path $script:PackageJsonPath -Content $originalPackageJson
+            (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash | Should -Be $originalPackageHash
+    }
+
+    It 'preserves installer bytes across native and package repair preparation entrances' {
+        foreach ($ending in @("`n", "`r`n")) {
+            foreach ($repair in @($false, $true)) {
+                $fixture = New-NpmReleaseFixture '0.23.0'
+                $installerPath = Join-Path $fixture 'install.ps1'
+                $body = [IO.File]::ReadAllText($installerPath).Replace("`r`n", "`n")
+                $body = $body.Replace('$VERSION = "0.23.0"', "`t`$VERSION `t= `"0.23.0`" `t")
+                $body = $body.Replace("`n", $ending)
+                Write-TestFileUtf8 $installerPath $body
+                $originalHash = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash
+                $selection = if ($repair) { @('--release-tag', 'v0.23.0.1') } else { @('--version', '0.23.0') }
+                $result = Invoke-NodeProcess -Arguments (@($script:StageScriptPath) + $selection + @('--out', 'output/npm-release/winsmux')) -WorkingDirectory $fixture
+                $result.ExitCode | Should -Be 0 -Because "the verified source version is unchanged ($repair; $($ending.Length) byte newline)"
+                (Get-FileHash -LiteralPath (Join-Path $script:OutputRoot 'install.ps1') -Algorithm SHA256).Hash | Should -BeExactly $originalHash
+                $package = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'package.json') -Raw | ConvertFrom-Json
+                $package.version | Should -BeExactly $(if ($repair) { '0.23.0-pkgfix.1' } else { '0.23.0' })
+                Remove-StagedReleaseOutput
+            }
         }
     }
 
     It 'stages a release-ready package when the publish gate is open' {
+        $fixture = New-NpmReleaseFixture '0.23.0'
         $stageResult = Invoke-NodeProcess -Arguments @(
             $script:StageScriptPath,
             '--version',
             '0.23.0',
             '--out',
             'output/npm-release/winsmux'
-        )
+        ) -WorkingDirectory $fixture
 
         $stageResult.ExitCode | Should -Be 0
         $stageResult.StdErr | Should -Be ''
-        $stageResult.StdOut | Should -Match 'Staged winsmux npm package at'
+        $stageResult.StdOut | Should -Match 'Staged winsmux 0\.23\.0 \(v0\.23\.0; native 0\.23\.0\) at'
 
         foreach ($relativePath in @('package.json', 'README.md', 'index.mjs', 'install.ps1', 'LICENSE')) {
             Test-Path -LiteralPath (Join-Path $script:OutputRoot $relativePath) | Should -Be $true
@@ -983,10 +1066,10 @@ param(
         $stagedInstallScript | Should -Match 'Remove-ProfileExcludedSupportScripts'
         $stagedInstallScript | Should -Match 'Removed profile-excluded support script'
         $stagedInstallScript | Should -Match 'Sync-WindowsTerminalFragment -Profile \$resolvedInstallProfile'
-        $stagedInstallScript | Should -Match 'SHA256SUMS asset not found in release'
-        $stagedInstallScript | Should -Match 'Cannot verify release asset'
+        $stagedInstallScript | Should -Match 'Missing or ambiguous paired release asset'
+        $stagedInstallScript | Should -Match 'Release checksum is missing the exact paired asset'
         $stagedInstallScript | Should -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$downloadPath -ErrorAction Stop'
-        $stagedInstallScript | Should -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
+        $stagedInstallScript | Should -Match 'Install-VerifiedWinsmuxGeneration \$lease \$state \$downloadPath \$sidecar'
         $stagedInstallScript | Should -Not -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$winsmuxExe'
         $stagedInstallScript | Should -Not -Match 'Skipping checksum verification'
 
@@ -998,13 +1081,14 @@ param(
     }
 
     It 'maps a four-part packaging hotfix tag to unique npm and exact release identities' {
+        $fixture = New-NpmReleaseFixture '0.36.28'
         $stageResult = Invoke-NodeProcess -Arguments @(
             $script:StageScriptPath,
             '--release-tag',
             'v0.36.28.1',
             '--out',
             'output/npm-release/winsmux'
-        )
+        ) -WorkingDirectory $fixture
 
         $stageResult.ExitCode | Should -Be 0
         $stageResult.StdErr | Should -Be ''
@@ -1034,18 +1118,19 @@ param(
         )
 
         $stageResult.ExitCode | Should -Not -Be 0
-        $stageResult.StdErr | Should -Match 'Reserved npm packaging-hotfix tag namespace'
+        $stageResult.StdErr | Should -Match 'Unsupported native release version: 0\.36\.28-pkgfix\.1'
         Test-Path -LiteralPath $script:OutputRoot | Should -BeFalse
     }
 
     It 'preserves an ordinary prerelease tag outside the reserved namespace' {
+        $fixture = New-NpmReleaseFixture '0.36.29-preview.1'
         $stageResult = Invoke-NodeProcess -Arguments @(
             $script:StageScriptPath,
             '--release-tag',
             'v0.36.29-preview.1',
             '--out',
             'output/npm-release/winsmux'
-        )
+        ) -WorkingDirectory $fixture
 
         $stageResult.ExitCode | Should -Be 0
         $stageResult.StdErr | Should -Be ''

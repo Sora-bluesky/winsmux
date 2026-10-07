@@ -94,9 +94,13 @@ Describe 'Public surface policy' {
         $docsIndex | Should -Match 'quickstart\.md'
         $docsIndexJa | Should -Match 'quickstart\.ja\.md'
 
+        $readme | Should -Match 'winsmux workspace'
+        $readmeJa | Should -Match 'winsmux workspace'
+        $readme | Should -Match 'older.*winsmux init.*winsmux launch'
+        $readmeJa | Should -Match '旧版の.*winsmux init.*winsmux launch'
+        $readme | Should -Match 'Start with the desktop app'
+        $readmeJa | Should -Match 'デスクトップアプリから始める'
         foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux launcher presets', 'winsmux compare')) {
-            $readme | Should -Match ([Regex]::Escape($entrypoint))
-            $readmeJa | Should -Match ([Regex]::Escape($entrypoint))
             $operatorModel | Should -Match ([Regex]::Escape($entrypoint))
         }
     }
@@ -246,20 +250,12 @@ Describe 'Public surface policy' {
         $readme | Should -Match 'npm install -g winsmux'
         $readmeJa | Should -Match 'npm install -g winsmux'
 
-        $readme | Should -Match 'Claude Code \| Pro / Max OAuth \| This PC only, interactive use'
-        $readme | Should -Match 'Antigravity CLI \| Official Antigravity CLI sign-in \| This PC only, interactive use'
-        $readme | Should -Match 'Gemini \| Google OAuth \| Legacy / tier-limited, this PC only'
-        $readme | Should -Match '2026-06-18'
-        $readme | Should -Match 'Google AI Pro'
-        $readme | Should -Match 'Google AI Ultra'
-        $readme | Should -Match 'Google AI Standard and Enterprise'
-        $readmeJa | Should -Match 'Claude Code \| Pro / Max OAuth \| 当該 PC での対話利用のみ'
-        $readmeJa | Should -Match 'Antigravity CLI \| 公式 Antigravity CLI のサインイン \| 当該 PC での対話利用のみ'
-        $readmeJa | Should -Match 'Gemini \| Google OAuth \| 互換目的 / tier 制限あり、この PC のみ'
-        $readmeJa | Should -Match '2026-06-18'
-        $readmeJa | Should -Match 'Google AI Pro'
-        $readmeJa | Should -Match 'Google AI Ultra'
-        $readmeJa | Should -Match 'Google AI Standard と Enterprise'
+        $readme | Should -Match 'docs/authentication-support\.md'
+        $readmeJa | Should -Match 'docs/authentication-support\.ja\.md'
+        $readme | Should -Match "does not extract another CLI's tokens or sign in on its behalf"
+        $readmeJa | Should -Match '別CLIのトークンを取り出したり、代理ログインしたりすることはありません'
+        $readme | Should -Match 'does not establish authentication or support for a requested model setting'
+        $readmeJa | Should -Match 'CLIの検出だけでは認証や指定モデルの対応は確認できない'
 
         $authSupport | Should -Match 'claude-pro-max-oauth.*interactive use on that same PC'
         $authSupport | Should -Match 'antigravity-official-cli.*interactive use on that same PC'

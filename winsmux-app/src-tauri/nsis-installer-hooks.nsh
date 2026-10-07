@@ -1,3 +1,6 @@
+; Compile-time inputs are anchored to this source file, never the compiler CWD.
+!define WINSMUX_NSIS_INPUTS "${__FILEDIR__}\binaries\nsis"
+
 LangString WINSMUX_OPEN_WITH_LABEL 1033 "Open with winsmux"
 LangString WINSMUX_OPEN_WITH_LABEL 1041 "winsmuxで開く"
 
