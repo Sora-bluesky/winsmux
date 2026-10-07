@@ -12,8 +12,7 @@ function operationText(record: NonNullable<ReturnType<Controller['snapshot']>['o
 }
 
 export function mountConnectionView(root: HTMLElement, controller: Controller, options: {
-  discovery(): Promise<WorkspaceDiscovery>;
-  copy(value: WorkspaceDiscovery): Promise<WorkspaceDiscovery>;
+  copyCurrent(stillCurrent: () => boolean): Promise<WorkspaceDiscovery>;
   current(): boolean;
 }) {
   const doc = root.ownerDocument;
@@ -45,13 +44,10 @@ export function mountConnectionView(root: HTMLElement, controller: Controller, o
     copiedInstance = null; discovered.textContent = '';
     updateCopyButton();
     try {
-      const value = await options.discovery();
-      if (!copyCurrent() || value.instance_id !== controller.snapshot().instanceId) return;
-      const receipt = await options.copy(value);
-      if (!copyCurrent() || receipt.instance_id !== value.instance_id || value.instance_id !== controller.snapshot().instanceId
-        || receipt.pipe_name !== value.pipe_name || receipt.schema_version !== value.schema_version) return;
-      copiedInstance = value.instance_id;
-      discovered.textContent = `現在の世代 ${value.instance_id} の接続情報をコピーしました。`;
+      const receipt = await options.copyCurrent(copyCurrent);
+      if (!copyCurrent() || receipt.instance_id !== controller.snapshot().instanceId) return;
+      copiedInstance = receipt.instance_id;
+      discovered.textContent = `現在の世代 ${receipt.instance_id} の接続情報をコピーしました。`;
     } catch (error) {
       if (copyCurrent()) { copiedInstance = null; discovered.textContent = error instanceof Error ? error.message : '接続情報を取得できませんでした。'; }
     } finally { copying = false; if (!disposed) updateCopyButton(); }

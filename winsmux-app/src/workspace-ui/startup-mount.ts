@@ -15,6 +15,7 @@ import { createAgentCommandSession, type AgentCommandIntent } from './agent-comm
 import { createAgentObservation } from './agent-observation';
 import { createControlAdmission, type ControlLease } from './control-admission';
 import { createConnectionController } from './connection-controller';
+import { createWorkspaceCopyGate, type CopyReservation } from './workspace-copy-gate';
 import { mountConnectionView } from './connection-view';
 import type { Request, Response, OutputReadData, EventsWaitData, OperationName, ProviderCapability } from '../generated/workspace-contract';
 
@@ -115,6 +116,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   });
   const admission = createControlAdmission(input);
   let connectedHost: string | null = null;
+  let requestGate: ReturnType<typeof createWorkspaceCopyGate> | null = null;
   let ownerSection: OwnerKey | null = null;
   const sameOwner = (a: OwnerKey, b: OwnerKey) => a.instanceId === b.instanceId && a.ownerGeneration === b.ownerGeneration;
   let connectionOwner: ReturnType<typeof createConnectionController> | null = null;
@@ -125,8 +127,8 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   let recoveryPending = false;
   let ownerMismatch = false;
   const hostUnknown = () => hostObservation?.phase === 'Unknown';
-  const reserveControl = (host: string, kind: Parameters<typeof admission.reserve>[1], ticket: string) =>
-    !hostBlocked && hostObservation?.phase === 'Ready' && input.inspect().lease !== null
+  const reserveControl = (host: string, kind: Parameters<typeof admission.reserve>[1], ticket: string, copy?: CopyReservation) =>
+    requestGate?.canReserveControl(copy) && !hostBlocked && hostObservation?.phase === 'Ready' && input.inspect().lease !== null
       ? admission.reserve(host, kind, ticket) : null;
   function showRecoveryShell() {
     if (!recoveryPending) {
@@ -189,7 +191,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   const visibility = () => { if (!disposed && document.hidden && frame !== null) { cancelAnimationFrame(frame); frame = null; } };
   document.addEventListener('visibilitychange', visibility);
   const recoveryWatch = input.observe(() => { if (recoveryPending) showRecoveryShell(); });
-  const dispose = () => { if (disposed) return; disposed = true; generation++; creations.dispose(); input.disconnect(); window.removeEventListener('storage', observeCreation); active?.(); active = null; connectionView?.dispose(); connectionView = null; connectionOwner?.retire(); connectionOwner = null; retiringAgent?.retireHost(); retiringAgent = null; if (connectedHost) admission.retireHost(connectedHost); connectedHost = null; closeDetails?.(); closeDetails = null; details?.disconnect(); details = null; recoveryWatch(); input.dispose(); if (frame !== null) cancelAnimationFrame(frame); frame = null; unlisten?.(); unlisten = null; reconnect.onclick = null; forceExit.onclick = null; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('unload', dispose); root.dataset.startupState = 'disposed'; delete root.dataset.session; };
+  const dispose = () => { if (disposed) return; disposed = true; requestGate?.retire(); requestGate = null; generation++; creations.dispose(); input.disconnect(); window.removeEventListener('storage', observeCreation); active?.(); active = null; connectionView?.dispose(); connectionView = null; connectionOwner?.retire(); connectionOwner = null; retiringAgent?.retireHost(); retiringAgent = null; if (connectedHost) admission.retireHost(connectedHost); connectedHost = null; closeDetails?.(); closeDetails = null; details?.disconnect(); details = null; recoveryWatch(); input.dispose(); if (frame !== null) cancelAnimationFrame(frame); frame = null; unlisten?.(); unlisten = null; reconnect.onclick = null; forceExit.onclick = null; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('unload', dispose); root.dataset.startupState = 'disposed'; delete root.dataset.session; };
   window.addEventListener('unload', dispose, { once: true });
   async function connect() {
     if (disposed || reconnecting) return;
@@ -209,11 +211,12 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     if (input.hasPendingComposition()) { reconnect.hidden = false; status.textContent = '変換中の文字を確定または取消してから接続を確認し直してください。'; return; }
     if (recoveryPending && !input.inspect().resumeAllowed) { void input.recoverGuard(); showRecoveryShell(); return; }
     recoveryPending = false;
-    reconnecting = true; creations.beginReconnect(); retiringAgent?.setConnected(false); input.disconnect(); active?.(); active = null; connectionView?.dispose(); connectionView = null; if (frame !== null) cancelAnimationFrame(frame); frame = null;
+    reconnecting = true; requestGate?.retire(); requestGate = null; creations.beginReconnect(); retiringAgent?.setConnected(false); input.disconnect(); active?.(); active = null; connectionView?.dispose(); connectionView = null; if (frame !== null) cancelAnimationFrame(frame); frame = null;
     const epoch = ++generation; const current = () => !disposed && epoch === generation;
     hostObservation = null; hostBlocked = true; probeIssued++;
     root.dataset.startupState = 'connecting'; delete root.dataset.session; reconnect.hidden = true; status.textContent = '作業セッションを確認しています。';
     let openReturned = false;
+    const wire = createWorkspaceCopyGate(); requestGate = wire;
     try {
       const session = await openWorkspaceSession();
       openReturned = true;
@@ -276,11 +279,15 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           if (!current() || phase !== 'Ready' || hostBlocked || input.inspect().lease === null || input.inspect().frozen)
             throw new Error('host_not_sent');
         }
-        if (inputOperation && (!current() || hostBlocked || hostObservation?.phase !== 'Ready'
-          || input.inspect().lease === null || input.inspect().frozen || !beforeDispatch?.())) throw new Error('host_not_sent');
         let response: Response;
         if (!current() || !sameLiveHost() || !ownerSection || !sameOwner(ownerKey, ownerSection)) throw new Error('session_closed');
-        try { response = await workspaceRequest(request); }
+        try { response = await wire.send(readOnly.has(request.operation), () => {
+          if (!current() || !sameLiveHost() || !ownerSection || !sameOwner(ownerKey, ownerSection)) throw new Error('session_closed');
+          if (hostBlocked) throw new Error(hostObservation?.phase === 'Unknown' ? 'transport_uncertain' : 'host_observation_unavailable');
+          if (!readOnly.has(request.operation) && (hostObservation?.phase !== 'Ready' || input.inspect().lease === null || input.inspect().frozen)) throw new Error('host_not_sent');
+          if (inputOperation && !beforeDispatch?.()) throw new Error('host_not_sent');
+          return workspaceRequest(request);
+        }); }
         catch (error) {
           if (!current()) throw new Error('session_closed');
           if (!sameLiveHost()) throw new Error('session_closed');
@@ -309,20 +316,42 @@ export async function mountWorkspaceMain(root: HTMLElement) {
         return response;
       }
       const connectionPort = { ownerKey, exchange: port.exchange, recover: port.recover,
-        async reserve(ticket: string) {
+        async reserve(ticket: string, copy?: CopyReservation) {
           if (hostObservation?.epoch === epoch && hostObservation.phase === 'Busy') {
             const phase = await observeHost(epoch, session.instance_id);
             if (!current() || phase !== 'Ready') return null;
           }
-          return current() ? reserveControl(session.instance_id, 'connection', ticket) : null;
+          return current() ? reserveControl(session.instance_id, 'connection', ticket, copy) : null;
         },
         release(lease: ControlLease) { admission.release(lease); },
         transportUncertain: () => { if (hostObservation?.epoch === epoch && hostObservation.phase === 'Unknown') blockHost(true); } };
       if (connectionOwner?.snapshot().instanceId !== session.instance_id) connectionOwner = createConnectionController(session.instance_id, connectionPort);
       else connectionOwner.bind(connectionPort);
       connectionView = mountConnectionView(connectionMount, connectionOwner, {
-        discovery: () => getWorkspaceDiscovery(session.instance_id),
-        copy: value => copyWorkspaceDiscovery(ownerKey.ownerGeneration, value),
+        async copyCurrent(stillCurrent) {
+          const refused = () => new Error('現在の接続情報をコピーできませんでした。接続状態を確認してください。');
+          const live = () => current() && stillCurrent() && !hostBlocked && sameLiveHost()
+            && input.inspect().lease !== null && !input.inspect().frozen;
+          if (!live() || admission.busy()) throw refused();
+          const reservation = wire.beginCopy();
+          if (!reservation) throw refused();
+          let lease: ControlLease | null = null;
+          try {
+            if (!await reservation.ready || !live()) throw refused();
+            const phase = await observeHost(epoch, session.instance_id);
+            if (phase !== 'Ready' || !live()) throw refused();
+            lease = await connectionPort.reserve(crypto.randomUUID(), reservation);
+            if (!lease || !live() || admission.current() !== lease) throw refused();
+            const discovery = await getWorkspaceDiscovery(session.instance_id);
+            if (!live() || admission.current() !== lease) throw refused();
+            const copyPhase = await observeHost(epoch, session.instance_id);
+            if (copyPhase !== 'Ready' || !live() || admission.current() !== lease) throw refused();
+            return await copyWorkspaceDiscovery(ownerKey.ownerGeneration, discovery);
+          } finally {
+            try { wire.endCopy(reservation); }
+            finally { if (lease) admission.release(lease); }
+          }
+        },
         current,
       });
       async function query(operation: OperationName, params: object): Promise<Response> {
@@ -610,7 +639,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       root.dataset.startupState = 'mounted'; status.textContent = '明示的な操作だけでペインを起動します。';
       updateAgentLocal(controller.getSnapshot());
       await revealOnce(); if (!current()) return; schedule();
-    } catch (error) { if (current()) { active?.(); active = null; connectionView?.dispose(); connectionView = null;
+    } catch (error) { wire.retire(); if (current()) { active?.(); active = null; connectionView?.dispose(); connectionView = null;
       const shutdown = error === 'shutdown_in_progress' || error instanceof Error && error.message === 'shutdown_in_progress';
       if (!openReturned && shutdown) {
         showRecoveryShell();

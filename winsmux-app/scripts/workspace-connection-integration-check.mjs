@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import './workspace-copy-gate-check.mjs';
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(resolve(app, 'package.json'));
@@ -48,7 +49,8 @@ try {
       holdNextCapabilities: false, lateCapabilities: null,
       holdNextDetailsOperation: null, lateDetails: null, holdNextProject: false, lateProject: null };
     Object.assign(f, { discoveryCalls: 0, copyCalls: [], copyWrites: 0, holdDiscovery: false, lateDiscovery: null,
-      holdCopy: false, lateCopy: null, copyError: null, copyReceipt: null, browserCopies: 0 });
+      holdCopy: false, lateCopy: null, copyError: null, copyReceipt: null, browserCopies: 0,
+      holdNextEvents: false, lateEvents: null, ordinaryBusy: false });
     Object.defineProperty(navigator, 'clipboard', { configurable: true,
       value: { writeText: async () => { f.browserCopies++; throw Error('browser clipboard intentionally unavailable'); } } });
     f.invoke = async (name, args) => {
@@ -67,12 +69,14 @@ try {
         return next ?? { instance_id: f.instanceId, generation: f.ownerGeneration, revision: String(f.revision), phase: f.host }; }
       if (name === 'workspace_discovery_get') {
         f.discoveryCalls++;
+        if (f.ordinaryBusy) throw 'session_closed';
         const value = { instance_id: f.instanceId, pipe_name: '\\\\.\\pipe\\winsmux-workspace-v1-fixture', schema_version: 1 };
         if (f.holdDiscovery) { f.holdDiscovery = false; return new Promise(resolve => { f.lateDiscovery = () => resolve(value); }); }
         return value;
       }
       if (name === 'workspace_discovery_copy') {
         const request = JSON.parse(args.requestJson); f.copyCalls.push(request);
+        if (f.ordinaryBusy) throw 'session_closed';
         if (f.host !== 'Ready' || request.owner_generation !== f.ownerGeneration || request.discovery.instance_id !== f.instanceId) throw 'protocol_failed';
         if (f.copyError) { const error = f.copyError; f.copyError = null; throw error; }
         f.copyWrites++;
@@ -130,7 +134,12 @@ try {
           ? { project_id: P, selected_pane_id: N, panes: [{ pane_id: N, project_id: P, display_name: 'Terminal', path: 'C:/fixture', current_run_id: f.runId,
             observation: { run_id: f.runId, pane_id: N, process: 'running', work: 'running', evidence: 'provider_event', observed_at: '2026-09-28T00:00:00Z', current: true, exit_code: null } }], root: { kind: 'leaf', pane_id: N } }
           : { project_id: q.params.project_id, selected_pane_id: null, panes: [], root: null });
-        case 'events.wait': return envelope(q, { events: [], next_event_seq: 0, status: 'no_change' });
+        case 'events.wait': {
+          const answer = () => envelope(q, { events: [], next_event_seq: 0, status: 'no_change' });
+          if (f.holdNextEvents) { f.holdNextEvents = false; f.ordinaryBusy = true;
+            return new Promise(resolve => { f.lateEvents = () => { f.ordinaryBusy = false; resolve(answer()); }; }); }
+          return answer();
+        }
         case 'output.read': return envelope(q, { run_id: q.params.run_id, text: '', next_cursor: 'cursor-0', gap: false, truncated: false });
         case 'artifact.list': return envelope(q, { registered: [], git_candidates: ['git/changed.txt'] });
         case 'artifact.register':
@@ -220,6 +229,7 @@ try {
         check('discovery pre-write host block is established', button.disabled && section.textContent.includes('接続'));
         f.lateDiscovery(); await tick();
         check('blocked discovery never dispatches native copy', f.copyCalls.length === 0 && !status.textContent.includes('コピーしました'));
+        check('blocked discovery fresh status actually establishes Unknown', root.dataset.startupState === 'unknown');
       } else if (scenario === 'old-generation') {
         f.ownerGeneration = '2'; f.lateDiscovery(); await tick();
         check('native refuses old owner generation before clipboard write', f.copyWrites === 0 && !status.textContent.includes('コピーしました'));
@@ -239,6 +249,114 @@ try {
       }
       check(scenario + ' never uses browser clipboard', f.browserCopies === 0);
       mounted.dispose(); root.remove(); frames.length = 0; f.ownerGeneration = '1'; f.host = 'Ready'; f.revision++;
+    }
+    // One fixed family: issued reads drain, queued reads resume, and control records
+    // cannot enter while Copy owns the gate. Native clipboard effects remain mocked.
+    {
+      Object.assign(f, { calls: [], withRun: false, host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', discoveryCalls: 0, copyCalls: [], copyWrites: 0, holdDiscovery: false,
+        lateDiscovery: null, holdCopy: false, copyError: null, copyReceipt: null, ordinaryBusy: false });
+      f.revision++; f.rows = [row(A, 'pending')];
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame(); await opening;
+      const section = root.querySelector('.workspace-connections');
+      const copy = [...section.querySelectorAll('button')].find(b => b.textContent === '現在の接続情報をコピー');
+      f.holdNextEvents = true; f.lateEvents = null;
+      for (let i = 0; i < 8 && !f.lateEvents; i++) await frame();
+      check('Copy family ordinary native read is held', !!f.lateEvents && f.ordinaryBusy);
+      f.holdDiscovery = true; copy.click(); await tick();
+      check('Copy drains issued read before discovery', f.discoveryCalls === 0 && f.copyCalls.length === 0);
+      section.querySelector('[data-connection-id="' + A + '"]').click();
+      [...section.querySelectorAll('button')].find(b => b.textContent === '要求を拒否').click(); await tick();
+      check('Copy drain rejects a new control before an unknown record', !f.calls.some(q => q.operation === 'connection.decide')
+        && !section.textContent.includes('結果不明') && !section.textContent.includes('結果は不明'));
+      f.lateEvents(); await tick();
+      check('Copy drain reaches discovery without waiting for the entire refresh chain', f.discoveryCalls === 1 && !!f.lateDiscovery);
+      const requests = f.calls.length; await frame();
+      check('Copy gate prevents new ordinary native reads during discovery', f.calls.length === requests && f.copyCalls.length === 0);
+      f.lateDiscovery(); await tick();
+      check('Copy succeeds while periodic ordinary reads are enabled', f.copyWrites === 1 && copy.nextElementSibling.textContent.includes('コピーしました'));
+      check('Copy finally releases queued ordinary reads', f.calls.length > requests && !copy.disabled);
+      mounted.dispose(); root.remove(); frames.length = 0;
+    }
+    {
+      Object.assign(f, { calls: [], withRun: true, term: null, host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', discoveryCalls: 0, copyCalls: [], copyWrites: 0, holdDiscovery: false,
+        lateDiscovery: null, holdCopy: false, ordinaryBusy: false, holdNextEvents: false, lateEvents: null });
+      f.revision++; f.rows = [row(A, 'pending')];
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && (!mounted || !f.term?.sendInput); i++) await frame(); await opening;
+      f.holdNextEvents = true;
+      for (let i = 0; i < 8 && !f.lateEvents; i++) await frame();
+      check('Copy input case holds an issued ordinary flight', !!f.lateEvents && !!f.term?.sendInput);
+      const copy = [...root.querySelector('.workspace-connections').querySelectorAll('button')].find(b => b.textContent === '現在の接続情報をコピー');
+      copy.click(); f.term.sendInput('held-by-copy'); await tick();
+      check('Copy gate refuses input before dispatched phase and retains unsent text', !f.calls.some(q => q.operation === 'input.write')
+        && root.querySelector('.workspace-input-confirmation').textContent.includes('未送信で保持'));
+      f.lateEvents(); await tick();
+      check('held input blocks Copy admission without automatic resend', f.discoveryCalls === 0 && f.copyCalls.length === 0
+        && !f.calls.some(q => q.operation === 'input.write') && !copy.disabled);
+      mounted.dispose(); root.remove(); frames.length = 0; f.withRun = false; f.term = null;
+    }
+    for (const stage of ['discovery', 'final-status']) for (const change of ['Unknown', 'owner', 'guard-lease', 'fence', 'dispose']) {
+      Object.assign(f, { calls: [], withRun: false, host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', discoveryCalls: 0, copyCalls: [], copyWrites: 0, holdDiscovery: true,
+        lateDiscovery: null, holdCopy: false, copyError: null, copyReceipt: null, ordinaryBusy: false,
+        holdNextGuardReply: false, lateGuardReply: null });
+      f.revision++; f.rows = [row(A, 'pending')];
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame(); await opening;
+      const copy = [...root.querySelector('.workspace-connections').querySelectorAll('button')].find(b => b.textContent === '現在の接続情報をコピー');
+      const status = copy.nextElementSibling; copy.click(); await tick();
+      check(`${stage}/${change} discovery is held`, !!f.lateDiscovery && f.copyCalls.length === 0);
+      if (stage === 'final-status') {
+        f.nextStatus = 'hold'; f.releaseStatus = null; f.lateDiscovery(); await tick();
+        check(`${stage}/${change} fresh final status is held`, !!f.releaseStatus && f.copyCalls.length === 0);
+      }
+      if (change === 'Unknown') { f.host = 'Unknown'; f.revision++; }
+      else if (change === 'owner') { f.ownerGeneration = '2'; f.revision++; }
+      else if (change === 'dispose') mounted.dispose();
+      else {
+        f.guardStatus = { lease: change === 'guard-lease' ? '2' : '1', revision: '2',
+          fence: change === 'fence' ? { nonce: '2', state: 'pending' } : null,
+          resume_allowed: false, admission_error: change === 'fence' ? 'shutdown_in_progress' : null };
+        f.holdNextGuardReply = change === 'fence';
+        f.listeners['workspace-input-guard-changed']?.({ payload: { lease: '1', revision: '2' } }); await tick();
+        check(`${stage}/${change} guard change is actually observed`, root.querySelector('.workspace-input-confirmation').textContent.includes('受付状態を確認できません')
+          || root.querySelector('.workspace-input-confirmation').textContent.includes('終了を止めました'));
+      }
+      if (stage === 'discovery') f.lateDiscovery();
+      else f.releaseStatus({ instance_id: I, generation: f.ownerGeneration, revision: String(f.revision), phase: f.host });
+      await tick();
+      check(`${stage}/${change} blocks COPY dispatch and success`, f.copyCalls.length === 0 && f.copyWrites === 0 && !status.textContent.includes('コピーしました'));
+      if (change === 'Unknown') check(`${stage}/${change} actual host observation is Unknown`, root.dataset.startupState === 'unknown');
+      if (change === 'owner') check(`${stage}/${change} replacement owner is not admitted`, root.dataset.startupState === 'unconfirmed');
+      mounted.dispose(); f.lateGuardReply?.success(); await tick(); root.remove(); frames.length = 0;
+      f.ownerGeneration = '1'; f.host = 'Ready'; f.guardStatus = null; f.nextStatus = null;
+    }
+    {
+      Object.assign(f, { calls: [], withRun: false, host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', discoveryCalls: 0, copyCalls: [], copyWrites: 0, holdDiscovery: false,
+        lateDiscovery: null, holdCopy: false, pending: null, late: null });
+      f.revision++; f.rows = [row(A, 'pending')];
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame(); await opening;
+      const section = root.querySelector('.workspace-connections');
+      section.querySelector('[data-connection-id="' + A + '"]').click();
+      [...section.querySelectorAll('button')].find(b => b.textContent === '要求を拒否').click(); await tick();
+      check('existing control is admitted before Copy begins', !!f.pending && !!f.late);
+      const copy = [...section.querySelectorAll('button')].find(b => b.textContent === '現在の接続情報をコピー');
+      copy.click(); await tick();
+      check('Copy does not close gate over an existing control lease', f.discoveryCalls === 0 && f.copyCalls.length === 0);
+      f.late.success(); await tick();
+      check('existing control completes without artificial uncertainty', !section.textContent.includes('結果不明') && !section.textContent.includes('結果は不明'));
+      copy.click(); await tick();
+      check('Copy resumes after the existing lease is released', f.copyWrites === 1 && copy.nextElementSibling.textContent.includes('コピーしました'));
+      mounted.dispose(); root.remove(); frames.length = 0;
     }
     {
       f.calls = []; f.withRun = false; f.host = 'Ready'; f.guardLease = '1'; f.revision++;
