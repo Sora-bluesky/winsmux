@@ -87,19 +87,23 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   const heading=doc.createElement('h2'); heading.textContent='入力の確認';
   const status=doc.createElement('p'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
   const list=doc.createElement('div'); const heldControls=doc.createElement('div'); panel.append(heading,status,list,heldControls); root.append(panel);
+  const guardRecovery=doc.createElement('section'); guardRecovery.className='workspace-input-confirmation workspace-input-recovery'; guardRecovery.setAttribute('aria-label','入力の受付状態の再確認'); guardRecovery.tabIndex=-1; guardRecovery.hidden=true;
+  const recoveryHeading=doc.createElement('h2'); recoveryHeading.textContent='入力の受付状態の再確認'; guardRecovery.append(recoveryHeading); root.append(guardRecovery);
+  let guardRecoveryShown=false;
   const rowElements=new Map<string,{row:HTMLParagraphElement;text:Text;confirm:HTMLButtonElement;close:HTMLButtonElement}>();
   const heldElements=new Map<string,{send:HTMLButtonElement;discard:HTMLButtonElement}>();
   type FocusOrigin={element:HTMLElement;instanceId:string;generation:string;projectId:string|null;paneId:string|null;runId:string|null;terminal:boolean;producerId:string|null};
   let focusOrigin:FocusOrigin|null=null;let focusedFence:string|null=null;
   function rememberFocus(element:HTMLElement|null) {
-    if (!element || !root.contains(element) || panel.contains(element)) return;
+    if (!element || !root.contains(element) || panel.contains(element) || guardRecovery.contains(element)) return;
     const snapshot=connection?.snapshot();if(!snapshot)return;
     const pane=element.closest<HTMLElement>('.workspace-pane');
     const terminal=!!element.closest('.workspace-terminal');
     const producer=terminal?Array.from(producers.values()).find(p=>!p.retired&&p.target.paneId===pane?.dataset.paneId&&p.target.runId===pane?.dataset.runId&&targetValid(p.target)):undefined;
     focusOrigin={element,instanceId:snapshot.instanceId,generation:snapshot.generation,projectId:snapshot.projects.selected_project_id,paneId:pane?.dataset.paneId??null,runId:pane?.dataset.runId||null,terminal,producerId:producer?.target.producerId??null};
   }
-  panel.addEventListener('focusin',event=>{if(event.relatedTarget instanceof HTMLElement)rememberFocus(event.relatedTarget);});
+  const rememberOrigin=(event:FocusEvent)=>{if(event.relatedTarget instanceof HTMLElement)rememberFocus(event.relatedTarget);};
+  panel.addEventListener('focusin',rememberOrigin); guardRecovery.addEventListener('focusin',rememberOrigin);
   function returnFocus() {
     const saved=focusOrigin;const snapshot=connection?.snapshot();
     const same=saved&&snapshot&&saved.instanceId===snapshot.instanceId&&saved.generation===snapshot.generation&&saved.projectId===snapshot.projects.selected_project_id;
@@ -112,6 +116,17 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   }
   const button=(label:string,action:()=>void)=>{const b=doc.createElement('button'); b.type='button'; b.textContent=label; b.onclick=action; return b;};
   const recheck=button('入力の受付状態を再確認',()=>{void recoverGuard();}); panel.append(recheck);
+  function showGuardRecovery(show:boolean) {
+    if(disposed || guardRecoveryShown===show)return;
+    const focused=doc.activeElement===recheck; guardRecoveryShown=show;
+    if(show)guardRecovery.append(status,recheck);
+    else {panel.insertBefore(status,list);panel.append(recheck);}
+    paint();
+    if(focused){
+      if(!recheck.closest('[inert],[hidden]'))recheck.focus({preventScroll:true});
+      else returnFocus();
+    }
+  }
   function used() { return records.reduce((n,r)=>n+r.charge,0)+Array.from(producers.values()).reduce((n,p)=>n+p.codecBytes,0); }
   function cap() { const limit=connection?.maxBytes(); if (uint(limit) && limit>0) retainedLimit=limit; return retainedLimit; }
   function targetValid(target:InputTarget, confirmationOnly=false) {
@@ -127,9 +142,11 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   function quiescent() { return controlDepth===0 && flight===null && records.length===0 && Array.from(producers.values()).every(p=>!p.codecActive); }
   function needsConfirmation() { return records.some(r=>r.state==='held'||r.state==='unknown'||r.state==='failed'); }
   function paint() {
-    const focused=doc.activeElement instanceof HTMLElement&&panel.contains(doc.activeElement)?doc.activeElement:null;
-    if(status.textContent!==notice)status.textContent=notice;
-    panel.hidden=!notice&&!needsConfirmation();
+    const focused=doc.activeElement instanceof HTMLElement&&(panel.contains(doc.activeElement)||guardRecovery.contains(doc.activeElement))?doc.activeElement:null;
+    const message=notice||(guardRecoveryShown?'host の現在状態を確認するまで入力を保持します。':'');
+    if(status.textContent!==message)status.textContent=message;
+    panel.hidden=guardRecoveryShown?!needsConfirmation():!notice&&!needsConfirmation();
+    guardRecovery.hidden=!guardRecoveryShown;
     const retainedIds=new Set(records.map(r=>r.request.operation_id));
     for(const [key,elements]of rowElements)if(!retainedIds.has(key)){elements.row.remove();rowElements.delete(key);}
     for (const record of records) {
@@ -152,7 +169,7 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
       const discardButton=button('この対象の未送信入力を破棄',()=>{discard(producerId);});
       heldControls.append(send,discardButton);heldElements.set(producerId,{send,discard:discardButton});
     }
-    if(focused&&(panel.hidden||!focused.isConnected||focused.closest('[hidden]')))returnFocus();
+    if(focused&&(!focused.isConnected||focused.closest('[hidden]')))returnFocus();
   }
   function remove(record:InputRecord) { const index=records.indexOf(record); if (index>=0) records.splice(index,1); }
   function collect() {
@@ -190,7 +207,8 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
       notice=safe?'入力の受付を止めて終了を確認しています。':'変換・配送・保持入力の確認が必要なため終了を止めました。';
       const key=`${lease}:${value.fence.nonce}`;const first=focusedFence!==key;focusedFence=key;
       changed();
-      if(!safe&&first&&!panel.contains(doc.activeElement)){rememberFocus(doc.activeElement instanceof HTMLElement?doc.activeElement:null);panel.focus();}
+      const recoveryPanel=guardRecoveryShown?guardRecovery:panel;
+      if(!safe&&first&&!recoveryPanel.contains(doc.activeElement)){rememberFocus(doc.activeElement instanceof HTMLElement?doc.activeElement:null);recoveryPanel.focus();}
       if (replying?.binding===effect.binding && replying.nonce===value.fence.nonce
         || lastReply?.binding===effect.binding && lastReply.nonce===value.fence.nonce) return;
       const nonce=value.fence.nonce; const replyEffect={...effect,nonce}; replying=replyEffect;
@@ -338,7 +356,9 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
     refresh:changed,
     observe(callback:()=>void) {observers.add(callback);return()=>observers.delete(callback);},
     recoverGuard,
+    guardRecovery,
+    showGuardRecovery,
     inspect:()=>({frozen,lease,revision:revision.toString(),fenceLocked,approvalPossible,resumeAllowed,fenceState:fence?.state??null,usedBytes:used(),records:records.map(r=>({operationId:r.request.operation_id,target:r.target,state:r.state}))}),
-    dispose() {if(disposed)return;disposed=true;retireFlight('owner_disposed');flight=null;frozen=true;releaseListener?.();releaseListener=null;const focused=panel.contains(doc.activeElement);panel.hidden=true;if(focused)returnFocus();connection=null;observers.clear();rowElements.clear();heldElements.clear();panel.remove();},
+    dispose() {if(disposed)return;disposed=true;retireFlight('owner_disposed');flight=null;frozen=true;releaseListener?.();releaseListener=null;const focused=panel.contains(doc.activeElement)||guardRecovery.contains(doc.activeElement);panel.hidden=true;guardRecovery.hidden=true;if(focused)returnFocus();connection=null;observers.clear();rowElements.clear();heldElements.clear();panel.remove();guardRecovery.remove();},
   };
 }

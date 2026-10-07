@@ -85,6 +85,7 @@ try {
         return receipt;
       }
       if (name === 'desktop_initial_project_dir') return null;
+      if (name === 'workspace_input_guard_status') f.guardStatusReads = (f.guardStatusReads ?? 0) + 1;
       if (name === 'workspace_input_guard_register' || name === 'workspace_input_guard_status') {
         const status = structuredClone(f.guardStatus ?? { lease: f.guardLease, revision: '1', fence: null, resume_allowed: false, admission_error: null });
         if (name === 'workspace_input_guard_status' && f.holdNextGuardStatus) {
@@ -135,6 +136,7 @@ try {
             observation: { run_id: f.runId, pane_id: N, process: 'running', work: 'running', evidence: 'provider_event', observed_at: '2026-09-28T00:00:00Z', current: true, exit_code: null } }], root: { kind: 'leaf', pane_id: N } }
           : { project_id: q.params.project_id, selected_pane_id: null, panes: [], root: null });
         case 'events.wait': {
+          if (f.failNextEvents) { f.failNextEvents = false; throw 'transport_uncertain'; }
           const answer = () => envelope(q, { events: [], next_event_seq: 0, status: 'no_change' });
           if (f.holdNextEvents) { f.holdNextEvents = false; f.ordinaryBusy = true;
             return new Promise(resolve => { f.lateEvents = () => { f.ordinaryBusy = false; resolve(answer()); }; }); }
@@ -200,6 +202,62 @@ try {
       await globalThis.pressTask876Key('Enter'); before.remove();
     };
     const module = await import(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+    // The recovery control remains reachable across the complete blocked-host family.
+    // Native effects are synthetic; keyboard traversal uses the browser's real input.
+    const blockedHostCases = [
+      ...['Empty', 'Opening', 'Stopping', 'Unknown', 'ForcePrompt', 'Finishing', 'FailedClosed', 'MainClosed', 'ExitReleased']
+        .map(phase => ({ name: phase, status: () => ({ instance_id: I, generation: '1', revision: String(f.revision + 1), phase }) })),
+      { name: 'rejected', status: () => 'failed' },
+      { name: 'malformed', status: () => ({ instance_id: I, generation: '1', revision: String(f.revision + 1), phase: 'Ready', extra: true }) },
+      { name: 'wrong-owner', status: () => ({ instance_id: Q, generation: '1', revision: String(f.revision + 1), phase: 'Ready' }) },
+      { name: 'wrong-generation', afterMount: true, status: () => ({ instance_id: I, generation: '2', revision: String(f.revision + 1), phase: 'Ready' }) },
+      { name: 'old-revision', afterMount: true, status: () => ({ instance_id: I, generation: '1', revision: String(f.revision - 1), phase: 'Ready' }) },
+      { name: 'contradictory-revision', afterMount: true, status: initial => ({ instance_id: I, generation: '1', revision: String(f.revision), phase: initial === 'Ready' ? 'Busy' : 'Ready' }) },
+    ];
+    for (const initial of ['mount', 'Ready', 'Busy']) for (const item of blockedHostCases) {
+      if (initial === 'mount' && item.afterMount) continue;
+      Object.assign(f, { calls: [], host: initial === 'mount' ? 'Ready' : initial, nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', withRun: false, rows: [], failNextEvents: false, failOpen: false, enforceGuardOpen: false,
+        holdNextEvents: false, ordinaryBusy: false, guardStatusReads: 0 }); f.revision++;
+      if (initial === 'mount') f.nextStatus = item.status(initial);
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame(); await opening;
+      const name = 'guard recovery ' + initial + ' -> ' + item.name;
+      if (initial !== 'mount') {
+        check(name + ' begins mounted', root.dataset.startupState === 'mounted');
+        f.nextStatus = item.status(initial); f.failNextEvents = true;
+        for (let i = 0; i < 35 && !['unknown', 'unconfirmed'].includes(root.dataset.startupState); i++) await frame();
+      }
+      check(name + ' enters blocked state', ['unknown', 'unconfirmed'].includes(root.dataset.startupState));
+      const recovery = root.querySelector('.workspace-input-recovery');
+      const ledger = root.querySelector('.workspace-input-confirmation:not(.workspace-input-recovery)');
+      const recheck = [...recovery.querySelectorAll('button')].find(b => b.textContent === '入力の受付状態を再確認');
+      check(name + ' only guard status and existing recheck in reachable region', !!recheck && !recovery.hidden && !recovery.inert
+        && recovery.querySelectorAll('button').length === 1 && !recheck.closest('[inert],[hidden]') && ledger.inert);
+      const before = document.createElement('button'); before.type = 'button'; before.textContent = 'fixture guard focus origin';
+      root.insertBefore(before, recovery); before.focus();
+      await globalThis.pressTask876Key('Tab'); check(name + ' Tab reaches guard recheck', document.activeElement === recheck);
+      before.remove();
+      const requests = f.calls.length, reads = f.guardStatusReads, opens = f.openCalls, copies = f.copyWrites;
+      await globalThis.pressTask876Key('Enter'); await tick();
+      check(name + ' Enter reads current lease once', f.guardStatusReads === reads + 1);
+      check(name + ' successful guard alone keeps host blocked', ['unknown', 'unconfirmed'].includes(root.dataset.startupState)
+        && ledger.inert && !recovery.hidden && recovery.textContent.includes('host の現在状態を確認するまで'));
+      check(name + ' no ordinary request, launch, copy or reconnect', f.calls.length === requests && f.openCalls === opens && f.copyWrites === copies);
+      if (initial === 'mount' && item.name === 'rejected') {
+        f.host = 'Ready'; f.revision++;
+        await keyboardReconnect(root, name);
+        for (let i = 0; i < 35 && root.dataset.startupState !== 'mounted'; i++) await frame();
+        check(name + ' only explicit reconnect restores original guard location', root.dataset.startupState === 'mounted'
+          && recovery.hidden && !ledger.inert && ledger.contains(recheck) && recovery.querySelectorAll('button').length === 0);
+      }
+      mounted.dispose();
+      check(name + ' dispose removes guard recovery region', !recovery.isConnected);
+      root.remove(); frames.length = 0; f.failNextEvents = false; f.nextStatus = null;
+    }
+    Object.assign(f, { host: 'Ready', nextStatus: null, guardStatus: null, failNextEvents: false });
+
     for (const scenario of ['success', 'occupied', 'old-generation', 'forged-receipt', 'dispose-discovery', 'blocked-discovery', 'dispose-copy']) {
       Object.assign(f, { calls: [], withRun: false, host: 'Ready', guardLease: '1', guardStatus: null,
         ownerGeneration: '1', discoveryCalls: 0, copyCalls: [], copyWrites: 0,
@@ -525,9 +583,10 @@ try {
           && f.calls.filter(q => q.operation === 'connection.revoke').length === 0);
         if (hostCase !== 'Busy') {
           const projectButton = [...root.querySelectorAll('[data-action="select-project"]')].find(button => button.textContent.includes('Other'));
-          check(action + ' ' + hostCase + ' makes all sibling surfaces inert',
+          check(action + ' ' + hostCase + ' keeps all operational sibling surfaces inert',
             [...root.children].filter(child => child !== root.querySelector(':scope > p')
-              && child !== root.querySelector(':scope > button') && child !== root.querySelector(':scope > button:nth-of-type(2)'))
+              && child !== root.querySelector(':scope > button') && child !== root.querySelector(':scope > button:nth-of-type(2)')
+              && child !== root.querySelector('.workspace-input-recovery'))
               .every(child => child.inert));
           const callCount = f.calls.length;
           projectButton?.click(); for (let i = 0; i < 3; i++) await frame();

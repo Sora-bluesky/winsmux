@@ -58,7 +58,67 @@ try {
   discard.focus();owner.refresh();
   check('refresh retains actionable control and keyboard focus',discard.isConnected&&document.activeElement===discard,{connected:discard.isConnected,focusRetained:document.activeElement===discard});
   const current=[...panel.querySelectorAll('button')].find(b=>b.textContent==='この対象の未送信入力を破棄');current.click();owner.dispose();root.replaceChildren();
-  // Actual adopted controller and actual input owner: inject only synthetic RPC responses.
+     // One immutable ledger survives guard-only recovery; no host operation resumes.
+   for (const retained of [false,true]) {
+    const recoveryRoot=document.createElement('main');document.body.append(recoveryRoot);
+    let guardValue={lease:'1',revision:'1',fence:null,resume_allowed:false,admission_error:null},guardFailure=false,holdGuard=false,resolveGuard;
+    const guardCalls=[],writes=[];
+    const recoveryGuard={listen:async()=>()=>{},invoke:async(command,args)=>{
+     const request=JSON.parse(args.requestJson);guardCalls.push({command,request});
+     if(command==='workspace_input_guard_reply'){
+      guardValue={lease:'1',revision:String(BigInt(guardValue.revision)+1n),fence:{nonce:request.nonce,state:request.safe?'approved':'released'},resume_allowed:!request.safe,admission_error:request.safe?'shutdown_in_progress':null};
+      return structuredClone(guardValue);
+     }
+     if(guardFailure)throw Error('synthetic guard failure');
+     const value=structuredClone(guardValue);
+     if(holdGuard){holdGuard=false;return new Promise(resolve=>{resolveGuard=()=>resolve(value);});}
+     return value;
+    }};
+    const recoveryOwner=createTerminalInputOwner(recoveryRoot,recoveryGuard,()=>uid(++seq));await recoveryOwner.initialize();
+    const recoveryConnection={...connection,exchange:async q=>{writes.push(q);return inputOk(q);}};
+    recoveryOwner.connect(recoveryConnection);await recoveryOwner.recoverGuard();
+    let retainedProducer;
+    if(retained){
+     retainedProducer=recoveryOwner.produce({...target,producerId:uid(++seq)});
+     const release=recoveryOwner.admitControl();check('recovery reserves synthetic control for held input',!!release);
+     check('recovery stores original Japanese input',retainedProducer.offer('保持する入力'));
+     release();
+    }
+    const original=JSON.stringify(recoveryOwner.inspect().records),originalBytes=recoveryOwner.inspect().usedBytes;
+    recoveryOwner.blockHost();
+    const ledger=recoveryRoot.querySelector('.workspace-input-confirmation:not(.workspace-input-recovery)');ledger.inert=true;
+    recoveryOwner.showGuardRecovery(true);
+    const region=recoveryOwner.guardRecovery,recheck=[...region.querySelectorAll('button')][0];
+    const preserved=()=>JSON.stringify(recoveryOwner.inspect().records)===original&&recoveryOwner.inspect().usedBytes===originalBytes&&writes.length===0;
+    check('recovery separates guard from retained input controls '+retained,!region.inert&&!region.hidden&&ledger.inert&&region.querySelectorAll('button').length===1&&preserved());
+    recheck.focus();recoveryOwner.refresh();check('recovery refresh retains guard focus '+retained,document.activeElement===recheck);
+    for(const bad of ['rejected','malformed','wrong-lease']){
+     guardFailure=bad==='rejected';guardValue=bad==='malformed'?{lease:'1'}:{lease:bad==='wrong-lease'?'2':'1',revision:'2',fence:null,resume_allowed:false,admission_error:null};
+     await recoveryOwner.recoverGuard();
+     check('recovery rejects '+bad+' without releasing ledger '+retained,recoveryOwner.inspect().frozen&&ledger.inert&&!region.hidden&&recoveryOwner.inspect().lease==='1'&&preserved());
+    }
+    guardFailure=false;
+    guardValue={lease:'1',revision:'3',fence:{nonce:'7',state:'pending'},resume_allowed:false,admission_error:null};
+    await recoveryOwner.recoverGuard();
+    const replies=guardCalls.filter(c=>c.command==='workspace_input_guard_reply');
+    check('recovery keeps existing quiescence reply '+retained,replies.length===1&&replies[0].request.lease==='1'&&replies[0].request.nonce==='7'&&replies[0].request.safe===!retained&&preserved());
+    await recoveryOwner.recoverGuard();
+    check('recovery does not repeat same nonce reply '+retained,guardCalls.filter(c=>c.command==='workspace_input_guard_reply').length===1&&preserved());
+    const settled=recoveryOwner.inspect();
+    guardValue={lease:'1',revision:'1',fence:{nonce:'8',state:'pending'},resume_allowed:false,admission_error:null};
+    await recoveryOwner.recoverGuard();
+    check('recovery ignores older guard revision '+retained,recoveryOwner.inspect().revision===settled.revision&&recoveryOwner.inspect().fenceState===settled.fenceState&&preserved());
+    holdGuard=true;const late=recoveryOwner.recoverGuard();
+    guardValue={lease:'1',revision:'6',fence:{nonce:'9',state:'released'},resume_allowed:true,admission_error:null};
+    await recoveryOwner.recoverGuard();resolveGuard();await late;
+    check('recovery rejects late old guard response '+retained,recoveryOwner.inspect().revision==='6'&&recoveryOwner.inspect().fenceState==='released'&&preserved());
+    check('released guard alone cannot admit host input '+retained,ledger.inert&&!region.hidden&&!retainedProducer?.canAccept()&&preserved());
+    recheck.focus();ledger.inert=false;recoveryOwner.showGuardRecovery(false);
+    check('recovery restores same guard control and focus '+retained,region.hidden&&ledger.contains(recheck)&&(ledger.hidden?document.activeElement!==recheck:document.activeElement===recheck)&&preserved());
+    recoveryOwner.dispose();check('recovery disposal removes both regions '+retained,!ledger.isConnected&&!region.isConnected);recoveryRoot.remove();
+   }
+
+// Actual adopted controller and actual input owner: inject only synthetic RPC responses.
   mode='success';let controller,resizeActive=false,offered=false,availability=[];
   const second=createTerminalInputOwner(root,guard,()=>uid(++seq));await second.initialize();
   let liveProducer;

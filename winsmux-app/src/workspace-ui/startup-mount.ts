@@ -139,6 +139,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     const panel = root.querySelector<HTMLElement>('.workspace-input-confirmation');
     for (const child of root.children) if (child instanceof HTMLElement)
       child.inert = child !== status && child !== reconnect && child !== forceExit && child !== panel;
+    input.showGuardRecovery(false);
     detailsButton.disabled = true; forceExit.hidden = true; reconnect.hidden = false; reconnect.disabled = false;
     root.dataset.startupState = 'recovering';
     status.textContent = input.inspect().resumeAllowed
@@ -150,7 +151,9 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     if (unknown) recoveryPending = false;
     hostBlocked = true;
     input.blockHost(); connectionOwner?.blockHost(); details?.blockTransport();
-    for (const child of root.children) if (child instanceof HTMLElement && child !== status && child !== reconnect && child !== forceExit) child.inert = true;
+    for (const child of root.children) if (child instanceof HTMLElement)
+      child.inert = child !== status && child !== reconnect && child !== forceExit && child !== input.guardRecovery;
+    input.showGuardRecovery(true);
     detailsButton.disabled = true;
     forceExit.hidden = !unknown; reconnect.hidden = unknown;
     root.dataset.startupState = unknown ? 'unknown' : 'unconfirmed';
@@ -242,6 +245,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       hostBlocked = false;
       forceExit.hidden = true;
       for (const child of root.children) if (child instanceof HTMLElement) child.inert = false;
+      input.showGuardRecovery(false);
       if (details && details.lifetime.instanceId !== session.instance_id) { closeDetails?.(); closeDetails = null; details.retire(); details = null; }
       details ??= createDetailsController({ instanceId: session.instance_id, nonce: crypto.randomUUID() }, crypto, {
         acquire(kind, ticket) { const lease = reserveControl(session.instance_id, kind, ticket); return lease ? () => { admission.release(lease); } : null; },
