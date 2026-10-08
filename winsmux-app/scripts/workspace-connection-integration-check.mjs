@@ -62,11 +62,13 @@ try {
         return { instance_id: f.instanceId, schema_version: 1 };
       }
       if (name === 'workspace_host_status') { f.statusCalls++; const next = f.nextStatus; f.nextStatus = null;
+        const offer = (value) => value && typeof value === 'object' && !Array.isArray(value) && !('force_offer' in value) && 'phase' in value
+          ? { ...value, force_offer: value.phase === 'Unknown' ? 'unknown' : 'none' } : value;
         if (next === 'failed') throw Error('status_probe_failed');
         if (next === 'hold') return new Promise((resolve, reject) => {
-          f.releaseStatus = value => resolve(value); f.rejectStatus = reject;
+          f.releaseStatus = value => resolve(offer(value)); f.rejectStatus = reject;
         });
-        return next ?? { instance_id: f.instanceId, generation: f.ownerGeneration, revision: String(f.revision), phase: f.host }; }
+        return offer(next ?? { instance_id: f.instanceId, generation: f.ownerGeneration, revision: String(f.revision), phase: f.host }); }
       if (name === 'workspace_discovery_get') {
         f.discoveryCalls++;
         if (f.ordinaryBusy) throw 'session_closed';
@@ -255,6 +257,27 @@ try {
       mounted.dispose();
       check(name + ' dispose removes guard recovery region', !recovery.isConnected);
       root.remove(); frames.length = 0; f.failNextEvents = false; f.nextStatus = null;
+    }
+    for (const waitingPhase of ['Busy', 'Stopping']) {
+      Object.assign(f, { calls: [], host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', withRun: false, rows: [], failNextEvents: false, failOpen: false, enforceGuardOpen: false,
+        holdNextEvents: false, ordinaryBusy: false, guardStatusReads: 0 });
+      f.revision++;
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame();
+      await opening;
+      check('waiting offer ' + waitingPhase + ' begins mounted', root.dataset.startupState === 'mounted');
+      f.nextStatus = { instance_id: I, generation: '1', revision: String(f.revision + 1), phase: waitingPhase, force_offer: 'waiting' };
+      f.failNextEvents = true;
+      for (let i = 0; i < 35 && !['unknown', 'unconfirmed', 'recovering'].includes(root.dataset.startupState); i++) await frame();
+      for (let i = 0; i < 6; i++) await frame();
+      const force = root.querySelector(':scope > button:nth-of-type(2)');
+      const status = root.querySelector(':scope > p');
+      check('waiting offer ' + waitingPhase + ' keeps the shell blocked', ['unknown', 'unconfirmed', 'recovering'].includes(root.dataset.startupState));
+      check('waiting offer ' + waitingPhase + ' shows the force button', !!force && !force.hidden && force.textContent === 'host を待たずに強制終了');
+      check('waiting offer ' + waitingPhase + ' shows the waiting status', status?.textContent === 'host の終了を待っています。待たずに終了する場合は強制終了を確認してください。');
+      mounted.dispose(); root.remove(); frames.length = 0; f.failNextEvents = false; f.nextStatus = null;
     }
     Object.assign(f, { host: 'Ready', nextStatus: null, guardStatus: null, failNextEvents: false });
 
@@ -945,10 +968,14 @@ try {
       check('A owner 1 revoke is pending', !!f.pending);
       const original = f.pending;
       f.ownerGeneration = '2'; f.revision++;
+      const statusBeforeHold = f.statusCalls;
       f.nextStatus = 'hold'; f.releaseStatus = null;
       await keyboardReconnect(root, 'different Rust owner');
       for (let i = 0; i < 20 && !f.releaseStatus; i++) await tick();
+      for (let i = 0; i < 8; i++) await tick();
       check('initial B status is observational until owner comparison', !!f.releaseStatus
+        && f.statusCalls === statusBeforeHold + 1
+        && root.dataset.startupState === 'connecting'
         && f.calls.filter(q => q.operation === 'operation.get' && q.params.operation_id === original.operation_id).length === 0
         && f.calls.filter(q => q.operation === 'connection.revoke').length === 1);
       f.releaseStatus({ instance_id: I, generation: '2', revision: String(f.revision), phase: 'Ready' });

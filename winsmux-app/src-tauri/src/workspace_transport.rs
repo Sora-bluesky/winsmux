@@ -1,12 +1,14 @@
 //! Coordinated ownership and completion for the private workspace transport.
 use sha2::{Digest, Sha256};
 use std::sync::{Arc, Condvar, Mutex};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tauri::{ipc, Emitter, Manager, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use crate::workspace_input_guard::{GuardFence, GuardStatus, GuardWake};
 use winsmux_workspace::{
     contract::{Action, Empty, Nullable, OperationId, Request, Response},
-    host::{WorkspaceOwner, WorkspaceRequestError},
+    host::{OwnerInterrupt, WorkspaceOwner, WorkspaceRequestError},
 };
 include!(concat!(env!("OUT_DIR"), "/workspace_companion_hash.rs"));
 
@@ -39,6 +41,7 @@ pub struct WorkspaceHostStatus {
     generation: String,
     revision: String,
     phase: &'static str,
+    force_offer: &'static str,
 }
 struct Session {
     owner: WorkspaceOwner,
@@ -72,6 +75,28 @@ enum IoKind {
     Stop,
     Force,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ForceOffer {
+    None,
+    Unknown,
+    Waiting,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum Escape {
+    #[default]
+    Idle,
+    Prompting,
+    Confirmed,
+}
+#[derive(Clone)]
+enum ForcePrompt {
+    Unknown(Arc<CompletionReservation>),
+    Waiting(Arc<CompletionReservation>),
+}
+enum Settled {
+    Moot,
+    Force(Arc<CompletionReservation>),
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Outcome {
     Known,
@@ -102,6 +127,7 @@ struct Completion {
     stopped: bool,
     helper_started: bool,
     input_key: Option<InputKey>,
+    escape: Escape,
 }
 struct Lifecycle {
     phase: Phase,
@@ -118,6 +144,8 @@ struct Lifecycle {
     input_lease: Option<u64>,
     input_binding: Option<String>,
     input_fence: Option<InputFence>,
+    interrupt: Option<OwnerInterrupt>,
+    interrupted_generation: Option<u64>,
 }
 impl Default for Lifecycle {
     fn default() -> Self {
@@ -136,6 +164,8 @@ impl Default for Lifecycle {
             input_lease: None,
             input_binding: None,
             input_fence: None,
+            interrupt: None,
+            interrupted_generation: None,
         }
     }
 }
@@ -176,6 +206,7 @@ impl Lifecycle {
             instance_id: self.discovery.as_ref().map(|d| d.instance_id().as_str().to_owned()),
             generation: self.generation.to_string(),
             revision: self.sequence.to_string(), phase,
+            force_offer: self.force_offer_label(),
         }
     }
     fn next_id(&mut self) -> u64 {
@@ -222,6 +253,7 @@ impl Lifecycle {
             stopped,
             helper_started: false,
             input_key,
+            escape: Escape::Idle,
         });
         ticket
     }
@@ -279,6 +311,11 @@ impl Lifecycle {
         {
             return session;
         }
+        let outcome = if self.owner_interrupted() && !matches!(outcome, Outcome::Collected) {
+            Outcome::Unknown
+        } else {
+            outcome
+        };
         self.next_id();
         let abandoned = self.completion.as_ref().is_some_and(|c| {
             c.abandoned && c.dependency.as_ref().is_some_and(|f| f.id == flight.id)
@@ -286,9 +323,11 @@ impl Lifecycle {
         self.session = session;
         if let Some(session) = &self.session {
             self.discovery = Some(session.owner.discovery().clone());
+            self.interrupt = Some(session.owner.interrupter());
         }
         if matches!(outcome, Outcome::Collected | Outcome::StartupFailed) {
             self.discovery = None;
+            self.interrupt = None;
         }
         self.flight = None;
         match &outcome {
@@ -310,7 +349,12 @@ impl Lifecycle {
                 }
             }
             Outcome::Unknown => {
-                self.cancel_attached(flight, "transport_uncertain", false);
+                let reason = if self.completion.as_ref().is_some_and(|c| c.escape == Escape::Confirmed) {
+                    "force_exit_confirmed"
+                } else {
+                    "transport_uncertain"
+                };
+                self.cancel_attached(flight, reason, false);
                 self.phase = Phase::Unknown;
             }
             Outcome::Refused(error) => {
@@ -524,6 +568,12 @@ impl Lifecycle {
             self.phase = Phase::Finishing;
             return Advance::Stopped;
         };
+        if self.owner_interrupted() {
+            self.session = Some(session);
+            Self::seal_ticket(ticket, Err("force_exit_confirmed".into()));
+            self.phase = Phase::Unknown;
+            return Advance::Terminal(Err("force_exit_confirmed".into()));
+        }
         let request = Self::stop_request(&session);
         let flight = self.new_flight(IoKind::Stop, Some(request.operation_id.clone()));
         self.completion.as_mut().expect("current").dependency = Some(flight.clone());
@@ -624,21 +674,88 @@ impl Lifecycle {
         self.next_id();
         Ok(())
     }
-    fn begin_force(&mut self) -> Result<Arc<CompletionReservation>, &'static str> {
-        if self.phase != Phase::Unknown || self.flight.is_some() {
-            return Err("force_exit_unavailable");
+    /// Waiting is CloseMain or ExitApp only, while that close is still Idle.
+    /// Update is not a waiting offer. Unknown is phase Unknown with no flight.
+    fn force_offer(&self) -> ForceOffer {
+        if self.phase == Phase::Unknown && self.flight.is_none() {
+            return ForceOffer::Unknown;
         }
-        let ticket = self.new_completion(Intent::ForceExit, false, false);
-        self.phase = Phase::ForcePrompt;
-        Ok(ticket)
+        let waiting = matches!(self.phase, Phase::Busy | Phase::Stopping)
+            && self.flight.as_ref().is_some_and(|flight| matches!(flight.kind, IoKind::Ordinary | IoKind::Stop))
+            && self.completion.as_ref().is_some_and(|completion| {
+                matches!(completion.intent, Intent::CloseMain | Intent::ExitApp(_))
+                    && completion.escape == Escape::Idle
+            });
+        if waiting { ForceOffer::Waiting } else { ForceOffer::None }
     }
-    fn cancel_force(&mut self, ticket: &CompletionReservation) {
-        if self.current(ticket) && self.phase == Phase::ForcePrompt {
-            self.next_id();
-            self.completion = None;
-            self.phase = Phase::Unknown;
-            Self::seal_ticket(ticket, Err("force_exit_cancelled".into()));
+    fn force_offer_label(&self) -> &'static str {
+        match self.force_offer() {
+            ForceOffer::None => "none",
+            ForceOffer::Unknown => "unknown",
+            ForceOffer::Waiting => "waiting",
         }
+    }
+    fn owner_interrupted(&self) -> bool {
+        self.interrupted_generation == Some(self.generation)
+    }
+    fn begin_force(&mut self) -> Result<ForcePrompt, &'static str> {
+        match self.force_offer() {
+            ForceOffer::None => Err("force_exit_unavailable"),
+            ForceOffer::Unknown => {
+                let ticket = self.new_completion(Intent::ForceExit, false, false);
+                self.phase = Phase::ForcePrompt;
+                Ok(ForcePrompt::Unknown(ticket))
+            }
+            ForceOffer::Waiting => {
+                let ticket = self.completion.as_ref().expect("waiting close").ticket.clone();
+                self.completion.as_mut().expect("waiting close").escape = Escape::Prompting;
+                self.next_id();
+                Ok(ForcePrompt::Waiting(ticket))
+            }
+        }
+    }
+    fn cancel_force(&mut self, prompt: &ForcePrompt) {
+        match prompt {
+            ForcePrompt::Unknown(ticket) => {
+                if self.current(ticket) && self.phase == Phase::ForcePrompt {
+                    self.next_id();
+                    self.completion = None;
+                    self.phase = Phase::Unknown;
+                    Self::seal_ticket(ticket, Err("force_exit_cancelled".into()));
+                }
+            }
+            ForcePrompt::Waiting(ticket) => {
+                if self.current(ticket) && self.completion.as_ref().is_some_and(|c| c.escape == Escape::Prompting) {
+                    self.completion.as_mut().expect("prompting close").escape = Escape::Idle;
+                }
+            }
+        }
+    }
+    fn confirm_waiting(&mut self, close: &CompletionReservation) -> Result<Option<OwnerInterrupt>, &'static str> {
+        let prompting = self.current(close) && self.completion.as_ref().is_some_and(|c| c.escape == Escape::Prompting && !c.stopped);
+        if !prompting {
+            return Err("force_exit_moot");
+        }
+        self.interrupted_generation = Some(self.generation);
+        self.completion.as_mut().expect("prompting close").escape = Escape::Confirmed;
+        if self.flight.is_none() {
+            Self::seal_ticket(close, Err("force_exit_confirmed".into()));
+            self.phase = Phase::Unknown;
+        }
+        Ok(self.interrupt.clone())
+    }
+    fn settle_waiting(&mut self, close: &CompletionReservation) -> Option<Settled> {
+        let sealed = close.terminal.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        if self.flight.is_some() || !sealed {
+            return None;
+        }
+        if self.phase == Phase::Unknown {
+            return match self.begin_force() {
+                Ok(ForcePrompt::Unknown(ticket)) => Some(Settled::Force(ticket)),
+                _ => Some(Settled::Moot),
+            };
+        }
+        Some(Settled::Moot)
     }
     fn force_permit(
         &mut self,
@@ -764,6 +881,7 @@ pub struct WorkspaceManager {
     state: Mutex<Lifecycle>,
     changed: Condvar,
     input_notifier: Mutex<Option<Arc<InputNotifier>>>,
+    force_offer_emit: Mutex<Option<Arc<dyn Fn(&'static str) + Send + Sync>>>,
     #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
     stop_reply_loss_gate: Option<Arc<winsmux_workspace::host::StopReplyLossGate>>,
     #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
@@ -774,6 +892,8 @@ pub struct WorkspaceManager {
     native_consumers: Mutex<Vec<serde_json::Value>>,
     #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
     native_companion_sha256: Option<String>,
+    #[cfg(test)]
+    wait_settled_parks: AtomicUsize,
 }
 type InputNotifier = dyn Fn(GuardWake, Option<InputKey>) -> Result<(), ()> + Send + Sync;
 #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
@@ -1055,6 +1175,24 @@ impl WorkspaceManager {
         }
         Ok(())
     }
+    fn wait_settled(&self, close: &CompletionReservation) -> Result<Settled, &'static str> {
+        let mut state = self.state.lock().map_err(|_| "transport_uncertain")?;
+        loop {
+            if let Some(settled) = state.settle_waiting(close) {
+                return Ok(settled);
+            }
+            #[cfg(test)]
+            self.wait_settled_parks.fetch_add(1, Ordering::Relaxed);
+            state = self.changed.wait(state).map_err(|_| "transport_uncertain")?;
+        }
+    }
+    fn announce_force_offer(&self) {
+        let label = self.state.lock().map(|state| state.force_offer_label()).unwrap_or("none");
+        let emit = self.force_offer_emit.lock().unwrap_or_else(|poison| poison.into_inner()).clone();
+        if let Some(emit) = emit {
+            emit(label);
+        }
+    }
     fn start_owner(&self) -> Result<Session, &'static str> {
         #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
         self.checkpoint(NativeLifecyclePoint::Opening);
@@ -1176,6 +1314,7 @@ impl WorkspaceManager {
                 .advance(ticket);
             match advance {
                 Advance::AwaitInput(key) => {
+                    self.announce_force_offer();
                     if announced != Some(key) {
                         announced = Some(key);
                         if self.input_wake(Some(key)).is_err() {
@@ -1184,12 +1323,16 @@ impl WorkspaceManager {
                     }
                     self.wait_input(ticket, key).map_err(str::to_owned)?;
                 }
-                Advance::Await(flight) => self.wait_flight(&flight).map_err(str::to_owned)?,
+                Advance::Await(flight) => {
+                    self.announce_force_offer();
+                    self.wait_flight(&flight).map_err(str::to_owned)?;
+                }
                 Advance::StartStop {
                     flight,
                     session,
                     request,
                 } => {
+                    self.announce_force_offer();
                     let lease = OwnerLease {
                         manager: self.clone(),
                         flight,
@@ -1199,8 +1342,14 @@ impl WorkspaceManager {
                     // Publication, including exact refusal, resolves this same reservation.
                     let _ = self.execute(lease, &request);
                 }
-                Advance::Stopped => return Ok(()),
-                Advance::Terminal(result) => return result,
+                Advance::Stopped => {
+                    self.announce_force_offer();
+                    return Ok(());
+                }
+                Advance::Terminal(result) => {
+                    self.announce_force_offer();
+                    return result;
+                }
             }
         }
     }
@@ -1217,6 +1366,15 @@ impl WorkspaceManager {
             .unwrap_or_else(|e| e.into_inner())
             .failed_effect(ticket, known_unstarted);
         self.notify_changed();
+    }
+    /// Sealing the completion is what wait_settled is parked on, so the wake belongs to this call.
+    fn release_effect(&self, ticket: &CompletionReservation, exit: bool) -> Result<(), &'static str> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .release_effect(ticket, exit)?;
+        self.notify_changed();
+        Ok(())
     }
 }
 fn response_error(response: &Response) -> String {
@@ -1545,6 +1703,20 @@ enum CompletionAdmission {
     Started(CompletionWorker),
     Coalesced,
 }
+enum UserClose {
+    Start(CompletionWorker),
+    Nothing,
+    Prompt,
+    Refuse(&'static str),
+}
+fn user_close_action(admission: Result<CompletionAdmission, &'static str>, offer: ForceOffer) -> UserClose {
+    match (admission, offer) {
+        (Ok(CompletionAdmission::Started(worker)), _) => UserClose::Start(worker),
+        (Ok(CompletionAdmission::Coalesced), ForceOffer::Waiting) | (Err(_), ForceOffer::Waiting) => UserClose::Prompt,
+        (Ok(CompletionAdmission::Coalesced), _) => UserClose::Nothing,
+        (Err(error), _) => UserClose::Refuse(error),
+    }
+}
 enum StopWork {
     Await(Arc<Flight>),
     Start { lease: OwnerLease, request: Request },
@@ -1563,17 +1735,23 @@ impl Drop for CompletionWorker {
 }
 struct ForcePromptLease {
     manager: Arc<WorkspaceManager>,
-    ticket: Arc<CompletionReservation>,
+    prompt: ForcePrompt,
     completed: bool,
 }
 impl Drop for ForcePromptLease {
     fn drop(&mut self) {
         if !self.completed {
             let mut state = self.manager.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.current(&self.ticket) && state.phase == Phase::ForcePrompt {
-                state.cancel_force(&self.ticket);
-            } else {
-                state.abandon(&self.ticket);
+            let prompt = self.prompt.clone();
+            match &prompt {
+                ForcePrompt::Waiting(_) => state.cancel_force(&prompt),
+                ForcePrompt::Unknown(ticket) => {
+                    if state.current(ticket) && state.phase == Phase::ForcePrompt {
+                        state.cancel_force(&prompt);
+                    } else {
+                        state.abandon(ticket);
+                    }
+                }
             }
             drop(state);
             self.manager.notify_changed();
@@ -1588,6 +1766,9 @@ fn show_completion_error(
     origin: u64,
     error: &str,
 ) {
+    if matches!(error, "force_exit_confirmed" | "force_exit_cancelled" | "force_exit_moot") {
+        return;
+    }
     let app_copy = app.clone();
     let manager = manager.clone();
     let error = error.to_owned();
@@ -1671,11 +1852,7 @@ async fn complete_reserved(
             show_completion_error(&app, &manager, ticket.id, "shutdown_failed");
             return Err("shutdown_failed".into());
         }
-        manager
-            .state
-            .lock()
-            .map_err(|_| "transport_uncertain")?
-            .release_effect(&ticket, false)?;
+        manager.release_effect(&ticket, false)?;
         worker.completed = true;
         return Ok(());
     }
@@ -1721,17 +1898,48 @@ async fn complete_reserved(
         Intent::ExitApp(code) => code.unwrap_or(0),
         _ => 0,
     };
-    manager
-        .state
-        .lock()
-        .map_err(|_| "transport_uncertain")?
-        .release_effect(&ticket, true)?;
+    manager.release_effect(&ticket, true)?;
     worker.completed = true;
     app.exit(code);
     Ok(())
 }
+fn bind_force_offer_emitter(app: &tauri::AppHandle, manager: &WorkspaceManager) {
+    let mut slot = manager.force_offer_emit.lock().unwrap_or_else(|poison| poison.into_inner());
+    if slot.is_some() {
+        return;
+    }
+    let app = app.clone();
+    *slot = Some(Arc::new(move |offer| {
+        let _ = app.emit("workspace-force-offer", offer);
+    }));
+}
+fn begin_user_close(app: tauri::AppHandle) {
+    let manager = Arc::clone(app.state::<Arc<WorkspaceManager>>().inner());
+    bind_force_offer_emitter(&app, &manager);
+    let admission = manager.reserve(Intent::CloseMain);
+    let offer = manager.state.lock().map(|state| state.force_offer()).unwrap_or(ForceOffer::None);
+    match user_close_action(admission, offer) {
+        UserClose::Start(worker) => {
+            tauri::async_runtime::spawn(async move {
+                let _ = complete_reserved(app, worker).await;
+            });
+        }
+        UserClose::Prompt => {
+            let manager = manager.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = force_exit_flow(app, manager).await;
+            });
+        }
+        UserClose::Nothing => {}
+        UserClose::Refuse(error) => {
+            let origin = manager.state.lock().map(|state| state.last_reservation).unwrap_or(0);
+            show_completion_error(&app, &manager, origin, error);
+        }
+    }
+}
 fn begin_completion(app: tauri::AppHandle, intent: Intent) {
     let manager = Arc::clone(app.state::<Arc<WorkspaceManager>>().inner());
+    bind_force_offer_emitter(&app, &manager);
     match manager.reserve(intent) {
         Ok(CompletionAdmission::Started(worker)) => {
             tauri::async_runtime::spawn(async move {
@@ -1750,7 +1958,7 @@ fn begin_completion(app: tauri::AppHandle, intent: Intent) {
     }
 }
 pub fn begin_normal_close(window: WebviewWindow) {
-    begin_completion(window.app_handle().clone(), Intent::CloseMain);
+    begin_user_close(window.app_handle().clone());
 }
 pub(crate) async fn install_prepared_update(
     app: tauri::AppHandle,
@@ -1779,7 +1987,7 @@ pub fn dispatch_desktop_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         } if label == "main" => {
             if !manager.state.lock().is_ok_and(|s| s.main_close_released) {
                 api.prevent_close();
-                begin_completion(app.clone(), Intent::CloseMain);
+                begin_user_close(app.clone());
             }
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {
@@ -1806,32 +2014,24 @@ pub fn dispatch_desktop_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         _ => {}
     }
 }
-#[tauri::command]
-pub async fn workspace_force_exit(
-    window: WebviewWindow,
-    invocation: ipc::Request<'_>,
-    manager: tauri::State<'_, Arc<WorkspaceManager>>,
+async fn force_exit_flow(
+    app: tauri::AppHandle,
+    manager: Arc<WorkspaceManager>,
 ) -> Result<(), &'static str> {
-    if !main_local_webview(&window, &invocation) {
-        return Err("wrong_window");
-    }
-    let manager = Arc::clone(manager.inner());
-    let app = window.app_handle().clone();
     let admission_manager = manager.clone();
     let mut prompt = main_lane(&app, move || {
-        let ticket = admission_manager
+        let prompt = admission_manager
             .state
             .lock()
             .map_err(|_| "transport_uncertain")?
             .begin_force()?;
         Ok::<_, &'static str>(ForcePromptLease {
             manager: admission_manager,
-            ticket,
+            prompt,
             completed: false,
         })
     })
     .await??;
-    let ticket = prompt.ticket.clone();
     let dialog_app = app.clone();
     let confirmed=tauri::async_runtime::spawn_blocking(move||dialog_app.dialog().message("Saving could not be confirmed. The last durable snapshot may be older. Active runs will stop. Text still being composed or held before sending may be lost. Text whose delivery is unknown may already have reached a run. Force exit and stop this app's workspace host?").title("Workspace state is uncertain").kind(MessageDialogKind::Warning).buttons(MessageDialogButtons::YesNo).blocking_show()).await.map_err(|_|"transport_uncertain")?;
     if !confirmed {
@@ -1839,11 +2039,69 @@ pub async fn workspace_force_exit(
             .state
             .lock()
             .map_err(|_| "transport_uncertain")?
-            .cancel_force(&ticket);
+            .cancel_force(&prompt.prompt);
         manager.notify_changed();
         prompt.completed = true;
         return Err("force_exit_cancelled");
     }
+    match prompt.prompt.clone() {
+        ForcePrompt::Unknown(ticket) => run_confirmed_force(app, manager, &mut prompt, ticket).await,
+        ForcePrompt::Waiting(close) => {
+            let interrupt = manager
+                .state
+                .lock()
+                .map_err(|_| "transport_uncertain")?
+                .confirm_waiting(&close);
+            let interrupt = match interrupt {
+                Ok(interrupt) => interrupt,
+                Err(error) => {
+                    prompt.completed = true;
+                    return Err(error);
+                }
+            };
+            if let Some(interrupt) = interrupt {
+                interrupt.interrupt();
+            }
+            manager.notify_changed();
+            let settled_manager = Arc::clone(&manager);
+            let settled_close = Arc::clone(&close);
+            let settled = tauri::async_runtime::spawn_blocking(move || {
+                settled_manager.wait_settled(&settled_close)
+            })
+            .await
+            .map_err(|_| "transport_uncertain")?;
+            let settled = match settled {
+                Ok(settled) => settled,
+                Err(error) => {
+                    prompt.completed = true;
+                    return Err(error);
+                }
+            };
+            match settled {
+                Settled::Moot => {
+                    prompt.completed = true;
+                    Err("force_exit_moot")
+                }
+                Settled::Force(force_ticket) => {
+                    prompt.completed = true;
+                    let mut force_prompt = ForcePromptLease {
+                        manager: Arc::clone(&manager),
+                        prompt: ForcePrompt::Unknown(Arc::clone(&force_ticket)),
+                        completed: false,
+                    };
+                    run_confirmed_force(app, manager, &mut force_prompt, force_ticket).await
+                }
+            }
+        }
+    }
+}
+
+async fn run_confirmed_force(
+    app: tauri::AppHandle,
+    manager: Arc<WorkspaceManager>,
+    prompt: &mut ForcePromptLease,
+    ticket: Arc<CompletionReservation>,
+) -> Result<(), &'static str> {
     let force_manager = manager.clone();
     let force_ticket = ticket.clone();
     let collected = tauri::async_runtime::spawn_blocking(move || {
@@ -1888,6 +2146,20 @@ pub async fn workspace_force_exit(
     .map_err(|_| "shutdown_failed")
 }
 
+#[tauri::command]
+pub async fn workspace_force_exit(
+    window: WebviewWindow,
+    invocation: ipc::Request<'_>,
+    manager: tauri::State<'_, Arc<WorkspaceManager>>,
+) -> Result<(), &'static str> {
+    if !main_local_webview(&window, &invocation) {
+        return Err("wrong_window");
+    }
+    let manager = Arc::clone(manager.inner());
+    let app = window.app_handle().clone();
+    force_exit_flow(app, manager).await
+}
+
 #[cfg(test)]
 mod input_guard_tests {
     use super::*;
@@ -1912,11 +2184,16 @@ mod input_guard_tests {
             let second = manager.host_status().unwrap();
             assert_eq!(first, second);
             assert_eq!(first.phase, label);
+            assert_eq!(
+                first.force_offer,
+                if phase == Phase::Unknown { "unknown" } else { "none" }
+            );
             assert_eq!(first.generation, u64::MAX.to_string());
             assert_eq!(first.revision, u64::MAX.to_string());
             assert_eq!(first.instance_id, None);
             let encoded = serde_json::to_value(&first).unwrap();
-            assert_eq!(encoded.as_object().unwrap().len(), 4);
+            assert_eq!(encoded["force_offer"], first.force_offer);
+            assert_eq!(encoded.as_object().unwrap().len(), 5);
             for prohibited in ["pipe_name", "grant", "input", "secret", "lease"] {
                 assert!(!encoded.as_object().unwrap().contains_key(prohibited));
             }
@@ -2092,7 +2369,7 @@ mod input_guard_tests {
         assert!(pending.revision>first.revision && !pending.resume_allowed);
         let before=state.sequence;
         assert_eq!(state.input_reply(old,true),Err("input_guard_stale"));
-        state.abandon(&a); state.failed_effect(&a,true); state.cancel_force(&a);
+        state.abandon(&a); state.failed_effect(&a,true); state.cancel_force(&ForcePrompt::Unknown(a.clone()));
         assert_eq!(state.sequence,before);
         assert!(state.current(&b));
         state.input_reply(new,false).unwrap();
@@ -2285,15 +2562,18 @@ mod lifecycle_tests {
         }
         drop(b);
         manager.state.lock().unwrap().phase = Phase::Unknown;
-        let a_ticket = manager.state.lock().unwrap().begin_force().unwrap();
-        manager.state.lock().unwrap().cancel_force(&a_ticket);
-        let b_ticket = manager.state.lock().unwrap().begin_force().unwrap();
+        let a_prompt = manager.state.lock().unwrap().begin_force().unwrap();
+        manager.state.lock().unwrap().cancel_force(&a_prompt);
+        let b_prompt = manager.state.lock().unwrap().begin_force().unwrap();
         drop(ForcePromptLease {
             manager: manager.clone(),
-            ticket: a_ticket,
+            prompt: a_prompt,
             completed: false,
         });
         assert_eq!(manager.state.lock().unwrap().phase, Phase::ForcePrompt);
+        let force_id = match &b_prompt {
+            ForcePrompt::Unknown(ticket) | ForcePrompt::Waiting(ticket) => ticket.id,
+        };
         assert_eq!(
             manager
                 .state
@@ -2304,11 +2584,11 @@ mod lifecycle_tests {
                 .unwrap()
                 .ticket
                 .id,
-            b_ticket.id
+            force_id
         );
         drop(ForcePromptLease {
             manager: manager.clone(),
-            ticket: b_ticket,
+            prompt: b_prompt,
             completed: false,
         });
         assert_eq!(manager.state.lock().unwrap().phase, Phase::Unknown);
@@ -2467,7 +2747,7 @@ mod lifecycle_tests {
             );
             state.abandon(&a);
             state.failed_effect(&a, true);
-            state.cancel_force(&a);
+            state.cancel_force(&ForcePrompt::Unknown(a.clone()));
             assert_eq!(
                 before,
                 (
@@ -2489,9 +2769,12 @@ mod lifecycle_tests {
         let b = state.begin_force().unwrap();
         state.abandon(&a);
         state.failed_effect(&a, true);
-        state.cancel_force(&a);
+        state.cancel_force(&ForcePrompt::Unknown(a.clone()));
         assert_eq!(state.phase, Phase::ForcePrompt);
-        assert!(state.current(&b));
+        let ForcePrompt::Unknown(ticket) = &b else {
+            panic!("unknown prompt");
+        };
+        assert!(state.current(ticket));
         state.cancel_force(&b);
         assert_eq!(state.phase, Phase::Unknown);
     }
@@ -2612,67 +2895,202 @@ mod lifecycle_tests {
         state.record_actual_exit();
         assert_eq!(state.confirmed_exit_code, None);
     }
-    fn issue_1359_close_outcome(kind: IoKind) -> String {
+    fn issue_1359_escape(kind: IoKind) {
+        let (mut state, flight, _) = pending(kind, Intent::SessionOnly);
+        let (close, started) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(started);
+        assert_eq!(state.force_offer(), ForceOffer::Waiting);
+        assert!(matches!(state.phase, Phase::Busy | Phase::Stopping));
+        assert!(matches!(state.advance(&close), Advance::Await(waited) if Arc::ptr_eq(&waited, &flight)));
+        let phase = state.phase;
+        let prompt = state.begin_force().unwrap();
+        let ForcePrompt::Waiting(waiting) = &prompt else { panic!("waiting prompt") };
+        assert!(Arc::ptr_eq(waiting, &close));
+        assert_eq!(state.phase, phase);
+        assert_eq!(state.force_offer(), ForceOffer::None);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        let interrupt = state.confirm_waiting(&close).unwrap();
+        assert!(interrupt.is_none());
+        assert!(state.owner_interrupted());
+        state.publish(&flight, None, Outcome::Unknown);
+        assert!(matches!(
+            close.terminal.lock().unwrap().as_ref(),
+            Some(Err(error)) if error == "force_exit_confirmed"
+        ));
+        assert_eq!(state.phase, Phase::Unknown);
+        let Settled::Force(force) = state.settle_waiting(&close).expect("settled") else {
+            panic!("force");
+        };
+        assert_eq!(state.phase, Phase::ForcePrompt);
+        assert!(matches!(state.completion.as_ref().unwrap().intent, Intent::ForceExit));
+        assert!(state.current(&force));
+        assert!(state.effect_intent(&close).is_err());
+        assert!(!state.main_close_released);
+    }
+    #[test]
+    fn issue_1359_escape_stop() { issue_1359_escape(IoKind::Stop); }
+    #[test]
+    fn issue_1359_escape_ordinary() { issue_1359_escape(IoKind::Ordinary); }
+    #[test]
+    fn answering_host_close_offers_no_force_prompt() {
+        let (mut state, flight, close) = pending(IoKind::Stop, Intent::CloseMain);
+        state.publish(&flight, None, Outcome::Collected);
+        assert_eq!(state.force_offer(), ForceOffer::None);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        assert!(matches!(state.advance(&close), Advance::Stopped));
+        assert!(matches!(state.effect_intent(&close), Ok(Intent::CloseMain)));
+        assert_eq!(state.phase, Phase::MainClosed);
+        assert!(state.main_close_released);
         let manager = Arc::new(WorkspaceManager::default());
-        let flight = {
-            let (state, flight, _ticket) = pending(kind, Intent::SessionOnly);
-            *manager.state.lock().unwrap() = state;
-            flight
-        };
-        assert!(
-            flight.terminal.lock().unwrap().is_none(),
-            "flight stays unanswered"
+        let ticket = manager.state.lock().unwrap().new_completion(Intent::CloseMain, true, false);
+        let action = user_close_action(
+            Ok(CompletionAdmission::Started(CompletionWorker {
+                manager: Arc::clone(&manager),
+                ticket,
+                completed: true,
+            })),
+            ForceOffer::Waiting,
         );
-        assert!(
-            manager.has_session(),
-            "outstanding flight counts as a live session"
-        );
-        let worker = match manager.reserve(Intent::CloseMain).unwrap() {
-            CompletionAdmission::Started(worker) => worker,
-            CompletionAdmission::Coalesced => panic!("close coalesced"),
-        };
-        let status = manager.host_status().unwrap();
-        let mut state = manager.state.lock().unwrap();
-        let close = state
-            .completion
-            .as_ref()
-            .expect("close reservation")
-            .ticket
-            .clone();
-        let waiting = matches!(state.advance(&close), Advance::Await(ref waited) if Arc::ptr_eq(waited, &flight));
-        let released = state.main_close_released;
-        let force_error = state.begin_force().err();
-        let effect_error = state.effect_intent(&close).err();
-        let report = if released || force_error.is_none() {
-            String::new()
-        } else {
-            format!(
-                "kind={kind:?} host_status.phase={} phase={:?} waiting={waiting} main_close_released={released} effect={effect_error:?} force={force_error:?} session_in_lifecycle={} flight_terminal_none={}",
-                status.phase,
-                state.phase,
-                state.session.is_some(),
-                flight.terminal.lock().unwrap().is_none(),
-            )
-        };
-        drop(state);
-        drop(worker);
-        report
+        assert!(matches!(action, UserClose::Start(_)));
+        drop(action);
+        assert!(!manager.state.lock().unwrap().completion.as_ref().unwrap().abandoned);
+    }
+    fn offer_unavailable(state: &mut Lifecycle) {
+        assert_eq!(state.force_offer(), ForceOffer::None);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
     }
     #[test]
-    fn issue_1359_unanswered_stop_close_reaches_release_or_force_confirmation() {
-        let report = issue_1359_close_outcome(IoKind::Stop);
-        assert!(
-            report.is_empty(),
-            "unanswered stop left no close release and no force confirmation: {report}"
-        );
+    fn force_not_offered_when_nothing_is_pending() {
+        let mut ready = Lifecycle::default();
+        ready.phase = Phase::Ready;
+        offer_unavailable(&mut ready);
+        let mut busy = Lifecycle::default();
+        busy.new_flight(IoKind::Ordinary, None);
+        offer_unavailable(&mut busy);
+        let (mut session_only, _, _) = pending(IoKind::Stop, Intent::SessionOnly);
+        offer_unavailable(&mut session_only);
+        let (mut forced, _, _) = pending(IoKind::Force, Intent::CloseMain);
+        offer_unavailable(&mut forced);
+        let (mut prompting, _, _) = pending(IoKind::Stop, Intent::CloseMain);
+        prompting.completion.as_mut().unwrap().escape = Escape::Prompting;
+        offer_unavailable(&mut prompting);
+        let (mut updating, _, _) = pending(IoKind::Stop, update("first.exe"));
+        offer_unavailable(&mut updating);
     }
     #[test]
-    fn issue_1359_unanswered_ordinary_flight_close_reaches_release_or_force_confirmation() {
-        let report = issue_1359_close_outcome(IoKind::Ordinary);
-        assert!(
-            report.is_empty(),
-            "unanswered flight left no close release and no force confirmation: {report}"
-        );
+    fn user_close_action_table() {
+        assert!(matches!(user_close_action(Ok(CompletionAdmission::Coalesced), ForceOffer::Waiting), UserClose::Prompt));
+        assert!(matches!(user_close_action(Err("transport_uncertain"), ForceOffer::Waiting), UserClose::Prompt));
+        assert!(matches!(user_close_action(Ok(CompletionAdmission::Coalesced), ForceOffer::None), UserClose::Nothing));
+        assert!(matches!(user_close_action(Err("transport_uncertain"), ForceOffer::None), UserClose::Refuse("transport_uncertain")));
+        assert!(matches!(user_close_action(Err("transport_uncertain"), ForceOffer::Unknown), UserClose::Refuse("transport_uncertain")));
+    }
+    #[test]
+    fn declined_prompt_keeps_close_and_late_answer_closes() {
+        let (mut state, flight, close) = pending(IoKind::Stop, Intent::CloseMain);
+        let prompt = state.begin_force().unwrap();
+        state.cancel_force(&prompt);
+        assert!(matches!(state.completion.as_ref().unwrap().escape, Escape::Idle));
+        assert_eq!(state.force_offer(), ForceOffer::Waiting);
+        assert!(state.current(&close));
+        assert!(close.terminal.lock().unwrap().is_none());
+        state.publish(&flight, None, Outcome::Collected);
+        assert!(matches!(state.advance(&close), Advance::Stopped));
+        assert!(matches!(state.effect_intent(&close), Ok(Intent::CloseMain)));
+        assert_eq!(state.phase, Phase::MainClosed);
+    }
+    #[test]
+    fn late_answer_before_confirm_is_moot() {
+        let manager = Arc::new(WorkspaceManager::default());
+        let (state, flight, close) = pending(IoKind::Stop, Intent::CloseMain);
+        *manager.state.lock().unwrap() = state;
+        let prompt = manager.state.lock().unwrap().begin_force().unwrap();
+        manager.state.lock().unwrap().publish(&flight, None, Outcome::Collected);
+        assert_eq!(manager.state.lock().unwrap().confirm_waiting(&close).err(), Some("force_exit_moot"));
+        drop(ForcePromptLease { manager: Arc::clone(&manager), prompt, completed: true });
+        let state = manager.state.lock().unwrap();
+        assert!(matches!(state.completion.as_ref().unwrap().escape, Escape::Prompting));
+        assert!(!matches!(state.completion.as_ref().unwrap().intent, Intent::ForceExit));
+    }
+    #[test]
+    fn late_answer_after_confirm() {
+        let (mut state, flight, close) = pending(IoKind::Stop, Intent::CloseMain);
+        state.begin_force().unwrap();
+        assert!(state.confirm_waiting(&close).unwrap().is_none());
+        state.publish(&flight, None, Outcome::Collected);
+        assert_eq!(state.phase, Phase::Finishing);
+        assert!(state.settle_waiting(&close).is_none());
+        assert!(matches!(state.effect_intent(&close), Ok(Intent::CloseMain)));
+        assert!(state.settle_waiting(&close).is_none());
+        state.release_effect(&close, false).unwrap();
+        assert!(matches!(state.settle_waiting(&close), Some(Settled::Moot)));
+        assert!(state.main_close_released);
+        let (mut state, flight, close) = pending(IoKind::Ordinary, Intent::CloseMain);
+        state.begin_force().unwrap();
+        assert!(state.confirm_waiting(&close).unwrap().is_none());
+        state.publish(&flight, None, Outcome::Known);
+        assert_eq!(flight.terminal.lock().unwrap().as_ref(), Some(&Outcome::Unknown));
+        assert_eq!(state.phase, Phase::Unknown);
+        assert!(matches!(state.settle_waiting(&close), Some(Settled::Force(_))));
+    }
+
+    #[test]
+    fn close_main_seal_wakes_the_force_waiter() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+        let manager = Arc::new(WorkspaceManager::default());
+        let (state, flight, close) = pending(IoKind::Stop, Intent::CloseMain);
+        *manager.state.lock().unwrap() = state;
+        manager.state.lock().unwrap().begin_force().unwrap();
+        assert!(manager.state.lock().unwrap().confirm_waiting(&close).unwrap().is_none());
+        let (tx, rx) = mpsc::channel();
+        let waiter = Arc::clone(&manager);
+        let waited = Arc::clone(&close);
+        let held = manager.state.lock().unwrap();
+        std::thread::spawn(move || {
+            let _ = tx.send(waiter.wait_settled(&waited));
+        });
+        std::thread::sleep(Duration::from_millis(200));
+        drop(held);
+        let start = Instant::now();
+        loop {
+            let guard = manager.state.lock().unwrap();
+            if manager.wait_settled_parks.load(Ordering::Relaxed) >= 1 {
+                break;
+            }
+            drop(guard);
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "waiter never parked in wait_settled"
+            );
+            std::thread::yield_now();
+        }
+        assert!(rx.try_recv().is_err(), "waiter returned before the stop was sealed");
+        manager.state.lock().unwrap().publish(&flight, None, Outcome::Collected);
+        assert!(matches!(
+            manager.state.lock().unwrap().effect_intent(&close),
+            Ok(Intent::CloseMain)
+        ));
+        manager.release_effect(&close, false).unwrap();
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_millis(500)),
+            Ok(Ok(Settled::Moot))
+        ));
+    }
+
+    #[test]
+    fn waiting_prompt_drop_does_not_abandon_the_close_ticket() {
+        let manager = Arc::new(WorkspaceManager::default());
+        let (state, _, close) = pending(IoKind::Stop, Intent::CloseMain);
+        *manager.state.lock().unwrap() = state;
+        let prompt = manager.state.lock().unwrap().begin_force().unwrap();
+        drop(ForcePromptLease { manager: Arc::clone(&manager), prompt, completed: false });
+        let state = manager.state.lock().unwrap();
+        assert!(matches!(state.completion.as_ref().unwrap().escape, Escape::Idle));
+        assert!(state.current(&close));
+        assert!(close.terminal.lock().unwrap().is_none());
+        assert!(!state.completion.as_ref().unwrap().abandoned);
+        assert_eq!(state.force_offer(), ForceOffer::Waiting);
     }
 }
 

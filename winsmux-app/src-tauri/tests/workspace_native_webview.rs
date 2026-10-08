@@ -1550,7 +1550,9 @@ fn main() {
     let input_guard_scenario=scenario=="input-guard";
     let lifecycle_scenario=scenario.starts_with("lifecycle-");
     let natural_last_window=scenario=="lifecycle-natural-last";
-    let fault_scenario = scenario == "lifecycle-shared-direct-loss"
+    let silent_close = scenario == "stop-reply-silent-close";
+    let fault_scenario = silent_close
+        || scenario == "lifecycle-shared-direct-loss"
         || scenario == "stop-reply-loss"
         || scenario == "stop-reply-abandon"
         || scenario == "stop-reply-parent-exit";
@@ -1851,7 +1853,7 @@ fn main() {
       &&output.readyHostStatus.instance_id===session.instance_id
       &&/^(0|[1-9][0-9]*)$/.test(output.readyHostStatus.generation)
       &&/^(0|[1-9][0-9]*)$/.test(output.readyHostStatus.revision)
-      &&Object.keys(output.readyHostStatus).sort().join(',')==='generation,instance_id,phase,revision');
+      &&Object.keys(output.readyHostStatus).sort().join(',')==='force_offer,generation,instance_id,phase,revision');
     const request=(operation,params,revision=null)=>({schema_version:1,instance_id:session.instance_id,operation_id:`87200000-0000-4000-8001-${String(++serial).padStart(12,'0')}`,expected_topology_revision:revision,operation,params});
     const exchange=req=>invoke('workspace_request',{requestJson:JSON.stringify(req)});
     const send=(operation,params,revision=null)=>exchange(request(operation,params,revision));
@@ -1949,6 +1951,33 @@ fn main() {
                 })().catch(error=>window.__TAURI_INTERNALS__.invoke('native_nonowner_report',{outcome:'close-only-error:'+String(error)}));"#.replace("__SCENARIO__",&serde_json::to_string(&scenario).unwrap());
                 webview.eval(&script).expect("native artifact admission journey");return;
             }
+            if silent_close {
+                let script = r#"(async()=>{
+                    const invoke=window.__TAURI_INTERNALS__.invoke;
+                    await invoke('native_install_companion',{valid:true});
+                    const session=await invoke('workspace_session_open');
+                    await invoke('native_record_owned_host');
+                    const opened=await invoke('workspace_request',{requestJson:JSON.stringify({schema_version:1,instance_id:session.instance_id,operation_id:'87000000-0000-4000-8004-000000000101',expected_topology_revision:0,operation:'project.open',params:{path:__PROJECT_PATH_JSON__}})});
+                    if(!opened.accepted) throw new Error('silent project missing');
+                    await invoke('native_unrelated_cli_start');
+                    await invoke('native_request_window_close');
+                    for(let i=0;i<60;i++){if(await invoke('native_gate_ready'))break;await new Promise(r=>setTimeout(r,500));}
+                    if(!(await invoke('native_gate_ready'))) throw new Error('silent gate missing');
+                    const status=await invoke('workspace_host_status');
+                    if(status.phase!=='Stopping'||status.force_offer!=='waiting') throw new Error('waiting offer missing');
+                    await invoke('native_request_window_close');
+                    await invoke('native_choose_force_dialog',{confirm:false});
+                    let kept;
+                    for(let i=0;i<60;i++){kept=await invoke('workspace_host_status');if(kept.force_offer==='waiting')break;await new Promise(r=>setTimeout(r,100));}
+                    const title=await invoke('native_window_title');
+                    if(!kept||kept.phase!=='Stopping'||kept.force_offer!=='waiting'||String(title).includes('uncertain')) throw new Error('declined close changed state');
+                    const exit=invoke('workspace_force_exit');
+                    await invoke('native_choose_force_dialog',{confirm:true});
+                    await exit;
+                })().catch(error=>window.__TAURI_INTERNALS__.invoke('native_nonowner_report',{outcome:'close-only-error:'+String(error)}));"#.replace("__PROJECT_PATH_JSON__", &project_literal);
+                webview.eval(&script).expect("silent close scenario");
+                return;
+            }
             if fault_scenario && !lifecycle_scenario {
                 let script = r#"(async () => {
                     const invoke=window.__TAURI_INTERNALS__.invoke; const output={};
@@ -1959,7 +1988,7 @@ fn main() {
                     const opened=await invoke('workspace_request',{requestJson:JSON.stringify({schema_version:1,instance_id:session.instance_id,operation_id:'87000000-0000-4000-8004-000000000001',expected_topology_revision:0,operation:'project.open',params:{path:__PROJECT_PATH_JSON__}})});
                     if(!opened.accepted) throw new Error('fault project missing');
                     await invoke('native_unrelated_cli_start');
-                    for(let i=0;i<60;i++) { await invoke('native_request_window_close'); await new Promise(r=>setTimeout(r,500)); if(await invoke('native_gate_ready')) break; }
+                    await invoke('native_request_window_close'); for(let i=0;i<60;i++) { if(await invoke('native_gate_ready')) break; await new Promise(r=>setTimeout(r,500)); }
                     if(!(await invoke('native_gate_ready'))) throw new Error('fault ready missing');
                     if (__PARENT_EXIT__) { await invoke('native_gate_parent_exit'); return; }
                     let validation='success';
@@ -2175,7 +2204,7 @@ fn main() {
                         await invoke('native_isolate_provider_path');
                         const session=await invoke('workspace_session_open');output.session=session;
                         output.readyStatus=await invoke('workspace_host_status');
-                        if(output.readyStatus.phase!=='Ready'||output.readyStatus.instance_id!==session.instance_id||Object.keys(output.readyStatus).sort().join(',')!=='generation,instance_id,phase,revision')throw new Error('ready host status mismatch');
+                        if(output.readyStatus.phase!=='Ready'||output.readyStatus.instance_id!==session.instance_id||Object.keys(output.readyStatus).sort().join(',')!=='force_offer,generation,instance_id,phase,revision')throw new Error('ready host status mismatch');
                         output.discovery=await invoke('workspace_discovery_get');
                         if(output.discovery.instance_id!==session.instance_id||output.discovery.schema_version!==session.schema_version||!output.discovery.pipe_name.startsWith('\\\\.\\pipe\\winsmux-workspace-v1-'))throw new Error('current discovery mismatch');
                         output.hostIdentity=await invoke('native_record_owned_host');
@@ -2687,6 +2716,20 @@ fn main() {
             eprintln!("TASK870_NATIVE_NORMAL_CLOSE_PROOF accepted_stop_collected=true window_destroyed=true snapshot_valid=true unrelated_cli_alive=true");
             let secondary=app_handle.get_webview_window("secondary").expect("retained secondary");
             secondary.eval(r#"(async()=>{const invoke=window.__TAURI_INTERNALS__.invoke;let output,answered=0,sent=false;for(let i=0;i<60;i++){output=await invoke('pty_capture',{paneId:'task870-legacy',lines:100});const queries=(String(output.output).match(/\x1b\[6n/g)||[]).length;if(queries>answered){await invoke('pty_write',{paneId:'task870-legacy',data:'\x1b[1;1R'});answered=queries;}if(!sent&&answered>0){await invoke('pty_write',{paneId:'task870-legacy',data:"[Console]::WriteLine([string]::Concat('task870-','after-main-live'))\r\n"});sent=true;}if(String(output.output).includes('task870-after-main-live'))break;await new Promise(r=>setTimeout(r,500));}await invoke('native_legacy_after_main',{value:output});})().catch(error=>window.__TAURI_INTERNALS__.invoke('native_nonowner_report',{outcome:'close-only-error:'+String(error)}));"#).expect("secondary actual legacy IO");
+        }
+        tauri::RunEvent::Exit if silent_close => {
+            let manager = app_handle.state::<Arc<winsmux_app_lib::workspace_transport::WorkspaceManager>>();
+            let unrelated_slot = app_handle.state::<UnrelatedCliSlot>();
+            let mut unrelated = unrelated_slot.0.lock().expect("unrelated CLI lock").take().expect("unrelated CLI process");
+            let alive = unrelated.child.try_wait().expect("unrelated CLI query").is_none();
+            drop(unrelated.input.take());
+            let exit = unrelated.child.wait().expect("unrelated CLI exit");
+            if manager.has_session() || !alive || !exit.success() {
+                eprintln!("TASK870_NATIVE_STOP_REPLY_SILENT_CLOSE_FAILED");
+                callback_failed.store(true, Ordering::SeqCst);
+                return;
+            }
+            eprintln!("TASK870_NATIVE_STOP_REPLY_SILENT_CLOSE_PROOF");
         }
         tauri::RunEvent::Exit if force_exit_scenario => {
             let manager = app_handle.state::<Arc<winsmux_app_lib::workspace_transport::WorkspaceManager>>();

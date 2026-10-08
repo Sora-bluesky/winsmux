@@ -137,7 +137,7 @@ pub(crate) mod server_identity;
 mod windows;
 
 #[cfg(windows)]
-pub use windows::{run_child, run_launcher, WorkspaceOwner, WorkspaceRequestError};
+pub use windows::{run_child, run_launcher, OwnerInterrupt, WorkspaceOwner, WorkspaceRequestError};
 #[cfg(windows)]
 pub(crate) use windows::run_child_cli;
 #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]

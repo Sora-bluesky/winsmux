@@ -761,12 +761,23 @@ fn wait_child(child: ChildProcess) -> Result<(), HostError> {
     }
 }
 
+/// Sticky: fails this owner's current and all later pipe IO with TransportUncertain.
+/// Never signals, kills, or waits on the host process. The event is not inheritable (io:79).
+#[derive(Clone)]
+pub struct OwnerInterrupt(Arc<CancelEvent>);
+
+impl OwnerInterrupt {
+    pub fn interrupt(&self) {
+        self.0.signal();
+    }
+}
+
 /// The private owner endpoint and exact child process for one host generation.
 /// Dropping it closes only this endpoint and collects only this child.
 pub struct WorkspaceOwner {
     endpoint: Option<OwnedHandle>,
     child: Option<ChildProcess>,
-    cancel: CancelEvent,
+    cancel: Arc<CancelEvent>,
     discovery: Discovery,
     fingerprint: String,
     artifact_review_available: Option<bool>,
@@ -804,7 +815,7 @@ impl WorkspaceOwner {
         >,
     ) -> Result<Self, HostError> {
         let identity = Identity::current().map_err(map_io)?;
-        let cancel = CancelEvent::new().map_err(map_io)?;
+        let cancel = Arc::new(CancelEvent::new().map_err(map_io)?);
         let (endpoint, inherited) = create_private_channel(&identity)?;
         #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
         let stop_reply_release = gate.map(StopReplyLossGate::release_on_drop);
@@ -850,6 +861,9 @@ impl WorkspaceOwner {
     /// This value is validated against the current Windows identity at startup.
     pub fn discovery(&self) -> &Discovery {
         &self.discovery
+    }
+    pub fn interrupter(&self) -> OwnerInterrupt {
+        OwnerInterrupt(Arc::clone(&self.cancel))
     }
 
     pub fn request(&mut self, request: &Request) -> Result<Response, WorkspaceRequestError> {

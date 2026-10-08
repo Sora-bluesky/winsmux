@@ -12,6 +12,7 @@ export interface WorkspaceHostStatus {
   revision: string;
   phase: 'Empty' | 'Opening' | 'Ready' | 'Busy' | 'Stopping' | 'Unknown' | 'ForcePrompt'
     | 'Finishing' | 'FailedClosed' | 'MainClosed' | 'ExitReleased';
+  force_offer: 'none' | 'unknown' | 'waiting';
 }
 
 export async function getWorkspaceHostStatus(): Promise<WorkspaceHostStatus> {

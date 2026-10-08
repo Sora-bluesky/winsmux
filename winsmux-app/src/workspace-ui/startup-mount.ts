@@ -51,9 +51,11 @@ const readOnly = new Set<OperationName>(['run.get', 'operation.get', 'capabiliti
 const hostPhases = new Set(['Empty', 'Opening', 'Ready', 'Busy', 'Stopping', 'Unknown', 'ForcePrompt', 'Finishing', 'FailedClosed', 'MainClosed', 'ExitReleased']);
 const decimalU64 = (value: unknown): value is string => typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= 18446744073709551615n;
 function validHostStatus(value: unknown): value is WorkspaceHostStatus {
-  return shape(value, ['instance_id', 'generation', 'revision', 'phase'])
+  return shape(value, ['instance_id', 'generation', 'revision', 'phase', 'force_offer'])
     && (value.instance_id === null || uuid(value.instance_id)) && decimalU64(value.generation)
-    && decimalU64(value.revision) && hostPhases.has(value.phase as string);
+    && decimalU64(value.revision) && hostPhases.has(value.phase as string)
+    && typeof value.force_offer === 'string'
+    && (value.force_offer === 'none' || value.force_offer === 'unknown' || value.force_offer === 'waiting');
 }
 export function validSession(value: unknown): value is WorkspaceSession & { schema_version: 1 } { return shape(value, ['instance_id', 'schema_version']) && uuid(value.instance_id) && value.schema_version === 1; }
 export function validReadResponse(request: Request, value: unknown): value is Response {
@@ -101,9 +103,33 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   const reconnect = document.createElement('button'); reconnect.type = 'button'; reconnect.textContent = '接続を確認し直す'; reconnect.hidden = true;
   const forceExit = document.createElement('button'); forceExit.type = 'button'; forceExit.textContent = '状態不明の host を強制終了'; forceExit.hidden = true;
   forceExit.onclick = async () => { forceExit.disabled = true; try { await forceExitUncertainWorkspace(); } catch (error) {
-    if (error !== 'force_exit_cancelled' && !(error instanceof Error && error.message === 'force_exit_cancelled')) status.textContent = `強制終了を確認できません: ${String(error)}`;
+    const message = error instanceof Error ? error.message : String(error);
+    if (error === 'force_exit_moot' || message === 'force_exit_moot') status.textContent = '強制終了の前に host が応答しました。';
+    else if (error !== 'force_exit_cancelled' && message !== 'force_exit_cancelled') status.textContent = `強制終了を確認できません: ${String(error)}`;
     forceExit.disabled = false;
   } };
+  function applyForceOffer(offer: WorkspaceHostStatus['force_offer']) {
+    if (offer === 'none') { forceExit.hidden = true; return; }
+    forceExit.hidden = false;
+    if (offer === 'waiting') {
+      forceExit.textContent = 'host を待たずに強制終了';
+      status.textContent = 'host の終了を待っています。待たずに終了する場合は強制終了を確認してください。';
+      return;
+    }
+    forceExit.textContent = '状態不明の host を強制終了';
+  }
+  let hostProbeStarted = false;
+  let statusEpoch = 0;
+  async function refreshForceOffer() {
+    if (disposed || !hostProbeStarted) return;
+    const epoch = statusEpoch;
+    let value: unknown;
+    try { value = await getWorkspaceHostStatus(); }
+    catch { return; }
+    if (disposed || epoch !== statusEpoch || !validHostStatus(value)) return;
+    lastOffer = value.force_offer;
+    applyForceOffer(value.force_offer);
+  }
   const detailsButton = document.createElement('button'); detailsButton.type = 'button'; detailsButton.textContent = '成果物・配置・診断'; detailsButton.disabled = true;
   const detailsMount = document.createElement('div'); detailsMount.setAttribute('aria-label', '成果物・配置・診断の表示領域');
   const agentMount = document.createElement('div'); agentMount.setAttribute('aria-label', 'AIの起動と状態の表示領域');
@@ -124,6 +150,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   let hostObservation: { epoch: number; instance: string | null; generation: bigint; revision: bigint; phase: WorkspaceHostStatus['phase'] } | null = null;
   let probeIssued = 0;
   let hostBlocked = true;
+  let lastOffer: WorkspaceHostStatus['force_offer'] = 'none';
   let recoveryPending = false;
   let ownerMismatch = false;
   const hostUnknown = () => hostObservation?.phase === 'Unknown';
@@ -140,7 +167,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     for (const child of root.children) if (child instanceof HTMLElement)
       child.inert = child !== status && child !== reconnect && child !== forceExit && child !== panel;
     input.showGuardRecovery(false);
-    detailsButton.disabled = true; forceExit.hidden = true; reconnect.hidden = false; reconnect.disabled = false;
+    detailsButton.disabled = true; applyForceOffer(lastOffer); reconnect.hidden = false; reconnect.disabled = false;
     root.dataset.startupState = 'recovering';
     status.textContent = input.inspect().resumeAllowed
       ? '入力の再開を確認しました。接続を明示的に確認し直してください。'
@@ -155,13 +182,15 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       child.inert = child !== status && child !== reconnect && child !== forceExit && child !== input.guardRecovery;
     input.showGuardRecovery(true);
     detailsButton.disabled = true;
-    forceExit.hidden = !unknown; reconnect.hidden = unknown;
+    applyForceOffer(unknown ? 'unknown' : lastOffer); reconnect.hidden = unknown;
     root.dataset.startupState = unknown ? 'unknown' : 'unconfirmed';
     status.textContent = unknown ? 'host の現在状態は不明です。元の要求と入力を保持しています。'
       : 'host の現在状態を確認できません。要求と入力を保持しています。';
   }
   async function observeHost(epoch: number, expectedInstance: string | null, admit = true): Promise<WorkspaceHostStatus['phase'] | 'unconfirmed'> {
+    hostProbeStarted = true;
     const ticket = ++probeIssued;
+    const epochAtRead = ++statusEpoch;
     let value: unknown;
     try { value = await getWorkspaceHostStatus(); }
     catch { value = null; }
@@ -169,22 +198,26 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     if (ticket !== probeIssued) return hostObservation?.epoch === epoch ? hostObservation.phase : 'unconfirmed';
     const previous = hostObservation?.epoch === epoch ? hostObservation : null;
     if (!validHostStatus(value) || expectedInstance !== null && value.instance_id !== expectedInstance) {
-      if (previous?.phase === 'Unknown') { blockHost(true); return 'Unknown'; }
-      blockHost(false); return 'unconfirmed';
+      if (previous?.phase === 'Unknown') { blockHost(true); statusEpoch++; return 'Unknown'; }
+      blockHost(false); statusEpoch++; return 'unconfirmed';
     }
     const nextGeneration = BigInt(value.generation), nextRevision = BigInt(value.revision);
     if (previous?.phase === 'Unknown' && value.instance_id === previous.instance && nextGeneration === previous.generation) {
-      blockHost(true); return 'Unknown';
+      blockHost(true); statusEpoch++; return 'Unknown';
     }
     if (previous && (value.instance_id !== previous.instance || nextGeneration !== previous.generation
       || nextRevision < previous.revision || nextRevision === previous.revision && value.phase !== previous.phase
     )) {
-      blockHost(false); return 'unconfirmed';
+      blockHost(false); statusEpoch++; return 'unconfirmed';
     }
     hostObservation = { epoch, instance: value.instance_id, generation: nextGeneration, revision: nextRevision, phase: value.phase };
-    if (value.phase === 'Unknown') blockHost(true);
+    lastOffer = value.force_offer;
+    if (value.force_offer === 'waiting') blockHost(false);
+    else if (value.phase === 'Unknown') blockHost(true);
     else if (admit && (value.phase === 'Ready' || value.phase === 'Busy')) hostBlocked = false;
     else blockHost(false);
+    applyForceOffer(value.force_offer);
+    if (epochAtRead === statusEpoch) statusEpoch++;
     return value.phase;
   }
   let retiringAgent: ReturnType<typeof createAgentCommandSession> | null = null;
@@ -243,7 +276,8 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       if (ownerSection === null || ownerSection.instanceId !== observedOwner.instanceId) ownerSection = observedOwner;
       connectedHost = session.instance_id;
       hostBlocked = false;
-      forceExit.hidden = true;
+      lastOffer = 'none';
+      applyForceOffer('none');
       for (const child of root.children) if (child instanceof HTMLElement) child.inert = false;
       input.showGuardRecovery(false);
       if (details && details.lifetime.instanceId !== session.instance_id) { closeDetails?.(); closeDetails = null; details.retire(); details = null; }
@@ -657,7 +691,12 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     finally { reconnecting = false; }
   }
   reconnect.onclick = () => { void connect(); };
-  try { const release = await listen('workspace-close-refused', () => { if (!disposed) status.textContent = '閉鎖の完了を確認できません。対象と要求を保持しています。'; }); if (disposed) release(); else unlisten = release; }
+  try {
+    const closeRelease = await listen('workspace-close-refused', () => { if (!disposed) status.textContent = '閉鎖の完了を確認できません。対象と要求を保持しています。'; });
+    const offerRelease = await listen('workspace-force-offer', () => { if (!disposed) void refreshForceOffer(); });
+    const release = () => { closeRelease(); offerRelease(); };
+    if (disposed) release(); else unlisten = release;
+  }
   catch { status.textContent = '閉鎖通知の購読を確認できません。'; }
   await input.initialize();await connect(); return { dispose };
 }

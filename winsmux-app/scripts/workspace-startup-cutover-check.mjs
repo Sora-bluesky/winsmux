@@ -104,7 +104,7 @@ try {
     if(q.kind!=='editor-read'||keys!=='kind,path,project_dir,worktree'||typeof q.project_dir!=='string'||!q.project_dir||!(q.worktree===null||typeof q.worktree==='string')||f.relativeReadPath(q.path)!==q.path)throw Error('closed secondary request denied');
     return{project_dir:q.project_dir,worktree:q.worktree,file:{path:q.path,content:'日本語\r\nconst x = 1;',line_count:2,truncated:false}};
    }
-   if(name==='workspace_session_open')return{instance_id:I,schema_version:1};if(name==='workspace_host_status')return{instance_id:I,generation:'1',revision:'1',phase:'Ready'};if(name==='desktop_initial_project_dir')return f.initial;if(name!=='workspace_request')throw Error('unexpected effect '+name);
+   if(name==='workspace_session_open')return{instance_id:I,schema_version:1};if(name==='workspace_host_status')return{instance_id:I,generation:'1',revision:'1',phase:'Ready',force_offer:'none'};if(name==='desktop_initial_project_dir')return f.initial;if(name!=='workspace_request')throw Error('unexpected effect '+name);
    const q=JSON.parse(args.requestJson);let data;
    switch(q.operation){case'capabilities.get':data={schema_version:1,operations:['capabilities.get','project.list','pane.list','project.open','project.select','pane.create','pane.select','run.get','operation.get','events.wait','output.read','pane.resize'],max_message_bytes:1048576,providers:[],shell_profile_ids:['pwsh'],replay_capacity:{retained_bytes:134217728,active_bytes:268435456}};break;
     case'project.list':data={projects:f.selected?[{project_id:P,path:f.root,display_name:'fixture',root_state:'verified'}]:[],selected_project_id:f.selected};break;

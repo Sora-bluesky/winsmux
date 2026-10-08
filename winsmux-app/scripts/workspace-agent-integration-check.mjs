@@ -38,7 +38,7 @@ try {
     f.invoke = async (name, args) => {
       if (name === 'startup_main_policy_ready' || name === 'startup_main_show') return null;
       if (name === 'workspace_session_open') { f.sessions++; return { instance_id: f.instanceId, schema_version: 1 }; }
-      if (name === 'workspace_host_status') return { instance_id: f.instanceId, generation: f.ownerGeneration, revision: f.ownerGeneration, phase: 'Ready' };
+      if (name === 'workspace_host_status') return { instance_id: f.instanceId, generation: f.ownerGeneration, revision: f.ownerGeneration, phase: 'Ready', force_offer: 'none' };
       if (name === 'desktop_initial_project_dir') return null;
       if (name === 'workspace_input_guard_register' || name === 'workspace_input_guard_status') return { lease: '1', revision: '1', fence: null, resume_allowed: false, admission_error: null };
       if (name !== 'workspace_request') throw Error(`Unexpected native effect ${name}`);
