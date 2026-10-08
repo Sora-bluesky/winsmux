@@ -11,6 +11,7 @@ export type TerminalInputOwner = ReturnType<typeof createTerminalInputOwner>;
 export interface InputProducer {
   readonly target: InputTarget;
   offer(text: string): boolean;
+  focus(text: '\x1b[I' | '\x1b[O'): void;
   pending(bytes: number, active: boolean): boolean;
   canAccept(): boolean;
   retire(): void;
@@ -28,9 +29,14 @@ export interface InputGuardPort {
 }
 type GuardStatus = { lease: string; revision: string; fence: { nonce: string; state: 'pending' | 'approved' | 'released' } | null; resume_allowed: boolean; admission_error: string | null };
 type RecordState = 'queued' | 'preflight' | 'sending' | 'held' | 'unknown' | 'failed';
-type InputRecord = { readonly ownerKey: OwnerKey; readonly request: Request; readonly target: InputTarget; readonly charge: number; readonly writtenBytes: number; state: RecordState; reason?: string };
-type ProducerState = { target: InputTarget; ownerKey: OwnerKey; retired: boolean; codecActive: boolean; codecBytes: number };
-type InputFlight = { binding: number; record: InputRecord; port: InputConnection; phase: 'preflight' | 'dispatched' };
+type Sendable = { readonly ownerKey: OwnerKey; readonly request: Request; readonly target: InputTarget; readonly writtenBytes: number };
+type InputRecord = Sendable & { readonly charge: number; readonly produced: number; state: RecordState; reason?: string };
+type FocusSlot = { text: '\x1b[I' | '\x1b[O'; produced: number };
+type ProducerState = { target: InputTarget; ownerKey: OwnerKey; retired: boolean; codecActive: boolean; codecBytes: number; focus: FocusSlot | null };
+type FlightPhase = 'preflight' | 'dispatched';
+type InputFlight =
+  | { kind: 'ledger'; binding: number; record: InputRecord; port: InputConnection; phase: FlightPhase }
+  | { kind: 'focus'; binding: number; request: Request; target: InputTarget; ownerKey: OwnerKey; writtenBytes: number; port: InputConnection; phase: FlightPhase };
 type GuardEffect = { binding: number; issue: number; lease: string | null; nonce?: string };
 const encoder = new TextEncoder();
 const uuid = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
@@ -75,13 +81,16 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   let connection: InputConnection | null=null; let lease: string | null=null; let revision=0n;
   let retainedLimit=0;
   let frozen=true; let controlDepth=0; let disposed=false;
-  let connectionBinding=0; let flight: InputFlight | null=null;
+  let connectionBinding=0; let flight: InputFlight | null=null; let produced=0;
   let guardIssue=0; let confirmIssue=0; const confirmations=new Map<InputRecord,number>();
   let fenceLocked=false; let approvalPossible=false; let resumeAllowed=false;
   let fence: GuardStatus['fence']=null;
   let releaseListener: (() => void) | null=null; let replying: GuardEffect | null=null; let lastReply: GuardEffect | null=null;
   let notice='入力の受付条件を確認しています。';
-  const producers=new Map<string,ProducerState>(); const records: InputRecord[]=[]; const sequences=new Map<string,number>();
+  const producers=new Map<string,ProducerState>();
+  /** Ledger rows are user input or a reply the child asked for. A focus report stays in its producer slot, stamped with the same production counter, and never enters this ledger. */
+  const records: InputRecord[]=[];
+  const sequences=new Map<string,number>();
   const observers=new Set<() => void>();
   const panel=doc.createElement('section'); panel.className='workspace-input-confirmation'; panel.setAttribute('aria-label','入力の確認'); panel.tabIndex=-1;
   const heading=doc.createElement('h2'); heading.textContent='入力の確認';
@@ -138,8 +147,9 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   }
   const sameOwner=(a:OwnerKey,b:OwnerKey)=>a.instanceId===b.instanceId&&a.ownerGeneration===b.ownerGeneration;
   const currentRecords=()=>records.filter(r=>connection&&sameOwner(r.ownerKey,connection.ownerKey));
-  const sequenceKey=(r:InputRecord)=>JSON.stringify([r.ownerKey.instanceId,r.ownerKey.ownerGeneration,r.target.runId]);
-  function quiescent() { return controlDepth===0 && flight===null && records.length===0 && Array.from(producers.values()).every(p=>!p.codecActive); }
+  const sequenceKey=(r:{readonly ownerKey:OwnerKey;readonly target:InputTarget})=>JSON.stringify([r.ownerKey.instanceId,r.ownerKey.ownerGeneration,r.target.runId]);
+  const ledgerFlight=()=>flight?.kind==='ledger';
+  function quiescent() { return controlDepth===0 && !ledgerFlight() && records.length===0 && Array.from(producers.values()).every(p=>!p.codecActive); }
   function needsConfirmation() { return records.some(r=>r.state==='held'||r.state==='unknown'||r.state==='failed'); }
   function paint() {
     const focused=doc.activeElement instanceof HTMLElement&&(panel.contains(doc.activeElement)||guardRecovery.contains(doc.activeElement))?doc.activeElement:null;
@@ -154,7 +164,7 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
       if(!elements){
         const row=doc.createElement('p');const text=doc.createTextNode('');
         const confirmButton=button('元の操作の結果を確認',()=>{void confirm(record);});
-        const close=button('確認済みの拒否を閉じる',()=>{remove(record);changed();});
+        const close=button('確認済みの拒否を閉じる',()=>{remove(record);changed();void pump();});
         row.append(text,confirmButton,close);list.append(row);elements={row,text,confirm:confirmButton,close};rowElements.set(key,elements);
       }
       const description={queued:'送信待ち',preflight:'送信前の状態確認中',sending:'配送の確認中',held:'未送信で保持',unknown:'配送結果は不明',failed:'確定した拒否'}[record.state];
@@ -185,12 +195,14 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   function retireFlight(reason:string) {
     const prior=flight; if (!prior) return;
     flight=null;
-    if (records.includes(prior.record)) {
+    if (prior.kind==='focus') { if (prior.phase!=='dispatched') return; }
+    else {
+      if (!records.includes(prior.record)) return;
       prior.record.state=prior.phase==='preflight'?'held':'unknown'; prior.record.reason=reason;
-      holdQueued('preceding_not_confirmed');
-      notice=prior.phase==='preflight'?'元の入力は未送信で保持しています。'
-        :'元の入力の配送結果は不明です。元の操作を確認してください。';
     }
+    holdQueued('preceding_not_confirmed');
+    notice=prior.phase==='preflight'?'元の入力は未送信で保持しています。'
+      :'元の入力の配送結果は不明です。元の操作を確認してください。';
   }
   function stopReason(message:string) { notice=message; changed(); }
   const currentEffect=(effect:GuardEffect) => !disposed && effect.binding===connectionBinding
@@ -225,9 +237,11 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
     }
     if(value.fence?.state==='approved' || value.fence?.state==='released' && !value.resume_allowed){fenceLocked=true;resumeAllowed=false;}
     if(value.fence?.state==='released' && value.resume_allowed){fenceLocked=false;approvalPossible=false;resumeAllowed=true;}
+    const wasFrozen=frozen;
     frozen=fenceLocked || value.admission_error!==null;
     notice=frozen?'入力の受付を止めています。終了の結果を確認してください。':needsConfirmation()?'保持した入力を確認してください。':'';
     changed();
+    if (wasFrozen && !frozen) void pump();
   }
   async function recoverGuard() {
     if (disposed || lease===null) return;
@@ -235,7 +249,7 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
     try { await applyGuard(await guard.invoke('workspace_input_guard_status',{requestJson:JSON.stringify({lease:effect.lease})}),effect); }
     catch { if(currentEffect(effect)){frozen=true;stopReason('入力の受付状態を確認できません。再確認してください。');} }
   }
-  function validInputResponse(record:InputRecord,response:Response) {
+  function validInputResponse(record:Sendable,response:Response) {
     if (!envelope(record.request,response)) return false;
     if (!response.accepted) return true;
     const data:unknown=response.result?.data;
@@ -243,33 +257,67 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
     if (!object(data,keys) || !uint(data.input_seq) || data.input_seq<1 || data.input_seq<=(sequences.get(sequenceKey(record))??0) || data.pane_id!==record.target.paneId || data.run_id!==record.target.runId || data.written_bytes!==record.writtenBytes) return false;
     return record.request.operation!=='input.key' || data.sent===true && data.key==='interrupt';
   }
+  function sendable(own:InputFlight):Sendable { return own.kind==='ledger'?own.record:own; }
+  function nextSend(): {kind:'ledger';record:InputRecord} | {kind:'focus';state:ProducerState;slot:FocusSlot} | null {
+    const queued=currentRecords().find(r=>r.state==='queued');
+    let chosen:{state:ProducerState;slot:FocusSlot}|null=null;
+    if (connection) for (const state of producers.values()) {
+      if (state.retired || state.focus===null || !sameOwner(state.ownerKey,connection.ownerKey) || !targetValid(state.target)) continue;
+      if (!chosen || state.focus.produced<chosen.slot.produced) chosen={state,slot:state.focus};
+    }
+    if (chosen && (!queued || chosen.slot.produced<queued.produced)) return {kind:'focus',state:chosen.state,slot:chosen.slot};
+    if (queued && !targetValid(queued.target)) { holdQueued('target_retired'); stopReason('元の対象を確認できないため未送信で保持しています。'); return null; }
+    return queued?{kind:'ledger',record:queued}:null;
+  }
+  function settle(own:InputFlight,result:{outcome:'accepted';response:Response}|{outcome:'refused';response:Response}|{outcome:'thrown';error:unknown}) {
+    const sent=sendable(own);
+    if (own.kind==='focus') {
+      if (result.outcome==='thrown' && own.phase==='preflight' && result.error instanceof Error && result.error.message==='host_not_sent') return;
+      if (result.outcome==='refused' && result.response.error?.code!=='state_unknown' && result.response.error?.code!=='in_progress') return;
+      if (result.outcome==='accepted') { sequences.set(sequenceKey(sent),(result.response.result!.data as {input_seq:number}).input_seq); return; }
+      holdQueued('preceding_not_confirmed');
+      notice=result.outcome==='thrown' && own.phase==='preflight' ? 'host が送信を受け付ける状態を確認できず、入力は未送信で保持しています。'
+        : result.outcome==='thrown' ? '入力の配送結果は不明です。元の操作を確認してください。'
+        : '入力の配送を確認してください。自動で再送しません。';
+      return;
+    }
+    if (result.outcome==='accepted') { sequences.set(sequenceKey(sent),(result.response.result!.data as {input_seq:number}).input_seq); remove(own.record); notice=''; return; }
+    if (result.outcome==='refused') {
+      own.record.state=result.response.error?.code==='state_unknown' || result.response.error?.code==='in_progress' ? 'unknown':'failed';
+      holdQueued('preceding_not_confirmed'); notice='入力の配送を確認してください。自動で再送しません。'; return;
+    }
+    const unsent=own.phase==='preflight';
+    own.record.state=unsent?'held':'unknown';
+    holdQueued('preceding_not_confirmed'); notice=unsent?'host が送信を受け付ける状態を確認できず、入力は未送信で保持しています。'
+      :'入力の配送結果は不明です。元の操作を確認してください。';
+  }
   async function pump() {
     if (disposed || frozen || controlDepth>0 || flight || !connection || currentRecords().some(r=>['unknown','held','failed'].includes(r.state))) return;
-    const record=currentRecords().find(r=>r.state==='queued'); if (!record) return;
-    if (!targetValid(record.target)) { holdQueued('target_retired'); stopReason('元の対象を確認できないため未送信で保持しています。'); return; }
-    const port=connection; const own:InputFlight={binding:connectionBinding,record,port,phase:'preflight'};
-    flight=own; record.state='preflight'; changed();
+    const port=connection, next=nextSend();
+    if (!next) return;
+    let own:InputFlight;
+    if (next.kind==='ledger') own={kind:'ledger',binding:connectionBinding,record:next.record,port,phase:'preflight'};
+    else {
+      const operation_id=allocate(); if (!uuid(operation_id)) throw new Error('input_id_invalid');
+      const text=next.slot.text;
+      own={kind:'focus',binding:connectionBinding,request:{schema_version:1,instance_id:next.state.target.instanceId,operation_id,expected_topology_revision:null,operation:'input.write',params:{pane_id:next.state.target.paneId,run_id:next.state.target.runId,text}},target:next.state.target,ownerKey:next.state.ownerKey,writtenBytes:encoder.encode(text).byteLength,port,phase:'preflight'};
+      next.state.focus=null;
+    }
+    flight=own; if (own.kind==='ledger') own.record.state='preflight'; changed();
     try {
-      const response=await port.exchange(record.request,()=>{
-        if (flight!==own || own.binding!==connectionBinding || connection!==port || !targetValid(record.target)
-          || producers.get(record.target.producerId)?.retired) return false;
-        own.phase='dispatched'; record.state='sending';
+      const response=await port.exchange(sendable(own).request,()=>{
+        if (flight!==own || own.binding!==connectionBinding || connection!==port || !targetValid(sendable(own).target)
+          || producers.get(sendable(own).target.producerId)?.retired) return false;
+        own.phase='dispatched'; if (own.kind==='ledger') own.record.state='sending';
         queueMicrotask(()=>{if(flight===own)changed();});
         return true;
       });
       if (flight!==own) return;
-      if (!validInputResponse(record,response)) throw new Error('protocol_failed');
-      if (response.accepted) { sequences.set(sequenceKey(record),(response.result!.data as {input_seq:number}).input_seq); remove(record); notice=''; }
-      else {
-        record.state=response.error?.code==='state_unknown' || response.error?.code==='in_progress' ? 'unknown':'failed';
-        holdQueued('preceding_not_confirmed'); notice='入力の配送を確認してください。自動で再送しません。';
-      }
+      if (!validInputResponse(sendable(own),response)) throw new Error('protocol_failed');
+      settle(own,response.accepted?{outcome:'accepted',response}:{outcome:'refused',response});
     } catch (error) {
       if (flight!==own) return;
-      const unsent=own.phase==='preflight';
-      record.state=unsent?'held':'unknown';
-      holdQueued('preceding_not_confirmed'); notice=unsent?'host が送信を受け付ける状態を確認できず、入力は未送信で保持しています。'
-        :'入力の配送結果は不明です。元の操作を確認してください。';
+      settle(own,{outcome:'thrown',error});
     } finally {
       if (flight===own) { flight=null; changed(); await recoverGuard(); if (!disposed) void pump(); }
     }
@@ -280,6 +328,7 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
     const current=()=>!disposed&&connectionBinding===bound&&connection===port&&confirmations.get(record)===issue;
     const request:Request={schema_version:1,instance_id:record.target.instanceId,operation_id:allocate(),expected_topology_revision:null,operation:'operation.get',params:{operation_id:record.request.operation_id}};
     if (encoder.encode(JSON.stringify(request)).byteLength>cap()) {stopReason('確認要求が許容サイズを超えています。');return;}
+    let removed=false;
     try {
       const response=await port.recover(record.ownerKey,request);
       if(!current()||!records.includes(record))return;
@@ -288,21 +337,22 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
       const result=data.operation;
       if (!object(result,['error_code','operation_id','outcome','phase']) || result.operation_id!==record.request.operation_id) throw new Error('protocol_failed');
       if (['accepted','in_progress','unknown'].includes(result.phase as string) && result.outcome===null && result.error_code===null) {notice='元の入力操作の結果はまだ未確定です。';}
-      else if (result.phase==='completed' && result.outcome==='succeeded' && result.error_code===null) { remove(record); notice='元の操作の成功記録を確認しました。保持入力は自動で送りません。'; }
+      else if (result.phase==='completed' && result.outcome==='succeeded' && result.error_code===null) { remove(record); notice='元の操作の成功記録を確認しました。保持入力は自動で送りません。'; removed=true; }
       else if (result.phase==='completed' && result.outcome==='failed' && knownError(result.error_code)) {record.state=result.error_code==='state_unknown'?'unknown':'failed';notice='元の操作の結果を確認しました。保持入力は自動で送りません。';}
       else throw new Error('protocol_failed');
     } catch {if(!current())return;notice='元の入力操作の結果を確認できません。記録を保持しています。';}
     if(!current())return;
     confirmations.delete(record);changed();await recoverGuard();
+    if(removed&&!disposed)void pump();
   }
   function resume(producerId:string) {
     const held=records.filter(r=>r.target.producerId===producerId && r.state==='held');
-    if (frozen || controlDepth>0 || flight || currentRecords().some(r=>r.state==='unknown' || r.state==='failed') || held.some(r=>!connection||!sameOwner(r.ownerKey,connection.ownerKey)||!targetValid(r.target))) {stopReason('元の対象と配送状態の確認が必要です。別の実行へは送りません。');return;}
+    if (frozen || controlDepth>0 || ledgerFlight() || currentRecords().some(r=>r.state==='unknown' || r.state==='failed') || held.some(r=>!connection||!sameOwner(r.ownerKey,connection.ownerKey)||!targetValid(r.target))) {stopReason('元の対象と配送状態の確認が必要です。別の実行へは送りません。');return;}
     for (const r of held) r.state='queued'; notice=''; changed(); void pump();
   }
   function discard(producerId:string) {
     for (const r of [...records]) if (r.target.producerId===producerId && r.state==='held') remove(r);
-    notice=records.some(r=>r.state==='unknown')?'送信済みの不明な結果は保持しています。':''; changed();
+    notice=records.some(r=>r.state==='unknown')?'送信済みの不明な結果は保持しています。':''; changed(); void pump();
   }
   return {
     async initialize() {
@@ -316,12 +366,12 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
         await applyGuard(await guard.invoke('workspace_input_guard_register',{requestJson:JSON.stringify({binding})}),effect);
       } catch {if(currentEffect(effect)){frozen=true;stopReason('入力の受付を登録できません。出力を保持しています。');}}
     },
-    connect(next:InputConnection) { if(connection!==next) {retireFlight('connection_replaced'); connectionBinding++;guardIssue++;confirmations.clear();} connection=next; changed(); void recoverGuard(); },
+    connect(next:InputConnection) { if(connection!==next) {retireFlight('connection_replaced'); connectionBinding++;guardIssue++;confirmations.clear();} connection=next; changed(); void pump(); void recoverGuard(); },
     disconnect() { cap(); retireFlight('connection_retired'); connectionBinding++;guardIssue++;confirmations.clear();connection=null; holdQueued('connection_retired'); changed(); },
     blockHost() { retireFlight('host_unconfirmed'); connectionBinding++;guardIssue++;confirmations.clear();frozen=true; connection=null; holdQueued('host_unconfirmed'); stopReason('host の現在状態を確認するまで入力を保持します。'); },
     produce(target:InputTarget):InputProducer {
       if (!Object.values(target).every(uuid) || producers.has(target.producerId) || !connection || connection.ownerKey.instanceId!==target.instanceId) throw new Error('input_target_invalid');
-      const immutable=Object.freeze({...target}); const state:ProducerState={target:immutable,ownerKey:connection.ownerKey,retired:false,codecActive:false,codecBytes:0}; producers.set(target.producerId,state);
+      const immutable=Object.freeze({...target}); const state:ProducerState={target:immutable,ownerKey:connection.ownerKey,retired:false,codecActive:false,codecBytes:0,focus:null}; producers.set(target.producerId,state);
       return {
         target:immutable,
         canAccept:()=>!disposed && !state.retired && !frozen && !fenceLocked && controlDepth===0 && lease!==null && !!connection && sameOwner(state.ownerKey,connection.ownerKey) && cap()>0 && targetValid(immutable),
@@ -339,21 +389,25 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
           const charge=encoder.encode(JSON.stringify({target:immutable,request})).byteLength;
           if (!cap() || encoder.encode(JSON.stringify(request)).byteLength>cap() || used()+charge>cap()) {stopReason('入力全体が保持できるサイズを超えているため送信していません。');return false;}
           const held=frozen || controlDepth>0 || !connection || !sameOwner(state.ownerKey,connection.ownerKey) || !targetValid(immutable) || currentRecords().some(r=>['held','unknown','failed'].includes(r.state));
-          records.push({ownerKey:state.ownerKey,target:immutable,request,charge,writtenBytes:encoder.encode(text).byteLength,state:held?'held':'queued'});
+          records.push({ownerKey:state.ownerKey,target:immutable,request,charge,writtenBytes:encoder.encode(text).byteLength,produced:++produced,state:held?'held':'queued'});
           notice=held?'元の対象へ未送信で保持しています。':'';changed();void pump();return true;
         },
-        retire() {state.retired=true;state.codecBytes=0;state.codecActive=false;
-          if(flight?.record.target.producerId===target.producerId)retireFlight('target_retired');
-          for (const r of records) if(r.target.producerId===target.producerId && r.state==='queued') r.state='held';changed();},
+        focus(text) {
+          if (disposed || state.retired) return;
+          state.focus={text,produced:++produced}; void pump();
+        },
+        retire() {state.retired=true;state.codecBytes=0;state.codecActive=false;state.focus=null;
+          if(flight && (flight.kind==='ledger'?flight.record.target.producerId:flight.target.producerId)===target.producerId)retireFlight('target_retired');
+          for (const r of records) if(r.target.producerId===target.producerId && r.state==='queued') r.state='held';changed();void pump();},
       };
     },
     admitControl() {
-      if (disposed || frozen || fenceLocked || lease===null || controlDepth!==0 || flight!==null || currentRecords().length!==0 || Array.from(producers.values()).some(p=>!p.retired&&p.codecActive&&connection&&sameOwner(p.ownerKey,connection.ownerKey))) {stopReason('変換・配送・保持入力を確認してから操作してください。');return null;}
-      controlDepth++; return () => {controlDepth=Math.max(0,controlDepth-1);changed();};
+      if (disposed || frozen || fenceLocked || lease===null || controlDepth!==0 || ledgerFlight() || currentRecords().length!==0 || Array.from(producers.values()).some(p=>!p.retired&&p.codecActive&&connection&&sameOwner(p.ownerKey,connection.ownerKey))) {stopReason('変換・配送・保持入力を確認してから操作してください。');return null;}
+      controlDepth++; return () => {controlDepth=Math.max(0,controlDepth-1);changed();void pump();};
     },
     hasPendingComposition:()=>Array.from(producers.values()).some(p=>p.codecActive),
     explain:stopReason,
-    refresh:changed,
+    refresh() { changed(); void pump(); },
     observe(callback:()=>void) {observers.add(callback);return()=>observers.delete(callback);},
     recoverGuard,
     guardRecovery,

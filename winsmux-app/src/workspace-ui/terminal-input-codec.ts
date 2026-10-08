@@ -11,6 +11,10 @@ function difference(base:Baseline,value:string):string|null {
   return value.startsWith(prefix) && value.endsWith(suffix) && value.length>=prefix.length+suffix.length ? value.slice(prefix.length,value.length-suffix.length) : null;
 }
 
+function isFocusReport(text: string, sendFocusMode: boolean): text is '\x1b[I' | '\x1b[O' {
+  return sendFocusMode && (text==='\x1b[I' || text==='\x1b[O');
+}
+
 /** Capture owns composition; xterm owns ordinary VT keys and bracketed paste. */
 export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, producer:InputProducer, explain:(message:string)=>void) {
   const candidate=terminal.textarea;
@@ -133,7 +137,11 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     }
     return true;
   });
-  const data=terminal.onData(text=>{if(!retired&&text)producer.offer(text);});
+  const data=terminal.onData(text=>{
+    if(retired||!text)return;
+    if(isFocusReport(text,terminal.modes.sendFocusMode)){producer.focus(text);return;}
+    producer.offer(text);
+  });
   const key=terminal.onKey(({domEvent})=>{domEvent.preventDefault();});
   const listeners:[string,EventListener][]=[['compositionstart',start],['compositionupdate',change],['compositionend',end],['beforeinput',before],['input',input],['blur',blur],['paste',paste],['contextmenu',context]];
   for(const [name,listener]of listeners)slot.addEventListener(name,listener,true);
