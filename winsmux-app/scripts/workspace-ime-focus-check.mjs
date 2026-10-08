@@ -415,6 +415,34 @@ try {
   const key=(key,options={})=>fallback.dispatchEvent(new KeyboardEvent('keydown',{bubbles:true,cancelable:true,key,ctrlKey:true,shiftKey:true,...options}));
   for(const k of ['p','t','w'])key(k);check('documented shortcuts reuse exact actions',calls.join(',')==='search,create,close');composing=true;key('p');composing=false;key('t',{isComposing:true});key('w',{keyCode:229});check('IME and 229 suppress all shortcut actions',calls.length===3);enabled=false;key('p');check('single-key-independent shortcut option disables capture',calls.length===3);enabled=true;key('p',{altKey:true});key('p',{metaKey:true});check('OS modifier alternatives remain unhandled',calls.length===3);remove();key('p');check('disposed shortcut handler has no effect',calls.length===3);return passed;
  });checks.push(...focusChecks);
+ const focusOutChecks=await page.evaluate(async()=>{
+  const {createProjectPaneView,createTerminalInputOwner,installTerminalInputCodec}=globalThis.product;
+  const passed=[],check=(name,value,detail)=>{if(!value)throw Error(name+' '+JSON.stringify(detail));passed.push(name);};
+  const flush=async()=>{for(let n=0;n<24;n++)await Promise.resolve();};
+  const uid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
+  const root=document.querySelector('#root');
+  root.replaceChildren();
+  const target={instanceId:uid(1),generation:uid(2),projectId:uid(3),paneId:uid(4),runId:uid(5),producerId:uid(6)};
+  const snapshot={instanceId:target.instanceId,generation:target.generation,topologyRevision:7,availability:'available',busy:false,projects:{projects:[{project_id:target.projectId,display_name:'synthetic',path:'C:/synthetic',root_state:'verified'}],selected_project_id:target.projectId},panes:{project_id:target.projectId,panes:[{pane_id:target.paneId,project_id:target.projectId,current_run_id:target.runId,display_name:'synthetic',observation:null}],root:{kind:'leaf',pane_id:target.paneId},selected_pane_id:target.paneId}};
+  let seq=100,inputSeq=0,releaseInput=null;const writes=[],admissions=[];
+  const guard={listen:async()=>()=>{},invoke:async()=>({lease:'1',revision:'1',fence:null,resume_allowed:false,admission_error:null})};
+  const owner=createTerminalInputOwner(root,guard,()=>uid(++seq));await owner.initialize();
+  const inputOk=q=>({schema_version:1,instance_id:q.instance_id,operation_id:q.operation_id,accepted:true,topology_revision:7,event_seq:0,result:{operation:q.operation,data:{input_seq:++inputSeq,pane_id:target.paneId,run_id:target.runId,written_bytes:new TextEncoder().encode(q.params.text).length}},error:null});
+  owner.connect({ownerKey:{instanceId:target.instanceId,ownerGeneration:'1'},snapshot:()=>snapshot,maxBytes:()=>1048576,recover:async()=>{throw Error('unexpected recovery');},exchange:async(q,beforeDispatch)=>{writes.push(q.params.text);if(beforeDispatch&&!beforeDispatch())throw Error('host_not_sent');return new Promise(resolve=>{releaseInput=()=>resolve(inputOk(q));});}});
+  await owner.recoverGuard();
+  let terminal,codec;
+  const view=createProjectPaneView(root,snapshot,{control:intent=>{const release=intent.kind==='resize-pane'?()=>{}:owner.admitControl();admissions.push({kind:intent.kind,accepted:!!release,records:owner.inspect().records.map(r=>r.state),writes:[...writes]});release?.();return{disposition:release?'completed':'refused'};},inspect:()=>{},composing:owner.hasPendingComposition,mountTerminal:slot=>{terminal=new globalThis.Terminal({screenReaderMode:true});terminal.open(slot);codec=installTerminalInputCodec(slot,terminal,owner.produce(target),owner.explain);return()=>{codec.retire();terminal.dispose();};}});
+  await new Promise(resolve=>terminal.write('\x1b[?1004h',resolve));
+  terminal.focus();await flush();
+  for(let n=0;n<8&&releaseInput;n++){const finish=releaseInput;releaseInput=null;finish();await flush();}
+  const quiescent={records:owner.inspect().records.map(r=>r.state),writes:[...writes]};
+  const interrupt=root.querySelector('[data-action="interrupt-run"]');
+  if(!interrupt||interrupt.disabled||interrupt.textContent!=='中断')throw Error('pane interrupt control missing');
+  interrupt.focus();interrupt.click();
+  check('pane interrupt admits while focus-out exchange stays deferred',admissions.length===1&&admissions[0].accepted&&admissions[0].kind==='interrupt-run',{quiescent,admissions,writes,records:owner.inspect().records.map(r=>r.state)});
+  view.dispose();owner.dispose();return passed;
+ });
+ checks.push(...focusOutChecks);
 }catch(error){failure=String(error.stack||error);}finally{if(browser)await browser.close();}
 const after=identity();if(JSON.stringify(before)!==JSON.stringify(after))failure=(failure||'')+'\nInput source identity changed during run';
 const receipt={scope:'actual production input owner, codec and focus with installed xterm in headless Edge; synthetic DOM composition; no native Windows IME, Tauri IPC, PTY or Narrator acceptance',command:[process.execPath,...process.argv.slice(1)],started,ended:new Date().toISOString(),browserVersion:browser?.version(),xtermVersion:JSON.parse(readFileSync(resolve(dependency,'node_modules/xterm/package.json'),'utf8')).version,success:failure===null,passed:checks.length,checks,failure,source_before:before,source_after:after};
