@@ -2612,6 +2612,68 @@ mod lifecycle_tests {
         state.record_actual_exit();
         assert_eq!(state.confirmed_exit_code, None);
     }
+    fn issue_1359_close_outcome(kind: IoKind) -> String {
+        let manager = Arc::new(WorkspaceManager::default());
+        let flight = {
+            let (state, flight, _ticket) = pending(kind, Intent::SessionOnly);
+            *manager.state.lock().unwrap() = state;
+            flight
+        };
+        assert!(
+            flight.terminal.lock().unwrap().is_none(),
+            "flight stays unanswered"
+        );
+        assert!(
+            manager.has_session(),
+            "outstanding flight counts as a live session"
+        );
+        let worker = match manager.reserve(Intent::CloseMain).unwrap() {
+            CompletionAdmission::Started(worker) => worker,
+            CompletionAdmission::Coalesced => panic!("close coalesced"),
+        };
+        let status = manager.host_status().unwrap();
+        let mut state = manager.state.lock().unwrap();
+        let close = state
+            .completion
+            .as_ref()
+            .expect("close reservation")
+            .ticket
+            .clone();
+        let waiting = matches!(state.advance(&close), Advance::Await(ref waited) if Arc::ptr_eq(waited, &flight));
+        let released = state.main_close_released;
+        let force_error = state.begin_force().err();
+        let effect_error = state.effect_intent(&close).err();
+        let report = if released || force_error.is_none() {
+            String::new()
+        } else {
+            format!(
+                "kind={kind:?} host_status.phase={} phase={:?} waiting={waiting} main_close_released={released} effect={effect_error:?} force={force_error:?} session_in_lifecycle={} flight_terminal_none={}",
+                status.phase,
+                state.phase,
+                state.session.is_some(),
+                flight.terminal.lock().unwrap().is_none(),
+            )
+        };
+        drop(state);
+        drop(worker);
+        report
+    }
+    #[test]
+    fn issue_1359_unanswered_stop_close_reaches_release_or_force_confirmation() {
+        let report = issue_1359_close_outcome(IoKind::Stop);
+        assert!(
+            report.is_empty(),
+            "unanswered stop left no close release and no force confirmation: {report}"
+        );
+    }
+    #[test]
+    fn issue_1359_unanswered_ordinary_flight_close_reaches_release_or_force_confirmation() {
+        let report = issue_1359_close_outcome(IoKind::Ordinary);
+        assert!(
+            report.is_empty(),
+            "unanswered flight left no close release and no force confirmation: {report}"
+        );
+    }
 }
 
 #[cfg(test)]
