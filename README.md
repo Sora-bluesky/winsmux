@@ -9,7 +9,7 @@ This README describes v0.38.0. Use the documentation shipped with the version yo
 ## Work with projects and panes
 
 - Select a local project folder and check its working-directory identity.
-- Create, select, split, resize and close terminal panes, up to four per project.
+- Create (up to four per project), select, split, resize and close terminal panes.
 - Use the AI launch controls for Codex or Claude Code, with optional model and reasoning settings.
 - Inspect process state separately from work state, with evidence and observation time.
 - Interrupt the selected run and check that termination was observed.

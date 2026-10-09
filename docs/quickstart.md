@@ -34,7 +34,7 @@ Use **プロジェクトを開く** (Open project) to select a local folder. Che
 
 Use **新しいペイン** (New pane) to open a terminal. **左右に分割** and **上下に分割** split the working area horizontally or vertically. Check the selected project and pane before an operation.
 
-A project holds at most four panes. At four, **新しいペイン** and the split buttons are disabled. Close a pane before adding another.
+You can create up to four panes in a project. When it has four or more, **新しいペイン** and the split buttons are disabled. Close a pane before adding another.
 
 For Japanese input, click the terminal, type using your IME, convert with Space, and commit with Enter. Distinguish committing an IME composition from pressing Enter to execute a shell command.
 
@@ -54,7 +54,7 @@ A running process and completed AI work are separate states. When a state is **�
 
 In **成果物** (Artifacts), use **ファイルを選ぶ** (Choose file) or register a Git candidate. Use **成果物を再確認** (Refresh artifacts), select a registered file, and use **本文を読む** (Read content) or **差分を読む** (Read diff). Binary files do not display a text body. If a file disappears, do not treat its previous body as current content.
 
-In a project folder with a top-level `.git`, **差分を読む** reads the whole folder, including untracked and ignored files and the Git objects. If that passes 1 MiB, or the folder contains a junction, symbolic link, hard-linked file or nested `.git`, the diff cannot be read even for a small file, and **成果物を再確認** shows the reason in place of the Git candidates. **本文を読む** is not affected. See [Troubleshooting](TROUBLESHOOTING.md#artifacts-or-layout-cannot-be-read).
+In a project folder with a top-level `.git` folder, **差分を読む** reads the whole folder, including untracked and ignored files and the Git objects. If that passes 1 MiB, or the folder contains a junction, symbolic link, hard-linked file or nested `.git`, the diff cannot be read even for a small file, and **成果物を再確認** shows the reason in place of the Git candidates. **本文を読む** is not affected. See [Troubleshooting](TROUBLESHOOTING.md#artifacts-or-layout-cannot-be-read).
 
 Inspect the file content, diff and command results before adopting AI output.
 
