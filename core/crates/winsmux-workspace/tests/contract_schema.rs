@@ -361,6 +361,16 @@ fn check_success(op: &str) {
         .chain(shape_mutants(&v, "/result"))
         .chain(shape_mutants(&v, ""))
     {
+        if op == "artifact.list" && name == "/result/data/git_candidates_error:missing" {
+            let parsed = parse_response(&q, &bytes(&m)).unwrap_or_else(|e| panic!("{op} {name}: {e}"));
+            match parsed.result.0 {
+                Some(Success::ArtifactList(ref data)) => assert!(data.git_candidates_error.0.is_none()),
+                _ => panic!("{op} {name}: missing success"),
+            }
+            let echoed = serialize_response(&q, &parsed).unwrap();
+            assert!(std::str::from_utf8(&echoed).unwrap().contains("\"git_candidates_error\":null"));
+            continue;
+        }
         assert!(parse_response(&q, &bytes(&m)).is_err(), "{op} {name}");
     }
     let different = if op == "capabilities.get" {
@@ -1761,6 +1771,17 @@ fn object_paths(v: &Value) -> Vec<String> {
 // separate guarantees. Exact discriminator removal selects a legal legacy
 // branch; it never makes another field/type mutation legal.
 fn structural_expectation(c: &Case, path: &str, mutant: &Value) -> Expectation {
+    if c.kind == "response"
+        && c.value.pointer("/result/operation").and_then(Value::as_str) == Some("artifact.list")
+        && path == "/result/data"
+    {
+        let mut legacy = c.value.clone();
+        if let Some(object) = legacy.pointer_mut(path).and_then(Value::as_object_mut) {
+            if object.remove("git_candidates_error").is_some() && mutant == &legacy {
+                return Expectation::Accepted;
+            }
+        }
+    }
     let field = match (
         c.kind,
         path,
@@ -2013,8 +2034,8 @@ fn every_field_enum_and_nullable_inventory() {
     assert_eq!(result["nullable"], result["nullable_checked"]);
     assert_eq!(result["enum_values"], result["enum_checked"]);
     println!("field coverage {result}");
-    // All required nullable fields are also individually removed in structural_cases;
-    // there are no fallback values or exceptions for an empty object or array.
+    // Required nullable fields are removed individually in structural_cases.
+    // A missing artifact.list git_candidates_error is null; every other absence stays invalid.
 }
 
 #[test]

@@ -73,6 +73,11 @@ fn refine(v: &mut Value) {
                 ]);
             }
         }
+        if let Some(list) = defs.get_mut("ArtifactListData") {
+            if let Some(required) = list.get_mut("required").and_then(Value::as_array_mut) {
+                required.retain(|field| field != "git_candidates_error");
+            }
+        }
         if let Some(s) = defs.get_mut("ArtifactRef") {
             s["oneOf"] = json!([
                 {"properties":{"run_id":{"type":"null"},"association":{"type":"null"}}},

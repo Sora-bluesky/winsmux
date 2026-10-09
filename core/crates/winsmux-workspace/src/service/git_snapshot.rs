@@ -13,17 +13,39 @@ pub(crate) struct CapturedRepository {
     ignore_case: bool,
 }
 
+pub(crate) enum CaptureFailure {
+    Walk(ErrorCode),
+    Repository(ErrorCode),
+}
+
+impl CaptureFailure {
+    pub(crate) fn code(self) -> ErrorCode {
+        match self {
+            Self::Walk(code) | Self::Repository(code) => code,
+        }
+    }
+}
+
 impl CapturedRepository {
     pub(crate) fn new(
         project_path: &str, expected_root: &RootIdentity,
         authority: &AllocationAuthority, pool: AllocationPool,
     ) -> Result<Option<Self>, ErrorCode> {
+        Self::capture(project_path, expected_root, authority, pool).map_err(CaptureFailure::code)
+    }
+
+    pub(crate) fn capture(
+        project_path: &str, expected_root: &RootIdentity,
+        authority: &AllocationAuthority, pool: AllocationPool,
+    ) -> Result<Option<Self>, CaptureFailure> {
         let saw_objects = Cell::new(false);
-        let tree = root_identity::capture_project_tree(
+        let rejected_metadata = Cell::new(false);
+        let tree = match root_identity::capture_project_tree(
             project_path, expected_root, authority, pool,
             |relative, directory| {
                 if relative.eq_ignore_ascii_case(".git/objects/info/alternates")
                     || relative.eq_ignore_ascii_case(".git/info/attributes") {
+                    rejected_metadata.set(true);
                     return Err(ErrorCode::UnsupportedFile);
                 }
                 if relative == ".git/objects" && directory { saw_objects.set(true); }
@@ -36,16 +58,22 @@ impl CapturedRepository {
                 }
                 Ok(true)
             },
-        )?;
+        ) {
+            Ok(tree) => tree,
+            Err(_) if rejected_metadata.get() => {
+                return Err(CaptureFailure::Repository(ErrorCode::UnsupportedFile));
+            }
+            Err(code) => return Err(CaptureFailure::Walk(code)),
+        };
         let Some(tree) = tree else { return Ok(None) };
         if !saw_objects.get() || !tree.files.iter().any(|entry| entry.relative == ".git/HEAD") {
-            return Err(ErrorCode::UnsupportedFile);
+            return Err(CaptureFailure::Repository(ErrorCode::UnsupportedFile));
         }
         let mut ignore_case = None;
         for entry in &tree.files {
             match entry.relative.as_str() {
-                ".git/config" => ignore_case = validate_source_config(&entry.bytes)?,
-                ".git/info/exclude" => validate_excludes(&entry.bytes)?,
+                ".git/config" => ignore_case = validate_source_config(&entry.bytes).map_err(CaptureFailure::Repository)?,
+                ".git/info/exclude" => validate_excludes(&entry.bytes).map_err(CaptureFailure::Repository)?,
                 _ => {}
             }
         }

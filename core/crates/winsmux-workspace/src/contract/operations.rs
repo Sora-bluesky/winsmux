@@ -674,7 +674,78 @@ object!(ArtifactRegisterData {
     artifact: ArtifactRef
 });
 enumeration!(GitCandidatesError { ResourceExhausted=>"resource_exhausted", UnsupportedFile=>"unsupported_file" });
-object!(ArtifactListData { registered:Vec<ArtifactRef>, git_candidates:StringSet<RelativePath>, git_candidates_error:Nullable<GitCandidatesError> });
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ArtifactListData {
+    pub registered: Vec<ArtifactRef>,
+    pub git_candidates: StringSet<RelativePath>,
+    pub git_candidates_error: Nullable<GitCandidatesError>,
+}
+impl OwnedCapacity for ArtifactListData {
+    fn owned_capacity(&self) -> usize {
+        self.registered.owned_capacity()
+            .saturating_add(self.git_candidates.owned_capacity())
+            .saturating_add(self.git_candidates_error.owned_capacity())
+    }
+}
+impl<'de> Deserialize<'de> for ArtifactListData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fields {
+            registered: Vec<ArtifactRef>,
+            git_candidates: StringSet<RelativePath>,
+            #[serde(default)]
+            git_candidates_error: Option<Nullable<GitCandidatesError>>,
+        }
+        struct ObjectVisitor;
+        impl<'de> serde::de::Visitor<'de> for ObjectVisitor {
+            type Value = ArtifactListData;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("object")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                let fields = Fields::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(ArtifactListData {
+                    registered: fields.registered,
+                    git_candidates: fields.git_candidates,
+                    git_candidates_error: fields.git_candidates_error.unwrap_or(Nullable(None)),
+                })
+            }
+        }
+        deserializer.deserialize_map(ObjectVisitor)
+    }
+}
+impl crate::contract::ingress::CanonicalValue for ArtifactListData {
+    fn write_canonical(
+        &self,
+        sink: &mut impl crate::contract::ingress::Sink,
+    ) -> Result<(), crate::host::admission::AllocationError> {
+        sink.bytes(b"{")?;
+        crate::contract::ingress::json_string(sink, "git_candidates")?;
+        sink.bytes(b":")?;
+        crate::contract::ingress::CanonicalValue::write_canonical(&self.git_candidates, sink)?;
+        sink.bytes(b",")?;
+        crate::contract::ingress::json_string(sink, "git_candidates_error")?;
+        sink.bytes(b":")?;
+        crate::contract::ingress::CanonicalValue::write_canonical(&self.git_candidates_error, sink)?;
+        sink.bytes(b",")?;
+        crate::contract::ingress::json_string(sink, "registered")?;
+        sink.bytes(b":")?;
+        crate::contract::ingress::CanonicalValue::write_canonical(&self.registered, sink)?;
+        sink.bytes(b"}")
+    }
+}
+#[cfg(test)]
+impl crate::contract::ingress::TestFixture for ArtifactListData {
+    fn test_fixture() -> Self {
+        Self {
+            registered: <Vec<ArtifactRef> as crate::contract::ingress::TestFixture>::test_fixture(),
+            git_candidates: <StringSet<RelativePath> as crate::contract::ingress::TestFixture>::test_fixture(),
+            git_candidates_error: <Nullable<GitCandidatesError> as crate::contract::ingress::TestFixture>::test_fixture(),
+        }
+    }
+}
 object!(ArtifactReadData { artifact_id:ArtifactId, kind:FileKind, size_bytes:U, text:Nullable<String>, truncated:bool });
 object!(ArtifactDiffData { artifact_id:ArtifactId, kind:FileKind, text:Nullable<String>, truncated:bool });
 object!(ArtifactChoiceData { left_artifact_id:ArtifactId, right_artifact_id:ArtifactId, kept_artifact_id:ArtifactId });

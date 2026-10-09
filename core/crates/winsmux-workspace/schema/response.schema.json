@@ -124,7 +124,6 @@
       },
       "required": [
         "git_candidates",
-        "git_candidates_error",
         "registered"
       ],
       "type": "object"

@@ -36,7 +36,7 @@ try {
     const field = name => mount.querySelector(`[data-field="${name}"]`)?.textContent ?? '';
     const calls = [];
     let pane = empty(), picked = null, replyLost = false, nativeUnknown = false, failStatus = false, paneListMode = 'empty', malformedRestore = false, diagnosticsExtra = false, readDeleted = false, sentRegister = 0;
-    let pickerMode = 'value', pickerRelease = null, directPath = null, directProject = null, registeredRows = [artifact], statusOutcome = 'succeeded', gitCandidatesError = null;
+    let pickerMode = 'value', pickerRelease = null, directPath = null, directProject = null, registeredRows = [artifact], statusOutcome = 'succeeded', gitCandidatesError = null, omitGitCandidatesError = false;
     let deferStatus = false, statusRelease = null, refuseRegister = false, ambiguousMutation = null;
     let deferArtifactList = false, artifactListRelease = null, deferRead = false, readRelease = null;
     let deferProjectList = false, projectListRelease = null, publishOnRefresh = false;
@@ -79,7 +79,9 @@ try {
         }
         case 'artifact.list': {
           if (deferArtifactList) await new Promise(resolve => { artifactListRelease = resolve; });
-          return response(req, { registered: registeredRows, git_candidates: ['git/changed.txt'], git_candidates_error: gitCandidatesError });
+          const data = { registered: registeredRows, git_candidates: ['git/changed.txt'], git_candidates_error: gitCandidatesError };
+          if (omitGitCandidatesError) delete data.git_candidates_error;
+          return response(req, data);
         }
         case 'artifact.read': {
           const value = req.params.artifact_id === artifactB.artifact_id ? 'B本文' : '試験本文';
@@ -210,11 +212,11 @@ try {
     directPath = null;
     gitCandidatesError = 'resource_exhausted'; button('list').click(); await flush();
     check('resource exhausted keeps the registered artifact and states the size limit', !!mount.querySelector(`[data-artifact-id="${artifactId}"]`)
-      && field('git-candidates-error') === 'プロジェクトフォルダー全体が1 MiBを超えるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。'
+      && field('git-candidates-error') === 'プロジェクトフォルダー全体が大きすぎる（1 MiBを超えるなど）ため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。'
       && !mount.querySelector('[data-action="register-git"]'));
     gitCandidatesError = 'unsupported_file'; button('list').click(); await flush();
     check('unsupported file keeps the registered artifact and states the link limit', !!mount.querySelector(`[data-artifact-id="${artifactId}"]`)
-      && field('git-candidates-error') === 'プロジェクトフォルダーにジャンクション、シンボリックリンク、ハードリンク、または入れ子の .git があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。'
+      && field('git-candidates-error') === 'プロジェクトフォルダーに取り込めないもの（ジャンクション、シンボリックリンク、ハードリンク、入れ子の .git など）があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。'
       && !mount.querySelector('[data-action="register-git"]'));
     gitCandidatesError = 'runtime_failed'; button('list').click(); await flush();
     check('unknown git candidate error is refused', field('content-state').includes('確認できません'));
@@ -285,6 +287,7 @@ try {
       directPath = null; directProject = null; registeredRows = [artifact]; refuseRegister = false; ambiguousMutation = null;
       deferArtifactList = false; artifactListRelease = null; deferRead = false; readRelease = null;
       deferProjectList = false; projectListRelease = null; publishOnRefresh = false;
+      gitCandidatesError = null; omitGitCandidatesError = false;
       controller = createDetailsController({ instanceId: host, nonce: `reentry-${name}` }, crypto, admission);
       bind(controller); dispose = controller.open(mount, origin);
     };
@@ -346,6 +349,20 @@ try {
     artifactListRelease(); await flush();
     check('old recovered register A cannot erase new register B success', field('content-state') === newerRegisterState
       && sentRegister === beforeRecovery + 2 && !controller.session.mutationPending());
+    dispose(); controller.retire();
+    freshReentry('register-recovered-with-git-candidates-error');
+    const beforeGitError = sentRegister;
+    const beforeGitLists = calls.filter(c => c.operation === 'artifact.list').length;
+    gitCandidatesError = 'unsupported_file'; replyLost = true; picked = 'C:\\root\\note.txt';
+    button('pick').click(); await flush();
+    check('uncertain register recovers through artifact.list when git_candidates_error is set',
+      sentRegister === beforeGitError + 1 && calls.filter(c => c.operation === 'artifact.list').length === beforeGitLists + 1
+      && !controller.session.mutationPending() && field('content-state').includes('登録を確認'));
+    omitGitCandidatesError = true; gitCandidatesError = null;
+    button('pick').click(); await flush();
+    check('uncertain register recovers through artifact.list when git_candidates_error is omitted',
+      sentRegister === beforeGitError + 2 && calls.filter(c => c.operation === 'artifact.list').length === beforeGitLists + 2
+      && !controller.session.mutationPending() && field('content-state').includes('登録を確認'));
     dispose(); controller.retire();
     freshReentry('old-read-after-new-read');
     registeredRows = [artifact, artifactB]; button('list').click(); await flush();

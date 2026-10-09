@@ -7075,30 +7075,30 @@ fn dispatch_artifact(
             drop(state);
             let observed = (|| -> Result<_, ErrorCode> {
                 let empty = || crate::contract::StringSet::new(Vec::new()).map_err(|_| ErrorCode::ResourceExhausted);
-                let soften = |code| match code {
-                    ErrorCode::ResourceExhausted => Ok(crate::contract::Nullable(Some(crate::contract::GitCandidatesError::ResourceExhausted))),
-                    ErrorCode::UnsupportedFile => Ok(crate::contract::Nullable(Some(crate::contract::GitCandidatesError::UnsupportedFile))),
-                    other => Err(other),
+                let softened = |code| match code {
+                    ErrorCode::ResourceExhausted => crate::contract::Nullable(Some(crate::contract::GitCandidatesError::ResourceExhausted)),
+                    ErrorCode::UnsupportedFile => crate::contract::Nullable(Some(crate::contract::GitCandidatesError::UnsupportedFile)),
+                    _ => crate::contract::Nullable(None),
                 };
-                let snapshot = match crate::service::git_snapshot::CapturedRepository::new(
+                let snapshot = match crate::service::git_snapshot::CapturedRepository::capture(
                     &path, &root_identity, &auth.shared.allocations, pool,
                 ) {
                     Ok(snapshot) => snapshot,
-                    Err(code) => return Ok((None, empty()?, soften(code)?)),
+                    Err(crate::service::git_snapshot::CaptureFailure::Walk(code @ (ErrorCode::ResourceExhausted | ErrorCode::UnsupportedFile))) => {
+                        return Ok((None, empty()?, softened(code), Some(code)));
+                    }
+                    Err(failure) => return Err(failure.code()),
                 };
                 let candidates = match &snapshot {
                     None => empty()?,
-                    Some(snapshot) => match snapshot.candidates(&auth.shared.git_supervisor, || {
+                    Some(snapshot) => snapshot.candidates(&auth.shared.git_supervisor, || {
                         let state = auth.shared.inner.lock().unwrap();
                         state.artifacts.epoch() != epoch
                             || !artifact_authorized(&state, owner, lease, &project_id)
                             || !artifact_request_reserved(&state, request, canonical, false, owner, lease)
-                    }) {
-                        Ok(candidates) => candidates,
-                        Err(code) => return Ok((None, empty()?, soften(code)?)),
-                    },
+                    })?,
                 };
-                Ok((snapshot, candidates, crate::contract::Nullable(None)))
+                Ok((snapshot, candidates, crate::contract::Nullable(None), None))
             })();
             let observed_root = crate::store::root_identity::observe_root(&path, &auth.shared.allocations, pool);
             let mut state = match relock_after_observe(auth, request, out, owner, lease, false) {
@@ -7106,13 +7106,13 @@ fn dispatch_artifact(
                 Err(Some(())) => return Some(owner_hold(hold)),
                 Err(None) => return None,
             };
-            let (_captured_repository, candidates, git_candidates_error) = match observed {
+            let (_captured_repository, candidates, git_candidates_error, walk_code) = match observed {
                 Ok(observed) => observed,
                 Err(code) => return artifact_error(auth, &mut state, request, out, code, false, Some(hold)),
             };
             let _observed_root = match observed_root {
                 Ok(root) if root.identity == root_identity => root,
-                _ => return artifact_error(auth, &mut state, request, out, ErrorCode::RootChanged, false, Some(hold)),
+                _ => return artifact_error(auth, &mut state, request, out, walk_code.unwrap_or(ErrorCode::RootChanged), false, Some(hold)),
             };
             if !state.workspace.get(&project_id).is_some_and(|project| project.identity.as_ref() == Some(&root_identity) && project.path.as_deref() == Some(path.as_str())) {
                 return artifact_error(auth, &mut state, request, out, ErrorCode::RootChanged, false, Some(hold));

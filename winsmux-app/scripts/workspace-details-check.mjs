@@ -150,12 +150,14 @@ try {
       settle(git); check('registered Git result explicit not auto read', commit({ kind: 'register', artifact: artifact(12, git.intent.relativePath) }) && calls.length === 2 && field('body') === '');
       reset();
       check('null git candidate error shows the candidate', !!btn('register-git') && host.querySelector('[data-field="git-candidates-error"]') === null);
+      update(s => { delete s.artifacts.git_candidates_error; });
+      check('missing git candidate error is null and still shows the candidate', !!btn('register-git') && host.querySelector('[data-field="git-candidates-error"]') === null);
       update(s => { s.artifacts.git_candidates_error = 'resource_exhausted'; });
       check('resource exhausted replaces Git candidates with the size reason', host.querySelector('[data-action="register-git"]') === null && !!host.querySelector(`[data-artifact-id="${id(10)}"]`)
-        && field('git-candidates-error') === 'プロジェクトフォルダー全体が1 MiBを超えるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。');
+        && field('git-candidates-error') === 'プロジェクトフォルダー全体が大きすぎる（1 MiBを超えるなど）ため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。');
       update(s => { s.artifacts.git_candidates_error = 'unsupported_file'; });
       check('unsupported file replaces Git candidates with the link reason', host.querySelector('[data-action="register-git"]') === null && !!host.querySelector(`[data-artifact-id="${id(10)}"]`)
-        && field('git-candidates-error') === 'プロジェクトフォルダーにジャンクション、シンボリックリンク、ハードリンク、または入れ子の .git があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。');
+        && field('git-candidates-error') === 'プロジェクトフォルダーに取り込めないもの（ジャンクション、シンボリックリンク、ハードリンク、入れ子の .git など）があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。');
       reset(); click('pick'); const exactPicker = clone(last());
       check('picker receipt records one exact relative path before terminal', session.prepareMutationPath(exactPicker.ticket, lifetime, exactPicker.intent, '結果/資料.txt'));
       settle(exactPicker);

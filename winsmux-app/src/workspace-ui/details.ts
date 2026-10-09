@@ -94,11 +94,11 @@ function validList(list: ArtifactListData, projectId: string): boolean {
     && list.registered.every(a => validArtifact(a, projectId))
     && new Set(list.registered.map(a => a.artifact_id)).size === list.registered.length
     && list.git_candidates.every(relativePath) && new Set(list.git_candidates).size === list.git_candidates.length
-    && (list.git_candidates_error === null || list.git_candidates_error === 'resource_exhausted' || list.git_candidates_error === 'unsupported_file');
+    && ((list.git_candidates_error ?? null) === null || list.git_candidates_error === 'resource_exhausted' || list.git_candidates_error === 'unsupported_file');
 }
 function gitCandidateReason(value: ArtifactListData['git_candidates_error'] | undefined): string | null {
-  if (value === 'resource_exhausted') return 'プロジェクトフォルダー全体が1 MiBを超えるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。';
-  if (value === 'unsupported_file') return 'プロジェクトフォルダーにジャンクション、シンボリックリンク、ハードリンク、または入れ子の .git があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。';
+  if (value === 'resource_exhausted') return 'プロジェクトフォルダー全体が大きすぎる（1 MiBを超えるなど）ため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。';
+  if (value === 'unsupported_file') return 'プロジェクトフォルダーに取り込めないもの（ジャンクション、シンボリックリンク、ハードリンク、入れ子の .git など）があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。';
   return null;
 }
 function diagnosticProjection(data: DiagnosticsData): string | null {
