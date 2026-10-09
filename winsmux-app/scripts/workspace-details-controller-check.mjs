@@ -36,7 +36,7 @@ try {
     const field = name => mount.querySelector(`[data-field="${name}"]`)?.textContent ?? '';
     const calls = [];
     let pane = empty(), picked = null, replyLost = false, nativeUnknown = false, failStatus = false, paneListMode = 'empty', malformedRestore = false, diagnosticsExtra = false, readDeleted = false, sentRegister = 0;
-    let pickerMode = 'value', pickerRelease = null, directPath = null, directProject = null, registeredRows = [artifact], statusOutcome = 'succeeded';
+    let pickerMode = 'value', pickerRelease = null, directPath = null, directProject = null, registeredRows = [artifact], statusOutcome = 'succeeded', gitCandidatesError = null;
     let deferStatus = false, statusRelease = null, refuseRegister = false, ambiguousMutation = null;
     let deferArtifactList = false, artifactListRelease = null, deferRead = false, readRelease = null;
     let deferProjectList = false, projectListRelease = null, publishOnRefresh = false;
@@ -79,7 +79,7 @@ try {
         }
         case 'artifact.list': {
           if (deferArtifactList) await new Promise(resolve => { artifactListRelease = resolve; });
-          return response(req, { registered: registeredRows, git_candidates: ['git/changed.txt'] });
+          return response(req, { registered: registeredRows, git_candidates: ['git/changed.txt'], git_candidates_error: gitCandidatesError });
         }
         case 'artifact.read': {
           const value = req.params.artifact_id === artifactB.artifact_id ? 'B本文' : '試験本文';
@@ -208,6 +208,18 @@ try {
     check('direct response for another path never reports registration success or recovers it from inventory', sentRegister === 3
       && !field('content-state').includes('登録を確認') && !controller.session.mutationPending());
     directPath = null;
+    gitCandidatesError = 'resource_exhausted'; button('list').click(); await flush();
+    check('resource exhausted keeps the registered artifact and states the size limit', !!mount.querySelector(`[data-artifact-id="${artifactId}"]`)
+      && field('git-candidates-error') === 'プロジェクトフォルダー全体が1 MiBを超えるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。'
+      && !mount.querySelector('[data-action="register-git"]'));
+    gitCandidatesError = 'unsupported_file'; button('list').click(); await flush();
+    check('unsupported file keeps the registered artifact and states the link limit', !!mount.querySelector(`[data-artifact-id="${artifactId}"]`)
+      && field('git-candidates-error') === 'プロジェクトフォルダーにジャンクション、シンボリックリンク、ハードリンク、または入れ子の .git があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。'
+      && !mount.querySelector('[data-action="register-git"]'));
+    gitCandidatesError = 'runtime_failed'; button('list').click(); await flush();
+    check('unknown git candidate error is refused', field('content-state').includes('確認できません'));
+    gitCandidatesError = null; button('list').click(); await flush();
+    check('null git candidate error shows candidates again', !!button('register-git') && field('git-candidates-error') === '');
     mount.querySelector(`[data-artifact-id="${artifactId}"]`).click(); button('read').click(); await flush();
     check('selected artifact reads text without launching', field('body') === '試験本文' && !calls.some(c => c.operation.includes('launch')));
     button('diff').click(); await flush();

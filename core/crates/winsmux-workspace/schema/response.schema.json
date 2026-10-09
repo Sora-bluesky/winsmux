@@ -105,6 +105,16 @@
         "git_candidates": {
           "$ref": "#/definitions/StringSet_RelativePath"
         },
+        "git_candidates_error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GitCandidatesError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "registered": {
           "items": {
             "$ref": "#/definitions/ArtifactRef"
@@ -114,6 +124,7 @@
       },
       "required": [
         "git_candidates",
+        "git_candidates_error",
         "registered"
       ],
       "type": "object"
@@ -842,6 +853,13 @@
       "enum": [
         "text",
         "binary"
+      ],
+      "type": "string"
+    },
+    "GitCandidatesError": {
+      "enum": [
+        "resource_exhausted",
+        "unsupported_file"
       ],
       "type": "string"
     },

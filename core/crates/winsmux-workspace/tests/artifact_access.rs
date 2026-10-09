@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 use std::fs;
+use std::process::Command;
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use winsmux_workspace::auth::testing::Harness;
@@ -81,6 +82,7 @@ fn selected_file_is_pinned_bounded_and_replayed_without_writes() {
     let listed = owner(&h, 3, "artifact.list", None, json!({"project_id":project_id}));
     assert_eq!(listed["result"]["data"]["registered"], json!([reference]));
     assert_eq!(listed["result"]["data"]["git_candidates"], json!([]));
+    assert_eq!(listed["result"]["data"]["git_candidates_error"], Value::Null);
     let full = owner(&h, 4, "artifact.read", None, json!({"artifact_id":id,"max_bytes":100}));
     assert_eq!(full["result"]["data"]["text"], text);
     assert_eq!(full["result"]["data"]["truncated"], false);
@@ -430,4 +432,68 @@ fn response_write_fault_keeps_old_ref_and_seals_register_error() {
     assert_eq!(new_ref["accepted"], true, "{new_ref}");
     assert_eq!(fs::read(project.0.join("old.txt")).unwrap(), b"old");
     assert_eq!(fs::read(project.0.join("new.txt")).unwrap(), b"new");
+}
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let output = Command::new(r"C:\Program Files\Git\bin\git.exe")
+        .current_dir(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "NUL")
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(output.status.success(), "git {args:?} status={} stderr={}", output.status, String::from_utf8_lossy(&output.stderr));
+}
+
+struct JunctionLink(std::path::PathBuf);
+
+impl Drop for JunctionLink {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir(&self.0);
+    }
+}
+
+fn mklink_junction(link: &std::path::Path, target: &std::path::Path) -> JunctionLink {
+    let output = Command::new("cmd").args(["/C", "mklink", "/J"]).arg(link).arg(target).output().expect("mklink");
+    assert!(output.status.success(), "mklink status={} stdout={} stderr={}", output.status, String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    JunctionLink(link.to_path_buf())
+}
+
+#[test]
+fn list_keeps_registered_artifacts_when_the_git_tree_exceeds_one_mebibyte() {
+    let (h, project, _layout, project_id) = setup();
+    fs::write(project.0.join("note.txt"), b"note").unwrap();
+    let registered = owner(&h, 200, "artifact.register", None, json!({"project_id":project_id,"relative_path":"note.txt","run_id":null}));
+    assert_eq!(registered["accepted"], true, "{registered}");
+    let reference = &registered["result"]["data"]["artifact"];
+    git(&project.0, &["-c", "init.defaultBranch=master", "init", "-q"]);
+    fs::write(project.0.join("big.bin"), vec![b'x'; 1_100_000]).unwrap();
+    let listed = owner(&h, 201, "artifact.list", None, json!({"project_id":project_id}));
+    assert_eq!(listed["accepted"], true, "{listed}");
+    assert_eq!(listed["result"]["data"]["registered"], json!([reference]));
+    assert_eq!(listed["result"]["data"]["git_candidates"], json!([]));
+    assert_eq!(listed["result"]["data"]["git_candidates_error"], "resource_exhausted");
+    let failed = owner(&h, 202, "artifact.diff", None, json!({"artifact_id":reference["artifact_id"],"max_bytes":100}));
+    assert_eq!(failed["accepted"], false, "{failed}");
+    assert_eq!(error(&failed), "resource_exhausted");
+}
+
+#[test]
+fn list_keeps_registered_artifacts_when_the_git_tree_contains_a_junction() {
+    let (h, project, _layout, project_id) = setup();
+    fs::write(project.0.join("note.txt"), b"note").unwrap();
+    let registered = owner(&h, 210, "artifact.register", None, json!({"project_id":project_id,"relative_path":"note.txt","run_id":null}));
+    assert_eq!(registered["accepted"], true, "{registered}");
+    let reference = &registered["result"]["data"]["artifact"];
+    git(&project.0, &["-c", "init.defaultBranch=master", "init", "-q"]);
+    let before = owner(&h, 211, "artifact.list", None, json!({"project_id":project_id}));
+    assert_ne!(before["error"]["code"].as_str(), Some("unsupported_file"), "{before}");
+    assert_ne!(before["result"]["data"]["git_candidates_error"].as_str(), Some("unsupported_file"), "{before}");
+    fs::create_dir(project.0.join("real")).unwrap();
+    let _junction = mklink_junction(&project.0.join("linked"), &project.0.join("real"));
+    let listed = owner(&h, 212, "artifact.list", None, json!({"project_id":project_id}));
+    assert_eq!(listed["accepted"], true, "{listed}");
+    assert_eq!(listed["result"]["data"]["registered"], json!([reference]));
+    assert_eq!(listed["result"]["data"]["git_candidates"], json!([]));
+    assert_eq!(listed["result"]["data"]["git_candidates_error"], "unsupported_file");
 }

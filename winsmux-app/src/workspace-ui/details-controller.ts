@@ -36,9 +36,11 @@ const artifactValid = (v: unknown, projectId: string): v is ArtifactRef => recor
   && (v.association === null && v.run_id === null || v.association === 'caller_selected' && uuid(v.run_id));
 const relative = (v: string) => v.length > 0 && !/[\p{Cc}\\:]/u.test(v) && v.split('/').every(part => part.length > 0 && part !== '.' && part !== '..' && !/[. ]$/.test(part)
   && !/^(CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/i.test(part.split('.')[0]));
-const listValid = (v: unknown, projectId: string): v is ArtifactListData => record(v, ['registered', 'git_candidates']) && Array.isArray(v.registered) && Array.isArray(v.git_candidates)
+const gitCandidatesError = (v: unknown): v is null | 'resource_exhausted' | 'unsupported_file' => v === null || v === 'resource_exhausted' || v === 'unsupported_file';
+const listValid = (v: unknown, projectId: string): v is ArtifactListData => record(v, ['registered', 'git_candidates', 'git_candidates_error']) && Array.isArray(v.registered) && Array.isArray(v.git_candidates)
   && v.registered.every(a => artifactValid(a, projectId)) && new Set(v.registered.map(a => a.artifact_id)).size === v.registered.length
-  && v.git_candidates.every((p: unknown) => typeof p === 'string' && relative(p)) && new Set(v.git_candidates).size === v.git_candidates.length;
+  && v.git_candidates.every((p: unknown) => typeof p === 'string' && relative(p)) && new Set(v.git_candidates).size === v.git_candidates.length
+  && gitCandidatesError(v.git_candidates_error);
 const projectValid = (v: unknown): v is ProjectSummary => record(v, ['project_id', 'root_state', 'display_name', 'path']) && uuid(v.project_id)
   && ['verified', 'changed', 'unavailable', 'unknown'].includes(v.root_state as string)
   && (v.path === null || typeof v.path === 'string') && (v.display_name === null || typeof v.display_name === 'string');

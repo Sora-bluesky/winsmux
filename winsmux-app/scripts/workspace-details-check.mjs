@@ -39,7 +39,7 @@ try {
     const artifact = (n = 10, path = '結果/資料.txt') => ({ artifact_id: id(n), project_id: id(2), relative_path: path, run_id: null, association: null });
     const fixture = () => ({ instanceId: id(1), generation: 'display-1', revision: 1, selectionRevision: 1, artifactsRevision: 1, availability: 'available',
       project: { project_id: id(2), path: 'C:\\synthetic-secret-path', display_name: '作業', root_state: 'verified' },
-      artifacts: { registered: [artifact(), artifact(11, '変更.txt')], git_candidates: ['候補/非Gitも登録.md'] }, selectedArtifactId: id(10), maxBytes: 1024 });
+      artifacts: { registered: [artifact(), artifact(11, '変更.txt')], git_candidates: ['候補/非Gitも登録.md'], git_candidates_error: null }, selectedArtifactId: id(10), maxBytes: 1024 });
     const diagnostics = () => ({ protocol_version: 1, product_version: '0.38.0', connection_state: 'granted', capabilities: operationNames, failure_codes: errorCodes,
       argv: ['SYNTHETIC_ARGV_SECRET'], env: { TOKEN: 'SYNTHETIC_ENV_SECRET' }, stdout: 'SYNTHETIC_OUTPUT_SECRET', path: 'SYNTHETIC_PATH_SECRET', name: 'SYNTHETIC_NAME_SECRET', artifact_text: 'SYNTHETIC_BODY_SECRET', internal_id: 'SYNTHETIC_ID_SECRET' });
     const host = document.querySelector('#details'), origin = document.querySelector('#origin'), other = document.querySelector('#other');
@@ -138,7 +138,7 @@ try {
         reset(); update(s => { s.artifacts.registered[0].relative_path = path; }); click('pick');
         check(`noncanonical relative path refused ${JSON.stringify(path)}`, calls.length === 0 && btn('pick').disabled && field('body') === '');
       }
-      for (const change of [s => { s.artifacts.registered[1].artifact_id = id(10); }, s => { s.artifacts.registered[0].project_id = id(3); }, s => { s.artifacts.git_candidates.push(s.artifacts.git_candidates[0]); }, s => { s.selectedArtifactId = id(90); }, s => { s.artifacts.registered[0].association = 'caller_selected'; }, s => { s.artifacts.registered[0].run_id = id(40); }]) {
+      for (const change of [s => { s.artifacts.registered[1].artifact_id = id(10); }, s => { s.artifacts.registered[0].project_id = id(3); }, s => { s.artifacts.git_candidates.push(s.artifacts.git_candidates[0]); }, s => { s.selectedArtifactId = id(90); }, s => { s.artifacts.registered[0].association = 'caller_selected'; }, s => { s.artifacts.registered[0].run_id = id(40); }, s => { s.artifacts.git_candidates_error = 'runtime_failed'; }]) {
         reset(); update(change); check('invalid list fails as whole not partial adoption', host.querySelectorAll('[data-action="select-artifact"]').length === 0 && btn('read').disabled);
       }
       reset(); update(s => { s.artifacts.registered[0].association = 'caller_selected'; s.artifacts.registered[0].run_id = id(40); });
@@ -148,6 +148,14 @@ try {
       btn('register-git').click(); const git = last();
       check('Git candidate issues registration only', git.intent.kind === 'register' && git.intent.source === 'git' && git.intent.relativePath === '候補/非Gitも登録.md');
       settle(git); check('registered Git result explicit not auto read', commit({ kind: 'register', artifact: artifact(12, git.intent.relativePath) }) && calls.length === 2 && field('body') === '');
+      reset();
+      check('null git candidate error shows the candidate', !!btn('register-git') && host.querySelector('[data-field="git-candidates-error"]') === null);
+      update(s => { s.artifacts.git_candidates_error = 'resource_exhausted'; });
+      check('resource exhausted replaces Git candidates with the size reason', host.querySelector('[data-action="register-git"]') === null && !!host.querySelector(`[data-artifact-id="${id(10)}"]`)
+        && field('git-candidates-error') === 'プロジェクトフォルダー全体が1 MiBを超えるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。');
+      update(s => { s.artifacts.git_candidates_error = 'unsupported_file'; });
+      check('unsupported file replaces Git candidates with the link reason', host.querySelector('[data-action="register-git"]') === null && !!host.querySelector(`[data-artifact-id="${id(10)}"]`)
+        && field('git-candidates-error') === 'プロジェクトフォルダーにジャンクション、シンボリックリンク、ハードリンク、または入れ子の .git があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。');
       reset(); click('pick'); const exactPicker = clone(last());
       check('picker receipt records one exact relative path before terminal', session.prepareMutationPath(exactPicker.ticket, lifetime, exactPicker.intent, '結果/資料.txt'));
       settle(exactPicker);
@@ -188,13 +196,13 @@ try {
           && selectedId() === id(11) && field('body') === '' && field('diagnostics') === '' && !field('restore-state').includes('未起動'));
       }
       reset(); choose(11); click('list');
-      const projectedList = { registered: [artifact(), artifact(11, '変更.txt'), artifact(12, '追加.txt')], git_candidates: ['追加候補.txt'] };
+      const projectedList = { registered: [artifact(), artifact(11, '変更.txt'), artifact(12, '追加.txt')], git_candidates: ['追加候補.txt'], git_candidates_error: null };
       check('correlated list overlay commits without changing received baseline', commit({ kind: 'list', data: projectedList }) && selectedId() === id(11));
       check('original repeated frame preserves list overlay and B', !view.update(clone(current)) && selectedId() === id(11)
         && host.querySelectorAll('[data-action="select-artifact"]').length === 3 && !btn('read').disabled);
       update(); view.dispose(); mount();
       check('ordinary higher frame and same-scope remount retain list overlay', selectedId() === id(11) && host.querySelectorAll('[data-action="select-artifact"]').length === 3);
-      update(s => { s.artifacts = { registered: [artifact()], git_candidates: [] }; s.artifactsRevision++; });
+      update(s => { s.artifacts = { registered: [artifact()], git_candidates: [], git_candidates_error: null }; s.artifactsRevision++; });
       check('fresh authoritative inventory removes B and never falls back to A', selectedId() === null && btn('read').disabled && field('body') === '' && field('diagnostics') === '');
       update(s => { s.selectionRevision++; });
       check('explicit external selection restores A only with new selection revision', selectedId() === id(10) && !btn('read').disabled);
@@ -218,7 +226,7 @@ try {
       check('local B never returns focus to A origin and close never replays notification', document.activeElement === btn('close') && selections.length === beforeClose);
 
       // Inventory/selection family: command history, current inventory and leases share one host transition.
-      const inventory = ids => ({ registered: ids.map(n => artifact(n, `${n}.txt`)), git_candidates: [] });
+      const inventory = ids => ({ registered: ids.map(n => artifact(n, `${n}.txt`)), git_candidates: [], git_candidates_error: null });
       const receive = s => { const accepted = view.update(s); if (accepted) current = clone(s); return accepted; };
       const freshInventory = list => { const s = clone(current); s.revision++; s.artifactsRevision++; s.artifacts = list; return receive(s); };
       const readResult = (call, text = '現在の成果物') => ({ kind: call.intent.kind,

@@ -247,7 +247,7 @@ fn fixture(op: &str) -> (Value, Value) {
         ),
         "artifact.list" => (
             json!({"project_id":PROJECT}),
-            json!({"registered":[artifact()],"git_candidates":["docs/result.txt"]}),
+            json!({"registered":[artifact()],"git_candidates":["docs/result.txt"],"git_candidates_error":null}),
         ),
         "artifact.read" => (
             json!({"artifact_id":ARTIFACT,"max_bytes":100}),
@@ -1704,6 +1704,19 @@ fn positive_cases() -> Vec<Case> {
         }
         cases.push(Case {
             name: format!("work_{work:?}"),
+            kind: "response",
+            request: Some(q),
+            value: r,
+            expectation: Expectation::Accepted,
+        });
+    }
+    for error in GitCandidatesError::ALL {
+        let (q, mut r) = fixture("artifact.list");
+        let data = &mut r["result"]["data"];
+        data["git_candidates"] = json!([]);
+        data["git_candidates_error"] = json!(error);
+        cases.push(Case {
+            name: format!("git_candidates_error_{error:?}"),
             kind: "response",
             request: Some(q),
             value: r,

@@ -673,7 +673,8 @@ object!(LayoutRestoreData {
 object!(ArtifactRegisterData {
     artifact: ArtifactRef
 });
-object!(ArtifactListData { registered:Vec<ArtifactRef>, git_candidates:StringSet<RelativePath> });
+enumeration!(GitCandidatesError { ResourceExhausted=>"resource_exhausted", UnsupportedFile=>"unsupported_file" });
+object!(ArtifactListData { registered:Vec<ArtifactRef>, git_candidates:StringSet<RelativePath>, git_candidates_error:Nullable<GitCandidatesError> });
 object!(ArtifactReadData { artifact_id:ArtifactId, kind:FileKind, size_bytes:U, text:Nullable<String>, truncated:bool });
 object!(ArtifactDiffData { artifact_id:ArtifactId, kind:FileKind, text:Nullable<String>, truncated:bool });
 object!(ArtifactChoiceData { left_artifact_id:ArtifactId, right_artifact_id:ArtifactId, kept_artifact_id:ArtifactId });

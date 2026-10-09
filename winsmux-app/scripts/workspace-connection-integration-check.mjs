@@ -145,7 +145,7 @@ try {
           return answer();
         }
         case 'output.read': return envelope(q, { run_id: q.params.run_id, text: '', next_cursor: 'cursor-0', gap: false, truncated: false });
-        case 'artifact.list': return envelope(q, { registered: [], git_candidates: ['git/changed.txt'] });
+        case 'artifact.list': return envelope(q, { registered: [], git_candidates: ['git/changed.txt'], git_candidates_error: null });
         case 'artifact.register':
         case 'layout.restore': {
           const answer = () => envelope(q, q.operation === 'artifact.register'

@@ -7074,19 +7074,31 @@ fn dispatch_artifact(
             };
             drop(state);
             let observed = (|| -> Result<_, ErrorCode> {
-                let snapshot = crate::service::git_snapshot::CapturedRepository::new(
+                let empty = || crate::contract::StringSet::new(Vec::new()).map_err(|_| ErrorCode::ResourceExhausted);
+                let soften = |code| match code {
+                    ErrorCode::ResourceExhausted => Ok(crate::contract::Nullable(Some(crate::contract::GitCandidatesError::ResourceExhausted))),
+                    ErrorCode::UnsupportedFile => Ok(crate::contract::Nullable(Some(crate::contract::GitCandidatesError::UnsupportedFile))),
+                    other => Err(other),
+                };
+                let snapshot = match crate::service::git_snapshot::CapturedRepository::new(
                     &path, &root_identity, &auth.shared.allocations, pool,
-                )?;
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(code) => return Ok((None, empty()?, soften(code)?)),
+                };
                 let candidates = match &snapshot {
-                    None => crate::contract::StringSet::new(Vec::new()).map_err(|_| ErrorCode::ResourceExhausted)?,
-                    Some(snapshot) => snapshot.candidates(&auth.shared.git_supervisor, || {
+                    None => empty()?,
+                    Some(snapshot) => match snapshot.candidates(&auth.shared.git_supervisor, || {
                         let state = auth.shared.inner.lock().unwrap();
                         state.artifacts.epoch() != epoch
                             || !artifact_authorized(&state, owner, lease, &project_id)
                             || !artifact_request_reserved(&state, request, canonical, false, owner, lease)
-                    })?,
+                    }) {
+                        Ok(candidates) => candidates,
+                        Err(code) => return Ok((None, empty()?, soften(code)?)),
+                    },
                 };
-                Ok((snapshot, candidates))
+                Ok((snapshot, candidates, crate::contract::Nullable(None)))
             })();
             let observed_root = crate::store::root_identity::observe_root(&path, &auth.shared.allocations, pool);
             let mut state = match relock_after_observe(auth, request, out, owner, lease, false) {
@@ -7094,7 +7106,7 @@ fn dispatch_artifact(
                 Err(Some(())) => return Some(owner_hold(hold)),
                 Err(None) => return None,
             };
-            let (_captured_repository, candidates) = match observed {
+            let (_captured_repository, candidates, git_candidates_error) = match observed {
                 Ok(observed) => observed,
                 Err(code) => return artifact_error(auth, &mut state, request, out, code, false, Some(hold)),
             };
@@ -7117,6 +7129,7 @@ fn dispatch_artifact(
             let data = crate::contract::ArtifactListData {
                 registered: refs,
                 git_candidates: candidates,
+                git_candidates_error,
             };
             if write_artifact_success(&mut state, out, request, &auth.shared.instance_id, Success::ArtifactList(data)).is_none() {
                 return artifact_error(auth, &mut state, request, out, ErrorCode::ResourceExhausted, false, Some(hold));

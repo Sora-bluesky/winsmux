@@ -93,7 +93,13 @@ function validList(list: ArtifactListData, projectId: string): boolean {
   return !!list && Array.isArray(list.registered) && Array.isArray(list.git_candidates)
     && list.registered.every(a => validArtifact(a, projectId))
     && new Set(list.registered.map(a => a.artifact_id)).size === list.registered.length
-    && list.git_candidates.every(relativePath) && new Set(list.git_candidates).size === list.git_candidates.length;
+    && list.git_candidates.every(relativePath) && new Set(list.git_candidates).size === list.git_candidates.length
+    && (list.git_candidates_error === null || list.git_candidates_error === 'resource_exhausted' || list.git_candidates_error === 'unsupported_file');
+}
+function gitCandidateReason(value: ArtifactListData['git_candidates_error'] | undefined): string | null {
+  if (value === 'resource_exhausted') return 'プロジェクトフォルダー全体が1 MiBを超えるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。';
+  if (value === 'unsupported_file') return 'プロジェクトフォルダーにジャンクション、シンボリックリンク、ハードリンク、または入れ子の .git があるため、Git の変更の候補を表示できません。登録済みの成果物は表示しています。';
+  return null;
 }
 function diagnosticProjection(data: DiagnosticsData): string | null {
   const validSet = (v: unknown, allowed: readonly string[]) => Array.isArray(v) && v.every(s => typeof s === 'string' && allowed.includes(s)) && new Set(v).size === v.length;
@@ -367,6 +373,7 @@ export function createDetails(container: HTMLElement, initial: DetailsSnapshot, 
   const target = field('target', '');
   const pick = button('ファイルを選ぶ', 'pick'), refresh = button('成果物を再確認', 'list');
   const registered = make('div'), candidates = make('div'); registered.setAttribute('aria-label', '登録済みの成果物'); candidates.setAttribute('aria-label', 'Gitの候補');
+  const candidateNotice = make('p'); candidateNotice.dataset.field = 'git-candidates-error';
   const artifactButtons = new Map<string, HTMLButtonElement>(), candidateButtons = new Map<string, HTMLButtonElement>();
   const read = button('本文を読む', 'read'), diff = button('差分を読む', 'diff');
   const contentState = field('content-state', '本文は未確認'); contentState.setAttribute('role', 'status');
@@ -465,9 +472,10 @@ export function createDetails(container: HTMLElement, initial: DetailsSnapshot, 
     const retire = (map: Map<string, HTMLButtonElement>, keep: Set<string>) => {
       for (const [id, node] of map) if (!keep.has(id)) { if (doc.activeElement === node) close.focus(); node.remove(); map.delete(id); }
     };
+    const reason = confirmed ? gitCandidateReason(current.artifacts?.git_candidates_error) : null;
     retire(artifactButtons, new Set(confirmed ? current.artifacts?.registered.map(a => a.artifact_id) : []));
-    retire(candidateButtons, new Set(confirmed ? current.artifacts?.git_candidates : []));
-    if (!confirmed || !current.artifacts) return;
+    retire(candidateButtons, new Set(confirmed && !reason ? current.artifacts?.git_candidates : []));
+    if (!confirmed || !current.artifacts) { candidateNotice.remove(); return; }
     for (const [index, artifact] of current.artifacts.registered.entries()) {
       let select = artifactButtons.get(artifact.artifact_id);
       if (!select) {
@@ -482,14 +490,20 @@ export function createDetails(container: HTMLElement, initial: DetailsSnapshot, 
       select.setAttribute('aria-pressed', String(artifact.artifact_id === current.selectedArtifactId));
       if (registered.children[index] !== select) registered.insertBefore(select, registered.children[index] ?? null);
     }
-    for (const [index, path] of current.artifacts.git_candidates.entries()) {
-      let candidate = candidateButtons.get(path);
-      if (!candidate) {
-        candidate = button(`登録: ${path}`, 'register-git');
-        candidate.addEventListener('click', () => { const scope = capture('register'); if (scope && current.artifacts?.git_candidates.includes(path)) submit({ ...scope, kind: 'register', source: 'git', relativePath: path }); });
-        candidateButtons.set(path, candidate);
+    if (reason) {
+      candidateNotice.textContent = reason;
+      if (candidateNotice.parentElement !== candidates) candidates.append(candidateNotice);
+    } else {
+      candidateNotice.remove();
+      for (const [index, path] of current.artifacts.git_candidates.entries()) {
+        let candidate = candidateButtons.get(path);
+        if (!candidate) {
+          candidate = button(`登録: ${path}`, 'register-git');
+          candidate.addEventListener('click', () => { const scope = capture('register'); if (scope && current.artifacts?.git_candidates.includes(path)) submit({ ...scope, kind: 'register', source: 'git', relativePath: path }); });
+          candidateButtons.set(path, candidate);
+        }
+        if (candidates.children[index] !== candidate) candidates.insertBefore(candidate, candidates.children[index] ?? null);
       }
-      if (candidates.children[index] !== candidate) candidates.insertBefore(candidate, candidates.children[index] ?? null);
     }
     if (preserveFocus && priorFocus instanceof HTMLButtonElement && priorFocus.isConnected && root.contains(priorFocus)
       && !priorFocus.closest('[hidden]') && (artifactButtons.has(priorFocus.dataset.artifactId ?? '') || [...candidateButtons.values()].includes(priorFocus))) priorFocus.focus();
