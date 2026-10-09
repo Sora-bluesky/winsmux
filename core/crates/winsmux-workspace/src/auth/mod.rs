@@ -8963,6 +8963,22 @@ fn spawn_pane(
         )?;
         return Some(owner_ok());
     }
+    if matches!(kind, SpawnKind::Create { .. } | SpawnKind::Split { .. })
+        && state.workspace.panes(&project_id).is_some_and(|panes| {
+            panes.panes.len() >= crate::contract::MAX_PANES_PER_PROJECT
+        })
+    {
+        write_error(
+            out,
+            request,
+            &auth.shared.instance_id,
+            state.event_seq(),
+            topology,
+            ErrorCode::ResourceExhausted,
+        )?;
+        seal_terminal(&mut state, request, out, false)?;
+        return Some(owner_ok());
+    }
     let provider_error = match &kind {
         SpawnKind::Agent { ready, arguments, .. } => arguments
             .as_ref()

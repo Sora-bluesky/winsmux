@@ -43,7 +43,7 @@ const projectValid = (v: unknown): v is ProjectSummary => record(v, ['project_id
   && ['verified', 'changed', 'unavailable', 'unknown'].includes(v.root_state as string)
   && (v.path === null || typeof v.path === 'string') && (v.display_name === null || typeof v.display_name === 'string');
 function stoppedPaneList(v: unknown, projectId: string): v is { project_id: string; panes: PaneSummary[]; root: unknown; selected_pane_id: string | null } {
-  if (!record(v, ['project_id', 'panes', 'root', 'selected_pane_id']) || v.project_id !== projectId || !Array.isArray(v.panes) || v.panes.length > 4) return false;
+  if (!record(v, ['project_id', 'panes', 'root', 'selected_pane_id']) || v.project_id !== projectId || !Array.isArray(v.panes)) return false;
   const ids = new Set<string>();
   for (const pane of v.panes) {
     if (!record(pane, ['pane_id', 'project_id', 'current_run_id', 'observation', 'display_name', 'path']) || !uuid(pane.pane_id) || ids.has(pane.pane_id)

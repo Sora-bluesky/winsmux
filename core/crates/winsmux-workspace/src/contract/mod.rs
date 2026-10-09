@@ -37,5 +37,7 @@ impl std::fmt::Display for ContractError {
 }
 impl std::error::Error for ContractError {}
 pub const MAX_MESSAGE_BYTES: usize = 1_048_576;
+/// pane.create and pane.split stop at this count. Restore of an existing store does not.
+pub const MAX_PANES_PER_PROJECT: usize = 4;
 /// serde_json's existing container recursion guard; not a runtime operation limit.
 pub(crate) const JSON_DEPTH: usize = 127;

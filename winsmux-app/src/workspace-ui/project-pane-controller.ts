@@ -146,7 +146,7 @@ function projects(v: unknown): v is ProjectListData {
   return v.selected_project_id === null || ids.has(v.selected_project_id as string);
 }
 function panes(v: unknown): v is PaneListData {
-  if (!object(v, ['project_id', 'panes', 'root', 'selected_pane_id']) || !uuid(v.project_id) || !Array.isArray(v.panes) || !nullable(v.selected_pane_id, uuid) || v.panes.length > 4) return false;
+  if (!object(v, ['project_id', 'panes', 'root', 'selected_pane_id']) || !uuid(v.project_id) || !Array.isArray(v.panes) || !nullable(v.selected_pane_id, uuid)) return false;
   const ids = new Set<string>();
   for (const p of v.panes) {
     if (!object(p, ['pane_id', 'project_id', 'current_run_id', 'observation', 'display_name', 'path']) || !uuid(p.pane_id) || ids.has(p.pane_id) || p.project_id !== v.project_id || !nullable(p.current_run_id, uuid) || !nullable(p.display_name, text) || !nullable(p.path, text)) return false;

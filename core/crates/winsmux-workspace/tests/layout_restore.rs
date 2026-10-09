@@ -23,7 +23,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 use winsmux_workspace::auth::testing::{Client, Harness};
 use winsmux_workspace::contract::{
-    parse_request, ConnectionId, OperationId, PaneId, ProjectId, Request, RunId,
+    parse_request, Axis, ConnectionId, LayoutNode, Nullable, OperationId, PaneId, ProjectId, Ratio,
+    Request, RunId,
 };
 use winsmux_workspace::{parse_snapshot, serialize_snapshot, Snapshot};
 
@@ -1504,4 +1505,189 @@ fn pane_selection_reobserves_root_and_retains_pair_grants_and_c_on_failure() {
     )
     .expect("grant still usable");
     assert_accepted(&public_list, "grant remains after root rejection");
+}
+
+#[test]
+fn pane_limit_refuses_a_fifth_create_and_split() {
+    let root = unique_store_root("pane-limit");
+    let harness = harness_on(&root);
+    let (_folder, project_id) = open_project(&harness);
+    let mut owned = OwnedRuns::new(&harness);
+    let (first, run_id) = create_pwsh(&harness, &project_id);
+    owned.track(run_id);
+    for _ in 1..winsmux_workspace::contract::MAX_PANES_PER_PROJECT {
+        let (_pane_id, run_id) = split_pwsh(&harness, &first);
+        owned.track(run_id);
+    }
+    let listed = pane_list(&harness, &project_id);
+    assert_eq!(
+        listed["panes"].as_array().map(Vec::len),
+        Some(winsmux_workspace::contract::MAX_PANES_PER_PROJECT)
+    );
+    let revision = current_revision(&harness);
+    let spawns = harness.authorization().testing_spawn_counts();
+    let create_id = "40000000-0000-4000-8000-000000000101";
+    let split_id = "40000000-0000-4000-8000-000000000102";
+    let create_params = json!({ "project_id": project_id, "shell_profile_id": "pwsh" });
+    let split_params = json!({ "axis": "vertical", "pane_id": first });
+    let created = owner_id(
+        &harness,
+        "pane.create",
+        create_id,
+        Some(revision),
+        create_params.clone(),
+    );
+    assert_error(&created, "resource_exhausted", "fifth pane.create");
+    assert_eq!(
+        created["error"]["message"],
+        json!("Resource limit reached."),
+        "{created}"
+    );
+    let split = owner_id(
+        &harness,
+        "pane.split",
+        split_id,
+        Some(revision),
+        split_params.clone(),
+    );
+    assert_error(&split, "resource_exhausted", "fifth pane.split");
+    assert_eq!(current_revision(&harness), revision);
+    assert_eq!(created["topology_revision"], json!(revision), "{created}");
+    assert_eq!(split["topology_revision"], json!(revision), "{split}");
+    assert_eq!(
+        pane_list(&harness, &project_id)["panes"]
+            .as_array()
+            .map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(harness.authorization().testing_spawn_counts(), spawns);
+    let replay_create = owner_id(
+        &harness,
+        "pane.create",
+        create_id,
+        Some(revision),
+        create_params.clone(),
+    );
+    assert_eq!(replay_create, created, "same create id keeps the refusal");
+    let replay_split = owner_id(
+        &harness,
+        "pane.split",
+        split_id,
+        Some(revision),
+        split_params,
+    );
+    assert_eq!(replay_split, split, "same split id keeps the refusal");
+    let fresh = owner(&harness, "pane.create", Some(revision), create_params);
+    assert_error(&fresh, "resource_exhausted", "fresh id is still refused");
+    assert_eq!(current_revision(&harness), revision);
+    assert_eq!(
+        pane_list(&harness, &project_id)["panes"]
+            .as_array()
+            .map(Vec::len),
+        Some(4)
+    );
+    assert_eq!(harness.authorization().testing_spawn_counts(), spawns);
+    drop(owned);
+}
+
+#[test]
+fn pane_limit_restores_a_snapshot_with_five_panes() {
+    let root = unique_store_root("five-pane-restore");
+    let folder = {
+        let first = harness_on(&root);
+        let (folder, project_id) = open_project(&first);
+        let mut owned = OwnedRuns::new(&first);
+        let (_pane_id, run_id) = create_pwsh(&first, &project_id);
+        owned.track(run_id.clone());
+        owned.interrupt_owned(&run_id);
+        drop(owned);
+        let saved = owner(&first, "layout.save", None, json!({}));
+        assert_accepted(&saved, "save one pane before five-pane injection");
+        let stopped = owner(&first, "host.stop", None, json!({}));
+        assert_accepted(&stopped, "stop before five-pane injection");
+        folder
+    };
+    assert!(folder.is_dir(), "restored project root must still exist");
+    let mut snapshot = load_snapshot(&root);
+    assert_eq!(snapshot.panes.len(), 1);
+    assert_eq!(snapshot.layouts.len(), 1);
+    let template = snapshot.panes[0].clone();
+    let mut layout = LayoutNode::leaf(template.pane_id.clone());
+    for n in 1..5 {
+        let id = PaneId::new(format!("40000000-0000-4000-8000-{n:012x}")).expect("extra pane id");
+        assert_ne!(id, template.pane_id);
+        let mut extra = template.clone();
+        extra.pane_id = id.clone();
+        snapshot.panes.push(extra);
+        layout = LayoutNode::split(
+            Axis::Horizontal,
+            Ratio::new(0.5).expect("ratio"),
+            layout,
+            LayoutNode::leaf(id),
+        )
+        .expect("five pane layout");
+    }
+    snapshot.layouts[0].root = Nullable(Some(layout));
+    let bytes = serialize_snapshot(&snapshot).expect("encode five panes");
+    parse_snapshot(&bytes).expect("five pane snapshot is valid");
+    fs::write(confirmed_path(&root), &bytes).expect("replace confirmed snapshot");
+    let second = harness_on(&root);
+    let project_id = snapshot.projects[0].project_id.as_str().to_owned();
+    let restored = owner(
+        &second,
+        "layout.restore",
+        Some(current_revision(&second)),
+        json!({}),
+    );
+    assert_accepted(&restored, "five pane restore");
+    let listed = pane_list(&second, &project_id);
+    assert_eq!(listed["panes"].as_array().map(Vec::len), Some(5));
+    assert_current_runs_null(&listed);
+    let revision = current_revision(&second);
+    let spawns = second.authorization().testing_spawn_counts();
+    let mut owned = OwnedRuns::new(&second);
+    let refused_create = owner(
+        &second,
+        "pane.create",
+        Some(revision),
+        json!({ "project_id": project_id, "shell_profile_id": "pwsh" }),
+    );
+    if refused_create["accepted"] == json!(true) {
+        if let Some(run) = refused_create["result"]["data"]["run_id"].as_str() {
+            owned.track(run.to_owned());
+        }
+    }
+    assert_error(
+        &refused_create,
+        "resource_exhausted",
+        "create after five-pane restore",
+    );
+    let target = listed["panes"][0]["pane_id"]
+        .as_str()
+        .expect("restored pane id");
+    let refused_split = owner(
+        &second,
+        "pane.split",
+        Some(revision),
+        json!({ "axis": "vertical", "pane_id": target }),
+    );
+    if refused_split["accepted"] == json!(true) {
+        if let Some(run) = refused_split["result"]["data"]["run_id"].as_str() {
+            owned.track(run.to_owned());
+        }
+    }
+    assert_error(
+        &refused_split,
+        "resource_exhausted",
+        "split after five-pane restore",
+    );
+    assert_eq!(current_revision(&second), revision);
+    assert_eq!(
+        pane_list(&second, &project_id)["panes"]
+            .as_array()
+            .map(Vec::len),
+        Some(5)
+    );
+    assert_eq!(second.authorization().testing_spawn_counts(), spawns);
+    drop(owned);
 }

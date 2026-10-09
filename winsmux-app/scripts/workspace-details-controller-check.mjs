@@ -59,6 +59,12 @@ try {
         }
         case 'pane.list': {
           if (paneListMode === 'empty') return response(req, { project_id: req.params.project_id, panes: [], root: null, selected_pane_id: null });
+          if (paneListMode === 'five-stopped') {
+            const ids = [7, 17, 18, 19, 20].map(id);
+            const panes = ids.map(paneId => ({ pane_id: paneId, project_id: req.params.project_id, current_run_id: null, observation: null, display_name: null, path: null }));
+            const root = ids.slice(1).reduce((first, paneId) => ({ kind: 'split', axis: 'horizontal', ratio: 0.5, first, second: { kind: 'leaf', pane_id: paneId } }), { kind: 'leaf', pane_id: ids[0] });
+            return response(req, { project_id: req.params.project_id, panes, root, selected_pane_id: ids[0] });
+          }
           const row = { pane_id: id(7), project_id: req.params.project_id, current_run_id: paneListMode === 'running' ? id(8) : null, observation: null, display_name: null, path: null };
           return response(req, { project_id: req.params.project_id, panes: [row], root: { kind: 'leaf', pane_id: id(7) }, selected_pane_id: id(7) });
         }
@@ -134,6 +140,8 @@ try {
     check('restore accepts different saved project with unavailable root and stopped pane', field('restore-state') === '配置のみ復元・未起動' && calls.filter(c => c.operation === 'pane.list').at(-1).params.project_id === id(4));
     paneListMode = 'running'; button('restore').click(); await flush();
     check('restore cannot claim completion when any restored pane still names a run', !field('restore-state').includes('未起動') && field('restore-state').includes('未確認'));
+    paneListMode = 'five-stopped'; button('restore').click(); await flush();
+    check('five stopped panes stay restorable', field('restore-state') === '配置のみ復元・未起動');
     paneListMode = 'stopped'; malformedRestore = true; button('restore').click(); await flush();
     check('lost restore generation payload cannot be reconstructed from terminal alone', !field('restore-state').includes('未起動') && field('restore-state').includes('未確認'));
     malformedRestore = false;

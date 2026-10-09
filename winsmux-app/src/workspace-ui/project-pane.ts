@@ -35,6 +35,8 @@ interface PaneElements {
   buttons: Map<string, HTMLButtonElement>; rows: HTMLInputElement; cols: HTMLInputElement;
   sizeError: HTMLElement; mounted: boolean; unmount?: () => void;
 }
+const MAX_PANES_PER_PROJECT = 4;
+const paneLimitReason = '1つのプロジェクトのペインは4つまでです。';
 const processText = { starting: '起動を確認中', running: '稼働中', exited: '終了を観測', unknown: '未確認' };
 const workText = { unknown: '未確認', running: '作業中', awaiting_input: '入力待ち', succeeded: '完了', failed: '失敗', interrupted: '中断済み' };
 const rootText = { verified: '作業場所を確認済み', unavailable: '作業場所を確認できません', changed: '作業場所が変わりました', unknown: '作業場所は未確認' };
@@ -212,7 +214,7 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
       const label = source.getAttribute('aria-label') ?? source.textContent ?? '';
       if (source.hidden || !label.includes(query.value)) continue;
       const item = searchResults.get(source) ?? button(label, 'search-result');
-      item.textContent = label; item.disabled = source.disabled;
+      item.textContent = label; item.disabled = source.disabled; item.title = source.title;
       const sourceHandler = source.onclick;
       item.onclick = event => { if (!item.disabled && sourceHandler) { if (operations.open) operations.close(); restoreWorkspaceFocus(source,[search,main]); sourceHandler.call(source, event); } };
       next.set(source, item);
@@ -228,15 +230,22 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   }
   function updateAdmission() {
     const usable = canControl(); const project = selectedProject();
+    const paneCount = project && snapshot.panes && snapshot.panes.project_id === project.project_id ? snapshot.panes.panes.length : 0;
+    const paneLimitReached = paneCount >= MAX_PANES_PER_PROJECT;
     open.disabled = !usable;
-    create.disabled = !usable || !project || project.root_state !== 'verified' || !snapshot.panes;
+    create.disabled = !usable || !project || project.root_state !== 'verified' || !snapshot.panes || paneLimitReached;
+    create.title = paneLimitReached ? paneLimitReason : '';
     forget.disabled = !usable || !project;
     for (const [id, el] of projects) el.disabled = !usable || !snapshot.projects.projects.some(p => p.project_id === id);
     for (const [id, elements] of panes) {
       const pane = snapshot.panes?.panes.find(p => p.pane_id === id);
-      for (const [action, el] of elements.buttons) el.disabled = !usable || !pane ||
-        ((action === 'resize-pane' || action === 'interrupt-run') && !pane.current_run_id) ||
-        ((action === 'split-horizontal' || action === 'split-vertical') && project?.root_state !== 'verified');
+      for (const [action, el] of elements.buttons) {
+        const split = action === 'split-horizontal' || action === 'split-vertical';
+        el.disabled = !usable || !pane ||
+          ((action === 'resize-pane' || action === 'interrupt-run') && !pane.current_run_id) ||
+          (split && (project?.root_state !== 'verified' || paneLimitReached));
+        if (split) el.title = paneLimitReached ? paneLimitReason : '';
+      }
     }
     if (pending) {
       const target = pending.intent;

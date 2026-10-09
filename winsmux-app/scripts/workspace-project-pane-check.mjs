@@ -176,6 +176,23 @@ try {
     reset(); current.busy = true; render(); click(action('select-pane')); check('caller busy denies control', calls.length === 0 && action('select-pane').disabled);
     reset(); current.error = 'permission_denied：この対象への操作は許可されていません'; render(); check('permission error retained without fallback', document.querySelector('[role=status]').textContent.includes('permission_denied') && mounts.length === 3 && calls.length === 0);
     for (const root_state of ['unavailable', 'changed', 'unknown']) { reset(); current.projects.projects[0].root_state = root_state; render(); check(`${root_state} root denies creation and split retains close`, global('create-pane').disabled && action('split-horizontal').disabled && !action('close-pane').disabled && document.querySelector('nav').textContent.includes('作業場所')); }
+    const withPaneCount = n => {
+      const snapshot = fixture();
+      const ids = Array.from({ length: n }, (_, index) => `pane-${index + 1}`);
+      let root = { kind: 'leaf', pane_id: ids[0] };
+      for (const paneId of ids.slice(1)) root = { kind: 'split', axis: 'horizontal', ratio: 0.5, first: root, second: { kind: 'leaf', pane_id: paneId } };
+      snapshot.panes = { project_id: 'project-1', selected_pane_id: ids[0], root, panes: ids.map(paneId => ({ pane_id: paneId, project_id: 'project-1', display_name: paneId, path: 'C:\\作業\\日本語', current_run_id: `run-${paneId}`, observation: { pane_id: paneId, run_id: `run-${paneId}`, current: true, process: 'running', work: 'unknown', evidence: 'unavailable', exit_code: null, observed_at: '2026-09-26T01:00:00Z' } })) };
+      return snapshot;
+    };
+    const paneLimitReason = '1つのプロジェクトのペインは4つまでです。';
+    reset(withPaneCount(4));
+    check('four panes disable create and split with the limit reason', global('create-pane').disabled && global('create-pane').title === paneLimitReason && action('split-horizontal').disabled && action('split-horizontal').title === paneLimitReason && action('split-vertical').disabled && action('split-vertical').title === paneLimitReason && document.querySelectorAll('.workspace-pane').length === 4);
+    click(global('create-pane')); click(action('split-horizontal')); click(action('split-vertical'));
+    check('disabled limit controls do not dispatch', calls.length === 0);
+    reset(withPaneCount(3));
+    check('three panes enable create and split without the limit reason', !global('create-pane').disabled && global('create-pane').title === '' && !action('split-horizontal').disabled && action('split-horizontal').title === '' && !action('split-vertical').disabled && action('split-vertical').title === '');
+    reset(withPaneCount(5));
+    check('five panes stay visible and keep create and split limited', document.querySelectorAll('.workspace-pane').length === 5 && global('create-pane').disabled && global('create-pane').title === paneLimitReason && action('split-horizontal').disabled && action('split-vertical').disabled);
     for (const defect of ['selection', 'membership', 'duplicate', 'observation', 'ratio']) {
       reset(); if (defect === 'selection') current.panes.selected_pane_id = 'missing'; if (defect === 'membership') current.panes.root.first.pane_id = 'missing'; if (defect === 'duplicate') current.panes.root.first.pane_id = 'pane-2'; if (defect === 'observation') current.panes.panes[0].observation.run_id = 'wrong'; if (defect === 'ratio') current.panes.root.ratio = 1;
       render(); click(global('forget-project')); check(`${defect} inconsistency denies domain`, global('forget-project').disabled && calls.length === 0 && document.querySelector('[role=status]').textContent.includes('対応を確認できません'));
