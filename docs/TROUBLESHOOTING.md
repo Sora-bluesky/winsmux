@@ -38,6 +38,10 @@ Click inside the terminal, type with the IME, convert with Space, and commit wit
 
 If Ctrl+Shift+P/T/W conflicts with your work, uncheck **アプリのショートカットを使う**. When input admission or delivery is unverified, inspect the displayed information before sending duplicate input.
 
+## A new pane cannot be added
+
+A project holds at most four panes. At four, **新しいペイン**, **左右に分割** and **上下に分割** are disabled with the reason 1つのプロジェクトのペインは4つまでです。 In CLI/MCP, `pane.create` and `pane.split` return `resource_exhausted`. Close a pane before adding another.
+
 ## Codex or Claude Code does not start
 
 Use **導入状況を再確認** (Recheck installation) to refresh the detected official CLI and version. CLIs change over time. Detection alone does not verify authentication or support for a requested model or reasoning setting.
@@ -60,6 +64,10 @@ Select the required scope and use **選択内容を許可** (Allow selection). U
 ## Artifacts or layout cannot be read
 
 Refresh the artifact list and check the target before reading its content or diff. Do not use a disappeared file's previous body as current content. A binary body being hidden, or a limited display range, does not mean the complete content was inspected.
+
+In a project folder with a top-level `.git`, **差分を読む** (`artifact.diff`) and the Git candidates of **成果物を再確認** (`artifact.list`) read the whole folder, not only the selected file. This includes untracked and ignored files (`.gitignore` does not apply) and the objects and refs under `.git`. When file contents and path names together pass 1 MiB, the diff fails with `resource_exhausted`. When the folder contains a junction, symbolic link, hard-linked file or nested `.git` (for example a submodule), it fails with `unsupported_file`. Both happen even for a small file. The artifact list still shows the registered artifacts and gives the reason in place of the Git candidates.
+
+To read one file, use **本文を読む** (`artifact.read`). To read diffs again, keep the project folder small, or move large files, links and nested repositories out of it.
 
 **配置だけを復元** restores the saved layout without automatically running previous processes. If save or restore fails, do not empty the saved file or manually modify its schema.
 
