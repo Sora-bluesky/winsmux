@@ -129,8 +129,9 @@ try {
     check('late old Q cannot reissue or relock agent mutation', f.calls.filter(q => q.operation === 'agent.launch').length === 2
       && !recoveredAgent.querySelector('[data-action="launch"]').disabled);
     const readsBefore = f.calls.filter(q => q.operation === 'capabilities.get').length;
+    const waitsBefore = f.calls.filter(q => q.operation === 'events.wait').length;
     f.eventMode = 'resource_exhausted'; await frame(); await frame();
-    check('events capacity refusal skips only optional read', root.dataset.startupState === 'mounted' && f.calls.filter(q => q.operation === 'capabilities.get').length > readsBefore);
+    check('events capacity refusal keeps the loop without another capabilities read', root.dataset.startupState === 'mounted' && f.calls.filter(q => q.operation === 'events.wait').length > waitsBefore && f.calls.filter(q => q.operation === 'capabilities.get').length === readsBefore);
     f.eventMode = 'gap'; await frame(); await frame();
     check('events gap preserves visible state polling', root.dataset.startupState === 'mounted');
     f.phase = 'accepted'; f.holdProject = true;

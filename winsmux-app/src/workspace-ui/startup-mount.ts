@@ -104,6 +104,13 @@ export function closeRefusalMessage(code: unknown): string {
   const row = typeof code === 'string' ? CLOSE_REFUSAL_COPY[code] : undefined;
   return row?.status ?? CLOSE_REFUSAL_FALLBACK;
 }
+export function agentReadDue(input: {
+  selectionChanged: boolean;
+  eventsStatus: 'no_change' | 'events' | 'gap' | null;
+  nudged: boolean;
+}): boolean {
+  return input.selectionChanged || input.nudged || input.eventsStatus === 'events' || input.eventsStatus === 'gap';
+}
 
 export async function mountWorkspaceMain(root: HTMLElement) {
   await invoke<void>('startup_main_policy_ready');
@@ -479,7 +486,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           if (!current()) return;
           if (intent.kind === 'inspect-installation') {
             const snap = controller.getSnapshot();
-            void controller.inspect({ kind: 'inspect-installation', instanceId: snap.instanceId, generation: snap.generation, topologyRevision: snap.topologyRevision });
+            void controller.inspect({ kind: 'inspect-installation', instanceId: snap.instanceId, generation: snap.generation, topologyRevision: snap.topologyRevision }).then(() => { if (current()) agentNudged = true; });
           } else if (intent.kind === 'focus-terminal') {
             const paneId = controller.getSnapshot().panes?.selected_pane_id;
             if (paneId) terminals.get(paneId)?.focus();
@@ -487,6 +494,10 @@ export async function mountWorkspaceMain(root: HTMLElement) {
         },
         restoreFocus(_target, origin) { restoreWorkspaceFocus(origin, [agentMount.querySelector<HTMLElement>('[data-action="launch"]') ?? undefined]); },
       });
+      let agentSelection = '';
+      let agentNudged = true;
+      let agentEvents: 'no_change' | 'events' | 'gap' | null = null;
+      let agentSawAvailable = false;
       function projectFrame(snapshot: ViewSnapshot) {
         const project = snapshot.projects.projects.find(row => row.project_id === snapshot.projects.selected_project_id) ?? null;
         const pane = snapshot.panes?.panes.find(row => row.pane_id === snapshot.panes?.selected_pane_id) ?? null;
@@ -500,6 +511,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
               if ((notice.result.phase === 'completed' || notice.result.phase === 'refused') && agentLease) {
                 admission.release(agentLease); agentLease = null;
               }
+              agentNudged = true;
             }
             updateAgentLocal(controller.getSnapshot());
           });
@@ -534,7 +546,10 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           return selection;
         },
         snapshot(snapshot) {
-          if (!current()) return; view.render(snapshot); details?.updatePane(snapshot); for(const terminal of terminals.values())terminal.sync(); input.refresh();
+          if (!current()) return;
+          if (snapshot.availability === 'available' && !agentSawAvailable) agentNudged = true;
+          if (snapshot.availability === 'available' || snapshot.availability === 'unavailable') agentSawAvailable = snapshot.availability === 'available';
+          view.render(snapshot); details?.updatePane(snapshot); for(const terminal of terminals.values())terminal.sync(); input.refresh();
           updateAgentLocal(snapshot);
           if (!launchReserved && launchPath !== null && snapshot.availability === 'available' && !snapshot.busy) {
             launchReserved = true; view.requestOpenFolder();
@@ -562,7 +577,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
             return result;
           });
         },
-        inspect(intent) { if (!current()) return; if (intent.kind === 'reread') stopped = false; void controller.inspect(intent).then(async()=>{if(!current())return;if(intent.kind==='reread')await details?.refresh();if(!current())return;await input.recoverGuard();if(current())schedule();}); },
+        inspect(intent) { if (!current()) return; if (intent.kind === 'reread') stopped = false; void controller.inspect(intent).then(async()=>{if(!current())return;if(intent.kind==='reread'){await details?.refresh();if(current())agentNudged=true;}if(!current())return;await input.recoverGuard();if(current())schedule();}); },
         composing:input.hasPendingComposition,
         mountTerminal(slot, target) {
           const terminal = mountProjectPaneTerminal(slot, target.projectId, target.paneId, { snapshot: controller.getSnapshot, resize: intent => view.requestPaneResize(intent), input });
@@ -608,19 +623,21 @@ export async function mountWorkspaceMain(root: HTMLElement) {
         if (!response.accepted && response.error?.code === 'resource_exhausted') return null;
         if (!validReadResponse(request, response)) throw new Error('protocol_failed'); return response;
       };
-      async function refreshAgentObservation() {
+      async function refreshAgentObservation(): Promise<boolean> {
         const snapshot = controller.getSnapshot();
         updateAgentLocal(snapshot);
         const ticket = agentObservation.begin();
-        if (!ticket || snapshot.availability !== 'available') return;
+        if (!ticket || snapshot.availability !== 'available') return false;
         const { project, pane } = projectFrame(snapshot);
-        if (!project || !pane || snapshot.projects.selected_project_id !== project.project_id || snapshot.panes?.selected_pane_id !== pane.pane_id) return;
+        if (!project || !pane || snapshot.projects.selected_project_id !== project.project_id || snapshot.panes?.selected_pane_id !== pane.pane_id) return false;
+        let issued = false;
+        const hostQuery = (operation: Parameters<typeof query>[0], params: object) => { issued = true; return query(operation, params); };
         try {
-          const caps = await query('capabilities.get', {});
-          if (!current()) return;
-          const projects = await query('project.list', {});
-          if (!current()) return;
-          const panes = await query('pane.list', { project_id: project.project_id });
+          const caps = await hostQuery('capabilities.get', {});
+          if (!current()) return true;
+          const projects = await hostQuery('project.list', {});
+          if (!current()) return true;
+          const panes = await hostQuery('pane.list', { project_id: project.project_id });
           if (!current() || !caps.accepted || caps.result?.operation !== 'capabilities.get' || !projects.accepted || projects.result?.operation !== 'project.list'
             || !panes.accepted || panes.result?.operation !== 'pane.list'
             || caps.topology_revision !== projects.topology_revision || projects.topology_revision !== panes.topology_revision
@@ -636,7 +653,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           let sequence = Math.max(caps.event_seq, projects.event_seq, panes.event_seq);
           if (caps.event_seq > projects.event_seq || projects.event_seq > panes.event_seq) throw new Error('observation_unavailable');
           if (selectedPane.current_run_id !== null) {
-            const run = await query('run.get', { run_id: selectedPane.current_run_id });
+            const run = await hostQuery('run.get', { run_id: selectedPane.current_run_id });
             if (!current() || !run.accepted || run.result?.operation !== 'run.get' || run.topology_revision !== panes.topology_revision || run.event_seq < sequence) throw new Error('observation_unavailable');
             const observed = runReadData(run.result.data, selectedPane.current_run_id, false)?.run;
             if (!observed || !observed.current || observed.pane_id !== selectedPane.pane_id) throw new Error('observation_unavailable');
@@ -646,7 +663,8 @@ export async function mountWorkspaceMain(root: HTMLElement) {
             availability: 'available', busy: admission.busy() || snapshot.busy, project: selectedProject, pane: selectedPane,
             capabilities: { state: providers === null ? 'unknown' : 'known', providers }, eventSeq: sequence });
           if (committed) agentView.update(committed);
-        } catch { const failed = agentObservation.failure(ticket); if (failed) agentView.update(failed); }
+          return true;
+        } catch { const failed = agentObservation.failure(ticket); if (failed) agentView.update(failed); return issued; }
       }
       async function cycle() {
         frame = null;
@@ -663,11 +681,20 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           const pending = controller.getPending();
           if (pending) await controller.refresh();
           if (!current() || stopped) return;
-          await refreshAgentObservation();
+          const framed = projectFrame(controller.getSnapshot());
+          const key = JSON.stringify([framed.project?.project_id ?? null, framed.pane?.pane_id ?? null, framed.pane?.current_run_id ?? null]);
+          if (agentReadDue({ selectionChanged: key !== agentSelection, eventsStatus: agentEvents, nudged: agentNudged })) {
+            agentNudged = false;
+            agentEvents = null;
+            agentSelection = key;
+            if (!await refreshAgentObservation()) agentNudged = true;
+          }
           if (!current() || stopped) return;
           const events = await read('events.wait', { after_event_seq: eventSeq, wait_ms: 0 });
           if (!current()) return;
           if (events) { const data = events.result!.data as EventsWaitData; eventSeq = data.next_event_seq;
+            const status = data.status;
+            agentEvents = status === 'events' || status === 'gap' || status === 'no_change' ? status : null;
             if (data.status !== 'no_change') { await controller.refresh(); if (!current() || stopped) return; void connectionOwner?.refresh(); } }
           if (!current() || stopped) return;
           for (const terminal of terminals.values()) {
@@ -681,19 +708,22 @@ export async function mountWorkspaceMain(root: HTMLElement) {
         } catch (error) { if (current()) { if(error==='shutdown_in_progress'){agentOwner.setConnected(false);void input.recoverGuard();}else{agentOwner.setConnected(false); stopped = true; if (!hostBlocked) status.textContent = '出力または作業状態を確認できません。状態を読み直してください。';} } }
       }
       function schedule() { if (current() && !stopped && !hostBlocked && !input.inspect().frozen && !document.hidden && frame === null) frame = requestAnimationFrame(() => { void cycle(); }); }
-      const resume = () => { if (!document.hidden) schedule(); };
+      const resume = () => { if (!document.hidden) { agentNudged = true; schedule(); } };
       document.addEventListener('visibilitychange', resume);
+      const wakeAgent = () => { agentNudged = true; schedule(); };
+      window.addEventListener('focus', wakeAgent);
+      agentMount.addEventListener('focusin', wakeAgent);
       let agentGuardFrozen = input.inspect().frozen;
       const inputChanges=input.observe(() => {
         const frozen = input.inspect().frozen;
         if (frozen) agentOwner.setConnected(false);
-        else if (agentGuardFrozen && current()) { agentOwner.setConnected(true); void agentOwner.recheck(); }
+        else if (agentGuardFrozen && current()) { agentOwner.setConnected(true); void agentOwner.recheck(); agentNudged = true; }
         agentGuardFrozen = frozen;
         if (current()) updateAgentLocal(controller.getSnapshot());
         schedule();
       });
       const admissionChanges=admission.observe(() => { if (current()) updateAgentLocal(controller.getSnapshot()); schedule(); });
-      const teardown = active; active = () => { admissionChanges();inputChanges();document.removeEventListener('visibilitychange', resume); teardown(); };
+      const teardown = active; active = () => { admissionChanges();inputChanges();document.removeEventListener('visibilitychange', resume); window.removeEventListener('focus', wakeAgent); agentMount.removeEventListener('focusin', wakeAgent); teardown(); };
       await controller.refresh(); if (!current()) return;
       if (connectionOwner.snapshot().original && ['unconfirmed', 'accepted', 'in_progress', 'read_failed'].includes(connectionOwner.snapshot().original!.phase)) void connectionOwner.recheck();
       else void connectionOwner.refresh();

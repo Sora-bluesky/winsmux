@@ -167,6 +167,8 @@ try {
     ['session_closed','作業用 host との接続が閉じられたため、閉鎖を確認できません。'],
   ];
   check('close refusal copy',refusalCopy.every(([code,status])=>mainModule.closeRefusalMessage(code)===status)&&mainModule.closeRefusalMessage()===refusalFallback&&mainModule.closeRefusalMessage('response_invalid')===refusalFallback);
+  const due=mainModule.agentReadDue;
+  check('agent read due only for selection, events, gap, or nudge',due({selectionChanged:false,eventsStatus:'no_change',nudged:false})===false&&due({selectionChanged:false,eventsStatus:null,nudged:false})===false&&due({selectionChanged:true,eventsStatus:null,nudged:false})===true&&due({selectionChanged:false,eventsStatus:'events',nudged:false})===true&&due({selectionChanged:false,eventsStatus:'gap',nudged:false})===true&&due({selectionChanged:false,eventsStatus:'no_change',nudged:true})===true);
   const request={schema_version:1,instance_id:I,operation_id:O,expected_topology_revision:null,operation:'events.wait',params:{after_event_seq:0,wait_ms:0}};
   const event=data=>({event_seq:1,observed_at:'2026-09-26T00:00:00Z',data});
   const run={run_id:R,pane_id:B,process:'running',work:'unknown',evidence:'unavailable',observed_at:'2026-09-26T00:00:00Z',current:true,exit_code:null};
@@ -288,18 +290,23 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
    const mount=await f.awaitMount(module.mountWorkspaceMain(root));
    const pump=async()=>{const callback=f.frames.shift();if(callback)callback(0);for(let n=0;n<8;n++)await tick();};
    await new Promise(resolve=>setTimeout(resolve,32));await pump();await pump();
+   const count=name=>state.requests.filter(item=>item===name).length;
+   const idle={capabilities:count('capabilities.get'),projects:count('project.list'),panes:count('pane.list'),runs:count('run.get'),waits:count('events.wait')};
+   await pump();await pump();await pump();
+   if(count('capabilities.get')!==idle.capabilities||count('project.list')!==idle.projects||count('pane.list')!==idle.panes||count('run.get')!==idle.runs||count('events.wait')<idle.waits+3)throw Error('idle agent pumps reread agent state '+JSON.stringify({before:idle,after:{capabilities:count('capabilities.get'),projects:count('project.list'),panes:count('pane.list'),runs:count('run.get'),waits:count('events.wait')}}));
    const select=root.querySelector('[aria-label="AIを選択"]');select.value=provider;select.dispatchEvent(new Event('change'));
    const interrupt=root.querySelector('[data-action="interrupt"]');
    const before={enabled:!interrupt.disabled,state:root.querySelector('[data-field="state"]').textContent};
    interrupt.click();for(let n=0;n<8;n++)await tick();await pump();
    const settled={admission:root.querySelector('[data-field="admission"]').textContent,process:root.querySelector('[data-field="process"]').textContent};
-   state.providers=[{provider,version:'2.3.4'}];await pump();
+   state.providers=[{provider,version:'2.3.4'}];root.querySelector('[aria-label="AIの起動と状態の表示領域"]').dispatchEvent(new FocusEvent('focusin',{bubbles:true}));await pump();
    results.push({provider,before,interrupts:state.requests.filter(x=>x==='run.interrupt').length,...settled,updatedCli:root.querySelector('[data-field="cli"]').textContent,updatedProcess:root.querySelector('[data-field="process"]').textContent,requests:[...state.requests]});
    mount.dispose();root.remove();
   }
   f.invoke=original;f.frames=[];return results;
  },outputs['startup-mount']);
  writeFileSync(resolve(evidence,'agent-live-state.json'),JSON.stringify(agentLiveProof,null,2)+'\n');
+ checks.push('idle agent pumps wait for events without rereading capabilities, projects, panes, or runs');
  for(const proof of agentLiveProof){if(!proof.before.enabled||proof.interrupts!==1||!proof.process.includes('終了を観測'))throw Error('Actual mounted first '+proof.provider+' interrupt: '+JSON.stringify(proof));checks.push('production main first '+proof.provider+' interrupt dispatches once and displays actual exit');if(!proof.updatedCli.includes('2.3.4')||!proof.updatedProcess.includes('終了を観測'))throw Error('Actual mounted '+proof.provider+' detection update at same runtime sequence: '+JSON.stringify(proof));checks.push('production main '+proof.provider+' detection update at unchanged runtime event preserves exit');}
  console.log(JSON.stringify({fixture_stage:'selected-terminal-focus'}));
  await page.setContent('<main id="workspace-startup"></main>');
