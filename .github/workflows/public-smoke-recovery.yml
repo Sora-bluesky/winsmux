@@ -6,7 +6,7 @@ on:
       release_tag:
         description: Immutable annotated release tag to verify.
         required: true
-        default: v0.36.38
+        default: v0.38.0
         type: string
       release_commit:
         description: Peeled commit of the immutable annotated release tag.
@@ -15,12 +15,12 @@ on:
       native_version:
         description: Exact Core and Desktop product version.
         required: true
-        default: 0.36.38
+        default: 0.38.0
         type: string
       npm_version:
         description: Exact public npm package version.
         required: true
-        default: 0.36.38
+        default: 0.38.0
         type: string
 
 permissions:
@@ -180,7 +180,8 @@ jobs:
             'cleanup'
           )
           if ($surface -ceq 'Desktop') {
-            $expectedReceiptProperties += 'router_inventory'
+            if ($nativeVersion -ceq '0.38.0') { $expectedReceiptProperties += @('installed_inventory', 'desktop_runtime') }
+            elseif ($nativeVersion -ceq '0.36.38') { $expectedReceiptProperties += 'router_inventory' }
           }
           Assert-ExactProperties -Object $helperReceipt -Expected $expectedReceiptProperties -Label "$surface receipt"
           if (
@@ -209,18 +210,20 @@ jobs:
             }
             'Desktop' {
               Assert-ExactProperties -Object $helperReceipt.evidence -Expected @('asset', 'sha256', 'version', 'page_url') -Label 'Desktop evidence'
-              Assert-ExactProperties -Object $helperReceipt.router_inventory -Expected @('found', 'expected', 'sha256_match', 'manifest_resolvable') -Label 'Desktop router inventory'
+              if ($nativeVersion -ceq '0.38.0') {
+                . ./scripts/desktop-install-inventory.ps1
+                Assert-DesktopInstallReceipt -Receipt $helperReceipt -Version $nativeVersion -InstallerSha256 $helperReceipt.evidence.sha256 -SourceCommit $releaseCommit | Out-Null
+              } elseif ($nativeVersion -ceq '0.36.38') {
+                Assert-ExactProperties -Object $helperReceipt.router_inventory -Expected @('found', 'expected', 'sha256_match', 'manifest_resolvable') -Label 'Desktop router inventory'
+                if ([int]$helperReceipt.router_inventory.found -ne 4 -or [int]$helperReceipt.router_inventory.expected -ne 4 -or [int]$helperReceipt.router_inventory.sha256_match -ne 4 -or $helperReceipt.router_inventory.manifest_resolvable -ne $true) { throw 'Legacy Desktop router inventory was not verified.' }
+              }
               if (
                 [string]$helperReceipt.evidence.asset -cne "winsmux_$($nativeVersion)_x64-setup.exe" -or
                 [string]$helperReceipt.evidence.sha256 -notmatch '^[0-9a-f]{64}$' -or
                 [string]$helperReceipt.evidence.version -cne $nativeVersion -or
-                [string]$helperReceipt.evidence.page_url -notmatch '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)' -or
-                [int]$helperReceipt.router_inventory.found -ne 4 -or
-                [int]$helperReceipt.router_inventory.expected -ne 4 -or
-                [int]$helperReceipt.router_inventory.sha256_match -ne 4 -or
-                $helperReceipt.router_inventory.manifest_resolvable -ne $true
+                [string]$helperReceipt.evidence.page_url -notmatch '^(?:tauri://localhost|https?://tauri\.localhost)(?:/|$)'
               ) {
-                throw 'Desktop evidence did not bind the exact public installer, digest, native version, production page, and router inventory.'
+                throw 'Desktop evidence did not bind the exact public installer, digest, native version, production page, and generation inventory.'
               }
             }
             'Npm' {

@@ -89,10 +89,31 @@ function Get-GitAttributeValue {
     return $line.Substring($prefix.Length)
 }
 
+function Test-DesktopWorkspaceDistributionContract {
+    param([Parameter(Mandatory = $true)][object]$Config)
+
+    # The workspace desktop carries paired native companions and checked licenses.
+    # Legacy router support remains in the full script install profile only.
+    try {
+        $bins = @($Config.bundle.externalBin)
+        $resources = @($Config.bundle.resources.PSObject.Properties)
+        return $bins.Count -eq 2 -and
+            (@($bins | Sort-Object) -join '|') -ceq 'binaries/winsmux|binaries/winsmux-workspace-mcp' -and
+            $resources.Count -eq 1 -and
+            $resources[0].Name -ceq 'binaries/licenses' -and
+            $resources[0].Value -ceq 'licenses' -and
+            $Config.build.beforeBuildCommand -ceq 'npm run prepare:companion-cli:release && npm run build' -and
+            $Config.build.beforeBundleCommand -ceq 'node ./src-tauri/scripts/check-bundled-distribution.mjs'
+    } catch {
+        return $false
+    }
+}
+
 function Get-TauriResourceInventory {
     $configPath = Join-Path $repoRoot 'winsmux-app/src-tauri/tauri.conf.json'
     $configDirectory = Split-Path -Parent $configPath
     $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $script:tauriConfig = $config
     $inventory = @{}
 
     foreach ($mapping in $config.bundle.resources.PSObject.Properties) {
@@ -246,7 +267,9 @@ $cleanupOwnsExactFiles = @($artifacts | Where-Object {
 }).Count -eq 0
 $cleanupIsNonRecursive = $cleanupText -notmatch '(?s)Remove-Item[^\r\n]*(?:-Recurse|\s-r\b)'
 
-$desktopFound = @($desktopItems | Where-Object { $_.present -and $_.source_matches -and $_.blob_matches_resource }).Count
+$desktopReady = (Test-DesktopWorkspaceDistributionContract -Config $script:tauriConfig) -and
+    @($desktopItems | Where-Object present).Count -eq 0
+$nativeFound = @($script:tauriConfig.bundle.externalBin | Where-Object { $_ -cin @('binaries/winsmux', 'binaries/winsmux-workspace-mcp') } | Sort-Object -Unique).Count
 $cliFound = @($installerInventory.Values | Where-Object { $_.declared -and $_.destination_matches }).Count
 $sourceReady = @($sourceInventory | Where-Object {
     $_.present -and $_.blob_matches_worktree -and $_.lf_attribute -and
@@ -255,7 +278,7 @@ $sourceReady = @($sourceInventory | Where-Object {
 $profileReady = $fullOwnsPayload -and (@($nonFullExcludePayload | Where-Object { $_ }).Count -eq 3) -and $installIsFullOnly
 $cleanupReady = $cleanupOwnsExactFiles -and $cleanupIsNonRecursive
 $allPass = $sourceReady -and $manifestResolvable -and ($parseErrors.Count -eq 0) -and
-    ($desktopFound -eq $artifacts.Count) -and ($cliFound -eq $artifacts.Count) -and
+    $desktopReady -and ($cliFound -eq $artifacts.Count) -and
     $profileReady -and $cleanupReady
 
 $result = [ordered]@{
@@ -269,8 +292,10 @@ $result = [ordered]@{
         items = $sourceInventory
     }
     desktop = [ordered]@{
-        found = $desktopFound
-        expected = $artifacts.Count
+        found = $nativeFound
+        expected = 2
+        paired_native_contract = $desktopReady
+        legacy_resources_absent = @($desktopItems | Where-Object present).Count -eq 0
         items = $desktopItems
     }
     cli_full = [ordered]@{

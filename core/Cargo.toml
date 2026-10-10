@@ -1,6 +1,6 @@
 [package]
 name = "winsmux"
-version = "0.36.38"
+version = "0.38.0"
 edition = "2021"
 autobins = false
 description = "Windows-native terminal multiplexer and agent workspace runtime"
@@ -122,15 +122,39 @@ path = "tests-rs/workflow_gate_contract.rs"
 name = "host_profile"
 path = "tests-rs/host_profile.rs"
 
+[[test]]
+name = "workspace_host_e2e"
+path = "tests-rs/workspace_host_e2e.rs"
+
+[[test]]
+name = "workspace_admission_e2e"
+path = "tests-rs/workspace_admission_e2e.rs"
+
+[[test]]
+name = "workspace_project_e2e"
+path = "tests-rs/workspace_project_e2e.rs"
+
+[[test]]
+name = "workspace_project_paths"
+path = "tests-rs/workspace_project_paths.rs"
+
+[[test]]
+name = "workspace_runtime_e2e"
+path = "tests-rs/workspace_runtime_e2e.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
+winsmux-workspace = { path = "crates/winsmux-workspace" }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
+    "Win32_System_Console",
     "Win32_System_Memory",
     "Win32_System_DataExchange",
     "Win32_System_Threading",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     "Win32_System_Pipes",
     "Win32_Security",
 ] }

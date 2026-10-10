@@ -38,7 +38,10 @@ jobs:
           cache: npm
           cache-dependency-path: winsmux-app/package-lock.json
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
+
+      - name: Verify exact Windows runtime import contracts
+        run: node --test tests/workspace-package/windows-runtime.test.mjs
 
       - name: Install frontend dependencies
         working-directory: winsmux-app
@@ -48,11 +51,21 @@ jobs:
         working-directory: winsmux-app
         run: npm run build
 
-      - name: Stage companion CLI sidecar
+      - name: Stage complete licensed companion generation
         working-directory: winsmux-app
         run: npm run prepare:companion-cli
 
+      - name: Prepare pinned older CLI for native version-pair proof
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pwsh -NoProfile -File winsmux-app/scripts/prepare-legacy-cli.ps1
+
       - name: Test Tauri backend
+        # cargo test does not launch the dev server. Use the frontend built above
+        # so the native WebView exercise reaches the actual app instead of :1420.
+        env:
+          TAURI_CONFIG: '{"build":{"devUrl":null}}'
         run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
 
       - name: Build desktop binary without bundling

@@ -1,0 +1,26 @@
+[package]
+name = "winsmux-workspace-mcp"
+version = "0.38.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "MCP stdio adapter for the authenticated winsmux workspace client"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value", "float_roundtrip"] }
+winsmux-workspace = { path = "../winsmux-workspace" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console",
+    "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading",
+    "Wdk_Storage_FileSystem",
+] }
+
+[[test]]
+name = "stdio_e2e"
+harness = false
+
+[target.'cfg(windows)'.dev-dependencies]
+sha2 = "0.10"
+windows-sys = { version = "0.61.2", features = ["Win32_Networking_WinSock", "Win32_Security_Cryptography"] }

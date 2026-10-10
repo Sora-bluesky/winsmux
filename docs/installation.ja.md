@@ -1,193 +1,93 @@
 # インストール
 
-`winsmux` は Windows 向けに 2 つの経路で配布します。通常の画面操作でオペレーターとワーカーを扱う場合は、デスクトップアプリのインストーラーを使います。CLI 中心、スクリプト実行、ヘッドレス運用では npm パッケージを使います。
-
-- 推奨経路: GitHub Release から入手するデスクトップアプリのインストーラー
-- 別経路: CLI 中心の利用やスクリプト導入に使う Windows 向け npm パッケージ
-
-| 用途 | インストール経路 | 起動経路 |
-| --- | --- | --- |
-| 通常の画面操作でオペレーターとワーカーを使う | [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) の `winsmux_..._x64-setup.exe` を実行 | インストール済みの `winsmux` デスクトップアプリを開き、プロジェクトフォルダーを選択 |
-| CLI 中心、ヘッドレス、スクリプト運用 | `npm install -g winsmux` の後に `winsmux install --profile full` | プロジェクトディレクトリで `winsmux init` と `winsmux launch` を実行 |
-| デスクトップオペレーターを外部自動化から使う | 先にデスクトップアプリをインストールして起動 | デスクトップオペレーターが表示された後、ローカル control pipe に接続 |
-
-`winsmux launch` は管理対象の Windows Terminal ワークスペースを起動します。デスクトップアプリは開きません。
+このガイドはv0.38.0のWindows向けworkspaceを説明します。使用中の版に付属するガイドを使ってください。旧版ではオペレーター／ワーカー画面と起動手順が異なります。
 
 ## 動作要件
 
-- Windows 10 または Windows 11
-- PowerShell 7+
-- Windows Terminal
-- npm 経路で入れる場合は Node.js と `npm`
+- 対象リリースが対応するWindowsビルドとCPU。
+- ペインのシェルに使うPowerShell 7。
+- デスクトップ画面に使うMicrosoft Edge WebView2 Runtime。
+- AI起動で使うCodexまたはClaude Codeの公式CLI。
+- npm経由の導入で使う場合だけ、Node.jsとnpm。
 
-Rust は、ランタイムをソースからビルドする時だけ必要です。
+配布済みアプリを使うためにRustやC++コンパイラーは必要ありません。Windows Terminalは旧版の管理対象ターミナルの経路に使われ、v0.38.0デスクトップの端末描画には使われません。
 
 ### Windows でソースからビルドする場合の前提条件
 
-Windows でソースからビルドする場合は、[Visual Studio Build Tools](https://learn.microsoft.com/en-us/visualstudio/install/use-command-line-parameters-to-install-visual-studio?view=vs-2022)
-と [Desktop development with C++](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=vs-2022)
-ワークロードも必要です。Rust の既定の MSVC toolchain は、Windows 向けのネイティブ成果物をビルドする時に MSVC の linker と Windows SDK を使います。
+Rust、デスクトップ用のNode.js依存、対象CPUのMSVCリンカーとWindows SDKが必要です。[Visual StudioのC++ビルドツール](https://learn.microsoft.com/en-us/visualstudio/install/workload-component-id-vs-build-tools?view=vs-2022)を参照してください。
 
-Visual Studio Installer からこのワークロードを入れるか、workload ID を使って `winget` で入れます。
-
-```powershell
-winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-```
-
-`cargo build` や `npm run tauri build` は、Git Bash などの MSYS shell ではなく、PowerShell または `cmd` から実行してください。MSYS 環境では MSVC の `link.exe` より前に別の `link` コマンドが `PATH` に入ることがあり、原因が分かりにくいリンカーエラーにつながります。
+リポジトリのWindows配布ビルドと同梱CLI準備のスクリプトを使います。x64のビルド成功はARM64のビルドや実機動作の確認にはなりません。デバッグ版の同梱物、別版、別CPUの実行ファイルを混ぜないでください。
 
 ## クイックインストール
 
-デスクトップアプリ:
+1. [リリース一覧](https://github.com/Sora-bluesky/winsmux/releases)で使用する版を選びます。
+2. CPUに対応するWindowsインストーラーを選びます。対象版の配布物を確認し、全CPU・全形式があると仮定しないでください。
+3. 同じリリースの検証情報でダウンロードしたファイルを確認します。署名と発行元も確認し、チェックサムの一致だけで代用しないでください。
+4. インストーラーを実行し、スタートメニューからwinsmuxを開きます。
+5. 「プロジェクトを開く」でフォルダーを選び、作業場所を確認してペインを作ります。
 
-1. [最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) を開きます。
-2. Assets から `winsmux_..._x64-setup.exe` という名前のインストーラーを取得します。
-3. Windows が発行元または SmartScreen の警告を出した場合は、同じリリースの `SHA256SUMS-desktop` と照合します。
-4. インストーラーを実行し、インストール済みの winsmux アプリを開いて、起動後にプロジェクトフォルダーを選びます。
-
-デスクトップアプリは、通常の Windows アプリとしてインストールされていることを確認します。
-
-- Windows 検索で `winsmux` というアプリ名が見つかることを確認します。
-- Windows の「設定」>「アプリ」>「インストールされているアプリ」に `winsmux` が表示されることを確認します。
-- Windows 検索にバージョン番号が出る必要はありません。バージョン確認が必要な場合は、アプリ、インストーラー名、または「インストールされているアプリ」の詳細を確認します。
-- インストール済みアプリを開いたとき、localhost 接続エラーや別のコンソールウィンドウではなく、winsmux のデスクトップ画面が表示されることを確認します。
-
-CLI パッケージ:
-
-```powershell
-npm install -g winsmux
-winsmux install --profile full
-winsmux version
-winsmux doctor
-```
-
-その後、エージェントに作業させたいプロジェクトへ移動し、その場所から
-CLI で管理するワークスペースを起動します。この経路ではデスクトップアプリは開きません。
-
-```powershell
-cd <project>
-winsmux init
-winsmux launch
-```
+AI起動、成果物、配置復元、閉鎖の手順は[クイックスタート](quickstart.ja.md)を参照してください。
 
 ## デスクトップアプリのインストーラー
 
-推奨するデスクトップアプリ経路では、[最新リリース](https://github.com/Sora-bluesky/winsmux/releases/latest) から Windows 用インストーラーを取得します。過去版が必要な場合は [Releases 一覧](https://github.com/Sora-bluesky/winsmux/releases) から対象の版を開きます。
+通常の導入では対象版のセットアップを使います。MSIは、その版に配布があり、導入方式が必要とする場合に選びます。配布形式と署名の状態はリリースの情報で確認してください。
 
-- `winsmux_..._x64-setup.exe`: 通常の対話式インストーラー
-- `winsmux_..._x64_en-US.msi`: MSI 配布用
-- `SHA256SUMS-desktop`: チェックサム確認用
+デスクトップ配布にはネイティブのworkspace CLIとMCPが同梱されます。同じ配布物の組合せを使い、一方だけを別版へ差し替えないでください。
 
-通常の 1 台利用では setup 形式の実行ファイルを使います。配布ツールが MSI を前提にしている場合は MSI を使います。
-
-setup 形式の実行ファイルは、英語と日本語のインストーラー画面に対応します。
-インストール画面またはアンインストール画面を開く前に、言語選択を表示します。
-
-Windows が発行元または SmartScreen の警告を出した場合は、同じ GitHub Release の `SHA256SUMS-desktop` と照合してから実行してください。各リリースの署名方針はリリースノートに記載します。
-
-`v1.0.0` 系で有効なデスクトップ配布方針は次の通りです。
-
-- 主な配布物: `winsmux_..._x64-setup.exe`
-- 配布ツール向けの配布物: `winsmux_..._x64_en-US.msi`
-- 確認用の配布物: `SHA256SUMS-desktop`
-- setup 形式の実行ファイルの言語: 英語と日本語。言語選択を有効にします。
-- 署名方針: 安定した署名証明書を用意するまではリリースごとに明記
-- 更新方法: 新しいデスクトップ版インストーラーを既存インストールの上から実行
-- ポータブル版の扱い: 既定ではデスクトップアプリのポータブル版は公開しません。必要な場合は release の `winsmux-x64.exe` または `winsmux-arm64.exe` の core binary、または npm パッケージを使います。
-
-`v1.0.0` 以降の公開配布は、インストーラーを主経路にします。完全な実装ソース一式は、公開リリース面には含めません。公開配布と再配布の境界は [公開配布の境界](source-access.ja.md) を参照してください。
-
-## Linux リモートヘルパー
-
-`v0.36.37` でパッケージ済みリモートヘルパーをサポートするのは、Ubuntu
-24.04 x86_64 だけです。Ubuntu 22.04、Rocky Linux 9、aarch64 など、今回
-パッケージ互換性を確認していない Linux 環境は試験的な扱いで、未サポートです。
-今後のリリースで実行結果を確認するまでは、サポート済みとして扱いません。
-
-Windows 側の winsmux と同じ GitHub Release からヘルパーを取得します。
-`SHA256SUMS` の該当行と照合してから、OpenSSH 経路が使う固定位置へ配置します。
-
-```bash
-release_tag=v0.36.37
-base_url="https://github.com/Sora-bluesky/winsmux/releases/download/$release_tag"
-curl -fLO "$base_url/SHA256SUMS"
-curl -fLO "$base_url/winsmux-remote-helper-linux-x64"
-grep '  winsmux-remote-helper-linux-x64$' SHA256SUMS | sha256sum --check -
-install -Dm755 winsmux-remote-helper-linux-x64 "$HOME/.local/bin/winsmux-remote-helper"
-```
-
-Windows の OpenSSH 経路は、リモートのホームディレクトリから
-`./.local/bin/winsmux-remote-helper serve --stdio` を起動します。
+Windowsの設定の「インストールされているアプリ」とインストール先で、導入した版を確認します。空白画面、接続エラー、workspaceのないコンソールだけの表示は起動成功ではありません。[トラブルシューティング](TROUBLESHOOTING.ja.md)を参照してください。
 
 ## CLI パッケージでのインストール
 
-```powershell
-npm install -g winsmux
-winsmux install --profile full
-```
+npmパッケージは、組み込まれたリリースタグへ固定してインストーラーを起動する入口です。リポジトリ内の開発用パッケージは公開用tarballそのものではありません。
 
-npm コマンドは同梱されたインストーラーに処理を渡します。インストーラーは npm パッケージと同じ Git tag に固定されます。リポジトリ内の `packages/winsmux` ディレクトリを直接 publish するのではなく、リリース時に `scripts/stage-npm-release.mjs` が npm 用 tarball を作成し、その段階で release tag に固定した `install.ps1` を追加します。
-
-インストール後は、作業対象のプロジェクトディレクトリへ移動して、管理対象
-ワークスペースを起動します。
+導入するリリースに対応する、公開済みのパッケージ版を選びます。
 
 ```powershell
-cd <project>
-winsmux init
-winsmux launch
+npm install -g winsmux@<published-version>
+winsmux install --profile core
 ```
 
-`winsmux launch` が CLI 経路の公開起動コマンドです。初回確認を行い、
-管理された Windows Terminal ワークスペースを起動します。デスクトップアプリは
-別経路です。GitHub Release からデスクトップアプリを入れた場合は、アプリを開き、
-同じプロジェクトフォルダーを選択して画面上の管制面を使います。
+実行前にプレースホルダーを置き換えます。npmの入口が扱うのはinstall・update・uninstall・version・helpで、ネイティブのworkspace要求クライアントではありません。workspace操作の前に、シェルが解決する実行ファイルを確認してください。
+
+ネイティブランタイムの公開入口は次のとおりです。
+
+```powershell
+winsmux.exe workspace host
+winsmux.exe workspace connect
+```
+
+これは用途別の入口です。`host` は別のhostを起動するため、既存のデスクトップworkspaceへ接続する操作ではありません。デスクトップを操作する場合は、GUIで現在の公開接続情報をコピーし、`connect` へ渡します。最初の入力行はdiscovery JSON、その後は1行につき1個の共通要求JSONです。応答の `accepted`、`result`、`error` を確認してください。
+
+MCPは `--discovery-json` に現在の公開接続情報のJSONを渡し、標準入出力で通信します。CLI/MCPにはGUIでのプロジェクト・権限の明示許可が必要です。私的なowner能力を公開接続情報として渡さず、host再起動後は接続情報と許可を取り直してください。
 
 ## インストールプロファイル
 
-| プロファイル | 入るもの | 向いている用途 |
-| ------- | -------- | ----------- |
-| `core` | ランタイム、ラッパースクリプト、`PATH` 設定、基本設定 | Windows native のターミナルランタイムだけが必要 |
-| `orchestra` | `core` と、オーケストレーション用スクリプト、Windows Terminal プロファイル | 1 人のオペレーターが管理ペインを動かす |
-| `security` | `core` と、vault、監査用スクリプト | フルのオーケストレーションなしで資格情報を扱う |
-| `full` | `core`、`orchestra`、`security` | 標準的な winsmux 設定で始める |
+スクリプト/npm導入は `core`、`orchestra`、`security`、`full` を受け付けます。これは補助部品の選択で、AIの許可やデスクトップの役割ではありません。`core` はネイティブランタイムと基本の補助部品を選びます。他には旧オーケストレーション・ターミナル・vault経路の補助部品が含まれますが、旧コマンドがv0.38.0のGUI起動手順である根拠にはなりません。
+
+## 旧版との併用・移行
+
+切替前に元の配布物と設定を保全し、作業を保存して旧版の実行プロセスを確認します。使用中の実行ファイルは置き換えないでください。
+
+v0.38.0では既存フォルダーを選び、必要なペイン配置を作ります。旧設定を保存配置のschemaへ手で変換しないでください。登録を外してもプロジェクトのファイルは保持され、配置復元でも旧シェルやAIは自動実行されません。
+
+旧版へ戻る場合は、元の実行ファイル・設定・ガイドを使います。新しい保存配置で元の設定を上書きしないでください。
 
 ## 更新
 
-```powershell
-winsmux update
-winsmux update --profile orchestra
-```
+デスクトップは対象リリースの案内に従って新しいインストーラーを取得・検証します。作業を保存し、workspaceを通常終了してから置き換えます。閉鎖が拒否された、または未確認なら、先に実行状態を確認してください。
 
-プロファイルを指定しない場合、`winsmux update` は前回記録したプロファイルを使います。プロファイルを変更した場合、選択対象外になった支援スクリプトはインストール先から削除されます。
+npmは対応する公開済みパッケージとupdate操作を使います。別のCLI導入の保守とデスクトップ更新を混同しないでください。スクリプトの更新ではプロファイルを指定しなければ記録済みのものを使います。
 
-デスクトップアプリは、`v0.36.23` 以降で GitHub Releases にある新しい Windows セットアップインストーラーを確認します。更新がある場合は、アプリ下部に小さな更新アクションを表示し、確認ダイアログを開き、進捗を表示しながらインストーラーをダウンロードします。リリースメタデータにチェックサムがある場合は検証し、インストーラーを起動して、実行中のアプリを置き換えられるように winsmux を終了します。`v0.36.23` より前の公開済みビルドは、新しいインストーラーを既存インストールの上から実行して更新します。
-
-この更新フローは、プロジェクトリポジトリ、エージェント CLI、それぞれの認証保存先を削除しません。
+更新後はアプリと同梱物の版、プロジェクト選択、公式CLI検出、新しい外部接続情報を確認します。失敗した場合はエラーと元の配布物を保全し、成功させるためにプロジェクトや認証保存先を削除しないでください。
 
 ## アンインストール
 
-```powershell
-winsmux uninstall
-```
+Windowsの設定またはデスクトップの配布形式に対応した削除手順を使います。スクリプト/npmはその導入経路のuninstall操作を使い、複数の導入がある場合は対象を先に確認します。
 
-アンインストールは winsmux の支援ファイルを削除します。エージェント CLI 本体や、それぞれの認証保存先は削除しません。
-
-デスクトップアプリは Windows Settings または MSI 配布ツールから `winsmux` をアンインストールしてください。プロジェクトリポジトリ、エージェント CLI、それぞれの認証保存先は削除しません。
+プロジェクト、保存した作業、公式CLIの認証保存先を手動削除の対象にしないでください。プロファイルのディレクトリの再帰削除を代用にしないでください。
 
 ## 確認
 
-```powershell
-winsmux version
-winsmux doctor
-```
+対象版とバージョン・CPU・配布物の同一性を照合します。アプリを開き、プロジェクト選択、ペイン作成、作業場所、公式CLI検出を確認します。導入コマンドの成功だけでは、この行程の動作は証明されません。
 
-インストール後または更新後は `winsmux doctor` を実行してください。PowerShell の起動、リポジトリ設定、プロセス数、ワークスペースの前提条件を確認できます。
-
-`api_llm` または Antigravity のワーカースロットでは、次も実行します。
-
-```powershell
-winsmux workers doctor
-```
-
-ワーカー診断では、外部 API のメタデータや認証情報、Antigravity CLI の不足を
-実行前に表示します。
+状態再読取り、接続の許可、共有診断、復旧は[トラブルシューティング](TROUBLESHOOTING.ja.md)を参照してください。

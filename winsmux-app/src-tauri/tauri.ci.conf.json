@@ -1,4 +1,8 @@
 {
+  "build": {
+    "beforeBuildCommand": "node ./src-tauri/scripts/prepare-companion-cli.mjs --release --sign-companions && npm run build",
+    "beforeBundleCommand": "node ./src-tauri/scripts/check-bundled-distribution.mjs --signed-companions"
+  },
   "bundle": {
     "createUpdaterArtifacts": true,
     "windows": {

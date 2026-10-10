@@ -128,6 +128,7 @@ function Get-WinsmuxPesterShardRegistry {
         (New-WinsmuxPesterMatrixRow -Ordinal 16 -ShardId 'release-public' -TimeoutMinutes 20 -TestPaths @(
             'tests/PublicSurfacePolicy.Tests.ps1'
             'tests/VersionSurface.Tests.ps1'
+            'tests/DesktopInstallReceipt.Tests.ps1'
             'tests/NpmReleasePackage.Tests.ps1'
             'tests/GitHubWritePreflight.Tests.ps1'
             'tests/McpServerContract.Tests.ps1'

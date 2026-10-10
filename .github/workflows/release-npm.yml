@@ -19,6 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -66,6 +68,27 @@ jobs:
         if: steps.stage.outputs.publish_ready == 'true'
         run: node output/npm-release/winsmux/index.mjs help
 
+      # Prepare the final archive once on Windows. The integration host uses
+      # this artifact; the legacy public entrance below is replaced only after
+      # the complete integrated gate and its cutover have been verified.
+      - name: Prepare and verify integrated npm tarball
+        if: steps.stage.outputs.publish_ready == 'true' && steps.stage.outputs.release_tag == 'v0.38.0'
+        shell: pwsh
+        run: |
+          $npmCommand = @(Get-Command npm.cmd -ErrorAction Stop)[0].Source
+          $npmCli = Join-Path (Split-Path -Parent $npmCommand) 'node_modules/npm/bin/npm-cli.js'
+          New-Item -ItemType Directory -Path output/npm-candidate -ErrorAction Stop | Out-Null
+          node scripts/prepare-verified-npm-candidate.mjs --source output/npm-release/winsmux --namespace output/npm-candidate --npm-cli $npmCli --release-tag '${{ steps.stage.outputs.release_tag }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Final npm tarball preparation or extracted Windows verification failed.' }
+
+      - name: Upload Windows-verified npm candidate
+        if: steps.stage.outputs.publish_ready == 'true' && steps.stage.outputs.release_tag == 'v0.38.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/npm-candidate/artifact/
+          if-no-files-found: error
+
   publish:
     needs: verify
     runs-on: ubuntu-latest
@@ -73,6 +96,8 @@ jobs:
     if: needs.verify.outputs.publish_ready == 'true'
     steps:
       - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
 
       - uses: actions/setup-node@v6
         with:

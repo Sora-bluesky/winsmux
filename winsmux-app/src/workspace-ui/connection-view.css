@@ -1,0 +1,10 @@
+.workspace-connections { margin-block: 1rem; padding: 1rem; border: 1px solid #59636e; border-radius: .4rem; }
+.workspace-connections h2 { margin-block: 0 .5rem; }
+.workspace-connections button { margin: .2rem .45rem .2rem 0; }
+.workspace-connection-rows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: .6rem; margin-block: .6rem; }
+.workspace-connection-rows article { padding: .6rem; border: 1px solid #59636e; overflow-wrap: anywhere; }
+.workspace-connection-rows p { margin-block: .35rem; }
+.workspace-connections fieldset { margin-block: .7rem; border: 1px solid #59636e; }
+.workspace-connections label { display: block; margin-block: .3rem; overflow-wrap: anywhere; }
+.workspace-connections :focus-visible { outline: 3px solid #79c0ff; outline-offset: 2px; }
+@media (forced-colors: active) { .workspace-connections, .workspace-connection-rows article, .workspace-connections fieldset { border-color: CanvasText; } }
