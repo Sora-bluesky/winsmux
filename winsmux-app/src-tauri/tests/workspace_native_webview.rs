@@ -1438,7 +1438,10 @@ fn validate_report(report: &Value, inputs: &NativeInputs) -> Result<(), &'static
     if report["activeClose"]["accepted"] != json!(false) {
         return Err("active close accepted");
     }
-    if report["normalCloseRefusal"] != json!("winsmux — workspace close refused: runtime_failed")
+    if report["normalCloseRefusal"]
+        != json!(winsmux_app_lib::workspace_transport::close_problem_title(
+            "runtime_failed"
+        ))
         || report["normalCloseRetryRefusal"] != report["normalCloseRefusal"]
     {
         return Err("normal close did not retain the window and reset its retry latch");
@@ -1501,7 +1504,10 @@ fn validate_report(report: &Value, inputs: &NativeInputs) -> Result<(), &'static
         || !report["terminatedHostPid"]
             .as_u64()
             .is_some_and(|pid| pid > 0)
-        || report["unknownCloseTitle"] != json!("winsmux — workspace close uncertain")
+        || report["unknownCloseTitle"]
+            != json!(winsmux_app_lib::workspace_transport::close_problem_title(
+                "transport_uncertain"
+            ))
         || report["unknownRepeatedCloseTitle"] != report["unknownCloseTitle"]
         || report["unknownOpen"] != json!("transport_uncertain")
     {
@@ -2454,7 +2460,7 @@ fn main() {
                         await invoke('native_request_window_close');
                         await new Promise(resolve => setTimeout(resolve, 500));
                         const title = await invoke('native_window_title');
-                        if (title.includes('workspace close uncertain')) throw new Error(title);
+                        if (title.includes('transport_uncertain')) throw new Error(title);
                     }
                     throw new Error('normal close did not destroy the window');
                 })().catch(error => window.__TAURI_INTERNALS__.invoke('native_nonowner_report', {outcome: 'close-only-error:' + String(error)}));"#)
@@ -2529,7 +2535,7 @@ fn main() {
                     output.grantAfterDeniedRead = await send('connection.list', {});
                     await invoke('native_public_close');
                     output.unrelatedBeforeClose = await invoke('native_unrelated_cli_alive');
-                    const refusedTitle = 'winsmux — workspace close refused: runtime_failed';
+                    const refusedTitle = __REFUSED_CLOSE_TITLE_JSON__;
                     await invoke('native_request_window_close');
                     for (let attempt = 0; attempt < 30; attempt++) {
                         output.normalCloseRefusal = await invoke('native_window_title');
@@ -2598,7 +2604,7 @@ fn main() {
                     await invoke('native_request_window_close');
                     for (let attempt = 0; attempt < 30; attempt++) {
                         output.unknownCloseTitle = await invoke('native_window_title');
-                        if (output.unknownCloseTitle === 'winsmux — workspace close uncertain') break;
+                        if (output.unknownCloseTitle === __UNCERTAIN_CLOSE_TITLE_JSON__) break;
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                     await invoke('native_request_window_close');
@@ -2626,7 +2632,22 @@ fn main() {
                         }
                     } catch (error) { observe(true);throw error; }
                 }
-            })();"#.replace("__PROJECT_PATH_JSON__", &project_literal);
+            })();"#
+                .replace("__PROJECT_PATH_JSON__", &project_literal)
+                .replace(
+                    "__REFUSED_CLOSE_TITLE_JSON__",
+                    &serde_json::to_string(&winsmux_app_lib::workspace_transport::close_problem_title(
+                        "runtime_failed",
+                    ))
+                    .expect("refused title"),
+                )
+                .replace(
+                    "__UNCERTAIN_CLOSE_TITLE_JSON__",
+                    &serde_json::to_string(&winsmux_app_lib::workspace_transport::close_problem_title(
+                        "transport_uncertain",
+                    ))
+                    .expect("uncertain title"),
+                );
             webview.eval(&script).expect("invoke registered commands in actual WebView2");
         })
         .setup(move|app| {

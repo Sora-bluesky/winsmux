@@ -55,7 +55,7 @@ function validHostStatus(value: unknown): value is WorkspaceHostStatus {
     && (value.instance_id === null || uuid(value.instance_id)) && decimalU64(value.generation)
     && decimalU64(value.revision) && hostPhases.has(value.phase as string)
     && typeof value.force_offer === 'string'
-    && (value.force_offer === 'none' || value.force_offer === 'unknown' || value.force_offer === 'waiting');
+    && ['none', 'unknown', 'waiting', 'persistence_refused', 'runtime_refused'].includes(value.force_offer as string);
 }
 export function validSession(value: unknown): value is WorkspaceSession & { schema_version: 1 } { return shape(value, ['instance_id', 'schema_version']) && uuid(value.instance_id) && value.schema_version === 1; }
 export function validReadResponse(request: Request, value: unknown): value is Response {
@@ -80,6 +80,29 @@ function shapeEvent(value: unknown) {
     case 'connection_state_changed': return shape(data, ['kind', 'connection_id', 'state']) && uuid(data.connection_id) && ['unpaired', 'pending', 'granted', 'revoked'].includes(data.state as string);
     default: return false;
   }
+}
+
+const CLOSE_REFUSAL_FALLBACK = '閉鎖の完了を確認できません。対象と要求を保持しています。';
+const CLOSE_REFUSAL_COPY: Record<string, { status: string; button?: string }> = {
+  persistence_failed: {
+    status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。保存せずに終了する場合は「保存せずに終了」を押してください。',
+    button: '保存せずに終了',
+  },
+  runtime_failed: {
+    status: 'ペインのプロセスがまだ動いているため閉じられませんでした。そのペインを閉じるか、プロセスの終了を待ってから閉じ直してください。待たずに閉じる場合は「ペインのプロセスを終了して閉じる」を押してください。',
+    button: 'ペインのプロセスを終了して閉じる',
+  },
+  resource_exhausted: { status: '記録の容量が尽きたため閉じられませんでした。容量が空いてから閉じ直してください。' },
+  state_unknown: { status: '作業状態が変わったため閉じられませんでした。もう一度閉じてください。' },
+  operation_conflict: { status: '実行中の変更と重なったため閉じられませんでした。もう一度閉じてください。' },
+  permission_denied: { status: 'この操作の権限がないため閉じられませんでした。' },
+  protocol_failed: { status: '作業用 host との通信が合わないため閉じられませんでした。' },
+  transport_uncertain: { status: '作業用 host の応答を確認できないため、閉鎖を確認できません。' },
+  session_closed: { status: '作業用 host との接続が閉じられたため、閉鎖を確認できません。' },
+};
+export function closeRefusalMessage(code: unknown): string {
+  const row = typeof code === 'string' ? CLOSE_REFUSAL_COPY[code] : undefined;
+  return row?.status ?? CLOSE_REFUSAL_FALLBACK;
 }
 
 export async function mountWorkspaceMain(root: HTMLElement) {
@@ -116,6 +139,9 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       status.textContent = 'host の終了を待っています。待たずに終了する場合は強制終了を確認してください。';
       return;
     }
+    const refused = offer === 'persistence_refused' ? CLOSE_REFUSAL_COPY.persistence_failed
+      : offer === 'runtime_refused' ? CLOSE_REFUSAL_COPY.runtime_failed : undefined;
+    if (refused?.button) { forceExit.textContent = refused.button; return; }
     forceExit.textContent = '状態不明の host を強制終了';
   }
   let hostProbeStarted = false;
@@ -692,7 +718,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   }
   reconnect.onclick = () => { void connect(); };
   try {
-    const closeRelease = await listen('workspace-close-refused', () => { if (!disposed) status.textContent = '閉鎖の完了を確認できません。対象と要求を保持しています。'; });
+    const closeRelease = await listen('workspace-close-refused', event => { if (!disposed) status.textContent = closeRefusalMessage(event?.payload); });
     const offerRelease = await listen('workspace-force-offer', () => { if (!disposed) void refreshForceOffer(); });
     const release = () => { closeRelease(); offerRelease(); };
     if (disposed) release(); else unlisten = release;

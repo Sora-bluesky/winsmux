@@ -279,6 +279,29 @@ try {
       check('waiting offer ' + waitingPhase + ' shows the waiting status', status?.textContent === 'host の終了を待っています。待たずに終了する場合は強制終了を確認してください。');
       mounted.dispose(); root.remove(); frames.length = 0; f.failNextEvents = false; f.nextStatus = null;
     }
+    for (const refused of [
+      { offer: 'persistence_refused', code: 'persistence_failed', button: '保存せずに終了', status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。保存せずに終了する場合は「保存せずに終了」を押してください。' },
+      { offer: 'runtime_refused', code: 'runtime_failed', button: 'ペインのプロセスを終了して閉じる', status: 'ペインのプロセスがまだ動いているため閉じられませんでした。そのペインを閉じるか、プロセスの終了を待ってから閉じ直してください。待たずに閉じる場合は「ペインのプロセスを終了して閉じる」を押してください。' },
+    ]) {
+      Object.assign(f, { calls: [], host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
+        ownerGeneration: '1', withRun: false, rows: [], failNextEvents: false, failOpen: false, enforceGuardOpen: false,
+        holdNextEvents: false, ordinaryBusy: false, guardStatusReads: 0 });
+      f.revision++;
+      const root = document.createElement('main'); document.body.append(root);
+      let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
+      for (let i = 0; i < 35 && !mounted; i++) await frame();
+      await opening;
+      check('refused close ' + refused.code + ' begins mounted', root.dataset.startupState === 'mounted');
+      f.nextStatus = { instance_id: I, generation: '1', revision: String(f.revision + 1), phase: 'Ready', force_offer: refused.offer };
+      f.listeners['workspace-force-offer']?.();
+      await tick();
+      f.listeners['workspace-close-refused']?.({ payload: refused.code });
+      const force = root.querySelector(':scope > button:nth-of-type(2)');
+      const status = root.querySelector(':scope > p');
+      check('refused close ' + refused.code + ' shows the exit button', !!force && !force.hidden && force.textContent === refused.button);
+      check('refused close ' + refused.code + ' explains the refusal', status?.textContent === refused.status);
+      mounted.dispose(); root.remove(); frames.length = 0; f.nextStatus = null;
+    }
     Object.assign(f, { host: 'Ready', nextStatus: null, guardStatus: null, failNextEvents: false });
 
     for (const scenario of ['success', 'occupied', 'old-generation', 'forged-receipt', 'dispose-discovery', 'blocked-discovery', 'dispose-copy']) {

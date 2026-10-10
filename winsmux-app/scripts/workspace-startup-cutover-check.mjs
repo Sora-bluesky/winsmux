@@ -154,6 +154,19 @@ try {
   }
   const mainModule=await load('startup-mount'),O='33333333-3333-4333-8333-333333333333',B='44444444-4444-4444-8444-444444444444',R='55555555-5555-4555-8555-555555555555';
   check('session closed schema1 UUID DTO',mainModule.validSession({instance_id:I,schema_version:1})&&!mainModule.validSession({instance_id:I,schema_version:1,extra:true})&&!mainModule.validSession({instance_id:'fake',schema_version:1})&&!mainModule.validSession({instance_id:I,schema_version:2}));
+  const refusalFallback='閉鎖の完了を確認できません。対象と要求を保持しています。';
+  const refusalCopy=[
+    ['persistence_failed','配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。保存せずに終了する場合は「保存せずに終了」を押してください。'],
+    ['runtime_failed','ペインのプロセスがまだ動いているため閉じられませんでした。そのペインを閉じるか、プロセスの終了を待ってから閉じ直してください。待たずに閉じる場合は「ペインのプロセスを終了して閉じる」を押してください。'],
+    ['resource_exhausted','記録の容量が尽きたため閉じられませんでした。容量が空いてから閉じ直してください。'],
+    ['state_unknown','作業状態が変わったため閉じられませんでした。もう一度閉じてください。'],
+    ['operation_conflict','実行中の変更と重なったため閉じられませんでした。もう一度閉じてください。'],
+    ['permission_denied','この操作の権限がないため閉じられませんでした。'],
+    ['protocol_failed','作業用 host との通信が合わないため閉じられませんでした。'],
+    ['transport_uncertain','作業用 host の応答を確認できないため、閉鎖を確認できません。'],
+    ['session_closed','作業用 host との接続が閉じられたため、閉鎖を確認できません。'],
+  ];
+  check('close refusal copy',refusalCopy.every(([code,status])=>mainModule.closeRefusalMessage(code)===status)&&mainModule.closeRefusalMessage()===refusalFallback&&mainModule.closeRefusalMessage('response_invalid')===refusalFallback);
   const request={schema_version:1,instance_id:I,operation_id:O,expected_topology_revision:null,operation:'events.wait',params:{after_event_seq:0,wait_ms:0}};
   const event=data=>({event_seq:1,observed_at:'2026-09-26T00:00:00Z',data});
   const run={run_id:R,pane_id:B,process:'running',work:'unknown',evidence:'unavailable',observed_at:'2026-09-26T00:00:00Z',current:true,exit_code:null};
