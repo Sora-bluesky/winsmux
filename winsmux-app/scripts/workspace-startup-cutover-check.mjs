@@ -259,13 +259,18 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
  if(main.before.state!=='mounted'||main.before.outcome!=='completed'||main.before.created!=='false'||names.filter(n=>n==='workspace_session_open').length!==1||ops.filter(n=>n==='project.open').length!==1||ops.includes('pane.create')||ops.includes('shell.launch')||!main.retained||main.after.state!=='disposed'||main.after.listeners)throw Error('Production main restoration/lifetime invariant');checks.push('production main real controller fixture: one open session, explicit same-ticket folder, existing no launch, close refusal retains, actual dispose releases');
  console.log(JSON.stringify({fixture_stage:'agent-live-state'}));
  const agentLiveProof=await page.evaluate(async code=>{
+  const realSetTimeout=window.setTimeout.bind(window),realClearTimeout=window.clearTimeout.bind(window),followUps=[];
+  let followUpSeq=1000000;
+  window.setTimeout=(fn,delay,...args)=>{const ms=Number(delay)||0;if(ms!==500&&ms!==1000&&ms!==2000&&ms!==4000&&ms!==8000)return realSetTimeout(fn,ms,...args);const id=++followUpSeq;followUps.push({id,fn,delay:ms,args});return id;};
+  window.clearTimeout=id=>{const index=followUps.findIndex(item=>item.id===id);if(index>=0){followUps.splice(index,1);return;}realClearTimeout(id);};
+  try{
   const f=globalThis.fixture,original=f.invoke,results=[];
   const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
   const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
   for(const provider of ['codex','claude']){
    const I='11111111-1111-4111-8111-111111111111',P='22222222-2222-4222-8222-222222222222',N=crypto.randomUUID(),R=crypto.randomUUID();
    const root=document.createElement('main');document.body.append(root);
-   const state={seq:1,process:'running',providers:[{provider,version:'1.2.3'}],requests:[],guardRevision:'1',guardError:null};
+   const state={seq:1,process:'running',providers:[{provider:'codex',version:'1.2.3'},{provider:'claude',version:'1.2.3'}],requests:[],guardRevision:'1',guardError:null};
    const run=()=>({run_id:R,pane_id:N,current:true,process:state.process,work:state.process==='exited'?'interrupted':'unknown',evidence:state.process==='exited'?'process_exit':'unavailable',exit_code:state.process==='exited'?0:null,observed_at:'2026-10-05T00:00:00Z'});
    f.native=true;f.label='main';f.initial=null;f.frames=[];
    f.invoke=async(name,args)=>{
@@ -294,16 +299,34 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
    const idle={capabilities:count('capabilities.get'),projects:count('project.list'),panes:count('pane.list'),runs:count('run.get'),waits:count('events.wait')};
    await pump();await pump();await pump();
    if(count('capabilities.get')!==idle.capabilities||count('project.list')!==idle.projects||count('pane.list')!==idle.panes||count('run.get')!==idle.runs||count('events.wait')<idle.waits+3)throw Error('idle agent pumps reread agent state '+JSON.stringify({before:idle,after:{capabilities:count('capabilities.get'),projects:count('project.list'),panes:count('pane.list'),runs:count('run.get'),waits:count('events.wait')}}));
+   if(followUps.length!==0)throw Error('provider read armed a follow-up '+followUps.map(item=>item.delay).join(','));
+   const region=root.querySelector('[aria-label="AIの起動と状態の表示領域"]');
+   const beforeFocus=count('capabilities.get');
+   region.dispatchEvent(new FocusEvent('focusin',{bubbles:true}));
+   await pump();
+   if(count('capabilities.get')!==beforeFocus+1)throw Error('focusin capabilities reads '+(count('capabilities.get')-beforeFocus));
+   const afterFocus=count('capabilities.get');
+   await pump();
+   if(count('capabilities.get')!==afterFocus)throw Error('idle pump after focus reread capabilities '+(count('capabilities.get')-afterFocus));
+   if(followUps.length!==0)throw Error('focus read armed a follow-up '+followUps.map(item=>item.delay).join(','));
    const select=root.querySelector('[aria-label="AIを選択"]');select.value=provider;select.dispatchEvent(new Event('change'));
    const interrupt=root.querySelector('[data-action="interrupt"]');
    const before={enabled:!interrupt.disabled,state:root.querySelector('[data-field="state"]').textContent};
    interrupt.click();for(let n=0;n<8;n++)await tick();await pump();
    const settled={admission:root.querySelector('[data-field="admission"]').textContent,process:root.querySelector('[data-field="process"]').textContent};
-   state.providers=[{provider,version:'2.3.4'}];root.querySelector('[aria-label="AIの起動と状態の表示領域"]').dispatchEvent(new FocusEvent('focusin',{bubbles:true}));await pump();
+   state.providers=null;root.querySelector('[data-action="inspect-installation"]').click();await pump();await pump();
+   if(followUps.length!==1||followUps[0].delay!==500)throw Error('empty provider read armed '+followUps.map(item=>item.delay).join(',')+' not one 500ms follow-up');
+   state.providers=[{provider,version:'2.3.4'},{provider:provider==='codex'?'claude':'codex',version:'9.9.9'}];const due=followUps.splice(0,followUps.length);for(const item of due)item.fn(...item.args);await pump();
+   if(followUps.length!==0)throw Error('provider read armed a follow-up after detection');
    results.push({provider,before,interrupts:state.requests.filter(x=>x==='run.interrupt').length,...settled,updatedCli:root.querySelector('[data-field="cli"]').textContent,updatedProcess:root.querySelector('[data-field="process"]').textContent,requests:[...state.requests]});
+   state.providers=[{provider,version:'2.3.4'}];root.querySelector('[data-action="inspect-installation"]').click();await pump();await pump();
+   if(followUps.length!==1||followUps[0].delay!==500)throw Error('one provider read armed '+followUps.map(item=>item.delay).join(',')+' not one 500ms follow-up');
+   state.providers=[];const dropped=followUps.splice(0,followUps.length);for(const item of dropped)item.fn(...item.args);await pump();
+   if(followUps.length!==1||followUps[0].delay!==500)throw Error('fewer providers started '+followUps.map(item=>item.delay).join(',')+' not a new 500ms chain');
    mount.dispose();root.remove();
   }
   f.invoke=original;f.frames=[];return results;
+  }finally{window.setTimeout=realSetTimeout;window.clearTimeout=realClearTimeout;}
  },outputs['startup-mount']);
  writeFileSync(resolve(evidence,'agent-live-state.json'),JSON.stringify(agentLiveProof,null,2)+'\n');
  checks.push('idle agent pumps wait for events without rereading capabilities, projects, panes, or runs');

@@ -497,6 +497,23 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       let agentNudged = true;
       let agentEvents: 'no_change' | 'events' | 'gap' | null = null;
       let agentSawAvailable = false;
+      let providerFollowUps = 0;
+      let providerFollowUp: ReturnType<typeof setTimeout> | null = null;
+      let providerChain = true;
+      let providerListed: number | null = null;
+      const clearProviderFollowUp = () => { if (providerFollowUp !== null) { clearTimeout(providerFollowUp); providerFollowUp = null; } };
+      const resetProviderFollowUps = () => { providerFollowUps = 0; providerChain = true; providerListed = null; clearProviderFollowUp(); };
+      const noteProviderFollowUp = (providers: ProviderCapability[] | null) => {
+        if (providers !== null) {
+          if (providerListed !== null && providers.length < providerListed) resetProviderFollowUps();
+          providerListed = providers.length;
+        }
+        if (providers !== null && providers.some(row => row.provider === 'codex') && providers.some(row => row.provider === 'claude')) { providerChain = false; clearProviderFollowUp(); return; }
+        if (!providerChain || providerFollowUp !== null || providerFollowUps >= 5) return;
+        const delay = [500, 1000, 2000, 4000, 8000][providerFollowUps];
+        providerFollowUps += 1;
+        providerFollowUp = window.setTimeout(() => { providerFollowUp = null; agentNudged = true; if (!document.hidden) schedule(); }, delay);
+      };
       function projectFrame(snapshot: ViewSnapshot) {
         const project = snapshot.projects.projects.find(row => row.project_id === snapshot.projects.selected_project_id) ?? null;
         const pane = snapshot.panes?.panes.find(row => row.pane_id === snapshot.panes?.selected_pane_id) ?? null;
@@ -561,7 +578,10 @@ export async function mountWorkspaceMain(root: HTMLElement) {
         },
         installation(data, message) {
           if (!current()) return;
+          resetProviderFollowUps();
+          agentNudged = true;
           status.textContent = data === null ? message ?? '導入状況を確認できません。' : data.providers === null ? 'CLIの導入状況は未確認です。' : `検出したCLI: ${data.providers.map(p => `${p.provider} ${p.version}`).join('、') || '未検出'} / シェル: ${data.shell_profile_ids?.join('、') || '未検出'}`;
+          schedule();
         },
       });
       view = createProjectPaneView(root, initial, {
@@ -602,6 +622,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       creationContext = () => { const snapshot = controller.getSnapshot(); return { active: current(), mounted: root.dataset.startupState === 'mounted', session, generation: identity, epoch, label: getCurrentWebviewWindow().label, href: location.href, origin: location.protocol === 'tauri:' ? 'tauri://localhost' : location.origin, selectedProject: snapshot.projects.projects.find(row => row.project_id === snapshot.projects.selected_project_id) ?? null }; };
       creations.activate();
       active = () => {
+        clearProviderFollowUp();
         connectionView?.dispose(); connectionView = null;
         creations.beginReconnect(); input.disconnect(); stopped = true; details?.disconnect();
         agentOwner.setConnected(false); agentBinding?.dispose(); agentBinding = null;
@@ -662,6 +683,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
             availability: 'available', busy: admission.busy() || snapshot.busy, project: selectedProject, pane: selectedPane,
             capabilities: { state: providers === null ? 'unknown' : 'known', providers }, eventSeq: sequence });
           if (committed) agentView.update(committed);
+          noteProviderFollowUp(providers);
           return true;
         } catch { const failed = agentObservation.failure(ticket); if (failed) agentView.update(failed); return issued; }
       }
@@ -683,6 +705,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           const framed = projectFrame(controller.getSnapshot());
           const key = JSON.stringify([framed.project?.project_id ?? null, framed.pane?.pane_id ?? null, framed.pane?.current_run_id ?? null]);
           if (agentReadDue({ selectionChanged: key !== agentSelection, eventsStatus: agentEvents, nudged: agentNudged })) {
+            if (key !== agentSelection) resetProviderFollowUps();
             agentNudged = false;
             agentEvents = null;
             agentSelection = key;
