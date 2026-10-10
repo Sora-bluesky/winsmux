@@ -535,7 +535,7 @@ fn choose_owned_force_dialog(confirm: bool) -> Result<bool, &'static str> {
         let count = GetWindowTextW(window, title.as_mut_ptr(), title.len() as i32);
         if pid == target.pid
             && String::from_utf16_lossy(&title[..count.max(0) as usize])
-                == "Workspace state is uncertain"
+                == winsmux_app_lib::workspace_transport::FORCE_EXIT_DIALOG_TITLE
         {
             target.window = window;
             return 0;
@@ -566,8 +566,8 @@ fn choose_owned_force_dialog(confirm: bool) -> Result<bool, &'static str> {
                 EnumChildWindows(target.window, Some(collect), &mut texts as *mut _ as isize);
             }
             let warning = texts.join(" ");
-            let win32_warning_verified = warning.contains("Saving could not be confirmed")
-                && warning.contains("last durable snapshot may be older");
+            let win32_warning_verified = warning.contains("保存を確認できませんでした")
+                && warning.contains("最後に保存した状態は古い可能性があります");
             native_force_phase(if win32_warning_verified { "win32_warning_verified" } else { "uia_warning_selected" });
             let warning_verified = win32_warning_verified
                 || owned_dialog_warning_via_automation(target.window as usize, target.pid);
@@ -581,7 +581,7 @@ fn choose_owned_force_dialog(confirm: bool) -> Result<bool, &'static str> {
                 capture_hold(
                     "warning",
                     target.window as usize,
-                    "Workspace state is uncertain",
+                    winsmux_app_lib::workspace_transport::FORCE_EXIT_DIALOG_TITLE,
                 )?;
                 native_force_phase("capture_hold_return");
             }
@@ -720,7 +720,7 @@ fn native_start_uia_observer(child: &Child) {
 fn owned_dialog_warning_via_automation(window: usize, process_id: u32) -> bool {
     use std::os::windows::process::CommandExt;
     let script = format!(
-        r#"$ErrorActionPreference='Stop'; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $target=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]{window}); if ($target.Current.ProcessId -ne {process_id}) {{ exit 2 }}; $nodes=$target.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition); $names=foreach ($item in $nodes) {{ $item.Current.Name }}; $warning=$names -join ' '; if ($warning.Contains('Saving could not be confirmed') -and $warning.Contains('last durable snapshot may be older')) {{ [Console]::Write('warning_verified'); exit 0 }}; exit 3"#
+        r#"$ErrorActionPreference='Stop'; Add-Type -AssemblyName UIAutomationClient; Add-Type -AssemblyName UIAutomationTypes; $target=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]{window}); if ($target.Current.ProcessId -ne {process_id}) {{ exit 2 }}; $nodes=$target.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition); $names=foreach ($item in $nodes) {{ $item.Current.Name }}; $warning=$names -join ' '; if ($warning.Contains('保存を確認できませんでした') -and $warning.Contains('最後に保存した状態は古い可能性があります')) {{ [Console]::Write('warning_verified'); exit 0 }}; exit 3"#
     );
     let Some(windows_root)=std::env::var_os("SystemRoot") else{native_force_phase("uia_image_unavailable");return false;};
     native_force_phase("uia_spawn_begin");

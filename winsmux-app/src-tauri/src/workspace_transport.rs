@@ -2014,6 +2014,10 @@ pub fn dispatch_desktop_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         _ => {}
     }
 }
+/// Caption of the uncertain-host force-exit confirmation. NT finds the dialog by this exact string.
+pub const FORCE_EXIT_DIALOG_TITLE: &str = "winsmux — 作業状態を確認できません";
+const FORCE_EXIT_DIALOG_BODY: &str = "保存を確認できませんでした。最後に保存した状態は古い可能性があります。実行中の作業は停止します。変換中の文字や送信前に保持している文字は失われることがあります。配送を確認できない文字は、すでに実行先に届いている可能性があります。このアプリの作業用 host を強制終了しますか？";
+
 async fn force_exit_flow(
     app: tauri::AppHandle,
     manager: Arc<WorkspaceManager>,
@@ -2033,7 +2037,17 @@ async fn force_exit_flow(
     })
     .await??;
     let dialog_app = app.clone();
-    let confirmed=tauri::async_runtime::spawn_blocking(move||dialog_app.dialog().message("Saving could not be confirmed. The last durable snapshot may be older. Active runs will stop. Text still being composed or held before sending may be lost. Text whose delivery is unknown may already have reached a run. Force exit and stop this app's workspace host?").title("Workspace state is uncertain").kind(MessageDialogKind::Warning).buttons(MessageDialogButtons::YesNo).blocking_show()).await.map_err(|_|"transport_uncertain")?;
+    let confirmed = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .message(FORCE_EXIT_DIALOG_BODY)
+            .title(FORCE_EXIT_DIALOG_TITLE)
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::YesNo)
+            .blocking_show()
+    })
+    .await
+    .map_err(|_| "transport_uncertain")?;
     if !confirmed {
         manager
             .state
@@ -3091,6 +3105,22 @@ mod lifecycle_tests {
         assert!(close.terminal.lock().unwrap().is_none());
         assert!(!state.completion.as_ref().unwrap().abandoned);
         assert_eq!(state.force_offer(), ForceOffer::Waiting);
+    }
+
+    #[test]
+    fn force_exit_dialog_text_is_japanese() {
+        assert_eq!(
+            FORCE_EXIT_DIALOG_TITLE,
+            "winsmux — 作業状態を確認できません"
+        );
+        for text in [FORCE_EXIT_DIALOG_TITLE, FORCE_EXIT_DIALOG_BODY] {
+            for word in text.split(|ch: char| !ch.is_ascii_alphabetic()) {
+                if word.is_empty() {
+                    continue;
+                }
+                assert!(word == "winsmux" || word == "host", "{word}");
+            }
+        }
     }
 }
 
