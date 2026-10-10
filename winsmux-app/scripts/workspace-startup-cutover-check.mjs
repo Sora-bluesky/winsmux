@@ -156,8 +156,8 @@ try {
   check('session closed schema1 UUID DTO',mainModule.validSession({instance_id:I,schema_version:1})&&!mainModule.validSession({instance_id:I,schema_version:1,extra:true})&&!mainModule.validSession({instance_id:'fake',schema_version:1})&&!mainModule.validSession({instance_id:I,schema_version:2}));
   const refusalFallback='閉鎖の完了を確認できません。対象と要求を保持しています。';
   const refusalCopy=[
-    ['persistence_failed','配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。保存せずに終了する場合は「保存せずに終了」を押してください。'],
-    ['runtime_failed','ペインのプロセスがまだ動いているため閉じられませんでした。そのペインを閉じるか、プロセスの終了を待ってから閉じ直してください。待たずに閉じる場合は「ペインのプロセスを終了して閉じる」を押してください。'],
+    ['persistence_failed','配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。'],
+    ['runtime_failed','作業中の処理（動いているペインのプロセスや起動の途中のペイン）があるため閉じられませんでした。そのペインを閉じるか、処理の終了を待ってから閉じ直してください。'],
     ['resource_exhausted','記録の容量が尽きたため閉じられませんでした。容量が空いてから閉じ直してください。'],
     ['state_unknown','作業状態が変わったため閉じられませんでした。もう一度閉じてください。'],
     ['operation_conflict','実行中の変更と重なったため閉じられませんでした。もう一度閉じてください。'],

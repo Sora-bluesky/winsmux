@@ -170,6 +170,8 @@ struct Lifecycle {
     input_fence: Option<InputFence>,
     interrupt: Option<OwnerInterrupt>,
     interrupted_generation: Option<u64>,
+    // Open refused-exit dialog. Cleared on either answer and on lease drop.
+    refused_prompt_open: bool,
 }
 impl Default for Lifecycle {
     fn default() -> Self {
@@ -191,6 +193,7 @@ impl Default for Lifecycle {
             input_fence: None,
             interrupt: None,
             interrupted_generation: None,
+            refused_prompt_open: false,
         }
     }
 }
@@ -423,6 +426,17 @@ impl Lifecycle {
         &mut self,
         incoming: Intent,
     ) -> Result<(Arc<CompletionReservation>, bool), &'static str> {
+        // The open refused dialog is the close. A new close or exit joins it and
+        // must not start another stop or erase the refusal record.
+        if self.refused_prompt_open && matches!(incoming, Intent::CloseMain | Intent::ExitApp(_)) {
+            return Ok((
+                Arc::new(CompletionReservation {
+                    id: 0,
+                    terminal: Mutex::new(None),
+                }),
+                false,
+            ));
+        }
         if matches!(self.phase, Phase::Unknown | Phase::ForcePrompt) {
             return Err("transport_uncertain");
         }
@@ -752,12 +766,18 @@ impl Lifecycle {
                 self.next_id();
                 Ok(ForcePrompt::Waiting(ticket))
             }
-            ForceOffer::Refused(refusal) => Ok(ForcePrompt::Refused(refusal)),
+            ForceOffer::Refused(refusal) => {
+                if self.refused_prompt_open {
+                    return Err("force_exit_unavailable");
+                }
+                self.refused_prompt_open = true;
+                Ok(ForcePrompt::Refused(refusal))
+            }
         }
     }
     fn cancel_force(&mut self, prompt: &ForcePrompt) {
         match prompt {
-            ForcePrompt::Refused(_) => {}
+            ForcePrompt::Refused(_) => self.refused_prompt_open = false,
             ForcePrompt::Unknown(ticket) => {
                 if self.current(ticket) && self.phase == Phase::ForcePrompt {
                     self.next_id();
@@ -797,6 +817,7 @@ impl Lifecycle {
         if self.force_offer() != ForceOffer::Refused(refusal) {
             return Err("force_exit_moot");
         }
+        self.refused_prompt_open = false;
         self.refused_close = None;
         self.interrupted_generation = Some(self.generation);
         self.next_id();
@@ -812,22 +833,33 @@ impl Lifecycle {
         if self.phase == Phase::Unknown && self.owner_interrupted() {
             return match self.begin_force() {
                 Ok(ForcePrompt::Unknown(ticket)) => Some(Settled::Force(ticket)),
-                _ => Some(Settled::Moot),
+                _ => {
+                    self.note_refused_confirm_failed();
+                    Some(Settled::Moot)
+                }
             };
+        }
+        if self.owner_interrupted() {
+            self.note_refused_confirm_failed();
         }
         Some(Settled::Moot)
     }
-    // A moot confirm must not leave phase Unknown: that offer replaces the refused exit button.
-    fn restore_refused_after_moot(&mut self, saved: RefusedClose) {
-        if saved.generation != self.generation {
-            return;
-        }
-        self.refused_close = Some(saved);
-        if self.phase == Phase::Unknown && self.flight.is_none() && self.completion.is_none() {
-            self.phase = Phase::Ready;
-            if self.interrupted_generation == Some(saved.generation) {
-                self.interrupted_generation = None;
-            }
+    // After the owner interrupt, a confirm that cannot proceed is the unknown-host offer.
+    fn note_refused_confirm_failed(&mut self) {
+        self.refused_prompt_open = false;
+        if self.flight.is_none()
+            && self.owner_interrupted()
+            && !matches!(
+                self.phase,
+                Phase::Unknown
+                    | Phase::ForcePrompt
+                    | Phase::Finishing
+                    | Phase::MainClosed
+                    | Phase::ExitReleased
+                    | Phase::FailedClosed
+            )
+        {
+            self.phase = Phase::Unknown;
         }
     }
     fn confirm_waiting(&mut self, close: &CompletionReservation) -> Result<Option<OwnerInterrupt>, &'static str> {
@@ -1302,6 +1334,13 @@ impl WorkspaceManager {
         if let Some(emit) = emit {
             emit(label);
         }
+    }
+    fn refused_confirm_failed(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.note_refused_confirm_failed();
+        }
+        self.notify_changed();
+        self.announce_force_offer();
     }
     fn start_owner(&self) -> Result<Session, &'static str> {
         #[cfg(all(windows, debug_assertions, feature = "native-e2e-faults"))]
@@ -1854,8 +1893,7 @@ impl Drop for ForcePromptLease {
             let mut state = self.manager.state.lock().unwrap_or_else(|e| e.into_inner());
             let prompt = self.prompt.clone();
             match &prompt {
-                ForcePrompt::Refused(_) => {}
-                ForcePrompt::Waiting(_) => state.cancel_force(&prompt),
+                ForcePrompt::Refused(_) | ForcePrompt::Waiting(_) => state.cancel_force(&prompt),
                 ForcePrompt::Unknown(ticket) => {
                     if state.current(ticket) && state.phase == Phase::ForcePrompt {
                         state.cancel_force(&prompt);
@@ -2126,7 +2164,7 @@ const FORCE_EXIT_DIALOG_BODY: &str = "保存を確認できませんでした。
 const PERSISTENCE_EXIT_TITLE: &str = "winsmux — 保存せずに終了しますか";
 const PERSISTENCE_EXIT_BODY: &str = "配置を保存できなかったため閉じられませんでした。保存せずに終了しても、保存済みの配置ファイルは変更しません。前回の保存より後に変えた配置は保存されません。変換中の文字や送信前に保持している文字は失われることがあります。保存せずに終了しますか？";
 const RUNTIME_EXIT_TITLE: &str = "winsmux — ペインのプロセスを終了しますか";
-const RUNTIME_EXIT_BODY: &str = "ペインのプロセスがまだ動いているため閉じられませんでした。終了すると、すべてのペインのプロセスを止め、配置は保存しません。保存済みの配置ファイルは変更しません。待つ場合は終了せず、ペインを閉じるかプロセスの終了を待ってから閉じ直してください。ペインのプロセスを終了して閉じますか？";
+const RUNTIME_EXIT_BODY: &str = "作業中の処理が残っているため閉じられませんでした。終了すると、すべてのペインのプロセスを止め、配置は保存しません。保存済みの配置ファイルは変更しません。待つ場合は終了せず、ペインを閉じるか処理の終了を待ってから閉じ直してください。ペインのプロセスを終了して閉じますか？";
 
 /// Main-window title after a close that did not complete. Keeps the code for support and NT.
 pub fn close_problem_title(error: &str) -> String {
@@ -2193,40 +2231,39 @@ async fn force_exit_flow(
     match prompt.prompt.clone() {
         ForcePrompt::Unknown(ticket) => run_confirmed_force(app, manager, &mut prompt, ticket).await,
         ForcePrompt::Refused(refusal) => {
-            let saved = {
+            {
                 let mut state = manager.state.lock().map_err(|_| "transport_uncertain")?;
-                let saved = state.refused_close;
                 let interrupt = state.confirm_refused(refusal)?;
                 drop(state);
                 if let Some(interrupt) = interrupt {
                     interrupt.interrupt();
                 }
-                saved
-            };
+            }
             manager.notify_changed();
             let settled_manager = Arc::clone(&manager);
-            let settled = tauri::async_runtime::spawn_blocking(move || {
+            let settled = match tauri::async_runtime::spawn_blocking(move || {
                 settled_manager.wait_refused_settled()
             })
             .await
-            .map_err(|_| "transport_uncertain")?;
+            {
+                Ok(settled) => settled,
+                Err(_) => {
+                    manager.refused_confirm_failed();
+                    prompt.completed = true;
+                    return Err("transport_uncertain");
+                }
+            };
             let settled = match settled {
                 Ok(settled) => settled,
                 Err(error) => {
+                    manager.refused_confirm_failed();
                     prompt.completed = true;
                     return Err(error);
                 }
             };
             match settled {
                 Settled::Moot => {
-                    if let Some(saved) = saved {
-                        manager
-                            .state
-                            .lock()
-                            .map_err(|_| "transport_uncertain")?
-                            .restore_refused_after_moot(saved);
-                    }
-                    manager.notify_changed();
+                    manager.refused_confirm_failed();
                     prompt.completed = true;
                     Err("force_exit_moot")
                 }
@@ -3354,23 +3391,6 @@ mod lifecycle_tests {
         state.generation += 1;
         assert_eq!(state.force_offer_label(), "none");
 
-        let (mut state, flight, _) = pending(IoKind::Stop, Intent::CloseMain);
-        state.publish(&flight, None, Outcome::Refused("persistence_failed".into()));
-        let saved = state.refused_close.expect("refusal record");
-        state.confirm_refused(CloseRefusal::Persistence).unwrap();
-        state.interrupted_generation = None;
-        assert!(matches!(state.settle_refused(), Some(Settled::Moot)));
-        assert_eq!(state.force_offer_label(), "unknown");
-        state.restore_refused_after_moot(saved);
-        assert_eq!(state.phase, Phase::Ready);
-        assert_eq!(state.force_offer_label(), "persistence_refused");
-        state.phase = Phase::Unknown;
-        state.refused_close = None;
-        state.generation = saved.generation + 1;
-        state.restore_refused_after_moot(saved);
-        assert!(state.refused_close.is_none());
-        assert_eq!(state.force_offer_label(), "unknown");
-
         assert_eq!(
             close_problem_title("runtime_failed"),
             "winsmux — 閉じられませんでした（runtime_failed）"
@@ -3385,6 +3405,83 @@ mod lifecycle_tests {
         let (title, body) = force_dialog(&ForcePrompt::Refused(CloseRefusal::Runtime));
         assert_eq!(title, "winsmux — ペインのプロセスを終了しますか");
         assert!(body.contains("すべてのペインのプロセスを止め"));
+    }
+
+    #[test]
+    fn refused_dialog_coalesces_later_closes_and_failed_confirm_is_unknown() {
+        let manager = Arc::new(WorkspaceManager::default());
+        let announced = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&announced);
+        *manager.force_offer_emit.lock().unwrap() = Some(Arc::new(move |label| {
+            sink.lock().unwrap().push(label);
+        }));
+
+        let (mut state, flight, _) = pending(IoKind::Stop, Intent::CloseMain);
+        state.publish(&flight, None, Outcome::Refused("persistence_failed".into()));
+        let prompt = state.begin_force().unwrap();
+        assert!(matches!(prompt, ForcePrompt::Refused(CloseRefusal::Persistence)));
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        let sequence = state.sequence;
+        let (close, close_starts) = state.reserve(Intent::CloseMain).unwrap();
+        let (exit, exit_starts) = state.reserve(Intent::ExitApp(None)).unwrap();
+        assert!(!close_starts && !exit_starts);
+        assert_eq!(close.id, 0);
+        assert_eq!(exit.id, 0);
+        assert!(state.flight.is_none());
+        assert!(state.completion.is_none());
+        assert_eq!(state.sequence, sequence);
+        assert_eq!(
+            state.refused_close,
+            Some(RefusedClose {
+                generation: 7,
+                refusal: CloseRefusal::Persistence,
+            })
+        );
+        assert_eq!(state.force_offer_label(), "persistence_refused");
+        assert!(matches!(
+            user_close_action(
+                Ok(CompletionAdmission::Coalesced),
+                ForceOffer::Refused(CloseRefusal::Persistence)
+            ),
+            UserClose::Nothing
+        ));
+
+        state.cancel_force(&prompt);
+        assert!(!state.refused_prompt_open);
+        assert_eq!(state.force_offer_label(), "persistence_refused");
+
+        let prompt = state.begin_force().unwrap();
+        *manager.state.lock().unwrap() = state;
+        drop(ForcePromptLease {
+            manager: Arc::clone(&manager),
+            prompt,
+            completed: false,
+        });
+        let mut state = std::mem::take(&mut *manager.state.lock().unwrap());
+        assert!(!state.refused_prompt_open);
+        assert_eq!(state.force_offer_label(), "persistence_refused");
+        assert!(matches!(
+            state.begin_force(),
+            Ok(ForcePrompt::Refused(CloseRefusal::Persistence))
+        ));
+
+        let ordinary = state.new_flight(IoKind::Ordinary, None);
+        assert_eq!(state.force_offer_label(), "persistence_refused");
+        state.confirm_refused(CloseRefusal::Persistence).unwrap();
+        assert!(!state.refused_prompt_open);
+        assert!(state.refused_close.is_none());
+        assert!(state.owner_interrupted());
+        assert_eq!(state.phase, Phase::Busy);
+        state.publish(&ordinary, None, Outcome::Collected);
+        assert_eq!(state.phase, Phase::Empty);
+        assert!(state.flight.is_none());
+        assert!(state.owner_interrupted());
+        assert!(matches!(state.settle_refused(), Some(Settled::Moot)));
+        assert_eq!(state.phase, Phase::Unknown);
+        assert_eq!(state.force_offer_label(), "unknown");
+        *manager.state.lock().unwrap() = state;
+        manager.refused_confirm_failed();
+        assert_eq!(announced.lock().unwrap().as_slice(), ["unknown"]);
     }
 }
 

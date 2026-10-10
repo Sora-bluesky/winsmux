@@ -280,8 +280,8 @@ try {
       mounted.dispose(); root.remove(); frames.length = 0; f.failNextEvents = false; f.nextStatus = null;
     }
     for (const refused of [
-      { offer: 'persistence_refused', code: 'persistence_failed', button: '保存せずに終了', status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。保存せずに終了する場合は「保存せずに終了」を押してください。' },
-      { offer: 'runtime_refused', code: 'runtime_failed', button: 'ペインのプロセスを終了して閉じる', status: 'ペインのプロセスがまだ動いているため閉じられませんでした。そのペインを閉じるか、プロセスの終了を待ってから閉じ直してください。待たずに閉じる場合は「ペインのプロセスを終了して閉じる」を押してください。' },
+      { offer: 'persistence_refused', code: 'persistence_failed', button: '保存せずに終了', status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。' },
+      { offer: 'runtime_refused', code: 'runtime_failed', button: 'ペインのプロセスを終了して閉じる', status: '作業中の処理（動いているペインのプロセスや起動の途中のペイン）があるため閉じられませんでした。そのペインを閉じるか、処理の終了を待ってから閉じ直してください。' },
     ]) {
       Object.assign(f, { calls: [], host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,
         ownerGeneration: '1', withRun: false, rows: [], failNextEvents: false, failOpen: false, enforceGuardOpen: false,
@@ -300,6 +300,12 @@ try {
       const status = root.querySelector(':scope > p');
       check('refused close ' + refused.code + ' shows the exit button', !!force && !force.hidden && force.textContent === refused.button);
       check('refused close ' + refused.code + ' explains the refusal', status?.textContent === refused.status);
+      f.revision++;
+      f.nextStatus = { instance_id: I, generation: '1', revision: String(f.revision + 1), phase: 'Ready', force_offer: refused.offer };
+      root.querySelector(':scope > button').click();
+      for (let i = 0; i < 35 && root.dataset.startupState !== 'mounted'; i++) await frame();
+      const kept = root.querySelector(':scope > button:nth-of-type(2)');
+      check('reconnect after refused ' + refused.code + ' keeps the exit button', root.dataset.startupState === 'mounted' && !!kept && !kept.hidden && kept.textContent === refused.button);
       mounted.dispose(); root.remove(); frames.length = 0; f.nextStatus = null;
     }
     Object.assign(f, { host: 'Ready', nextStatus: null, guardStatus: null, failNextEvents: false });

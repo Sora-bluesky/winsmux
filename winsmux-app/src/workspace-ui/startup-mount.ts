@@ -85,11 +85,11 @@ function shapeEvent(value: unknown) {
 const CLOSE_REFUSAL_FALLBACK = '閉鎖の完了を確認できません。対象と要求を保持しています。';
 const CLOSE_REFUSAL_COPY: Record<string, { status: string; button?: string }> = {
   persistence_failed: {
-    status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。保存せずに終了する場合は「保存せずに終了」を押してください。',
+    status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。',
     button: '保存せずに終了',
   },
   runtime_failed: {
-    status: 'ペインのプロセスがまだ動いているため閉じられませんでした。そのペインを閉じるか、プロセスの終了を待ってから閉じ直してください。待たずに閉じる場合は「ペインのプロセスを終了して閉じる」を押してください。',
+    status: '作業中の処理（動いているペインのプロセスや起動の途中のペイン）があるため閉じられませんでした。そのペインを閉じるか、処理の終了を待ってから閉じ直してください。',
     button: 'ペインのプロセスを終了して閉じる',
   },
   resource_exhausted: { status: '記録の容量が尽きたため閉じられませんでした。容量が空いてから閉じ直してください。' },
@@ -309,8 +309,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       if (ownerSection === null || ownerSection.instanceId !== observedOwner.instanceId) ownerSection = observedOwner;
       connectedHost = session.instance_id;
       hostBlocked = false;
-      lastOffer = 'none';
-      applyForceOffer('none');
+      applyForceOffer(lastOffer);
       for (const child of root.children) if (child instanceof HTMLElement) child.inert = false;
       input.showGuardRecovery(false);
       if (details && details.lifetime.instanceId !== session.instance_id) { closeDetails?.(); closeDetails = null; details.retire(); details = null; }
