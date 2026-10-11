@@ -15,7 +15,7 @@ function isFocusReport(text: string, sendFocusMode: boolean): text is '\x1b[I' |
   return sendFocusMode && (text==='\x1b[I' || text==='\x1b[O');
 }
 
-/** Capture owns composition; xterm owns ordinary VT keys and bracketed paste. */
+/** Capture owns composition and the Ctrl+Shift+C copy chord; xterm owns ordinary VT keys and bracketed paste. */
 export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, producer:InputProducer, explain:(message:string)=>void) {
   const candidate=terminal.textarea;
   if (!candidate) throw new Error('terminal_textarea_unavailable');
@@ -126,11 +126,26 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     event.preventDefault();
   };
   const context=(event:Event)=>{if(composition&&!composition.ended){event.preventDefault();event.stopImmediatePropagation();explain('変換を確定または取消してから右クリック操作を行ってください。');}else if(composition&&!commit(composition)){event.preventDefault();event.stopImmediatePropagation();}};
+  let copyGeneration=0;
+  const copyFailed=(generation:number)=>{if(!retired&&generation===copyGeneration&&producer.canAccept())explain('選択した文字をクリップボードに写せませんでした。');};
+  const copySelection=()=>{
+    const text=terminal.getSelection();
+    if(!text)return;
+    const generation=++copyGeneration;
+    const clipboard=doc.defaultView?.navigator.clipboard;
+    if(!clipboard?.writeText){copyFailed(generation);return;}
+    try{void Promise.resolve(clipboard.writeText(text)).then(()=>{if(!retired&&generation===copyGeneration&&terminal.getSelection()===text)terminal.clearSelection();},()=>copyFailed(generation));}
+    catch{copyFailed(generation);}
+  };
   terminal.attachCustomKeyEventHandler(event=>{
     if(retired)return false;
     if(event.isComposing||event.keyCode===229||composition&&!composition.ended)return false;
     if(composition&&!commit(composition)){event.preventDefault();return false;}
     if(event.type==='keyup'&&doc.activeElement!==textarea)return false;
+    if(event.ctrlKey&&event.shiftKey&&!event.altKey&&!event.metaKey&&event.key.toLowerCase()==='c'){
+      if(event.type==='keydown'){event.preventDefault();if(!event.repeat&&terminal.hasSelection())copySelection();}
+      return false;
+    }
     if(!producer.canAccept()){
       if(event.ctrlKey&&event.key.toLowerCase()==='c'&&terminal.hasSelection())return true;
       event.preventDefault();return false;
