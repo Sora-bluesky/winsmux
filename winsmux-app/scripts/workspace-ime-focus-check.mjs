@@ -13,7 +13,8 @@ const evidence=option('--evidence-dir',resolve(app,'../.evidence/rebuild/v0.38.0
 mkdirSync(evidence,{recursive:true});
 const bundle=await build({stdin:{contents:"export * from './src/workspace-ui/terminal-input';export * from './src/workspace-ui/terminal-input-codec';export * from './src/workspace-ui/focus';export * from './src/workspace-ui/project-pane-controller';export * from './src/workspace-ui/project-pane';",resolveDir:app},bundle:true,write:false,format:'esm',platform:'browser',target:'es2022',metafile:true});
 const sdkPath=resolve(dependency,'node_modules/xterm/lib/xterm.js'),sdk=readFileSync(sdkPath),css=readFileSync(resolve(dependency,'node_modules/xterm/css/xterm.css'),'utf8');
-const inputPaths=[...Object.keys(bundle.metafile.inputs).filter(p=>p!=='<stdin>').map(p=>resolve(p)),sdkPath,resolve(dependency,'node_modules/xterm/package.json'),fileURLToPath(import.meta.url)];
+const paneCssPath=resolve(app,'src/workspace-ui/project-pane.css'),paneCss=readFileSync(paneCssPath,'utf8');
+const inputPaths=[...Object.keys(bundle.metafile.inputs).filter(p=>p!=='<stdin>').map(p=>resolve(p)),sdkPath,resolve(dependency,'node_modules/xterm/package.json'),paneCssPath,fileURLToPath(import.meta.url)];
 const identity=()=>inputPaths.map(path=>{const bytes=readFileSync(path);return{path,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')};});
 const before=identity(),started=new Date().toISOString();
 const checks=[];let failure=null,browser;
@@ -26,9 +27,40 @@ try {
   : route.abort());
  await page.goto(fixtureUrl);
  if(!await page.evaluate(()=>isSecureContext&&typeof crypto.randomUUID==='function'))throw Error('local fixture requires secure-context UUID support');
+ await page.addStyleTag({content:paneCss});
  await page.addStyleTag({content:css});
  await page.addScriptTag({content:sdk.toString('utf8')});
  await page.evaluate(async code=>{globalThis.product=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));},bundle.outputFiles[0].text);
+ const contrastChecks=await page.evaluate(async marker=>{
+  const passed=[],check=(name,value,detail)=>{if(!value)throw Error(detail===undefined?name:name+' '+JSON.stringify(detail));passed.push(name);};
+  const transparent=color=>{const match=/rgba?\(([^)]+)\)/.exec(color);if(!match)return color==='transparent';const parts=match[1].split(/[,\s/]+/).filter(Boolean);return parts.length===4&&Number(parts[3])===0;};
+  const host=document.createElement('div');host.className='workspace-terminal';host.style.cssText='width:850px;height:420px';document.body.append(host);
+  const terminal=new globalThis.Terminal({disableStdin:true,cursorBlink:false,scrollback:5000,screenReaderMode:true});
+  terminal.open(host);
+  await new Promise(resolve=>terminal.write(marker,resolve));
+  const tree=()=>document.querySelector('.workspace-terminal .xterm-accessibility-tree');
+  const until=performance.now()+1500;
+  while(performance.now()<until&&!tree()?.textContent?.includes(marker))await new Promise(resolve=>setTimeout(resolve,50));
+  const read=()=>{const node=document.querySelector('.workspace-terminal .xterm-accessibility');const style=getComputedStyle(node);return{color:style.color,adjust:style.forcedColorAdjust,forced:matchMedia('(forced-colors: active)').matches,text:tree()?.textContent??''};};
+  globalThis.contrastRead=read;globalThis.contrastMarker=marker;globalThis.contrastDone=()=>{terminal.dispose();host.remove();};
+  const off=read();
+  check('workspace terminal accessibility text stays fully transparent with forced colors off',!off.forced&&transparent(off.color),off);
+  check('screen reader tree contains the written terminal marker',off.text.includes(marker),off);
+  return passed;
+ },'SRMARKER876');
+ checks.push(...contrastChecks);
+ await page.emulateMedia({forcedColors:'active'});
+ const forcedContrastChecks=await page.evaluate(()=>{
+  const passed=[],check=(name,value,detail)=>{if(!value)throw Error(detail===undefined?name:name+' '+JSON.stringify(detail));passed.push(name);};
+  const transparent=color=>{const match=/rgba?\(([^)]+)\)/.exec(color);if(!match)return color==='transparent';const parts=match[1].split(/[,\s/]+/).filter(Boolean);return parts.length===4&&Number(parts[3])===0;};
+  const style=globalThis.contrastRead();
+  check('forced colors keep workspace terminal accessibility text fully transparent and forced-color-adjust none',style.forced&&transparent(style.color)&&style.adjust==='none',style);
+  check('screen reader tree still contains the written terminal marker under forced colors',style.text.includes(globalThis.contrastMarker),style);
+  return passed;
+ });
+ checks.push(...forcedContrastChecks);
+ await page.emulateMedia({forcedColors:'none'});
+ await page.evaluate(()=>globalThis.contrastDone());
  const integrationChecks=await page.evaluate(async()=>{
   const {createTerminalInputOwner,createProjectPaneController}=globalThis.product;
   const checks=[],check=(name,passed,detail)=>checks.push({name,passed,detail});
