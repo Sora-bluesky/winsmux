@@ -7,8 +7,6 @@ use winsmux_workspace::host::ProductHost;
 
 const PROJECT: &str = "30000000-0000-4000-8000-000000000877";
 const OPERATIONS: &[&str] = &[
-    "artifact.choice.list",
-    "artifact.choose",
     "artifact.diff",
     "artifact.list",
     "artifact.read",

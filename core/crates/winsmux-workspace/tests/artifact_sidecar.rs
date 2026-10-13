@@ -18,8 +18,12 @@ fn public_capabilities(host: &ProductHost) {
     assert!(response.accepted);
     let value = serde_json::to_value(response).unwrap();
     let operations = value["result"]["data"]["operations"].as_array().unwrap();
-    assert_eq!(operations.len(), 33);
-    for name in ["artifact.choose", "artifact.diff", "artifact.choice.list", "diagnostics.get"] {
+    assert_eq!(operations.len(), 31);
+    assert!(operations.windows(2).all(|pair| pair[0].as_str() < pair[1].as_str()));
+    for name in ["artifact.choose", "artifact.choice.list"] {
+        assert!(!operations.contains(&json!(name)), "extension leaked into v1: {name}");
+    }
+    for name in ["artifact.diff", "diagnostics.get"] {
         assert!(operations.contains(&json!(name)), "missing supported operation: {name}");
     }
 }

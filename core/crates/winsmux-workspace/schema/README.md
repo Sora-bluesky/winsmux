@@ -94,3 +94,14 @@ The guard does not prove process exit; existing occupancy rules still apply.
 Omission, null, and UUID have distinct canonical bytes and replay identities.
 Clients using this guarantee must never retry a rejected guarded request without
 its guard. Schema version 1 and legacy request semantics remain unchanged.
+
+`capabilities.get` and `diagnostics.get` advertise the stable base-v1 operation
+vocabulary understood by the original closed enum. Both inventories include only
+implemented base operations, in sorted unique order. `agent.launch` is present
+only while a provider is ready: the current host exposes 31 operations without
+that readiness and 32 with it, including `artifact.diff` and `diagnostics.get`.
+`artifact.choose` and `artifact.choice.list` remain in the request and response
+schemas, but are discovered through the authenticated `artifact_review_v1`
+sidecar. Existing instance, fingerprint, PID and challenge checks and owner /
+project `read_output` authorization still govern their use. Missing or rejected
+extension discovery leaves ordinary v1 requests usable.

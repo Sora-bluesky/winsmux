@@ -124,6 +124,48 @@ operations! {
  ArtifactChoiceList=>("artifact.choice.list",Q,ProjectParams,ArtifactChoiceListData),
  DiagnosticsGet=>("diagnostics.get",Q,Empty,DiagnosticsData),
 }
+// Schema version 1 inventories must stay decodable by the original closed enum.
+// Extensions are discovered through the authenticated artifact_review_v1 sidecar.
+// Keep this match exhaustive so every future operation needs an explicit decision.
+impl OperationName {
+    pub(crate) fn is_base_v1(self) -> bool {
+        match self {
+            Self::CapabilitiesGet
+            | Self::ConnectionRequest
+            | Self::ConnectionList
+            | Self::ConnectionDecide
+            | Self::ConnectionRevoke
+            | Self::HostStop
+            | Self::ProjectList
+            | Self::ProjectOpen
+            | Self::ProjectSelect
+            | Self::ProjectForget
+            | Self::PaneList
+            | Self::PaneCreate
+            | Self::PaneSplit
+            | Self::PaneSelect
+            | Self::PaneClose
+            | Self::PaneResize
+            | Self::ShellLaunch
+            | Self::AgentLaunch
+            | Self::InputWrite
+            | Self::InputKey
+            | Self::RunGet
+            | Self::RunInterrupt
+            | Self::OperationGet
+            | Self::OutputRead
+            | Self::EventsWait
+            | Self::LayoutSave
+            | Self::LayoutRestore
+            | Self::ArtifactRegister
+            | Self::ArtifactList
+            | Self::ArtifactRead
+            | Self::ArtifactDiff
+            | Self::DiagnosticsGet => true,
+            Self::ArtifactChoose | Self::ArtifactChoiceList => false,
+        }
+    }
+}
 object!(host_codec ConnectionRequestParams { project_ids:StringSet<ProjectId>, scopes:StringSet<Scope> });
 object!(host_codec ConnectionDecideParams { connection_id:ConnectionId, decision:Decision, project_ids:StringSet<ProjectId>, scopes:StringSet<Scope> });
 object!(host_codec ConnectionParams {

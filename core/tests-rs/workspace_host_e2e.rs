@@ -2360,6 +2360,9 @@ fn real_owner_and_client_review_git_results_without_writing_sources() {
         "connection.request", None, json!({"project_ids":[project_id],"scopes":["read_output"]}),
     )), "connection.request");
     let connection_id = pending["result"]["data"]["connection_id"].as_str().unwrap();
+    assert_error(&client.transact(&request(
+        "artifact.choice.list", Some(instance), json!({"project_id":project_id}),
+    )), "permission_denied");
     assert_success(&host.transact(&request(
         "connection.decide", Some(instance), json!({
             "connection_id":connection_id,"decision":"allow","project_ids":[project_id],"scopes":["read_output"],
@@ -2377,12 +2380,21 @@ fn real_owner_and_client_review_git_results_without_writing_sources() {
     )), "artifact.choice.list");
     assert_eq!(choices["result"]["data"]["choices"].as_array().unwrap().len(), 1);
     assert_error(&client.transact(&request(
+        "artifact.choice.list", Some(instance),
+        json!({"project_id":"30000000-0000-4000-8000-000000000000"}),
+    )), "permission_denied");
+    assert_error(&client.transact(&request(
         "artifact.choose", Some(instance), json!({
             "project_id":project_id,"left_artifact_id":left_id,
             "right_artifact_id":right_id,"kept_artifact_id":right_id,
         }),
     )), "permission_denied");
-    drop(client.finish());
+    assert_success(&client.transact(&request(
+        "capabilities.get", None, json!({}),
+    )), "capabilities.get");
+    assert_eq!(std::fs::read(project.join("left.txt")).unwrap(), b"chosen left\n");
+    assert_eq!(std::fs::read(project.join("right.bin")).unwrap(), [0u8, 255, 42]);
+    assert_eq!(client.finish().code, 0);
     let rechoice = assert_success(&host.transact(&request(
         "artifact.choose", Some(instance), json!({
             "project_id":project_id,"left_artifact_id":left_id,
@@ -2605,7 +2617,65 @@ fn old_and_new_workspace_binaries_preserve_v1_and_reject_unproved_review() {
     let capabilities = assert_success(&old_client.transact(&request(
         "capabilities.get", None, json!({}),
     )), "capabilities.get");
-    assert_eq!(capabilities["result"]["data"]["operations"].as_array().unwrap().len(), 29);
+    // The old enum also knows artifact.diff and diagnostics.get; this host
+    // implements them, so its non-ready v1 inventory contains 31 operations.
+    let operations = capabilities["result"]["data"]["operations"].as_array().unwrap();
+    let old_vocabulary = [
+        "artifact.diff",
+        "artifact.list",
+        "artifact.read",
+        "artifact.register",
+        "capabilities.get",
+        "connection.decide",
+        "connection.list",
+        "connection.request",
+        "connection.revoke",
+        "diagnostics.get",
+        "events.wait",
+        "host.stop",
+        "input.key",
+        "input.write",
+        "layout.restore",
+        "layout.save",
+        "operation.get",
+        "output.read",
+        "pane.close",
+        "pane.create",
+        "pane.list",
+        "pane.resize",
+        "pane.select",
+        "pane.split",
+        "project.forget",
+        "project.list",
+        "project.open",
+        "project.select",
+        "run.get",
+        "run.interrupt",
+        "shell.launch"
+    ];
+    assert_eq!(operations.len(), 31);
+    assert_eq!(operations, &old_vocabulary.iter().map(|name| json!(name)).collect::<Vec<_>>());
+    assert!(operations.iter().all(|name| old_vocabulary.contains(&name.as_str().unwrap())));
+    assert!(operations.contains(&json!("artifact.diff")));
+    assert!(operations.contains(&json!("diagnostics.get")));
+    for extension in ["artifact.choose", "artifact.choice.list"] {
+        assert!(!operations.contains(&json!(extension)));
+    }
+    // Diagnostics metadata is host-wide and needs no project grant or layout change.
+    let pending = assert_success(&old_client.transact(&request(
+        "connection.request", None, json!({"project_ids":[],"scopes":["metadata"]}),
+    )), "connection.request");
+    let connection_id = pending["result"]["data"]["connection_id"].as_str().unwrap();
+    assert_success(&new_host.transact(&request(
+        "connection.decide", Some(new_instance), json!({
+            "connection_id":connection_id,"decision":"allow",
+            "project_ids":[],"scopes":["metadata"],
+        }),
+    )), "connection.decide");
+    let diagnostic = assert_success(&old_client.transact(&request(
+        "diagnostics.get", Some(new_instance), json!({}),
+    )), "diagnostics.get");
+    assert_eq!(diagnostic["result"]["data"]["capabilities"], json!(old_vocabulary));
     assert_eq!(old_client.finish().code, 0);
     assert_success(&stop_after_provider_cleanup(&mut new_host, new_instance), "host.stop");
     assert_eq!(new_host.wait_for_exit().code, 0);

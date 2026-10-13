@@ -226,8 +226,6 @@ fn capabilities_and_connection_state_follow_the_frozen_decision_table() {
     assert_eq!(
         capabilities["result"]["data"]["operations"],
         json!([
-            "artifact.choice.list",
-            "artifact.choose",
             "artifact.diff",
             "artifact.list",
             "artifact.read",

@@ -10799,7 +10799,8 @@ fn write_success(
     write_success_suffix(&mut sink, topology).ok()
 }
 
-// Both public inventories describe the operations implemented by this host.
+// Both v1 inventories project implemented operations into the original vocabulary.
+// Extension support stays available through authenticated sidecar discovery.
 // Provider readiness changes only whether agent.launch can currently succeed.
 fn write_implemented_operations(
     sink: &mut impl Sink,
@@ -10810,7 +10811,8 @@ fn write_implemented_operations(
     while let Some(current) = OperationName::ALL
         .iter()
         .filter(|operation| {
-            crate::service::replay::ledger_class(**operation)
+            operation.is_base_v1()
+                && crate::service::replay::ledger_class(**operation)
                 != crate::service::replay::LedgerClass::Unsupported
                 && (agent_ready || **operation != OperationName::AgentLaunch)
         })
@@ -10949,6 +10951,67 @@ mod capability_visibility_tests {
         serde_json::to_value(response).unwrap()
     }
 
+    fn assert_v1_inventory(inventory: &Value, ready: bool) {
+        let mut expected = vec![
+            "artifact.diff",
+            "artifact.list",
+            "artifact.read",
+            "artifact.register",
+            "capabilities.get",
+            "connection.decide",
+            "connection.list",
+            "connection.request",
+            "connection.revoke",
+            "diagnostics.get",
+            "events.wait",
+            "host.stop",
+            "input.key",
+            "input.write",
+            "layout.restore",
+            "layout.save",
+            "operation.get",
+            "output.read",
+            "pane.close",
+            "pane.create",
+            "pane.list",
+            "pane.resize",
+            "pane.select",
+            "pane.split",
+            "project.forget",
+            "project.list",
+            "project.open",
+            "project.select",
+            "run.get",
+            "run.interrupt",
+            "shell.launch"
+        ];
+        if ready { expected.push("agent.launch"); }
+        expected.sort_unstable();
+        assert_eq!(*inventory, json!(expected));
+        assert_eq!(expected.len(), if ready { 32 } else { 31 });
+        for operation in OperationName::ALL {
+            assert_eq!(operation.is_base_v1(),
+                expected.contains(&operation.wire()) || *operation == OperationName::AgentLaunch);
+        }
+    }
+
+    #[test]
+    fn implemented_inventory_is_exact_stable_v1_for_both_readiness_states() {
+        struct Bytes(Vec<u8>);
+        impl Sink for Bytes {
+            fn bytes(&mut self, bytes: &[u8]) -> Result<(), AllocationError> {
+                self.0.extend_from_slice(bytes);
+                Ok(())
+            }
+        }
+        for ready in [false, true] {
+            let mut sink = Bytes(Vec::new());
+            write_implemented_operations(&mut sink, ready).unwrap();
+            let inventory: Value = serde_json::from_slice(&sink.0).unwrap();
+            assert_v1_inventory(&inventory, ready);
+        }
+    }
+
     #[test]
     fn ready_public_capabilities_never_read_details_or_enqueue_probes() {
         let (h, runtime) = fixture();
@@ -10970,8 +11033,7 @@ mod capability_visibility_tests {
                 assert_eq!(got["accepted"], true, "{got}");
                 assert_eq!(got["result"]["data"]["providers"], Value::Null);
                 assert_eq!(got["result"]["data"]["shell_profile_ids"], Value::Null);
-                assert!(got["result"]["data"]["operations"].as_array().unwrap()
-                    .iter().any(|operation| operation == "agent.launch"));
+                assert_v1_inventory(&got["result"]["data"]["operations"], true);
                 assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
             }
             let denied = value(&c.request(&request(&h, "capabilities.get",
@@ -11017,6 +11079,7 @@ mod capability_visibility_tests {
         })));
         let diagnostic = value(&c.request(&request(&h, "diagnostics.get", json!({}))).unwrap());
         assert_eq!(diagnostic["accepted"], true);
+        assert_v1_inventory(&diagnostic["result"]["data"]["capabilities"], true);
         assert_eq!(runtime.testing_provider_observation_counts(), [0; 4]);
         for owner in [false, true] {
             let before = runtime.testing_provider_observation_counts();
@@ -11024,6 +11087,7 @@ mod capability_visibility_tests {
             let response = if owner { h.owner(&q) } else { c.request(&q).unwrap() };
             let got = value(&response);
             assert_eq!(got["accepted"], true, "{got}");
+            assert_v1_inventory(&got["result"]["data"]["operations"], true);
             assert_eq!(got["result"]["data"]["providers"], json!([
                 {"provider":"claude","version":"9.999.0"},
                 {"provider":"codex","version":"9.999.0"}
