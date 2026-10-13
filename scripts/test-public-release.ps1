@@ -2221,17 +2221,18 @@ function Get-VerifiedRemoteDebugPage {
     try {
         if ($Deadline -ne [DateTime]::MinValue) {
             $remaining = ($Deadline - [DateTime]::UtcNow).TotalMilliseconds
-            if ($remaining -le 0) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
+            if ($remaining -le 0) { try { [Console]::Error.WriteLine(('desktop_http_transport stage=initial_deadline remaining_ms={0} exception=none hresult=none' -f $(if ($Deadline -eq [DateTime]::MinValue) { 'none' } else { [Math]::Floor(($Deadline - [DateTime]::UtcNow).TotalMilliseconds).ToString([Globalization.CultureInfo]::InvariantCulture) }))) } catch { }; return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
             $cancel = [Threading.CancellationTokenSource]::new([TimeSpan]::FromMilliseconds($remaining))
         }
         $client.Timeout = [TimeSpan]::FromSeconds(5)
         $client.MaxResponseContentBufferSize = 65536
         try {
             if ($null -ne $cancel) {
-                if ([DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
+                if ([DateTime]::UtcNow -ge $Deadline) { try { [Console]::Error.WriteLine(('desktop_http_transport stage=version_deadline remaining_ms={0} exception=none hresult=none' -f $(if ($Deadline -eq [DateTime]::MinValue) { 'none' } else { [Math]::Floor(($Deadline - [DateTime]::UtcNow).TotalMilliseconds).ToString([Globalization.CultureInfo]::InvariantCulture) }))) } catch { }; return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
                 $versionResponse = $client.GetAsync("http://${HostName}:$Port/json/version", $cancel.Token).GetAwaiter().GetResult()
             } else { $versionResponse = $client.GetAsync("http://${HostName}:$Port/json/version").GetAwaiter().GetResult() }
         } catch {
+            try { [Console]::Error.WriteLine(('desktop_http_transport stage=version_request remaining_ms={0} exception={1} hresult={2}' -f $(if ($Deadline -eq [DateTime]::MinValue) { 'none' } else { [Math]::Floor(($Deadline - [DateTime]::UtcNow).TotalMilliseconds).ToString([Globalization.CultureInfo]::InvariantCulture) }), $_.Exception.GetBaseException().GetType().FullName, $_.Exception.GetBaseException().HResult.ToString([Globalization.CultureInfo]::InvariantCulture))) } catch { }
             return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port)
         }
         if (-not $versionResponse.IsSuccessStatusCode) {
@@ -2261,10 +2262,11 @@ function Get-VerifiedRemoteDebugPage {
 
         try {
             if ($null -ne $cancel) {
-                if ([DateTime]::UtcNow -ge $Deadline) { return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
+                if ([DateTime]::UtcNow -ge $Deadline) { try { [Console]::Error.WriteLine(('desktop_http_transport stage=list_deadline remaining_ms={0} exception=none hresult=none' -f $(if ($Deadline -eq [DateTime]::MinValue) { 'none' } else { [Math]::Floor(($Deadline - [DateTime]::UtcNow).TotalMilliseconds).ToString([Globalization.CultureInfo]::InvariantCulture) }))) } catch { }; return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port) }
                 $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list", $cancel.Token).GetAwaiter().GetResult()
             } else { $listResponse = $client.GetAsync("http://${HostName}:$Port/json/list").GetAwaiter().GetResult() }
         } catch {
+            try { [Console]::Error.WriteLine(('desktop_http_transport stage=list_request remaining_ms={0} exception={1} hresult={2}' -f $(if ($Deadline -eq [DateTime]::MinValue) { 'none' } else { [Math]::Floor(($Deadline - [DateTime]::UtcNow).TotalMilliseconds).ToString([Globalization.CultureInfo]::InvariantCulture) }), $_.Exception.GetBaseException().GetType().FullName, $_.Exception.GetBaseException().HResult.ToString([Globalization.CultureInfo]::InvariantCulture))) } catch { }
             return (New-DesktopCdpProbeRecord -State 'transport_unavailable' -PageUrl $null -Port $Port -PathAuthority ([string]$pathAuthority.state))
         }
         if (-not $listResponse.IsSuccessStatusCode) {
