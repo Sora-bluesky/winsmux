@@ -140,6 +140,40 @@ function Read-CapturedInstallerLanguage {
     if ([Convert]::ToHexString($raw) -cne [Convert]::ToHexString($expected)) { throw 'Installer language bytes are not the exact terminated REG_SZ.' }
     return [int]$language
 }
+function Complete-CapturedObservations {
+    param($Receipt, [string]$GuiPath, $LinkPaths, [string]$Sentinel, [string]$SentinelHash)
+    $failures = [Collections.Generic.List[string]]::new()
+    try { $Receipt.language = Read-CapturedInstallerLanguage $Receipt.registration[1] }
+    catch { $failures.Add($_.Exception.Message) }
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        $shellApp = New-Object -ComObject Shell.Application
+        foreach ($kind in $LinkPaths.Keys) {
+            $linkPath = $LinkPaths[$kind]
+            try {
+                if (-not (Test-Path -LiteralPath $linkPath -PathType Leaf)) { continue }
+                $link = $shell.CreateShortcut($linkPath)
+                $observed = [ordered]@{
+                    kind = $kind; target = [string]$link.TargetPath; expected_gui = $GuiPath; aumid = $null
+                    bytes = (Get-Item -LiteralPath $linkPath).Length
+                    sha256 = (Get-FileHash -LiteralPath $linkPath -Algorithm SHA256).Hash.ToLowerInvariant()
+                }
+                $Receipt.shortcuts += $observed
+                $item = $shellApp.NameSpace([IO.Path]::GetDirectoryName($linkPath)).ParseName([IO.Path]::GetFileName($linkPath))
+                $observed.aumid = [string]$item.ExtendedProperty('System.AppUserModel.ID')
+                $target = [IO.Path]::GetFullPath($observed.target)
+                if (-not $target.Equals($GuiPath, [StringComparison]::OrdinalIgnoreCase)) { $failures.Add('Shortcut target is not the observed installed GUI: ' + $kind) }
+                if ($observed.aumid -ne 'io.github.sora-bluesky.winsmux') { $failures.Add('Shortcut AUMID does not match this product: ' + $kind) }
+            } catch { $failures.Add('Shortcut observation failed (' + $kind + '): ' + $_.Exception.Message) }
+        }
+    } catch { $failures.Add('Shortcut reader failed: ' + $_.Exception.Message) }
+    try {
+        $Receipt.protected_project_after_sha256 = (Get-FileHash -LiteralPath $Sentinel -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($Receipt.protected_project_after_sha256 -ne $SentinelHash) { $failures.Add('The project sentinel changed.') }
+    } catch { $failures.Add('Project sentinel observation failed: ' + $_.Exception.Message) }
+    $Receipt.validation_failures = @($failures.ToArray())
+    if ($failures.Count) { throw ($failures -join '; ') }
+}
 $linkPaths = [ordered]@{
     desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'winsmux.lnk'
     start_menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'winsmux.lnk'
@@ -155,7 +189,7 @@ $sentinel = Join-Path $project 'keep.txt'
 [IO.File]::WriteAllText($sentinel, 'TASK880 protected project bytes', [Text.UTF8Encoding]::new($false))
 $sentinelHash = (Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash.ToLowerInvariant()
 $receipt = [ordered]@{
-    schema = 'winsmux-task880-legacy-install-capture/v1'; outcome = 'pending'; failure = $null
+    schema = 'winsmux-task880-legacy-install-capture/v1'; outcome = 'pending'; failure = $null; validation_failures = @()
     original_installer = [ordered]@{ bytes = 9920209; sha256 = $expectedHash }
     profile_name = $ProfileName; root = $installRoot; install_exit_code = $null
     arguments = @('/S', "/D=$installRoot"); installed_inventory_complete = $false
@@ -209,22 +243,7 @@ try {
     }
     $receipt.files = @($files | Sort-Object path)
     $receipt.registration = Read-Registration
-    $receipt.language = Read-CapturedInstallerLanguage $receipt.registration[1]
-    $shell = New-Object -ComObject WScript.Shell
-    $shellApp = New-Object -ComObject Shell.Application
-    foreach ($kind in $linkPaths.Keys) {
-        $linkPath = $linkPaths[$kind]
-        if (-not (Test-Path -LiteralPath $linkPath -PathType Leaf)) { continue }
-        $link = $shell.CreateShortcut($linkPath)
-        $target = [IO.Path]::GetFullPath($link.TargetPath)
-        if (-not $target.Equals($guiPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Shortcut target is not the observed installed GUI.' }
-        $item = $shellApp.NameSpace([IO.Path]::GetDirectoryName($linkPath)).ParseName([IO.Path]::GetFileName($linkPath))
-        $aumid = [string]$item.ExtendedProperty('System.AppUserModel.ID')
-        if ($aumid -ne 'io.github.sora-bluesky.winsmux') { throw 'Shortcut AUMID does not match this product.' }
-        $receipt.shortcuts += [ordered]@{ kind = $kind; bytes = (Get-Item -LiteralPath $linkPath).Length; sha256 = (Get-FileHash -LiteralPath $linkPath -Algorithm SHA256).Hash.ToLowerInvariant(); target = $target; aumid = $aumid }
-    }
-    $receipt.protected_project_after_sha256 = (Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($receipt.protected_project_after_sha256 -ne $sentinelHash) { throw 'The project sentinel changed.' }
+    Complete-CapturedObservations -Receipt $receipt -GuiPath $guiPath -LinkPaths $linkPaths -Sentinel $sentinel -SentinelHash $sentinelHash
     $receipt.installed_inventory_complete = $true
     $receipt.outcome = 'passed'
 } catch {
