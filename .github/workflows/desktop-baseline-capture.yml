@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   capture:
+    permissions:
+      contents: write
     if: github.repository == 'Sora-bluesky/winsmux'
     runs-on: windows-2025
     strategy:
