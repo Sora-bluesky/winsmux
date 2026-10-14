@@ -17,6 +17,22 @@ systemDlls.add('api-ms-win-core-synch-l1-2-0.dll');
 // Windows handle API-set, documented since Windows 10.0.10240 in the same
 // Microsoft inventory and observed in the hosted Windows CLI release image.
 systemDlls.add('api-ms-win-core-handle-l1-1-0.dll');
+// Windows Installer OS API used by native installer ownership detection.
+// https://learn.microsoft.com/en-us/windows/win32/api/msi/nf-msi-msienumrelatedproductsw
+systemDlls.add('msi.dll');
+// Product support is Windows 10/11; these exact observed names are inbox OS components.
+// https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-initcommoncontrolsex
+// https://learn.microsoft.com/en-us/windows/win32/api/dwmapi/nf-dwmapi-dwmiscompositionenabled
+// https://learn.microsoft.com/en-us/cpp/windows/universal-crt-deployment
+// UCRT inbox forwarders differ from redistributable VCRUNTIME/MSVCP, which remain refused.
+for (const name of [
+  'comctl32.dll', 'dwmapi.dll',
+  'api-ms-win-crt-string-l1-1-0.dll', 'api-ms-win-crt-math-l1-1-0.dll',
+  'api-ms-win-crt-runtime-l1-1-0.dll', 'api-ms-win-crt-filesystem-l1-1-0.dll',
+  'api-ms-win-crt-stdio-l1-1-0.dll', 'api-ms-win-crt-time-l1-1-0.dll',
+  'api-ms-win-crt-heap-l1-1-0.dll', 'api-ms-win-crt-convert-l1-1-0.dll',
+  'api-ms-win-crt-locale-l1-1-0.dll',
+]) systemDlls.add(name);
 function requireValue(value, reason) { if (!value) throw new Error(reason); }
 
 /** Read-only image inspection. Both ordinary and delayed imports must be OS supplied.

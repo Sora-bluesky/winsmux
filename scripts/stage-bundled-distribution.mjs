@@ -31,8 +31,8 @@ function checkedBuildInputs({ repoRoot, host, version, rustcCommit }) {
   const dll = plain(path.join(source, 'nsis/winsmux_nsis_utils.dll'));
   requireValue(hash(dll) === binding.plugin.dll_sha256, 'Source-built NSIS plugin differs.');
   const utils = plain(path.join(source, 'nsis/winsmux-utils.nsh'));
-  requireValue(hash(utils) === '9e2259d2226398ff4e69c1b322ce480ccb51df5d65525ac706b2179bd1db92c4'
-    && hash(plain(path.join(source, 'nsis/installer.nsi'))) === '1b691a6d9d526a312f95a156e5b52503bd37aa993173e366ebef9db0b66ba9a9',
+  requireValue(hash(utils) === '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'
+    && hash(plain(path.join(source, 'nsis/installer.nsi'))) === 'c4fc0d1f02ac01ff06b74dfb10ffd5f7259eb7d2a8a58ac44a3e334f81cf72dc',
   'Pinned compiler inputs differ.');
   const hook = plain(path.join(source, 'nsis-installer-hooks.nsh'));
   return { repo, source, assets, binding, dll, utils, hook };

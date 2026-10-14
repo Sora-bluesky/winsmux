@@ -42,7 +42,7 @@
     },
     {
       "path": "core/crates/winsmux-workspace/Cargo.toml",
-      "sha256": "ac2601c622573e15a7bf2daf17c2229e392b7812cd271f8b18faa1255fc63194"
+      "sha256": "fa3a33439adb79a9c41d37cb73e41fbff5d2df9d6a7bae31f3d64472405df1d9"
     },
     {
       "path": "git-graph/Cargo.toml",

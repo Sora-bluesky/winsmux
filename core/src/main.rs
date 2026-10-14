@@ -984,6 +984,11 @@ fn run_main() -> io::Result<()> {
     let args = decode_cli_args()?;
 
     #[cfg(windows)]
+    if args.get(1).map(String::as_str) == Some("--winsmux-internal-desktop-installer") {
+        std::process::exit(winsmux_workspace::run_internal_desktop_installer(&args[2..]));
+    }
+
+    #[cfg(windows)]
     if args.len() == 2 && args[1] == "--winsmux-internal-git-reader" {
         std::process::exit(winsmux_workspace::run_internal_git_reader());
     }

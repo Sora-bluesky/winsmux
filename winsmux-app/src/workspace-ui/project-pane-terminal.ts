@@ -16,7 +16,7 @@ export function mountProjectPaneTerminal(slot: HTMLElement, projectId: string, p
   let disposed = false; let runId: string | null = null; let cursor: string | null = null; let epoch = 0;
   let queued: Extract<ControlIntent, { kind: 'resize-pane' }> | null = null;
   let codec: ReturnType<typeof installTerminalInputCodec> | null = null; let inputIdentity='';
-  const terminal = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 5000, screenReaderMode:true });
+  const terminal = new Terminal({ disableStdin: true, cursorBlink: false, scrollback: 5000 });
   const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(slot);
   const reset = installTerminalMouseTrackingReset({ parser: terminal.parser, write(data) { if (!disposed) terminal.write(data); } });
   const gap = slot.ownerDocument.createElement('p'); gap.className = 'workspace-output-gap'; gap.setAttribute('role', 'status'); slot.before(gap);

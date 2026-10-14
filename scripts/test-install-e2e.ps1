@@ -91,14 +91,31 @@ function Get-GitBlobSha256 {
     }
 }
 
-$scratch = if ([string]::IsNullOrWhiteSpace($ScratchRoot)) {
-    $base = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-    Join-Path $base ("winsmux-install-e2e-" + [System.Guid]::NewGuid().ToString('N'))
+$profileVolume = $null
+$ownRootVolume = $null
+if ($isGitHubRunner) {
+    $sourceTokens=$null;$sourceErrors=$null
+    $sourceAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $repoRoot 'install.ps1'),[ref]$sourceTokens,[ref]$sourceErrors)
+    if($sourceErrors.Count){throw 'Current installer source cannot be parsed for volume measurement.'}
+    foreach($name in @('Initialize-WinsmuxInstallPathInfo','Assert-WinsmuxInstallPath','Get-WinsmuxInstallVolume')) {
+        $definitions=@($sourceAst.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+        if($definitions.Count -ne 1){throw 'Installer volume observation function is ambiguous.'}
+        . ([scriptblock]::Create($definitions[0].Extent.Text))
+    }
+    $profilePath=[IO.Path]::GetFullPath([string]$PROFILE.CurrentUserAllHosts)
+    $profileParent=[IO.Path]::GetDirectoryName($profilePath)
+    $profileVolume=Get-WinsmuxInstallVolume $profilePath File
+    $scratch=if([string]::IsNullOrWhiteSpace($ScratchRoot)){Join-Path $profileParent ('winsmux-install-e2e-'+[Guid]::NewGuid().ToString('N'))}else{[IO.Path]::GetFullPath($ScratchRoot)}
+    if([IO.Path]::GetDirectoryName($scratch) -ine $profileParent -or [IO.Path]::GetFileName($scratch) -cnotmatch '^winsmux-install-e2e-[a-f0-9]{32}$') {throw 'Disposable CI requires its own exact fresh GUID root beside the actual profile.'}
+    if(Test-Path -LiteralPath $scratch){throw 'Own CI root already exists.'}
+    $ownRootVolume=Get-WinsmuxInstallVolume $scratch Directory
+    if($ownRootVolume -cne $profileVolume){throw 'CI HOME and the actual profile are on different physical volumes.'}
 } else {
-    [System.IO.Path]::GetFullPath($ScratchRoot)
-}
-if (Test-Path -LiteralPath $scratch) {
-    throw "Scratch root must not exist before the run: $scratch"
+    $scratch=if([string]::IsNullOrWhiteSpace($ScratchRoot)) {
+        $base=if($env:RUNNER_TEMP){$env:RUNNER_TEMP}else{[IO.Path]::GetTempPath()}
+        Join-Path $base ('winsmux-install-e2e-'+[Guid]::NewGuid().ToString('N'))
+    } else {[IO.Path]::GetFullPath($ScratchRoot)}
+    if(Test-Path -LiteralPath $scratch){throw "Scratch root must not exist before the run: $scratch"}
 }
 
 $fixtureHome = Join-Path $scratch 'home'
@@ -109,6 +126,17 @@ $npmPrefix = Join-Path $scratch 'npm-global'
 $npmCache = Join-Path $scratch 'npm-cache'
 @($fixtureHome, $temp, $localAppData, $appData, $npmPrefix, $npmCache) | ForEach-Object {
     New-Item -ItemType Directory -Path $_ -Force | Out-Null
+}
+
+$realRoot = Join-Path $scratch 'task880-real-lifecycle'
+if($isGitHubRunner) {
+    [void][IO.Directory]::CreateDirectory($realRoot)
+    $resultOutput=Join-Path $realRoot 'result.json';$environmentOutput=Join-Path $realRoot 'environment.json'
+    [IO.File]::WriteAllText($resultOutput,(ConvertTo-Json @{schema='task880-real-lifecycle/v1';passed=$false;state='not_run';route=$Route;source_commit=$SourceCommit;reason='Real entry assertions have not completed.'}),[Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($environmentOutput,(ConvertTo-Json @{source_commit=$SourceCommit;profile_volume_guid=$profileVolume;home_volume_guid=$ownRootVolume;os=[Environment]::OSVersion.VersionString;architecture=[Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString();powershell=$PSVersionTable.PSVersion.ToString();state='not_run'}),[Text.UTF8Encoding]::new($false))
+    if(-not [string]::IsNullOrWhiteSpace($env:GITHUB_OUTPUT)) {
+        [IO.File]::AppendAllText($env:GITHUB_OUTPUT,('task880_result_path='+$resultOutput+[Environment]::NewLine+'task880_environment_path='+$environmentOutput+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
+    }
 }
 
 $env:TEMP = $temp
@@ -127,7 +155,8 @@ function Invoke-CapturedProcess {
         [switch]$IncludeGitHubAccess,
         [switch]$IncludeTargetInstallerBootstrapMarker,
         [switch]$RepositoryPreparation,
-        [switch]$OmitReleaseTagSelection
+        [switch]$OmitReleaseTagSelection,
+        [switch]$InterruptAfterRegistration
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -179,11 +208,52 @@ function Invoke-CapturedProcess {
         $startInfo.Environment['WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'] = '1'
     }
 
+    $captureWatch = [Diagnostics.Stopwatch]::StartNew()
     $process = [System.Diagnostics.Process]::Start($startInfo)
     try {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        $interruption = $null
+        if ($InterruptAfterRegistration) {
+            if (-not $isGitHubRunner -or -not $candidateFixture -or $RepositoryPreparation) { throw 'Real lifecycle interruption requires the disposable private-candidate route.' }
+            $bin = Join-Path $fixtureHome '.local/bin'
+            $markerPath = Join-Path $bin 'winsmux.install.pending.json'
+            $watcher = [IO.FileSystemWatcher]::new($bin)
+            $watcher.IncludeSubdirectories = $true
+            $watcher.NotifyFilter = [IO.NotifyFilters]::FileName -bor [IO.NotifyFilters]::LastWrite
+            $watcher.EnableRaisingEvents = $true
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            try {
+                while (-not $process.HasExited -and $watch.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
+                    $journal = $null;$operation = ''; $journalBytes = $null
+                    try {
+                        if ([IO.File]::Exists($markerPath)) {
+                            $markerValue = [IO.File]::ReadAllText($markerPath) | ConvertFrom-Json -AsHashtable
+                            if ($markerValue.operation_id -cnotmatch '^[a-f0-9]{32}$') { throw 'Unexpected own pending identity.' }
+                            $operation = Join-Path $bin ('.winsmux-install-' + $markerValue.operation_id)
+                            $journalBytes = [IO.File]::ReadAllBytes((Join-Path $operation 'recovery.json'))
+                            $journal = [Text.UTF8Encoding]::new($false,$true).GetString($journalBytes) | ConvertFrom-Json -AsHashtable
+                        }
+                    } catch { $journal = $null }
+                    if ($journal -and $journal.operation_id -ceq $markerValue.operation_id -and
+                        $journal.registration.ContainsKey('user') -and $journal.registration.user.phase -ceq 'confirmed' -and
+                        -not [IO.File]::Exists((Join-Path $operation 'committed'))) {
+                        $interruption = @{ operation_id=$markerValue.operation_id; phase=$journal.registration.user.phase;
+                            journal_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($journalBytes)).ToLowerInvariant();
+                            controller_pid=$process.Id; controller_start_utc=$process.StartTime.ToUniversalTime().ToString('o'); committed_before=$false }
+                        $process.Kill($true);$process.WaitForExit()
+                        $interruption.operation_matches = $false
+                        try { $afterMarker = [IO.File]::ReadAllText($markerPath) | ConvertFrom-Json -AsHashtable; $interruption.operation_matches = $afterMarker.operation_id -ceq $interruption.operation_id } catch {}
+                        $interruption.committed_after = [IO.File]::Exists((Join-Path $operation 'committed'))
+                        break
+                    }
+                    $remaining = [Math]::Max(1,[int]($TimeoutSeconds * 1000 - $watch.Elapsed.TotalMilliseconds))
+                    [void]$watcher.WaitForChanged([IO.WatcherChangeTypes]::All,$remaining)
+                }
+            } finally { $watcher.Dispose() }
+        }
+        $captureRemaining = [Math]::Max(0,[int]($TimeoutSeconds * 1000 - $captureWatch.Elapsed.TotalMilliseconds))
+        if (-not $process.WaitForExit($captureRemaining)) {
             $process.Kill($true)
             $process.WaitForExit()
             $timedOutStdOut = $stdoutTask.GetAwaiter().GetResult()
@@ -194,11 +264,16 @@ function Invoke-CapturedProcess {
         $stderr = $stderrTask.GetAwaiter().GetResult()
         return [PSCustomObject]@{
             ExitCode = $process.ExitCode
+            Interruption = $interruption
+            FilePath = $FilePath
+            Arguments = $Arguments
+            WorkingDirectory = $WorkingDirectory
             StdOut = $stdout.Trim()
             StdErr = $stderr.Trim()
             Combined = ($stdout + [Environment]::NewLine + $stderr).Trim()
         }
     } finally {
+        if (-not $process.HasExited) { $process.Kill($true);$process.WaitForExit() }
         $process.Dispose()
     }
 }
@@ -366,31 +441,73 @@ try {
     }
 }
 
+function New-WinsmuxMissingSourceFixture {
+    param([Parameter(Mandatory=$true)][string]$Source)
+    $tokens=$null;$errors=$null
+    $ast=[Management.Automation.Language.Parser]::ParseInput($Source,[ref]$tokens,[ref]$errors)
+    if($errors.Count){throw 'Missing-source fixture input cannot be parsed.'}
+    $functions=@{}
+    foreach($name in @('New-WinsmuxSupportStage','Invoke-WinsmuxInstallLifecycle')) {
+        $definitions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true))
+        if($definitions.Count -ne 1){throw 'Missing-source fixture function is ambiguous.'}
+        $functions[$name]=$definitions[0]
+    }
+    # The current producer creates its own stage before the two core downloads.
+    # Select the SCRIPT_DIR command structurally, without depending on quote style.
+    $stage=$functions['New-WinsmuxSupportStage']
+    $coreCalls=@($stage.Body.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Download-File' -and $n.CommandElements.Count -eq 3 -and $n.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.CommandElements[1].Value -ceq 'scripts/winsmux-core.ps1'},$true))
+    if($coreCalls.Count -ne 2){throw 'Missing-source fixture requires the current paired core-stage downloads.'}
+    $selected=$null
+    foreach($call in $coreCalls) {
+        $destinations=@($call.CommandElements[2].FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Join-Path'},$true))
+        if($destinations.Count -ne 1 -or $destinations[0].CommandElements.Count -ne 3 -or
+            $destinations[0].CommandElements[1] -isnot [Management.Automation.Language.VariableExpressionAst] -or
+            $destinations[0].CommandElements[2] -isnot [Management.Automation.Language.StringConstantExpressionAst] -or
+            $destinations[0].CommandElements[2].Value -cne 'winsmux-core.ps1'){throw 'Unexpected core-stage destination.'}
+        $variable=$destinations[0].CommandElements[1].VariablePath.UserPath
+        if($variable -ceq 'SCRIPT_DIR') {
+            if($selected){throw 'Ambiguous script-stage core download.'};$selected=$call
+        } elseif($variable -cne 'BIN_DIR'){throw 'Unexpected core-stage directory.'}
+    }
+    if(-not $selected -or $coreCalls[0].Extent.StartOffset -ge $coreCalls[1].Extent.StartOffset -or $selected -ne $coreCalls[1]){throw 'Unexpected core-stage download order.'}
+    $lifecycle=$functions['Invoke-WinsmuxInstallLifecycle']
+    $binaryCalls=@($lifecycle.Body.FindAll({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -ceq 'Install-WinsmuxBinary'},$true))
+    if($binaryCalls.Count -ne 1){throw 'Missing-source fixture lifecycle dispatch is ambiguous.'}
+    $binary=$binaryCalls[0]
+    $shape=@($binary.CommandElements|ForEach-Object {$_.Extent.Text}) -join ' '
+    if($shape -cne 'Install-WinsmuxBinary -Lease $lease -SupportProfile $profile -IsUpdate:$IsUpdate'){throw 'Unsupported current lifecycle dispatch.'}
+    $insertion=[Environment]::NewLine+"    Write-Output 'TASK880_DEFECT_MISSING_SOURCE_READY'"+[Environment]::NewLine+"    Download-File 'winsmux.ps1' (Join-Path `$BIN_DIR 'winsmux.ps1')"
+    $replacement='$null = New-WinsmuxSupportStage $lease $profile ([bool]$IsUpdate)'+[Environment]::NewLine+"        throw 'Historical missing-source download unexpectedly succeeded.'"
+    $edits=@(@{start=$selected.Extent.EndOffset;length=0;text=$insertion},@{start=$binary.Extent.StartOffset;length=$binary.Extent.EndOffset-$binary.Extent.StartOffset;text=$replacement})
+    $broken=$Source
+    foreach($edit in @($edits|Sort-Object start -Descending)) {$broken=$broken.Remove($edit.start,$edit.length).Insert($edit.start,$edit.text)}
+    if([regex]::Matches($broken,[regex]::Escape($insertion)).Count -ne 1 -or [regex]::Matches($broken,[regex]::Escape($replacement)).Count -ne 1 -or
+        $broken.Replace($insertion,'').Replace($replacement,$binary.Extent.Text) -cne $Source){throw 'Missing-source fixture changed bytes beyond its two declared projections.'}
+    $checkTokens=$null;$checkErrors=$null
+    [void][Management.Automation.Language.Parser]::ParseInput($broken,[ref]$checkTokens,[ref]$checkErrors)
+    if($checkErrors.Count){throw 'Missing-source fixture projection cannot be parsed.'}
+    return @{source=$broken;proof=@{original_installer_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Source))).ToLowerInvariant();fixture_installer_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($broken))).ToLowerInvariant();inverse_projection_exact=$true;core_stage_calls=$coreCalls.Count;binary_dispatch_calls=$binaryCalls.Count;stage_function='New-WinsmuxSupportStage';lifecycle_function='Invoke-WinsmuxInstallLifecycle';historical_target='winsmux.ps1';stage_reached_marker='TASK880_DEFECT_MISSING_SOURCE_READY';release_binary_acquisition='excluded in this historical-source fixture';publication_registration='not reached; fixture invokes only the current own-stage producer';real_http_404='not_run'}}
+}
+
 if ($Route -eq 'DefectDetection') {
     $brokenInstaller = Join-Path $scratch 'install-pre-fix.ps1'
     $source = Get-Content -LiteralPath $installerPath -Raw -Encoding UTF8
-    $anchor = '    Download-File "scripts/winsmux-core.ps1" (Join-Path $SCRIPT_DIR "winsmux-core.ps1")'
-    if (-not $source.Contains($anchor)) {
-        throw 'Could not construct the pre-fix installer fixture.'
-    }
-    $broken = $source.Replace($anchor, $anchor + [Environment]::NewLine + [Environment]::NewLine + '    Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")')
-    $binaryInstallCall = '(?m)^[ \t]*Install-WinsmuxBinary(?:[ \t]+-Lease[ \t]+\$lease)?[ \t]*\r?$'
-    if ([regex]::Matches($broken, $binaryInstallCall).Count -ne 1) {
-        throw 'Could not isolate the pre-fix download defect from release binary acquisition.'
-    }
-    $broken = [regex]::Replace($broken, $binaryInstallCall, '    Write-Status "Defect fixture skips release binary acquisition"')
-    [System.IO.File]::WriteAllText($brokenInstaller, $broken, [System.Text.UTF8Encoding]::new($false))
+    $fixture=New-WinsmuxMissingSourceFixture $source
+    if($fixture.proof.original_installer_sha256 -cne (Get-GitBlobSha256 -Treeish $SourceCommit -RelativePath 'install.ps1')){throw 'Historical detection source differs from the committed installer.'}
+    [System.IO.File]::WriteAllText($brokenInstaller, $fixture.source, [System.Text.UTF8Encoding]::new($false))
     $result = Invoke-IrmInstaller -SourceInstaller $brokenInstaller -ServerDirectory (Join-Path $scratch 'pre-fix-server') -IncludeTargetInstallerBootstrapMarker
-    if ($result.ExitCode -eq 0 -or $result.Combined -notmatch 'winsmux\.ps1' -or $result.Combined -notmatch '404|Not Found') {
+    if ($result.ExitCode -eq 0 -or $result.Combined -notmatch $fixture.proof.stage_reached_marker -or $result.Combined -notmatch 'winsmux\.ps1' -or $result.Combined -notmatch '404|Not Found') {
         throw "Pre-fix defect was not detected as expected. exit=$($result.ExitCode)`n$($result.Combined)"
     }
+    $fixture.proof.real_http_404='observed by this CI run'
     [ordered]@{
         schema_version = 1
         route = $Route
         expected_failure_exit_code = $result.ExitCode
         detected_missing_target = 'winsmux.ps1'
+        fixture = $fixture.proof
         scratch_root = $scratch
-    } | ConvertTo-Json -Depth 4
+    } | ConvertTo-Json -Depth 5
     exit 0
 }
 
@@ -587,6 +704,165 @@ if ($Route -eq 'Direct' -and $isGitHubRunner) {
     }
 }
 
+$realLifecycle = $null
+if ($isGitHubRunner -and $candidateFixture) {
+    $realRoot = Join-Path $scratch 'task880-real-lifecycle'
+    [void][IO.Directory]::CreateDirectory($realRoot)
+    [IO.File]::WriteAllText((Join-Path $realRoot 'result.json'),(ConvertTo-Json @{schema='task880-real-lifecycle/v1';passed=$false;state='not_run';route=$Route;source_commit=$SourceCommit;reason='All real-entry assertions have not completed.'}),[Text.UTF8Encoding]::new($false))
+    $environment=@{source_commit=$SourceCommit;profile_volume_guid=$profileVolume;home_volume_guid=$ownRootVolume;os=[Environment]::OSVersion.VersionString;architecture=[Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString();powershell=$PSVersionTable.PSVersion.ToString();node=(& $node --version | Out-String).Trim();npm=(& $npm --version | Out-String).Trim();candidate_receipt_sha256=$fixtureProof.candidate_receipt_sha256;pristine_transport_sha256=$fixtureProof.transport_sha256;real_lifecycle_state='not_run'}
+    [IO.File]::WriteAllText((Join-Path $realRoot 'environment.json'),(ConvertTo-Json $environment -Depth 10),[Text.UTF8Encoding]::new($false))
+    $task880Evidence=@{commands=[Collections.Generic.List[object]]::new();preservation=[Collections.Generic.List[object]]::new()}
+    function Write-Task880Progress([string]$State='running',[string]$Reason='Real entry assertions are incomplete.') {
+        $progress=@{schema='task880-real-lifecycle/v1';passed=$false;state=$State;route=$Route;source_commit=$SourceCommit;reason=$Reason;commands=@($task880Evidence.commands.ToArray());preservation=@($task880Evidence.preservation.ToArray())}
+        [IO.File]::WriteAllText((Join-Path $realRoot 'result.json'),(ConvertTo-Json $progress -Depth 16),[Text.UTF8Encoding]::new($false))
+    }
+    function Assert-Task880([bool]$Condition,[string]$Message) { if(-not $Condition){Write-Task880Progress 'failed' $Message;throw $Message} }
+    function Test-Task880Nullable($Actual,$Expected) {
+        if($null -eq $Actual -or $null -eq $Expected){return ($null -eq $Actual -and $null -eq $Expected)}
+        return ($Actual -is [string] -and $Expected -is [string] -and $Actual -ceq $Expected)
+    }
+    function Get-Task880Snapshot {
+        $rows=[ordered]@{}
+        foreach($relative in @('.local/bin/winsmux.exe','.local/bin/winsmux-licenses.owner.json','.local/bin/winsmux-licenses','.winsmux/install-owner.json','.winsmux/bin/winsmux-core.ps1','.winsmux.conf','.winsmux/projects/task880/project.json','.winsmux/task880-unknown.json')) {
+            $path=Join-Path $fixtureHome $relative
+            if([IO.Directory]::Exists($path)) {
+                $rows[$relative]=@([IO.Directory]::EnumerateFiles($path,'*',[IO.SearchOption]::AllDirectories)|Sort-Object|ForEach-Object {@{path=[IO.Path]::GetRelativePath($path,$_);sha256=(Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant()}})
+            } elseif([IO.File]::Exists($path)) {$rows[$relative]=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()}
+            else {$rows[$relative]=$null}
+        }
+        foreach($extra in @(@{name='actual-profile';path=$profilePath},@{name='terminal-fragment';path=$fragment})) {
+            $rows[$extra.name]=if([IO.File]::Exists($extra.path)){(Get-FileHash -LiteralPath $extra.path -Algorithm SHA256).Hash.ToLowerInvariant()}else{$null}
+        }
+        return (ConvertTo-Json $rows -Depth 10 -Compress)
+    }
+    function Save-Task880Equality([string]$Name,[string]$Before,[string]$After,$PriorUser,$CurrentUser) {
+        function Get-Task880NullableDigest($Value) {
+            if($null -eq $Value){return @{present=$false;bytes=$null;sha256=$null}}
+            $bytes=[Text.Encoding]::UTF8.GetBytes($Value)
+            return @{present=$true;bytes=$bytes.Length;sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()}
+        }
+        $data=@{name=$Name;before_inventory=($Before|ConvertFrom-Json -AsHashtable);after_inventory=($After|ConvertFrom-Json -AsHashtable);prior_user_path=(Get-Task880NullableDigest $PriorUser);current_user_path=(Get-Task880NullableDigest $CurrentUser);paired_settings_project_equal=$Before -ceq $After;user_path_equal=(Test-Task880Nullable $CurrentUser $PriorUser);canonical_lifecycle_excluded='Current entrance migration is permanent by the fixed contract.'}
+        $task880Evidence.preservation.Add($data)
+        Write-Task880Progress
+    }
+    $pristineInstaller=$fixtureProof.installer
+    $packagedInstaller=if($Route -ceq 'Npm'){Join-Path $npmPrefix 'node_modules/winsmux/install.ps1'}else{''}
+    $pristinePackageBytes=if($Route -ceq 'Npm'){[IO.File]::ReadAllBytes($packagedInstaller)}else{$null}
+    function Invoke-Task880Action([string]$Action,[string]$Body=$pristineInstaller,[switch]$Interrupt) {
+        if($Route -ceq 'Npm') {
+            # Both files come from the verified fixture producer: only its fixed
+            # transport block differs. The public npm index/metadata stay exact.
+            $beforeIndex=(Get-FileHash -LiteralPath (Join-Path $npmPrefix 'node_modules/winsmux/index.mjs') -Algorithm SHA256).Hash
+            [IO.File]::WriteAllBytes($packagedInstaller,[IO.File]::ReadAllBytes($Body))
+            try { $result=Invoke-CapturedProcess -FilePath $npmShim -Arguments @($Action,'--profile','full') -InterruptAfterRegistration:$Interrupt }
+            finally {[IO.File]::WriteAllBytes($packagedInstaller,$pristinePackageBytes)}
+            Assert-Task880 ((Get-FileHash -LiteralPath (Join-Path $npmPrefix 'node_modules/winsmux/index.mjs') -Algorithm SHA256).Hash -ceq $beforeIndex) 'npm index changed during lifecycle invocation.'
+            return $result
+        }
+        return (Invoke-CapturedProcess -FilePath $pwsh -Arguments @('-NoProfile','-File',$Body,$Action,'-ReleaseTag',$expectedReleaseTag,'-InstallProfile','full') -InterruptAfterRegistration:$Interrupt)
+    }
+    function Save-Task880Command([string]$Name,$Command) {
+        $record=@{name=$Name;route=$Route;file_path=$Command.FilePath;arguments=$Command.Arguments;working_directory=$Command.WorkingDirectory;exit=$Command.ExitCode;interruption=$Command.Interruption;stdout_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Command.StdOut))).ToLowerInvariant();stderr_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Command.StdErr))).ToLowerInvariant()}
+        $task880Evidence.commands.Add($record)
+        Write-Task880Progress
+    }
+    Save-Task880Command 'initial-install' $installResult
+    $project=Join-Path $fixtureHome '.winsmux/projects/task880/project.json'
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($project))
+    [IO.File]::WriteAllBytes($project,[Text.Encoding]::UTF8.GetBytes('{"task880":"protected-project"}'))
+    $unknown=Join-Path $fixtureHome '.winsmux/task880-unknown.json'
+    [IO.File]::WriteAllText($unknown,'task880 unknown user bytes',[Text.UTF8Encoding]::new($false))
+    $projectHash=(Get-FileHash -LiteralPath $project -Algorithm SHA256).Hash
+    $unknownHash=(Get-FileHash -LiteralPath $unknown -Algorithm SHA256).Hash
+    $positive=Invoke-Task880Action 'update';Save-Task880Command 'normal-update' $positive
+    Assert-Task880 ($positive.ExitCode -eq 0) 'Real public update failed.'
+    $nativeVersion=Invoke-CapturedProcess -FilePath $native -Arguments @('-V')
+    Assert-Task880 ($nativeVersion.ExitCode -eq 0 -and $nativeVersion.StdOut -ceq ('winsmux '+$expectedNativeVersion)) 'Real PE did not run after update.'
+    $config=Join-Path $fixtureHome '.winsmux.conf'
+    [IO.File]::WriteAllText($config,'task880 user settings before failed update',[Text.UTF8Encoding]::new($false))
+    $before=Get-Task880Snapshot;$priorUser=[Environment]::GetEnvironmentVariable('Path','User')
+    $lock=[IO.File]::Open($config,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {$locked=Invoke-Task880Action 'update'}finally{$lock.Dispose()}
+    Save-Task880Command 'external-rename-lock' $locked
+    Save-Task880Equality 'external-rename-lock' $before (Get-Task880Snapshot) $priorUser ([Environment]::GetEnvironmentVariable('Path','User'))
+    Assert-Task880 ($locked.ExitCode -ne 0) 'External no-delete lock did not reject publication.'
+    Assert-Task880 ((Get-Task880Snapshot) -ceq $before) 'Real locked publication did not restore old paired/settings/project bytes.'
+    Assert-Task880 (Test-Task880Nullable ([Environment]::GetEnvironmentVariable('Path','User')) $priorUser) 'Real locked publication changed User PATH.'
+    $marker=Join-Path $fixtureHome '.local/bin/winsmux.install.pending.json'
+    Assert-Task880 (-not [IO.File]::Exists($marker)) 'Verified lock failure restoration retained pending.'
+    $faults=@{}
+    foreach($mode in @('tamper','missing')) {
+        $prepared=Invoke-CapturedProcess -FilePath $node -Arguments @((Join-Path $repoRoot 'scripts/prepare-install-e2e-fixture.mjs'),[IO.Path]::GetFullPath($CandidateDirectory),$SourceCommit,$Version,(Join-Path $scratch ('fault-'+$mode)),'--fault',$mode)
+        Assert-Task880 ($prepared.ExitCode -eq 0) 'Fault transport preparation failed.'
+        $proof=$prepared.StdOut|ConvertFrom-Json -AsHashtable
+        Assert-Task880 ($proof.product_body_unchanged -and $proof.original_installer_sha256 -ceq $fixtureProof.original_installer_sha256 -and $proof.fault -ceq $mode) 'Fault transport changed product source identity.'
+        $faults[$mode]=$proof
+        $before=Get-Task880Snapshot;$priorUser=[Environment]::GetEnvironmentVariable('Path','User')
+        $failed=Invoke-Task880Action 'update' $proof.installer;Save-Task880Command ('transport-'+$mode) $failed
+        Save-Task880Equality ('transport-'+$mode) $before (Get-Task880Snapshot) $priorUser ([Environment]::GetEnvironmentVariable('Path','User'))
+        Assert-Task880 ($failed.ExitCode -ne 0) 'Real update accepted a damaged or missing response.'
+        if($mode -ceq 'tamper'){Assert-Task880 ($failed.Combined -match 'checksum') 'Transport tamper did not reach the product checksum rejection.'}
+        Assert-Task880 ((Get-Task880Snapshot) -ceq $before) 'Transport failure changed installed paired/settings/project bytes.'
+        Assert-Task880 (Test-Task880Nullable ([Environment]::GetEnvironmentVariable('Path','User')) $priorUser) 'Transport failure changed User PATH.'
+        Assert-Task880 (-not [IO.File]::Exists($marker)) 'Failed acquisition created pending publication.'
+    }
+    $before=Get-Task880Snapshot;$priorUser=[Environment]::GetEnvironmentVariable('Path','User')
+    $crash=Invoke-Task880Action 'update' $pristineInstaller -Interrupt;Save-Task880Command 'external-interruption' $crash
+    Assert-Task880 ($crash.ExitCode -ne 0 -and $null -ne $crash.Interruption -and $crash.Interruption.operation_matches -and -not $crash.Interruption.committed_after) 'Uncommitted own-operation interruption evidence missing; lifecycle not proven.'
+    Assert-Task880 ([IO.File]::Exists($marker)) 'Interrupted actual update lost pending.'
+    # The next public update recovers first, then intentionally fails acquisition.
+    # It cannot publish a fresh generation over the old bytes we must observe.
+    $recovery=Invoke-Task880Action 'update' $faults.missing.installer;Save-Task880Command 'pending-recovery-missing-response' $recovery
+    Save-Task880Equality 'pending-recovery' $before (Get-Task880Snapshot) $priorUser ([Environment]::GetEnvironmentVariable('Path','User'))
+    Assert-Task880 ($recovery.ExitCode -ne 0 -and -not [IO.File]::Exists($marker)) 'Next public entry did not complete old-generation recovery before missing acquisition.'
+    Assert-Task880 ((Get-Task880Snapshot) -ceq $before) 'Real pending recovery did not restore old paired/settings/project bytes.'
+    Assert-Task880 (Test-Task880Nullable ([Environment]::GetEnvironmentVariable('Path','User')) $priorUser) 'Real pending recovery did not restore exact User PATH.'
+    # Keep the public lifecycle usable when its standalone executable is missing.
+    [IO.File]::Delete($native)
+    $missingNative=Invoke-CapturedProcess -FilePath $wrapper -Arguments @('update','--profile','full');Save-Task880Command 'missing-native-recovery' $missingNative
+    Assert-Task880 ($missingNative.ExitCode -eq 0 -and [IO.File]::Exists($native)) 'Actual public update did not recover a missing standalone native.'
+    $beforeNative=(Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
+    [IO.File]::WriteAllText($config,'task880 modified user settings preserved at uninstall',[Text.UTF8Encoding]::new($false))
+    $beforeConfig=(Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash
+    $beforeUninstallUser=[Environment]::GetEnvironmentVariable('Path','User')
+    $removed=Invoke-Task880Action 'uninstall';Save-Task880Command 'real-uninstall' $removed
+    Assert-Task880 ($removed.ExitCode -eq 0) 'Real public uninstall failed.'
+    $preservedBefore=[ordered]@{};$preservedAfter=[ordered]@{}
+    foreach($pair in @(@{path=$project;sha=$projectHash},@{path=$unknown;sha=$unknownHash},@{path=$config;sha=$beforeConfig},@{path=$native;sha=$beforeNative})) {
+        $key=[IO.Path]::GetRelativePath($fixtureHome,$pair.path)
+        $preservedBefore[$key]=$pair.sha
+        $preservedAfter[$key]=if([IO.File]::Exists($pair.path)){(Get-FileHash -LiteralPath $pair.path -Algorithm SHA256).Hash}else{$null}
+    }
+    Save-Task880Equality 'real-uninstall' (ConvertTo-Json $preservedBefore -Compress) (ConvertTo-Json $preservedAfter -Compress) $beforeUninstallUser ([Environment]::GetEnvironmentVariable('Path','User'))
+    Assert-Task880 ((ConvertTo-Json $preservedBefore -Compress) -ceq (ConvertTo-Json $preservedAfter -Compress)) 'Real uninstall changed protected user/standalone bytes.'
+    Assert-Task880 (-not [IO.File]::Exists((Join-Path $fixtureHome '.winsmux/install-owner.json')) -and -not [IO.File]::Exists($core)) 'Real uninstall retained unchanged owned support.'
+    Assert-Task880 (Test-Task880Nullable ([Environment]::GetEnvironmentVariable('Path','User')) $beforeUninstallUser) 'Support-only uninstall changed standalone User PATH registration.'
+    # Retain the installed-wrapper uninstall guarantee with a real second owned
+    # generation; the route-specific npm/direct uninstall above already removed
+    # its own inventory and proved preservation independently.
+    $reinstall=Invoke-Task880Action 'update';Save-Task880Command 'wrapper-uninstall-preparation' $reinstall
+    Assert-Task880 ($reinstall.ExitCode -eq 0) 'Could not prepare the real installed-wrapper uninstall.'
+    [IO.File]::WriteAllText($config,'task880 modified wrapper-uninstall settings',[Text.UTF8Encoding]::new($false))
+    $wrapperConfig=(Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash
+    $wrapperUser=[Environment]::GetEnvironmentVariable('Path','User')
+    $wrappedRemove=Invoke-CapturedProcess -FilePath $wrapper -Arguments @('uninstall');Save-Task880Command 'real-wrapper-uninstall' $wrappedRemove
+    Assert-Task880 ($wrappedRemove.ExitCode -eq 0) 'Real installed wrapper uninstall failed.'
+    $preservedBefore=[ordered]@{};$preservedAfter=[ordered]@{}
+    foreach($pair in @(@{path=$project;sha=$projectHash},@{path=$unknown;sha=$unknownHash},@{path=$config;sha=$wrapperConfig},@{path=$native;sha=$beforeNative})) {
+        $key=[IO.Path]::GetRelativePath($fixtureHome,$pair.path)
+        $preservedBefore[$key]=$pair.sha
+        $preservedAfter[$key]=if([IO.File]::Exists($pair.path)){(Get-FileHash -LiteralPath $pair.path -Algorithm SHA256).Hash}else{$null}
+    }
+    Save-Task880Equality 'real-wrapper-uninstall' (ConvertTo-Json $preservedBefore -Compress) (ConvertTo-Json $preservedAfter -Compress) $wrapperUser ([Environment]::GetEnvironmentVariable('Path','User'))
+    Assert-Task880 ((ConvertTo-Json $preservedBefore -Compress) -ceq (ConvertTo-Json $preservedAfter -Compress)) 'Real wrapper uninstall changed protected bytes.'
+    Assert-Task880 (Test-Task880Nullable ([Environment]::GetEnvironmentVariable('Path','User')) $wrapperUser) 'Real wrapper uninstall changed standalone PATH.'
+    $realLifecycle=@{schema='task880-real-lifecycle/v1';passed=$true;state='passed';route=$Route;source_commit=$SourceCommit;product_installer_sha256=$fixtureProof.original_installer_sha256;transport_only=$true;real_pe_sha256=$beforeNative;normal_update=$true;external_rename_lock_restore=$true;transport_tamper_rejected=$true;transport_missing_rejected=$true;own_uncommitted_interruption=$crash.Interruption;pending_recovery_old_bytes=$true;missing_native_recovery=$true;real_uninstall=$true;project_unknown_modified_settings_standalone_preserved=$true;user_path_registration_actual=$true;same_version_generation_update=$true;different_version_migration='not_run'}
+    $realLifecycle.commands=@($task880Evidence.commands.ToArray());$realLifecycle.preservation=@($task880Evidence.preservation.ToArray())
+    $realLifecycle.initial_install=$true;$realLifecycle.real_wrapper_update=$true;$realLifecycle.real_wrapper_uninstall=$true
+    [IO.File]::WriteAllText((Join-Path $realRoot 'result.json'),(ConvertTo-Json $realLifecycle -Depth 16),[Text.UTF8Encoding]::new($false))
+    $environment=@{source_commit=$SourceCommit;profile_volume_guid=$profileVolume;home_volume_guid=$ownRootVolume;os=[Environment]::OSVersion.VersionString;architecture=[Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString();powershell=$PSVersionTable.PSVersion.ToString();node=(& $node --version | Out-String).Trim();npm=(& $npm --version | Out-String).Trim();candidate_receipt_sha256=$fixtureProof.candidate_receipt_sha256;pristine_transport_sha256=$fixtureProof.transport_sha256;tamper_transport_sha256=$faults.tamper.transport_sha256;missing_transport_sha256=$faults.missing.transport_sha256;package=if($Route -ceq 'Npm'){$packageEvidence}else{$null}}
+    [IO.File]::WriteAllText((Join-Path $realRoot 'environment.json'),(ConvertTo-Json $environment -Depth 10),[Text.UTF8Encoding]::new($false))
+} else {
 $lifecycleProbePath = Join-Path $scratch 'lifecycle-probe.json'
 $lifecycleProbeLiteral = $lifecycleProbePath.Replace("'", "''")
 $lifecycleProbeScript = @"
@@ -612,10 +888,15 @@ if ($uninstallProbe.action -ne 'uninstall' -or -not [string]::IsNullOrWhiteSpace
     throw "installed wrapper did not preserve uninstall lifecycle arguments: $($uninstallProbe | ConvertTo-Json -Compress)"
 }
 
+}
+
 [ordered]@{
     schema_version = 1
     route = $Route
     private_candidate_transport = $candidateFixture
+    real_lifecycle = $realLifecycle
+    task880_result_path = if($isGitHubRunner){Join-Path $realRoot 'result.json'}else{$null}
+    task880_environment_path = if($isGitHubRunner){Join-Path $realRoot 'environment.json'}else{$null}
     public_release_acquisition_proven = $false
     package_version = $Version
     native_asset_version = $expectedNativeVersion

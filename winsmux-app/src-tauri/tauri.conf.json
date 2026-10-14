@@ -46,6 +46,7 @@
     ],
     "windows": {
       "wix": {
+        "template": "wix/installer.wxs",
         "language": {
           "en-US": {
             "localePath": "wix-en-US.wxl"
@@ -70,6 +71,15 @@
           "Japanese"
         ],
         "displayLanguageSelector": true
+      },
+      "signCommand": {
+        "cmd": "node",
+        "args": [
+          "../../scripts/stage-desktop-msi-plan.mjs",
+          "--sign-asset",
+          "%1",
+          "--unsigned"
+        ]
       }
     }
   }

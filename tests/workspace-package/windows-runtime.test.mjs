@@ -165,7 +165,7 @@ test('known API-set, ordinal imports and ordinary OFT0 remain supported', () => 
 });
 test('dynamic CRT, unknown DLLs and path spellings refuse in either import table', () => {
   for (const name of ['vcruntime140.dll', 'msvcp140.dll', 'concrt140.dll', 'ucrtbase.dll',
-    'api-ms-win-crt-runtime-l1-1-0.dll', 'unknown.dll', '../kernel32.dll',
+    'api-ms-win-crt-runtime-l1-2-0.dll', 'unknown.dll', '../kernel32.dll',
     'api-ms-win-core-review-unknown-l999-9-9.dll', 'api-ms-win-core-synch-l999-9-9.dll',
     'api-ms-win-core-handle-l999-9-9.dll', 'api-ms-win-core-handle-l1-1-1.dll']) {
     for (const field of ['normal', 'delayed']) {
@@ -284,5 +284,63 @@ test('IAT aggregate is exactly the contiguous ordinary IAT union, with explicit 
     // Two descriptors may share exact names, but cannot alias IAT tables.
     const alias = Buffer.from(valid); alias.writeUInt32LE(alias.readUInt32LE(528), 548);
     assert.throws(() => assertWindowsRuntime(alias, triple), /Overlapping/u);
+  }
+});
+
+
+test('Windows Installer runtime inventory accepts exact MSI ordinary and delayed imports', () => {
+  for (const imports of [{ normal: ['msi.dll'] }, { delayed: ['msi.dll'] },
+    { normal: ['MSI.DLL'], delayed: ['msi.dll'] }]) {
+    const proof = assertWindowsRuntime(fixturePe(imports), target);
+    assert.ok([...proof.imports, ...proof.delay_imports].every(name => name === 'msi.dll'));
+  }
+});
+
+test('Windows Installer runtime inventory refuses near names in ordinary and delayed imports', () => {
+  for (const name of ['msi2.dll', 'msi-custom.dll', 'msi.dll.evil', '../msi.dll']) {
+    for (const kind of ['normal', 'delayed']) {
+      assert.throws(() => assertWindowsRuntime(fixturePe({ [kind]: [name] }), target),
+        /runtime dependency|PE DLL name/u, kind + ': ' + name);
+    }
+  }
+});
+
+test('Windows 10 inbox runtime inventory accepts exact GUI OS and UCRT ordinary and delayed imports', () => {
+  const names = [
+    'comctl32.dll', 'dwmapi.dll',
+    'api-ms-win-crt-string-l1-1-0.dll', 'api-ms-win-crt-math-l1-1-0.dll',
+    'api-ms-win-crt-runtime-l1-1-0.dll', 'api-ms-win-crt-filesystem-l1-1-0.dll',
+    'api-ms-win-crt-stdio-l1-1-0.dll', 'api-ms-win-crt-time-l1-1-0.dll',
+    'api-ms-win-crt-heap-l1-1-0.dll', 'api-ms-win-crt-convert-l1-1-0.dll',
+    'api-ms-win-crt-locale-l1-1-0.dll',
+  ];
+  for (const name of names) {
+    for (const imports of [{ normal: [name] }, { delayed: [name] },
+      { normal: [name.toUpperCase()], delayed: [name] }]) {
+      const proof = assertWindowsRuntime(fixturePe(imports), target);
+      assert.deepEqual(proof.imports, (imports.normal ?? []).map(() => name));
+      assert.deepEqual(proof.delay_imports, (imports.delayed ?? []).map(() => name));
+    }
+  }
+});
+
+test('Windows 10 inbox runtime inventory refuses redistributable unknown and near-name dependencies', () => {
+  const observed = [
+    'comctl32.dll', 'dwmapi.dll',
+    'api-ms-win-crt-string-l1-1-0.dll', 'api-ms-win-crt-math-l1-1-0.dll',
+    'api-ms-win-crt-runtime-l1-1-0.dll', 'api-ms-win-crt-filesystem-l1-1-0.dll',
+    'api-ms-win-crt-stdio-l1-1-0.dll', 'api-ms-win-crt-time-l1-1-0.dll',
+    'api-ms-win-crt-heap-l1-1-0.dll', 'api-ms-win-crt-convert-l1-1-0.dll',
+    'api-ms-win-crt-locale-l1-1-0.dll',
+  ];
+  const refused = ['VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'MSVCP140.dll', 'ucrtbased.dll',
+    'unknown.dll', 'comctl33.dll', 'dwmapi-custom.dll',
+    'api-ms-win-crt-unknown-l1-1-0.dll', 'api-ms-win-crt-string-l1-2-0.dll',
+    ...observed.flatMap(name => [name + '.evil', '../' + name, name.replace('.dll', '-extra.dll')])];
+  for (const name of refused) {
+    for (const kind of ['normal', 'delayed']) {
+      assert.throws(() => assertWindowsRuntime(fixturePe({ [kind]: [name] }), target),
+        /runtime dependency|PE DLL name/u, kind + ': ' + name);
+    }
   }
 });

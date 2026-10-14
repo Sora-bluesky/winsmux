@@ -3,7 +3,7 @@
   "version": "0.38.0",
   "compiler_host": "x86_64-pc-windows-msvc",
   "rustc_commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",
-  "binding_sha256": "7f3aa38a96cb9e5c1b6a0f5e1bccecd275f7c4c6e8edbece4e98a77bf2c0c0fe",
+  "binding_sha256": "3190db1046efffdd2cb5b31f14683e4546b9c106f269df0e177d1464a724edc2",
   "targets": {
     "x86_64-pc-windows-msvc": {
       "packages": 243,

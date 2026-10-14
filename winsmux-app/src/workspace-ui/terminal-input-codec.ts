@@ -22,7 +22,7 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const textarea:HTMLTextAreaElement=candidate;
   textarea.setAttribute('aria-label',`ペイン ${producer.target.paneId} のターミナル入力`);
   const doc=slot.ownerDocument;
-  const preview=doc.createElement('p'); preview.className='workspace-input-preedit'; preview.setAttribute('aria-label','変換中の文字'); preview.setAttribute('aria-live','polite');
+  const preview=doc.createElement('p'); preview.className='workspace-input-preedit'; preview.setAttribute('aria-label','変換中の文字');
   const cancel=doc.createElement('button'); cancel.type='button';cancel.textContent='変換を取消';cancel.hidden=true;
   slot.before(preview,cancel);
   let retired=false;let composition:Composition|null=null;let pendingNative:Baseline|null=null;let token=0;let delayedBlur=false;

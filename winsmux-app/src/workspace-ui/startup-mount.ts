@@ -754,7 +754,8 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       void details.recoverSameHost().catch(() => {}).finally(() => { if (current()) updateAgentLocal(controller.getSnapshot()); });
       root.dataset.startupState = 'mounted'; status.textContent = '明示的な操作だけでペインを起動します。';
       updateAgentLocal(controller.getSnapshot());
-      await revealOnce(); if (!current()) return; schedule();
+      await revealOnce(); if (!current()) return;
+      await invoke<void>('installer_startup_confirmed'); if (!current()) return; schedule();
     } catch (error) { wire.retire(); if (current()) { active?.(); active = null; connectionView?.dispose(); connectionView = null;
       const shutdown = error === 'shutdown_in_progress' || error instanceof Error && error.message === 'shutdown_in_progress';
       if (!openReturned && shutdown) {

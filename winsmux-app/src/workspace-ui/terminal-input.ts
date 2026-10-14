@@ -94,7 +94,7 @@ export function createTerminalInputOwner(root: HTMLElement, guard: InputGuardPor
   const observers=new Set<() => void>();
   const panel=doc.createElement('section'); panel.className='workspace-input-confirmation'; panel.setAttribute('aria-label','入力の確認'); panel.tabIndex=-1;
   const heading=doc.createElement('h2'); heading.textContent='入力の確認';
-  const status=doc.createElement('p'); status.setAttribute('role','status'); status.setAttribute('aria-live','polite');
+  const status=doc.createElement('p'); status.setAttribute('role','status');
   const list=doc.createElement('div'); const heldControls=doc.createElement('div'); panel.append(heading,status,list,heldControls); root.append(panel);
   const guardRecovery=doc.createElement('section'); guardRecovery.className='workspace-input-confirmation workspace-input-recovery'; guardRecovery.setAttribute('aria-label','入力の受付状態の再確認'); guardRecovery.tabIndex=-1; guardRecovery.hidden=true;
   const recoveryHeading=doc.createElement('h2'); recoveryHeading.textContent='入力の受付状態の再確認'; guardRecovery.append(recoveryHeading); root.append(guardRecovery);

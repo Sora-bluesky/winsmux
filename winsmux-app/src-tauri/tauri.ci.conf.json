@@ -6,7 +6,15 @@
   "bundle": {
     "createUpdaterArtifacts": true,
     "windows": {
-      "signCommand": "pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File ./scripts/sign-windows-bundle.ps1 %1"
+      "signCommand": {
+        "cmd": "node",
+        "args": [
+          "../../scripts/stage-desktop-msi-plan.mjs",
+          "--sign-asset",
+          "%1",
+          "--signed"
+        ]
+      }
     }
   },
   "plugins": {

@@ -9,8 +9,8 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join('\0') === keys.slice().sort().join('\0');
-const pinnedTemplate = '1b691a6d9d526a312f95a156e5b52503bd37aa993173e366ebef9db0b66ba9a9';
-const pinnedUtils = '9e2259d2226398ff4e69c1b322ce480ccb51df5d65525ac706b2179bd1db92c4';
+const pinnedTemplate = 'c4fc0d1f02ac01ff06b74dfb10ffd5f7259eb7d2a8a58ac44a3e334f81cf72dc';
+const pinnedUtils = '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad';
 function requireValue(condition, reason) { if (!condition) throw new Error(reason); }
 function plainFile(file) {
   const resolved = physicalPath(file);

@@ -13,7 +13,7 @@ import { stageCoreGeneration } from './stage-core-generation.mjs';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const coreTargets = new Map([['x86_64-pc-windows-msvc', 'winsmux-x64.exe'],
   ['aarch64-pc-windows-msvc', 'winsmux-arm64.exe']]);
-export const coreTargetMeasurementIdentity = 'dcf73ee4dda34898ca3e4445fcb6c333287bc896e20a6bf0d5ca43469810ac7f';
+export const coreTargetMeasurementIdentity = 'b429d7d03fb78b4446508d26d5794ec37d6f23e387e08accd5fc4737c2127118';
 export const bytesHash = raw => createHash('sha256').update(raw).digest('hex');
 export function requireCore(value, reason) { if (!value) throw new Error(reason); }
 export function readCorePlain(file) {

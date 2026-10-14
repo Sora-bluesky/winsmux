@@ -24,12 +24,246 @@ param(
     [ValidateSet('PortAndMarker', 'MarkerOnly')]
     [string]$DesktopLegacyEnvMode = 'PortAndMarker',
 
+    [switch]$DesktopNativeActorProbeOnly,
+
+    [switch]$DesktopNativeLifecycle,
+
+    [ValidateSet('MSI', 'NSIS')]
+    [string]$DesktopNativeFormat,
+
+    [string]$DesktopNativeSourceCommit,
+
+    [string]$DesktopNativeCandidateDirectory,
+
+    [string]$DesktopNativeBaselineDirectory,
+
     [switch]$SelfTest,
     [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+
+function Assert-DesktopNativeActorRequest {
+    param([Collections.IDictionary]$Arguments, [string]$CallerHead, [string]$ActualHead)
+    foreach ($key in @('Surface', 'Version', 'ReleaseTag', 'Repository', 'DesktopNativeSourceCommit', 'DesktopNativeActorProbeOnly', 'Json')) { if (-not $Arguments.ContainsKey($key)) { throw 'actor_probe_input_missing' } }
+    if ($Arguments['Surface'] -cne 'Desktop' -or $Arguments['Version'] -cne '0.38.0' -or $Arguments['ReleaseTag'] -cne 'v0.38.0' -or $Arguments['Repository'] -cne 'Sora-bluesky/winsmux' -or -not [bool]$Arguments['Json'] -or -not [bool]$Arguments['DesktopNativeActorProbeOnly']) { throw 'actor_probe_identity_refused' }
+    foreach ($mixed in @('DesktopNativeLifecycle', 'DesktopNativeFormat', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory', 'CandidateInstallerPath', 'DesktopInventoryPath', 'PriorInstallerPath', 'PriorVersion', 'DesktopLegacyEnvMode', 'SelfTest')) { if ($Arguments.ContainsKey($mixed)) { throw 'actor_probe_mixed_mode_refused' } }
+    $source = [string]$Arguments['DesktopNativeSourceCommit']
+    if ($source -cnotmatch '^[a-f0-9]{40}$' -or $source -cne $CallerHead -or $source -cne $ActualHead) { throw 'actor_probe_source_refused' }
+}
+
+# This isolated entry runs before inventory imports and every installer validator.
+if ($DesktopNativeActorProbeOnly) {
+    $actorResult = [ordered]@{ schema = 'winsmux-desktop-native-actor-probe/v1'; outcome = 'failed'; created = $false; resumed = $false; installer_started = $false }
+    try {
+        Assert-DesktopNativeActorRequest $PSBoundParameters $env:GITHUB_SHA $DesktopNativeSourceCommit
+        $actorRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+        $actualHead = (& git -C $actorRepo rev-parse HEAD | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'actor_probe_checkout_refused' }
+        Assert-DesktopNativeActorRequest $PSBoundParameters $env:GITHUB_SHA $actualHead
+        if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or $env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '^[1-9][0-9]*$') { throw 'actor_probe_runner_identity_refused' }
+        $temp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+        $tempItem = Get-Item -LiteralPath $temp -Force
+        if (-not $tempItem.PSIsContainer -or ($tempItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'actor_probe_temp_refused' }
+        $actorRoot = Join-Path $temp ('winsmux-native-actor-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit)
+        if (Test-Path -LiteralPath $actorRoot) { throw 'actor_probe_namespace_exists' }
+        $actorSourceHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actorCSharp = @'
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Principal;
+public static class WinsmuxDesktopActorProbe {
+ [StructLayout(LayoutKind.Sequential)] struct SA { public IntPtr Sid; public uint Attributes; }
+ [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct SI { public uint cb; public string reserved,desktop,title; public uint x,y,xs,ys,xc,yc,fill,flags; public ushort show,reserved2; public IntPtr bytes,stdin,stdout,stderr; }
+ [StructLayout(LayoutKind.Sequential)] struct PI { public IntPtr process,thread; public uint pid,tid; }
+ [StructLayout(LayoutKind.Sequential)] struct BASIC { public long processTime,jobTime; public uint flags; public UIntPtr minWork,maxWork; public uint active; public UIntPtr affinity; public uint priority,scheduling; }
+ [StructLayout(LayoutKind.Sequential)] struct IO { public ulong readOps,writeOps,otherOps,readBytes,writeBytes,otherBytes; }
+ [StructLayout(LayoutKind.Sequential)] struct LIMIT { public BASIC basic; public IO io; public UIntPtr processMemory,jobMemory,peakProcess,peakJob; }
+ [StructLayout(LayoutKind.Sequential)] struct ACCOUNT { public long totalUser,totalKernel,periodUser,periodKernel; public uint faults,totalProcesses,activeProcesses,terminatedProcesses; }
+ [StructLayout(LayoutKind.Sequential)] struct FILEINFO { public uint attributes; public System.Runtime.InteropServices.ComTypes.FILETIME creation,access,write; public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow; }
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool ProcessIdToSessionId(uint pid,out uint session);
+ [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr p,uint access,out IntPtr h);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenThreadToken(IntPtr p,uint access,bool self,out IntPtr h);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr h,int kind,IntPtr b,uint size,out uint n);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool SetTokenInformation(IntPtr h,int kind,IntPtr b,uint size);
+ [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
+ [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+ [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid,uint index);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool CreateWellKnownSid(int kind,IntPtr domain,IntPtr sid,ref uint size);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr token,uint flags,uint disableCount,ref SA disable,uint deleteCount,IntPtr delete,uint restrictCount,IntPtr restrict,out IntPtr result);
+ [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUserW(IntPtr token,string app,StringBuilder command,IntPtr psa,IntPtr tsa,bool inherit,uint flags,IntPtr env,string cwd,ref SI startup,out PI process);
+ [DllImport("userenv.dll",SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr env,IntPtr token,bool inherit);
+ [DllImport("userenv.dll",SetLastError=true)] static extern bool DestroyEnvironmentBlock(IntPtr env);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateJobObjectW(IntPtr sa,string name);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr h,int kind,ref LIMIT b,uint size);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr h,int kind,out ACCOUNT b,uint size,IntPtr returned);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h,uint timeout);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h,out uint code);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr h,uint code);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateJobObject(IntPtr h,uint code);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr h,uint flags,StringBuilder name,ref uint size);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr h,out long creation,out long exit,out long kernel,out long user);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr h,out FILEINFO info);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateDirectoryW(string path,IntPtr sa);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateFileW(string path,uint access,uint share,IntPtr sa,uint disposition,uint flags,IntPtr template);
+ [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
+ [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint id);
+ [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+ [DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformationW(IntPtr h,int kind,StringBuilder text,uint bytes,out uint needed);
+ static void Check(bool value,string where) { if(!value) throw new Win32Exception(Marshal.GetLastWin32Error(),where); }
+ static string Hash(byte[] b) { using(var h=SHA256.Create()) return BitConverter.ToString(h.ComputeHash(b)).Replace("-","").ToLowerInvariant(); }
+ static IntPtr Info(IntPtr h,int kind) { uint returned; return Info(h,kind,out returned); }
+ static IntPtr Info(IntPtr h,int kind,out uint returned) {
+  uint capacity; GetTokenInformation(h,kind,IntPtr.Zero,0,out capacity);
+  // The size query may report ERROR_BAD_LENGTH for TokenElevation while returning its exact four-byte size.
+  // Only the final API success and written range authorize reads; no size-query error-code assumption.
+  if(capacity==0 || capacity>65536) throw new InvalidOperationException("Token information size refused");
+  IntPtr b=Marshal.AllocHGlobal((int)capacity); try {
+   Marshal.Copy(new byte[capacity],0,b,(int)capacity);
+   Check(GetTokenInformation(h,kind,b,capacity,out returned),"GetTokenInformation "+kind);
+   if(returned==0 || returned>capacity) throw new InvalidOperationException("Token information returned range refused");
+   return b;
+  } catch { Marshal.FreeHGlobal(b); throw; }
+ }
+ static uint NormalizeTokenNumber(int kind,byte[] data) {
+  if(data==null) throw new InvalidOperationException("Token numeric bytes missing");
+  // TokenHasRestrictions is documented as DWORD but the measured Windows provider also returns one BOOLEAN byte.
+  // Both closed widths express nonzero TRUE; read only returned bytes and canonicalize the same fact to zero or one.
+  if(kind==21) {
+   if(data.Length==1) return data[0]==0?0u:1u;
+   if(data.Length!=4) throw new InvalidOperationException("Token restriction width refused");
+   return BitConverter.ToUInt32(data,0)==0?0u:1u;
+  }
+  if(kind!=8 && kind!=18 && kind!=12 && kind!=20 && kind!=29) throw new InvalidOperationException("Token numeric class refused");
+  if(data.Length!=4) throw new InvalidOperationException("Token DWORD width refused");
+  uint value=BitConverter.ToUInt32(data,0);
+  if(kind==20 || kind==29) return value==0?0u:1u;
+  if((kind==8 && value!=1 && value!=2)||(kind==18 && value!=1 && value!=2 && value!=3)) throw new InvalidOperationException("Token enum value refused");
+  return value;
+ }
+ static uint Value(IntPtr h,int kind) { uint returned; var b=Info(h,kind,out returned); try {var data=new byte[returned];Marshal.Copy(b,data,0,(int)returned);return NormalizeTokenNumber(kind,data);} finally {Marshal.FreeHGlobal(b);} }
+ sealed class TokenFacts {
+  internal byte[] sid; internal string sidText; internal uint elevation,type,rid,session,tokenType,restricted,appContainer;
+  internal Dictionary<string,object> Public() { return new Dictionary<string,object>{{"sid_sha256",Hash(sid)},{"elevation",elevation},{"elevation_type",type},{"integrity_rid",rid},{"session",session},{"token_type",tokenType},{"restricted",restricted},{"app_container",appContainer}}; }
+ }
+ static TokenFacts Observe(IntPtr token) {
+  var t=new TokenFacts(); var u=Info(token,1); var m=Info(token,25);
+  try { var sid=Marshal.ReadIntPtr(u); t.sid=new byte[GetLengthSid(sid)]; Marshal.Copy(sid,t.sid,0,t.sid.Length); t.sidText=new SecurityIdentifier(sid).Value; var integrity=Marshal.ReadIntPtr(m); uint count=Marshal.ReadByte(GetSidSubAuthorityCount(integrity)); if(count==0) throw new InvalidOperationException("Integrity SID refused"); t.rid=(uint)Marshal.ReadInt32(GetSidSubAuthority(integrity,count-1)); }
+  finally { Marshal.FreeHGlobal(u); Marshal.FreeHGlobal(m); }
+  t.elevation=Value(token,20); t.type=Value(token,18); t.session=Value(token,12); t.tokenType=Value(token,8); t.restricted=Value(token,21); t.appContainer=Value(token,29); return t;
+ }
+ static bool Equal(byte[] a,byte[] b) { if(a.Length!=b.Length)return false; for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false; return true; }
+ static void Medium(TokenFacts t,TokenFacts caller) { if(!Equal(t.sid,caller.sid)||t.session!=caller.session||t.tokenType!=1||t.elevation!=0||t.rid<8192||t.rid>=12288||t.appContainer!=0) throw new InvalidOperationException("Actual medium actor identity refused"); }
+ static IntPtr Sid(int kind,out uint n) { n=68; var b=Marshal.AllocHGlobal(68); try { Check(CreateWellKnownSid(kind,IntPtr.Zero,b,ref n),"CreateWellKnownSid"); return b; } catch { Marshal.FreeHGlobal(b); throw; } }
+ static string DesktopName(IntPtr h) { uint n; var b=new StringBuilder(256); Check(GetUserObjectInformationW(h,2,b,512,out n),"GetUserObjectInformation"); var s=b.ToString(); if(s.Length==0||s.Contains("\\")||s.Contains("\0"))throw new InvalidOperationException("Desktop name refused"); return s; }
+ static FileStream OpenPlain(string path) { var handle=CreateFileW(path,0x80000000,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero); if(handle==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Open plain file lease"); var safe=new Microsoft.Win32.SafeHandles.SafeFileHandle(handle,true); try {var facts=FileFacts(handle);if(facts.links!=1||(facts.attributes&0x10)!=0)throw new InvalidOperationException("Plain single-link file required");return new FileStream(safe,FileAccess.Read);}catch{safe.Dispose();throw;} }
+ static FILEINFO FileFacts(IntPtr h) { FILEINFO f; Check(GetFileInformationByHandle(h,out f),"GetFileInformationByHandle"); if((f.attributes&0x400)!=0)throw new InvalidOperationException("Reparse object refused"); return f; }
+ static string FileId(FILEINFO f) { return f.volume+":"+f.indexHigh+":"+f.indexLow; }
+ static Dictionary<string,string> UserEnvironment(IntPtr token) {
+  IntPtr block; Check(CreateEnvironmentBlock(out block,token,false),"CreateEnvironmentBlock"); var env=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+  try { int offset=0; for(int count=0;count<4096;count++) { var s=Marshal.PtrToStringUni(IntPtr.Add(block,offset)); if(String.IsNullOrEmpty(s))break; offset+=(s.Length+1)*2; int at=s.IndexOf('='); if(at>0) { var key=s.Substring(0,at); if(Array.Exists(new[]{"SystemRoot","WINDIR","SystemDrive","ComSpec","PATH","PATHEXT","TEMP","TMP","USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA","USERNAME","USERDOMAIN","ProgramData","ProgramFiles","ProgramFiles(x86)","CommonProgramFiles","CommonProgramFiles(x86)","PROCESSOR_ARCHITECTURE","NUMBER_OF_PROCESSORS"}, x=>String.Equals(x,key,StringComparison.OrdinalIgnoreCase)))env[key]=s.Substring(at+1); } } } finally { Check(DestroyEnvironmentBlock(block),"DestroyEnvironmentBlock"); }
+  foreach(string key in new[]{"GITHUB_ACTIONS","RUNNER_OS","RUNNER_TEMP","GITHUB_SHA","GITHUB_RUN_ID","GITHUB_RUN_ATTEMPT"}) { var value=Environment.GetEnvironmentVariable(key); if(value!=null)env[key]=value; }
+  return env;
+ }
+ public static Dictionary<string,object> Query() { IntPtr h; Check(OpenProcessToken(GetCurrentProcess(),8,out h),"OpenProcessToken query"); try { var facts=Observe(h); bool profile; using(var hive=Microsoft.Win32.Registry.Users.OpenSubKey(facts.sidText,false))profile=hive!=null; return new Dictionary<string,object>{{"facts",facts.Public()},{"pid",GetCurrentProcessId()},{"existing_profile_hive",profile},{"local_app_data_exists",Directory.Exists(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData))}}; } finally { CloseHandle(h); } }
+ public static string ReadChild(string path) { using(var f=OpenPlain(path)) {var info=FileFacts(f.SafeFileHandle.DangerousGetHandle()); if(info.links!=1||(info.attributes&0x10)!=0||f.Length<2||f.Length>16384)throw new InvalidOperationException("Child receipt file refused"); byte[] b=new byte[f.Length]; int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Child receipt changed");return new UTF8Encoding(false,true).GetString(b);} }
+ public static Dictionary<string,object> Probe(string image,string root,string childScript) {
+  var result=new Dictionary<string,object>{{"schema","winsmux-desktop-native-actor-probe/v1"},{"outcome","failed"},{"created",false},{"resumed",false},{"installer_started",false}};
+  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,job=IntPtr.Zero,admin=IntPtr.Zero,medium=IntPtr.Zero,environment=IntPtr.Zero,dir=IntPtr.Zero; PI pi=new PI(); bool assigned=false,terminal=false; FileStream imageLease=null,scriptLease=null;
+  try {
+   IntPtr impersonation; if(OpenThreadToken(GetCurrentThread(),8,true,out impersonation)) { CloseHandle(impersonation); throw new InvalidOperationException("Thread impersonation refused"); } if(Marshal.GetLastWin32Error()!=1008)throw new Win32Exception(Marshal.GetLastWin32Error(),"OpenThreadToken");
+   Check(OpenProcessToken(GetCurrentProcess(),0x8b,out callerToken),"OpenProcessToken caller"); var caller=Observe(callerToken); result["caller"]=caller.Public(); uint session; Check(ProcessIdToSessionId(GetCurrentProcessId(),out session),"ProcessIdToSessionId");
+   if(caller.tokenType!=1||caller.session!=session||caller.appContainer!=0||caller.sidText=="S-1-5-18"||caller.sidText=="S-1-5-19"||caller.sidText=="S-1-5-20"||caller.sidText.StartsWith("S-1-5-80-",StringComparison.Ordinal))throw new InvalidOperationException("Caller identity refused");
+   if(caller.elevation!=1||caller.rid<12288) { result["outcome"]="host_not_applicable"; return result; }
+   uint sidSize; admin=Sid(26,out sidSize); var disabled=new SA{Sid=admin,Attributes=0}; Check(CreateRestrictedToken(callerToken,5,1,ref disabled,0,IntPtr.Zero,0,IntPtr.Zero,out derived),"CreateRestrictedToken flags 5"); result["derived_initial"]=Observe(derived).Public();
+   if(Observe(derived).rid>8192) { medium=Sid(67,out sidSize); var label=new SA{Sid=medium,Attributes=0x20}; IntPtr labelMemory=Marshal.AllocHGlobal(Marshal.SizeOf<SA>()); try { Marshal.StructureToPtr(label,labelMemory,false); Check(SetTokenInformation(derived,25,labelMemory,(uint)Marshal.SizeOf<SA>()+sidSize),"SetTokenInformation own derived medium"); } finally { Marshal.FreeHGlobal(labelMemory); } }
+   var actor=Observe(derived); result["derived"]=actor.Public(); Medium(actor,caller);
+   var env=UserEnvironment(derived); string local; if(!env.TryGetValue("LOCALAPPDATA",out local)||!String.Equals(Path.GetFullPath(local),Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Existing same-SID profile refused");
+   image=Path.GetFullPath(image); imageLease=OpenPlain(image); var imageInfo=FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()); if(imageInfo.links!=1||(imageInfo.attributes&0x10)!=0)throw new InvalidOperationException("PowerShell image is not a plain single-link file"); var imageBytes=new byte[imageLease.Length]; int read=0; while(read<imageBytes.Length) { int n=imageLease.Read(imageBytes,read,imageBytes.Length-read); if(n==0)throw new EndOfStreamException();read+=n; } string imageHash=Hash(imageBytes); result["image_sha256"]=imageHash;
+   Check(CreateDirectoryW(root,IntPtr.Zero),"CreateDirectoryW exclusive probe root"); dir=CreateFileW(root,0,1|2|4,IntPtr.Zero,3,0x02000000|0x00200000,IntPtr.Zero); if(dir==new IntPtr(-1)) {dir=IntPtr.Zero;throw new Win32Exception(Marshal.GetLastWin32Error(),"Open owned probe root");} var rootInfo=FileFacts(dir); if((rootInfo.attributes&0x10)==0||Directory.GetFileSystemEntries(root).Length!=0)throw new InvalidOperationException("Owned empty directory refused"); result["evidence_root_id"]=FileId(rootInfo);
+   string scriptPath=Path.Combine(root,"token-query.ps1"); using(var output=new FileStream(scriptPath,FileMode.CreateNew,FileAccess.Write,FileShare.None)) { var bytes=new UTF8Encoding(false,true).GetBytes(childScript); output.Write(bytes,0,bytes.Length); } scriptLease=OpenPlain(scriptPath); var scriptInfo=FileFacts(scriptLease.SafeFileHandle.DangerousGetHandle()); if(scriptInfo.links!=1||(scriptInfo.attributes&0x10)!=0)throw new InvalidOperationException("Token-query script is not plain single-link"); result["child_script_sha256"]=Hash(File.ReadAllBytes(scriptPath));
+   job=CreateJobObjectW(IntPtr.Zero,null); Check(job!=IntPtr.Zero,"CreateJobObjectW"); var limits=new LIMIT(); limits.basic.flags=0x2000; Check(SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf<LIMIT>()),"SetInformationJobObject kill-on-close");
+   var sorted=new List<string>(env.Keys); sorted.Sort(StringComparer.OrdinalIgnoreCase); var envText=new StringBuilder(); foreach(var key in sorted)envText.Append(key).Append('=').Append(env[key]).Append('\0'); envText.Append('\0'); environment=Marshal.StringToHGlobalUni(envText.ToString());
+   var start=new SI{cb=(uint)Marshal.SizeOf<SI>(),desktop=DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(GetCurrentThreadId()))}; var command=new StringBuilder("\""+image+"\" -NoLogo -NoProfile -NonInteractive -File \""+scriptPath+"\"");
+   Check(CreateProcessAsUserW(derived,image,command,IntPtr.Zero,IntPtr.Zero,false,0x00000404,environment,root,ref start,out pi),"CreateProcessAsUserW suspended"); result["created"]=true; result["child_pid"]=pi.pid;
+   Check(AssignProcessToJobObject(job,pi.process),"AssignProcessToJobObject");assigned=true; bool member; Check(IsProcessInJob(pi.process,job,out member),"IsProcessInJob");if(!member)throw new InvalidOperationException("Owned Job membership refused");
+   IntPtr childToken; Check(OpenProcessToken(pi.process,8,out childToken),"OpenProcessToken child"); TokenFacts child; try {child=Observe(childToken);}finally{CloseHandle(childToken);} Medium(child,caller);result["child_before_resume"]=child.Public();
+   uint nameSize=32768; var name=new StringBuilder((int)nameSize);Check(QueryFullProcessImageNameW(pi.process,0,name,ref nameSize),"QueryFullProcessImageNameW");if(!String.Equals(Path.GetFullPath(name.ToString()),image,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Owned child image path refused"); if(FileId(FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()))!=FileId(imageInfo)||Hash(File.ReadAllBytes(image))!=imageHash)throw new InvalidOperationException("Owned child image bytes changed"); long creation,exit,kernel,user;Check(GetProcessTimes(pi.process,out creation,out exit,out kernel,out user),"GetProcessTimes");result["child_creation_time"]=creation;
+   uint count=ResumeThread(pi.thread);result["resume_previous_count"]=count;if(count!=1)throw new InvalidOperationException("ResumeThread count refused");result["resumed"]=true;
+   if(WaitForSingleObject(pi.process,60000)!=0)throw new InvalidOperationException("Owned token-query child did not terminate");terminal=true;uint code;Check(GetExitCodeProcess(pi.process,out code),"GetExitCodeProcess");result["child_exit_code"]=code;if(code!=0)throw new InvalidOperationException("Token-query child failed");
+   ACCOUNT account;Check(QueryInformationJobObject(job,1,out account,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"QueryInformationJobObject");result["job_active_processes"]=account.activeProcesses;if(account.activeProcesses!=0)throw new InvalidOperationException("Owned Job has live members");var currentDir=CreateFileW(root,0,1|2|4,IntPtr.Zero,3,0x02000000|0x00200000,IntPtr.Zero); if(currentDir==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Readback owned root"); try { if(FileId(FileFacts(dir))!=FileId(rootInfo)||FileId(FileFacts(currentDir))!=FileId(rootInfo))throw new InvalidOperationException("Owned root identity changed"); } finally {CloseHandle(currentDir);} if(Hash(File.ReadAllBytes(scriptPath))!=(string)result["child_script_sha256"]||FileId(FileFacts(scriptLease.SafeFileHandle.DangerousGetHandle()))!=FileId(scriptInfo))throw new InvalidOperationException("Token-query script changed");
+   if(FileId(FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()))!=FileId(imageInfo)||Hash(File.ReadAllBytes(image))!=imageHash)throw new InvalidOperationException("PowerShell image changed");result["outcome"]="child_terminal";
+  } catch(Exception e) { result["outcome"]="failed";result["error_type"]=e.GetType().Name;result["error"]=e.Message; if(e is Win32Exception)result["winerror"]=((Win32Exception)e).NativeErrorCode; }
+  finally {
+   try {
+    if(pi.process!=IntPtr.Zero) {
+     bool live=!terminal;
+     if(assigned) { ACCOUNT remaining; if(!QueryInformationJobObject(job,1,out remaining,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero))live=true; else live=live||remaining.activeProcesses!=0; }
+     if(live) {
+      bool stopped=assigned?TerminateJobObject(job,124):TerminateProcess(pi.process,124); result["owned_failure_stop"]=stopped; bool ended=WaitForSingleObject(pi.process,10000)==0; result["cleanup_terminal"]=ended;
+      ACCOUNT remaining; bool jobEnded=!assigned||(QueryInformationJobObject(job,1,out remaining,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero)&&remaining.activeProcesses==0); result["cleanup_job_terminal"]=jobEnded;
+      if(!stopped||!ended||!jobEnded)result["outcome"]="failed";
+     }
+    }
+   } catch(Exception e) {result["outcome"]="failed";result["cleanup_error"]=e.GetType().Name+": "+e.Message;}
+   foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken,dir})if(h!=IntPtr.Zero)CloseHandle(h);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();foreach(var p in new[]{admin,medium,environment})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);
+  }
+  return result;
+ }
+}
+'@
+        Add-Type -TypeDefinition $actorCSharp
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($actorCSharp))
+        $childScript = @'
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__QUERY_SOURCE__'))
+Add-Type -TypeDefinition $source
+$facts = [WinsmuxDesktopActorProbe]::Query()
+$bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes(($facts | ConvertTo-Json -Depth 8 -Compress) + [char]10)
+$file = [IO.FileStream]::new((Join-Path $PSScriptRoot 'child-result.json'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+'@
+        $childScript = $childScript.Replace('__QUERY_SOURCE__', $encoded)
+        $pwshImage = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        if ([IO.Path]::GetFileName($pwshImage) -ine 'pwsh.exe') { throw 'actor_probe_host_image_refused' }
+        $actorResult = [WinsmuxDesktopActorProbe]::Probe($pwshImage, $actorRoot, $childScript)
+        $actorResult['source_commit'] = $actualHead
+        $actorResult['source_sha256'] = $actorSourceHash
+        if ($actorResult['outcome'] -ceq 'child_terminal') {
+            $child = [WinsmuxDesktopActorProbe]::ReadChild((Join-Path $actorRoot 'child-result.json')) | ConvertFrom-Json -AsHashtable
+            if (@($child.Keys).Count -ne 4 -or -not $child.ContainsKey('facts') -or -not $child.ContainsKey('pid') -or -not $child.ContainsKey('existing_profile_hive') -or -not $child.ContainsKey('local_app_data_exists')) { throw 'actor_probe_child_receipt_shape_refused' }
+            if ($child['pid'] -ne $actorResult['child_pid'] -or $child['existing_profile_hive'] -ne $true -or $child['local_app_data_exists'] -ne $true -or @($child['facts'].Keys).Count -ne 8) { throw 'actor_probe_child_profile_refused' }
+            foreach ($key in $actorResult['child_before_resume'].Keys) { if (-not $child['facts'].ContainsKey($key) -or $child['facts'][$key] -cne $actorResult['child_before_resume'][$key]) { throw 'actor_probe_child_actor_changed' } }
+            $actorResult['child_result'] = $child
+            $actorResult['outcome'] = 'passed'
+        }
+        if ((Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $actorSourceHash) { throw 'actor_probe_source_changed' }
+    } catch {
+        $actorResult['outcome'] = 'failed'
+        $actorResult['error'] = $_.Exception.Message
+    }
+    $actorResult | ConvertTo-Json -Depth 12 -Compress
+    if ($actorResult['outcome'] -ceq 'passed') { exit 0 }
+    exit 1
+}
+
+
+if ($PSBoundParameters.ContainsKey('DesktopNativeActorProbeOnly')) { throw 'actor_probe_mode_refused' }
 
 $script:DesktopOwnerSourceRoot = $PSScriptRoot
 $script:RetryCount = 6
@@ -67,6 +301,36 @@ function Assert-Condition {
     }
 }
 
+function Assert-DesktopNativeRequest {
+    param(
+        [Parameter(Mandatory)][string]$RequestedSurface,
+        [Parameter(Mandatory)][string]$CandidateVersion,
+        [Parameter(Mandatory)][string]$CandidateReleaseTag,
+        [Parameter(Mandatory)][Collections.IDictionary]$Arguments,
+        [string]$ActualHead,
+        [string]$CallerHead
+    )
+    $enabled = $Arguments.ContainsKey('DesktopNativeLifecycle') -and [bool]$Arguments['DesktopNativeLifecycle']
+    $nativeKeys = @('DesktopNativeFormat', 'DesktopNativeSourceCommit', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory')
+    if (-not $enabled) {
+        foreach ($key in $nativeKeys) { Assert-Condition (-not $Arguments.ContainsKey($key)) 'desktop_native_mode_required' }
+        return
+    }
+    Assert-Condition ($RequestedSurface -ceq 'Desktop' -and $CandidateVersion -ceq '0.38.0' -and $CandidateReleaseTag -ceq 'v0.38.0') 'desktop_native_identity_refused'
+    foreach ($key in @('CandidateInstallerPath', 'DesktopInventoryPath', 'PriorInstallerPath', 'PriorVersion', 'DesktopLegacyEnvMode')) {
+        Assert-Condition (-not $Arguments.ContainsKey($key)) 'desktop_native_mixed_mode_refused'
+    }
+    if ($Arguments.ContainsKey('SelfTest') -and [bool]$Arguments['SelfTest']) {
+        foreach ($key in $nativeKeys) { Assert-Condition (-not $Arguments.ContainsKey($key)) 'desktop_native_selftest_input_refused' }
+        return
+    }
+    foreach ($key in $nativeKeys) { Assert-Condition ($Arguments.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$Arguments[$key])) 'desktop_native_input_missing' }
+    Assert-Condition ([string]$Arguments['DesktopNativeFormat'] -cin @('MSI', 'NSIS')) 'desktop_native_format_refused'
+    $source = [string]$Arguments['DesktopNativeSourceCommit']
+    Assert-Condition ($source -cmatch '^[a-f0-9]{40}$' -and $source -ceq $ActualHead -and $source -ceq $CallerHead) 'desktop_native_source_refused'
+    # Physical artifact admission and every case root are checked by the finite mode before any installer starts.
+}
+
 function Assert-DesktopInstallerRequest {
     param(
         [Parameter(Mandatory)][string]$RequestedSurface,
@@ -99,7 +363,14 @@ function Assert-DesktopInstallerRequest {
     Assert-Condition (Test-Path -LiteralPath $priorPath -PathType Leaf) "Prior installer path does not exist: $priorPath"
     Assert-Condition (-not [string]::Equals($requestedPriorVersion, $CandidateVersion, [StringComparison]::Ordinal)) "PriorVersion '$requestedPriorVersion' must not equal candidate Version '$CandidateVersion'."
 }
-Assert-DesktopInstallerRequest -RequestedSurface $Surface -CandidateVersion $Version -Arguments $PSBoundParameters
+if ($DesktopNativeLifecycle) {
+    $nativeHead = if ($SelfTest) { '' } else { (& git -C $script:RepositoryRoot rev-parse --verify HEAD | Out-String).Trim() }
+    if (-not $SelfTest) { Assert-Condition ($LASTEXITCODE -eq 0) 'desktop_native_source_unavailable' }
+    Assert-DesktopNativeRequest -RequestedSurface $Surface -CandidateVersion $Version -CandidateReleaseTag $ReleaseTag -Arguments $PSBoundParameters -ActualHead $nativeHead -CallerHead ([string]$env:GITHUB_SHA)
+} else {
+    Assert-DesktopNativeRequest -RequestedSurface $Surface -CandidateVersion $Version -CandidateReleaseTag $ReleaseTag -Arguments $PSBoundParameters
+    Assert-DesktopInstallerRequest -RequestedSurface $Surface -CandidateVersion $Version -Arguments $PSBoundParameters
+}
 if ($PSBoundParameters.ContainsKey('DesktopLegacyEnvMode')) {
     Assert-Condition ($Surface -eq 'Desktop') 'DesktopLegacyEnvMode requires -Surface Desktop; it is only valid for the Desktop surface.'
 }
@@ -3376,6 +3647,1476 @@ function Test-Throws {
     }
 }
 
+
+
+function Get-DesktopNativeTransportModule {
+    return @'
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
+const [mode,sourceCommit,format,repoArgument]=process.argv.slice(1);
+const need=(v,r)=>{if(!v)throw new Error(r);};
+const digest=b=>createHash('sha256').update(b).digest('hex');
+const sameKeys=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('\0')===k.slice().sort().join('\0');
+need(['create','verify'].includes(mode)&&/^[a-f0-9]{40}$/.test(sourceCommit)&&['MSI','NSIS'].includes(format),'native_transport_request_refused');
+need(sourceCommit===process.env.GITHUB_SHA&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_OS==='Windows'&&/^[1-9][0-9]*$/.test(process.env.GITHUB_RUN_ID??'')&&/^[1-9][0-9]*$/.test(process.env.GITHUB_RUN_ATTEMPT??''),'native_transport_caller_refused');
+const repo=path.resolve(repoArgument);
+const { physicalPath }=await import(pathToFileURL(path.join(repo,'scripts/distribution-prelaunch.mjs')));
+const { parseStrictJson }=await import(pathToFileURL(path.join(repo,'scripts/assert-license-inputs.mjs')));
+const { assertCanonicalBundledDistribution }=await import(pathToFileURL(path.join(repo,'scripts/stage-bundled-distribution.mjs')));
+const { assertDesktopBundleNamespace }=await import(pathToFileURL(path.join(repo,'scripts/stage-desktop-msi-plan.mjs')));
+const { assertWindowsRuntime }=await import(pathToFileURL(path.join(repo,'scripts/assert-windows-runtime.mjs')));
+const head=spawnSync('git',['-C',repo,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true});
+need(!head.error&&head.status===0&&head.stdout.trim()===sourceCommit,'native_transport_source_refused');
+const diff=spawnSync('git',['-C',repo,'diff','--exit-code','--no-ext-diff','HEAD','--'],{windowsHide:true});
+need(!diff.error&&diff.status===0,'native_transport_tracked_source_changed');
+const root=path.join(path.resolve(process.env.RUNNER_TEMP),'winsmux-native-input-'+process.env.GITHUB_RUN_ID+'.'+process.env.GITHUB_RUN_ATTEMPT+'.'+sourceCommit+'.'+format);
+const directory=p=>{const s=fs.lstatSync(p,{bigint:true});need(s.isDirectory()&&!s.isSymbolicLink()&&s.dev>=0n&&s.ino>0n&&physicalPath(p)===p,'native_transport_plain_directory_required');return s.dev+':'+s.ino;};
+const plain=p=>{need(physicalPath(p)===p,'native_transport_physical_file_required');const s=fs.lstatSync(p,{bigint:true});need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1n&&s.dev>=0n&&s.ino>0n,'native_transport_single_link_required');const b=fs.readFileSync(p);const t=fs.lstatSync(p,{bigint:true});need(s.dev===t.dev&&s.ino===t.ino&&s.size===t.size&&b.length===Number(s.size),'native_transport_readback_changed');return b;};
+const originDirectoryIds=new Map();for(const p of [repo,root,path.join(root,'build'),path.join(root,'build/release'),path.join(root,'sdk-temp'),path.join(root,'candidate')])originDirectoryIds.set(p,directory(p));
+const release=path.join(root,'build/release'),candidate=path.join(root,'candidate'),src=path.join(repo,'winsmux-app/src-tauri'),canonical=path.join(src,'binaries'),gui=path.join(release,'winsmux-app.exe');
+const phasePath=gui+'.winsmux-bundle-phase.json';const phaseBytes=plain(phasePath),phase=parseStrictJson(phaseBytes);
+assertDesktopBundleNamespace(gui);
+need(sameKeys(phase,['schema','invocation_id','gui_path','host','version','signed','generation_manifest_sha256','input_gui_sha256','input_app_lib_sha256','sdk_temp_root','expected_pre_sign','phase','records','prior_pairs'])&&phase.schema==='winsmux-desktop-bundle-phase/v1'&&phase.gui_path===gui&&phase.host==='x86_64-pc-windows-msvc'&&phase.version==='0.38.0'&&phase.signed===false&&phase.phase==='frozen'&&phase.sdk_temp_root===path.join(root,'sdk-temp')&&sameKeys(phase.expected_pre_sign,['msi','nsis'])&&phase.expected_pre_sign.msi===null&&phase.expected_pre_sign.nsis===null&&Array.isArray(phase.prior_pairs)&&phase.prior_pairs.length===0&&Array.isArray(phase.records)&&phase.records.length===2&&phase.records[0].flavor==='msi'&&phase.records[1].flavor==='nsis','native_transport_phase_refused');
+const manifestPath=path.join(canonical,'distribution-manifest.json'),manifestBytes=plain(manifestPath),manifest=parseStrictJson(manifestBytes);
+const binding=parseStrictJson(plain(path.join(repo,'distribution/windows-licenses/binding.json')));
+assertCanonicalBundledDistribution({repoRoot:repo,host:phase.host,version:phase.version,rustcCommit:binding.rustc_commit,projectOutput:release});
+need(digest(manifestBytes)===phase.generation_manifest_sha256,'native_transport_generation_changed');
+const mapping=[
+ ['installer_msi_en','winsmux_0.38.0_x64_en-US.msi',path.join(release,'bundle/msi/winsmux_0.38.0_x64_en-US.msi')],
+ ['installer_msi_ja','winsmux_0.38.0_x64_ja-JP.msi',path.join(release,'bundle/msi/winsmux_0.38.0_x64_ja-JP.msi')],
+ ['installer_nsis_setup','winsmux_0.38.0_x64-setup.exe',path.join(release,'bundle/nsis/winsmux_0.38.0_x64-setup.exe')],
+ ['plan_msi','winsmux-msi-plan.json',gui+'.winsmux-msi-plan.json'],
+ ['plan_nsis','winsmux-nsis-plan.json',gui+'.winsmux-nsis-plan.json'],
+ ['pe_gui_original','winsmux-app.exe',gui],['pe_app_lib','winsmux_app_lib.dll',path.join(release,'winsmux_app_lib.dll')],
+ ['pe_cli','winsmux.exe',path.join(canonical,'winsmux-x86_64-pc-windows-msvc.exe')],
+ ['pe_mcp','winsmux-workspace-mcp.exe',path.join(canonical,'winsmux-workspace-mcp-x86_64-pc-windows-msvc.exe')]
+];
+const sources=new Map(mapping.map(([role,name,p])=>[role,plain(p)]));
+const identities=mapping.map(([role,name])=>({role,path:name,bytes:sources.get(role).length,sha256:digest(sources.get(role))}));
+const plans={msi:parseStrictJson(sources.get('plan_msi')),nsis:parseStrictJson(sources.get('plan_nsis'))};
+const licenseRows=manifest.files.filter(r=>r.path.startsWith('licenses/')).map(r=>({role:'license',path:r.path,bytes:r.bytes,sha256:r.sha256}));
+need(licenseRows.length===319,'native_transport_license_inventory_refused');
+for(const flavor of ['msi','nsis']) {
+ const record=phase.records.find(r=>r.flavor===flavor),plan=plans[flavor];
+ need(sameKeys(record,['flavor','gui_sha256','plan_sha256','include_sha256','compiler_inputs_ready','artifacts'])&&record.compiler_inputs_ready===true&&Array.isArray(record.artifacts),'native_transport_record_refused');
+ const planBytes=sources.get('plan_'+flavor);need(digest(planBytes)===record.plan_sha256,'native_transport_plan_changed');
+ need(sameKeys(plan,['schema','flavor','version','host','files'])&&plan.schema==='winsmux-desktop-install-plan/v1'&&plan.flavor===flavor&&plan.version==='0.38.0'&&plan.host===phase.host&&Array.isArray(plan.files)&&Buffer.from(JSON.stringify(plan,null,2)+'\n').equals(planBytes),'native_transport_plan_encoding_refused');
+ const roles=[['gui','winsmux-app.exe','pe_gui_original'],['cli','winsmux.exe','pe_cli'],['mcp','winsmux-workspace-mcp.exe','pe_mcp']];if(flavor==='msi')roles.push(['app_lib','winsmux_app_lib.dll','pe_app_lib']);
+ const expected=[...licenseRows,...roles.map(([role,name,sourceRole])=>({role,path:name,bytes:sources.get(sourceRole).length,sha256:role==='gui'?record.gui_sha256:digest(sources.get(sourceRole))}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+ need(JSON.stringify(plan.files)===JSON.stringify(expected),'native_transport_plan_inventory_changed');
+ need(plan.files.find(r=>r.role==='gui').sha256===record.gui_sha256,'native_transport_gui_plan_changed');
+ const includePath=flavor==='msi'?gui+'.winsmux-plan.wxi':gui+'.winsmux-nsis-plan.nsh';need(digest(plain(includePath))===record.include_sha256,'native_transport_include_changed');
+ const artifacts=flavor==='msi'?[['en-US','installer_msi_en'],['ja-JP','installer_msi_ja']]:[['setup','installer_nsis_setup']];
+ need(record.artifacts.length===artifacts.length,'native_transport_artifact_set_refused');
+ for(const [output,role] of artifacts){const rows=record.artifacts.filter(a=>a.output===output);need(rows.length===1&&sameKeys(rows[0],['output','bytes','sha256'])&&rows[0].bytes===sources.get(role).length&&rows[0].sha256===digest(sources.get(role)),'native_transport_artifact_changed');}
+}
+const original=sources.get('pe_gui_original'),marker=Buffer.from('__TAURI_BUNDLE_TYPE_VAR_'),at=original.indexOf(marker);
+need(at>=0&&original.indexOf(marker,at+1)<0&&at+marker.length+3<=original.length&&original.subarray(at+marker.length,at+marker.length+3).toString('ascii')==='UNK'&&digest(original)===phase.input_gui_sha256,'native_transport_original_gui_changed');
+for(const [flavor,tag] of [['msi','MSI'],['nsis','NSS']]){const projected=Buffer.from(original);projected.write(tag,at+marker.length,3,'ascii');need(digest(projected)===phase.records.find(r=>r.flavor===flavor).gui_sha256,'native_transport_gui_projection_changed');}
+need(digest(sources.get('pe_app_lib'))===phase.input_app_lib_sha256,'native_transport_app_library_changed');
+for(const role of ['pe_gui_original','pe_app_lib','pe_cli','pe_mcp'])assertWindowsRuntime(sources.get(role),phase.host);
+const receipt={schema:'winsmux-desktop-native-ci-candidate/v1',source_commit:sourceCommit,version:'0.38.0',release_tag:'v0.38.0',host:phase.host,run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,format,build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),files:identities};
+const receiptName='desktop-native-candidate.json',allowed=new Set([...mapping.map(r=>r[1]),receiptName]);
+const checkNamespace=()=>{const names=fs.readdirSync(candidate);need(names.length===allowed.size&&new Set(names.map(x=>x.toLowerCase())).size===names.length&&names.every(x=>allowed.has(x)),'native_transport_candidate_namespace_refused');};
+if(mode==='create') {
+ need(fs.readdirSync(candidate).length===0,'native_transport_candidate_not_empty');
+ for(const [role,name] of mapping){const b=sources.get(role);fs.writeFileSync(path.join(candidate,name),b,{flag:'wx'});need(plain(path.join(candidate,name)).equals(b),'native_transport_copy_readback_changed');}
+ const b=Buffer.from(JSON.stringify(receipt,null,2)+'\n');fs.writeFileSync(path.join(candidate,receiptName),b,{flag:'wx'});need(plain(path.join(candidate,receiptName)).equals(b),'native_transport_receipt_readback_changed');
+}
+checkNamespace();const receiptBytes=plain(path.join(candidate,receiptName));const received=parseStrictJson(receiptBytes);
+need(sameKeys(received,['schema','source_commit','version','release_tag','host','run_id','run_attempt','format','build_phase_sha256','generation_manifest_sha256','files'])&&Array.isArray(received.files)&&received.files.length===9&&received.files.every(r=>sameKeys(r,['role','path','bytes','sha256'])&&Number.isSafeInteger(r.bytes)&&r.bytes>0&&/^[a-f0-9]{64}$/.test(r.sha256))&&Buffer.from(JSON.stringify(receipt,null,2)+'\n').equals(receiptBytes),'native_transport_receipt_refused');
+for(const [role,name,p] of mapping)need(plain(p).equals(sources.get(role))&&plain(path.join(candidate,name)).equals(sources.get(role)),'native_transport_source_or_copy_changed');
+need(plain(phasePath).equals(phaseBytes)&&plain(manifestPath).equals(manifestBytes),'native_transport_origin_changed');
+for(const [p,id] of originDirectoryIds)need(directory(p)===id,'native_transport_directory_replaced');
+console.log(JSON.stringify({schema:'winsmux-desktop-native-transport-check/v1',mode,source_commit:sourceCommit,format,files:9,receipt_sha256:digest(receiptBytes),build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),runtime_pe_count:4}));
+'@
+}
+
+
+
+
+
+
+
+
+
+
+function Initialize-DesktopNativeLifecycleActor {
+    if ($null -ne ([Management.Automation.PSTypeName]'WinsmuxDesktopNativeActor').Type) { return }
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$tokens, [ref]$errors)
+    Assert-Condition (@($errors).Count -eq 0) 'desktop_native_source_parse_refused'
+    $definitions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ceq 'actorCSharp' }, $true))
+    Assert-Condition ($definitions.Count -eq 1) 'desktop_native_actor_definition_refused'
+    Assert-Condition ($definitions[0].Right -is [Management.Automation.Language.CommandExpressionAst] -and $definitions[0].Right.Expression -is [Management.Automation.Language.StringConstantExpressionAst] -and $definitions[0].Right.Expression.StringConstantType -eq [Management.Automation.Language.StringConstantType]::SingleQuotedHereString) 'desktop_native_actor_literal_refused'
+    $actor = [string]$definitions[0].Right.Expression.Value
+    $actor = $actor.Replace('public static class WinsmuxDesktopActorProbe {', 'public static class WinsmuxDesktopNativeActor {').Replace('sealed class TokenFacts {', 'internal sealed class TokenFacts {').Replace('struct PI {', 'internal struct PI {')
+    $closing = $actor.LastIndexOf('}')
+    Assert-Condition ($closing -gt 0) 'desktop_native_actor_source_refused'
+    $native = @'
+
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessW(string app,StringBuilder command,IntPtr psa,IntPtr tsa,bool inherit,uint flags,IntPtr env,string cwd,ref SI startup,out PI process);
+ static string Quote(string value) { if(value==null||value.IndexOf('\0')>=0||value.IndexOf('\r')>=0||value.IndexOf('\n')>=0)throw new InvalidOperationException("Native argument refused");var b=new StringBuilder("\"");int slashes=0;foreach(char c in value){if(c=='\\'){slashes++;continue;}if(c=='\"'){b.Append('\\',slashes*2+1).Append(c);slashes=0;continue;}b.Append('\\',slashes).Append(c);slashes=0;}return b.Append('\\',slashes*2).Append('"').ToString(); }
+ public static string NativeCommand(string purpose,string image,string root,string source,string candidate,string baseline,string script) {
+  image=Path.GetFullPath(image);root=Path.GetFullPath(root);if(root.IndexOf('"')>=0||root.IndexOf('\r')>=0||root.IndexOf('\n')>=0||root.IndexOf(" _?=",StringComparison.OrdinalIgnoreCase)>=0)throw new InvalidOperationException("Native root refused");
+  switch(purpose) {
+   case "msi-nsis-conflict":
+   case "nsis-fresh":return Quote(image)+" /S /D="+root;
+   case "nsis-update":return Quote(image)+" /S /UPDATE /D="+root;
+   case "nsis-fresh-no-shortcuts":return Quote(image)+" /S /NS /D="+root;
+   case "nsis-update-no-shortcuts":return Quote(image)+" /S /UPDATE /NS /D="+root;
+   case "nsis-uninstall":return Quote(image)+" /S";
+   case "msi-capacity-install-en":
+   case "msi-capacity-update-ja":
+   case "msi-capacity-uninstall":
+   case "msi-install-en":
+   case "msi-update-ja":
+   case "msi-uninstall":
+    if(!String.Equals(image,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"msiexec.exe"),StringComparison.OrdinalIgnoreCase)||!candidate.EndsWith(".msi",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Native MSI entry refused");
+    bool uninstall=purpose=="msi-uninstall"||purpose=="msi-capacity-uninstall";bool capacity=purpose=="msi-capacity-install-en"||purpose=="msi-capacity-update-ja";
+    return Quote(image)+(uninstall?" /x ":" /i ")+Quote(Path.GetFullPath(candidate))+" /qn /norestart"+(uninstall?"":" INSTALLDIR="+Quote(root))+(capacity?" ADDLOCAL=MainProgram,Environment":"")+" /l*v "+Quote(Path.Combine(Path.GetDirectoryName(root),purpose+".log"));
+   case "medium-bootstrap":
+    if(source==null||source.Length!=40||source!=Environment.GetEnvironmentVariable("GITHUB_SHA")||Path.GetFileName(image).ToLowerInvariant()!="pwsh.exe")throw new InvalidOperationException("Native bootstrap source refused");
+    return Quote(image)+" -NoLogo -NoProfile -NonInteractive -File "+Quote(Path.GetFullPath(script))+" -Surface Desktop -Version 0.38.0 -ReleaseTag v0.38.0 -Repository Sora-bluesky/winsmux -DesktopNativeLifecycle -DesktopNativeFormat NSIS -DesktopNativeSourceCommit "+source+" -DesktopNativeCandidateDirectory "+Quote(Path.GetFullPath(candidate))+" -DesktopNativeBaselineDirectory "+Quote(Path.GetFullPath(baseline))+" -Json";
+   default:throw new InvalidOperationException("Native purpose refused");
+  }
+ }
+ public sealed class NativeOwned : IDisposable {
+  IntPtr job,process,thread; bool terminal,disposed; uint pid; long creation; TokenFacts caller; string image,imageHash; FileStream lease,scriptLease;
+  internal NativeOwned(IntPtr j,PI p,TokenFacts c,string i,string sha,FileStream f,FileStream extra) {scriptLease=extra;job=j;process=p.process;thread=p.thread;pid=p.pid;caller=c;image=i;imageHash=sha;lease=f;long exit,kernel,user;Check(GetProcessTimes(process,out creation,out exit,out kernel,out user),"Native creation");}
+
+  public NativeGui HoldStartupGui(uint guiPid,string expectedImage,string expectedSha) {
+   var h=OpenProcess(0x00101001,false,guiPid);if(h==IntPtr.Zero)return null;bool adopted=false;try{
+    bool member;Check(IsProcessInJob(h,job,out member),"Startup GUI own Job");if(!member||WaitForSingleObject(h,0)==0)return null;
+    uint length=32768;var actual=new StringBuilder((int)length);Check(QueryFullProcessImageNameW(h,0,actual,ref length),"Startup GUI retained image");if(!String.Equals(Path.GetFullPath(actual.ToString()),Path.GetFullPath(expectedImage),StringComparison.OrdinalIgnoreCase)||Hash(File.ReadAllBytes(expectedImage))!=expectedSha)return null;
+    IntPtr token;Check(OpenProcessToken(h,8,out token),"Startup GUI retained actor");TokenFacts facts;try{facts=Observe(token);}finally{CloseHandle(token);}if(!Equal(facts.sid,caller.sid)||facts.session!=caller.session||facts.tokenType!=1||facts.appContainer!=0)return null;
+    if(WaitForSingleObject(h,0)==0)return null;var gui=new NativeGui(h,guiPid,Path.GetFullPath(expectedImage),expectedSha,facts);adopted=true;return gui;
+   }finally{if(!adopted)CloseHandle(h);}
+  }
+
+  public uint Id { get {return pid;} }
+  public bool HasExited { get {return WaitForSingleObject(process,0)==0;} }
+  public uint ActiveMembers {get{ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native Job observation");return a.activeProcesses;}}
+  public uint ExitCode {get{uint code;Check(GetExitCodeProcess(process,out code),"Native exit code");if(code==259)throw new InvalidOperationException("Native child still active");return code;}}
+  public bool WaitTerminal(int milliseconds) {var end=DateTime.UtcNow.AddMilliseconds(milliseconds);do {if(HasExited&&ActiveMembers==0){terminal=true;return true;}System.Threading.Thread.Sleep(50);}while(DateTime.UtcNow<end);return false;}
+  public void StopOwnedFailure() {Check(TerminateJobObject(job,124),"Stop native owned Job");if(!WaitTerminal(10000))throw new InvalidOperationException("Native owned Job did not terminate");}
+  public Dictionary<string,object> Facts() {return new Dictionary<string,object>{{"pid",pid},{"creation_time",creation},{"image",image},{"image_sha256",imageHash},{"actor",caller.Public()},{"active_members",ActiveMembers},{"terminal",terminal}};}
+  public void Dispose() {if(disposed)return;if(!terminal||ActiveMembers!=0)throw new InvalidOperationException("Native handles retained for nonterminal Job");CloseHandle(thread);CloseHandle(process);CloseHandle(job);lease.Dispose();if(scriptLease!=null)scriptLease.Dispose();disposed=true;}
+ }
+ public static NativeOwned StartNative(string purpose,string image,string imageSha,string root,string source,string candidate,string baseline,string script) {
+  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,admin=IntPtr.Zero,medium=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;PI pi=new PI();bool assigned=false;FileStream imageLease=null,scriptLease=null;
+  try {
+   IntPtr impersonation;if(OpenThreadToken(GetCurrentThread(),8,true,out impersonation)){CloseHandle(impersonation);throw new InvalidOperationException("Native thread impersonation refused");}if(Marshal.GetLastWin32Error()!=1008)throw new Win32Exception(Marshal.GetLastWin32Error(),"Native thread token");
+   Check(OpenProcessToken(GetCurrentProcess(),0x8b,out callerToken),"Native caller token");var caller=Observe(callerToken);uint session;Check(ProcessIdToSessionId(GetCurrentProcessId(),out session),"Native caller session");if(caller.tokenType!=1||caller.session!=session||caller.appContainer!=0||caller.sidText=="S-1-5-18"||caller.sidText=="S-1-5-19"||caller.sidText=="S-1-5-20"||caller.sidText.StartsWith("S-1-5-80-",StringComparison.Ordinal))throw new InvalidOperationException("Native caller identity refused");
+   IntPtr launchToken=callerToken;bool msi=purpose=="msi-install-en"||purpose=="msi-update-ja"||purpose=="msi-uninstall"||purpose=="msi-capacity-install-en"||purpose=="msi-capacity-update-ja"||purpose=="msi-capacity-uninstall";bool bootstrap=purpose=="medium-bootstrap"||purpose=="msi-nsis-conflict";
+   if(bootstrap) {
+    if(caller.elevation!=1||caller.rid<12288)throw new InvalidOperationException("Native high bootstrap required");uint n;admin=Sid(26,out n);var disabled=new SA{Sid=admin,Attributes=0};Check(CreateRestrictedToken(callerToken,5,1,ref disabled,0,IntPtr.Zero,0,IntPtr.Zero,out derived),"Native restricted primary");if(Observe(derived).rid>8192){medium=Sid(67,out n);var label=new SA{Sid=medium,Attributes=0x20};var mem=Marshal.AllocHGlobal(Marshal.SizeOf<SA>());try{Marshal.StructureToPtr(label,mem,false);Check(SetTokenInformation(derived,25,mem,(uint)Marshal.SizeOf<SA>()+n),"Native own medium label");}finally{Marshal.FreeHGlobal(mem);}}Medium(Observe(derived),caller);launchToken=derived;
+   } else if(!msi) { Medium(caller,caller); }
+   var env=UserEnvironment(launchToken);string local;if(!env.TryGetValue("LOCALAPPDATA",out local)||!String.Equals(Path.GetFullPath(local),Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Native same-SID profile refused");using(var hive=Microsoft.Win32.Registry.Users.OpenSubKey(caller.sidText,false))if(hive==null)throw new InvalidOperationException("Native existing profile hive missing");
+   image=Path.GetFullPath(image);NativePhysical(image);if(purpose=="nsis-uninstall"||msi){var h=CreateFileW(image,0x80000000,purpose=="nsis-uninstall"?5u:1u,IntPtr.Zero,3,0x00200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Native image lease");var safe=new Microsoft.Win32.SafeHandles.SafeFileHandle(h,true);try{var f=FileFacts(h);if((f.attributes&0x10)!=0||f.links<1||(purpose=="nsis-uninstall"&&f.links!=1))throw new InvalidOperationException("Native image plain identity refused");imageLease=new FileStream(safe,FileAccess.Read);}catch{safe.Dispose();throw;}}else imageLease=OpenPlain(image);if(Hash(File.ReadAllBytes(image))!=imageSha)throw new InvalidOperationException("Native image identity refused");string command=NativeCommand(purpose,image,root,source,candidate,baseline,script);if(purpose=="medium-bootstrap"){NativePhysical(script);scriptLease=OpenPlain(script);}
+   var keys=new List<string>(env.Keys);keys.Sort(StringComparer.OrdinalIgnoreCase);var text=new StringBuilder();foreach(var key in keys)text.Append(key).Append('=').Append(env[key]).Append('\0');text.Append('\0');environment=Marshal.StringToHGlobalUni(text.ToString());
+   job=CreateJobObjectW(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"Native unnamed Job");var limits=new LIMIT();limits.basic.flags=0x2000;Check(SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf<LIMIT>()),"Native kill-on-close");var si=new SI{cb=(uint)Marshal.SizeOf<SI>(),desktop=DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(GetCurrentThreadId()))};
+   bool created=bootstrap?CreateProcessAsUserW(launchToken,image,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x404,environment,Path.GetDirectoryName(image),ref si,out pi):CreateProcessW(image,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x404,environment,Path.GetDirectoryName(image),ref si,out pi);Check(created,"Native suspended launch");Check(AssignProcessToJobObject(job,pi.process),"Native Job assignment");assigned=true;bool member;Check(IsProcessInJob(pi.process,job,out member),"Native Job membership");if(!member)throw new InvalidOperationException("Native member refused");IntPtr childToken;Check(OpenProcessToken(pi.process,8,out childToken),"Native retained child token");TokenFacts child;try{child=Observe(childToken);if(msi){if(!Equal(child.sid,caller.sid)||child.session!=caller.session||child.tokenType!=1||child.appContainer!=0||child.elevation!=caller.elevation||child.rid!=caller.rid)throw new InvalidOperationException("Native MSI actor changed");}else Medium(child,caller);}finally{CloseHandle(childToken);}uint length=32768;var actual=new StringBuilder((int)length);Check(QueryFullProcessImageNameW(pi.process,0,actual,ref length),"Native retained child image");if(!String.Equals(Path.GetFullPath(actual.ToString()),image,StringComparison.OrdinalIgnoreCase)||Hash(File.ReadAllBytes(image))!=imageSha)throw new InvalidOperationException("Native retained child image changed");
+   var owned=new NativeOwned(job,pi,child,image,imageSha,imageLease,scriptLease);uint count=ResumeThread(pi.thread);if(count!=1)throw new InvalidOperationException("Native resume count refused");job=IntPtr.Zero;pi=new PI();imageLease=null;scriptLease=null;return owned;
+  } catch { if(pi.process!=IntPtr.Zero){bool stopped=assigned?TerminateJobObject(job,124):TerminateProcess(pi.process,124);if(!stopped||WaitForSingleObject(pi.process,10000)!=0)throw new InvalidOperationException("Native failed launch cleanup unconfirmed");if(assigned){ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native failed Job cleanup");if(a.activeProcesses!=0)throw new InvalidOperationException("Native failed Job retains members");}}throw; }
+  finally {foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken})if(h!=IntPtr.Zero)CloseHandle(h);foreach(var p in new[]{admin,medium,environment})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();}
+ }
+ public static Dictionary<string,object> NativeFile(string path) {NativePhysical(path);using(var f=OpenPlain(Path.GetFullPath(path))){var info=FileFacts(f.SafeFileHandle.DangerousGetHandle());var b=new byte[f.Length];int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Native witness changed");return new Dictionary<string,object>{{"bytes",b.Length},{"sha256",Hash(b)},{"identity",FileId(info)}};}}
+
+ [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern int RegOpenKeyExW(IntPtr key,string subkey,uint options,uint access,out IntPtr result);
+ [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern int RegQueryValueExW(IntPtr key,string name,IntPtr reserved,out uint type,byte[] data,ref uint bytes);
+ [DllImport("advapi32.dll")] static extern int RegCloseKey(IntPtr key);
+ public static Dictionary<string,object> NativeRegistry(string key,string name) {IntPtr handle;int status=RegOpenKeyExW(new IntPtr(unchecked((int)0x80000001)),key,0,0x101,out handle);if(status==2)return null;if(status!=0)throw new Win32Exception(status);try{uint kind,size=0;status=RegQueryValueExW(handle,name,IntPtr.Zero,out kind,null,ref size);if(status==2)return null;if(status!=0||size>65536)throw new InvalidOperationException("Native registry query refused");var data=new byte[size];status=RegQueryValueExW(handle,name,IntPtr.Zero,out kind,data,ref size);if(status!=0||size!=data.Length)throw new InvalidOperationException("Native registry changed during capture");return new Dictionary<string,object>{{"type",kind},{"data",data}};}finally{RegCloseKey(handle);}}
+
+ public static string NativeDirectory(string path,bool create) {path=Path.GetFullPath(path);if(create)NativePhysical(Path.GetDirectoryName(path));else NativePhysical(path);if(create)Check(CreateDirectoryW(path,IntPtr.Zero),"Native exclusive directory");var h=CreateFileW(path,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Native directory lease");try{var f=FileFacts(h);if((f.attributes&0x10)==0)throw new InvalidOperationException("Native directory required");return FileId(f);}finally{CloseHandle(h);}}
+
+ [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+ public sealed class NativeGui : IDisposable {
+  IntPtr handle; uint pid; long creation; string image,sha; TokenFacts actor; bool disposed;
+  internal NativeGui(IntPtr h,uint p,string i,string s,TokenFacts a) {handle=h;pid=p;image=i;sha=s;actor=a;long exit,kernel,user;Check(GetProcessTimes(h,out creation,out exit,out kernel,out user),"Retained GUI creation");}
+  public bool HasExited {get{return WaitForSingleObject(handle,0)==0;}}
+  public Dictionary<string,object> StopForStartup(string[] arguments) {
+   if(HasExited||arguments==null||arguments.Length!=7||!String.Equals(Path.GetFullPath(arguments[0]),image,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Startup GUI arguments unavailable");
+   var values=new Dictionary<string,string>(StringComparer.Ordinal);for(int i=1;i<arguments.Length;i+=2){if(arguments[i]!="--winsmux-installer-probe"&&arguments[i]!="--winsmux-installer-pipe"&&arguments[i]!="--project-dir")throw new InvalidOperationException("Startup GUI argument refused");values.Add(arguments[i],arguments[i+1]);}
+   string operation=values["--winsmux-installer-probe"];Guid id;if(!Guid.TryParseExact(operation,"D",out id)||id.ToString()!=operation||operation[14]!='4'||"89ab".IndexOf(operation[19])<0||values["--winsmux-installer-pipe"]!="\\\\.\\pipe\\winsmux-installer-"+operation)throw new InvalidOperationException("Startup GUI operation refused");
+   string project=Path.Combine(Path.GetTempPath(),"winsmux-installer-"+operation,"project");if(!String.Equals(Path.GetFullPath(values["--project-dir"]),project,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Startup GUI project refused");NativeDirectory(project,false);
+   if(Hash(File.ReadAllBytes(image))!=sha||HasExited)throw new InvalidOperationException("Startup GUI changed or receipt may have completed");Check(TerminateProcess(handle,123),"Stop retained owned startup GUI");if(WaitForSingleObject(handle,10000)!=0)throw new InvalidOperationException("Stopped GUI terminal unconfirmed");return new Dictionary<string,object>{{"pid",pid},{"creation_time",creation},{"image",image},{"image_sha256",sha},{"actor",actor.Public()},{"operation_id",operation},{"pipe",values["--winsmux-installer-pipe"]},{"project",project},{"owned_job_member",true},{"terminated",true}};
+  }
+  public void Dispose(){if(!disposed){CloseHandle(handle);disposed=true;}}
+ }
+
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetVolumePathNameW(string path,StringBuilder mount,uint size);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetVolumeNameForVolumeMountPointW(string mount,StringBuilder name,uint size);
+ public static string NativeVolume(string path) {var mount=new StringBuilder(32768);var name=new StringBuilder(64);Check(GetVolumePathNameW(Path.GetFullPath(path),mount,(uint)mount.Capacity),"Native volume path");Check(GetVolumeNameForVolumeMountPointW(mount.ToString(),name,(uint)name.Capacity),"Native volume identity");return name.ToString().ToLowerInvariant();}
+
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr handle,StringBuilder path,uint size,uint flags);
+ static void NativePhysical(string path) {
+  path=Path.GetFullPath(path);if(path.StartsWith("\\\\",StringComparison.Ordinal)||path.Length<3||path[1]!=':')throw new InvalidOperationException("Native physical DOS path required");
+  string current=path;for(;;){var h=CreateFileW(current,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Native physical parent lease");try{FileFacts(h);var final=new StringBuilder(32768);uint n=GetFinalPathNameByHandleW(h,final,(uint)final.Capacity,0);if(n==0||n>=final.Capacity)throw new Win32Exception(Marshal.GetLastWin32Error(),"Native physical final path");string resolved=final.ToString();if(resolved.StartsWith("\\\\?\\",StringComparison.Ordinal))resolved=resolved.Substring(4);if(!String.Equals(Path.GetFullPath(resolved).TrimEnd('\\'),current.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Native physical alias refused");}finally{CloseHandle(h);}var parent=Path.GetDirectoryName(current.TrimEnd('\\'));if(String.IsNullOrEmpty(parent))break;current=parent;}
+ }
+
+'@
+    $actor = $actor.Substring(0, $closing) + $native + $actor.Substring($closing)
+    Add-Type -TypeDefinition $actor
+}
+
+function New-DesktopNativeNsisContextText {
+    param(
+        [Parameter(Mandatory)][ValidateSet('install', 'uninstall')][string]$Command,
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$PlanSha256,
+        [Parameter(Mandatory)][ValidateSet(1033, 1041)][int]$Language,
+        [Parameter(Mandatory)][bool]$StartMenu,
+        [Parameter(Mandatory)][bool]$Desktop,
+        [Parameter(Mandatory)][bool]$Update
+    )
+    foreach ($path in @($Root, $Source)) {
+        Assert-Condition ([IO.Path]::IsPathFullyQualified($path) -and [IO.Path]::GetFullPath($path) -ceq $path -and $path -cmatch '^[A-Za-z]:\\' -and $path -notmatch '[\x00-\x1f\x7f-\x9f\uFEFF]') 'desktop_native_context_path_refused'
+    }
+    Assert-Condition ($PlanSha256 -cmatch '^[a-f0-9]{64}$') 'desktop_native_context_plan_refused'
+    # Existing Rust parser and NSIS template consume exactly these ten fields.
+    # The helper's CLI SHA is bound by the actual plan role, not an extra context key.
+    $end = [string][char]13 + [char]10
+    return [string]::Join($end, @(
+        'schema=winsmux-nsis-context/v1', ('command=' + $Command), ('root=' + $Root),
+        ('source=' + $Source), ('plan_sha256=' + $PlanSha256), 'version=0.38.0',
+        ('language=' + $Language), ('start_menu=' + [int]$StartMenu),
+        ('desktop=' + [int]$Desktop), ('update=' + [int]$Update)
+    )) + $end
+}
+
+function Assert-DesktopNativeNsisResult {
+    param(
+        [Parameter(Mandatory)]$Result,
+        [Parameter(Mandatory)][ValidateSet('install', 'uninstall')][string]$Command,
+        [Parameter(Mandatory)][string]$PlanSha256,
+        [Parameter(Mandatory)][string]$GuiSha256
+    )
+    Assert-Condition ($Result.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$Result.stderr) -and -not $Result.stdout_metadata.truncated) 'desktop_native_action_failed'
+    $receipt = ConvertFrom-DesktopStrictJsonText ([string]$Result.stdout)
+    Assert-DesktopInventoryShape $receipt @('schema', 'operation_id', 'action', 'version', 'plan_sha256', 'startup_receipt', 'owned_registration_verified', 'durable_commit', 'outcome')
+    Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-nsis-transaction-receipt/v1' -and $receipt.action -ceq $Command -and $receipt.version -ceq '0.38.0' -and $receipt.plan_sha256 -ceq $PlanSha256 -and $receipt.operation_id -cmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$' -and $receipt.durable_commit -eq $true -and $receipt.owned_registration_verified -eq $true -and $receipt.outcome -ceq 'committed') 'desktop_native_action_receipt_refused'
+    if ($Command -ceq 'install') {
+        $startup = $receipt.startup_receipt
+        Assert-DesktopInventoryShape $startup @('schema', 'operation_id', 'version', 'gui_sha256', 'normal_mount', 'native_ready', 'actor_verified', 'probe_processes_exited')
+        Assert-Condition ($startup.schema -ceq 'winsmux-desktop-startup-receipt/v1' -and $startup.version -ceq '0.38.0' -and $startup.gui_sha256 -ceq $GuiSha256 -and $startup.operation_id -cmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$' -and $startup.normal_mount -eq $true -and $startup.native_ready -eq $true -and $startup.actor_verified -eq $true -and $startup.probe_processes_exited -eq $true) 'desktop_native_startup_receipt_refused'
+    } else { Assert-Condition ($null -eq $receipt.startup_receipt) 'desktop_native_uninstall_receipt_refused' }
+    return $receipt
+}
+
+function Assert-DesktopNativeBaselineReceipt {
+    param([Parameter(Mandatory)]$Receipt, [Parameter(Mandatory)]$Legacy)
+    Assert-Condition ($Legacy.schema -ceq 'winsmux-desktop-nsis-legacy-v0380/v1' -and $Legacy.version -ceq '0.38.0' -and $Legacy.host -ceq 'x86_64-pc-windows-msvc' -and $Legacy.installed_inventory_complete -is [bool] -and $Legacy.installed_inventory_complete) 'desktop_native_legacy_profile_refused'
+    Assert-Condition ($Receipt.schema -ceq 'winsmux-task880-legacy-install-capture/v1' -and $Receipt.outcome -ceq 'passed' -and $Receipt.installed_inventory_complete -is [bool] -and $Receipt.installed_inventory_complete -and $Receipt.profile_name -ceq 'ja-root') 'desktop_native_legacy_capture_refused'
+    Assert-Condition ($Receipt.original_installer.bytes -eq 9920209 -and $Receipt.original_installer.sha256 -ceq 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2') 'desktop_native_legacy_installer_refused'
+    Assert-Condition ($null -eq $Receipt.failure -and @($Receipt.validation_failures).Count -eq 0 -and $Receipt.install_exit_code -eq 0) 'desktop_native_legacy_capture_incomplete'
+    $profile = $Legacy.registration_profile
+    Assert-Condition (@($Receipt.arguments).Count -eq 2 -and $Receipt.arguments[0] -ceq '/S' -and $Receipt.arguments[1] -ceq ('/D=' + $profile.root)) 'desktop_native_legacy_arguments_refused'
+    Assert-Condition ($Receipt.root -ceq $profile.root -and $null -eq $Receipt.language -and $null -eq $profile.language) 'desktop_native_legacy_root_language_refused'
+    Assert-Condition (@($Receipt.files).Count -eq 323 -and @($Legacy.files).Count -eq 323 -and @($Receipt.registration).Count -eq 22 -and @($profile.registration).Count -eq 22 -and @($Receipt.shortcuts).Count -eq 2 -and @($profile.shortcuts).Count -eq 2) 'desktop_native_legacy_shape_refused'
+    $members = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $aliases = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($row in $Receipt.files) {
+        Assert-Condition ($row.path -is [string] -and $aliases.Add([string]$row.path)) 'desktop_native_legacy_member_alias_refused'
+        $members.Add([string]$row.path, $row)
+    }
+    foreach ($row in $Legacy.files) {
+        Assert-Condition ($members.ContainsKey([string]$row.path)) 'desktop_native_legacy_member_refused'
+        $actual = $members[[string]$row.path]
+        Assert-Condition ($actual.role -ceq $row.role -and $actual.bytes -eq $row.bytes -and $actual.sha256 -ceq $row.sha256) 'desktop_native_legacy_member_refused'
+    }
+    $raw = ConvertTo-Json -InputObject @($Receipt.registration) -Depth 32 -Compress
+    $expected = ConvertTo-Json -InputObject @($profile.registration) -Depth 32 -Compress
+    Assert-Condition ($raw -ceq $expected) 'desktop_native_legacy_registration_refused'
+    for ($index = 0; $index -lt 2; $index++) {
+        $actual = $Receipt.shortcuts[$index]; $link = $profile.shortcuts[$index]
+        Assert-Condition ($actual.kind -ceq $link.kind -and $actual.bytes -eq $link.bytes -and $actual.sha256 -cmatch '^[a-f0-9]{64}$' -and $actual.target -ceq $link.target -and $actual.expected_gui -ceq $link.target -and $actual.aumid -ceq $link.aumid) 'desktop_native_legacy_shortcut_refused'
+    }
+    Assert-Condition ($Receipt.protected_project_before_sha256 -cmatch '^[a-f0-9]{64}$' -and $Receipt.protected_project_after_sha256 -ceq $Receipt.protected_project_before_sha256) 'desktop_native_legacy_project_refused'
+    # Clause6: old VM shortcut SHA is provenance only. This transport receipt does not contain shortcut arguments or file IDs.
+    # Before a real legacy update, reacquire each exactly known-folder/basename link as a plain single-link lease,
+    # decode Unicode raw target/empty arguments/AUMID from the same bytes, and retain acquired ID/fullbytes/SHA.
+    # Every subsequent backup/restore/uninstall must match that acquired witness. No copied link or repin.
+    # Run-specific capture JSON hashes are evidence, never a replacement for compiled legacy identity.
+}
+
+
+function Write-DesktopNativeEvidence {
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)]$Value)
+    Assert-Condition ($Name -cmatch '^[a-z0-9-]+\.json$') 'desktop_native_evidence_name_refused'
+    $text = ($Value | ConvertTo-Json -Depth 64 -Compress) + [char]10
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($text)
+    Assert-Condition ($bytes.Length -le 4194304) 'desktop_native_evidence_limit'
+    $file = [IO.FileStream]::new((Join-Path $script:DesktopNativeEvidenceRoot $Name), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+}
+
+function Get-DesktopNativeRawRegistration {
+$nativeSlots = @(
+    @('Software\github\winsmux', ''), @('Software\github\winsmux', 'Installer Language'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'MainBinaryName'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'DisplayName'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'DisplayIcon'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'DisplayVersion'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'Publisher'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'InstallLocation'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'UninstallString'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'NoModify'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'NoRepair'),
+    @('Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux', 'EstimatedSize'),
+    @('Software\Classes\Directory\shell\winsmux', ''), @('Software\Classes\Directory\shell\winsmux', 'MUIVerb'),
+    @('Software\Classes\Directory\shell\winsmux', 'Icon'), @('Software\Classes\Directory\shell\winsmux', 'Position'),
+    @('Software\Classes\Directory\shell\winsmux\command', ''),
+    @('Software\Classes\Directory\Background\shell\winsmux', ''), @('Software\Classes\Directory\Background\shell\winsmux', 'MUIVerb'),
+    @('Software\Classes\Directory\Background\shell\winsmux', 'Icon'), @('Software\Classes\Directory\Background\shell\winsmux', 'Position'),
+    @('Software\Classes\Directory\Background\shell\winsmux\command', '')
+)
+    $values = [Collections.Generic.List[object]]::new()
+    foreach ($slot in $nativeSlots) {
+        $value = [WinsmuxDesktopNativeActor]::NativeRegistry($slot[0], $slot[1])
+        if ($null -eq $value) { $values.Add($null) } else { $values.Add([ordered]@{ type = [uint32]$value['type']; data = @($value['data'] | ForEach-Object { [int]$_ }) }) }
+    }
+    return ,$values.ToArray()
+}
+
+function Get-DesktopNativeWitness {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sentinel)
+    $rows = [Collections.Generic.List[object]]::new()
+    if (Test-Path -LiteralPath $Root) {
+        $rootId = [WinsmuxDesktopNativeActor]::NativeDirectory($Root, $false)
+        $stack = [Collections.Generic.Stack[string]]::new(); $stack.Push($Root)
+        while ($stack.Count -gt 0) {
+            $directory = $stack.Pop(); [void][WinsmuxDesktopNativeActor]::NativeDirectory($directory, $false)
+            foreach ($path in @([IO.Directory]::GetFileSystemEntries($directory) | Sort-Object -CaseSensitive)) {
+                $attr = [IO.File]::GetAttributes($path)
+                Assert-Condition (($attr -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'desktop_native_witness_reparse'
+                if (($attr -band [IO.FileAttributes]::Directory) -ne 0) { $stack.Push($path) } else {
+                    $f = [WinsmuxDesktopNativeActor]::NativeFile($path)
+                    $rows.Add([ordered]@{ path = [IO.Path]::GetRelativePath($Root, $path).Replace('\','/'); bytes = $f['bytes']; sha256 = $f['sha256']; identity = $f['identity'] })
+                }
+            }
+        }
+    } else { $rootId = $null }
+    $links = [Collections.Generic.List[object]]::new()
+    foreach ($kind in @('desktop', 'start_menu')) {
+        $path = if ($kind -ceq 'desktop') { Get-DesktopShortcutPath } else { Get-DesktopStartMenuShortcutPath }
+        if (Test-Path -LiteralPath $path) { $f = [WinsmuxDesktopNativeActor]::NativeFile($path); $links.Add([ordered]@{ kind = $kind; path = $path; bytes = $f['bytes']; sha256 = $f['sha256']; identity = $f['identity'] }) } else { $links.Add($null) }
+    }
+    if ($DesktopNativeFormat -ceq 'MSI') {
+        foreach ($path in @((Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDesktopDirectory)) 'winsmux.lnk'), (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Programs)) 'winsmux/winsmux.lnk'), (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonPrograms)) 'winsmux/winsmux.lnk'))) {
+            if (Test-Path -LiteralPath $path) { $f = [WinsmuxDesktopNativeActor]::NativeFile($path); $links.Add([ordered]@{ kind = 'msi-fixed-slot'; path = $path; bytes = $f['bytes']; sha256 = $f['sha256']; identity = $f['identity'] }) } else { $links.Add($null) }
+        }
+    }
+    $user = [WinsmuxDesktopNativeActor]::NativeFile($Sentinel)
+    return [ordered]@{ root = $Root; root_identity = $rootId; files = @($rows | Sort-Object -Property path -CaseSensitive); registration = (Get-DesktopNativeRawRegistration); shortcuts = $links.ToArray(); user_sentinel = $user }
+}
+
+function Assert-DesktopNativeWitnessEqual {
+    param([Parameter(Mandatory)]$Expected, [Parameter(Mandatory)]$Actual)
+    $before = ConvertTo-Json -InputObject $Expected -Depth 64 -Compress
+    $after = ConvertTo-Json -InputObject $Actual -Depth 64 -Compress
+    Assert-Condition ($before -ceq $after) 'desktop_native_restoration_or_preservation_mismatch'
+}
+
+function Assert-DesktopNativeInstalledPayload {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$PlanSha256, [switch]$Managed)
+    [void][WinsmuxDesktopNativeActor]::NativeDirectory($Root, $false)
+    foreach ($row in $Plan.files) {
+        $path = [IO.Path]::GetFullPath((Join-Path $Root ([string]$row.path).Replace('/', '\')))
+        Assert-Condition (Test-PathInsideRoot -Path $path -Root $Root) 'desktop_native_installed_path_refused'
+        $actual = [WinsmuxDesktopNativeActor]::NativeFile($path)
+        Assert-Condition ($actual['bytes'] -eq $row.bytes -and $actual['sha256'] -ceq $row.sha256) 'desktop_native_installed_payload_mismatch'
+    }
+    $planPath = Join-Path $Root 'winsmux.install-plan.json'
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256'] -ceq $PlanSha256) 'desktop_native_installed_plan_mismatch'
+    if ($Managed) {
+        $statePath = Join-Path $Root '.winsmux-desktop/installed.json'
+        $state = Read-DesktopStrictJson $statePath
+        Assert-Condition ($state.schema -ceq 'winsmux-desktop-nsis-installed/v1' -and $state.version -ceq '0.38.0' -and $state.root -ceq $Root -and $state.plan_sha256 -ceq $PlanSha256 -and $state.action -ceq 'install') 'desktop_native_installed_state_mismatch'
+        [void](Assert-DesktopNativeNsisObservation -Kind installed -Binding (Get-DesktopNativeNsisObservationBinding -Root $Root) -PlanSha256 $PlanSha256 -State $state)
+        foreach ($member in $state.members) {
+            $actual = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root ([string]$member.path).Replace('/', '\')))
+            $parts = ([string]$actual['identity']).Split(':'); $index = ([uint64]$parts[1] -shl 32) -bor [uint64]$parts[2]
+            Assert-Condition ($actual['bytes'] -eq $member.bytes -and $actual['sha256'] -ceq $member.sha256 -and $index -eq [uint64]$member.identity.index -and ([WinsmuxDesktopNativeActor]::NativeVolume((Join-Path $Root ([string]$member.path).Replace('/', '\')))).TrimEnd([char]92) -ceq $member.identity.volume) 'desktop_native_installed_state_member_mismatch'
+        }
+        return $state
+    }
+}
+
+function Invoke-DesktopNativeOwnedEntry {
+    param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '')
+    $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
+    $terminal = $false
+    try {
+        $terminal = $owned.WaitTerminal(180000)
+        if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_entry_timeout' }
+        return [ordered]@{ purpose = $Purpose; exit_code = $owned.ExitCode; process = $owned.Facts() }
+    } finally {
+        if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true }
+        if ($terminal) { $owned.Dispose() }
+    }
+}
+
+function Invoke-DesktopNativeTransportCheck {
+    param([Parameter(Mandatory)][string]$NodeImage)
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $NodeImage -ArgumentList @('--input-type=module', '--eval', (Get-DesktopNativeTransportModule), 'verify', $DesktopNativeSourceCommit, $DesktopNativeFormat, $script:RepositoryRoot) -Environment @{} -TimeoutSeconds 180
+    Assert-Condition ($result.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace($result.stderr) -and -not $result.stdout_metadata.truncated) 'desktop_native_transport_refused'
+    $receipt = ConvertFrom-DesktopStrictJsonText $result.Stdout
+    Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-native-transport-check/v1' -and $receipt.mode -ceq 'verify' -and $receipt.source_commit -ceq $DesktopNativeSourceCommit -and $receipt.format -ceq $DesktopNativeFormat -and $receipt.files -eq 9 -and $receipt.runtime_pe_count -eq 4) 'desktop_native_transport_result_refused'
+    return $receipt
+}
+
+
+function Get-DesktopNativeInputRoot {
+    $expected = Join-Path ([IO.Path]::GetFullPath($env:RUNNER_TEMP)) ('winsmux-native-input-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit + '.' + $DesktopNativeFormat)
+    Assert-Condition ([string]$env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and $env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'desktop_native_runner_refused'
+    Assert-Condition ([IO.Path]::GetFullPath($DesktopNativeCandidateDirectory) -ceq (Join-Path $expected 'candidate') -and [IO.Path]::GetFullPath($DesktopNativeBaselineDirectory) -ceq (Join-Path $expected 'baseline')) 'desktop_native_artifact_namespace_refused'
+    [void][WinsmuxDesktopNativeActor]::NativeDirectory($expected, $false)
+    return $expected
+}
+
+function Assert-DesktopNativeBaselineArtifact {
+    $items = @([IO.Directory]::GetFileSystemEntries($DesktopNativeBaselineDirectory))
+    Assert-Condition ($items.Count -eq 2 -and [string]::Join('|', @($items | ForEach-Object { [IO.Path]::GetFileName($_) } | Sort-Object -CaseSensitive)) -ceq 'capture.json|winsmux_0.38.0_x64-setup.exe') 'desktop_native_baseline_namespace_refused'
+    $installer = Join-Path $DesktopNativeBaselineDirectory 'winsmux_0.38.0_x64-setup.exe'
+    $file = [WinsmuxDesktopNativeActor]::NativeFile($installer)
+    Assert-Condition ($file['bytes'] -eq 9920209 -and $file['sha256'] -ceq 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2') 'desktop_native_baseline_asset_refused'
+    [void][WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeBaselineDirectory 'capture.json'))
+    $legacy = Read-DesktopStrictJson (Join-Path $script:RepositoryRoot 'core/crates/winsmux-workspace/src/desktop_nsis_legacy_v0380.json')
+    $receipt = Read-DesktopStrictJson (Join-Path $DesktopNativeBaselineDirectory 'capture.json')
+    Assert-DesktopNativeBaselineReceipt $receipt $legacy
+    return $legacy
+}
+
+function Invoke-DesktopNativeBaselineRecapture {
+    param([Parameter(Mandatory)]$Legacy)
+    $baseSource = Join-Path $script:RepositoryRoot '.native-baseline-source'
+    $head = (& git -C $baseSource rev-parse --verify HEAD | Out-String).Trim()
+    Assert-Condition ($LASTEXITCODE -eq 0 -and $head -ceq '0eaed56da31826b48fc153293c9407ec49547c91') 'desktop_native_baseline_source_refused'
+    $capture = Join-Path $baseSource 'scripts/capture-desktop-baseline.ps1'
+    $owner = Join-Path $baseSource 'scripts/DesktopProcessOwner.cs'
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($capture)['sha256'] -ceq 'a4223bd1fde0c6c35f1d136ae933f09b3deffb9f6076bee43f572c483f1505b6' -and [WinsmuxDesktopNativeActor]::NativeFile($owner)['sha256'] -ceq 'b2ec09ebdbc9557e9a09c052186478ce1d71af95d194f88f3c5152bd5324e936') 'desktop_native_baseline_source_bytes_refused'
+    $output = Join-Path $script:DesktopNativeEvidenceRoot 'legacy-actual'
+    Assert-Condition (-not (Test-Path -LiteralPath $output) -and -not (Test-Path -LiteralPath $Legacy.registration_profile.root)) 'desktop_native_legacy_fixture_exists'
+    $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $capture, '-Installer', (Join-Path $DesktopNativeBaselineDirectory 'winsmux_0.38.0_x64-setup.exe'), '-Profile', 'ja-root', '-OutputDirectory', $output) -Environment @{} -TimeoutSeconds 180
+    Assert-Condition ($result.exit_code -eq 0 -and -not $result.stderr_metadata.truncated) 'desktop_native_actual_legacy_capture_failed'
+    $receipt = Read-DesktopStrictJson (Join-Path $output 'capture.json')
+    Assert-DesktopNativeBaselineReceipt $receipt $Legacy
+    # This is an actual new-VM capture, not inferred from the artifact. Production admit_previous performs
+    # the clause6 same-lease Unicode target / empty arguments / AUMID admission before any native mutation.
+    Write-DesktopNativeEvidence 'legacy-actual-admission.json' ([ordered]@{ schema = 'winsmux-desktop-native-legacy-preflight/v1'; outcome = 'immutable_profile_matched'; capture = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $output 'capture.json')); process = $result.native_observation; shortcut_authority = 'production-same-lease-clause6-before-mutation' })
+    return [string]$Legacy.registration_profile.root
+}
+
+function New-DesktopNativeFaultSource {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][ValidateSet('hash', 'missing', 'complete')][string]$Kind, [ValidateSet('legacy', 'fresh', 'capacity')][string]$Role = 'legacy')
+    $sourceParent = if ($Role -ceq 'capacity') { $script:DesktopNativeCapacityVolume } else { $script:DesktopNativeEvidenceRoot }
+    $source = Join-Path $sourceParent ('nsis-source-' + $Role + '-' + $Kind)
+    [void][WinsmuxDesktopNativeActor]::NativeDirectory($source, $true)
+    $paths = @($Plan.files | ForEach-Object { [string]$_.path }) + @('winsmux.install-plan.json', 'uninstall.exe')
+    $state = Read-DesktopStrictJson (Join-Path $Root '.winsmux-desktop/installed.json')
+    foreach ($link in $state.shortcuts) { $paths += 'shortcuts/' + [string]$link.kind + '.lnk' }
+    foreach ($relative in $paths) {
+        $from = Join-Path $Root $relative.Replace('/', '\')
+        if ($relative.StartsWith('shortcuts/')) {
+            $shortcut = @($state.shortcuts | Where-Object { ('shortcuts/' + $_.kind + '.lnk') -ceq $relative })[0]
+            $from = if ($shortcut.kind -ceq 'desktop') { Get-DesktopShortcutPath } else { Get-DesktopStartMenuShortcutPath }
+        }
+        $witness = [WinsmuxDesktopNativeActor]::NativeFile($from)
+        if ($Kind -ceq 'missing' -and $relative -ceq 'winsmux-app.exe') { continue }
+        $to = Join-Path $source $relative.Replace('/', '\'); $parent = [IO.Path]::GetDirectoryName($to)
+        $relativeParent = [IO.Path]::GetRelativePath($source, $parent)
+        $cursor = $source
+        foreach ($part in @($relativeParent -split '\\' | Where-Object { $_ -cne '.' -and $_ -cne '' })) {
+            $cursor = Join-Path $cursor $part
+            if (-not (Test-Path -LiteralPath $cursor)) { [void][WinsmuxDesktopNativeActor]::NativeDirectory($cursor, $true) } else { [void][WinsmuxDesktopNativeActor]::NativeDirectory($cursor, $false) }
+        }
+        $bytes = [IO.File]::ReadAllBytes($from)
+        Assert-Condition ($bytes.Length -eq $witness['bytes'] -and (Get-FileHash -LiteralPath $from -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $witness['sha256']) 'desktop_native_fault_source_changed'
+        if ($Kind -ceq 'hash' -and $relative -ceq 'winsmux-app.exe') { $bytes[0] = $bytes[0] -bxor 1 }
+        $stream = [IO.FileStream]::new($to, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        $copied = [WinsmuxDesktopNativeActor]::NativeFile($to)
+        if (-not ($Kind -ceq 'hash' -and $relative -ceq 'winsmux-app.exe')) { Assert-Condition ($copied['bytes'] -eq $witness['bytes'] -and $copied['sha256'] -ceq $witness['sha256']) 'desktop_native_fault_copy_mismatch' }
+        Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($from)['identity'] -ceq $witness['identity']) 'desktop_native_fault_source_replaced'
+    }
+    return $source
+}
+
+function Invoke-DesktopNativeNsisAction {
+    param([Parameter(Mandatory)][ValidateSet('install', 'uninstall')][string]$Command, [Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$Case, [Parameter(Mandatory)][string]$PlanSha256, [bool]$Links = $true, [bool]$Update = $true)
+    Assert-Condition ($Case -cmatch '^[a-z0-9-]+$') 'desktop_native_case_refused'
+    $context = New-DesktopNativeNsisContextText -Command $Command -Root $Root -Source $Source -PlanSha256 $PlanSha256 -Language 1041 -StartMenu $Links -Desktop $Links -Update $Update
+    $path = Join-Path $script:DesktopNativeEvidenceRoot ($Case + '.context')
+    $bytes = [Text.UnicodeEncoding]::new($false, $false, $true).GetBytes($context)
+    $file = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+    $witness = [WinsmuxDesktopNativeActor]::NativeFile($path)
+    $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'
+    $expectedCli = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'cli')[0]
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($cli)['sha256'] -ceq $expectedCli.sha256) 'desktop_native_action_cli_mismatch'
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', ('nsis-' + $Command), '--context', $path) -Environment @{} -TimeoutSeconds 180
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($path)['identity'] -ceq $witness['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($path)['sha256'] -ceq $witness['sha256']) 'desktop_native_action_context_changed'
+    Write-DesktopNativeEvidence ($Case + '-action.json') ([ordered]@{ schema = 'winsmux-desktop-native-action-observation/v1'; command = $Command; context = $witness; process = $result })
+    return $result
+}
+
+
+function Convert-DesktopNativeObservedIdentity {
+    param([Parameter(Mandatory)][string]$Identity, [Parameter(Mandatory)][string]$Volume)
+    $parts = $Identity.Split(':')
+    Assert-Condition ($parts.Length -eq 3) 'desktop_native_observed_identity_refused'
+    return [ordered]@{ volume = $Volume.TrimEnd([char]92); index = (([uint64]$parts[1] -shl 32) -bor [uint64]$parts[2]) }
+}
+
+function Get-DesktopNativeJournalPayloadSha256 {
+    param([Parameter(Mandatory)][byte[]]$Bytes)
+    $document = [Text.Json.JsonDocument]::Parse([Text.UTF8Encoding]::new($false, $true).GetString($Bytes))
+    try { $payloadBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($document.RootElement.GetProperty('payload').GetRawText()) } finally { $document.Dispose() }
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($payloadBytes)).ToLowerInvariant()
+}
+
+function Get-DesktopNativeNsisObservationBinding {
+    param([Parameter(Mandatory)][string]$Root, [switch]$Journal)
+    $volume = [WinsmuxDesktopNativeActor]::NativeVolume($Root)
+    $binding = [ordered]@{ root = $Root; actor_sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value; root_identity = (Convert-DesktopNativeObservedIdentity ([WinsmuxDesktopNativeActor]::NativeDirectory($Root, $false)) $volume) }
+    if ($Journal) {
+        $control = Join-Path $Root '.winsmux-desktop'; $ops = Join-Path $control 'ops'; $path = Join-Path $control 'pending.json'
+        $before = [WinsmuxDesktopNativeActor]::NativeFile($path)
+        $raw = [IO.File]::ReadAllBytes($path)
+        $envelope = Read-DesktopStrictJson $path
+        $after = [WinsmuxDesktopNativeActor]::NativeFile($path)
+        $rawSha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($raw)).ToLowerInvariant()
+        Assert-Condition ($before['identity'] -ceq $after['identity'] -and $before['sha256'] -ceq $after['sha256'] -and $rawSha -ceq $before['sha256']) 'desktop_native_journal_observation_changed'
+        $binding.envelope = $envelope; $binding.payload_sha256 = Get-DesktopNativeJournalPayloadSha256 $raw
+        $binding.journal_identity = Convert-DesktopNativeObservedIdentity $before['identity'] $volume
+        $binding.journal_bytes = $before['bytes']; $binding.journal_sha256 = $before['sha256']
+        $binding.control_identity = Convert-DesktopNativeObservedIdentity ([WinsmuxDesktopNativeActor]::NativeDirectory($control, $false)) $volume
+        $binding.ops_identity = Convert-DesktopNativeObservedIdentity ([WinsmuxDesktopNativeActor]::NativeDirectory($ops, $false)) $volume
+        $binding.ops_empty = [IO.Directory]::GetFileSystemEntries($ops).Length -eq 0
+    }
+    return $binding
+}
+
+function Assert-DesktopNativeNsisObservation {
+    param([Parameter(Mandatory)][ValidateSet('installed','updated','publishing','uninstalled')][string]$Kind, [Parameter(Mandatory)]$Binding, [Parameter(Mandatory)][string]$PlanSha256, $State, $PriorState, $Receipt, $Witness, $PriorWitness, $Published)
+    $equal = { param($Left, $Right) (ConvertTo-Json -InputObject $Left -Depth 64 -Compress) -ceq (ConvertTo-Json -InputObject $Right -Depth 64 -Compress) }
+    $uuid = '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
+    if ($Kind -cin @('installed','updated')) {
+        Assert-DesktopInventoryShape $State @('schema','generation','legacy_capture','actor_sid','root','root_identity','host','version','plan_sha256','plan_bytes','members','registration','shortcuts','operation_id','action')
+        Assert-Condition ($State.schema -ceq 'winsmux-desktop-nsis-installed/v1' -and $State.generation -ceq 'managed' -and $State.action -ceq 'install' -and $State.version -ceq '0.38.0' -and $State.host -ceq 'x86_64-pc-windows-msvc' -and $State.root -ceq $Binding.root -and $State.actor_sid -ceq $Binding.actor_sid -and (& $equal $State.root_identity $Binding.root_identity) -and $State.plan_sha256 -ceq $PlanSha256 -and $State.operation_id -cmatch $uuid) 'desktop_native_managed_observation_refused'
+        Assert-Condition ($State.registration.Count -eq 22 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$State.plan_bytes)).ToLowerInvariant() -ceq $PlanSha256) 'desktop_native_managed_plan_bytes_refused'
+        if ($null -ne $State.legacy_capture) { Assert-DesktopInventoryShape $State.legacy_capture @('original_installer_sha256','capture_receipt_sha256'); Assert-Condition ($State.legacy_capture.original_installer_sha256 -ceq 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2' -and $State.legacy_capture.capture_receipt_sha256 -cmatch '^[a-f0-9]{64}$') 'desktop_native_legacy_binding_refused' }
+        if ($Kind -ceq 'updated') {
+            Assert-Condition ($State.operation_id -cne $PriorState.operation_id -and $State.operation_id -ceq $Receipt.operation_id -and $Receipt.action -ceq 'install' -and $Receipt.plan_sha256 -ceq $PlanSha256 -and $Receipt.outcome -ceq 'committed' -and $Receipt.durable_commit -eq $true -and $Receipt.owned_registration_verified -eq $true -and (& $equal $State.legacy_capture $PriorState.legacy_capture)) 'desktop_native_same_version_update_not_committed'
+            $language = [Text.UnicodeEncoding]::new($false,$false,$true).GetBytes('1041' + [char]0)
+            Assert-Condition ($State.registration.Count -eq 22 -and $State.registration[1].type -eq 1 -and [Convert]::ToBase64String([byte[]]$State.registration[1].data) -ceq [Convert]::ToBase64String($language)) 'desktop_native_update_language_not_committed'
+        }
+        return $State
+    }
+    $envelope = $Binding.envelope
+    Assert-DesktopInventoryShape $envelope @('schema','sha256','payload')
+    $p = $envelope.payload
+    Assert-DesktopInventoryShape $p @('schema','operation_id','action','actor_sid','root','root_identity','plan_sha256','plan_bytes','prior_state','old','new','slots','phase','commit_bytes','journal_identity','control_identity','ops_identity','owned_dirs')
+    Assert-Condition ($envelope.schema -ceq 'winsmux-desktop-nsis-journal/v1' -and $envelope.sha256 -ceq $Binding.payload_sha256 -and $p.schema -ceq 'winsmux-desktop-nsis-pending/v1' -and $p.operation_id -cmatch $uuid -and $p.root -ceq $Binding.root -and $p.actor_sid -ceq $Binding.actor_sid -and $p.plan_sha256 -ceq $PlanSha256 -and (& $equal $p.root_identity $Binding.root_identity) -and (& $equal $p.journal_identity $Binding.journal_identity) -and (& $equal $p.control_identity $Binding.control_identity) -and (& $equal $p.ops_identity $Binding.ops_identity)) 'desktop_native_journal_projection_refused'
+    $stateRow = @($PriorWitness.files | Where-Object path -CEQ '.winsmux-desktop/installed.json')
+    Assert-Condition ($stateRow.Count -eq 1 -and $null -ne $p.prior_state) 'desktop_native_journal_prior_missing'
+    $priorBytes = [byte[]]$p.prior_state
+    $parsedPrior = ConvertFrom-Json -InputObject ([Text.UTF8Encoding]::new($false,$true).GetString($priorBytes)) -AsHashtable -Depth 64
+    Assert-Condition ((& $equal $parsedPrior $PriorState)) 'desktop_native_journal_prior_projection_mismatch'
+    Assert-Condition ($priorBytes.Length -eq $stateRow[0].bytes -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($priorBytes)).ToLowerInvariant() -ceq $stateRow[0].sha256 -and $p.operation_id -cne $PriorState.operation_id) 'desktop_native_journal_prior_mismatch'
+    if ($Kind -ceq 'publishing') {
+        $row = @($p.new | Where-Object { $_.domain -ceq 'root' -and $_.member.path -ceq $Published.path })
+        Assert-Condition ($p.phase -ceq 'publishing' -and $p.action -ceq 'install' -and $row.Count -eq 1 -and $row[0].member.bytes -eq $Published.bytes -and $row[0].member.sha256 -ceq $Published.sha256 -and (& $equal $row[0].member.identity $Published.identity)) 'desktop_native_crash_wrong_cut'
+        return $p
+    }
+    Assert-Condition ($p.phase -ceq 'committed' -and $p.action -ceq 'uninstall' -and @($p.new).Count -eq 0 -and $null -eq $p.commit_bytes -and $Binding.ops_empty -eq $true) 'desktop_native_uninstall_terminal_refused'
+    Assert-Condition ($Witness.root -ceq $Binding.root -and $PriorWitness.root -ceq $Binding.root -and @($Witness.files).Count -eq 1 -and $Witness.files[0].path -ceq '.winsmux-desktop/pending.json' -and $Witness.files[0].bytes -eq $Binding.journal_bytes -and $Witness.files[0].sha256 -ceq $Binding.journal_sha256 -and (& $equal (Convert-DesktopNativeObservedIdentity $Witness.files[0].identity $Binding.root_identity.volume) $Binding.journal_identity) -and @($Witness.registration | Where-Object { $null -ne $_ }).Count -eq 0 -and @($Witness.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0 -and $Witness.root_identity -ceq $PriorWitness.root_identity -and $Witness.user_sentinel['identity'] -ceq $PriorWitness.user_sentinel['identity'] -and $Witness.user_sentinel['bytes'] -eq $PriorWitness.user_sentinel['bytes'] -and $Witness.user_sentinel['sha256'] -ceq $PriorWitness.user_sentinel['sha256']) 'desktop_native_uninstall_preservation_failed'
+    $seenOld = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $expected = @($PriorState.members | ForEach-Object { [ordered]@{domain='root';member=$_} })
+    $expected += [ordered]@{domain='state';member=[ordered]@{path='installed.json';bytes=$stateRow[0].bytes;sha256=$stateRow[0].sha256;identity=(Convert-DesktopNativeObservedIdentity $stateRow[0].identity $Binding.root_identity.volume)}}
+    foreach ($link in $PriorState.shortcuts) { $expected += [ordered]@{domain=$link.kind;member=$link.member} }
+    Assert-Condition (@($p.old).Count -eq $expected.Count) 'desktop_native_uninstall_old_inventory_refused'
+    foreach ($old in $p.old) {
+        Assert-DesktopInventoryShape $old @('member','domain','phase')
+        Assert-DesktopInventoryShape $old.member @('path','bytes','sha256','identity')
+        Assert-Condition ($seenOld.Add($old.domain + ':' + $old.member.path)) 'desktop_native_uninstall_duplicate_row'
+        $match = @($expected | Where-Object { $_.domain -ceq $old.domain -and $_.member.path -ceq $old.member.path })
+        Assert-Condition ($match.Count -eq 1 -and $old.phase -ceq 'moved_confirmed' -and (& $equal $old.member $match[0].member)) 'desktop_native_uninstall_owned_row_refused'
+    }
+    Assert-Condition ($p.slots.Count -ge 22 -and $p.slots.Count -le 23) 'desktop_native_uninstall_slots_refused'
+    for ($i=0; $i -lt $p.slots.Count; $i++) { Assert-DesktopInventoryShape $p.slots[$i] @('id','prior','desired','phase'); Assert-Condition ($p.slots[$i].id -eq $i -and $p.slots[$i].phase -ceq 'published_confirmed' -and $null -eq $p.slots[$i].desired -and ($i -ge 22 -or (& $equal $p.slots[$i].prior $PriorState.registration[$i]))) 'desktop_native_uninstall_slot_refused' }
+    if ($p.slots.Count -eq 23) {
+        $raw = $p.slots[22].prior; $expectedPath = [Text.UnicodeEncoding]::new($false,$false,$true).GetBytes(([string][char]34) + $Binding.root + '\winsmux-app.exe' + [char]34 + [char]0)
+        Assert-Condition ($raw.type -eq 1 -and [Convert]::ToBase64String([byte[]]$raw.data) -ceq [Convert]::ToBase64String($expectedPath)) 'desktop_native_uninstall_application_slot_refused'
+    }
+    return $p
+}
+
+function Invoke-DesktopNativeNsisJourney {
+    param([Parameter(Mandatory)]$Legacy, [Parameter(Mandatory)][string]$Sentinel)
+    $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'
+    $script:DesktopNativePlan = Read-DesktopStrictJson $planPath
+    $planSha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']
+    $gui = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'gui')[0]
+    $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'
+    $setupSha = [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']
+    $legacyRoot = Invoke-DesktopNativeBaselineRecapture $Legacy
+    $legacyBefore = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    Write-DesktopNativeEvidence 'legacy-before.json' $legacyBefore
+    $first = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-update' -Image $setup -ImageSha256 $setupSha -Root $legacyRoot
+    Write-DesktopNativeEvidence 'legacy-update-process.json' $first
+    Assert-Condition ($first.exit_code -eq 0) 'LegacyProfileMismatch-or-native-update-failed'
+    $state = Assert-DesktopNativeInstalledPayload -Root $legacyRoot -Plan $script:DesktopNativePlan -PlanSha256 $planSha -Managed
+    Assert-Condition ($null -ne $state.legacy_capture -and $state.legacy_capture.capture_receipt_sha256 -ceq $Legacy.capture_receipt_sha256 -and $state.legacy_capture.original_installer_sha256 -ceq $Legacy.original_installer.sha256) 'desktop_native_legacy_authority_not_committed'
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($Sentinel)['sha256'] -ceq $legacyBefore.user_sentinel['sha256']) 'desktop_native_user_sentinel_changed'
+    Write-DesktopNativeEvidence 'legacy-update-state.json' $state
+    $prior = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    foreach ($kind in @('hash', 'missing')) {
+        $source = New-DesktopNativeFaultSource -Root $legacyRoot -Plan $script:DesktopNativePlan -Kind $kind
+        $failed = Invoke-DesktopNativeNsisAction -Command install -Root $legacyRoot -Source $source -Case ('nsis-' + $kind) -PlanSha256 $planSha
+        Assert-Condition ($failed.exit_code -ne 0 -and [string]::IsNullOrWhiteSpace($failed.stdout) -and $failed.stderr -match '^winsmux installer: (plan_refused|member_unconfirmed|io_unconfirmed)\s*$') 'desktop_native_payload_fault_not_reached'
+        $restored = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+        Assert-DesktopNativeWitnessEqual $prior $restored
+        Write-DesktopNativeEvidence ('nsis-' + $kind + '-preserved.json') $restored
+    }
+    $source = New-DesktopNativeFaultSource -Root $legacyRoot -Plan $script:DesktopNativePlan -Kind complete
+    $updated = Invoke-DesktopNativeNsisAction -Command install -Root $legacyRoot -Source $source -Case 'nsis-same-version-ja' -PlanSha256 $planSha
+    $receipt = Assert-DesktopNativeNsisResult -Result $updated -Command install -PlanSha256 $planSha -GuiSha256 $gui.sha256
+    $same = Assert-DesktopNativeInstalledPayload -Root $legacyRoot -Plan $script:DesktopNativePlan -PlanSha256 $planSha -Managed
+    [void](Assert-DesktopNativeNsisObservation -Kind updated -Binding (Get-DesktopNativeNsisObservationBinding -Root $legacyRoot) -PlanSha256 $planSha -State $same -PriorState $state -Receipt $receipt)
+    Write-DesktopNativeEvidence 'nsis-same-version-ja-state.json' $same
+    $uninstallPrior = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    $uninstaller = Join-Path $legacyRoot 'uninstall.exe'; $unSha = [WinsmuxDesktopNativeActor]::NativeFile($uninstaller)['sha256']
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $legacyRoot
+    Write-DesktopNativeEvidence 'legacy-managed-uninstall-process.json' $removed
+    Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_managed_uninstall_failed'
+    $after = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding (Get-DesktopNativeNsisObservationBinding -Root $legacyRoot -Journal) -PlanSha256 $planSha -PriorState $same -PriorWitness $uninstallPrior -Witness $after)
+    Write-DesktopNativeEvidence 'legacy-managed-uninstall-after.json' $after
+    return [ordered]@{ legacy_update = 'passed'; hash_failure = 'passed'; missing_failure = 'passed'; same_version_ja = 'passed'; managed_uninstall = 'passed' }
+}
+
+function Invoke-DesktopNativeMsiJourney {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sentinel)
+    $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-msi-plan.json'
+    $plan = Read-DesktopStrictJson $planPath; $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']
+    $msiexec = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::System)) 'msiexec.exe'
+    $msiSha = (Get-FileHash -LiteralPath $msiexec -Algorithm SHA256).Hash.ToLowerInvariant()
+    $en = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64_en-US.msi'; $ja = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64_ja-JP.msi'
+    $enProperties = Get-DesktopNativeMsiProperties $en; $jaProperties = Get-DesktopNativeMsiProperties $ja
+    Assert-Condition ($enProperties.properties.ProductCode -cne $jaProperties.properties.ProductCode -and $enProperties.properties.ProductLanguage -ceq '1033' -and $jaProperties.properties.ProductLanguage -ceq '1041' -and $enProperties.properties.UpgradeCode -ceq $jaProperties.properties.UpgradeCode) 'desktop_native_msi_locale_upgrade_identity_refused'
+    Write-DesktopNativeEvidence 'msi-container-property-admission.json' ([ordered]@{ english = $enProperties; japanese = $jaProperties })
+    Assert-NoDesktopProtectedState -State (Get-DesktopProtectedState -InstallRoot $Root) -Phase 'native MSI preflight'
+    $before = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    $installed = Invoke-DesktopNativeOwnedEntry -Purpose 'msi-install-en' -Image $msiexec -ImageSha256 $msiSha -Root $Root -Package $en
+    Write-DesktopNativeEvidence 'msi-en-process.json' $installed
+    Assert-Condition ($installed.exit_code -eq 0) 'desktop_native_msi_en_install_failed'
+    Assert-DesktopNativeInstalledPayload -Root $Root -Plan $plan -PlanSha256 $sha
+    Write-DesktopNativeEvidence 'msi-en-installed.json' (Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel)
+    $updated = Invoke-DesktopNativeOwnedEntry -Purpose 'msi-update-ja' -Image $msiexec -ImageSha256 $msiSha -Root $Root -Package $ja
+    Write-DesktopNativeEvidence 'msi-ja-process.json' $updated
+    Assert-Condition ($updated.exit_code -eq 0) 'desktop_native_msi_ja_same_version_failed'
+    Assert-DesktopNativeInstalledPayload -Root $Root -Plan $plan -PlanSha256 $sha
+    Write-DesktopNativeEvidence 'msi-ja-installed.json' (Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel)
+    $conflict = Invoke-DesktopNativeMsiNsisConflict -Root $Root -Sentinel $Sentinel
+    $gui = @($plan.files | Where-Object role -CEQ 'gui')[0]
+    $startup = Invoke-DesktopNativeStartupFault -Purpose 'msi-install-en' -Image $msiexec -ImageSha256 $msiSha -Root $Root -GuiSha256 $gui.sha256 -Sentinel $Sentinel -Package $en
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'msi-uninstall' -Image $msiexec -ImageSha256 $msiSha -Root $Root -Package $ja
+    Write-DesktopNativeEvidence 'msi-uninstall-process.json' $removed
+    Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_msi_uninstall_failed'
+    $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    Assert-Condition (@($after.files).Count -eq 0 -and @($after.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0 -and $after.user_sentinel['sha256'] -ceq $before.user_sentinel['sha256']) 'desktop_native_msi_uninstall_preservation_failed'
+    Assert-DesktopPostUninstallOwnedState -State (Get-DesktopProtectedState -InstallRoot $Root)
+    Write-DesktopNativeEvidence 'msi-uninstall-after.json' $after
+    return [ordered]@{ english_install = 'passed'; japanese_same_version_update = 'passed'; nsis_conflict = $conflict; startup_failure = $startup; uninstall = 'passed' }
+}
+
+
+function Invoke-DesktopNativeStartupFault {
+    param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$GuiSha256, [Parameter(Mandatory)][string]$Sentinel, [string]$Package = '')
+    $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
+    $terminal = $false; $stopped = $null; $nonmemberObserved = $false
+    try {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $owned.HasExited -and $watch.ElapsedMilliseconds -lt 180000 -and $null -eq $stopped) {
+            foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='winsmux-app.exe'")) {
+                $held = $owned.HoldStartupGui([uint32]$process.ProcessId, (Join-Path $Root 'winsmux-app.exe'), $GuiSha256)
+                if ($null -eq $held) { $nonmemberObserved = $true; continue }
+                try {
+                    # Keep the handle and creation identity across this command-line read. An exited/reused PID is refused.
+                    $actual = Get-CimInstance -ClassName Win32_Process -Filter ('ProcessId=' + $process.ProcessId)
+                    if ($null -ne $actual -and -not $held.HasExited -and -not [string]::IsNullOrWhiteSpace([string]$actual.CommandLine)) {
+                        Initialize-DesktopNativeTypes
+                        $arguments = [Winsmux.PublicRelease.WindowsCommandLine]::Parse([string]$actual.CommandLine)
+                        $stopped = $held.StopForStartup([string[]]$arguments)
+                    }
+                } finally { $held.Dispose() }
+                if ($null -ne $stopped) { break }
+            }
+            if ($null -eq $stopped) { Start-Sleep -Milliseconds 20 }
+        }
+        $terminal = $owned.WaitTerminal(180000)
+        if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_startup_fault_timeout' }
+        $processReceipt = [ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts(); stopped_gui = $stopped; observed_gui_outside_job = $nonmemberObserved }
+        Write-DesktopNativeEvidence ($DesktopNativeFormat.ToLowerInvariant() + '-startup-fault-process.json') $processReceipt
+        Assert-Condition ($null -ne $stopped -and $processReceipt.exit_code -ne 0) 'desktop_native_startup_fault_unmet'
+        $restored = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+        Assert-DesktopNativeWitnessEqual $prior $restored
+        Write-DesktopNativeEvidence ($DesktopNativeFormat.ToLowerInvariant() + '-startup-fault-restored.json') $restored
+        return 'passed'
+    } finally {
+        if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true }
+        if ($terminal) { $owned.Dispose() }
+    }
+}
+
+function Invoke-DesktopNativeNsisCrashFault {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$PlanSha256, [Parameter(Mandatory)][string]$Sentinel)
+    $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    $priorState = Read-DesktopStrictJson (Join-Path $Root '.winsmux-desktop/installed.json')
+    $first = $script:DesktopNativePlan.files[0]
+    $before = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
+    $text = New-DesktopNativeNsisContextText -Command install -Root $Root -Source $Source -PlanSha256 $PlanSha256 -Language 1041 -StartMenu $true -Desktop $true -Update $true
+    $context = Join-Path $script:DesktopNativeEvidenceRoot 'nsis-crash.context'
+    $bytes = [Text.UnicodeEncoding]::new($false, $false, $true).GetBytes($text)
+    $stream = [IO.FileStream]::new($context, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'
+    $owned = Start-OwnedProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', 'nsis-install', '--context', $context) -Environment @{}
+    $observed = $null; $terminal = $false
+    try {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        while (-not $owned.process.HasExited -and $watch.ElapsedMilliseconds -lt 180000) {
+            try {
+                $published = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
+                if ($published['identity'] -cne $before['identity'] -and $published['sha256'] -ceq $first.sha256 -and $published['bytes'] -eq $first.bytes) { $observed = $published; break }
+            } catch [ComponentModel.Win32Exception] { } catch [IO.IOException] { }
+            Start-Sleep -Milliseconds 1
+        }
+        Assert-Condition ($null -ne $observed) 'desktop_native_publication_cut_unmet'
+        $owned.owner.ForceFailureCleanup(180000, 50)
+        Assert-Condition ($owned.owner.WaitTerminal(180000, 50)) 'desktop_native_crash_job_terminal_unconfirmed'
+        $terminal = $true
+        $process = Get-OwnedProcessCapture $owned
+        # Active share-mode-zero journal is never read. Read only after this exact owned Job and pipe capture terminate.
+        $journal = Get-DesktopNativeNsisObservationBinding -Root $Root -Journal
+        $published = [ordered]@{path=$first.path;bytes=$observed['bytes'];sha256=$observed['sha256'];identity=(Convert-DesktopNativeObservedIdentity $observed['identity'] $journal.root_identity.volume)}
+        $pending = Assert-DesktopNativeNsisObservation -Kind publishing -Binding $journal -PlanSha256 $PlanSha256 -PriorState $priorState -PriorWitness $prior -Published $published
+        Write-DesktopNativeEvidence 'nsis-crash-publishing-cut.json' ([ordered]@{ observed = $observed; process = $process; pending = $pending })
+    } finally {
+        if (-not $terminal -and -not $owned.owner.WaitTerminal(0, 50)) { $owned.owner.ForceFailureCleanup(180000, 50) }
+        if ($owned.owner.WaitTerminal(180000, 50)) { $owned.owner.Dispose() }
+    }
+    $reentry = Invoke-DesktopNativeNsisAction -Command install -Root $Root -Source $Source -Case 'nsis-crash-reentry' -PlanSha256 $PlanSha256
+    $current = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    if ($reentry.exit_code -eq 0) {
+        $gui = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'gui')[0]
+        [void](Assert-DesktopNativeNsisResult -Result $reentry -Command install -PlanSha256 $PlanSha256 -GuiSha256 $gui.sha256)
+        [void](Assert-DesktopNativeInstalledPayload -Root $Root -Plan $script:DesktopNativePlan -PlanSha256 $PlanSha256 -Managed)
+        Assert-Condition ($current.user_sentinel['identity'] -ceq $prior.user_sentinel['identity'] -and $current.user_sentinel['sha256'] -ceq $prior.user_sentinel['sha256']) 'desktop_native_crash_user_data_changed'
+        $outcome = 'full-q'
+    } elseif ($reentry.exit_code -eq 3 -and $reentry.stderr -match '^winsmux installer: pending_unconfirmed\s*$') {
+        $outcome = 'truthful-pending'
+    } else { Assert-DesktopNativeWitnessEqual $prior $current; $outcome = 'exact-p' }
+    Write-DesktopNativeEvidence 'nsis-crash-reentry-state.json' ([ordered]@{ outcome = $outcome; witness = $current })
+    Assert-Condition ($outcome -cne 'truthful-pending') 'desktop_native_crash_preserved_pending_needs_recovery'
+    return 'passed'
+}
+
+
+function Get-DesktopNativeMsiProperties {
+    param([Parameter(Mandatory)][string]$Path)
+    $witness = [WinsmuxDesktopNativeActor]::NativeFile($Path)
+    $installer = $null; $database = $null; $view = $null; $record = $null
+    $values = [ordered]@{}
+    try {
+        $installer = New-Object -ComObject WindowsInstaller.Installer
+        $database = $installer.OpenDatabase($Path, 0)
+        $view = $database.OpenView('SELECT `Property`, `Value` FROM `Property`')
+        $view.Execute()
+        while ($null -ne ($record = $view.Fetch())) {
+            $key = [string]$record.StringData(1)
+            if ($key -cin @('ProductCode', 'UpgradeCode', 'ProductVersion', 'ProductLanguage', 'ProductName', 'Manufacturer')) { Assert-Condition (-not $values.Contains($key)) 'desktop_native_msi_property_duplicate'; $values[$key] = [string]$record.StringData(2) }
+            [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); $record = $null
+        }
+        $view.Close()
+    } finally {
+        foreach ($com in @($record, $view, $database, $installer)) { if ($null -ne $com) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) } }
+    }
+    $after = [WinsmuxDesktopNativeActor]::NativeFile($Path)
+    Assert-Condition ($after['identity'] -ceq $witness['identity'] -and $after['sha256'] -ceq $witness['sha256'] -and $values.Count -eq 6) 'desktop_native_msi_property_source_changed'
+    Assert-Condition ($values.ProductCode -cmatch '^\{[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\}$' -and $values.UpgradeCode -ceq '{84F969BF-F0EC-5CE2-8AD2-A093DE3312BB}' -and $values.ProductVersion -ceq '0.38.0' -and $values.ProductName -ceq 'winsmux' -and $values.Manufacturer -ceq 'github') 'desktop_native_msi_product_identity_refused'
+    return [ordered]@{ properties = $values; file = $witness }
+}
+
+function New-DesktopNativeFreshRoot {
+    $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    Assert-Condition (-not [string]::IsNullOrWhiteSpace($local) -and [IO.Path]::IsPathFullyQualified($local)) 'desktop_native_local_profile_refused'
+    [void][WinsmuxDesktopNativeActor]::NativeDirectory($local, $false)
+    $prefix = Join-Path $local 'winsmux-task880-native'
+    if (Test-Path -LiteralPath $prefix) { [void][WinsmuxDesktopNativeActor]::NativeDirectory($prefix, $false) } else { [void][WinsmuxDesktopNativeActor]::NativeDirectory($prefix, $true) }
+    $owned = Join-Path $prefix ($env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit + '.' + $DesktopNativeFormat)
+    $id = [WinsmuxDesktopNativeActor]::NativeDirectory($owned, $true)
+    $root = Join-Path $owned '日本語 & winsmux'
+    $volume = [WinsmuxDesktopNativeActor]::NativeVolume($owned)
+    foreach ($known in @([Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory), [Environment]::GetFolderPath([Environment+SpecialFolder]::Programs))) {
+        [void][WinsmuxDesktopNativeActor]::NativeDirectory($known, $false)
+        Assert-Condition ([WinsmuxDesktopNativeActor]::NativeVolume($known) -ceq $volume) 'desktop_native_known_folder_volume_mismatch'
+    }
+    Write-DesktopNativeEvidence 'fresh-root-admission.json' ([ordered]@{ parent = $owned; identity = $id; root = $root; volume = $volume })
+    return $root
+}
+
+function Invoke-DesktopNativeFreshNsis {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sentinel)
+    $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'; $setupSha = [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']
+    $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'; $plan = Read-DesktopStrictJson $planPath; $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']; $gui = @($plan.files | Where-Object role -CEQ 'gui')[0]
+    Assert-NoDesktopProtectedState -State (Get-DesktopProtectedState -InstallRoot $Root) -Phase 'native NSIS fresh preflight'
+    $installed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-fresh' -Image $setup -ImageSha256 $setupSha -Root $Root
+    Write-DesktopNativeEvidence 'nsis-fresh-process.json' $installed
+    Assert-Condition ($installed.exit_code -eq 0) 'desktop_native_nsis_fresh_failed'
+    [void](Assert-DesktopNativeInstalledPayload -Root $Root -Plan $plan -PlanSha256 $sha -Managed)
+    Write-DesktopNativeEvidence 'nsis-fresh-state.json' (Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel)
+    $script:DesktopNativePlan = $plan
+    $complete = New-DesktopNativeFaultSource -Root $Root -Plan $plan -Kind complete -Role fresh
+    $startup = Invoke-DesktopNativeStartupFault -Purpose 'nsis-update' -Image $setup -ImageSha256 $setupSha -Root $Root -GuiSha256 $gui.sha256 -Sentinel $Sentinel
+    $crash = Invoke-DesktopNativeNsisCrashFault -Root $Root -Source $complete -PlanSha256 $sha -Sentinel $Sentinel
+    $uninstallState = Read-DesktopStrictJson (Join-Path $Root '.winsmux-desktop/installed.json')
+    $uninstallPrior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    $uninstaller = Join-Path $Root 'uninstall.exe'; $unSha = [WinsmuxDesktopNativeActor]::NativeFile($uninstaller)['sha256']
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $Root
+    Write-DesktopNativeEvidence 'nsis-fresh-uninstall-process.json' $removed
+    Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_nsis_fresh_uninstall_failed'
+    $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding (Get-DesktopNativeNsisObservationBinding -Root $Root -Journal) -PlanSha256 $sha -PriorState $uninstallState -PriorWitness $uninstallPrior -Witness $after)
+    Write-DesktopNativeEvidence 'nsis-fresh-uninstall-after.json' $after
+    return [ordered]@{ fresh = 'passed'; startup_failure = $startup; publishing_crash = $crash; uninstall = 'passed' }
+}
+
+
+function Get-DesktopNativeBootstrapBinding {
+    param([Parameter(Mandatory)][string]$InputRoot, [switch]$Create)
+    $path = Join-Path (Join-Path $InputRoot 'evidence') 'bootstrap-input.json'
+    $scriptWitness = [WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)
+    if ($Create) {
+        $command = Get-Command node -CommandType Application -ErrorAction Stop
+        Assert-Condition ($command.CommandType -eq [Management.Automation.CommandTypes]::Application -and [IO.Path]::IsPathFullyQualified($command.Source) -and [IO.Path]::GetFileName($command.Source) -ieq 'node.exe') 'desktop_native_node_image_refused'
+        $node = [WinsmuxDesktopNativeActor]::NativeFile($command.Source)
+        $version = Invoke-DesktopOwnedNativeProcess -FilePath $command.Source -ArgumentList @('--version') -Environment @{} -TimeoutSeconds 180
+        Assert-Condition ($version.exit_code -eq 0 -and $version.stdout.Trim() -cmatch '^v24\.[0-9]+\.[0-9]+$' -and [string]::IsNullOrWhiteSpace($version.stderr) -and -not $version.stdout_metadata.truncated) 'desktop_native_node_version_refused'
+        $binding = [ordered]@{ schema = 'winsmux-desktop-native-bootstrap-helper/v1'; source_commit = $DesktopNativeSourceCommit; script_sha256 = $scriptWitness['sha256']; node_path = [IO.Path]::GetFullPath($command.Source); node_sha256 = $node['sha256']; node_identity = $node['identity'] }
+        Write-DesktopNativeEvidence 'bootstrap-input.json' $binding
+    }
+    $before = [WinsmuxDesktopNativeActor]::NativeFile($path)
+    $binding = Read-DesktopStrictJson $path
+    Assert-DesktopInventoryShape $binding @('schema', 'source_commit', 'script_sha256', 'node_path', 'node_sha256', 'node_identity')
+    Assert-Condition ($binding.schema -ceq 'winsmux-desktop-native-bootstrap-helper/v1' -and $binding.source_commit -ceq $DesktopNativeSourceCommit -and $binding.script_sha256 -ceq $scriptWitness['sha256'] -and $binding.node_sha256 -cmatch '^[a-f0-9]{64}$' -and [IO.Path]::IsPathFullyQualified([string]$binding.node_path) -and [IO.Path]::GetFileName([string]$binding.node_path) -ieq 'node.exe') 'desktop_native_bootstrap_binding_refused'
+    $node = [WinsmuxDesktopNativeActor]::NativeFile([string]$binding.node_path)
+    Assert-Condition ($node['sha256'] -ceq $binding.node_sha256 -and $node['identity'] -ceq $binding.node_identity -and [WinsmuxDesktopNativeActor]::NativeFile($path)['identity'] -ceq $before['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($path)['sha256'] -ceq $before['sha256']) 'desktop_native_bootstrap_helper_changed'
+    return $binding
+}
+
+function Invoke-DesktopNativeLifecycle {
+    Assert-Condition ($Repository -ceq 'Sora-bluesky/winsmux') 'desktop_native_repository_refused'
+    Initialize-DesktopNativeLifecycleActor
+    $inputRoot = Get-DesktopNativeInputRoot
+    $script:DesktopNativeEvidenceRoot = Join-Path $inputRoot 'evidence'
+    $actor = [WinsmuxDesktopNativeActor]::Query()
+    $facts = $actor['facts']; $high = [uint32]$facts['elevation'] -eq 1 -and [uint32]$facts['integrity_rid'] -ge 12288
+    $medium = [uint32]$facts['elevation'] -eq 0 -and [uint32]$facts['integrity_rid'] -ge 8192 -and [uint32]$facts['integrity_rid'] -lt 12288
+    Assert-Condition ($actor['existing_profile_hive'] -eq $true -and $actor['local_app_data_exists'] -eq $true -and [uint32]$facts['token_type'] -eq 1 -and [uint32]$facts['app_container'] -eq 0 -and ($high -or $medium)) 'desktop_native_actual_actor_refused'
+    $bootstrap = $DesktopNativeFormat -ceq 'NSIS' -and $high
+    if (-not $bootstrap -and $DesktopNativeFormat -ceq 'NSIS') { Assert-Condition $medium 'desktop_native_medium_required' }
+    if ($high) {
+        [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $true)
+        $binding = Get-DesktopNativeBootstrapBinding -InputRoot $inputRoot -Create
+    } else {
+        [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $false)
+        $binding = Get-DesktopNativeBootstrapBinding -InputRoot $inputRoot
+    }
+    $transport = Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path
+    $legacy = Assert-DesktopNativeBaselineArtifact
+    if ($medium -and $DesktopNativeFormat -ceq 'NSIS' -and (Test-Path -LiteralPath (Join-Path $script:DesktopNativeEvidenceRoot 'capacity-request.json'))) { return Invoke-DesktopNativeCapacityStage -InputRoot $inputRoot }
+    Write-DesktopNativeEvidence $(if ($bootstrap) { 'high-parent-admission.json' } else { 'native-admission.json' }) ([ordered]@{ transport = $transport; actor = $actor; baseline_artifact = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeBaselineDirectory 'capture.json')); script_sha256 = $binding.script_sha256 })
+    if ($bootstrap) {
+        $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $sha = [WinsmuxDesktopNativeActor]::NativeFile($pwsh)['sha256']
+        $owned = [WinsmuxDesktopNativeActor]::StartNative('medium-bootstrap', $pwsh, $sha, $inputRoot, $DesktopNativeSourceCommit, $DesktopNativeCandidateDirectory, $DesktopNativeBaselineDirectory, $PSCommandPath)
+        $terminal = $false
+        try {
+            $observationSlots = @('transport-before', 'legacy-capture', 'legacy-update', 'hash', 'missing', 'same-version', 'legacy-uninstall', 'fresh', 'startup-observe', 'startup-terminal', 'crash-observe', 'crash-terminal', 'crash-reentry', 'fresh-uninstall', 'transport-after')
+            $terminal = $owned.WaitTerminal($script:DesktopObservationTimeoutMilliseconds * $observationSlots.Count)
+            if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_medium_bootstrap_timeout' }
+            Write-DesktopNativeEvidence 'medium-bootstrap-process.json' ([ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts() })
+            $resultPath = Join-Path $script:DesktopNativeEvidenceRoot 'native-journey-result.json'
+            [void][WinsmuxDesktopNativeActor]::NativeFile($resultPath)
+            $result = Read-DesktopStrictJson $resultPath
+            Assert-Condition ($owned.ExitCode -eq 0 -and $result.outcome -ceq 'journey_passed' -and $result.schema -ceq 'winsmux-desktop-native-journey-ci/v1' -and $result.source_commit -ceq $DesktopNativeSourceCommit -and $result.format -ceq 'NSIS') 'desktop_native_medium_journey_failed'
+            $final = [ordered]@{ schema = 'winsmux-desktop-native-lifecycle-ci/v1'; source_commit = $DesktopNativeSourceCommit; format = 'NSIS'; outcome = 'failed'; transport = $transport; actor = $result.actor; cases = [ordered]@{ legacy = $result.cases.legacy; fresh = $result.cases.fresh }; failure = $null; preserved_user = $result.preserved_user }
+            try {
+                $sentinel = Join-Path (Join-Path (Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'winsmux-task880-native') ($env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit + '.NSIS')) 'user-project-sentinel.txt'
+                $final.cases.capacity = Invoke-DesktopNativeCapacityCases -Sentinel $sentinel
+                [void](Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path)
+                $final.outcome = 'passed'
+            } catch { $final.failure = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }
+            Write-DesktopNativeEvidence 'native-result.json' $final
+            return $final
+        } finally {
+            if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true }
+            if ($terminal) { $owned.Dispose() }
+        }
+    }
+    $root = New-DesktopNativeFreshRoot
+    $sentinel = Join-Path ([IO.Path]::GetDirectoryName($root)) 'user-project-sentinel.txt'
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes('TASK880 owned user project; installer must preserve these bytes.' + [char]10)
+    $file = [IO.FileStream]::new($sentinel, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+    $user = [WinsmuxDesktopNativeActor]::NativeFile($sentinel)
+    $result = [ordered]@{ schema = 'winsmux-desktop-native-lifecycle-ci/v1'; source_commit = $DesktopNativeSourceCommit; format = $DesktopNativeFormat; outcome = 'failed'; transport = $transport; actor = $actor; cases = [ordered]@{}; failure = $null; preserved_user = $null }
+    try {
+        if ($DesktopNativeFormat -ceq 'NSIS') {
+            $result.cases.legacy = Invoke-DesktopNativeNsisJourney -Legacy $legacy -Sentinel $sentinel
+            $result.cases.fresh = Invoke-DesktopNativeFreshNsis -Root $root -Sentinel $sentinel
+        } else { $result.cases.msi = Invoke-DesktopNativeMsiJourney -Root $root -Sentinel $sentinel }
+        if ($DesktopNativeFormat -ceq 'MSI') { $result.cases.capacity = Invoke-DesktopNativeCapacityCases -Sentinel $sentinel }
+        $after = [WinsmuxDesktopNativeActor]::NativeFile($sentinel)
+        Assert-Condition ($after['identity'] -ceq $user['identity'] -and $after['sha256'] -ceq $user['sha256']) 'desktop_native_final_user_preservation_failed'
+        $result.preserved_user = $after
+        [void](Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path)
+        $result.outcome = if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { 'journey_passed' } else { 'passed' }
+        if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { $result.schema = 'winsmux-desktop-native-journey-ci/v1' }
+    } catch { $result.failure = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }
+    Write-DesktopNativeEvidence $(if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { 'native-journey-result.json' } else { 'native-result.json' }) $result
+    return $result
+}
+
+
+function Invoke-DesktopNativeMsiNsisConflict {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sentinel)
+    $before = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'
+    $sha = [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']
+    $process = Invoke-DesktopNativeOwnedEntry -Purpose 'msi-nsis-conflict' -Image $setup -ImageSha256 $sha -Root $Root
+    Write-DesktopNativeEvidence 'msi-nsis-conflict-process.json' $process
+    Assert-Condition ($process.exit_code -ne 0) 'desktop_native_msi_nsis_conflict_not_refused'
+    $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    Assert-DesktopNativeWitnessEqual $before $after
+    Write-DesktopNativeEvidence 'msi-nsis-conflict-preserved.json' $after
+    return 'passed'
+}
+
+function Initialize-DesktopNativeOwnedVhdSupport {
+    if ($null -ne ([Management.Automation.PSTypeName]'Winsmux.DesktopNativeVhd.Lease').Type) { return }
+# Private TASK-880 fragment. Calls require the single disposable-CI supervisor.
+# No native child, other writer, or other disk operation may run concurrently.
+# Dot-sourcing only defines helpers and compiles the private file-witness type.
+$script:DesktopNativeVhdStates = [Collections.Generic.Dictionary[object,object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
+Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Text;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace Winsmux.DesktopNativeVhd {
+ public sealed class Witness {
+  public string canonical_path; public uint volume_serial; public ulong file_id;
+ }
+ public sealed class Lease : IDisposable {
+  [StructLayout(LayoutKind.Sequential)] struct Info {
+   public uint attr,ctlo,cthi,atlo,athi,wtlo,wthi,serial,sizehi,sizelo,links,indexhi,indexlo;
+  }
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFileW(string p,uint a,uint s,IntPtr sa,uint c,uint f,IntPtr t);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle h,out Info i);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle h,StringBuilder b,uint n,uint f);
+  [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetFileInformationByHandle(SafeFileHandle h,int kind,ref byte flag,uint size);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetDiskFreeSpaceExW(string p,out ulong available,out ulong total,out ulong free);
+  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool GetVolumeNameForVolumeMountPointW(string p,StringBuilder b,uint n);
+  readonly SafeFileHandle handle; readonly bool directory; readonly string path;
+  public readonly Witness identity;
+  static void Check(bool ok) { if(!ok)throw new Win32Exception(Marshal.GetLastWin32Error()); }
+  static string Final(SafeFileHandle h) {
+   uint n=GetFinalPathNameByHandleW(h,null,0,0); Check(n!=0);
+   var b=new StringBuilder(checked((int)n+1)); uint got=GetFinalPathNameByHandleW(h,b,(uint)b.Capacity,0); Check(got!=0 && got<b.Capacity);
+   string p=b.ToString(); if(p.StartsWith(@"\\?\",StringComparison.Ordinal))p=p.Substring(4); return p;
+  }
+  public static Witness Read(SafeFileHandle h,string path,bool dir) {
+   Info i; Check(GetFileInformationByHandle(h,out i));
+   if((i.attr&0x400)!=0 || ((i.attr&0x10)!=0)!=dir || (!dir && (i.links!=1 || (i.attr&(0x200|0x800))!=0)))throw new IOException("Nonplain witness refused");
+   string actual=Final(h); if(!String.Equals(actual.TrimEnd('\\'),path.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new IOException("Canonical witness mismatch");
+   return new Witness{canonical_path=actual,volume_serial=i.serial,file_id=((ulong)i.indexhi<<32)|i.indexlo};
+  }
+  public Lease(string p,bool dir,bool deleteAccess) {
+   path=Path.GetFullPath(p); directory=dir;
+   handle=CreateFileW(path,(dir?0x80u:0x80000000u)|(deleteAccess?0x10000u:0u),3,IntPtr.Zero,3,0x200000|(dir?0x2000000u:0u),IntPtr.Zero);
+   if(handle.IsInvalid)throw new Win32Exception(Marshal.GetLastWin32Error());
+   try { identity=Read(handle,path,dir); } catch {handle.Dispose();throw;}
+  }
+  public void Verify() { var x=Read(handle,path,directory); if(x.volume_serial!=identity.volume_serial || x.file_id!=identity.file_id)throw new IOException("Held identity changed"); }
+  public void CheckVhdxMagic() { Verify(); byte[] b=new byte[8]; if(RandomAccess.Read(handle,b,0)!=8 || Encoding.ASCII.GetString(b)!="vhdxfile")throw new IOException("VHDX magic refused"); }
+  public void Delete() { Verify(); byte flag=1; Check(SetFileInformationByHandle(handle,4,ref flag,1)); }
+  public void Dispose() { handle.Dispose(); }
+  public static ulong[] Free(string p) { ulong a,t,f;Check(GetDiskFreeSpaceExW(p,out a,out t,out f));return new[]{a,t,f}; }
+  public static string Volume(string p) { var b=new StringBuilder(50);Check(GetVolumeNameForVolumeMountPointW(p,b,(uint)b.Capacity));return b.ToString(); }
+  public static long[] Budget(long payload) {
+   if(payload<=0)throw new ArgumentOutOfRangeException("payload");
+   // Three resident payloads (source/current/incoming; rollback is a same-volume move).
+   // Two payloads are a filesystem-format allowance, checked against actual free space.
+   long data=checked(payload*3), requested=checked(payload*5), mib=1048576;
+   long units=checked(requested/mib+(requested%mib==0?0:1)); return new[]{units,checked(units*mib),data};
+  }
+ }
+}
+'@
+
+
+}
+
+function Assert-DesktopNativeVhdCondition { param([bool]$Condition,[string]$Reason) if(-not $Condition){throw $Reason} }
+function Get-DesktopNativeVhdJson { param($Value) ConvertTo-Json -InputObject $Value -Depth 12 -Compress }
+function Get-DesktopNativeVhdOwnedRoot {
+ param([string]$OwnedRoot)
+ Assert-DesktopNativeVhdCondition ($env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and [IntPtr]::Size -eq 8) 'owned_vhd_ci_only'
+ Assert-DesktopNativeVhdCondition ($env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'owned_vhd_run_identity'
+ Assert-DesktopNativeVhdCondition ($DesktopNativeSourceCommit -cmatch '^[0-9a-f]{40}$' -and $DesktopNativeFormat -cin @('NSIS','MSI')) 'owned_vhd_source_identity'
+ $tempRoot=[IO.Path]::GetFullPath($env:RUNNER_TEMP)
+ $inputRoot=Join-Path $tempRoot ('winsmux-native-input-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$DesktopNativeSourceCommit+'.'+$DesktopNativeFormat)
+ $evidenceRoot=Join-Path $inputRoot 'evidence'
+ $full=[IO.Path]::GetFullPath($OwnedRoot)
+ Assert-DesktopNativeVhdCondition ($OwnedRoot -ceq $full -and $full.StartsWith($evidenceRoot+'\',[StringComparison]::Ordinal) -and [IO.Path]::GetDirectoryName($full) -ceq $evidenceRoot -and [IO.Path]::GetFileName($full) -cmatch '^vhd-owned-[0-9a-f]{32}$') 'owned_vhd_root_scope'
+ Assert-DesktopNativeVhdCondition ($full -cmatch '^[A-Za-z]:\\[^\r\n"]+$' -and $full -notmatch '[^\x20-\x7e]' -and $full -notmatch '[~]' -and $full.Substring(2) -notmatch ':') 'owned_vhd_plain_ascii_control_path'
+ return $full
+}
+function Update-DesktopNativeVhdRecord {
+ param($State)
+ $State.Record.image_path=$State.ImagePath; $State.Record.image_witness=$State.ImageWitness
+ $State.Record.volume_root=$State.VolumeRoot; $State.Record.disk_number=$State.DiskNumber
+ $State.Record.mount_witness=$State.MountWitness; $State.Record.filler_path=$State.FillerPath
+ $State.RecordJson=Get-DesktopNativeVhdJson $State.Record
+}
+function Get-DesktopNativeVhdState {
+ param($Owned)
+ Assert-DesktopNativeVhdCondition ($null -ne $Owned -and $script:DesktopNativeVhdStates.ContainsKey($Owned)) 'owned_vhd_unknown_record'
+ $state=$script:DesktopNativeVhdStates[$Owned]
+ Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $Owned) -ceq $state.RecordJson) 'owned_vhd_record_changed'
+ return $state
+}
+function Write-DesktopNativeVhdReceipt {
+ param($State,[string]$Phase,$Facts)
+ $State.Phase=$Phase
+ foreach($lease in $State.RootLeases){$lease.Verify()}
+ $line=Get-DesktopNativeVhdJson ([ordered]@{phase=$Phase;owned=$State.Record;capacity_bytes=$State.Capacity;payload_bytes=$State.Payload;facts=$Facts})
+ $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($line+"`n")
+ $State.ReceiptStream.Write($bytes,0,$bytes.Length);$State.ReceiptStream.Flush($true)
+}
+function Invoke-DesktopNativeVhdDiskPart {
+ param($State,[ValidateSet('create','attach','detach')][string]$Operation)
+ $registered=Get-DesktopNativeVhdState $State.Record
+ Assert-DesktopNativeVhdCondition ([object]::ReferenceEquals($State,$registered)) 'owned_vhd_unknown_state'
+ $requiredPhase=@{create='creating';attach='image-witnessed';detach='detach-intent'}[$Operation]
+ Assert-DesktopNativeVhdCondition ($State.Phase -ceq $requiredPhase) 'owned_vhd_operation_phase'
+ foreach($lease in $State.RootLeases){$lease.Verify()}
+ if($Operation -ne 'create'){$State.ImageLease.CheckVhdxMagic()}
+ $commands=switch($Operation){
+  create { Assert-DesktopNativeVhdCondition (-not [IO.File]::Exists($State.ImagePath)) 'owned_vhd_preexisting_image'; 'create vdisk file="'+$State.ImagePath+'" maximum='+$State.MiB+' type=expandable' }
+  attach { 'select vdisk file="'+$State.ImagePath+'"'; 'attach vdisk' }
+  detach { 'select vdisk file="'+$State.ImagePath+'"'; 'detach vdisk' }
+ }
+ $text=([string]::Join("`r`n",@($commands)+@('exit')))+"`r`n"
+ $commandPath=Join-Path $State.Root ($Operation+'.diskpart.txt')
+ $ascii=[Text.ASCIIEncoding]::new();$ascii.EncoderFallback=[Text.EncoderExceptionFallback]::new()
+ $cmdStream=[IO.FileStream]::new($commandPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+ try{$b=$ascii.GetBytes($text);$cmdStream.Write($b,0,$b.Length);$cmdStream.Flush($true)}finally{$cmdStream.Dispose()}
+ $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=Join-Path ([Environment]::SystemDirectory) 'diskpart.exe';$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+ $start.ArgumentList.Add('/s');$start.ArgumentList.Add($commandPath);$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+ $process=[Diagnostics.Process]::new();$process.StartInfo=$start
+ $out=[IO.FileStream]::new((Join-Path $State.Root ($Operation+'.stdout.bin')),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+ $err=[IO.FileStream]::new((Join-Path $State.Root ($Operation+'.stderr.bin')),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+ try{
+  Assert-DesktopNativeVhdCondition ($process.Start()) 'owned_vhd_diskpart_start_failed'
+  $outTask=$process.StandardOutput.BaseStream.CopyToAsync($out);$errTask=$process.StandardError.BaseStream.CopyToAsync($err)
+  $process.WaitForExit();$outTask.GetAwaiter().GetResult();$errTask.GetAwaiter().GetResult()
+  $exit=$process.ExitCode;$out.Flush($true);$err.Flush($true)
+  Write-DesktopNativeVhdReceipt $State ($Operation+'-terminal') @{exit_code=$exit;command_file=$commandPath}
+  Assert-DesktopNativeVhdCondition ($exit -eq 0) ('owned_vhd_diskpart_'+$Operation+'_failed')
+ }finally{$out.Dispose();$err.Dispose();$process.Dispose()}
+}
+function Assert-DesktopNativeVhdDiskFacts {
+ param($Image,$Disk,$State)
+ Assert-DesktopNativeVhdCondition ($null -ne $Image -and $Image.Attached -is [bool] -and $Image.Attached -and [int]$Image.StorageType -eq 3 -and [string]$Image.ImagePath -ceq $State.ImagePath -and [uint64]$Image.Size -eq [uint64]$State.Capacity) 'owned_vhd_image_mapping'
+ Assert-DesktopNativeVhdCondition ($null -ne $Disk -and $Disk.IsBoot -is [bool] -and $Disk.IsSystem -is [bool] -and -not $Disk.IsBoot -and -not $Disk.IsSystem -and [int]$Disk.BusType -eq 15 -and [uint64]$Disk.Size -eq [uint64]$State.Capacity -and -not [string]::IsNullOrWhiteSpace([string]$Disk.Path)) 'owned_vhd_nonboot_filebacked_disk'
+ $key=[ordered]@{number=[uint32]$Disk.Number;path=[string]$Disk.Path;serial=[string]$Disk.SerialNumber;size=[uint64]$Disk.Size;bus_type=[int]$Disk.BusType;device_path=[string]$Image.DevicePath}
+ Assert-DesktopNativeVhdCondition ($key.device_path -cmatch '^\\\\\.\\PHYSICALDRIVE[0-9]+$' -and $key.device_path -ceq ('\\.\PHYSICALDRIVE'+$key.number)) 'owned_vhd_device_number'
+ if($null -ne $State.DiskAnchor){Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $key) -ceq $State.DiskAnchor) 'owned_vhd_disk_identity_changed'}
+ return $key
+}
+function Get-DesktopNativeVhdMapping {
+ param($State,[ValidateSet('raw','gpt','mounted')][string]$Stage)
+ $registered=Get-DesktopNativeVhdState $State.Record
+ Assert-DesktopNativeVhdCondition ([object]::ReferenceEquals($State,$registered)) 'owned_vhd_unknown_mapping_state'
+ $State.ImageLease.CheckVhdxMagic()
+ $images=@(Storage\Get-DiskImage -ImagePath $State.ImagePath -ErrorAction Stop)
+ Assert-DesktopNativeVhdCondition ($images.Count -eq 1) 'owned_vhd_image_count'
+ $disks=@($images[0] | Storage\Get-Disk -ErrorAction Stop)
+ Assert-DesktopNativeVhdCondition ($disks.Count -eq 1) 'owned_vhd_disk_count'
+ $disk=$disks[0];$key=Assert-DesktopNativeVhdDiskFacts $images[0] $disk $State
+ if($null -eq $State.DiskAnchor){$State.DiskAnchor=Get-DesktopNativeVhdJson $key;$State.DiskNumber=[int]$disk.Number;Update-DesktopNativeVhdRecord $State}
+ if($Stage -eq 'raw'){Assert-DesktopNativeVhdCondition ([string]$disk.PartitionStyle -ceq 'RAW' -and [uint32]$disk.NumberOfPartitions -eq 0) 'owned_vhd_expected_fresh_raw'}
+ else {
+  Assert-DesktopNativeVhdCondition ([string]$disk.PartitionStyle -ceq 'GPT' -and -not [string]::IsNullOrWhiteSpace([string]$disk.UniqueId)) 'owned_vhd_expected_gpt'
+  if($null -ne $State.GptId){Assert-DesktopNativeVhdCondition ([string]$disk.UniqueId -ceq $State.GptId) 'owned_vhd_gpt_id_changed'}
+ }
+ if($Stage -eq 'mounted'){
+  $partitions=@($disk | Storage\Get-Partition -ErrorAction Stop | Where-Object PartitionNumber -eq $State.PartitionNumber)
+  Assert-DesktopNativeVhdCondition ($partitions.Count -eq 1) 'owned_vhd_partition_count'
+  $partition=$partitions[0]
+  Assert-DesktopNativeVhdCondition ([string]$partition.Guid -ceq $State.PartitionGuid -and [uint32]$partition.DiskNumber -eq [uint32]$State.DiskNumber) 'owned_vhd_partition_identity'
+  $volumes=@($partition | Storage\Get-Volume -ErrorAction Stop)
+  Assert-DesktopNativeVhdCondition ($volumes.Count -eq 1) 'owned_vhd_volume_count'
+  $volume=$volumes[0]
+  $actual=[ordered]@{unique_id=[string]$volume.UniqueId;path=[string]$volume.Path;drive_letter=[string]$volume.DriveLetter;size=[uint64]$volume.Size;filesystem=[string]$volume.FileSystem;label=[string]$volume.FileSystemLabel;partition_guid=[string]$partition.Guid;disk_number=[int]$disk.Number}
+  if($null -ne $State.MountJson){Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $actual) -ceq $State.MountJson) 'owned_vhd_mount_changed'}
+  return @{Disk=$disk;Partition=$partition;Volume=$volume;Mount=$actual}
+ }
+ return @{Disk=$disk}
+}
+
+function New-DesktopNativeOwnedVhd {
+ [CmdletBinding()] param([Parameter(Mandatory)][string]$OwnedRoot,[Parameter(Mandatory)][long]$PayloadBytes)
+ $budget=[Winsmux.DesktopNativeVhd.Lease]::Budget($PayloadBytes)
+ $root=Get-DesktopNativeVhdOwnedRoot $OwnedRoot
+ $state=$null;$leases=[Collections.Generic.List[object]]::new();$cursor=$root
+ try{
+  while($null -ne $cursor){$leases.Add([Winsmux.DesktopNativeVhd.Lease]::new($cursor,$true,$false));$parent=[IO.Directory]::GetParent($cursor);$cursor=if($null -eq $parent){$null}else{$parent.FullName}}
+  Assert-DesktopNativeVhdCondition ([IO.Directory]::GetFileSystemEntries($root).Length -eq 0) 'owned_vhd_root_not_fresh_empty'
+  $nonce=[Guid]::NewGuid().ToString('N')
+  $record=[pscustomobject][ordered]@{image_path=(Join-Path $root 'owned.vhdx');image_witness=$null;volume_root=$null;disk_number=$null;mount_witness=$null;filler_path=$null}
+  $state=@{Record=$record;Root=$root;RootLeases=$leases;ImagePath=$record.image_path;ImageWitness=$null;ImageLease=$null;VolumeRoot=$null;VolumeLease=$null;DiskNumber=$null;MountWitness=$null;MountJson=$null;DiskAnchor=$null;GptId=$null;PartitionNumber=$null;PartitionGuid=$null;FillerPath=$null;FillerStream=$null;FillerWitness=$null;Payload=$PayloadBytes;MiB=$budget[0];Capacity=$budget[1];DataBudget=$budget[2];Nonce=$nonce;Phase='new';Closed=$false;Shortage=$null;ReceiptStream=$null}
+  $state.ReceiptStream=[IO.FileStream]::new((Join-Path $root 'ownership.jsonl'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+  Update-DesktopNativeVhdRecord $state;$script:DesktopNativeVhdStates.Add($record,$state)
+  Write-DesktopNativeVhdReceipt $state 'creating' @{exclusive_ci_scope=$true;initial_image_witness=$false}
+  Invoke-DesktopNativeVhdDiskPart $state create
+  $state.ImageLease=[Winsmux.DesktopNativeVhd.Lease]::new($state.ImagePath,$false,$false);$state.ImageLease.CheckVhdxMagic()
+  $state.ImageWitness=$state.ImageLease.identity;Update-DesktopNativeVhdRecord $state
+  $created=@(Storage\Get-DiskImage -ImagePath $state.ImagePath -ErrorAction Stop)
+  Assert-DesktopNativeVhdCondition ($created.Count -eq 1 -and $created[0].Attached -is [bool] -and -not $created[0].Attached -and [int]$created[0].StorageType -eq 3 -and [uint64]$created[0].Size -eq [uint64]$state.Capacity) 'owned_vhd_created_image_refused'
+  Write-DesktopNativeVhdReceipt $state 'image-witnessed' @{witness_begins_after_successful_create=$true}
+  Invoke-DesktopNativeVhdDiskPart $state attach
+  $mapping=Get-DesktopNativeVhdMapping $state raw
+  Write-DesktopNativeVhdReceipt $state 'initialize-intent' @{disk_anchor=$state.DiskAnchor}
+  $null=Storage\Initialize-Disk -InputObject $mapping.Disk -PartitionStyle GPT -PassThru -ErrorAction Stop
+  $mapping=Get-DesktopNativeVhdMapping $state gpt;$state.GptId=[string]$mapping.Disk.UniqueId
+  Write-DesktopNativeVhdReceipt $state 'partition-intent' @{gpt_id=$state.GptId}
+  $parts=@(Storage\New-Partition -InputObject $mapping.Disk -UseMaximumSize -AssignDriveLetter -ErrorAction Stop)
+  Assert-DesktopNativeVhdCondition ($parts.Count -eq 1 -and [uint32]$parts[0].DiskNumber -eq [uint32]$state.DiskNumber -and -not [string]::IsNullOrWhiteSpace([string]$parts[0].Guid)) 'owned_vhd_new_partition_refused'
+  $state.PartitionNumber=[uint32]$parts[0].PartitionNumber;$state.PartitionGuid=[string]$parts[0].Guid
+  $mapping=Get-DesktopNativeVhdMapping $state mounted
+  Write-DesktopNativeVhdReceipt $state 'format-intent' @{partition_guid=$state.PartitionGuid;volume_unique_id=[string]$mapping.Volume.UniqueId}
+  $null=Storage\Format-Volume -InputObject $mapping.Volume -FileSystem NTFS -AllocationUnitSize 4096 -NewFileSystemLabel ('winsmux-vhd-'+$nonce.Substring(0,16)) -Force -Confirm:$false -ErrorAction Stop
+  $mapping=Get-DesktopNativeVhdMapping $state mounted
+  Assert-DesktopNativeVhdCondition ($mapping.Mount.filesystem -ceq 'NTFS' -and $mapping.Mount.drive_letter -cmatch '^[A-Z]$') 'owned_vhd_formatted_volume_refused'
+  $state.VolumeRoot=$mapping.Mount.drive_letter+':\';$state.VolumeLease=[Winsmux.DesktopNativeVhd.Lease]::new($state.VolumeRoot,$true,$false)
+  $nativeVolume=[Winsmux.DesktopNativeVhd.Lease]::Volume($state.VolumeRoot)
+  Assert-DesktopNativeVhdCondition ($nativeVolume.Equals($mapping.Mount.path,[StringComparison]::OrdinalIgnoreCase) -or $nativeVolume.Equals($mapping.Mount.unique_id,[StringComparison]::OrdinalIgnoreCase)) 'owned_vhd_drive_volume_mismatch'
+  $state.MountJson=Get-DesktopNativeVhdJson $mapping.Mount
+  $state.MountWitness=[pscustomobject]@{mapping=$mapping.Mount;root=$state.VolumeLease.identity;volume_guid=$nativeVolume}
+  $state.FillerPath=Join-Path $state.VolumeRoot ('.winsmux-native-capacity-'+$nonce+'.bin')
+  Update-DesktopNativeVhdRecord $state
+  $free=[Winsmux.DesktopNativeVhd.Lease]::Free($nativeVolume)
+  Assert-DesktopNativeVhdCondition ($free[2] -ge [uint64]$state.DataBudget) 'owned_vhd_actual_format_overhead_exceeded_budget'
+  Write-DesktopNativeVhdReceipt $state 'ready' @{free_available=$free[0];free_total=$free[2];filesystem_and_partition_consumed=([uint64]$state.Capacity-$free[2]);required_data_budget=$state.DataBudget}
+  return $record
+ }catch{
+  if($null -ne $state -and $null -ne $state.ReceiptStream){Write-DesktopNativeVhdReceipt $state 'failed' @{reason=$_.Exception.Message};$errorOwned=[InvalidOperationException]::new('owned_vhd_new_failed_preserved',$_.Exception);$errorOwned.Data['OwnedVhd']=$state.Record;throw $errorOwned}
+  foreach($lease in $leases){$lease.Dispose()};throw
+ }
+}
+function Set-DesktopNativeVhdShortage {
+ [CmdletBinding()] param([Parameter(Mandatory)]$Owned,[Parameter(Mandatory)][long]$RequiredBytes)
+ Assert-DesktopNativeVhdCondition ($RequiredBytes -gt 0) 'owned_vhd_required_bytes'
+ $state=Get-DesktopNativeVhdState $Owned
+ Assert-DesktopNativeVhdCondition (-not $state.Closed -and $state.Phase -cin @('ready','shortage')) 'owned_vhd_not_ready'
+ $null=Get-DesktopNativeVhdMapping $state mounted;$state.VolumeLease.Verify()
+ $writeError=$null
+ $before=[Winsmux.DesktopNativeVhd.Lease]::Free($state.MountWitness.volume_guid)
+ if($null -ne $state.Shortage){Assert-DesktopNativeVhdCondition ($state.Shortage.required_bytes -eq $RequiredBytes -and $before[2] -lt [uint64]$RequiredBytes) 'owned_vhd_shortage_reentry_changed';return @{before_free_bytes=$before[2];after_free_bytes=$before[2];required_bytes=$RequiredBytes;reused=$true}}
+ if($before[2] -ge [uint64]$RequiredBytes){
+  $state.FillerStream=[IO.FileStream]::new($state.FillerPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read,4096,[IO.FileOptions]::WriteThrough)
+  $state.FillerWitness=[Winsmux.DesktopNativeVhd.Lease]::Read($state.FillerStream.SafeFileHandle,$state.FillerPath,$false)
+  Assert-DesktopNativeVhdCondition ($state.FillerWitness.volume_serial -eq $state.VolumeLease.identity.volume_serial) 'owned_vhd_filler_cross_volume'
+  $remaining=[uint64]$before[2]-[uint64][decimal]::Floor(([decimal]$RequiredBytes)/2)
+  $buffer=[byte[]]::new(1048576);$writeError=$null
+  try{while($remaining -gt 0){$count=if($remaining -gt [uint64]$buffer.Length){$buffer.Length}else{[int]$remaining};$state.FillerStream.Write($buffer,0,$count);$remaining-=[uint64]$count};$state.FillerStream.Flush($true)}catch{$writeError=$_.Exception;Assert-DesktopNativeVhdCondition (($writeError.HResult -band 0xffff) -in @(39,112)) 'owned_vhd_filler_write_failed'}
+ }
+ $null=Get-DesktopNativeVhdMapping $state mounted;$state.VolumeLease.Verify()
+ $after=[Winsmux.DesktopNativeVhd.Lease]::Free($state.MountWitness.volume_guid)
+ Assert-DesktopNativeVhdCondition ($after[2] -lt [uint64]$RequiredBytes) 'owned_vhd_shortage_not_observed'
+ $state.Shortage=@{before_free_bytes=$before[2];after_free_bytes=$after[2];before_available_bytes=$before[0];after_available_bytes=$after[0];required_bytes=$RequiredBytes;filler_path=$state.FillerPath;filler_witness=$state.FillerWitness;disk_full_write_observed=($null -ne $writeError)}
+ Write-DesktopNativeVhdReceipt $state 'shortage' $state.Shortage
+ return $state.Shortage
+}
+function Close-DesktopNativeOwnedVhd {
+ [CmdletBinding()] param([Parameter(Mandatory)]$Owned)
+ $state=Get-DesktopNativeVhdState $Owned
+ if($state.Closed){return @{closed=$true;reused=$true;observed_close=$state.CloseResult}}
+ Assert-DesktopNativeVhdCondition ($null -ne $state.ImageLease -and $null -ne $state.MountWitness -and $state.Phase -cin @('ready','shortage')) 'owned_vhd_partial_or_unknown_preserved'
+ $null=Get-DesktopNativeVhdMapping $state mounted;$state.VolumeLease.Verify()
+ if($null -ne $state.FillerStream){$held=[Winsmux.DesktopNativeVhd.Lease]::Read($state.FillerStream.SafeFileHandle,$state.FillerPath,$false);Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $held) -ceq (Get-DesktopNativeVhdJson $state.FillerWitness)) 'owned_vhd_filler_changed';$state.FillerStream.Dispose();$state.FillerStream=$null}
+ $state.VolumeLease.Dispose();$state.VolumeLease=$null
+ Write-DesktopNativeVhdReceipt $state 'detach-intent' @{mount_witness=$state.MountWitness}
+ Invoke-DesktopNativeVhdDiskPart $state detach
+ $state.ImageLease.CheckVhdxMagic();$images=@(Storage\Get-DiskImage -ImagePath $state.ImagePath -ErrorAction Stop)
+ Assert-DesktopNativeVhdCondition ($images.Count -eq 1 -and $images[0].Attached -is [bool] -and -not $images[0].Attached -and [string]$images[0].ImagePath -ceq $state.ImagePath) 'owned_vhd_detach_not_observed'
+ $state.ImageLease.Dispose();$state.ImageLease=$null
+ $deletion=[Winsmux.DesktopNativeVhd.Lease]::new($state.ImagePath,$false,$true)
+ try{Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $deletion.identity) -ceq (Get-DesktopNativeVhdJson $state.ImageWitness)) 'owned_vhd_delete_identity_changed';$deletion.Delete()}finally{$deletion.Dispose()}
+ Assert-DesktopNativeVhdCondition (-not [IO.File]::Exists($state.ImagePath) -and -not [IO.Directory]::Exists($state.ImagePath)) 'owned_vhd_post_delete_unknown_preserved'
+ $state.CloseResult=@{closed=$true;detached_observed=$true;owned_image_removed=$true;image_witness=$state.ImageWitness;mount_witness=$state.MountWitness}
+ Write-DesktopNativeVhdReceipt $state 'closed' $state.CloseResult;$state.Closed=$true
+ $state.ReceiptStream.Dispose();foreach($lease in $state.RootLeases){$lease.Dispose()}
+ return $state.CloseResult
+}
+
+
+function Invoke-DesktopNativeCapacityStage {
+    param([Parameter(Mandatory)][string]$InputRoot)
+    $requestPath = Join-Path $script:DesktopNativeEvidenceRoot 'capacity-request.json'
+    $requestFile = [WinsmuxDesktopNativeActor]::NativeFile($requestPath)
+    $request = Read-DesktopStrictJson $requestPath
+    Assert-DesktopInventoryShape $request @('schema', 'stage', 'source_commit', 'script_sha256', 'candidate_receipt_sha256', 'plan_sha256', 'cli_sha256', 'setup_sha256', 'owned_vhd', 'root', 'root_identity', 'volume_identity', 'source', 'context', 'user_sentinel')
+    Assert-Condition ($request.schema -ceq 'winsmux-desktop-native-capacity-request/v1' -and $request.stage -cin @('fresh-container', 'native-shortage', 'cleanup') -and $request.source_commit -ceq $DesktopNativeSourceCommit -and $request.script_sha256 -ceq [WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)['sha256']) 'desktop_native_capacity_request_refused'
+    $candidate = Read-DesktopStrictJson (Join-Path $DesktopNativeCandidateDirectory 'desktop-native-candidate.json')
+    Assert-Condition ($request.candidate_receipt_sha256 -ceq [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeCandidateDirectory 'desktop-native-candidate.json'))['sha256'] -and $candidate.format -ceq 'NSIS') 'desktop_native_capacity_origin_refused'
+    $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'
+    $script:DesktopNativePlan = Read-DesktopStrictJson $planPath
+    $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']
+    $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'; $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'
+    Assert-Condition ($request.plan_sha256 -ceq $sha -and $request.cli_sha256 -ceq [WinsmuxDesktopNativeActor]::NativeFile($cli)['sha256'] -and $request.setup_sha256 -ceq [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']) 'desktop_native_capacity_image_binding_refused'
+    Assert-DesktopInventoryShape $request.owned_vhd @('image_path', 'image_witness', 'volume_root', 'disk_number', 'mount_witness', 'filler_path')
+    $volume = [string]$request.owned_vhd.volume_root
+    Assert-Condition ($volume -cmatch '^[A-Z]:\\$' -and $request.root -ceq (Join-Path $volume '日本語 & winsmux') -and $request.owned_vhd.image_path -cmatch '\\vhd-owned-[a-f0-9]{32}\\owned\.vhdx$' -and [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($request.owned_vhd.image_path)) -ceq $script:DesktopNativeEvidenceRoot) 'desktop_native_capacity_namespace_refused'
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeVolume($volume) -ceq $request.volume_identity) 'desktop_native_capacity_actual_volume_mismatch'
+    [void][WinsmuxDesktopNativeActor]::NativeDirectory($volume, $false)
+    $sentinel = Join-Path $volume 'user-project-sentinel.txt'
+    Assert-DesktopInventoryShape $request.user_sentinel @('bytes', 'sha256', 'identity')
+    $user = [WinsmuxDesktopNativeActor]::NativeFile($sentinel)
+    Assert-Condition ($user['bytes'] -eq $request.user_sentinel.bytes -and $user['sha256'] -ceq $request.user_sentinel.sha256 -and $user['identity'] -ceq $request.user_sentinel.identity) 'desktop_native_capacity_user_witness_mismatch'
+    if ($request.stage -ceq 'fresh-container') {
+        Assert-Condition ($null -eq $request.root_identity -and $null -eq $request.source -and $null -eq $request.context -and -not (Test-Path -LiteralPath $request.root)) 'desktop_native_capacity_fresh_root_refused'
+    } else {
+        Assert-Condition ([WinsmuxDesktopNativeActor]::NativeDirectory($request.root, $false) -ceq $request.root_identity -and [WinsmuxDesktopNativeActor]::NativeVolume($request.root) -ceq $request.volume_identity) 'desktop_native_capacity_root_identity_changed'
+    }
+    $result = [ordered]@{ schema = 'winsmux-desktop-native-capacity-result/v1'; source_commit = $DesktopNativeSourceCommit; stage = $request.stage; outcome = 'failed'; process = $null; before = $null; after = $null; state = $null; failure = $null }
+    try {
+        if ($request.stage -ceq 'fresh-container') {
+            $process = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-fresh-no-shortcuts' -Image $setup -ImageSha256 $request.setup_sha256 -Root $request.root
+            $result.process = $process
+            Assert-Condition ($process.exit_code -eq 0) 'desktop_native_capacity_fresh_install_failed'
+            $result.state = Assert-DesktopNativeInstalledPayload -Root $request.root -Plan $script:DesktopNativePlan -PlanSha256 $sha -Managed
+            Assert-Condition (@($result.state.shortcuts).Count -eq 0) 'desktop_native_capacity_cross_volume_old_links'
+        } elseif ($request.stage -ceq 'native-shortage') {
+            Assert-Condition ($request.source -ceq (Join-Path $volume 'nsis-source-capacity-complete')) 'desktop_native_capacity_source_refused'
+            Assert-DesktopInventoryShape $request.context @('path', 'bytes', 'sha256', 'identity')
+            Assert-Condition ($request.context.path -ceq (Join-Path $script:DesktopNativeEvidenceRoot 'capacity-native-shortage.context')) 'desktop_native_capacity_context_path_refused'
+            $expected = New-DesktopNativeNsisContextText -Command install -Root $request.root -Source $request.source -PlanSha256 $sha -Language 1041 -StartMenu $false -Desktop $false -Update $true
+            $encoded = [Text.UnicodeEncoding]::new($false, $false, $true).GetBytes($expected)
+            $ctx = [WinsmuxDesktopNativeActor]::NativeFile($request.context.path)
+            Assert-Condition ($ctx['bytes'] -eq $request.context.bytes -and $ctx['sha256'] -ceq $request.context.sha256 -and $ctx['identity'] -ceq $request.context.identity -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($encoded)).ToLowerInvariant() -ceq $ctx['sha256']) 'desktop_native_capacity_context_bytes_refused'
+            $old = Assert-DesktopNativeInstalledPayload -Root $request.root -Plan $script:DesktopNativePlan -PlanSha256 $sha -Managed
+            Assert-Condition (@($old.shortcuts).Count -eq 0) 'desktop_native_capacity_old_links_refused'
+            $result.before = Get-DesktopNativeWitness -Root $request.root -Sentinel $sentinel
+            $process = Invoke-DesktopOwnedNativeProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', 'nsis-install', '--context', $request.context.path) -Environment @{} -TimeoutSeconds 180
+            $result.process = $process
+            Assert-Condition ($process.exit_code -ne 0 -and [string]::IsNullOrWhiteSpace($process.stdout) -and $process.stderr -match '^winsmux installer: io_unconfirmed\s*$') 'desktop_native_capacity_failure_class_unmet'
+            $result.after = Get-DesktopNativeWitness -Root $request.root -Sentinel $sentinel
+            Assert-DesktopNativeWitnessEqual $result.before $result.after
+            Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($request.context.path)['identity'] -ceq $ctx['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($request.context.path)['sha256'] -ceq $ctx['sha256']) 'desktop_native_capacity_context_changed'
+        } else {
+            Assert-Condition ($null -eq $request.context -and $null -eq $request.source) 'desktop_native_capacity_cleanup_input_refused'
+            $uninstallState = Read-DesktopStrictJson (Join-Path $request.root '.winsmux-desktop/installed.json')
+            $before = Get-DesktopNativeWitness -Root $request.root -Sentinel $sentinel
+            $uninstaller = Join-Path $request.root 'uninstall.exe'; $unSha = [WinsmuxDesktopNativeActor]::NativeFile($uninstaller)['sha256']
+            $result.process = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $request.root
+            Assert-Condition ($result.process.exit_code -eq 0) 'desktop_native_capacity_uninstall_failed'
+            $result.after = Get-DesktopNativeWitness -Root $request.root -Sentinel $sentinel
+            [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding (Get-DesktopNativeNsisObservationBinding -Root $request.root -Journal) -PlanSha256 $sha -PriorState $uninstallState -PriorWitness $before -Witness $result.after)
+        }
+        Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($requestPath)['identity'] -ceq $requestFile['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($requestPath)['sha256'] -ceq $requestFile['sha256']) 'desktop_native_capacity_request_changed'
+        $result.outcome = 'passed'
+    } catch { $result.failure = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }
+    Write-DesktopNativeEvidence 'capacity-result.json' $result
+    return $result
+}
+
+function Invoke-DesktopNativeCapacityBootstrap {
+    param([Parameter(Mandatory)]$Owned, [Parameter(Mandatory)][ValidateSet('fresh-container', 'native-shortage', 'cleanup')][string]$Stage, [Parameter(Mandatory)][string]$Root, [string]$Source, $Context)
+    $held = Get-DesktopNativeVhdState $Owned
+    foreach ($lease in $held.RootLeases) { $lease.Verify() }; $held.ImageLease.Verify(); $held.VolumeLease.Verify()
+    [void](Get-DesktopNativeVhdMapping $held 'mounted')
+    $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'; $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']
+    $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'; $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'
+    $rootIdentity = if ($Stage -ceq 'fresh-container') { $null } else { [WinsmuxDesktopNativeActor]::NativeDirectory($Root, $false) }
+    $request = [ordered]@{ schema = 'winsmux-desktop-native-capacity-request/v1'; stage = $Stage; source_commit = $DesktopNativeSourceCommit; script_sha256 = [WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)['sha256']; candidate_receipt_sha256 = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeCandidateDirectory 'desktop-native-candidate.json'))['sha256']; plan_sha256 = $sha; cli_sha256 = [WinsmuxDesktopNativeActor]::NativeFile($cli)['sha256']; setup_sha256 = [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']; owned_vhd = $Owned; root = $Root; root_identity = $rootIdentity; volume_identity = [WinsmuxDesktopNativeActor]::NativeVolume($Owned.volume_root); source = $Source; context = $Context; user_sentinel = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Owned.volume_root 'user-project-sentinel.txt')) }
+    Write-DesktopNativeEvidence 'capacity-request.json' $request
+    $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName; $pwshSha = [WinsmuxDesktopNativeActor]::NativeFile($pwsh)['sha256']
+    $inputRoot = Get-DesktopNativeInputRoot
+    $child = [WinsmuxDesktopNativeActor]::StartNative('medium-bootstrap', $pwsh, $pwshSha, $inputRoot, $DesktopNativeSourceCommit, $DesktopNativeCandidateDirectory, $DesktopNativeBaselineDirectory, $PSCommandPath)
+    $terminal = $false
+    try {
+        $terminal = $child.WaitTerminal($script:DesktopObservationTimeoutMilliseconds * 2)
+        if (-not $terminal) { $child.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_capacity_medium_timeout' }
+        $resultPath = Join-Path $script:DesktopNativeEvidenceRoot 'capacity-result.json'; [void][WinsmuxDesktopNativeActor]::NativeFile($resultPath)
+        $result = Read-DesktopStrictJson $resultPath
+        Assert-Condition ($child.ExitCode -eq 0 -and $result.schema -ceq 'winsmux-desktop-native-capacity-result/v1' -and $result.source_commit -ceq $DesktopNativeSourceCommit -and $result.stage -ceq $Stage -and $result.outcome -ceq 'passed') 'desktop_native_capacity_medium_stage_failed'
+        Write-DesktopNativeEvidence ('capacity-' + $Stage + '-bootstrap.json') ([ordered]@{ process = $child.Facts(); result = $result })
+        # Retire only this verified request/result pair after its exact owned Job is terminal. Each stage retains original bytes.
+        foreach ($name in @('capacity-request.json', 'capacity-result.json')) {
+            $from = Join-Path $script:DesktopNativeEvidenceRoot $name; $to = Join-Path $script:DesktopNativeEvidenceRoot ('capacity-' + $Stage + '-' + $name)
+            $witness = [WinsmuxDesktopNativeActor]::NativeFile($from)
+            Assert-Condition ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($from)) -ceq $script:DesktopNativeEvidenceRoot -and [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($to)) -ceq $script:DesktopNativeEvidenceRoot -and -not (Test-Path -LiteralPath $to)) 'desktop_native_capacity_pair_retire_refused'
+            [IO.File]::Move($from, $to, $false)
+            Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($to)['identity'] -ceq $witness['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($to)['sha256'] -ceq $witness['sha256']) 'desktop_native_capacity_pair_retire_changed'
+        }
+        foreach ($lease in $held.RootLeases) { $lease.Verify() }; $held.ImageLease.Verify(); $held.VolumeLease.Verify(); [void](Get-DesktopNativeVhdMapping $held 'mounted')
+        return $result
+    } finally { if (-not $terminal) { $child.StopOwnedFailure(); $terminal = $true }; if ($terminal) { $child.Dispose() } }
+}
+
+function Invoke-DesktopNativeCapacityCases {
+    param([Parameter(Mandatory)][string]$Sentinel)
+    Initialize-DesktopNativeOwnedVhdSupport
+    $format = $DesktopNativeFormat.ToLowerInvariant(); $planPath = Join-Path $DesktopNativeCandidateDirectory ('winsmux-' + $format + '-plan.json')
+    $plan = Read-DesktopStrictJson $planPath; $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']
+    [long]$payload = 0; foreach ($row in $plan.files) { $payload += [long]$row.bytes }; $payload += [long][WinsmuxDesktopNativeActor]::NativeFile($planPath)['bytes']
+    if ($DesktopNativeFormat -ceq 'NSIS') { $payload += [long][WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'))['bytes'] }
+    $ownedRoot = Join-Path $script:DesktopNativeEvidenceRoot ('vhd-owned-' + [Guid]::NewGuid().ToString('N'))
+    [void][WinsmuxDesktopNativeActor]::NativeDirectory($ownedRoot, $true)
+    $vhd = $null; $outcome = $null; $operationError = $null; $cleanupError = $null; $dataObservedClean = $false
+    try {
+        $vhd = New-DesktopNativeOwnedVhd -OwnedRoot $ownedRoot -PayloadBytes $payload
+        $root = Join-Path $vhd.volume_root '日本語 & winsmux'
+        Assert-Condition (-not (Test-PathInsideRoot -Path $vhd.filler_path -Root $root) -and -not (Test-PathInsideRoot -Path $root -Root $vhd.filler_path)) 'desktop_native_capacity_filler_overlap'
+        $sentinelPath = Join-Path $vhd.volume_root 'user-project-sentinel.txt'
+        $sentinelBytes = [IO.File]::ReadAllBytes($Sentinel)
+        $file = [IO.FileStream]::new($sentinelPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $file.Write($sentinelBytes, 0, $sentinelBytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+        if ($DesktopNativeFormat -ceq 'NSIS') {
+            $fresh = Invoke-DesktopNativeCapacityBootstrap -Owned $vhd -Stage fresh-container -Root $root
+            Assert-Condition (@($fresh.state.shortcuts).Count -eq 0) 'desktop_native_capacity_shortcuts_not_empty'
+            $script:DesktopNativeCapacityVolume = $vhd.volume_root; $script:DesktopNativePlan = $plan
+            $source = New-DesktopNativeFaultSource -Root $root -Plan $plan -Kind complete -Role capacity
+            [long]$required = 0; foreach ($row in $fresh.state.members) { $required += [long]$row.bytes }
+            $contextPath = Join-Path $script:DesktopNativeEvidenceRoot 'capacity-native-shortage.context'
+            $text = New-DesktopNativeNsisContextText -Command install -Root $root -Source $source -PlanSha256 $sha -Language 1041 -StartMenu $false -Desktop $false -Update $true
+            $bytes = [Text.UnicodeEncoding]::new($false, $false, $true).GetBytes($text)
+            $stream = [IO.FileStream]::new($contextPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+            $shortage = Set-DesktopNativeVhdShortage -Owned $vhd -RequiredBytes $required
+            Assert-Condition ($shortage.after_free_bytes -lt $required -and [WinsmuxDesktopNativeActor]::NativeVolume($source) -ceq [WinsmuxDesktopNativeActor]::NativeVolume($vhd.volume_root)) 'desktop_native_capacity_shortage_not_bound'
+            Write-DesktopNativeEvidence 'capacity-actual-shortage.json' $shortage
+            $ctx = [WinsmuxDesktopNativeActor]::NativeFile($contextPath)
+            $context = [ordered]@{ path = $contextPath; bytes = $ctx['bytes']; sha256 = $ctx['sha256']; identity = $ctx['identity'] }
+            $failed = Invoke-DesktopNativeCapacityBootstrap -Owned $vhd -Stage native-shortage -Root $root -Source $source -Context $context
+            $cleanup = Invoke-DesktopNativeCapacityBootstrap -Owned $vhd -Stage cleanup -Root $root
+            $outcome = [ordered]@{ outcome = 'passed'; fresh = $fresh; shortage = $shortage; failure = $failed; uninstall = $cleanup }
+        } else { $outcome = Invoke-DesktopNativeMsiCapacity -Owned $vhd -Root $root -Sentinel $sentinelPath -Plan $plan -PlanSha256 $sha -RequiredBytes $payload }
+        $dataObservedClean = $outcome.outcome -ceq 'passed'
+    } catch { $operationError = $_.Exception; if ($null -eq $vhd -and $_.Exception.Data.Contains('OwnedVhd')) { $vhd = $_.Exception.Data['OwnedVhd'] } }
+    finally {
+        if ($null -ne $vhd -and $dataObservedClean) {
+            try { $close = Close-DesktopNativeOwnedVhd $vhd; Write-DesktopNativeEvidence 'capacity-owned-vhd-closed.json' $close } catch { $cleanupError = $_.Exception }
+        } elseif ($null -ne $vhd) {
+            # Unknown/partial native data is not detached/deleted to manufacture a clean result.
+            $cleanupError = [InvalidOperationException]::new('owned_vhd_preserved_without_verified_data_terminal')
+            try { if (-not [string]::IsNullOrWhiteSpace([string]$vhd.volume_root)) { Write-DesktopNativeEvidence 'capacity-unconfirmed-state.json' (Get-DesktopNativeWitness -Root (Join-Path $vhd.volume_root '日本語 & winsmux') -Sentinel (Join-Path $vhd.volume_root 'user-project-sentinel.txt')) } } catch { }
+        }
+    }
+    if ($null -ne $operationError -or $null -ne $cleanupError) {
+        Write-DesktopNativeEvidence 'capacity-preserved-failure.json' ([ordered]@{ operation_failure = $(if ($null -ne $operationError) { $operationError.Message } else { $null }); cleanup_failure = $(if ($null -ne $cleanupError) { $cleanupError.Message } else { $null }); owned_vhd = $vhd })
+        throw 'desktop_native_capacity_failed_or_preserved_unconfirmed'
+    }
+    return $outcome
+}
+
+
+function Invoke-DesktopNativeMsiCapacity {
+    param([Parameter(Mandatory)]$Owned, [Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sentinel, [Parameter(Mandatory)]$Plan, [Parameter(Mandatory)][string]$PlanSha256, [Parameter(Mandatory)][long]$RequiredBytes)
+    $msiexec = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::System)) 'msiexec.exe'; $sha = (Get-FileHash -LiteralPath $msiexec -Algorithm SHA256).Hash.ToLowerInvariant()
+    $en = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64_en-US.msi'; $ja = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64_ja-JP.msi'
+    $enProperties = Get-DesktopNativeMsiProperties $en; $jaProperties = Get-DesktopNativeMsiProperties $ja
+    Assert-Condition ($enProperties.properties.ProductCode -cne $jaProperties.properties.ProductCode -and $enProperties.properties.ProductLanguage -ceq '1033' -and $jaProperties.properties.ProductLanguage -ceq '1041') 'desktop_native_capacity_msi_pair_refused'
+    $fresh = Invoke-DesktopNativeOwnedEntry -Purpose msi-capacity-install-en -Image $msiexec -ImageSha256 $sha -Root $Root -Package $en
+    Write-DesktopNativeEvidence 'capacity-msi-fresh-process.json' $fresh
+    Assert-Condition ($fresh.exit_code -eq 0) 'desktop_native_capacity_msi_fresh_failed'
+    Assert-DesktopNativeInstalledPayload -Root $Root -Plan $Plan -PlanSha256 $PlanSha256
+    $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    Assert-Condition (@($prior.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0) 'desktop_native_capacity_msi_shortcuts_present'
+    Write-DesktopNativeEvidence 'capacity-msi-prior.json' $prior
+    $shortage = Set-DesktopNativeVhdShortage -Owned $Owned -RequiredBytes $RequiredBytes
+    Assert-Condition ($shortage.after_free_bytes -lt $RequiredBytes) 'desktop_native_capacity_msi_shortage_unobserved'
+    Write-DesktopNativeEvidence 'capacity-msi-shortage.json' $shortage
+    $failed = Invoke-DesktopNativeOwnedEntry -Purpose msi-capacity-update-ja -Image $msiexec -ImageSha256 $sha -Root $Root -Package $ja
+    Write-DesktopNativeEvidence 'capacity-msi-update-process.json' $failed
+    Assert-Condition ($failed.exit_code -ne 0) 'desktop_native_capacity_msi_failure_unmet'
+    $logPath = Join-Path ([IO.Path]::GetDirectoryName($Root)) 'msi-capacity-update-ja.log'
+    $log = [IO.File]::ReadAllText($logPath)
+    $space = @($log -split '\r?\n' | Where-Object { $_ -match 'OutOfDiskSpace[ =:]+1|Error (112|1307)|insufficient.*(disk|space)|not enough.*(disk|space)' })
+    Assert-Condition ($space.Count -gt 0) 'desktop_native_capacity_msi_wrong_failure_class'
+    Write-DesktopNativeEvidence 'capacity-msi-space-error.json' ([ordered]@{ log = [WinsmuxDesktopNativeActor]::NativeFile($logPath); matches = $space })
+    $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    Assert-DesktopNativeWitnessEqual $prior $after
+    Write-DesktopNativeEvidence 'capacity-msi-restored.json' $after
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose msi-capacity-uninstall -Image $msiexec -ImageSha256 $sha -Root $Root -Package $en
+    Write-DesktopNativeEvidence 'capacity-msi-uninstall-process.json' $removed
+    Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_capacity_msi_uninstall_failed'
+    $clean = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    Assert-Condition (@($clean.files).Count -eq 0 -and @($clean.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0 -and $clean.user_sentinel['identity'] -ceq $prior.user_sentinel['identity'] -and $clean.user_sentinel['sha256'] -ceq $prior.user_sentinel['sha256']) 'desktop_native_capacity_msi_uninstall_preservation_failed'
+    Write-DesktopNativeEvidence 'capacity-msi-uninstall-after.json' $clean
+    return [ordered]@{ outcome = 'passed'; fresh = $fresh; shortage = $shortage; failed_update = $failed; uninstall = $removed }
+}
+
+function Invoke-DesktopNativeLifecycleSelfTest {
+    $source = 'f792c631829d850c8b025e9308487432becc9be7'
+    $valid = @{ DesktopNativeLifecycle = $true; DesktopNativeFormat = 'MSI'; DesktopNativeSourceCommit = $source; DesktopNativeCandidateDirectory = 'C:\run-owned\candidate'; DesktopNativeBaselineDirectory = 'C:\run-owned\baseline' }
+    $cases = [Collections.Generic.List[object]]::new()
+    $run = {
+        param([string]$Name, [hashtable]$Arguments, [string]$RequestedSurface = 'Desktop', [string]$CandidateVersion = '0.38.0', [string]$CandidateReleaseTag = 'v0.38.0', [string]$ActualHead = $source, [string]$CallerHead = $source, [bool]$Reject = $true)
+        $refused = Test-Throws { Assert-DesktopNativeRequest -RequestedSurface $RequestedSurface -CandidateVersion $CandidateVersion -CandidateReleaseTag $CandidateReleaseTag -Arguments $Arguments -ActualHead $ActualHead -CallerHead $CallerHead }
+        Assert-Condition ($refused -eq $Reject) ('desktop_native_selftest_' + $Name)
+        $cases.Add([ordered]@{ name = $Name; refused = $refused; passed = $true })
+    }.GetNewClosure()
+    & $run 'msi' $valid -Reject $false
+    $nsis = $valid.Clone(); $nsis.DesktopNativeFormat = 'NSIS'; & $run 'nsis' $nsis -Reject $false
+    & $run 'ordinary_unmodified' @{} -Reject $false
+    foreach ($surface in @('Core', 'Npm')) { & $run ('surface_' + $surface) $valid -RequestedSurface $surface }
+    & $run 'version' $valid -CandidateVersion '0.37.0'
+    & $run 'release_tag' $valid -CandidateReleaseTag 'v0.37.0'
+    foreach ($key in @('DesktopNativeFormat', 'DesktopNativeSourceCommit', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory')) {
+        $missing = $valid.Clone(); $missing.Remove($key); & $run ('missing_' + $key) $missing
+        $withoutMode = @{ }; $withoutMode[$key] = $valid[$key]; & $run ('without_mode_' + $key) $withoutMode
+    }
+    foreach ($key in @('CandidateInstallerPath', 'DesktopInventoryPath', 'PriorInstallerPath', 'PriorVersion', 'DesktopLegacyEnvMode')) {
+        $mixed = $valid.Clone(); $mixed[$key] = 'unrelated-smoke-input'; & $run ('mixed_' + $key) $mixed
+    }
+    $badFormat = $valid.Clone(); $badFormat.DesktopNativeFormat = 'other'; & $run 'format' $badFormat
+    $short = $valid.Clone(); $short.DesktopNativeSourceCommit = 'f792'; & $run 'short_source' $short
+    $upper = $valid.Clone(); $upper.DesktopNativeSourceCommit = $source.ToUpperInvariant(); & $run 'uppercase_source' $upper
+    & $run 'checkout_mismatch' $valid -ActualHead ('0' * 40)
+    & $run 'caller_mismatch' $valid -CallerHead ('0' * 40)
+    & $run 'finite_selftest' @{ DesktopNativeLifecycle = $true; SelfTest = $true } -Reject $false
+    foreach ($key in @('DesktopNativeFormat', 'DesktopNativeSourceCommit', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory')) {
+        $selfInput = @{ DesktopNativeLifecycle = $true; SelfTest = $true }; $selfInput[$key] = $valid[$key]; & $run ('selftest_external_' + $key) $selfInput
+    }
+    return [ordered]@{ schema = 'winsmux-desktop-native-input-selftest/v1'; ok = $true; surface = 'Desktop'; passed = $cases.Count; failed = 0; cases = @($cases.ToArray()); native_processes_started = 0; installer_executed = $false; scope = 'Finite native-mode request admission only; physical artifact, real installer/runtime and rollback evidence are separate.' }
+}
+
 function Invoke-SelfTest {
     # GetNewClosure captures factory-local values, not inherited script parameters.
     # Pin the normalized coordinates for every surface and every fixture callback.
@@ -5211,13 +6952,20 @@ try {
 $Version = Resolve-ReleaseCoordinates -Surface $Surface -Version $Version -ReleaseTag $ReleaseTag -Repository $Repository
 
 if ($SelfTest) {
-    $result = Invoke-SelfTest
+    $result = if ($DesktopNativeLifecycle) { Invoke-DesktopNativeLifecycleSelfTest } else { Invoke-SelfTest }
     if ($Json) {
         $result | ConvertTo-Json -Depth 10 -Compress
     } else {
         [pscustomobject]$result
     }
     exit 0
+}
+
+if ($DesktopNativeLifecycle) {
+    $nativeResult = Invoke-DesktopNativeLifecycle
+    if ($Json) { $nativeResult | ConvertTo-Json -Depth 64 -Compress } else { [pscustomobject]$nativeResult }
+    if ($nativeResult.outcome -ceq 'passed' -or ($nativeResult.schema -ceq 'winsmux-desktop-native-journey-ci/v1' -and $nativeResult.outcome -ceq 'journey_passed')) { exit 0 }
+    exit 1
 }
 
 $ownedRoot = New-OwnedRoot

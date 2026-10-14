@@ -36,7 +36,6 @@
 .workspace-input-confirmation button { font:inherit;color:ButtonText;background:ButtonFace;border:1px solid ButtonBorder;padding:.4rem;margin:.25rem;max-width:100%; }
 .workspace-input-confirmation :focus-visible, .workspace-input-confirmation:focus-visible { outline:3px solid Highlight;outline-offset:2px; }
 .workspace-input-preedit { white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%; }
-.workspace-terminal .xterm-accessibility { forced-color-adjust: none; color: transparent; }
 @media (max-width: 48rem) {
   .workspace-body { display: flex; flex-direction: column; }
   .workspace-body nav { max-height: 35vh; overflow: auto; border: 1px solid ButtonBorder; }

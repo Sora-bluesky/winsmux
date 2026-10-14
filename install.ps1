@@ -109,21 +109,26 @@ if (-not [string]::IsNullOrWhiteSpace($installSourceRef)) {
 function Get-InstallUserPath {
     if ($redirectedInstallerE2e) {
         $pathFile = Join-Path $redirectedStateRoot 'user-path.txt'
-        if (-not (Test-Path -LiteralPath $pathFile -PathType Leaf)) { return '' }
+        if (-not (Test-Path -LiteralPath $pathFile -PathType Leaf)) { return $null }
         return (Get-Content -LiteralPath $pathFile -Raw -Encoding UTF8)
     }
     return [Environment]::GetEnvironmentVariable('Path', 'User')
 }
 
 function Set-InstallUserPath {
-    param([AllowEmptyString()][string]$Value)
+    param([AllowNull()][AllowEmptyString()][object]$Value)
+    if ($null -ne $Value -and $Value -isnot [string]) { throw 'User PATH must be nullable text.' }
 
     if ($redirectedInstallerE2e) {
         $pathFile = Join-Path $redirectedStateRoot 'user-path.txt'
-        [System.IO.File]::WriteAllText($pathFile, $Value, [System.Text.UTF8Encoding]::new($false))
+        if ($null -eq $Value) { [IO.File]::Delete($pathFile) }
+        else { [System.IO.File]::WriteAllText($pathFile, $Value, [System.Text.UTF8Encoding]::new($false)) }
         return
     }
-    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+    # A plain PowerShell $null binds to an empty .NET string; use typed null
+    # to restore an absent value without converting it into present-empty.
+    $environmentValue = if ($null -eq $Value) { [Management.Automation.Language.NullString]::Value } else { $Value }
+    [Environment]::SetEnvironmentVariable('Path', $environmentValue, 'User')
 }
 
 function Get-InstallPowerShellProfilePath {
@@ -467,9 +472,10 @@ function Remove-ProfileExcludedSupportScripts {
 }
 
 function Sync-WindowsTerminalFragment {
-    param([Parameter(Mandatory = $true)][string]$Profile)
+    param([Parameter(Mandatory = $true)][string]$Profile, [string]$FragmentDirectory = '')
 
     $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
+    if ($FragmentDirectory) { $fragmentDir = $FragmentDirectory }
     $fragmentFile = Join-Path $fragmentDir "winsmux.json"
     $shouldInstallFragment = Test-InstallProfileContent -Profile $Profile -Content "windows_terminal_profile"
 
@@ -573,6 +579,10 @@ function Assert-WinsmuxLicenseObjectKeys {
             'string' { $entry -is [string] -and -not [string]::IsNullOrWhiteSpace($entry) }
             'nullable-string' { $null -eq $entry -or ($entry -is [string] -and -not [string]::IsNullOrWhiteSpace($entry)) }
             'integer' { $entry -is [int] -or $entry -is [long] }
+            'text' { $entry -is [string] }
+            'nullable-text' { $null -eq $entry -or $entry -is [string] }
+            'boolean' { $entry -is [bool] }
+            'object' { $entry -is [Collections.IDictionary] }
             'array' { $entry -is [array] }
             default { throw 'Unsupported installer JSON schema type.' }
         }
@@ -737,7 +747,10 @@ function ConvertTo-WinsmuxLifecycleBytes {
     foreach ($name in @('Get-WinsmuxExecutingInstallerSource', 'ConvertTo-WinsmuxLifecycleBytes',
         'Open-WinsmuxInstallLease', 'New-WinsmuxLifecycleState', 'Assert-WinsmuxLifecycleFile',
         'Publish-WinsmuxLifecycle', 'Install-VerifiedWinsmuxGeneration', 'Install-WinsmuxBinary',
-        'Invoke-Install', 'Invoke-Uninstall', 'Show-Help')) {
+        'Invoke-Install', 'Invoke-Uninstall', 'Show-Help', 'Invoke-WinsmuxInstallLifecycle',
+        'Get-WinsmuxSupportNames', 'Get-WinsmuxMemberPath', 'Read-WinsmuxSupportOwner', 'New-WinsmuxSupportStage',
+        'Restore-WinsmuxInstalledGeneration', 'ConvertTo-WinsmuxRecoverySnapshot', 'Read-WinsmuxRecoveryJournal',
+        'Repair-WinsmuxPendingInstallation', 'Clear-WinsmuxCommittedSupportBackups')) {
         $definitions = @($ast.FindAll({ param($node)
             $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ieq $name
         }, $true))
@@ -828,6 +841,14 @@ namespace Winsmux {
             return new InstallPathInfo { Name=finalName, Links=information.Links, Attributes=information.Attributes,
                 Identity=information.Volume.ToString("x8") + ":" + information.IndexHigh.ToString("x8") + information.IndexLow.ToString("x8") };
         }
+        [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool MoveFileExW(string source, string destination, uint flags);
+        public static void Rename(string source, string destination) {
+            // COPY_ALLOWED (0x2) is deliberately absent: cross-volume renames fail.
+            if (!MoveFileExW(@"\\?\" + source, @"\\?\" + destination, 0))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
         public static InstallPathInfo Query(string path) {
             using (var handle = CreateFileW(@"\\?\" + path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
                 if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
@@ -877,7 +898,7 @@ function Assert-WinsmuxInstallPath {
 }
 
 function Open-WinsmuxInstallLease {
-    param([string]$LocalBin)
+    param([string]$LocalBin, [switch]$RecoverPending)
     if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'Paired installation requires PowerShell 7 or later.' }
     [void](Assert-WinsmuxInstallPath $LocalBin Directory -AllowMissing)
     [void][IO.Directory]::CreateDirectory($LocalBin)
@@ -893,7 +914,10 @@ function Open-WinsmuxInstallLease {
         $lease = [PSCustomObject]@{ LocalBin = [IO.Path]::GetFullPath($LocalBin); Stream = $stream;
             Marker = Join-Path $LocalBin 'winsmux.install.pending.json' }
         [void](Assert-WinsmuxInstallPath $lease.Marker File -AllowMissing)
-        if ([IO.File]::Exists($lease.Marker)) { throw 'An incomplete paired installation requires recovery; all pending files have been preserved.' }
+        if ([IO.File]::Exists($lease.Marker)) {
+            if ($RecoverPending) { Repair-WinsmuxPendingInstallation $lease }
+            else { throw 'An incomplete paired installation requires recovery; all pending files have been preserved.' }
+        }
         return $lease
     } catch { $stream.Dispose(); throw }
 }
@@ -992,11 +1016,45 @@ function Write-WinsmuxInstallFile {
     try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
 }
 
+function Get-WinsmuxInstallVolume {
+    param([string]$Path, [string]$Kind = 'Either')
+    $physical = Assert-WinsmuxInstallPath $Path $Kind -AllowMissing
+    $ancestor = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Path))
+    while (-not $physical -and $ancestor) {
+        $physical = Assert-WinsmuxInstallPath $ancestor Directory -AllowMissing
+        $ancestor = [IO.Path]::GetDirectoryName($ancestor)
+    }
+    if (-not $physical) { throw 'Installer volume could not be resolved.' }
+    return $physical.Name.Substring(0, $physical.Name.IndexOf('}') + 1).ToLowerInvariant()
+}
+
+function Assert-WinsmuxGenerationVolumes {
+    param($Lease, $Lifecycle, $State, $Support)
+    $volume = Get-WinsmuxInstallVolume $Lease.LocalBin Directory
+    $paths = [Collections.Generic.List[object]]::new()
+    $paths.Add(@{ Path=$Lifecycle.Path; Kind='File' })
+    foreach ($member in $State.Paths.Keys) { $paths.Add(@{ Path=$State.Paths[$member]; Kind=$State.Snapshots[$member].Kind }) }
+    if ($Support) {
+        $paths.Add(@{ Path=$Support.Root; Kind='Directory' })
+        foreach ($item in $Support.Members) {
+            $paths.Add(@{ Path=(Get-WinsmuxMemberPath $Lease $item.Name); Kind='File' })
+            if (-not $item.Remove) { $paths.Add(@{ Path=$item.Stage; Kind='File' }) }
+        }
+        $paths.Add(@{ Path=(Get-WinsmuxMemberPath $Lease '.winsmux/install-owner.json'); Kind='File' })
+    }
+    foreach ($item in $paths) {
+        if ((Get-WinsmuxInstallVolume $item.Path $item.Kind) -cne $volume) { throw 'Installer generation crosses physical volumes; old generation preserved.' }
+    }
+    if ($Lifecycle.Volume -cne $volume) { throw 'Lifecycle volume changed before publication.' }
+}
+
 function Move-WinsmuxInstallMember {
     param([string]$Source, [string]$Destination, [string]$Kind)
     [void](Assert-WinsmuxInstallPath $Source $Kind)
     if (Assert-WinsmuxInstallPath $Destination $Kind -AllowMissing) { throw 'Owned installer destination already exists.' }
-    if ($Kind -eq 'Directory') { [IO.Directory]::Move($Source, $Destination) } else { [IO.File]::Move($Source, $Destination) }
+    $sourceVolume = Get-WinsmuxInstallVolume $Source $Kind
+    if ((Get-WinsmuxInstallVolume $Destination $Kind) -cne $sourceVolume) { throw 'Installer rename crosses physical volumes; protected files preserved.' }
+    [Winsmux.InstallPathInfo]::Rename([IO.Path]::GetFullPath($Source), [IO.Path]::GetFullPath($Destination))
 }
 
 function Assert-WinsmuxInstalledGeneration {
@@ -1040,20 +1098,20 @@ function New-WinsmuxLifecycleState {
     $homeRoot = [IO.Path]::GetDirectoryName($local)
     $homeInfo = Assert-WinsmuxInstallPath $homeRoot Directory
     $binInfo = Assert-WinsmuxInstallPath $Lease.LocalBin Directory
-    if ($homeInfo.Identity.Substring(0, 8) -cne $binInfo.Identity.Substring(0, 8)) {
+    if ((Get-WinsmuxInstallVolume $homeRoot Directory) -cne (Get-WinsmuxInstallVolume $Lease.LocalBin Directory)) {
         throw 'The installer directories are on different physical volumes.'
     }
     $path = Join-Path $homeRoot '.winsmux/bin/install.ps1'
     $prior = Get-WinsmuxInstallSnapshot $path File
     $bytes = ConvertTo-WinsmuxLifecycleBytes $Source $Version
     return [PSCustomObject]@{ Path = $path; Prior = $prior; Bytes = $bytes;
-        Sha256 = Get-WinsmuxBytesSha256 $bytes; Version = $Version; Volume = $homeInfo.Identity.Substring(0, 8) }
+        Sha256 = Get-WinsmuxBytesSha256 $bytes; Version = $Version; Volume = Get-WinsmuxInstallVolume $homeRoot Directory }
 }
 
 function Assert-WinsmuxLifecycleFile {
     param($Lifecycle)
     $physical = Assert-WinsmuxInstallPath $Lifecycle.Path File
-    if ($physical.Identity.Substring(0, 8) -cne $Lifecycle.Volume) { throw 'Lifecycle volume identity changed.' }
+    if ((Get-WinsmuxInstallVolume $Lifecycle.Path File) -cne $Lifecycle.Volume) { throw 'Lifecycle volume identity changed.' }
     $bytes = [IO.File]::ReadAllBytes($Lifecycle.Path)
     if ((Get-WinsmuxBytesSha256 $bytes) -cne $Lifecycle.Sha256) { throw 'The current lifecycle bytes changed.' }
     $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
@@ -1064,6 +1122,7 @@ function Assert-WinsmuxLifecycleFile {
 function Publish-WinsmuxLifecycle {
     param($Lease, $Lifecycle)
     if (-not $Lease.Stream.CanWrite) { throw 'Installer lease is not held.' }
+    if ((Get-WinsmuxInstallVolume $Lifecycle.Path File) -cne (Get-WinsmuxInstallVolume $Lease.LocalBin Directory)) { throw 'Lifecycle publication crosses physical volumes.' }
     Assert-WinsmuxInstallSnapshot $Lifecycle.Path $Lifecycle.Prior
     if ($Lifecycle.Prior.Present -and $Lifecycle.Prior.Files[''] -ceq $Lifecycle.Sha256) {
         Assert-WinsmuxLifecycleFile $Lifecycle
@@ -1074,7 +1133,7 @@ function Publish-WinsmuxLifecycle {
     [void](Assert-WinsmuxInstallPath $directory Directory -AllowMissing)
     [void][IO.Directory]::CreateDirectory($directory)
     $directoryInfo = Assert-WinsmuxInstallPath $directory Directory
-    if ($directoryInfo.Identity.Substring(0, 8) -cne $Lifecycle.Volume) { throw 'Lifecycle directory volume changed.' }
+    if ((Get-WinsmuxInstallVolume $directory Directory) -cne $Lifecycle.Volume) { throw 'Lifecycle directory volume changed.' }
     $archive = Join-Path $Lease.LocalBin ('.winsmux-lifecycle-' + [Guid]::NewGuid().ToString('N'))
     if (Assert-WinsmuxInstallPath $archive Directory -AllowMissing) { throw 'Owned lifecycle archive already exists.' }
     [void][IO.Directory]::CreateDirectory($archive)
@@ -1088,12 +1147,14 @@ function Publish-WinsmuxLifecycle {
     if ($Lifecycle.Prior.Present) {
         Invoke-WinsmuxInstallCheckpoint 'before-park-lifecycle'
         $oldPath = Join-Path $archive 'prior-install.ps1'
-        Move-WinsmuxInstallMember $Lifecycle.Path $oldPath File
+        Invoke-WinsmuxInstallCheckpoint 'before-publish-lifecycle'
+        [IO.File]::Replace($stage, $Lifecycle.Path, $oldPath, $false)
         Invoke-WinsmuxInstallCheckpoint 'parked-lifecycle'
         Assert-WinsmuxInstallSnapshot $oldPath $Lifecycle.Prior
+    } else {
+        Invoke-WinsmuxInstallCheckpoint 'before-publish-lifecycle'
+        Move-WinsmuxInstallMember $stage $Lifecycle.Path File
     }
-    Invoke-WinsmuxInstallCheckpoint 'before-publish-lifecycle'
-    Move-WinsmuxInstallMember $stage $Lifecycle.Path File
     Invoke-WinsmuxInstallCheckpoint 'published-lifecycle'
     Invoke-WinsmuxInstallCheckpoint 'before-lifecycle-readback'
     Assert-WinsmuxLifecycleFile $Lifecycle
@@ -1103,7 +1164,7 @@ function Publish-WinsmuxLifecycle {
 }
 
 function Install-VerifiedWinsmuxGeneration {
-    param($Lease, $State, [string]$DownloadPath, $Sidecar, [Parameter(Mandatory = $true)]$Lifecycle)
+    param($Lease, $State, [string]$DownloadPath, $Sidecar, [Parameter(Mandatory = $true)]$Lifecycle, $Support = $null)
     if (-not $Lease.Stream.CanWrite) { throw 'Installer lease is not held.' }
     foreach ($member in $State.Paths.Keys) { Assert-WinsmuxInstallSnapshot $State.Paths[$member] $State.Snapshots[$member] }
     [void](Assert-WinsmuxInstallPath $DownloadPath File)
@@ -1142,9 +1203,72 @@ function Install-VerifiedWinsmuxGeneration {
     [void](Assert-WinsmuxInstalledGeneration $stage $Sidecar)
     Invoke-WinsmuxInstallCheckpoint 'stage-readback'
     foreach ($member in $State.Paths.Keys) { Assert-WinsmuxInstallSnapshot $State.Paths[$member] $State.Snapshots[$member] }
+
+    $extraPaths = @{}; $extraSnapshots = @{}
+    $entries = [Collections.Generic.List[object]]::new()
+    if ($Support) {
+        $oldSupportOwner = if ($Support.PSObject.Properties['Owner']) { $Support.Owner } else { $null }
+        $ownedFiles = [Collections.Generic.List[object]]::new()
+        foreach ($item in $Support.Members) {
+            if (-not $item.Remove -and $item.Name -cne 'profile') {
+                $ownedFiles.Add(@{ name=$item.Name; sha256=(Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes($item.Stage))) })
+            }
+        }
+        $ownedFiles.Add(@{ name='.winsmux/bin/install.ps1'; sha256=$Lifecycle.Sha256 })
+        $receipt = @{ schema='winsmux-support-owner/v1'; files=$ownedFiles.ToArray(); profile_line=$Support.ProfileLine }
+        $receiptStage = Join-Path $Support.Root 'install-owner.json'
+        Write-WinsmuxInstallFile $receiptStage ([Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json $receipt -Depth 8 -Compress)))
+        $Support.Members.Add([PSCustomObject]@{ Name='.winsmux/install-owner.json'; Stage=$receiptStage; Remove=$false })
+        $index = 0
+        foreach ($item in $Support.Members) {
+            $id = 'support-' + $index.ToString('000'); $index++
+            $extraPaths[$id] = Get-WinsmuxMemberPath $Lease $item.Name
+            $extraSnapshots[$id] = Get-WinsmuxInstallSnapshot $extraPaths[$id] File
+            $stage[$id] = Join-Path $operationRoot ('new-' + $id)
+            $backup[$id] = Join-Path $operationRoot ('old-' + $id)
+            $rejected[$id] = Join-Path $operationRoot ('rejected-' + $id)
+            if (-not $item.Remove) { Move-WinsmuxInstallMember $item.Stage $stage[$id] File }
+            $cleanupOwned = $false
+            if ($oldSupportOwner -and $extraSnapshots[$id].Present) {
+                if ($item.Name -ceq '.winsmux/install-owner.json') { $cleanupOwned = $true }
+                else {
+                    $priorMember = @($oldSupportOwner.files | Where-Object { $_.name -ceq $item.Name })
+                    $cleanupOwned = $priorMember.Count -eq 1 -and $extraSnapshots[$id].Files[''] -ceq $priorMember[0].sha256
+                }
+            }
+            $entries.Add(@{ name=$item.Name; id=$id; kind='File'; prior=$extraSnapshots[$id]; remove=[bool]$item.Remove; cleanup_owned=$cleanupOwned })
+            Invoke-WinsmuxInstallCheckpoint 'stage-support-write'
+        }
+    }
+
+    Invoke-WinsmuxInstallCheckpoint 'before-volume-admission'
+    Assert-WinsmuxGenerationVolumes $Lease $Lifecycle $State $Support
     Publish-WinsmuxLifecycle $Lease $Lifecycle
     foreach ($member in $State.Paths.Keys) { Assert-WinsmuxInstallSnapshot $State.Paths[$member] $State.Snapshots[$member] }
     Assert-WinsmuxLifecycleFile $Lifecycle
+
+    $pairedEntries = @('licenses','owner','exe') | ForEach-Object {
+        @{ name=$_; id=$_; kind=$State.Snapshots[$_].Kind; prior=$State.Snapshots[$_]; remove=$false; cleanup_owned=$false }
+    }
+    $allEntries = @($pairedEntries) + @($entries.ToArray())
+    $registration = if ($Support) { @{
+        user=@{ prior=$Support.PriorUserPath; desired=$Support.UserPath; phase='staged' };
+        process=@{ prior=$Support.PriorProcessPath; desired=$Support.ProcessPath; phase='staged' }
+    } } else { @{} }
+    foreach ($entry in $allEntries) {
+        $snapshot = $entry.prior
+        $entry.prior = @{ present=[bool]$snapshot.Present; identity=$snapshot.Identity; kind=$snapshot.Kind;
+            files=$snapshot.Files; directories=@($snapshot.Directories) }
+        $new = if ($entry.remove) { $null } else { Get-WinsmuxInstallSnapshot $stage[$entry.id] $entry.kind }
+        $entry.new_identity = if ($new) { $new.Identity } else { '' }
+        $entry.new_files = if ($new) { $new.Files } else { @{} }
+        if ($new) { $entry.new_directories = @($new.Directories) } else { $entry.new_directories = @() }
+        $entry.new_sha256 = if ($new -and $entry.kind -ceq 'File') { $new.Files[''] } else { '' }
+    }
+    $journal = @{ schema='winsmux-install-recovery/v2'; operation_id=$operation; members=$allEntries; registration=$registration }
+    Write-WinsmuxInstallFile (Join-Path $operationRoot 'recovery.json') ([Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json $journal -Depth 20 -Compress)))
+    $journal = Read-WinsmuxRecoveryJournal $Lease $operationRoot
+
     # Marker bytes are diagnostics only. No recovery operation trusts their paths.
     $marker = [ordered]@{ schema = 'winsmux-install-pending/v1'; operation_id = $operation }
     Write-WinsmuxInstallFile $Lease.Marker ([Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json $marker -Compress) + "`n"))
@@ -1154,44 +1278,63 @@ function Install-VerifiedWinsmuxGeneration {
         Invoke-WinsmuxInstallCheckpoint 'marker-written'
         # Licenses are complete before the new executable is published. Three
         # renames are not atomic; the marker exposes every incomplete transition.
-        foreach ($member in @('licenses', 'owner', 'exe')) {
-            $kind = $State.Snapshots[$member].Kind
-            if ($State.Snapshots[$member].Present) {
+        foreach ($entry in $journal.members) {
+            $member = $entry.id; $kind = $entry.kind
+            $target = Get-WinsmuxMemberPath $Lease $entry.name
+            Assert-WinsmuxInstallSnapshot $target (ConvertTo-WinsmuxRecoverySnapshot $entry.prior)
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))
+            [void](Assert-WinsmuxInstallPath ([IO.Path]::GetDirectoryName($target)) Directory)
+            if ($entry.prior.present) {
                 Invoke-WinsmuxInstallCheckpoint ('before-park-' + $member)
-                Move-WinsmuxInstallMember $State.Paths[$member] $backup[$member] $kind
+                Move-WinsmuxInstallMember $target $backup[$member] $kind
                 [void]$parked.Add($member)
                 Invoke-WinsmuxInstallCheckpoint ('parked-' + $member)
             }
-            Invoke-WinsmuxInstallCheckpoint ('before-publish-' + $member)
-            Move-WinsmuxInstallMember $stage[$member] $State.Paths[$member] $kind
-            [void]$published.Add($member)
-            Invoke-WinsmuxInstallCheckpoint ('published-' + $member)
+            if (-not $entry.remove) {
+                Invoke-WinsmuxInstallCheckpoint ('before-publish-' + $member)
+                Move-WinsmuxInstallMember $stage[$member] $target $kind
+                [void]$published.Add($member)
+                Invoke-WinsmuxInstallCheckpoint ('published-' + $member)
+            }
+        }
+        if ($Support) {
+            Invoke-WinsmuxInstallCheckpoint 'before-registration'
+            foreach ($name in @('user','process')) {
+                if (-not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $name) $journal.registration[$name].prior)) { throw 'PATH changed before registration; external value preserved.' }
+            }
+            foreach ($name in @('user','process')) { Publish-WinsmuxRegistrationSlot $Lease $journal $operationRoot $name }
+            Invoke-WinsmuxInstallCheckpoint 'published-registration'
         }
         Invoke-WinsmuxInstallCheckpoint 'before-readback'
         $installed = Assert-WinsmuxInstalledGeneration $State.Paths $Sidecar
         Assert-WinsmuxLifecycleFile $Lifecycle
+        foreach ($entry in $journal.members) {
+            if ($entry.id -in @('exe','owner','licenses')) { continue }
+            $current = Get-WinsmuxInstallSnapshot (Get-WinsmuxMemberPath $Lease $entry.name) File
+            if ($entry.remove) { if ($current.Present) { throw 'Profile-excluded member remained published.' } }
+            elseif (-not $current.Present -or $current.Identity -cne $entry.new_identity -or $current.Files[''] -cne $entry.new_sha256) { throw 'Support publication readback failed.' }
+        }
+        if ($Support) {
+            foreach ($name in @('user','process')) {
+                if ($journal.registration[$name].phase -cne 'confirmed' -or -not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $name) $journal.registration[$name].desired)) { throw 'Registration publication readback failed.' }
+            }
+        }
         Invoke-WinsmuxInstallCheckpoint 'readback-complete'
+        if ($Support) {
+            foreach ($name in @('user','process')) {
+                if (-not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $name) $journal.registration[$name].desired)) { throw 'Registration changed before commit; external value preserved.' }
+            }
+        }
+        Write-WinsmuxInstallFile (Join-Path $operationRoot 'committed') ([Text.UTF8Encoding]::new($false).GetBytes($operation))
+        Invoke-WinsmuxInstallCheckpoint 'generation-committed'
         $validated = $true
     } catch {
         $installError = $_
         try {
-            foreach ($member in @('exe', 'owner', 'licenses')) {
-                $kind = $State.Snapshots[$member].Kind
-                if ($published.Contains($member)) {
-                    Invoke-WinsmuxInstallCheckpoint ('before-reject-' + $member)
-                    Move-WinsmuxInstallMember $State.Paths[$member] $rejected[$member] $kind
-                    Invoke-WinsmuxInstallCheckpoint ('rejected-' + $member)
-                }
-                if ($parked.Contains($member)) {
-                    Invoke-WinsmuxInstallCheckpoint ('before-restore-' + $member)
-                    Move-WinsmuxInstallMember $backup[$member] $State.Paths[$member] $kind
-                    Invoke-WinsmuxInstallCheckpoint ('restored-' + $member)
-                }
-            }
-            Invoke-WinsmuxInstallCheckpoint 'before-restoration-readback'
-            foreach ($member in $State.Paths.Keys) { Assert-WinsmuxInstallSnapshot $State.Paths[$member] $State.Snapshots[$member] }
+            if ([IO.File]::Exists((Join-Path $operationRoot 'committed'))) { throw 'The generation is already committed; pending completion retained.' }
+            $journal = Read-WinsmuxRecoveryJournal $Lease $operationRoot
+            Restore-WinsmuxInstalledGeneration $Lease $journal $operationRoot
             Assert-WinsmuxLifecycleFile $Lifecycle
-            Invoke-WinsmuxInstallCheckpoint 'restoration-readback-complete'
             $restored = $true
         } catch { throw "Paired installation failed and restoration is uncertain; marker and owned backups retained. Install: $installError; restoration: $_" }
         if ($restored) {
@@ -1201,12 +1344,506 @@ function Install-VerifiedWinsmuxGeneration {
         throw $installError
     }
     if ($validated) {
+        Clear-WinsmuxCommittedSupportBackups $Lease $journal $operationRoot
         Invoke-WinsmuxInstallCheckpoint 'before-marker-removal'
         [IO.File]::Delete($Lease.Marker)
     }
     # Preserve the unique operation directory and all prior members. Cleanup is
     # a separate explicit operation; never unlink the shared lease or legacy files.
     return $installed
+}
+
+
+
+function Get-WinsmuxSupportNames {
+    # Exact product members; receipts never authorize arbitrary paths below HOME.
+    return @(
+        '.winsmux/winsmux-core/agents/profiles/base.md',
+        '.winsmux/winsmux-core/agents/profiles/lifecycles/one-shot.md',
+        '.winsmux/winsmux-core/agents/profiles/lifecycles/session.md',
+        '.winsmux/winsmux-core/agents/profiles/lifecycles/task.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-claude-opus-4-6-thinking.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-claude-sonnet-4-6-thinking.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-1-pro-high.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-1-pro-low.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-5-flash-high.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-5-flash-low.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-gemini-3-5-flash-medium.md',
+        '.winsmux/winsmux-core/agents/profiles/models/antigravity/antigravity-gpt-oss-120b-medium.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-fable-5.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-haiku-4-5.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-opus-4-6.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-opus-4-7.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-opus-4-8.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-opus-5.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-sonnet-4-6.md',
+        '.winsmux/winsmux-core/agents/profiles/models/claude/claude-sonnet-5.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-gpt-5-4-mini.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-gpt-5-4.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-gpt-5-5.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-gpt-5-6-luna.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-gpt-5-6-sol.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-gpt-5-6-terra.md',
+        '.winsmux/winsmux-core/agents/profiles/models/codex/codex-spark.md',
+        '.winsmux/winsmux-core/agents/profiles/models/grok-build/grok-build-composer-2-5-fast.md',
+        '.winsmux/winsmux-core/agents/profiles/models/grok-build/grok-build-grok-4-3.md',
+        '.winsmux/winsmux-core/agents/profiles/models/openrouter/_dynamic.md',
+        '.winsmux/winsmux-core/agents/profiles/models/openrouter/openrouter-glm-5-2.md',
+        '.winsmux/winsmux-core/agents/profiles/models/openrouter/openrouter-kimi-k2-7-code.md',
+        '.winsmux/winsmux-core/agents/profiles/models/openrouter/openrouter-sakana-fugu-ultra.md',
+        '.winsmux/winsmux-core/agents/profiles/providers/antigravity.md',
+        '.winsmux/winsmux-core/agents/profiles/providers/claude.md',
+        '.winsmux/winsmux-core/agents/profiles/providers/codex.md',
+        '.winsmux/winsmux-core/agents/profiles/providers/grok-build.md',
+        '.winsmux/winsmux-core/agents/profiles/providers/openrouter.md',
+        '.winsmux/winsmux-core/agents/profiles/registry.yaml',
+        '.winsmux/winsmux-core/agents/profiles/roles/architect.md',
+        '.winsmux/winsmux-core/agents/profiles/roles/builder.md',
+        '.winsmux/winsmux-core/agents/profiles/roles/maintainer.md',
+        '.winsmux/winsmux-core/agents/profiles/roles/researcher.md',
+        '.winsmux/winsmux-core/agents/profiles/roles/reviewer.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/architecture.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/documentation.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/implementation.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/protocol.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/repository-operations.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/research.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/review.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/security.md',
+        '.winsmux/winsmux-core/agents/profiles/task-classes/test.md',
+        '.winsmux/winsmux-core/router/local-small-router-v03621.manifest.json',
+        '.winsmux/winsmux-core/router/local-small-router-v03621.weights.json',
+        '.winsmux/winsmux-core/scripts/agent-launch.ps1',
+        '.winsmux/winsmux-core/scripts/agent-monitor.ps1',
+        '.winsmux/winsmux-core/scripts/agent-readiness.ps1',
+        '.winsmux/winsmux-core/scripts/agent-watchdog.ps1',
+        '.winsmux/winsmux-core/scripts/api-llm-pane-worker.ps1',
+        '.winsmux/winsmux-core/scripts/assignment-policy.ps1',
+        '.winsmux/winsmux-core/scripts/builder-queue.ps1',
+        '.winsmux/winsmux-core/scripts/builder-worktree.ps1',
+        '.winsmux/winsmux-core/scripts/clm-safe-io.ps1',
+        '.winsmux/winsmux-core/scripts/common-contract.generated.ps1',
+        '.winsmux/winsmux-core/scripts/conflict-preflight.ps1',
+        '.winsmux/winsmux-core/scripts/control-plane-commands.ps1',
+        '.winsmux/winsmux-core/scripts/control-plane-dispatch.ps1',
+        '.winsmux/winsmux-core/scripts/control-plane-ledger.ps1',
+        '.winsmux/winsmux-core/scripts/control-plane-workers.ps1',
+        '.winsmux/winsmux-core/scripts/coordinator-router.ps1',
+        '.winsmux/winsmux-core/scripts/credential-metadata.ps1',
+        '.winsmux/winsmux-core/scripts/declarative-workflow.ps1',
+        '.winsmux/winsmux-core/scripts/dispatch-router.ps1',
+        '.winsmux/winsmux-core/scripts/doctor.ps1',
+        '.winsmux/winsmux-core/scripts/github-write-preflight.ps1',
+        '.winsmux/winsmux-core/scripts/harness-check.ps1',
+        '.winsmux/winsmux-core/scripts/json-compat.ps1',
+        '.winsmux/winsmux-core/scripts/local-router-shadow.ps1',
+        '.winsmux/winsmux-core/scripts/logger.ps1',
+        '.winsmux/winsmux-core/scripts/manifest.ps1',
+        '.winsmux/winsmux-core/scripts/operator-poll.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-attach-confirm.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-attach-entry.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-attach.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-layout.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-pane-bootstrap.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-preflight.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-smoke.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-start.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-state.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-supervisor.ps1',
+        '.winsmux/winsmux-core/scripts/orchestra-ui-attach.ps1',
+        '.winsmux/winsmux-core/scripts/pane-border.ps1',
+        '.winsmux/winsmux-core/scripts/pane-control.ps1',
+        '.winsmux/winsmux-core/scripts/pane-dispatch-detect.ps1',
+        '.winsmux/winsmux-core/scripts/pane-env.ps1',
+        '.winsmux/winsmux-core/scripts/pane-scaler.ps1',
+        '.winsmux/winsmux-core/scripts/pane-status.ps1',
+        '.winsmux/winsmux-core/scripts/planning-paths.ps1',
+        '.winsmux/winsmux-core/scripts/powershell-deescalation.ps1',
+        '.winsmux/winsmux-core/scripts/public-first-run.ps1',
+        '.winsmux/winsmux-core/scripts/role-gate.ps1',
+        '.winsmux/winsmux-core/scripts/server-watchdog.ps1',
+        '.winsmux/winsmux-core/scripts/settings.ps1',
+        '.winsmux/winsmux-core/scripts/shadow-cutover-gate.ps1',
+        '.winsmux/winsmux-core/scripts/submission-contract.ps1',
+        '.winsmux/winsmux-core/scripts/task-splitter.ps1',
+        '.winsmux/winsmux-core/scripts/team-pipeline.ps1',
+        '.winsmux/winsmux-core/scripts/vault.ps1',
+        '.winsmux/winsmux-core/scripts/worker-isolation.ps1',
+        '.winsmux/bin/winsmux-core.ps1', '.winsmux/scripts/winsmux-core.ps1', '.winsmux/bin/winsmux.cmd',
+        '.winsmux/bin/install.ps1', '.winsmux/version', '.winsmux/install-profile', '.winsmux/install-profile.json',
+        '.winsmux/install-owner.json', '.winsmux.conf', 'terminal-fragment'
+    )
+}
+
+function Get-WinsmuxMemberPath {
+    param($Lease, [string]$Name)
+    switch -CaseSensitive ($Name) {
+        'exe' { return (Join-Path $Lease.LocalBin 'winsmux.exe') }
+        'owner' { return (Join-Path $Lease.LocalBin 'winsmux-licenses.owner.json') }
+        'licenses' { return (Join-Path $Lease.LocalBin 'winsmux-licenses') }
+        'profile' { return (Get-InstallPowerShellProfilePath) }
+        'terminal-fragment' { return (Join-Path $env:LOCALAPPDATA 'Microsoft/Windows Terminal/Fragments/winsmux/winsmux.json') }
+        default {
+            if ($Name -cnotin @(Get-WinsmuxSupportNames)) { throw 'Unrecognized installer member; files preserved.' }
+            $homeRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($Lease.LocalBin))
+            return (Join-Path $homeRoot $Name)
+        }
+    }
+}
+
+function Read-WinsmuxSupportOwner {
+    param($Lease)
+    $ownerPath = Get-WinsmuxMemberPath $Lease '.winsmux/install-owner.json'
+    if (-not (Assert-WinsmuxInstallPath $ownerPath File -AllowMissing)) { return $null }
+    $owner = ConvertFrom-StrictWinsmuxJsonBytes ([IO.File]::ReadAllBytes($ownerPath))
+    Assert-WinsmuxLicenseObjectKeys $owner @{ schema='string'; files='array'; profile_line='string' }
+    if ($owner.schema -cne 'winsmux-support-owner/v1') { throw 'Invalid support ownership receipt.' }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $owner.files) {
+        Assert-WinsmuxLicenseObjectKeys $entry @{ name='string'; sha256='string' }
+        if ($entry.name -cnotin @(Get-WinsmuxSupportNames) -or $entry.name -ceq '.winsmux/install-owner.json' -or
+            $entry.sha256 -cnotmatch '^[a-f0-9]{64}$' -or -not $seen.Add($entry.name)) {
+            throw 'Invalid support ownership member; unknown files preserved.'
+        }
+    }
+    # Compute the exact installed block without permitting directory names in receipts.
+    $homeRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($Lease.LocalBin))
+    $expectedLine = '$env:PATH = "' + (Join-Path $homeRoot '.winsmux/bin') + ';$env:PATH"'
+    if ($owner.profile_line -cne $expectedLine) { throw 'Invalid support profile ownership block.' }
+    return $owner
+}
+
+function New-WinsmuxSupportStage {
+    param($Lease, [string]$Profile, [bool]$IsUpdate)
+    $stageRoot = Join-Path $Lease.LocalBin ('.winsmux-support-' + [Guid]::NewGuid().ToString('N'))
+    [void](Assert-WinsmuxInstallPath $stageRoot Directory -AllowMissing)
+    [void][IO.Directory]::CreateDirectory($stageRoot)
+    # These local variables project all existing download helpers into the private
+    # stage. No installed support, project, APPDATA or registration is touched.
+    $WINSMUX_DIR = Join-Path $stageRoot '.winsmux'; $BIN_DIR = Join-Path $WINSMUX_DIR 'bin'
+    $SCRIPT_DIR = Join-Path $WINSMUX_DIR 'scripts'; $BRIDGE_DIR = Join-Path $WINSMUX_DIR 'winsmux-core'
+    $BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR 'scripts'; $BRIDGE_ROUTER_DIR = Join-Path $BRIDGE_DIR 'router'
+    $PROFILE_MANIFEST_FILE = Join-Path $WINSMUX_DIR 'install-profile.json'
+    foreach ($directory in @($BIN_DIR, $SCRIPT_DIR, $BRIDGE_SCRIPTS_DIR)) { [void][IO.Directory]::CreateDirectory($directory) }
+    Download-File 'scripts/winsmux-core.ps1' (Join-Path $BIN_DIR 'winsmux-core.ps1')
+    Download-File 'scripts/winsmux-core.ps1' (Join-Path $SCRIPT_DIR 'winsmux-core.ps1')
+    Install-CoreSupportScripts
+    Install-InstructionPacks
+    if (Test-InstallProfileContent $Profile 'orchestration_scripts') { Install-OrchestraSupportScripts }
+    if (Test-InstallProfileContent $Profile 'vault') { Install-SecuritySupportScripts }
+    if (Test-InstallProfileContent $Profile 'local_router_artifacts') { Install-LocalRouterArtifacts }
+    Download-File '.winsmux.conf' (Join-Path $stageRoot '.winsmux.conf')
+    $wrapper = @'
+@echo off
+setlocal
+set "WINSMUX_RAW_EXE=%USERPROFILE%\.local\bin\winsmux.exe"
+pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
+exit /b %ERRORLEVEL%
+'@
+    [IO.File]::WriteAllText((Join-Path $BIN_DIR 'winsmux.cmd'), $wrapper + "`n", [Text.ASCIIEncoding]::new())
+    [IO.File]::WriteAllText((Join-Path $WINSMUX_DIR 'version'), $ResolvedVersion + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $WINSMUX_DIR 'install-profile'), $Profile + "`n", [Text.UTF8Encoding]::new($false))
+    Write-InstallProfileManifest $Profile $IsUpdate
+    Sync-WindowsTerminalFragment $Profile -FragmentDirectory (Join-Path $stageRoot 'fragment')
+    $members = [Collections.Generic.List[object]]::new()
+    foreach ($name in @(Get-WinsmuxSupportNames)) {
+        if ($name -in @('.winsmux/bin/install.ps1', '.winsmux/install-owner.json')) { continue }
+        $stagedPath = if ($name -ceq 'terminal-fragment') { Join-Path $stageRoot 'fragment/winsmux.json' } else { Join-Path $stageRoot $name }
+        if (Assert-WinsmuxInstallPath $stagedPath File -AllowMissing) {
+            $members.Add([PSCustomObject]@{ Name=$name; Stage=$stagedPath; Remove=$false })
+        }
+    }
+    $owner = Read-WinsmuxSupportOwner $Lease
+    if ($owner) {
+        foreach ($entry in $owner.files) {
+            if ($entry.name -ceq '.winsmux/bin/install.ps1' -or $entry.name -cin @($members | ForEach-Object { $_.Name })) { continue }
+            $oldPath = Get-WinsmuxMemberPath $Lease $entry.name
+            $old = Get-WinsmuxInstallSnapshot $oldPath File
+            if ($old.Present -and $old.Files[''] -ceq $entry.sha256) {
+                $members.Add([PSCustomObject]@{ Name=$entry.name; Stage=''; Remove=$true })
+            }
+        }
+    }
+    $homeRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName($Lease.LocalBin))
+    $profileLine = '$env:PATH = "' + (Join-Path $homeRoot '.winsmux/bin') + ';$env:PATH"'
+    $profilePath = Get-InstallPowerShellProfilePath
+    $profileStage = Join-Path $stageRoot 'profile.ps1'
+    [void](Assert-WinsmuxInstallPath $profilePath File -AllowMissing)
+    $profileBytes = if ([IO.File]::Exists($profilePath)) { [IO.File]::ReadAllBytes($profilePath) } else { [byte[]]@() }
+    # Preserve existing profile bytes and encoding while appending the exact block.
+    $encoding = [Text.UTF8Encoding]::new($false, $true)
+    if ($profileBytes.Length -ge 4 -and $profileBytes[0] -eq 255 -and $profileBytes[1] -eq 254 -and $profileBytes[2] -eq 0 -and $profileBytes[3] -eq 0) { $encoding = [Text.UTF32Encoding]::new($false, $true) }
+    elseif ($profileBytes.Length -ge 4 -and $profileBytes[0] -eq 0 -and $profileBytes[1] -eq 0 -and $profileBytes[2] -eq 254 -and $profileBytes[3] -eq 255) { $encoding = [Text.UTF32Encoding]::new($true, $true) }
+    elseif ($profileBytes.Length -ge 2 -and $profileBytes[0] -eq 255 -and $profileBytes[1] -eq 254) { $encoding = [Text.UnicodeEncoding]::new($false, $true) }
+    elseif ($profileBytes.Length -ge 2 -and $profileBytes[0] -eq 254 -and $profileBytes[1] -eq 255) { $encoding = [Text.UnicodeEncoding]::new($true, $true) }
+    $text = $encoding.GetString($profileBytes)
+    if ($text -cnotmatch ('(?m)^# winsmux\r?\n' + [regex]::Escape($profileLine) + '(?:\r?$)')) {
+        $profileBytes = [byte[]]($profileBytes + $encoding.GetBytes("`n# winsmux`n" + $profileLine + "`n"))
+    }
+    Write-WinsmuxInstallFile $profileStage $profileBytes
+    $members.Add([PSCustomObject]@{ Name='profile'; Stage=$profileStage; Remove=$false })
+    $userPath = Get-InstallUserPath
+    $newPath = $userPath
+    if (-not @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Lease.LocalBin.TrimEnd('\') })) {
+        $newPath = if ($userPath) { $userPath + ';' + $Lease.LocalBin } else { $Lease.LocalBin }
+    }
+    $processPath = $env:Path
+    foreach ($entry in @($Lease.LocalBin, (Join-Path $homeRoot '.winsmux/bin'))) {
+        if (-not @($processPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $entry.TrimEnd('\') })) {
+            $processPath = if ($processPath) { $entry + ';' + $processPath } else { $entry }
+        }
+    }
+    return [PSCustomObject]@{ Root=$stageRoot; Members=$members; ProfileLine=$profileLine; PriorUserPath=$userPath;
+        UserPath=$newPath; PriorProcessPath=$env:Path; ProcessPath=$processPath; Owner=$owner }
+}
+
+function Test-WinsmuxNullablePath {
+    param([AllowNull()][AllowEmptyString()][object]$Actual, [AllowNull()][AllowEmptyString()][object]$Expected)
+    if ($null -eq $Actual -or $null -eq $Expected) { return ($null -eq $Actual -and $null -eq $Expected) }
+    return ($Actual -is [string] -and $Expected -is [string] -and $Actual -ceq $Expected)
+}
+
+function Get-WinsmuxRegistrationPath {
+    param([ValidateSet('user','process')][string]$Name)
+    if ($Name -ceq 'user') { return (Get-InstallUserPath) }
+    return $env:Path
+}
+
+function Set-WinsmuxRegistrationPath {
+    param([ValidateSet('user','process')][string]$Name, [AllowNull()][AllowEmptyString()][object]$Value)
+    if ($Name -ceq 'user') { Set-InstallUserPath $Value } else { $env:Path = $Value }
+}
+
+function Write-WinsmuxRecoveryJournal {
+    param($Lease, $Journal, [string]$OperationRoot)
+    $path = Join-Path $OperationRoot 'recovery.json'
+    $temporary = Join-Path $OperationRoot ('journal-' + [Guid]::NewGuid().ToString('N'))
+    Write-WinsmuxInstallFile $temporary ([Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json $Journal -Depth 20 -Compress)))
+    [void](Assert-WinsmuxInstallPath $path File)
+    if ((Get-WinsmuxInstallVolume $temporary File) -cne (Get-WinsmuxInstallVolume $path File)) { throw 'Recovery journal volume changed.' }
+    [IO.File]::Replace($temporary, $path, [Management.Automation.Language.NullString]::Value, $false)
+    $checked = Read-WinsmuxRecoveryJournal $Lease $OperationRoot
+    foreach ($name in @('user','process')) {
+        if ($checked.registration[$name].phase -cne $Journal.registration[$name].phase -or
+            -not (Test-WinsmuxNullablePath $checked.registration[$name].prior $Journal.registration[$name].prior) -or
+            -not (Test-WinsmuxNullablePath $checked.registration[$name].desired $Journal.registration[$name].desired)) { throw 'Recovery journal readback failed.' }
+    }
+}
+
+function Publish-WinsmuxRegistrationSlot {
+    param($Lease, $Journal, [string]$OperationRoot, [string]$Name)
+    $slot = $Journal.registration[$Name]
+    if ($slot.phase -cne 'staged' -or -not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $Name) $slot.prior)) { throw 'PATH changed before setter; observed external value preserved.' }
+    $slot.phase = 'write-intent'
+    Write-WinsmuxRecoveryJournal $Lease $Journal $OperationRoot
+    Invoke-WinsmuxInstallCheckpoint ('registration-' + $Name + '-write-intent')
+    # Registry has no atomic CAS. The immediate recheck protects every observed
+    # competing value; an unseen write in the read/write interval is unavoidable.
+    if (-not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $Name) $slot.prior)) { throw 'PATH changed before setter; observed external value preserved.' }
+    Set-WinsmuxRegistrationPath $Name $slot.desired
+    Invoke-WinsmuxInstallCheckpoint ('registration-' + $Name + '-written')
+    if (-not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $Name) $slot.desired)) { throw 'PATH setter readback failed; publication uncertain.' }
+    $slot.phase = 'confirmed'
+    Write-WinsmuxRecoveryJournal $Lease $Journal $OperationRoot
+    Invoke-WinsmuxInstallCheckpoint ('registration-' + $Name + '-confirmed')
+}
+
+function Restore-WinsmuxRegistrationSlot {
+    param($Lease, $Journal, [string]$OperationRoot, [string]$Name)
+    $slot = $Journal.registration[$Name]
+    $current = Get-WinsmuxRegistrationPath $Name
+    if ($slot.phase -cin @('write-intent','restore-intent')) { throw 'Interrupted PATH write is uncertain; preserved current value.' }
+    if (Test-WinsmuxNullablePath $current $slot.prior) {
+        if ($slot.phase -cne 'staged') { $slot.phase = 'restored'; Write-WinsmuxRecoveryJournal $Lease $Journal $OperationRoot }
+        return
+    }
+    if ($slot.phase -cne 'confirmed' -or -not (Test-WinsmuxNullablePath $current $slot.desired)) { throw 'PATH changed outside operation; preserved current value.' }
+    $slot.phase = 'restore-intent'
+    Write-WinsmuxRecoveryJournal $Lease $Journal $OperationRoot
+    Invoke-WinsmuxInstallCheckpoint ('registration-' + $Name + '-restore-intent')
+    if (-not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $Name) $slot.desired)) { throw 'PATH changed before restore setter; preserved current value.' }
+    Set-WinsmuxRegistrationPath $Name $slot.prior
+    Invoke-WinsmuxInstallCheckpoint ('registration-' + $Name + '-restored-written')
+    if (-not (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $Name) $slot.prior)) { throw 'PATH restoration readback failed.' }
+    $slot.phase = 'restored'
+    Write-WinsmuxRecoveryJournal $Lease $Journal $OperationRoot
+}
+
+function Restore-WinsmuxInstalledGeneration {
+    param($Lease, $Journal, [string]$OperationRoot)
+    foreach ($entry in @($Journal.members)[($Journal.members.Count - 1)..0]) {
+        $target = Get-WinsmuxMemberPath $Lease $entry.name
+        $backupPath = Join-Path $OperationRoot ('old-' + $entry.id)
+        $rejectPath = Join-Path $OperationRoot ('rejected-' + $entry.id)
+        $prior = ConvertTo-WinsmuxRecoverySnapshot $entry.prior
+        $actual = Get-WinsmuxInstallSnapshot $target $entry.kind
+        if (Assert-WinsmuxInstallPath $backupPath $entry.kind -AllowMissing) {
+            Assert-WinsmuxInstallSnapshot $backupPath $prior
+            if ($actual.Present) {
+                if ($actual.Identity -cne $entry.new_identity) { throw 'Recovery destination changed identity; retained all backups.' }
+                Invoke-WinsmuxInstallCheckpoint ('before-reject-' + $entry.id)
+                Move-WinsmuxInstallMember $target $rejectPath $entry.kind
+                Invoke-WinsmuxInstallCheckpoint ('rejected-' + $entry.id)
+            }
+            Invoke-WinsmuxInstallCheckpoint ('before-restore-' + $entry.id)
+            Move-WinsmuxInstallMember $backupPath $target $entry.kind
+            Invoke-WinsmuxInstallCheckpoint ('restored-' + $entry.id)
+        } elseif (-not $prior.Present -and $actual.Present) {
+            if ($actual.Identity -cne $entry.new_identity) { throw 'Recovery cannot identify new member; retained pending evidence.' }
+            Invoke-WinsmuxInstallCheckpoint ('before-reject-' + $entry.id)
+            Move-WinsmuxInstallMember $target $rejectPath $entry.kind
+            Invoke-WinsmuxInstallCheckpoint ('rejected-' + $entry.id)
+        }
+        Assert-WinsmuxInstallSnapshot $target $prior
+    }
+    $registrationUncertain = $false
+    if ($Journal.registration.Count -gt 0) {
+        foreach ($name in @('user','process')) {
+            try { Restore-WinsmuxRegistrationSlot $Lease $Journal $OperationRoot $name }
+            catch { $registrationUncertain = $true }
+        }
+    }
+    Invoke-WinsmuxInstallCheckpoint 'before-restoration-readback'
+    foreach ($entry in $Journal.members) {
+        Assert-WinsmuxInstallSnapshot (Get-WinsmuxMemberPath $Lease $entry.name) (ConvertTo-WinsmuxRecoverySnapshot $entry.prior)
+    }
+    Invoke-WinsmuxInstallCheckpoint 'restoration-readback-complete'
+    if ($registrationUncertain) { throw 'PATH restoration is uncertain; observed external values and pending evidence retained.' }
+}
+
+function ConvertTo-WinsmuxRecoverySnapshot {
+    param($Snapshot)
+    $files = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    foreach ($key in $Snapshot.files.Keys) { $files.Add($key, [string]$Snapshot.files[$key]) }
+    $directories = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($directory in $Snapshot.directories) { [void]$directories.Add([string]$directory) }
+    return [PSCustomObject]@{ Present=[bool]$Snapshot.present; Identity=$Snapshot.identity; Kind=$Snapshot.kind; Files=$files; Directories=$directories }
+}
+
+function Read-WinsmuxRecoveryJournal {
+    param($Lease, [string]$OperationRoot)
+    $journalPath = Join-Path $OperationRoot 'recovery.json'
+    [void](Assert-WinsmuxInstallPath $journalPath File)
+    $journal = ConvertFrom-StrictWinsmuxJsonBytes ([IO.File]::ReadAllBytes($journalPath))
+    Assert-WinsmuxLicenseObjectKeys $journal @{ schema='string'; operation_id='string'; members='array'; registration='object' }
+    if ($journal.schema -cne 'winsmux-install-recovery/v2' -or $journal.operation_id -cnotmatch '^[a-f0-9]{32}$' -or
+        [IO.Path]::GetFileName($OperationRoot) -cne ('.winsmux-install-' + $journal.operation_id) -or $journal.members.Count -lt 3) {
+        throw 'Invalid pending recovery identity.'
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $ids = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($entry in $journal.members) {
+        Assert-WinsmuxLicenseObjectKeys $entry @{ name='string'; id='string'; kind='string'; prior='object'; new_identity='text'; new_sha256='text'; new_files='object'; new_directories='array'; remove='boolean'; cleanup_owned='boolean' }
+        if (-not $seen.Add($entry.name) -or -not $ids.Add($entry.id) -or $entry.id -cnotmatch '^(exe|owner|licenses|support-[0-9]{3})$' -or
+            $entry.kind -cne $(if ($entry.name -ceq 'licenses') { 'Directory' } else { 'File' }) -or
+            ($entry.id -in @('exe','owner','licenses') -and $entry.id -cne $entry.name)) { throw 'Invalid recovery member.' }
+        [void](Get-WinsmuxMemberPath $Lease $entry.name)
+        Assert-WinsmuxLicenseObjectKeys $entry.prior @{ present='boolean'; identity='nullable-string'; kind='string'; files='object'; directories='array' }
+        if ($entry.prior.kind -cne $entry.kind -or ($entry.prior.present -and $entry.prior.identity -cnotmatch '^[a-f0-9]{8}:[a-f0-9]{16}$')) { throw 'Invalid prior recovery identity.' }
+        if ($entry.new_identity -and $entry.new_identity -cnotmatch '^[a-f0-9]{8}:[a-f0-9]{16}$') { throw 'Invalid new recovery identity.' }
+        foreach ($directory in @($entry.prior.directories) + @($entry.new_directories)) { Assert-WinsmuxLicenseMemberPath $directory }
+        foreach ($key in $entry.new_files.Keys) {
+            if ($entry.kind -ceq 'Directory') { Assert-WinsmuxLicenseMemberPath $key }
+            elseif ($key -cne '') { throw 'Invalid new file inventory.' }
+            if ($entry.new_files[$key] -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid new member checksum.' }
+        }
+        foreach ($key in $entry.prior.files.Keys) {
+            if ($entry.kind -ceq 'Directory') { Assert-WinsmuxLicenseMemberPath $key }
+            elseif ($key -cne '') { throw 'Invalid file recovery inventory.' }
+            if ($entry.prior.files[$key] -cnotmatch '^[a-f0-9]{64}$') { throw 'Invalid recovery checksum.' }
+        }
+    }
+    if (@('exe','owner','licenses') | Where-Object { -not $seen.Contains($_) }) { throw 'Recovery omitted a paired member.' }
+    if ($journal.registration.Count) {
+        Assert-WinsmuxLicenseObjectKeys $journal.registration @{ user='object'; process='object' }
+        foreach ($name in @('user','process')) {
+            $slot = $journal.registration[$name]
+            Assert-WinsmuxLicenseObjectKeys $slot @{ prior='nullable-text'; desired='nullable-text'; phase='string' }
+            if ($slot.phase -cnotin @('staged','write-intent','confirmed','restore-intent','restored')) { throw 'Invalid pending PATH phase.' }
+        }
+        $expected = $journal.registration.user.prior
+        if (-not @($expected -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Lease.LocalBin.TrimEnd('\') })) {
+            $expected = if ($expected) { $expected + ';' + $Lease.LocalBin } else { $Lease.LocalBin }
+        }
+        if (-not (Test-WinsmuxNullablePath $journal.registration.user.desired $expected)) { throw 'Invalid pending PATH mutation.' }
+    }
+    return $journal
+}
+
+
+function Clear-WinsmuxCommittedSupportBackups {
+    param($Lease, $Journal, [string]$OperationRoot)
+    if ($Journal.registration.Count -eq 0) { return }
+    [void](Assert-WinsmuxInstallPath (Join-Path $OperationRoot 'committed') File)
+    foreach ($entry in $Journal.members) {
+        # The paired/opaque archives keep their existing preservation contract.
+        # Only exact old support files from the prior ownership inventory, and a
+        # profile whose original bytes still exist at the canonical entrance, are
+        # eligible for collection. Unknown/modified settings are never erased.
+        if ($entry.id -cnotmatch '^support-[0-9]{3}$' -or -not $entry.prior.present -or
+            (-not $entry.cleanup_owned -and $entry.name -cne 'profile')) { continue }
+        $backupPath = Join-Path $OperationRoot ('old-' + $entry.id)
+        try {
+            if (-not (Assert-WinsmuxInstallPath $backupPath File -AllowMissing)) { continue }
+            Assert-WinsmuxInstallSnapshot $backupPath (ConvertTo-WinsmuxRecoverySnapshot $entry.prior)
+            if ($entry.name -ceq 'profile') {
+                $currentPath = Get-WinsmuxMemberPath $Lease 'profile'
+                $current = Get-WinsmuxInstallSnapshot $currentPath File
+                if ($current.Identity -cne $entry.new_identity -or $current.Files[''] -cne $entry.new_sha256) { continue }
+                $old = [IO.File]::ReadAllBytes($backupPath); $new = [IO.File]::ReadAllBytes($currentPath)
+                if ($new.Length -lt $old.Length) { continue }
+                $same = $true
+                for ($index=0; $index -lt $old.Length; $index++) { if ($old[$index] -ne $new[$index]) { $same=$false; break } }
+                if (-not $same) { continue }
+            }
+            Invoke-WinsmuxInstallCheckpoint ('before-cleanup-' + $entry.id)
+            Assert-WinsmuxInstallSnapshot $backupPath (ConvertTo-WinsmuxRecoverySnapshot $entry.prior)
+            [IO.File]::Delete($backupPath)
+            Invoke-WinsmuxInstallCheckpoint ('cleaned-' + $entry.id)
+        } catch { Write-Warning 'Committed support backup retained because safe collection could not be confirmed.' }
+    }
+}
+
+function Repair-WinsmuxPendingInstallation {
+    param($Lease)
+    $marker = ConvertFrom-StrictWinsmuxJsonBytes ([IO.File]::ReadAllBytes($Lease.Marker))
+    Assert-WinsmuxLicenseObjectKeys $marker @{ schema='string'; operation_id='string' }
+    if ($marker.schema -cne 'winsmux-install-pending/v1' -or $marker.operation_id -cnotmatch '^[a-f0-9]{32}$') { throw 'Invalid pending marker; files preserved.' }
+    $operationRoot = Join-Path $Lease.LocalBin ('.winsmux-install-' + $marker.operation_id)
+    [void](Assert-WinsmuxInstallPath $operationRoot Directory)
+    $journal = Read-WinsmuxRecoveryJournal $Lease $operationRoot
+    $committedPath = Join-Path $operationRoot 'committed'
+    if (Assert-WinsmuxInstallPath $committedPath File -AllowMissing) {
+        if ([IO.File]::ReadAllText($committedPath) -cne $marker.operation_id) { throw 'Invalid commit witness; preserved pending operation.' }
+        foreach ($entry in $journal.members) {
+            $path = Get-WinsmuxMemberPath $Lease $entry.name
+            $actual = Get-WinsmuxInstallSnapshot $path $entry.kind
+            if ($entry.remove) { if ($actual.Present) { throw 'Committed deletion changed; pending evidence retained.' } }
+            elseif (-not $actual.Present -or $actual.Identity -cne $entry.new_identity -or
+                ($entry.kind -ceq 'File' -and $actual.Files[''] -cne $entry.new_sha256)) { throw 'Committed member changed; pending evidence retained.' }
+        }
+        foreach ($entry in $journal.members) {
+            if ($entry.remove) { continue }
+            $expected = ConvertTo-WinsmuxRecoverySnapshot @{ present=$true; identity=$entry.new_identity; kind=$entry.kind;
+                files=$entry.new_files; directories=$entry.new_directories }
+            Assert-WinsmuxInstallSnapshot (Get-WinsmuxMemberPath $Lease $entry.name) $expected
+        }
+        if ($journal.registration.Count -and ($journal.registration.user.phase -cne 'confirmed' -or
+            -not (Test-WinsmuxNullablePath (Get-InstallUserPath) $journal.registration.user.desired))) { throw 'Committed PATH changed; pending evidence retained.' }
+        Clear-WinsmuxCommittedSupportBackups $Lease $journal $operationRoot
+    } else { Restore-WinsmuxInstalledGeneration $Lease $journal $operationRoot }
+    Invoke-WinsmuxInstallCheckpoint 'before-marker-removal'
+    [IO.File]::Delete($Lease.Marker)
+}
+
+function Invoke-WinsmuxInstallLifecycle {
+    param([switch]$IsUpdate)
+    $lease = Open-WinsmuxInstallLease (Join-Path $HOME '.local/bin') -RecoverPending
+    try {
+        $profile = Resolve-InstallProfile -PreferExisting:$IsUpdate
+        Install-WinsmuxBinary -Lease $lease -SupportProfile $profile -IsUpdate:$IsUpdate
+        Write-Status "Installed v$ResolvedVersion with profile '$profile'."
+    } finally { $lease.Stream.Dispose() }
 }
 
 function Get-WinsmuxCommandVersion {
@@ -1324,7 +1961,7 @@ function Read-WinsmuxReleaseChecksums {
 }
 
 function Install-WinsmuxBinary {
-    param($Lease = $null)
+    param($Lease = $null, [string]$SupportProfile = '', [switch]$IsUpdate)
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
 
@@ -1372,41 +2009,16 @@ function Install-WinsmuxBinary {
             try { [void](Assert-WinsmuxInstalledGeneration $state.Paths $sidecar); $healthy = $true }
             catch { Write-Status 'Installed licenses require paired repair.' }
         }
-        if ($healthy) {
+        if ($healthy -and -not $SupportProfile) {
             Publish-WinsmuxLifecycle $lease $lifecycle
             [void](Assert-WinsmuxInstalledGeneration $state.Paths $sidecar)
             Assert-WinsmuxLifecycleFile $lifecycle
-            Write-Status 'Installed executable and complete licenses match the verified release.'
         } else {
             if ($matchingBinary) { $downloadPath = $winsmuxExe }
             else { Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $downloadPath -ErrorAction Stop }
-            Install-VerifiedWinsmuxGeneration $lease $state $downloadPath $sidecar $lifecycle | Out-Null
+            $support = if ($SupportProfile) { New-WinsmuxSupportStage $lease $SupportProfile ([bool]$IsUpdate) } else { $null }
+            Install-VerifiedWinsmuxGeneration $lease $state $downloadPath $sidecar $lifecycle $support | Out-Null
         }
-
-        $userPath = Get-InstallUserPath
-        $userPaths = @()
-        if ($userPath) {
-            $userPaths = $userPath -split ';' | Where-Object { $_ }
-        }
-
-        $hasLocalBin = $false
-        foreach ($pathEntry in $userPaths) {
-            if ($pathEntry.TrimEnd('\') -ieq $localBin.TrimEnd('\')) {
-                $hasLocalBin = $true
-                break
-            }
-        }
-
-        if (-not $hasLocalBin) {
-            $newUserPath = if ($userPath) { "$userPath;$localBin" } else { $localBin }
-            Set-InstallUserPath -Value $newUserPath
-            Write-Status "Added $localBin to user PATH"
-        }
-
-        if (-not (($env:Path -split ';' | Where-Object { $_.TrimEnd('\') -ieq $localBin.TrimEnd('\') }))) {
-            $env:Path = if ($env:Path) { "$env:Path;$localBin" } else { $localBin }
-        }
-
         $installed = Get-WinsmuxCommandVersion -CommandInfo ([PSCustomObject]@{ Source = $winsmuxExe })
         if (-not $installed -or $installed.Version -ne $script:ResolvedVersion) {
             $observed = if ($installed) { $installed.Output } else { 'not runnable' }
@@ -1471,7 +2083,7 @@ function Invoke-DownloadFileWithRetry($relativeUrl, $destPath) {
 
 function Download-File($relativeUrl, $destPath) {
     try { Invoke-DownloadFileWithRetry $relativeUrl $destPath }
-    catch { Write-Error $_; exit 1 }
+    catch { throw }
 }
 
 function Test-RemoteFileExists($relativeUrl) {
@@ -1484,8 +2096,7 @@ function Test-RemoteFileExists($relativeUrl) {
         if ($statusCode -eq 404 -or $_.Exception.Message -match '404|Not Found') {
             return $false
         }
-        Write-Error "[winsmux] Failed to probe $url : $_"
-        exit 1
+        throw "[winsmux] Failed to probe $url : $_"
     }
 }
 
@@ -1503,174 +2114,28 @@ function Download-OptionalFile($relativeUrl, $destPath) {
 
 function Invoke-Install {
     param([switch]$IsUpdate)
-    $lease = Open-WinsmuxInstallLease (Join-Path $HOME '.local/bin')
-    try {
-    $label = if ($IsUpdate) { "Updating" } else { "Installing" }
-    $resolvedInstallProfile = Resolve-InstallProfile -PreferExisting:$IsUpdate
-    Write-Status "$label winsmux with profile '$resolvedInstallProfile' ..."
-
-    # 1. PowerShell version check
-    if ($PSVersionTable.PSVersion.Major -lt 7) {
-        Write-Warning "[winsmux] PowerShell 7+ is recommended. You are running $($PSVersionTable.PSVersion). Some features may not work correctly."
-    }
-
-    # 2. Administrator check
-    if (Test-Administrator) {
-        Write-Warning "[winsmux] Running as Administrator is not recommended. Consider running as a normal user."
-    }
-
-    # 3. winsmux detection / install
-    Install-WinsmuxBinary -Lease $lease
-
-    # 4. Create directories
-    foreach ($dir in @($WINSMUX_DIR, $BIN_DIR, $BACKUP_DIR, $SCRIPT_DIR, $BRIDGE_DIR, $BRIDGE_SCRIPTS_DIR, (Join-Path $env:APPDATA "winsmux"))) {
-        if (-not (Test-Path $dir)) {
-            New-Item -ItemType Directory -Path $dir -Force | Out-Null
-        }
-    }
-
-    # 5. Download & place files
-    # Installed lifecycle entrypoint and winsmux-core.ps1
-    # Install-WinsmuxBinary has already persisted the exact current consumer.
-    Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")
-    Download-File "scripts/winsmux-core.ps1" (Join-Path $SCRIPT_DIR "winsmux-core.ps1")
-
-    Install-CoreSupportScripts
-    Install-InstructionPacks
-
-    if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
-        Install-OrchestraSupportScripts
-    }
-    if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "vault") {
-        Install-SecuritySupportScripts
-    }
-    if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "local_router_artifacts") {
-        Install-LocalRouterArtifacts
-    }
-    Remove-ProfileExcludedSupportScripts -Profile $resolvedInstallProfile
-
-    # .winsmux.conf (backup existing)
-    $confDest = Join-Path $HOME ".winsmux.conf"
-    Backup-File $confDest
-    Download-File ".winsmux.conf" $confDest
-
-    # 6. Create .cmd wrappers
-    $winsmuxCmd = Join-Path $BIN_DIR "winsmux.cmd"
-@"
-@echo off
-setlocal
-set "WINSMUX_RAW_EXE=%USERPROFILE%\.local\bin\winsmux.exe"
-pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
-exit /b %ERRORLEVEL%
-"@ | Set-Content -Path $winsmuxCmd -Encoding ASCII
-
-    # 7.5. Register Windows Terminal Fragments
-    Sync-WindowsTerminalFragment -Profile $resolvedInstallProfile
-
-    # 8. Add to PATH via $PROFILE
-    $profileLine = "`$env:PATH = `"$BIN_DIR;`$env:PATH`""
-    $profilePath = Get-InstallPowerShellProfilePath
-    if (-not (Test-Path $profilePath)) {
-        $profileDir = Split-Path $profilePath -Parent
-        if (-not (Test-Path $profileDir)) {
-            New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-        }
-        New-Item -Path $profilePath -Force | Out-Null
-    }
-    $content = Get-Content $profilePath -Raw -ErrorAction SilentlyContinue
-    $managedProfilePattern = '(?m)^# winsmux\r?\n' + [regex]::Escape($profileLine) + '(?:\r?$)'
-    if (-not $content -or $content -notmatch $managedProfilePattern) {
-        Add-Content $profilePath "`n# winsmux`n$profileLine"
-    }
-    $env:PATH = "$BIN_DIR;$env:PATH"
-
-    # 9. Record version
-    $ResolvedVersion | Set-Content $VERSION_FILE
-    $resolvedInstallProfile | Set-Content $PROFILE_FILE
-    Write-InstallProfileManifest -Profile $resolvedInstallProfile -IsUpdate:$IsUpdate
-
-    # 10. Completion message
-    if ($IsUpdate) {
-        Write-Host ""
-        Write-Status "Updated to v$ResolvedVersion!"
-        Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
-        Write-Host "  winsmux config:  $confDest"
-        Write-Host "  install profile: $resolvedInstallProfile"
-    } else {
-        Write-Host ""
-        Write-Status "Installed successfully! (v$ResolvedVersion)"
-        Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
-        Write-Host "  winsmux config:  $confDest"
-        Write-Host "  install profile: $resolvedInstallProfile"
-        Write-Host ""
-        Write-Host "Next steps:"
-        if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
-            Write-Host "  1. Create project config:  winsmux init"
-            Write-Host "  2. Launch first run:       winsmux launch"
-            Write-Host "  3. Inspect panes:          winsmux list"
-        } else {
-            Write-Host "  1. Start a session:        winsmux new-session -s work"
-            Write-Host "  2. Inspect panes:          winsmux list"
-        }
-    }
-    } finally { $lease.Stream.Dispose() }
+    Invoke-WinsmuxInstallLifecycle -IsUpdate:$IsUpdate
 }
 
-
-
-
-
 function Invoke-Uninstall {
-    $lease = Open-WinsmuxInstallLease (Join-Path $HOME '.local/bin')
+    $lease = Open-WinsmuxInstallLease (Join-Path $HOME '.local/bin') -RecoverPending
     try {
-    Write-Status "Uninstalling winsmux..."
-
-    # 1. Remove ~/.winsmux
-    if (Test-Path $WINSMUX_DIR) {
-        Remove-Item $WINSMUX_DIR -Recurse -Force
-        Write-Status "Removed $WINSMUX_DIR"
-    }
-
-    # 2. Remove ~/.winsmux.conf
-    $confPath = Join-Path $HOME ".winsmux.conf"
-    if (Test-Path $confPath) {
-        Write-Host "[winsmux] Remove $confPath ? (winsmux config file)" -NoNewline
-        Write-Host " [Y/n] " -NoNewline
-        $answer = Read-Host
-        if ($answer -eq '' -or $answer -match '^[Yy]') {
-            Remove-Item $confPath -Force
-            Write-Status "Removed $confPath"
-        } else {
-            Write-Status "Kept $confPath"
+        $owner = Read-WinsmuxSupportOwner $lease
+        if (-not $owner) { Write-Status 'No support ownership receipt; existing files preserved.'; return }
+        foreach ($entry in $owner.files) {
+            $target = Get-WinsmuxMemberPath $lease $entry.name
+            $snapshot = Get-WinsmuxInstallSnapshot $target File
+            if ($snapshot.Present -and $snapshot.Files[''] -ceq $entry.sha256) {
+                Assert-WinsmuxInstallSnapshot $target $snapshot
+                [IO.File]::Delete($target)
+            }
         }
-    }
-
-    # 3. Remove only the exact installer-owned block from $PROFILE
-    $profilePath = Get-InstallPowerShellProfilePath
-    if (Test-Path $profilePath) {
-        $profileLine = "`$env:PATH = `"$BIN_DIR;`$env:PATH`""
-        Remove-WinsmuxProfileBlock -ProfilePath $profilePath -ManagedPathLine $profileLine
-        Write-Status "Cleaned $profilePath"
-    }
-
-    # 4. Remove Windows Terminal Fragments
-    $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
-    if (Test-Path $fragmentDir) {
-        Remove-Item $fragmentDir -Recurse -Force
-        Write-Status "Removed Windows Terminal fragment: $fragmentDir"
-    }
-
-    # 5. Remove %APPDATA%\winsmux
-    $appDataDir = Join-Path $env:APPDATA "winsmux"
-    if (Test-Path $appDataDir) {
-        Remove-Item $appDataDir -Recurse -Force
-        Write-Status "Removed $appDataDir"
-    }
-
-    # 6. Done (winsmux binary is NOT uninstalled)
-    Write-Host ""
-    Write-Status "Uninstalled."
-    Write-Host "  Note: winsmux itself was NOT removed. Manage it separately if needed."
+        $profilePath = Get-InstallPowerShellProfilePath
+        [void](Assert-WinsmuxInstallPath $profilePath File -AllowMissing)
+        Remove-WinsmuxProfileBlock $profilePath $owner.profile_line
+        $ownerPath = Get-WinsmuxMemberPath $lease '.winsmux/install-owner.json'
+        [IO.File]::Delete($ownerPath)
+        Write-Status 'Removed unchanged owned support. User files and standalone binary were preserved.'
     } finally { $lease.Stream.Dispose() }
 }
 

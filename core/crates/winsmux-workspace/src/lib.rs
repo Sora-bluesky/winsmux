@@ -2,6 +2,9 @@
 pub mod auth;
 pub mod client;
 pub mod contract;
+pub mod desktop_install;
+pub mod desktop_nsis;
+pub use desktop_install::run_internal_desktop_installer;
 pub mod host;
 #[cfg(windows)]
 pub(crate) mod provider;

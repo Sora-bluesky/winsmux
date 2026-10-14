@@ -25,7 +25,20 @@ function git(args, input) {
 // Only this explicit test artifact changes transport. The production installer,
 // its guards, npm index and shim are not edited. The private fixture must never
 // be published or counted as public-release acquisition evidence.
-export function prepareInstallFixture({ candidateDirectory, sourceCommit, version, output }) {
+export function projectInstallFixtureAsset(name, bytes, fault, snapshot) {
+  requireValue(['none', 'tamper', 'missing'].includes(fault), 'Unknown private transport failure mode.');
+  // Same-version updates reuse a matching installed PE, but acquire its sidecar
+  // on every entry. Fault this response so the real product guard is reached.
+  if (name === 'winsmux-x64.exe.licenses.zip' && fault === 'missing') return { kind: 'missing' };
+  if (name === 'winsmux-x64.exe.licenses.zip' && fault === 'tamper') {
+    const damaged = Buffer.from(bytes); damaged[damaged.length - 1] ^= 1;
+    return { ...snapshot(damaged), kind: 'file' };
+  }
+  return { ...snapshot(bytes), kind: 'file' };
+}
+
+export function prepareInstallFixture({ candidateDirectory, sourceCommit, version, output, fault = 'none' }) {
+  requireValue(['none', 'tamper', 'missing'].includes(fault), 'Unknown private transport failure mode.');
   requireValue(/^[a-f0-9]{40}$/u.test(sourceCommit) && /^\d+\.\d+\.\d+$/u.test(version), 'Exact fixture coordinates required.');
   requireValue(git(['rev-parse', 'HEAD']).toString('utf8').trim() === sourceCommit
     && plain(path.join(repo, 'VERSION')).toString('utf8').trim() === version, 'Fixture checkout coordinates differ.');
@@ -103,12 +116,14 @@ export function prepareInstallFixture({ candidateDirectory, sourceCommit, versio
   const releaseAssets = [];
   for (const [name, bytes] of assets) {
     const url = 'https://winsmux-fixture.invalid/assets/' + name;
-    responses[url] = { ...snapshot(bytes), kind: 'file' };
+    // The immutable candidate remains untouched. Only this run-owned HTTP
+    // response copy is changed; advertised SHA256SUMS and sidecar remain exact.
+    responses[url] = projectInstallFixtureAsset(name, bytes, fault, snapshot);
     releaseAssets.push({ name, browser_download_url: url });
   }
   const release = snapshot(Buffer.from(JSON.stringify({ tag_name: tag, assets: releaseAssets })));
   for (const suffix of ['latest', 'tags/' + tag]) responses['https://api.github.com/repos/Sora-bluesky/winsmux/releases/' + suffix] = { ...release, kind: 'json' };
-  const manifest = Buffer.from(JSON.stringify({ schema: 'install-e2e-transport/v1', source_commit: sourceCommit, version, responses }));
+  const manifest = Buffer.from(JSON.stringify({ schema: 'install-e2e-transport/v1', source_commit: sourceCommit, version, fault, responses }));
   const mapFile = path.join(destination, 'transport.json');
   fs.writeFileSync(mapFile, manifest, { flag: 'wx' });
   const literal = value => "'" + value.replaceAll("'", "''") + "'";
@@ -149,7 +164,7 @@ function Invoke-WebRequest {
   requireValue(Buffer.from(projected.toString('utf8').replace(transport, '')).equals(original), 'Fixture projection changed the product installer body.');
   const installer = path.join(destination, 'install.ps1');
   fs.writeFileSync(installer, projected, { flag: 'wx' });
-  const proof = { schema: 'install-e2e-fixture/v1', installer, source_commit: sourceCommit, version,
+  const proof = { schema: 'install-e2e-fixture/v1', installer, source_commit: sourceCommit, version, fault,
     original_installer_sha256: digest(original), fixture_installer_sha256: digest(projected), transport_sha256: digest(manifest),
     product_body_unchanged: true, source_snapshot: sourceRows, candidate_receipt_sha256: digest(plain(path.join(candidate, 'core-candidate.json'))),
     public_release_acquisition_proven: false, native_redistribution_verified: false };
@@ -159,8 +174,8 @@ function Invoke-WebRequest {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    requireValue(process.argv.length === 6, 'Usage: prepare-install-e2e-fixture.mjs <candidate-dir> <commit> <version> <fresh-output>');
-    const proof = prepareInstallFixture({ candidateDirectory: process.argv[2], sourceCommit: process.argv[3], version: process.argv[4], output: process.argv[5] });
+    requireValue(process.argv.length === 6 || (process.argv.length === 8 && process.argv[6] === '--fault'), 'Usage: prepare-install-e2e-fixture.mjs <candidate-dir> <commit> <version> <fresh-output> [--fault tamper|missing]');
+    const proof = prepareInstallFixture({ candidateDirectory: process.argv[2], sourceCommit: process.argv[3], version: process.argv[4], output: process.argv[5], fault: process.argv[7] ?? 'none' });
     console.log(JSON.stringify({ ...proof, source_snapshot: undefined }));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

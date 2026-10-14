@@ -15,6 +15,7 @@ pub mod workspace_transport;
 pub mod workspace_input_guard;
 mod startup_secondary_native;
 mod webview_accelerators;
+mod install_startup_receipt;
 mod workspace_clipboard;
 
 use control_pipe::{
@@ -2189,6 +2190,10 @@ pub fn desktop_webview_browser_args<R: tauri::Runtime>(app: &tauri::AppHandle<R>
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let installer_probe = install_startup_receipt::ProbeState::from_args().unwrap_or_else(|reason| {
+        eprintln!("winsmux-desktop: {reason}");
+        std::process::exit(2);
+    });
     let app = with_desktop_webview_policy(with_desktop_runtime_state(tauri::Builder::default()))
         .unwrap_or_else(|reason| {
             eprintln!("winsmux-desktop: remote debug gate rejected: {}", reason);
@@ -2197,6 +2202,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Arc::new(workspace_transport::WorkspaceManager::default()))
+        .manage(installer_probe)
         .setup(move |app| {
             let main_window_config = app
                 .config()
@@ -2211,12 +2217,17 @@ pub fn run() {
             if let Some(args) = desktop_webview_browser_args(app.handle())? {
                 window_builder = window_builder.additional_browser_args(&args);
             }
-            window_builder.build()?;
+            if let Some(directory) = app.state::<install_startup_receipt::ProbeState>().data_directory() {
+                window_builder = window_builder.data_directory(directory);
+            }
+            let main_window = window_builder.build()?;
+            app.state::<install_startup_receipt::ProbeState>().bind(&main_window)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             webview_accelerators::startup_main_policy_ready,
             webview_accelerators::startup_main_show,
+            install_startup_receipt::installer_startup_confirmed,
             remote_debug_gate::startup_secondary_creation_policy,
             startup_secondary_native::startup_secondary_request,
             desktop_summary_snapshot,

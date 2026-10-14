@@ -11,7 +11,7 @@ const require=createRequire(resolve(dependency,'package.json'));
 const {build}=require('esbuild'),{chromium}=require('playwright');
 const evidence=option('--evidence-dir',resolve(app,'../.evidence/rebuild/v0.38.0/TASK-872/ime-focus',new Date().toISOString().replaceAll(/[:.]/g,'-')));
 mkdirSync(evidence,{recursive:true});
-const bundle=await build({stdin:{contents:"export * from './src/workspace-ui/terminal-input';export * from './src/workspace-ui/terminal-input-codec';export * from './src/workspace-ui/focus';export * from './src/workspace-ui/project-pane-controller';export * from './src/workspace-ui/project-pane';",resolveDir:app},bundle:true,write:false,format:'esm',platform:'browser',target:'es2022',metafile:true});
+const bundle=await build({stdin:{contents:"export * from './src/workspace-ui/terminal-input';export * from './src/workspace-ui/terminal-input-codec';export * from './src/workspace-ui/focus';export * from './src/workspace-ui/project-pane-controller';export * from './src/workspace-ui/project-pane';export * from './src/workspace-ui/project-pane-terminal';",resolveDir:app},bundle:true,write:false,format:'esm',platform:'browser',target:'es2022',metafile:true,nodePaths:[resolve(dependency,'node_modules')],loader:{'.css':'empty'}});
 const sdkPath=resolve(dependency,'node_modules/xterm/lib/xterm.js'),sdk=readFileSync(sdkPath),css=readFileSync(resolve(dependency,'node_modules/xterm/css/xterm.css'),'utf8');
 const paneCssPath=resolve(app,'src/workspace-ui/project-pane.css'),paneCss=readFileSync(paneCssPath,'utf8');
 const inputPaths=[...Object.keys(bundle.metafile.inputs).filter(p=>p!=='<stdin>').map(p=>resolve(p)),sdkPath,resolve(dependency,'node_modules/xterm/package.json'),paneCssPath,fileURLToPath(import.meta.url)];
@@ -31,36 +31,44 @@ try {
  await page.addStyleTag({content:css});
  await page.addScriptTag({content:sdk.toString('utf8')});
  await page.evaluate(async code=>{globalThis.product=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));},bundle.outputFiles[0].text);
- const contrastChecks=await page.evaluate(async marker=>{
-  const passed=[],check=(name,value,detail)=>{if(!value)throw Error(detail===undefined?name:name+' '+JSON.stringify(detail));passed.push(name);};
-  const transparent=color=>{const match=/rgba?\(([^)]+)\)/.exec(color);if(!match)return color==='transparent';const parts=match[1].split(/[,\s/]+/).filter(Boolean);return parts.length===4&&Number(parts[3])===0;};
-  const host=document.createElement('div');host.className='workspace-terminal';host.style.cssText='width:850px;height:420px';document.body.append(host);
-  const terminal=new globalThis.Terminal({disableStdin:true,cursorBlink:false,scrollback:5000,screenReaderMode:true});
-  terminal.open(host);
-  await new Promise(resolve=>terminal.write(marker,resolve));
-  const tree=()=>document.querySelector('.workspace-terminal .xterm-accessibility-tree');
-  const until=performance.now()+1500;
-  while(performance.now()<until&&!tree()?.textContent?.includes(marker))await new Promise(resolve=>setTimeout(resolve,50));
-  const read=()=>{const node=document.querySelector('.workspace-terminal .xterm-accessibility');const style=getComputedStyle(node);return{color:style.color,adjust:style.forcedColorAdjust,forced:matchMedia('(forced-colors: active)').matches,text:tree()?.textContent??''};};
-  globalThis.contrastRead=read;globalThis.contrastMarker=marker;globalThis.contrastDone=()=>{terminal.dispose();host.remove();};
-  const off=read();
-  check('workspace terminal accessibility text stays fully transparent with forced colors off',!off.forced&&transparent(off.color),off);
-  check('screen reader tree contains the written terminal marker',off.text.includes(marker),off);
-  return passed;
- },'SRMARKER876');
- checks.push(...contrastChecks);
- await page.emulateMedia({forcedColors:'active'});
- const forcedContrastChecks=await page.evaluate(()=>{
-  const passed=[],check=(name,value,detail)=>{if(!value)throw Error(detail===undefined?name:name+' '+JSON.stringify(detail));passed.push(name);};
-  const transparent=color=>{const match=/rgba?\(([^)]+)\)/.exec(color);if(!match)return color==='transparent';const parts=match[1].split(/[,\s/]+/).filter(Boolean);return parts.length===4&&Number(parts[3])===0;};
-  const style=globalThis.contrastRead();
-  check('forced colors keep workspace terminal accessibility text fully transparent and forced-color-adjust none',style.forced&&transparent(style.color)&&style.adjust==='none',style);
-  check('screen reader tree still contains the written terminal marker under forced colors',style.text.includes(globalThis.contrastMarker),style);
-  return passed;
- });
- checks.push(...forcedContrastChecks);
+ for(const forcedColors of ['none','active']) {
+  await page.emulateMedia({forcedColors});
+  await page.evaluate(()=>{
+   const {mountProjectPaneTerminal}=globalThis.product;
+   const uid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
+   const host=document.createElement('div');host.className='workspace-terminal';host.style.cssText='width:850px;height:420px';document.body.append(host);
+   const snapshot={instanceId:uid(1),generation:uid(2),topologyRevision:7,availability:'available',busy:false,projects:{selected_project_id:uid(3)},panes:{project_id:uid(3),selected_pane_id:uid(4),panes:[{pane_id:uid(4),current_run_id:uid(5)}]}};
+   const out=[];
+   const input={explain:message=>{throw Error(message);},produce:target=>({target,offer:text=>{out.push(text);return true;},focus:()=>{},pending:()=>true,canAccept:()=>true,retire:()=>{}})};
+   const mounted=mountProjectPaneTerminal(host,uid(3),uid(4),{snapshot:()=>snapshot,resize:()=>true,input});
+   const marker='TERMINAL876';
+   mounted.append(mounted.readTarget(),{run_id:uid(5),text:marker,next_cursor:'1',gap:false,truncated:false});
+   globalThis.workspaceTerminalModeFixture={host,mounted,out,marker,dispose(){mounted.dispose();host.remove();}};
+  });
+  await page.waitForFunction(()=>{const f=globalThis.workspaceTerminalModeFixture;return f.host.querySelector('.xterm-rows')?.textContent?.includes(f.marker);});
+  const modeChecks=await page.evaluate(forcedColors=>{
+   const f=globalThis.workspaceTerminalModeFixture;
+   const passed=[],check=(name,value,detail)=>{if(!value)throw Error(name+' '+JSON.stringify(detail));passed.push(name+' '+forcedColors);};
+   const rows=f.host.querySelector('.xterm-rows'),row=[...rows.children].find(node=>node.textContent.includes(f.marker));
+   const span=[...row.querySelectorAll('span')].find(node=>node.textContent.includes(f.marker)),style=getComputedStyle(span),rect=span.getBoundingClientRect();
+   check('production terminal has no screen reader layer',!f.host.querySelector('.xterm-accessibility, .xterm-accessibility-tree'));
+   check('production terminal renders the written text',rows.textContent.includes(f.marker)&&rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility==='visible'&&style.opacity!=='0',{text:row.textContent,width:rect.width,height:rect.height});
+   check('production terminal uses the requested color mode',matchMedia('(forced-colors: active)').matches===(forcedColors==='active'));
+   document.querySelector('#other').focus();
+   check('production terminal restores keyboard focus',f.mounted.focus()&&document.activeElement===f.host.querySelector('textarea'));
+   return passed;
+  },forcedColors);
+  checks.push(...modeChecks);
+  for(const key of ['a','Shift+KeyA','ArrowLeft','Enter','Control+c'])await page.keyboard.press(key);
+  const inputChecks=await page.evaluate(forcedColors=>{
+   const f=globalThis.workspaceTerminalModeFixture,expected=['a','A','\x1b[D','\r','\x03'];
+   if(JSON.stringify(f.out)!==JSON.stringify(expected))throw Error('production terminal VT keys must be delivered once '+forcedColors+' '+JSON.stringify({actual:f.out,expected}));
+   return ['production terminal delivers lowercase, uppercase, arrow, Enter and Ctrl+C once '+forcedColors];
+  },forcedColors);
+  checks.push(...inputChecks);
+  await page.evaluate(()=>globalThis.workspaceTerminalModeFixture.dispose());
+ }
  await page.emulateMedia({forcedColors:'none'});
- await page.evaluate(()=>globalThis.contrastDone());
  const integrationChecks=await page.evaluate(async()=>{
   const {createTerminalInputOwner,createProjectPaneController}=globalThis.product;
   const checks=[],check=(name,passed,detail)=>checks.push({name,passed,detail});
@@ -349,7 +357,7 @@ try {
   const passed=[],check=(name,value)=>{if(!value)throw Error(name);passed.push(name);};
   const slot=document.querySelector('#term'),other=document.querySelector('#other');
   const uid=n=>'00000000-0000-4000-8000-'+String(n).padStart(12,'0');
-  function fixture(){slot.replaceChildren();const terminal=new globalThis.Terminal({screenReaderMode:true,disableStdin:false});terminal.open(slot);terminal.focus();const f={terminal,ta:terminal.textarea,out:[],focus:[],pending:0,active:false,enabled:true,notes:[],retired:false};const producer={target:{instanceId:uid(1),generation:uid(2),projectId:uid(3),paneId:uid(4),runId:uid(5),producerId:uid(6)},offer:text=>{f.out.push(text);return true;},focus(text){f.focus.push(text);},pending:(bytes,active)=>{f.pending=bytes;f.active=active;return true;},canAccept:()=>f.enabled,retire:()=>{f.retired=true;}};f.codec=installTerminalInputCodec(slot,terminal,producer,message=>f.notes.push(message));f.dispose=()=>{f.codec.retire();terminal.dispose();};return f;}
+  function fixture(){slot.replaceChildren();const terminal=new globalThis.Terminal({disableStdin:false});terminal.open(slot);terminal.focus();const f={terminal,ta:terminal.textarea,out:[],focus:[],pending:0,active:false,enabled:true,notes:[],retired:false};const producer={target:{instanceId:uid(1),generation:uid(2),projectId:uid(3),paneId:uid(4),runId:uid(5),producerId:uid(6)},offer:text=>{f.out.push(text);return true;},focus(text){f.focus.push(text);},pending:(bytes,active)=>{f.pending=bytes;f.active=active;return true;},canAccept:()=>f.enabled,retire:()=>{f.retired=true;}};f.codec=installTerminalInputCodec(slot,terminal,producer,message=>f.notes.push(message));f.dispose=()=>{f.codec.retire();terminal.dispose();};return f;}
   const event=(ta,type,options={})=>ta.dispatchEvent(type.startsWith('composition')?new CompositionEvent(type,{bubbles:true,...options}):new InputEvent(type,{bubbles:true,cancelable:type==='beforeinput',...options}));
   const key=(ta,type,options)=>ta.dispatchEvent(new KeyboardEvent(type,{bubbles:true,cancelable:true,...options}));
   const start=(f,text)=>{event(f.ta,'compositionstart');f.ta.value=text;event(f.ta,'compositionupdate',{data:text});event(f.ta,'input',{inputType:'insertCompositionText',data:text,isComposing:true});};
@@ -369,7 +377,7 @@ try {
    f=fixture();start(f,'既存');f.enabled=false;end(f);drain();check('fenced existing IME preedit remains visible and undelivered',f.out.length===0&&f.active&&f.ta.value==='既存');f.dispose();drain();
    f=fixture();for(let i=0;i<2;i++){start(f,'同じ');end(f);drain();}check('same repeated composition is two columns',f.out.join('|')==='同じ|同じ');f.dispose();drain();
    f=fixture();event(f.ta,'beforeinput',{inputType:'insertCompositionText',data:'日本語',isComposing:true});f.ta.value='日本語';event(f.ta,'input',{inputType:'insertCompositionText',data:'日本語',isComposing:true});end(f);drain();check('compositionstart absent uses actual beforeinput range',f.out.join('')==='日本語');f.dispose();drain();
-   f=fixture();event(f.ta,'beforeinput',{inputType:'insertText',data:'😀'});f.ta.value='😀';event(f.ta,'input',{inputType:'insertText',data:'😀'});check('screen reader emoji from native input delivered once',f.out.join('')==='😀');f.dispose();drain();
+   f=fixture();event(f.ta,'beforeinput',{inputType:'insertText',data:'😀'});f.ta.value='😀';event(f.ta,'input',{inputType:'insertText',data:'😀'});check('emoji from native input delivered once',f.out.join('')==='😀');f.dispose();drain();
    f=fixture();start(f,'先');end(f);event(f.ta,'beforeinput',{inputType:'insertText',data:'次'});f.ta.value='先次';event(f.ta,'input',{inputType:'insertText',data:'次'});drain();check('independent post-composition insertion has two exact columns',f.out.join('|')==='先|次');f.dispose();drain();
    f=fixture();start(f,'先');end(f);f.ta.value='ambiguous';event(f.ta,'input',{inputType:'insertText',data:'ambiguous'});drain();check('ambiguous completion is refused with active retention',f.out.length===0&&f.active&&f.notes.some(n=>n.includes('対応')));f.dispose();drain();
    f=fixture();start(f,'変換');const data=new DataTransfer();data.setData('text/plain','paste');f.ta.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));check('paste during active IME keeps preedit and refuses delivery',f.out.length===0&&f.ta.value==='変換'&&f.active);const cancel=slot.previousElementSibling;cancel.click();check('explicit cancel releases only uncommitted preedit',f.out.length===0&&!f.active&&f.ta.value==='');f.dispose();drain();
@@ -487,7 +495,7 @@ try {
    let terminal,codec;
    const view=createProjectPaneView(root,snapshot,{
     control:(intent)=>{const release=intent.kind==='resize-pane'?()=>{}:owner.admitControl();admissions.push({kind:intent.kind,accepted:!!release,records:owner.inspect().records.map(r=>r.state),terminalFocused:document.activeElement===terminal.textarea});release?.();return{disposition:release?'completed':'refused'};},inspect:intent=>inspections.push(intent.kind),composing:owner.hasPendingComposition,
-    mountTerminal:slot=>{terminal=new globalThis.Terminal({screenReaderMode:true});terminal.open(slot);codec=installTerminalInputCodec(slot,terminal,owner.produce(target),owner.explain);return()=>{codec.retire();terminal.dispose();};}
+    mountTerminal:slot=>{terminal=new globalThis.Terminal({});terminal.open(slot);codec=installTerminalInputCodec(slot,terminal,owner.produce(target),owner.explain);return()=>{codec.retire();terminal.dispose();};}
    });
    if(reporting)await new Promise(resolve=>terminal.write('\x1b[?1004h',resolve));
    terminal.focus();await flush();
@@ -563,7 +571,7 @@ try {
     owner.connect(connection);
     await owner.recoverGuard();
     let terminal,producer;
-    const view=createProjectPaneView(root,snapshot,{control:intent=>{const release=intent.kind==='resize-pane'?()=>{}:owner.admitControl();admissions.push({kind:intent.kind,accepted:!!release,records:owner.inspect().records.map(r=>r.state)});release?.();return{disposition:release?'completed':'refused'};},inspect:()=>{},composing:owner.hasPendingComposition,mountTerminal:slot=>{terminal=new globalThis.Terminal({screenReaderMode:true});terminal.open(slot);producer=owner.produce(target);const codec=installTerminalInputCodec(slot,terminal,producer,owner.explain);return()=>{codec.retire();terminal.dispose();};}});
+    const view=createProjectPaneView(root,snapshot,{control:intent=>{const release=intent.kind==='resize-pane'?()=>{}:owner.admitControl();admissions.push({kind:intent.kind,accepted:!!release,records:owner.inspect().records.map(r=>r.state)});release?.();return{disposition:release?'completed':'refused'};},inspect:()=>{},composing:owner.hasPendingComposition,mountTerminal:slot=>{terminal=new globalThis.Terminal({});terminal.open(slot);producer=owner.produce(target);const codec=installTerminalInputCodec(slot,terminal,producer,owner.explain);return()=>{codec.retire();terminal.dispose();};}});
     const interrupt=()=>{const button=root.querySelector('[data-action="interrupt-run"]');if(!button||button.disabled||button.textContent!=='中断')throw Error('pane interrupt control missing');return button;};
     const releaseOne=async()=>{if(!gate.release)return false;const finish=gate.release;gate.release=null;finish();await flush();return true;};
     const releaseAll=async()=>{for(let n=0;n<8;n++)if(!await releaseOne())break;};

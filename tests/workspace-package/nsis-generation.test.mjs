@@ -130,8 +130,12 @@ run('wrong-hook-anchor', f => {
   f.options.hookSha256 = hash(fs.readFileSync(hook));
 });
 run('changed-template', f => fs.appendFileSync(path.join(f.source, 'nsis/installer.nsi'), '; changed'));
-run('old-namespace-utils', f => fs.writeFileSync(path.join(f.source, 'nsis/winsmux-utils.nsh'),
-  fs.readFileSync(path.join(f.source, 'nsis/winsmux-utils.nsh'), 'utf8').replaceAll('winsmux_nsis_utils::', 'nsis_tauri_utils::')));
+run('old-namespace-utils', f => {
+  const file = path.join(f.source, 'nsis/winsmux-utils.nsh'), original = fs.readFileSync(file, 'utf8');
+  const altered = original + '\nnsis_tauri_utils::FindProcess \"winsmux-app.exe\"\n';
+  assert.notEqual(altered, original); assert.ok(altered.includes('nsis_tauri_utils::FindProcess'));
+  fs.writeFileSync(file, altered);
+});
 run('unknown-plugin-source', f => { f.manifest.plugin.source_commit = '0'.repeat(40); });
 run('wrong-DLL-provenance', f => { f.manifest.plugin.dll_sha256 = '0'.repeat(64); });
 run('non-PE-DLL', f => {

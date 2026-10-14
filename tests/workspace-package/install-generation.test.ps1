@@ -1,5 +1,6 @@
 param([string]$ChildRoot = '', [string]$ChildPhase = '', [string]$ChildAction = '', [string]$SelectedCase = '')
 $ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 Set-StrictMode -Version Latest
 $repo = (Get-Location).Path
 $tokens = $null; $parseErrors = $null
@@ -10,7 +11,12 @@ $names = @('Assert-WinsmuxReleaseTag', 'Get-WinsmuxBytesSha256', 'ConvertFrom-St
     'Assert-WinsmuxLicenseObjectKeys', 'Assert-WinsmuxLicenseMemberPath', 'Initialize-WinsmuxInstallPathInfo',
     'Get-WinsmuxExecutingInstallerSource', 'ConvertTo-WinsmuxLifecycleBytes', 'New-WinsmuxLifecycleState', 'Assert-WinsmuxLifecycleFile', 'Publish-WinsmuxLifecycle', 'Assert-WinsmuxInstallPath', 'Open-WinsmuxInstallLease', 'Get-WinsmuxInstallSnapshot', 'Assert-WinsmuxInstallSnapshot',
     'Read-WinsmuxInstallOwner', 'Get-WinsmuxInstallState', 'Invoke-WinsmuxInstallCheckpoint', 'Write-WinsmuxInstallFile',
-    'Move-WinsmuxInstallMember', 'Assert-WinsmuxInstalledGeneration', 'Install-VerifiedWinsmuxGeneration')
+    'Get-WinsmuxInstallVolume', 'Assert-WinsmuxGenerationVolumes', 'Test-WinsmuxNullablePath',
+    'Get-WinsmuxRegistrationPath', 'Set-WinsmuxRegistrationPath', 'Write-WinsmuxRecoveryJournal',
+    'Publish-WinsmuxRegistrationSlot', 'Restore-WinsmuxRegistrationSlot', 'Move-WinsmuxInstallMember', 'Assert-WinsmuxInstalledGeneration', 'Install-VerifiedWinsmuxGeneration',
+    'Get-WinsmuxSupportNames', 'Get-WinsmuxMemberPath', 'ConvertTo-WinsmuxRecoverySnapshot',
+    'Read-WinsmuxRecoveryJournal', 'Restore-WinsmuxInstalledGeneration', 'Repair-WinsmuxPendingInstallation',
+    'Clear-WinsmuxCommittedSupportBackups')
 foreach ($name in $names) {
     $definitions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true))
     if ($definitions.Count -ne 1) { throw "Ambiguous product function: $name" }
@@ -143,11 +149,17 @@ function Assert-LifecycleInvariant([string]$Root) {
     if ([IO.File]::Exists((Join-Path $bin 'winsmux.install.pending.json'))) {
         Assert-Condition ([IO.File]::Exists($active)) 'Pending data has no complete current entrance.'
         Assert-Condition ((Get-FileHash $active -Algorithm SHA256).Hash -ceq (Get-FileHash $installer -Algorithm SHA256).Hash) 'Pending data still reaches a historical or changed consumer.'
-        Assert-PublicPendingRefusal $Root $active
+        Assert-PublicInvalidPendingRefusal $Root $active
     }
 }
-function Assert-PublicPendingRefusal([string]$Root, [string]$Active) {
+function Assert-PublicInvalidPendingRefusal([string]$Root, [string]$Active) {
     $before = Read-ExternalInventory (Join-Path $Root '.local/bin')
+    # Valid journal recovery is exercised in install-lifecycle.test.ps1. This
+    # public Main proof deliberately damages the marker and requires fail-closed
+    # preservation before any transport or user registration can run.
+    $markerPath = Join-Path $Root '.local/bin/winsmux.install.pending.json'
+    $markerBytes = [IO.File]::ReadAllBytes($markerPath)
+    [IO.File]::WriteAllText($markerPath, '{}', $utf8)
     $wrapper = Join-Path $Root 'public-pending-entry.ps1'
     $template = @'
 param([string]$InstalledSource, [string]$PrivateRoot)
@@ -162,7 +174,7 @@ $results = @()
 foreach ($action in @('install', 'update', 'uninstall')) {
     $errorMessage = ''; $refused = $false
     try { & ([scriptblock]::Create($projected)) -Action $action }
-    catch { $errorMessage = $_.Exception.Message; $refused = $errorMessage -like '*incomplete paired installation requires recovery*' }
+    catch { $errorMessage = $_.Exception.Message; $refused = $errorMessage -like '*supported schema*' }
     $results += @{ action = $action; refused = $refused; error = $errorMessage }
 }
 Write-Output (ConvertTo-Json @{ actions = $results; source_sha256 = (Get-FileHash $InstalledSource -Algorithm SHA256).Hash } -Depth 5 -Compress)
@@ -180,7 +192,8 @@ if (@($results | Where-Object { -not $_.refused }).Count) { exit 81 }
     $record = @{ exit = $process.ExitCode; stdout = $outTask.GetAwaiter().GetResult(); stderr = $errTask.GetAwaiter().GetResult() }
     $process.Dispose()
     [IO.File]::WriteAllText((Join-Path $Root 'public-pending-result.json'), (ConvertTo-Json $record -Depth 5), $utf8)
-    Assert-Condition ($record.exit -eq 0) ('Public Main did not refuse all pending mutations: ' + $record.stderr + $record.stdout)
+    [IO.File]::WriteAllBytes($markerPath, $markerBytes)
+    Assert-Condition ($record.exit -eq 0) ('Public Main did not refuse all damaged-pending mutations: ' + $record.stderr + $record.stdout)
     Assert-Condition ((Read-ExternalInventory (Join-Path $Root '.local/bin')) -ceq $before) 'Public pending refusal changed canonical data.'
     Assert-Condition (-not [IO.File]::Exists((Join-Path $Root 'opaque-old-consumer-reached.txt'))) 'Public refusal reached the opaque old consumer.'
 }
@@ -487,7 +500,7 @@ $failedCases = @($results | Where-Object { -not $_.passed })
 $expectedCount = if ($SelectedCase) { $SelectedCase.Split(',').Count } else { 173 }
 $receipt = @{ schema = 'winsmux-install-generation-proof/v1'; completed = ($failedCases.Count -eq 0 -and $results.Count -eq $expectedCount);
     selection = $SelectedCase; expected_count = $expectedCount;
-    scope = 'actual Windows filesystem transaction and lease; synthetic executable/license bytes and version observation; complete persisted consumer public Main install/update/uninstall pending refusal with HOME-only private projection; no live release or real artifact installation claim';
+    scope = 'actual Windows filesystem transaction and lease; synthetic executable/license bytes and version observation; complete persisted consumer public Main install/update/uninstall damaged-pending refusal; valid journal recovery has a separate lifecycle proof with HOME-only private projection; no live release or real artifact installation claim';
     installer_sha256 = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant();
     cases = $results.ToArray(); passed = $results.Count - $failedCases.Count; failed = $failedCases.Count }
 [IO.File]::WriteAllText((Join-Path $proofRoot 'result.json'), (ConvertTo-Json $receipt -Depth 12), $utf8)
