@@ -11,6 +11,25 @@
 name: desktop-candidate-cdp-gate
 
 on:
+  workflow_call:
+    inputs:
+      candidate_ref:
+        required: true
+        type: string
+      release_tag:
+        required: false
+        default: v0.38.0
+        type: string
+      version:
+        required: false
+        default: 0.38.0
+        type: string
+      native_lifecycle:
+        required: true
+        type: boolean
+      baseline_artifact:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       candidate_ref:
@@ -27,12 +46,23 @@ on:
         required: false
         default: 0.38.0
         type: string
+      native_lifecycle:
+        description: Finite native install/update/rollback/uninstall proof
+        required: false
+        default: false
+        type: boolean
+      baseline_artifact:
+        description: Same-run fixed ja baseline artifact (native mode only)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
 
 jobs:
   desktop-candidate-cdp-gate:
+    if: ${{ !inputs.native_lifecycle }}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -338,3 +368,17 @@ jobs:
             Assert-DesktopInventoryShape $failure @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($failure | ConvertTo-Json -Compress)
           }
+
+  desktop-native-lifecycle:
+    if: ${{ inputs.native_lifecycle }}
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [MSI, NSIS]
+    steps:
+      - name: Refuse incomplete native lifecycle implementation
+        shell: pwsh
+        run: throw 'desktop_native_implementation_pending'

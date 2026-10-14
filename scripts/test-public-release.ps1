@@ -24,12 +24,218 @@ param(
     [ValidateSet('PortAndMarker', 'MarkerOnly')]
     [string]$DesktopLegacyEnvMode = 'PortAndMarker',
 
+    [switch]$DesktopNativeActorProbeOnly,
+
+    [switch]$DesktopNativeLifecycle,
+
+    [ValidateSet('MSI', 'NSIS')]
+    [string]$DesktopNativeFormat,
+
+    [string]$DesktopNativeSourceCommit,
+
+    [string]$DesktopNativeCandidateDirectory,
+
+    [string]$DesktopNativeBaselineDirectory,
+
     [switch]$SelfTest,
     [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+
+function Assert-DesktopNativeActorRequest {
+    param([Collections.IDictionary]$Arguments, [string]$CallerHead, [string]$ActualHead)
+    foreach ($key in @('Surface', 'Version', 'ReleaseTag', 'Repository', 'DesktopNativeSourceCommit', 'DesktopNativeActorProbeOnly', 'Json')) { if (-not $Arguments.ContainsKey($key)) { throw 'actor_probe_input_missing' } }
+    if ($Arguments['Surface'] -cne 'Desktop' -or $Arguments['Version'] -cne '0.38.0' -or $Arguments['ReleaseTag'] -cne 'v0.38.0' -or $Arguments['Repository'] -cne 'Sora-bluesky/winsmux' -or -not [bool]$Arguments['Json'] -or -not [bool]$Arguments['DesktopNativeActorProbeOnly']) { throw 'actor_probe_identity_refused' }
+    foreach ($mixed in @('DesktopNativeLifecycle', 'DesktopNativeFormat', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory', 'CandidateInstallerPath', 'DesktopInventoryPath', 'PriorInstallerPath', 'PriorVersion', 'DesktopLegacyEnvMode', 'SelfTest')) { if ($Arguments.ContainsKey($mixed)) { throw 'actor_probe_mixed_mode_refused' } }
+    $source = [string]$Arguments['DesktopNativeSourceCommit']
+    if ($source -cnotmatch '^[a-f0-9]{40}$' -or $source -cne $CallerHead -or $source -cne $ActualHead) { throw 'actor_probe_source_refused' }
+}
+
+# This isolated entry runs before inventory imports and every installer validator.
+if ($DesktopNativeActorProbeOnly) {
+    $actorResult = [ordered]@{ schema = 'winsmux-desktop-native-actor-probe/v1'; outcome = 'failed'; created = $false; resumed = $false; installer_started = $false }
+    try {
+        Assert-DesktopNativeActorRequest $PSBoundParameters $env:GITHUB_SHA $DesktopNativeSourceCommit
+        $actorRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+        $actualHead = (& git -C $actorRepo rev-parse HEAD | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'actor_probe_checkout_refused' }
+        Assert-DesktopNativeActorRequest $PSBoundParameters $env:GITHUB_SHA $actualHead
+        if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or $env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '^[1-9][0-9]*$') { throw 'actor_probe_runner_identity_refused' }
+        $temp = [IO.Path]::GetFullPath($env:RUNNER_TEMP)
+        $tempItem = Get-Item -LiteralPath $temp -Force
+        if (-not $tempItem.PSIsContainer -or ($tempItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'actor_probe_temp_refused' }
+        $actorRoot = Join-Path $temp ('winsmux-native-actor-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit)
+        if (Test-Path -LiteralPath $actorRoot) { throw 'actor_probe_namespace_exists' }
+        $actorSourceHash = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actorCSharp = @'
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Principal;
+public static class WinsmuxDesktopActorProbe {
+ [StructLayout(LayoutKind.Sequential)] struct SA { public IntPtr Sid; public uint Attributes; }
+ [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct SI { public uint cb; public string reserved,desktop,title; public uint x,y,xs,ys,xc,yc,fill,flags; public ushort show,reserved2; public IntPtr bytes,stdin,stdout,stderr; }
+ [StructLayout(LayoutKind.Sequential)] struct PI { public IntPtr process,thread; public uint pid,tid; }
+ [StructLayout(LayoutKind.Sequential)] struct BASIC { public long processTime,jobTime; public uint flags; public UIntPtr minWork,maxWork; public uint active; public UIntPtr affinity; public uint priority,scheduling; }
+ [StructLayout(LayoutKind.Sequential)] struct IO { public ulong readOps,writeOps,otherOps,readBytes,writeBytes,otherBytes; }
+ [StructLayout(LayoutKind.Sequential)] struct LIMIT { public BASIC basic; public IO io; public UIntPtr processMemory,jobMemory,peakProcess,peakJob; }
+ [StructLayout(LayoutKind.Sequential)] struct ACCOUNT { public long totalUser,totalKernel,periodUser,periodKernel; public uint faults,totalProcesses,activeProcesses,terminatedProcesses; }
+ [StructLayout(LayoutKind.Sequential)] struct FILEINFO { public uint attributes; public System.Runtime.InteropServices.ComTypes.FILETIME creation,access,write; public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow; }
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr h);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool ProcessIdToSessionId(uint pid,out uint session);
+ [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr p,uint access,out IntPtr h);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenThreadToken(IntPtr p,uint access,bool self,out IntPtr h);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr h,int kind,IntPtr b,uint size,out uint n);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool SetTokenInformation(IntPtr h,int kind,IntPtr b,uint size);
+ [DllImport("advapi32.dll")] static extern uint GetLengthSid(IntPtr sid);
+ [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+ [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid,uint index);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool CreateWellKnownSid(int kind,IntPtr domain,IntPtr sid,ref uint size);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool CreateRestrictedToken(IntPtr token,uint flags,uint disableCount,ref SA disable,uint deleteCount,IntPtr delete,uint restrictCount,IntPtr restrict,out IntPtr result);
+ [DllImport("advapi32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateProcessAsUserW(IntPtr token,string app,StringBuilder command,IntPtr psa,IntPtr tsa,bool inherit,uint flags,IntPtr env,string cwd,ref SI startup,out PI process);
+ [DllImport("userenv.dll",SetLastError=true)] static extern bool CreateEnvironmentBlock(out IntPtr env,IntPtr token,bool inherit);
+ [DllImport("userenv.dll",SetLastError=true)] static extern bool DestroyEnvironmentBlock(IntPtr env);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateJobObjectW(IntPtr sa,string name);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr h,int kind,ref LIMIT b,uint size);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr h,int kind,out ACCOUNT b,uint size,IntPtr returned);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr h,uint timeout);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr h,out uint code);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateProcess(IntPtr h,uint code);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool TerminateJobObject(IntPtr h,uint code);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr h,uint flags,StringBuilder name,ref uint size);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr h,out long creation,out long exit,out long kernel,out long user);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr h,out FILEINFO info);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool CreateDirectoryW(string path,IntPtr sa);
+ [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateFileW(string path,uint access,uint share,IntPtr sa,uint disposition,uint flags,IntPtr template);
+ [DllImport("user32.dll")] static extern IntPtr GetProcessWindowStation();
+ [DllImport("user32.dll")] static extern IntPtr GetThreadDesktop(uint id);
+ [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+ [DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformationW(IntPtr h,int kind,StringBuilder text,uint bytes,out uint needed);
+ static void Check(bool value,string where) { if(!value) throw new Win32Exception(Marshal.GetLastWin32Error(),where); }
+ static string Hash(byte[] b) { using(var h=SHA256.Create()) return BitConverter.ToString(h.ComputeHash(b)).Replace("-","").ToLowerInvariant(); }
+ static IntPtr Info(IntPtr h,int kind) { uint n; GetTokenInformation(h,kind,IntPtr.Zero,0,out n); if(n==0 || n>65536) throw new InvalidOperationException("Token information size refused"); IntPtr b=Marshal.AllocHGlobal((int)n); try { Check(GetTokenInformation(h,kind,b,n,out n),"GetTokenInformation "+kind); return b; } catch { Marshal.FreeHGlobal(b); throw; } }
+ static uint Value(IntPtr h,int kind) { var b=Info(h,kind); try { return (uint)Marshal.ReadInt32(b); } finally { Marshal.FreeHGlobal(b); } }
+ sealed class TokenFacts {
+  internal byte[] sid; internal string sidText; internal uint elevation,type,rid,session,tokenType,restricted,appContainer;
+  internal Dictionary<string,object> Public() { return new Dictionary<string,object>{{"sid_sha256",Hash(sid)},{"elevation",elevation},{"elevation_type",type},{"integrity_rid",rid},{"session",session},{"token_type",tokenType},{"restricted",restricted},{"app_container",appContainer}}; }
+ }
+ static TokenFacts Observe(IntPtr token) {
+  var t=new TokenFacts(); var u=Info(token,1); var m=Info(token,25);
+  try { var sid=Marshal.ReadIntPtr(u); t.sid=new byte[GetLengthSid(sid)]; Marshal.Copy(sid,t.sid,0,t.sid.Length); t.sidText=new SecurityIdentifier(sid).Value; var integrity=Marshal.ReadIntPtr(m); uint count=Marshal.ReadByte(GetSidSubAuthorityCount(integrity)); if(count==0) throw new InvalidOperationException("Integrity SID refused"); t.rid=(uint)Marshal.ReadInt32(GetSidSubAuthority(integrity,count-1)); }
+  finally { Marshal.FreeHGlobal(u); Marshal.FreeHGlobal(m); }
+  t.elevation=Value(token,20); t.type=Value(token,18); t.session=Value(token,12); t.tokenType=Value(token,8); t.restricted=Value(token,21); t.appContainer=Value(token,29); return t;
+ }
+ static bool Equal(byte[] a,byte[] b) { if(a.Length!=b.Length)return false; for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false; return true; }
+ static void Medium(TokenFacts t,TokenFacts caller) { if(!Equal(t.sid,caller.sid)||t.session!=caller.session||t.tokenType!=1||t.elevation!=0||t.rid<8192||t.rid>=12288||t.appContainer!=0) throw new InvalidOperationException("Actual medium actor identity refused"); }
+ static IntPtr Sid(int kind,out uint n) { n=68; var b=Marshal.AllocHGlobal(68); try { Check(CreateWellKnownSid(kind,IntPtr.Zero,b,ref n),"CreateWellKnownSid"); return b; } catch { Marshal.FreeHGlobal(b); throw; } }
+ static string DesktopName(IntPtr h) { uint n; var b=new StringBuilder(256); Check(GetUserObjectInformationW(h,2,b,512,out n),"GetUserObjectInformation"); var s=b.ToString(); if(s.Length==0||s.Contains("\\")||s.Contains("\0"))throw new InvalidOperationException("Desktop name refused"); return s; }
+ static FileStream OpenPlain(string path) { var handle=CreateFileW(path,0x80000000,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero); if(handle==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Open plain file lease"); var safe=new Microsoft.Win32.SafeHandles.SafeFileHandle(handle,true); try {var facts=FileFacts(handle);if(facts.links!=1||(facts.attributes&0x10)!=0)throw new InvalidOperationException("Plain single-link file required");return new FileStream(safe,FileAccess.Read);}catch{safe.Dispose();throw;} }
+ static FILEINFO FileFacts(IntPtr h) { FILEINFO f; Check(GetFileInformationByHandle(h,out f),"GetFileInformationByHandle"); if((f.attributes&0x400)!=0)throw new InvalidOperationException("Reparse object refused"); return f; }
+ static string FileId(FILEINFO f) { return f.volume+":"+f.indexHigh+":"+f.indexLow; }
+ static Dictionary<string,string> UserEnvironment(IntPtr token) {
+  IntPtr block; Check(CreateEnvironmentBlock(out block,token,false),"CreateEnvironmentBlock"); var env=new Dictionary<string,string>(StringComparer.OrdinalIgnoreCase);
+  try { int offset=0; for(int count=0;count<4096;count++) { var s=Marshal.PtrToStringUni(IntPtr.Add(block,offset)); if(String.IsNullOrEmpty(s))break; offset+=(s.Length+1)*2; int at=s.IndexOf('='); if(at>0) { var key=s.Substring(0,at); if(Array.Exists(new[]{"SystemRoot","WINDIR","SystemDrive","ComSpec","PATH","PATHEXT","TEMP","TMP","USERPROFILE","HOMEDRIVE","HOMEPATH","APPDATA","LOCALAPPDATA","USERNAME","USERDOMAIN","ProgramData","ProgramFiles","ProgramFiles(x86)","CommonProgramFiles","CommonProgramFiles(x86)","PROCESSOR_ARCHITECTURE","NUMBER_OF_PROCESSORS"}, x=>String.Equals(x,key,StringComparison.OrdinalIgnoreCase)))env[key]=s.Substring(at+1); } } } finally { Check(DestroyEnvironmentBlock(block),"DestroyEnvironmentBlock"); }
+  foreach(string key in new[]{"GITHUB_ACTIONS","RUNNER_OS","RUNNER_TEMP","GITHUB_SHA","GITHUB_RUN_ID","GITHUB_RUN_ATTEMPT"}) { var value=Environment.GetEnvironmentVariable(key); if(value!=null)env[key]=value; }
+  return env;
+ }
+ public static Dictionary<string,object> Query() { IntPtr h; Check(OpenProcessToken(GetCurrentProcess(),8,out h),"OpenProcessToken query"); try { var facts=Observe(h); bool profile; using(var hive=Microsoft.Win32.Registry.Users.OpenSubKey(facts.sidText,false))profile=hive!=null; return new Dictionary<string,object>{{"facts",facts.Public()},{"pid",GetCurrentProcessId()},{"existing_profile_hive",profile},{"local_app_data_exists",Directory.Exists(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData))}}; } finally { CloseHandle(h); } }
+ public static string ReadChild(string path) { using(var f=OpenPlain(path)) {var info=FileFacts(f.SafeFileHandle.DangerousGetHandle()); if(info.links!=1||(info.attributes&0x10)!=0||f.Length<2||f.Length>16384)throw new InvalidOperationException("Child receipt file refused"); byte[] b=new byte[f.Length]; int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Child receipt changed");return new UTF8Encoding(false,true).GetString(b);} }
+ public static Dictionary<string,object> Probe(string image,string root,string childScript) {
+  var result=new Dictionary<string,object>{{"schema","winsmux-desktop-native-actor-probe/v1"},{"outcome","failed"},{"created",false},{"resumed",false},{"installer_started",false}};
+  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,job=IntPtr.Zero,admin=IntPtr.Zero,medium=IntPtr.Zero,environment=IntPtr.Zero,dir=IntPtr.Zero; PI pi=new PI(); bool assigned=false,terminal=false; FileStream imageLease=null,scriptLease=null;
+  try {
+   IntPtr impersonation; if(OpenThreadToken(GetCurrentThread(),8,true,out impersonation)) { CloseHandle(impersonation); throw new InvalidOperationException("Thread impersonation refused"); } if(Marshal.GetLastWin32Error()!=1008)throw new Win32Exception(Marshal.GetLastWin32Error(),"OpenThreadToken");
+   Check(OpenProcessToken(GetCurrentProcess(),0x8b,out callerToken),"OpenProcessToken caller"); var caller=Observe(callerToken); result["caller"]=caller.Public(); uint session; Check(ProcessIdToSessionId(GetCurrentProcessId(),out session),"ProcessIdToSessionId");
+   if(caller.tokenType!=1||caller.session!=session||caller.appContainer!=0||caller.sidText=="S-1-5-18"||caller.sidText=="S-1-5-19"||caller.sidText=="S-1-5-20"||caller.sidText.StartsWith("S-1-5-80-",StringComparison.Ordinal))throw new InvalidOperationException("Caller identity refused");
+   if(caller.elevation!=1||caller.rid<12288) { result["outcome"]="host_not_applicable"; return result; }
+   uint sidSize; admin=Sid(26,out sidSize); var disabled=new SA{Sid=admin,Attributes=0}; Check(CreateRestrictedToken(callerToken,5,1,ref disabled,0,IntPtr.Zero,0,IntPtr.Zero,out derived),"CreateRestrictedToken flags 5"); result["derived_initial"]=Observe(derived).Public();
+   if(Observe(derived).rid>8192) { medium=Sid(67,out sidSize); var label=new SA{Sid=medium,Attributes=0x20}; IntPtr labelMemory=Marshal.AllocHGlobal(Marshal.SizeOf<SA>()); try { Marshal.StructureToPtr(label,labelMemory,false); Check(SetTokenInformation(derived,25,labelMemory,(uint)Marshal.SizeOf<SA>()+sidSize),"SetTokenInformation own derived medium"); } finally { Marshal.FreeHGlobal(labelMemory); } }
+   var actor=Observe(derived); result["derived"]=actor.Public(); Medium(actor,caller);
+   var env=UserEnvironment(derived); string local; if(!env.TryGetValue("LOCALAPPDATA",out local)||!String.Equals(Path.GetFullPath(local),Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Existing same-SID profile refused");
+   image=Path.GetFullPath(image); imageLease=OpenPlain(image); var imageInfo=FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()); if(imageInfo.links!=1||(imageInfo.attributes&0x10)!=0)throw new InvalidOperationException("PowerShell image is not a plain single-link file"); var imageBytes=new byte[imageLease.Length]; int read=0; while(read<imageBytes.Length) { int n=imageLease.Read(imageBytes,read,imageBytes.Length-read); if(n==0)throw new EndOfStreamException();read+=n; } string imageHash=Hash(imageBytes); result["image_sha256"]=imageHash;
+   Check(CreateDirectoryW(root,IntPtr.Zero),"CreateDirectoryW exclusive probe root"); dir=CreateFileW(root,0,1|2|4,IntPtr.Zero,3,0x02000000|0x00200000,IntPtr.Zero); if(dir==new IntPtr(-1)) {dir=IntPtr.Zero;throw new Win32Exception(Marshal.GetLastWin32Error(),"Open owned probe root");} var rootInfo=FileFacts(dir); if((rootInfo.attributes&0x10)==0||Directory.GetFileSystemEntries(root).Length!=0)throw new InvalidOperationException("Owned empty directory refused"); result["evidence_root_id"]=FileId(rootInfo);
+   string scriptPath=Path.Combine(root,"token-query.ps1"); using(var output=new FileStream(scriptPath,FileMode.CreateNew,FileAccess.Write,FileShare.None)) { var bytes=new UTF8Encoding(false,true).GetBytes(childScript); output.Write(bytes,0,bytes.Length); } scriptLease=OpenPlain(scriptPath); var scriptInfo=FileFacts(scriptLease.SafeFileHandle.DangerousGetHandle()); if(scriptInfo.links!=1||(scriptInfo.attributes&0x10)!=0)throw new InvalidOperationException("Token-query script is not plain single-link"); result["child_script_sha256"]=Hash(File.ReadAllBytes(scriptPath));
+   job=CreateJobObjectW(IntPtr.Zero,null); Check(job!=IntPtr.Zero,"CreateJobObjectW"); var limits=new LIMIT(); limits.basic.flags=0x2000; Check(SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf<LIMIT>()),"SetInformationJobObject kill-on-close");
+   var sorted=new List<string>(env.Keys); sorted.Sort(StringComparer.OrdinalIgnoreCase); var envText=new StringBuilder(); foreach(var key in sorted)envText.Append(key).Append('=').Append(env[key]).Append('\0'); envText.Append('\0'); environment=Marshal.StringToHGlobalUni(envText.ToString());
+   var start=new SI{cb=(uint)Marshal.SizeOf<SI>(),desktop=DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(GetCurrentThreadId()))}; var command=new StringBuilder("\""+image+"\" -NoLogo -NoProfile -NonInteractive -File \""+scriptPath+"\"");
+   Check(CreateProcessAsUserW(derived,image,command,IntPtr.Zero,IntPtr.Zero,false,0x00000404,environment,root,ref start,out pi),"CreateProcessAsUserW suspended"); result["created"]=true; result["child_pid"]=pi.pid;
+   Check(AssignProcessToJobObject(job,pi.process),"AssignProcessToJobObject");assigned=true; bool member; Check(IsProcessInJob(pi.process,job,out member),"IsProcessInJob");if(!member)throw new InvalidOperationException("Owned Job membership refused");
+   IntPtr childToken; Check(OpenProcessToken(pi.process,8,out childToken),"OpenProcessToken child"); TokenFacts child; try {child=Observe(childToken);}finally{CloseHandle(childToken);} Medium(child,caller);result["child_before_resume"]=child.Public();
+   uint nameSize=32768; var name=new StringBuilder((int)nameSize);Check(QueryFullProcessImageNameW(pi.process,0,name,ref nameSize),"QueryFullProcessImageNameW");if(!String.Equals(Path.GetFullPath(name.ToString()),image,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Owned child image path refused"); if(FileId(FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()))!=FileId(imageInfo)||Hash(File.ReadAllBytes(image))!=imageHash)throw new InvalidOperationException("Owned child image bytes changed"); long creation,exit,kernel,user;Check(GetProcessTimes(pi.process,out creation,out exit,out kernel,out user),"GetProcessTimes");result["child_creation_time"]=creation;
+   uint count=ResumeThread(pi.thread);result["resume_previous_count"]=count;if(count!=1)throw new InvalidOperationException("ResumeThread count refused");result["resumed"]=true;
+   if(WaitForSingleObject(pi.process,60000)!=0)throw new InvalidOperationException("Owned token-query child did not terminate");terminal=true;uint code;Check(GetExitCodeProcess(pi.process,out code),"GetExitCodeProcess");result["child_exit_code"]=code;if(code!=0)throw new InvalidOperationException("Token-query child failed");
+   ACCOUNT account;Check(QueryInformationJobObject(job,1,out account,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"QueryInformationJobObject");result["job_active_processes"]=account.activeProcesses;if(account.activeProcesses!=0)throw new InvalidOperationException("Owned Job has live members");var currentDir=CreateFileW(root,0,1|2|4,IntPtr.Zero,3,0x02000000|0x00200000,IntPtr.Zero); if(currentDir==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Readback owned root"); try { if(FileId(FileFacts(dir))!=FileId(rootInfo)||FileId(FileFacts(currentDir))!=FileId(rootInfo))throw new InvalidOperationException("Owned root identity changed"); } finally {CloseHandle(currentDir);} if(Hash(File.ReadAllBytes(scriptPath))!=(string)result["child_script_sha256"]||FileId(FileFacts(scriptLease.SafeFileHandle.DangerousGetHandle()))!=FileId(scriptInfo))throw new InvalidOperationException("Token-query script changed");
+   if(FileId(FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()))!=FileId(imageInfo)||Hash(File.ReadAllBytes(image))!=imageHash)throw new InvalidOperationException("PowerShell image changed");result["outcome"]="child_terminal";
+  } catch(Exception e) { result["outcome"]="failed";result["error_type"]=e.GetType().Name;result["error"]=e.Message; if(e is Win32Exception)result["winerror"]=((Win32Exception)e).NativeErrorCode; }
+  finally {
+   try {
+    if(pi.process!=IntPtr.Zero) {
+     bool live=!terminal;
+     if(assigned) { ACCOUNT remaining; if(!QueryInformationJobObject(job,1,out remaining,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero))live=true; else live=live||remaining.activeProcesses!=0; }
+     if(live) {
+      bool stopped=assigned?TerminateJobObject(job,124):TerminateProcess(pi.process,124); result["owned_failure_stop"]=stopped; bool ended=WaitForSingleObject(pi.process,10000)==0; result["cleanup_terminal"]=ended;
+      ACCOUNT remaining; bool jobEnded=!assigned||(QueryInformationJobObject(job,1,out remaining,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero)&&remaining.activeProcesses==0); result["cleanup_job_terminal"]=jobEnded;
+      if(!stopped||!ended||!jobEnded)result["outcome"]="failed";
+     }
+    }
+   } catch(Exception e) {result["outcome"]="failed";result["cleanup_error"]=e.GetType().Name+": "+e.Message;}
+   foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken,dir})if(h!=IntPtr.Zero)CloseHandle(h);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();foreach(var p in new[]{admin,medium,environment})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);
+  }
+  return result;
+ }
+}
+'@
+        Add-Type -TypeDefinition $actorCSharp
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($actorCSharp))
+        $childScript = @'
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__QUERY_SOURCE__'))
+Add-Type -TypeDefinition $source
+$facts = [WinsmuxDesktopActorProbe]::Query()
+$bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes(($facts | ConvertTo-Json -Depth 8 -Compress) + [char]10)
+$file = [IO.FileStream]::new((Join-Path $PSScriptRoot 'child-result.json'), [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+'@
+        $childScript = $childScript.Replace('__QUERY_SOURCE__', $encoded)
+        $pwshImage = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        if ([IO.Path]::GetFileName($pwshImage) -ine 'pwsh.exe') { throw 'actor_probe_host_image_refused' }
+        $actorResult = [WinsmuxDesktopActorProbe]::Probe($pwshImage, $actorRoot, $childScript)
+        $actorResult['source_commit'] = $actualHead
+        $actorResult['source_sha256'] = $actorSourceHash
+        if ($actorResult['outcome'] -ceq 'child_terminal') {
+            $child = [WinsmuxDesktopActorProbe]::ReadChild((Join-Path $actorRoot 'child-result.json')) | ConvertFrom-Json -AsHashtable
+            if (@($child.Keys).Count -ne 4 -or -not $child.ContainsKey('facts') -or -not $child.ContainsKey('pid') -or -not $child.ContainsKey('existing_profile_hive') -or -not $child.ContainsKey('local_app_data_exists')) { throw 'actor_probe_child_receipt_shape_refused' }
+            if ($child['pid'] -ne $actorResult['child_pid'] -or $child['existing_profile_hive'] -ne $true -or $child['local_app_data_exists'] -ne $true -or @($child['facts'].Keys).Count -ne 8) { throw 'actor_probe_child_profile_refused' }
+            foreach ($key in $actorResult['child_before_resume'].Keys) { if (-not $child['facts'].ContainsKey($key) -or $child['facts'][$key] -cne $actorResult['child_before_resume'][$key]) { throw 'actor_probe_child_actor_changed' } }
+            $actorResult['child_result'] = $child
+            $actorResult['outcome'] = 'passed'
+        }
+        if ((Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $actorSourceHash) { throw 'actor_probe_source_changed' }
+    } catch {
+        $actorResult['outcome'] = 'failed'
+        $actorResult['error'] = $_.Exception.Message
+    }
+    $actorResult | ConvertTo-Json -Depth 12 -Compress
+    if ($actorResult['outcome'] -ceq 'passed') { exit 0 }
+    exit 1
+}
+
+
+if ($PSBoundParameters.ContainsKey('DesktopNativeActorProbeOnly')) { throw 'actor_probe_mode_refused' }
 
 $script:DesktopOwnerSourceRoot = $PSScriptRoot
 $script:RetryCount = 6
@@ -67,6 +273,36 @@ function Assert-Condition {
     }
 }
 
+function Assert-DesktopNativeRequest {
+    param(
+        [Parameter(Mandatory)][string]$RequestedSurface,
+        [Parameter(Mandatory)][string]$CandidateVersion,
+        [Parameter(Mandatory)][string]$CandidateReleaseTag,
+        [Parameter(Mandatory)][Collections.IDictionary]$Arguments,
+        [string]$ActualHead,
+        [string]$CallerHead
+    )
+    $enabled = $Arguments.ContainsKey('DesktopNativeLifecycle') -and [bool]$Arguments['DesktopNativeLifecycle']
+    $nativeKeys = @('DesktopNativeFormat', 'DesktopNativeSourceCommit', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory')
+    if (-not $enabled) {
+        foreach ($key in $nativeKeys) { Assert-Condition (-not $Arguments.ContainsKey($key)) 'desktop_native_mode_required' }
+        return
+    }
+    Assert-Condition ($RequestedSurface -ceq 'Desktop' -and $CandidateVersion -ceq '0.38.0' -and $CandidateReleaseTag -ceq 'v0.38.0') 'desktop_native_identity_refused'
+    foreach ($key in @('CandidateInstallerPath', 'DesktopInventoryPath', 'PriorInstallerPath', 'PriorVersion', 'DesktopLegacyEnvMode')) {
+        Assert-Condition (-not $Arguments.ContainsKey($key)) 'desktop_native_mixed_mode_refused'
+    }
+    if ($Arguments.ContainsKey('SelfTest') -and [bool]$Arguments['SelfTest']) {
+        foreach ($key in $nativeKeys) { Assert-Condition (-not $Arguments.ContainsKey($key)) 'desktop_native_selftest_input_refused' }
+        return
+    }
+    foreach ($key in $nativeKeys) { Assert-Condition ($Arguments.ContainsKey($key) -and -not [string]::IsNullOrWhiteSpace([string]$Arguments[$key])) 'desktop_native_input_missing' }
+    Assert-Condition ([string]$Arguments['DesktopNativeFormat'] -cin @('MSI', 'NSIS')) 'desktop_native_format_refused'
+    $source = [string]$Arguments['DesktopNativeSourceCommit']
+    Assert-Condition ($source -cmatch '^[a-f0-9]{40}$' -and $source -ceq $ActualHead -and $source -ceq $CallerHead) 'desktop_native_source_refused'
+    # Physical artifact admission and every case root are checked by the finite mode before any installer starts.
+}
+
 function Assert-DesktopInstallerRequest {
     param(
         [Parameter(Mandatory)][string]$RequestedSurface,
@@ -99,7 +335,14 @@ function Assert-DesktopInstallerRequest {
     Assert-Condition (Test-Path -LiteralPath $priorPath -PathType Leaf) "Prior installer path does not exist: $priorPath"
     Assert-Condition (-not [string]::Equals($requestedPriorVersion, $CandidateVersion, [StringComparison]::Ordinal)) "PriorVersion '$requestedPriorVersion' must not equal candidate Version '$CandidateVersion'."
 }
-Assert-DesktopInstallerRequest -RequestedSurface $Surface -CandidateVersion $Version -Arguments $PSBoundParameters
+if ($DesktopNativeLifecycle) {
+    $nativeHead = if ($SelfTest) { '' } else { (& git -C $script:RepositoryRoot rev-parse --verify HEAD | Out-String).Trim() }
+    if (-not $SelfTest) { Assert-Condition ($LASTEXITCODE -eq 0) 'desktop_native_source_unavailable' }
+    Assert-DesktopNativeRequest -RequestedSurface $Surface -CandidateVersion $Version -CandidateReleaseTag $ReleaseTag -Arguments $PSBoundParameters -ActualHead $nativeHead -CallerHead ([string]$env:GITHUB_SHA)
+} else {
+    Assert-DesktopNativeRequest -RequestedSurface $Surface -CandidateVersion $Version -CandidateReleaseTag $ReleaseTag -Arguments $PSBoundParameters
+    Assert-DesktopInstallerRequest -RequestedSurface $Surface -CandidateVersion $Version -Arguments $PSBoundParameters
+}
 if ($PSBoundParameters.ContainsKey('DesktopLegacyEnvMode')) {
     Assert-Condition ($Surface -eq 'Desktop') 'DesktopLegacyEnvMode requires -Surface Desktop; it is only valid for the Desktop surface.'
 }
@@ -3376,6 +3619,77 @@ function Test-Throws {
     }
 }
 
+function Assert-DesktopNativeBaselineReceipt {
+    param([Parameter(Mandatory)]$Receipt, [Parameter(Mandatory)]$Legacy)
+    Assert-Condition ($Legacy.schema -ceq 'winsmux-desktop-nsis-legacy-v0380/v1' -and $Legacy.version -ceq '0.38.0' -and $Legacy.host -ceq 'x86_64-pc-windows-msvc' -and $Legacy.installed_inventory_complete -is [bool] -and $Legacy.installed_inventory_complete) 'desktop_native_legacy_profile_refused'
+    Assert-Condition ($Receipt.schema -ceq 'winsmux-task880-legacy-install-capture/v1' -and $Receipt.outcome -ceq 'passed' -and $Receipt.installed_inventory_complete -is [bool] -and $Receipt.installed_inventory_complete -and $Receipt.profile_name -ceq 'ja-root') 'desktop_native_legacy_capture_refused'
+    Assert-Condition ($Receipt.original_installer.bytes -eq 9920209 -and $Receipt.original_installer.sha256 -ceq 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2') 'desktop_native_legacy_installer_refused'
+    Assert-Condition ($null -eq $Receipt.failure -and @($Receipt.validation_failures).Count -eq 0 -and $Receipt.install_exit_code -eq 0) 'desktop_native_legacy_capture_incomplete'
+    $profile = $Legacy.registration_profile
+    Assert-Condition (@($Receipt.arguments).Count -eq 2 -and $Receipt.arguments[0] -ceq '/S' -and $Receipt.arguments[1] -ceq ('/D=' + $profile.root)) 'desktop_native_legacy_arguments_refused'
+    Assert-Condition ($Receipt.root -ceq $profile.root -and $null -eq $Receipt.language -and $null -eq $profile.language) 'desktop_native_legacy_root_language_refused'
+    Assert-Condition (@($Receipt.files).Count -eq 323 -and @($Legacy.files).Count -eq 323 -and @($Receipt.registration).Count -eq 22 -and @($profile.registration).Count -eq 22 -and @($Receipt.shortcuts).Count -eq 2 -and @($profile.shortcuts).Count -eq 2) 'desktop_native_legacy_shape_refused'
+    $members = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+    $aliases = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($row in $Receipt.files) {
+        Assert-Condition ($row.path -is [string] -and $aliases.Add([string]$row.path)) 'desktop_native_legacy_member_alias_refused'
+        $members.Add([string]$row.path, $row)
+    }
+    foreach ($row in $Legacy.files) {
+        Assert-Condition ($members.ContainsKey([string]$row.path)) 'desktop_native_legacy_member_refused'
+        $actual = $members[[string]$row.path]
+        Assert-Condition ($actual.role -ceq $row.role -and $actual.bytes -eq $row.bytes -and $actual.sha256 -ceq $row.sha256) 'desktop_native_legacy_member_refused'
+    }
+    $raw = ConvertTo-Json -InputObject @($Receipt.registration) -Depth 32 -Compress
+    $expected = ConvertTo-Json -InputObject @($profile.registration) -Depth 32 -Compress
+    Assert-Condition ($raw -ceq $expected) 'desktop_native_legacy_registration_refused'
+    for ($index = 0; $index -lt 2; $index++) {
+        $actual = $Receipt.shortcuts[$index]; $link = $profile.shortcuts[$index]
+        Assert-Condition ($actual.kind -ceq $link.kind -and $actual.bytes -eq $link.bytes -and $actual.sha256 -cmatch '^[a-f0-9]{64}$' -and $actual.target -ceq $link.target -and $actual.expected_gui -ceq $link.target -and $actual.aumid -ceq $link.aumid) 'desktop_native_legacy_shortcut_refused'
+    }
+    Assert-Condition ($Receipt.protected_project_before_sha256 -cmatch '^[a-f0-9]{64}$' -and $Receipt.protected_project_after_sha256 -ceq $Receipt.protected_project_before_sha256) 'desktop_native_legacy_project_refused'
+    # Clause6: old VM shortcut SHA is provenance only. This transport receipt does not contain shortcut arguments or file IDs.
+    # Before a real legacy update, reacquire each exactly known-folder/basename link as a plain single-link lease,
+    # decode Unicode raw target/empty arguments/AUMID from the same bytes, and retain acquired ID/fullbytes/SHA.
+    # Every subsequent backup/restore/uninstall must match that acquired witness. No copied link or repin.
+    # Run-specific capture JSON hashes are evidence, never a replacement for compiled legacy identity.
+}
+
+function Invoke-DesktopNativeLifecycleSelfTest {
+    $source = 'f792c631829d850c8b025e9308487432becc9be7'
+    $valid = @{ DesktopNativeLifecycle = $true; DesktopNativeFormat = 'MSI'; DesktopNativeSourceCommit = $source; DesktopNativeCandidateDirectory = 'C:\run-owned\candidate'; DesktopNativeBaselineDirectory = 'C:\run-owned\baseline' }
+    $cases = [Collections.Generic.List[object]]::new()
+    $run = {
+        param([string]$Name, [hashtable]$Arguments, [string]$RequestedSurface = 'Desktop', [string]$CandidateVersion = '0.38.0', [string]$CandidateReleaseTag = 'v0.38.0', [string]$ActualHead = $source, [string]$CallerHead = $source, [bool]$Reject = $true)
+        $refused = Test-Throws { Assert-DesktopNativeRequest -RequestedSurface $RequestedSurface -CandidateVersion $CandidateVersion -CandidateReleaseTag $CandidateReleaseTag -Arguments $Arguments -ActualHead $ActualHead -CallerHead $CallerHead }
+        Assert-Condition ($refused -eq $Reject) ('desktop_native_selftest_' + $Name)
+        $cases.Add([ordered]@{ name = $Name; refused = $refused; passed = $true })
+    }.GetNewClosure()
+    & $run 'msi' $valid -Reject $false
+    $nsis = $valid.Clone(); $nsis.DesktopNativeFormat = 'NSIS'; & $run 'nsis' $nsis -Reject $false
+    & $run 'ordinary_unmodified' @{} -Reject $false
+    foreach ($surface in @('Core', 'Npm')) { & $run ('surface_' + $surface) $valid -RequestedSurface $surface }
+    & $run 'version' $valid -CandidateVersion '0.37.0'
+    & $run 'release_tag' $valid -CandidateReleaseTag 'v0.37.0'
+    foreach ($key in @('DesktopNativeFormat', 'DesktopNativeSourceCommit', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory')) {
+        $missing = $valid.Clone(); $missing.Remove($key); & $run ('missing_' + $key) $missing
+        $withoutMode = @{ }; $withoutMode[$key] = $valid[$key]; & $run ('without_mode_' + $key) $withoutMode
+    }
+    foreach ($key in @('CandidateInstallerPath', 'DesktopInventoryPath', 'PriorInstallerPath', 'PriorVersion', 'DesktopLegacyEnvMode')) {
+        $mixed = $valid.Clone(); $mixed[$key] = 'unrelated-smoke-input'; & $run ('mixed_' + $key) $mixed
+    }
+    $badFormat = $valid.Clone(); $badFormat.DesktopNativeFormat = 'other'; & $run 'format' $badFormat
+    $short = $valid.Clone(); $short.DesktopNativeSourceCommit = 'f792'; & $run 'short_source' $short
+    $upper = $valid.Clone(); $upper.DesktopNativeSourceCommit = $source.ToUpperInvariant(); & $run 'uppercase_source' $upper
+    & $run 'checkout_mismatch' $valid -ActualHead ('0' * 40)
+    & $run 'caller_mismatch' $valid -CallerHead ('0' * 40)
+    & $run 'finite_selftest' @{ DesktopNativeLifecycle = $true; SelfTest = $true } -Reject $false
+    foreach ($key in @('DesktopNativeFormat', 'DesktopNativeSourceCommit', 'DesktopNativeCandidateDirectory', 'DesktopNativeBaselineDirectory')) {
+        $selfInput = @{ DesktopNativeLifecycle = $true; SelfTest = $true }; $selfInput[$key] = $valid[$key]; & $run ('selftest_external_' + $key) $selfInput
+    }
+    return [ordered]@{ schema = 'winsmux-desktop-native-input-selftest/v1'; ok = $true; surface = 'Desktop'; passed = $cases.Count; failed = 0; cases = @($cases.ToArray()); native_processes_started = 0; installer_executed = $false; scope = 'Finite native-mode request admission only; physical artifact, real installer/runtime and rollback evidence are separate.' }
+}
+
 function Invoke-SelfTest {
     # GetNewClosure captures factory-local values, not inherited script parameters.
     # Pin the normalized coordinates for every surface and every fixture callback.
@@ -5211,7 +5525,7 @@ try {
 $Version = Resolve-ReleaseCoordinates -Surface $Surface -Version $Version -ReleaseTag $ReleaseTag -Repository $Repository
 
 if ($SelfTest) {
-    $result = Invoke-SelfTest
+    $result = if ($DesktopNativeLifecycle) { Invoke-DesktopNativeLifecycleSelfTest } else { Invoke-SelfTest }
     if ($Json) {
         $result | ConvertTo-Json -Depth 10 -Compress
     } else {
@@ -5219,6 +5533,8 @@ if ($SelfTest) {
     }
     exit 0
 }
+
+if ($DesktopNativeLifecycle) { throw 'desktop_native_implementation_pending' }
 
 $ownedRoot = New-OwnedRoot
 $operationError = $null

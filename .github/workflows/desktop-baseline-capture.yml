@@ -1,8 +1,14 @@
 name: Capture Fixed Desktop Installer Baseline
 
 on:
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: Full candidate commit SHA; must equal this workflow revision
+        required: true
+        type: string
   push:
-    branches: [codex/task880-baseline-capture]
+    branches: [codex/task880-baseline-capture, codex/task880-actor-probe]
 
 permissions:
   contents: read
@@ -11,16 +17,27 @@ jobs:
   capture:
     permissions:
       contents: write
-    if: github.repository == 'Sora-bluesky/winsmux'
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/task880-baseline-capture' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
         profile: [ja-root]
     steps:
+      - name: Bind caller and candidate revision
+        shell: pwsh
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref || github.sha }}
+          CALLER_REF: ${{ github.sha }}
+        run: |
+          $candidate = [string]$env:CANDIDATE_REF
+          if ($candidate -cnotmatch '^[a-f0-9]{40}$' -or $candidate -cne $env:CALLER_REF) {
+            throw 'Native lifecycle requires the same full caller and candidate commit SHA.'
+          }
+
       - uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          ref: 0eaed56da31826b48fc153293c9407ec49547c91
           persist-credentials: false
 
       - name: Download the fixed unpublished baseline
@@ -48,10 +65,73 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-evidence-${{ matrix.profile }}'
           ./scripts/capture-desktop-baseline.ps1 -Installer $inputFile -ProfileName '${{ matrix.profile }}' -OutputDirectory $evidenceRoot
 
+      - name: Stage only the two fixed baseline artifact members
+        if: always()
+        shell: pwsh
+        run: |
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-artifact-ja-root'
+          if (Test-Path -LiteralPath $artifactRoot) { throw 'Baseline artifact namespace already exists.' }
+          New-Item -ItemType Directory -Path $artifactRoot | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input/winsmux_0.38.0_x64-setup.exe') -Destination (Join-Path $artifactRoot 'winsmux_0.38.0_x64-setup.exe')
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'winsmux-baseline-evidence-ja-root/capture.json') -Destination (Join-Path $artifactRoot 'capture.json')
+
       - name: Preserve the bounded capture receipt
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: desktop-baseline-${{ matrix.profile }}-${{ github.sha }}
-          path: ${{ runner.temp }}/winsmux-baseline-evidence-${{ matrix.profile }}/capture.json
+          path: ${{ runner.temp }}/winsmux-baseline-artifact-ja-root/
+          if-no-files-found: error
+
+  native-lifecycle:
+    needs: capture
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/task880-baseline-capture' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.capture.result == 'success'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/desktop-candidate-cdp-gate.yml
+    with:
+      candidate_ref: ${{ inputs.candidate_ref || github.sha }}
+      release_tag: v0.38.0
+      version: 0.38.0
+      native_lifecycle: true
+      baseline_artifact: desktop-baseline-ja-root-${{ github.sha }}
+
+  actor-probe:
+    if: github.repository == 'Sora-bluesky/winsmux' && github.event_name == 'push' && github.ref == 'refs/heads/codex/task880-actor-probe'
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Probe only the fixed same-SID medium actor
+        shell: pwsh
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = [string]$env:SOURCE_COMMIT
+          if ($source -cnotmatch '^[a-f0-9]{40}$' -or $source -cne $env:GITHUB_SHA) { throw 'Actor caller/candidate mismatch.' }
+          $head = (& git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $source) { throw 'Actor checkout mismatch.' }
+          $receipt = Join-Path $env:RUNNER_TEMP ('winsmux-actor-receipt-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $source + '.json')
+          if (Test-Path -LiteralPath $receipt) { throw 'Actor receipt already exists.' }
+          $raw = & ./scripts/test-public-release.ps1 -Surface Desktop -Version 0.38.0 -ReleaseTag v0.38.0 -Repository Sora-bluesky/winsmux -DesktopNativeActorProbeOnly -DesktopNativeSourceCommit $source -Json
+          $code = $LASTEXITCODE
+          $json = ($raw | Out-String).Trim()
+          if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 16384) { throw 'Actor receipt exceeds the bounded transport.' }
+          $facts = $json | ConvertFrom-Json -AsHashtable
+          if ($facts['schema'] -cne 'winsmux-desktop-native-actor-probe/v1' -or $facts['installer_started'] -ne $false) { throw 'Actor receipt shape mismatch.' }
+          $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json + [char]10)
+          $file = [IO.FileStream]::new($receipt, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+          try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
+          if ($code -ne 0 -or $facts['outcome'] -cne 'passed' -or $facts['source_commit'] -cne $source) { throw 'Actual medium actor probe did not pass; original receipt was preserved.' }
+      - name: Preserve only the bounded actor receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-native-actor-${{ github.sha }}
+          path: ${{ runner.temp }}/winsmux-actor-receipt-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}.json
           if-no-files-found: error
