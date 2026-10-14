@@ -31,9 +31,9 @@ jobs:
           $inputRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input'
           if (Test-Path -LiteralPath $inputRoot) { throw 'Baseline input root already exists.' }
           New-Item -ItemType Directory -Path $inputRoot | Out-Null
-          gh release download codex/task880-baseline-c1f3ea8 --repo Sora-bluesky/winsmux --pattern winsmux_0.38.0_x64-setup.exe --dir $inputRoot
-          if ($LASTEXITCODE -ne 0) { throw 'Authenticated draft download failed; no installer was launched.' }
           $inputFile = Join-Path $inputRoot 'winsmux_0.38.0_x64-setup.exe'
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream' }
+          Invoke-WebRequest -Uri 'https://api.github.com/repos/Sora-bluesky/winsmux/releases/assets/639538953' -Headers $headers -OutFile $inputFile
           $hash = (Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash.ToLowerInvariant()
           if ((Get-Item -LiteralPath $inputFile).Length -ne 9920209 -or $hash -ne 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2') {
             throw 'Downloaded baseline identity mismatch; no installer was launched.'
