@@ -128,6 +128,18 @@ function Read-Registration {
     }
     return ,$result.ToArray()
 }
+function Read-CapturedInstallerLanguage {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value.type -ne 1) { throw 'Installer language was not recorded as REG_SZ.' }
+    $raw = [byte[]]$Value.data
+    $unicode = [Text.UnicodeEncoding]::new($false, $false, $true)
+    $language = $unicode.GetString($raw).TrimEnd([char]0)
+    if ($language -notin @('1033', '1041')) { throw 'Observed installer language is outside the fixed profile.' }
+    $expected = $unicode.GetBytes($language + [char]0)
+    if ([Convert]::ToHexString($raw) -cne [Convert]::ToHexString($expected)) { throw 'Installer language bytes are not the exact terminated REG_SZ.' }
+    return [int]$language
+}
 $linkPaths = [ordered]@{
     desktop = Join-Path ([Environment]::GetFolderPath('Desktop')) 'winsmux.lnk'
     start_menu = Join-Path ([Environment]::GetFolderPath('Programs')) 'winsmux.lnk'
@@ -197,11 +209,7 @@ try {
     }
     $receipt.files = @($files | Sort-Object path)
     $receipt.registration = Read-Registration
-    $languageValue = $receipt.registration[1]
-    if ($null -eq $languageValue -or $languageValue.type -ne 1) { throw 'Installer language was not recorded as REG_SZ.' }
-    $language = [Text.Encoding]::Unicode.GetString([byte[]]$languageValue.data).TrimEnd([char]0)
-    if ($language -notin @('1033', '1041')) { throw 'Observed installer language is outside the fixed profile.' }
-    $receipt.language = [int]$language
+    $receipt.language = Read-CapturedInstallerLanguage $receipt.registration[1]
     $shell = New-Object -ComObject WScript.Shell
     $shellApp = New-Object -ComObject Shell.Application
     foreach ($kind in $linkPaths.Keys) {
