@@ -1,0 +1,55 @@
+name: Capture Fixed Desktop Installer Baseline
+
+on:
+  push:
+    branches: [codex/task880-baseline-capture]
+
+permissions:
+  contents: read
+
+jobs:
+  capture:
+    if: github.repository == 'Sora-bluesky/winsmux'
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [en-root, ja-root]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download the fixed unpublished baseline
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input'
+          if (Test-Path -LiteralPath $inputRoot) { throw 'Baseline input root already exists.' }
+          New-Item -ItemType Directory -Path $inputRoot | Out-Null
+          gh release download codex/task880-baseline-c1f3ea8 --repo Sora-bluesky/winsmux --pattern winsmux_0.38.0_x64-setup.exe --dir $inputRoot
+          if ($LASTEXITCODE -ne 0) { throw 'Authenticated draft download failed; no installer was launched.' }
+          $inputFile = Join-Path $inputRoot 'winsmux_0.38.0_x64-setup.exe'
+          $hash = (Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Item -LiteralPath $inputFile).Length -ne 9920209 -or $hash -ne 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2') {
+            throw 'Downloaded baseline identity mismatch; no installer was launched.'
+          }
+
+      - name: Install and capture actual owned members
+        shell: pwsh
+        run: |
+          $inputFile = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input/winsmux_0.38.0_x64-setup.exe'
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-evidence-${{ matrix.profile }}'
+          ./scripts/capture-desktop-baseline.ps1 -Installer $inputFile -ProfileName '${{ matrix.profile }}' -OutputDirectory $evidenceRoot
+
+      - name: Preserve the bounded capture receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-baseline-${{ matrix.profile }}-${{ github.sha }}
+          path: ${{ runner.temp }}/winsmux-baseline-evidence-${{ matrix.profile }}/capture.json
+          if-no-files-found: error
