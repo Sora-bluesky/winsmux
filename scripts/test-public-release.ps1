@@ -126,8 +126,36 @@ public static class WinsmuxDesktopActorProbe {
  [DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool GetUserObjectInformationW(IntPtr h,int kind,StringBuilder text,uint bytes,out uint needed);
  static void Check(bool value,string where) { if(!value) throw new Win32Exception(Marshal.GetLastWin32Error(),where); }
  static string Hash(byte[] b) { using(var h=SHA256.Create()) return BitConverter.ToString(h.ComputeHash(b)).Replace("-","").ToLowerInvariant(); }
- static IntPtr Info(IntPtr h,int kind) { uint n; GetTokenInformation(h,kind,IntPtr.Zero,0,out n); if(n==0 || n>65536) throw new InvalidOperationException("Token information size refused"); IntPtr b=Marshal.AllocHGlobal((int)n); try { Check(GetTokenInformation(h,kind,b,n,out n),"GetTokenInformation "+kind); return b; } catch { Marshal.FreeHGlobal(b); throw; } }
- static uint Value(IntPtr h,int kind) { var b=Info(h,kind); try { return (uint)Marshal.ReadInt32(b); } finally { Marshal.FreeHGlobal(b); } }
+ static IntPtr Info(IntPtr h,int kind) { uint returned; return Info(h,kind,out returned); }
+ static IntPtr Info(IntPtr h,int kind,out uint returned) {
+  uint capacity; GetTokenInformation(h,kind,IntPtr.Zero,0,out capacity);
+  // The size query may report ERROR_BAD_LENGTH for TokenElevation while returning its exact four-byte size.
+  // Only the final API success and written range authorize reads; no size-query error-code assumption.
+  if(capacity==0 || capacity>65536) throw new InvalidOperationException("Token information size refused");
+  IntPtr b=Marshal.AllocHGlobal((int)capacity); try {
+   Marshal.Copy(new byte[capacity],0,b,(int)capacity);
+   Check(GetTokenInformation(h,kind,b,capacity,out returned),"GetTokenInformation "+kind);
+   if(returned==0 || returned>capacity) throw new InvalidOperationException("Token information returned range refused");
+   return b;
+  } catch { Marshal.FreeHGlobal(b); throw; }
+ }
+ static uint NormalizeTokenNumber(int kind,byte[] data) {
+  if(data==null) throw new InvalidOperationException("Token numeric bytes missing");
+  // TokenHasRestrictions is documented as DWORD but the measured Windows provider also returns one BOOLEAN byte.
+  // Both closed widths express nonzero TRUE; read only returned bytes and canonicalize the same fact to zero or one.
+  if(kind==21) {
+   if(data.Length==1) return data[0]==0?0u:1u;
+   if(data.Length!=4) throw new InvalidOperationException("Token restriction width refused");
+   return BitConverter.ToUInt32(data,0)==0?0u:1u;
+  }
+  if(kind!=8 && kind!=18 && kind!=12 && kind!=20 && kind!=29) throw new InvalidOperationException("Token numeric class refused");
+  if(data.Length!=4) throw new InvalidOperationException("Token DWORD width refused");
+  uint value=BitConverter.ToUInt32(data,0);
+  if(kind==20 || kind==29) return value==0?0u:1u;
+  if((kind==8 && value!=1 && value!=2)||(kind==18 && value!=1 && value!=2 && value!=3)) throw new InvalidOperationException("Token enum value refused");
+  return value;
+ }
+ static uint Value(IntPtr h,int kind) { uint returned; var b=Info(h,kind,out returned); try {var data=new byte[returned];Marshal.Copy(b,data,0,(int)returned);return NormalizeTokenNumber(kind,data);} finally {Marshal.FreeHGlobal(b);} }
  sealed class TokenFacts {
   internal byte[] sid; internal string sidText; internal uint elevation,type,rid,session,tokenType,restricted,appContainer;
   internal Dictionary<string,object> Public() { return new Dictionary<string,object>{{"sid_sha256",Hash(sid)},{"elevation",elevation},{"elevation_type",type},{"integrity_rid",rid},{"session",session},{"token_type",tokenType},{"restricted",restricted},{"app_container",appContainer}}; }
