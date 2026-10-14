@@ -49,6 +49,22 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
+[ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface Task880CaptureLinkW {
+    [PreserveSig] int GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder path, int count, IntPtr data, uint flags);
+}
+public static class Task880WideLink {
+    public static string Read(string path) {
+        object link = Activator.CreateInstance(Type.GetTypeFromCLSID(new Guid("00021401-0000-0000-C000-000000000046"), true));
+        try {
+            ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Load(path, 0);
+            var buffer = new StringBuilder(32768);
+            int result = ((Task880CaptureLinkW)link).GetPath(buffer, buffer.Capacity, IntPtr.Zero, 4);
+            if (result != 0 || buffer.Length == 0) throw new InvalidOperationException("Unicode shortcut target was not returned successfully.");
+            return buffer.ToString();
+        } finally { Marshal.FinalReleaseComObject(link); }
+    }
+}
 public static class Task880RawRegistry {
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)]
     private static extern int RegOpenKeyExW(IntPtr key, string subkey, uint options, uint access, out IntPtr result);
@@ -140,21 +156,23 @@ function Read-CapturedInstallerLanguage {
     if ([Convert]::ToHexString($raw) -cne [Convert]::ToHexString($expected)) { throw 'Installer language bytes are not the exact terminated REG_SZ.' }
     return [int]$language
 }
+function Read-CapturedShortcutTarget {
+    param([string]$Path)
+    return [Task880WideLink]::Read($Path)
+}
 function Complete-CapturedObservations {
     param($Receipt, [string]$GuiPath, $LinkPaths, [string]$Sentinel, [string]$SentinelHash)
     $failures = [Collections.Generic.List[string]]::new()
     try { $Receipt.language = Read-CapturedInstallerLanguage $Receipt.registration[1] }
     catch { $failures.Add($_.Exception.Message) }
     try {
-        $shell = New-Object -ComObject WScript.Shell
         $shellApp = New-Object -ComObject Shell.Application
         foreach ($kind in $LinkPaths.Keys) {
             $linkPath = $LinkPaths[$kind]
             try {
                 if (-not (Test-Path -LiteralPath $linkPath -PathType Leaf)) { continue }
-                $link = $shell.CreateShortcut($linkPath)
                 $observed = [ordered]@{
-                    kind = $kind; target = [string]$link.TargetPath; expected_gui = $GuiPath; aumid = $null
+                    kind = $kind; target = Read-CapturedShortcutTarget $linkPath; expected_gui = $GuiPath; aumid = $null
                     bytes = (Get-Item -LiteralPath $linkPath).Length
                     sha256 = (Get-FileHash -LiteralPath $linkPath -Algorithm SHA256).Hash.ToLowerInvariant()
                 }
