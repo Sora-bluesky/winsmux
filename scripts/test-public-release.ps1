@@ -4150,6 +4150,7 @@ function ConvertTo-DesktopNativeMsiLogProjection {
     param([Parameter(Mandatory)][Collections.IDictionary]$ObservationInput)
     $actionNames = @('AppSearch','CostFinalize','CostInitialize','CreateFolders','CreateShortcuts','CreateUpdateTask','DeleteUpdateTask','DownloadAndInvokeBootstrapper','FileCost','FindRelatedProducts','InstallFiles','InstallFinalize','InstallInitialize','InstallValidate','InvokeBootstrapper','InvokeStandalone','LaunchApplication','MigrateFeatureStates','ProcessComponents','PublishFeatures','PublishProduct','RegisterProduct','RegisterUser','RemoveExistingProducts','RemoveFiles','RemoveFolders','RemoveRegistryValues','RemoveShortcuts','SetARPINSTALLLOCATION','SetARPNOMODIFY','UnpublishFeatures','UpdateWebView2ViaEdgeUpdate','ValidateProductID','WinsmuxVerifyStartup','WixUIPrintEula','WixUIValidatePath','WriteRegistryValues')
     $helperNames = @('usage','plan_refused','path_refused','member_unconfirmed','actor_refused','isolation_failed','launch_failed','startup_unconfirmed','startup_timeout','probe_exit_unconfirmed')
+    $diagnosticMsiExitNames = [ordered]@{'64'='usage';'65'='plan_refused';'66'='path_refused';'67'='member_unconfirmed';'68'='actor_refused';'69'='isolation_failed';'70'='launch_failed';'71'='startup_unconfirmed';'72'='startup_timeout';'73'='probe_exit_unconfirmed'}
     $errorCodes = @('112','1303','1304','1305','1307','1317','1335','1603','1618','1619','1620','1638','1708','1721','1722','2203')
     $actions = [ordered]@{}
     foreach ($name in $actionNames) {
@@ -4185,7 +4186,9 @@ function ConvertTo-DesktopNativeMsiLogProjection {
             } else { $result.unknown.action_count += 1 }
         } elseif ($record -cmatch '^CustomAction ([A-Za-z][A-Za-z0-9_]{0,63}) returned actual error code ([0-9]{1,5})(?: \(note this may not be 100% accurate if translation happened inside sandbox\))?$') {
             $name = $Matches[1]; $number = $Matches[2]
-            if ($actionNames -ccontains $name) {
+            if ($name -ceq 'WinsmuxVerifyStartup' -and $diagnosticMsiExitNames.Contains($number)) {
+                $helper[$diagnosticMsiExitNames[$number]] += 1; $recognized += 1
+            } elseif ($actionNames -ccontains $name) {
                 if (@('2','3') -ccontains $number) { $actions[$name].custom_errors[$number] += 1; $recognized += 1 } else { $result.unknown.return_count += 1 }
             } else { $result.unknown.action_count += 1 }
         } elseif ($record -ceq 'MainEngineThread is returning 1603') { $result.markers.MainEngineThread_return1603 += 1; $recognized += 1 }

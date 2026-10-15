@@ -272,12 +272,23 @@ pub fn run_internal_desktop_installer(arguments: &[String]) -> i32 {
             }
             Err(_) => {
                 eprintln!("winsmux installer: startup_unconfirmed");
-                2
+                71
             }
         },
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
-            2
+            match error {
+                DesktopInstallError::Usage => 64,
+                DesktopInstallError::Plan => 65,
+                DesktopInstallError::Path => 66,
+                DesktopInstallError::Member => 67,
+                DesktopInstallError::Actor => 68,
+                DesktopInstallError::Isolation => 69,
+                DesktopInstallError::Launch => 70,
+                DesktopInstallError::Receipt => 71,
+                DesktopInstallError::Timeout => 72,
+                DesktopInstallError::Cleanup => 73,
+            }
         }
     }
 }

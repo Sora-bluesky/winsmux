@@ -141,8 +141,8 @@ pub fn parse_context(bytes: &[u8], action: Action) -> Result<Context> {
     };
     let root = PathBuf::from(vals[2]);
     let source = PathBuf::from(vals[3]);
-    strict_absolute(&root)?;
-    strict_absolute(&source)?;
+    strict_absolute_role(&root, PathRole::ContextRoot)?;
+    strict_absolute_role(&source, PathRole::ContextSource)?;
     Ok(Context {
         action,
         root,
@@ -158,7 +158,90 @@ pub fn parse_context(bytes: &[u8], action: Action) -> Result<Context> {
         update: flag(vals[9])?,
     })
 }
+// Diagnostic only: observe an already-refused tilde path; never retry with its expansion.
+#[derive(Clone, Copy)]
+enum PathRole {
+    ContextArgumentParent,
+    ContextRoot,
+    ContextSource,
+    CurrentHelperParent,
+    KnownFolderDesktop,
+    KnownFolderPrograms,
+    DerivedPath,
+}
+#[derive(Clone, Copy)]
+enum TildeShape {
+    TildeRemovedAndStrictValid,
+    TildeRemainsOrStrictInvalid,
+    LookupFailed,
+}
+fn tilde_role_code(role: PathRole, shape: TildeShape) -> u8 {
+    match (role, shape) {
+        (PathRole::ContextArgumentParent, TildeShape::TildeRemovedAndStrictValid) => 205,
+        (PathRole::ContextArgumentParent, TildeShape::TildeRemainsOrStrictInvalid) => 206,
+        (PathRole::ContextArgumentParent, TildeShape::LookupFailed) => 207,
+        (PathRole::ContextRoot, TildeShape::TildeRemovedAndStrictValid) => 208,
+        (PathRole::ContextRoot, TildeShape::TildeRemainsOrStrictInvalid) => 209,
+        (PathRole::ContextRoot, TildeShape::LookupFailed) => 210,
+        (PathRole::ContextSource, TildeShape::TildeRemovedAndStrictValid) => 211,
+        (PathRole::ContextSource, TildeShape::TildeRemainsOrStrictInvalid) => 212,
+        (PathRole::ContextSource, TildeShape::LookupFailed) => 213,
+        (PathRole::CurrentHelperParent, TildeShape::TildeRemovedAndStrictValid) => 214,
+        (PathRole::CurrentHelperParent, TildeShape::TildeRemainsOrStrictInvalid) => 215,
+        (PathRole::CurrentHelperParent, TildeShape::LookupFailed) => 216,
+        (PathRole::KnownFolderDesktop, TildeShape::TildeRemovedAndStrictValid) => 217,
+        (PathRole::KnownFolderDesktop, TildeShape::TildeRemainsOrStrictInvalid) => 218,
+        (PathRole::KnownFolderDesktop, TildeShape::LookupFailed) => 219,
+        (PathRole::KnownFolderPrograms, TildeShape::TildeRemovedAndStrictValid) => 220,
+        (PathRole::KnownFolderPrograms, TildeShape::TildeRemainsOrStrictInvalid) => 221,
+        (PathRole::KnownFolderPrograms, TildeShape::LookupFailed) => 222,
+        (PathRole::DerivedPath, TildeShape::TildeRemovedAndStrictValid) => 223,
+        (PathRole::DerivedPath, TildeShape::TildeRemainsOrStrictInvalid) => 224,
+        (PathRole::DerivedPath, TildeShape::LookupFailed) => 225,
+    }
+}
 fn strict_absolute(path: &Path) -> Result<()> {
+    strict_absolute_role(path, PathRole::DerivedPath)
+}
+fn strict_absolute_role(path: &Path, role: PathRole) -> Result<()> {
+    match strict_absolute_original(path) {
+        Err(Error::Path(203)) => Err(Error::Path(tilde_role_code(role, tilde_shape(path)))),
+        unchanged => unchanged,
+    }
+}
+#[cfg(windows)]
+fn tilde_shape(path: &Path) -> TildeShape {
+    use windows_sys::Win32::Storage::FileSystem::GetLongPathNameW;
+    let Some(text) = path.to_str() else {
+        return TildeShape::LookupFailed;
+    };
+    let mut input: Vec<u16> = text.replace('/', "\\").encode_utf16().collect();
+    if input.contains(&0) {
+        return TildeShape::LookupFailed;
+    }
+    input.push(0);
+    let required = unsafe { GetLongPathNameW(input.as_ptr(), std::ptr::null_mut(), 0) };
+    let Some(capacity) = required.checked_add(1).filter(|_| required != 0) else {
+        return TildeShape::LookupFailed;
+    };
+    let mut output = vec![0; capacity as usize];
+    let written = unsafe { GetLongPathNameW(input.as_ptr(), output.as_mut_ptr(), capacity) };
+    if written == 0 || written >= capacity {
+        return TildeShape::LookupFailed;
+    }
+    match String::from_utf16(&output[..written as usize]) {
+        Ok(expanded) if !expanded.contains('~')
+            && strict_absolute_original(Path::new(&expanded)).is_ok() => {
+                TildeShape::TildeRemovedAndStrictValid
+            }
+        _ => TildeShape::TildeRemainsOrStrictInvalid,
+    }
+}
+#[cfg(not(windows))]
+fn tilde_shape(_: &Path) -> TildeShape {
+    TildeShape::LookupFailed
+}
+fn strict_absolute_original(path: &Path) -> Result<()> {
     let t = path.to_str().ok_or(Error::Path(100))?.replace('/', "\\");
     let b = t.as_bytes();
     if b.len() < 4
@@ -633,7 +716,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
             match error {
-                Error::Path(code @ (100..=160 | 200..=204)) => i32::from(code),
+                Error::Path(code @ (100..=160 | 200..=225)) => i32::from(code),
                 Error::Pending => 3,
                 _ => 2,
             }
@@ -830,9 +913,12 @@ mod native {
     }
     impl Dirs {
         fn open(p: &Path) -> Result<Self> {
+            Self::open_role(p, PathRole::DerivedPath)
+        }
+        fn open_role(p: &Path, role: PathRole) -> Result<Self> {
             let t = path_text(p)?;
             if t.len() != 3 {
-                strict_absolute(p)?;
+                strict_absolute_role(p, role)?;
             }
             let mut cur = PathBuf::from(&t[..3]);
             let mut holds = Vec::new();
@@ -925,7 +1011,10 @@ mod native {
         })
     }
     fn observe(p: &Path, relative: &str, mutable: bool) -> Result<Observed> {
-        let dirs = Dirs::open(p.parent().ok_or(Error::Path(117))?)?;
+        observe_role(p, relative, mutable, PathRole::DerivedPath)
+    }
+    fn observe_role(p: &Path, relative: &str, mutable: bool, role: PathRole) -> Result<Observed> {
+        let dirs = Dirs::open_role(p.parent().ok_or(Error::Path(117))?, role)?;
         let access = if mutable {
             0xC0000000 | DELETE_ACCESS
         } else {
@@ -947,7 +1036,10 @@ mod native {
         })
     }
     fn read_plain(p: &Path) -> Result<Vec<u8>> {
-        let mut h = observe(p, "read", false)?;
+        read_plain_role(p, PathRole::DerivedPath)
+    }
+    fn read_plain_role(p: &Path, role: PathRole) -> Result<Vec<u8>> {
+        let mut h = observe_role(p, "read", false, role)?;
         h.file
             .seek(SeekFrom::Start(0))
             .map_err(|e| diagnostic_io(&e))?;
@@ -1553,7 +1645,8 @@ mod native {
             CoTaskMemFree(raw.cast());
         }
         let p = PathBuf::from(text?).join("winsmux.lnk");
-        strict_absolute(&p)?;
+        let role = if kind == "desktop" { PathRole::KnownFolderDesktop } else { PathRole::KnownFolderPrograms };
+        strict_absolute_role(&p, role)?;
         Ok(p)
     }
     struct Key(HKEY);
@@ -3596,10 +3689,10 @@ mod native {
         })
     }
     pub(super) fn run_context(action: Action, path: &Path) -> Result<Receipt> {
-        let ctx = parse_context(&read_plain(path)?, action)?;
+        let ctx = parse_context(&read_plain_role(path, PathRole::ContextArgumentParent)?, action)?;
         let sid = actor_sid()?;
         refuse_msi()?;
-        let source = Dirs::open(&ctx.source)?;
+        let source = Dirs::open_role(&ctx.source, PathRole::ContextSource)?;
         let plan_bytes = read_plain(&ctx.source.join(PLAN_FILE))?;
         let plan = checked_plan(&plan_bytes, &sha256_hex(&ctx.plan_sha256))?;
         let helper = plan
@@ -3608,7 +3701,7 @@ mod native {
             .find(|m| m.role == "cli")
             .ok_or(Error::Plan)?;
         let self_exe = std::env::current_exe().map_err(|_| Error::Member)?;
-        let me = observe(&self_exe, "helper", false)?;
+        let me = observe_role(&self_exe, "helper", false, PathRole::CurrentHelperParent)?;
         if me.member.bytes != helper.bytes || me.member.sha256 != helper.sha256 {
             return Err(Error::Member);
         }
@@ -3623,7 +3716,7 @@ mod native {
             }
             fs::create_dir(&ctx.root).map_err(|e| diagnostic_io(&e))?;
         }
-        let root = Dirs::open(&ctx.root)?;
+        let root = Dirs::open_role(&ctx.root, PathRole::ContextRoot)?;
         let _exclusion = exclusion(&root, &sid)?;
         if root.id.volume != parent.id.volume {
             return Err(Error::Path(160));
