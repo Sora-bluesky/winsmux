@@ -100,7 +100,7 @@
         <Binary Id="WinsmuxInstallerHelper" SourceFile="$(var.WinsmuxMsiHelperPath)" />
         <CustomAction Id="WinsmuxVerifyStartup" Execute="deferred" Impersonate="yes" Return="check"
             BinaryKey="WinsmuxInstallerHelper"
-            ExeCommand="--winsmux-internal-desktop-installer msi-verify --root &quot;[INSTALLDIR].&quot; --version &quot;[ProductVersion]&quot; --plan-sha256 &quot;$(var.WinsmuxMsiPlanSha256)&quot; --user-sid &quot;[UserSID]&quot;" />
+            ExeCommand="--winsmux-internal-desktop-installer msi-verify --root &quot;[INSTALLDIR]\&quot; --version &quot;[ProductVersion]&quot; --plan-sha256 &quot;$(var.WinsmuxMsiPlanSha256)&quot; --user-sid &quot;[UserSID]&quot;" />
 
         <UI>
             <!-- launch app checkbox -->

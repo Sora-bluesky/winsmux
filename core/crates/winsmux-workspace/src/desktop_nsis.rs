@@ -165,9 +165,24 @@ fn strict_absolute(path: &Path) -> Result<()> {
         || !b[0].is_ascii_alphabetic()
         || b[1] != b':'
         || b[2] != b'\\'
-        || !t[3..].split('\\').all(valid_member_path)
     {
-        return Err(Error::Path(101));
+        return Err(Error::Path(200));
+    }
+    for part in t[3..].split('\\') {
+        if !valid_member_path(part) {
+            let code = if part.is_empty() {
+                201
+            } else if matches!(part, "." | "..") {
+                202
+            } else if part.ends_with(['.', ' ']) {
+                204
+            } else if part.contains('~') {
+                203
+            } else {
+                204
+            };
+            return Err(Error::Path(code));
+        }
     }
     Ok(())
 }
@@ -618,7 +633,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
             match error {
-                Error::Path(code @ 100..=160) => i32::from(code),
+                Error::Path(code @ (100..=160 | 200..=204)) => i32::from(code),
                 Error::Pending => 3,
                 _ => 2,
             }

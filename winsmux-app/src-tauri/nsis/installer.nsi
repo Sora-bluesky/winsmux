@@ -169,6 +169,11 @@ ManifestDPIAwareness PerMonitorV2
         ${OrIf} $0 S== "158"
         ${OrIf} $0 S== "159"
         ${OrIf} $0 S== "160"
+        ${OrIf} $0 S== "200"
+        ${OrIf} $0 S== "201"
+        ${OrIf} $0 S== "202"
+        ${OrIf} $0 S== "203"
+        ${OrIf} $0 S== "204"
           StrCpy $2 $0
         ${EndIf}
       ${EndIf}
