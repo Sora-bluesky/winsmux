@@ -1236,6 +1236,9 @@ function Install-VerifiedWinsmuxGeneration {
                     $cleanupOwned = $priorMember.Count -eq 1 -and $extraSnapshots[$id].Files[''] -ceq $priorMember[0].sha256
                 }
             }
+            if ($item.Name -ceq '.winsmux/bin/winsmux-entry.ps1' -and $extraSnapshots[$id].Present -and -not $cleanupOwned) {
+                throw 'Existing winsmux entry is not unchanged installer-owned support; file preserved.'
+            }
             $entries.Add(@{ name=$item.Name; id=$id; kind='File'; prior=$extraSnapshots[$id]; remove=[bool]$item.Remove; cleanup_owned=$cleanupOwned })
             Invoke-WinsmuxInstallCheckpoint 'stage-support-write'
         }
@@ -1469,7 +1472,7 @@ function Get-WinsmuxSupportNames {
         '.winsmux/winsmux-core/scripts/team-pipeline.ps1',
         '.winsmux/winsmux-core/scripts/vault.ps1',
         '.winsmux/winsmux-core/scripts/worker-isolation.ps1',
-        '.winsmux/bin/winsmux-core.ps1', '.winsmux/scripts/winsmux-core.ps1', '.winsmux/bin/winsmux.cmd',
+        '.winsmux/bin/winsmux-core.ps1', '.winsmux/scripts/winsmux-core.ps1', '.winsmux/bin/winsmux.cmd', '.winsmux/bin/winsmux-entry.ps1',
         '.winsmux/bin/install.ps1', '.winsmux/version', '.winsmux/install-profile', '.winsmux/install-profile.json',
         '.winsmux/install-owner.json', '.winsmux.conf', 'terminal-fragment'
     )
@@ -1536,11 +1539,31 @@ function New-WinsmuxSupportStage {
     $wrapper = @'
 @echo off
 setlocal
-set "WINSMUX_RAW_EXE=%USERPROFILE%\.local\bin\winsmux.exe"
-pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
-exit /b %ERRORLEVEL%
+endlocal & goto #_undefined_# 2>NUL || pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-entry.ps1" %*
 '@
-    [IO.File]::WriteAllText((Join-Path $BIN_DIR 'winsmux.cmd'), $wrapper + "`n", [Text.ASCIIEncoding]::new())
+    $entryScript = @'
+param()
+
+$ErrorActionPreference = 'Stop'
+$env:WINSMUX_RAW_EXE = $env:USERPROFILE + '\.local\bin\winsmux.exe'
+$startInfo = [Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = Join-Path $PSHOME 'pwsh.exe'
+$startInfo.UseShellExecute = $false
+$startInfo.ArgumentList.Add('-NoProfile')
+$startInfo.ArgumentList.Add('-File')
+$startInfo.ArgumentList.Add((Join-Path $PSScriptRoot 'winsmux-core.ps1'))
+foreach ($argument in $args) { $startInfo.ArgumentList.Add([string]$argument) }
+$process = [Diagnostics.Process]::Start($startInfo)
+try {
+    $process.WaitForExit()
+    $childExitCode = $process.ExitCode
+} finally {
+    $process.Dispose()
+}
+exit $childExitCode
+'@
+    [IO.File]::WriteAllText((Join-Path $BIN_DIR 'winsmux.cmd'), $wrapper.Replace(([string][char]13 + [char]10), [string][char]10) + [char]10, [Text.ASCIIEncoding]::new())
+    [IO.File]::WriteAllText((Join-Path $BIN_DIR 'winsmux-entry.ps1'), $entryScript.Replace(([string][char]13 + [char]10), [string][char]10) + [char]10, [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $WINSMUX_DIR 'version'), $ResolvedVersion + "`n", [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $WINSMUX_DIR 'install-profile'), $Profile + "`n", [Text.UTF8Encoding]::new($false))
     Write-InstallProfileManifest $Profile $IsUpdate
