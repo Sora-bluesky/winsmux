@@ -106,7 +106,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Observe exact pipe slots, default object security and readonly runtime starts
+      - name: Prove fresh derived object security and real readonly runtime starts
         shell: pwsh
         env:
           SOURCE_COMMIT: ${{ github.sha }}
@@ -124,7 +124,7 @@ jobs:
           function Hash-File([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
           $sourceSha = Hash-File $sourcePath
           $ownerSha = Hash-File $ownerPath
-          if ($sourceSha -cnotin @('bf9c818f4992e7319a66931a37a5ef33b50571804503b4a5f277b47c7d38bb23','822b400b54c89f3632be26c697f455a91d2dd33d451bd5967b87aa5000e89bc2','74e068f1abd3a565f794e6e74f84a910a0d6e28c8df8d5db469d2782291dd90c','7c0fec8489f4e70a0ce9cb3bcd6949345521a65929b225e4a3e4ee846b598bb2') -or $ownerSha -cnotin @('cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c','b2ec09ebdbc9557e9a09c052186478ce1d71af95d194f88f3c5152bd5324e936')) { throw 'git_diagnostic_fixed_source_changed' }
+          if ($sourceSha -cnotin @('03f583645d052cb660a5e672b7fd8237bc52b4bc22b5f6bda67b328b8408c5bc','9e9be1cb74d20c0180e54cb5e8445bf8b4f5aa4f3dcc8303838a772b3f3fcce3') -or $ownerSha -cnotin @('cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c','b2ec09ebdbc9557e9a09c052186478ce1d71af95d194f88f3c5152bd5324e936')) { throw 'actor_proof_fixed_source_changed' }
           $tokens=$null;$errors=$null
           $ast=[Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$tokens,[ref]$errors)
           if(@($errors).Count){throw 'git_diagnostic_source_parse'}
@@ -132,10 +132,6 @@ jobs:
           if($assignment.Count -ne 1 -or $assignment[0].Right -isnot [Management.Automation.Language.CommandExpressionAst] -or $assignment[0].Right.Expression -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $assignment[0].Right.Expression.StringConstantType -ne [Management.Automation.Language.StringConstantType]::SingleQuotedHereString){throw 'git_diagnostic_actor_literal'}
           $actorSource=[string]$assignment[0].Right.Expression.Value
           $ownerSource=[IO.File]::ReadAllText($ownerPath)
-          $labels=@('desktop_owner_stdin_create_failed','desktop_owner_stdin_noinherit_failed','desktop_owner_stdout_create_failed','desktop_owner_stdout_noinherit_failed','desktop_owner_stderr_create_failed','desktop_owner_stderr_noinherit_failed')
-          $at=0
-          foreach($label in $labels){$needle='"desktop_owner_pipe_failed"';$pos=$ownerSource.IndexOf($needle,$at,[StringComparison]::Ordinal);if($pos -lt 0){throw 'pipe_diagnostic_owner_labels'};$ownerSource=$ownerSource.Substring(0,$pos)+'"'+$label+'"'+$ownerSource.Substring($pos+$needle.Length);$at=$pos+$label.Length+2}
-          if($ownerSource.Contains('"desktop_owner_pipe_failed"')){throw 'pipe_diagnostic_extra_owner_label'}
           # Exact existing actor factory and DesktopProcessOwner: no token/ACL/guard edits.
           Add-Type -TypeDefinition $actorSource
           Add-Type -TypeDefinition $ownerSource
@@ -231,18 +227,49 @@ jobs:
            static string Hash(byte[] bytes){return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();}
            static string SidHash(SecurityIdentifier sid){var b=new byte[sid.BinaryLength];sid.GetBinaryForm(b,0);return Hash(b);}
            static string Role(SecurityIdentifier s,SecurityIdentifier user){if(s.Equals(user))return "current_user";if(s.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid))return "builtin_administrators";if(s.IsWellKnown(WellKnownSidType.LocalSystemSid))return "local_system";if(s.IsWellKnown(WellKnownSidType.WorldSid))return "everyone";if(s.IsWellKnown(WellKnownSidType.AuthenticatedUserSid))return "authenticated_users";if(s.IsWellKnown(WellKnownSidType.CreatorOwnerSid))return "creator_owner";if(s.IsWellKnown(WellKnownSidType.LogonIdsSid))return "logon_sid";return "other_hashed";}
-           public static Dictionary<string,object> Read(){var r=new Dictionary<string,object>();IntPtr t;if(!OpenProcessToken(GetCurrentProcess(),8,out t)){r["opened"]=false;r["winerror"]=Marshal.GetLastWin32Error();return r;}r["opened"]=true;try{IntPtr u=IntPtr.Zero,o=IntPtr.Zero,d=IntPtr.Zero;try{u=Info(t,1);o=Info(t,4);d=Info(t,6);var user=new SecurityIdentifier(Marshal.ReadIntPtr(u));var owner=new SecurityIdentifier(Marshal.ReadIntPtr(o));r["user_sid_sha256"]=SidHash(user);r["owner"]=new Dictionary<string,object>{{"role",Role(owner,user)},{"sid_sha256",SidHash(owner)}};IntPtr p=Marshal.ReadIntPtr(d);r["default_dacl_null"]=p==IntPtr.Zero;if(p!=IntPtr.Zero){int length=(ushort)Marshal.ReadInt16(p,2);if(length<8||length>65535)throw new InvalidOperationException("pipe_dacl_length");byte[] b=new byte[length];Marshal.Copy(p,b,0,length);var acl=new RawAcl(b,0);r["default_dacl_sha256"]=Hash(b);r["default_dacl_bytes"]=length;r["ace_count"]=acl.Count;var rows=new List<Dictionary<string,object>>();for(int i=0;i<Math.Min(acl.Count,16);i++){var ace=acl[i];var row=new Dictionary<string,object>{{"type",(int)ace.AceType},{"flags",(int)ace.AceFlags}};var q=ace as QualifiedAce;if(q!=null){row["qualifier"]=(int)q.AceQualifier;row["mask"]=unchecked((uint)q.AccessMask);row["sid_role"]=Role(q.SecurityIdentifier,user);row["sid_sha256"]=SidHash(q.SecurityIdentifier);}else{byte[] raw=new byte[ace.BinaryLength];ace.GetBinaryForm(raw,0);row["unclassified_ace_sha256"]=Hash(raw);}rows.Add(row);}r["aces"]=rows;r["aces_truncated"]=acl.Count>16;}return r;}finally{foreach(var p in new[]{u,o,d})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);}}finally{r["token_closed"]=CloseHandle(t);}}
+           public static Dictionary<string,object> Read(){var r=new Dictionary<string,object>();IntPtr t;if(!OpenProcessToken(GetCurrentProcess(),8,out t)){r["opened"]=false;r["winerror"]=Marshal.GetLastWin32Error();return r;}r["opened"]=true;try{IntPtr u=IntPtr.Zero,o=IntPtr.Zero,d=IntPtr.Zero;try{u=Info(t,1);o=Info(t,4);d=Info(t,6);var user=new SecurityIdentifier(Marshal.ReadIntPtr(u));var owner=new SecurityIdentifier(Marshal.ReadIntPtr(o));r["user_sid_sha256"]=SidHash(user);r["owner"]=new Dictionary<string,object>{{"role",Role(owner,user)},{"sid_sha256",SidHash(owner)}};IntPtr p=Marshal.ReadIntPtr(d);r["default_dacl_null"]=p==IntPtr.Zero;if(p!=IntPtr.Zero){int length=(ushort)Marshal.ReadInt16(p,2);if(length<8||length>65535)throw new InvalidOperationException("pipe_dacl_length");byte[] b=new byte[length];Marshal.Copy(p,b,0,length);var acl=new RawAcl(b,0);r["default_dacl_sha256"]=Hash(b);r["default_dacl_bytes"]=length;r["ace_count"]=acl.Count;var rows=new List<Dictionary<string,object>>();for(int i=0;i<Math.Min(acl.Count,16);i++){var ace=acl[i];byte[] aceBytes=new byte[ace.BinaryLength];ace.GetBinaryForm(aceBytes,0);var row=new Dictionary<string,object>{{"type",(int)ace.AceType},{"flags",(int)ace.AceFlags},{"ace_sha256",Hash(aceBytes)}};var q=ace as QualifiedAce;if(q!=null){row["qualifier"]=(int)q.AceQualifier;row["mask"]=unchecked((uint)q.AccessMask);row["sid_role"]=Role(q.SecurityIdentifier,user);row["sid_sha256"]=SidHash(q.SecurityIdentifier);}else{byte[] raw=new byte[ace.BinaryLength];ace.GetBinaryForm(raw,0);row["unclassified_ace_sha256"]=Hash(raw);}rows.Add(row);}r["aces"]=rows;r["aces_truncated"]=acl.Count>16;}return r;}finally{foreach(var p in new[]{u,o,d})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);}}finally{r["token_closed"]=CloseHandle(t);}}
           }
           '@
           Add-Type -TypeDefinition $tokenSource
+          $securityProofSource=@'
+          using System;
+          using System.IO;
+          using System.Text;
+          using System.Reflection;
+          using System.Collections.Generic;
+          using System.Security.Cryptography;
+          using System.Security.Principal;
+          using System.Runtime.InteropServices;
+          public static class WinsmuxActorSecurityProofRead {
+           [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+           [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+           [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr p,uint a,out IntPtr h);
+           const BindingFlags I=BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic;
+           static Type Actor(){foreach(var a in AppDomain.CurrentDomain.GetAssemblies()){var t=a.GetType("WinsmuxDesktopActorProbe",false);if(t!=null)return t;}throw new InvalidOperationException("Proof actor source missing");}
+           static object Get(object o,string n){return o.GetType().GetField(n,I).GetValue(o);}
+           static object Invoke(Type a,string name,params object[] args){return a.GetMethod(name,BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,args);}
+           static string Hash(byte[] b){return Convert.ToHexString(SHA256.HashData(b)).ToLowerInvariant();}
+           static void Bytes(BinaryWriter b,byte[] v){b.Write(v==null?-1:v.Length);if(v!=null)b.Write(v);}
+           static void Strings(BinaryWriter b,string[] v){b.Write(v.Length);foreach(var s in v)b.Write(s);}
+           public static Dictionary<string,object> Read(){IntPtr h;if(!OpenProcessToken(GetCurrentProcess(),8,out h))throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Proof current token query");try{var a=Actor();var snapshot=Invoke(a,"SecuritySnapshot",h);var facts=Get(snapshot,"facts");using(var memory=new MemoryStream()){using(var writer=new BinaryWriter(memory,Encoding.UTF8,true)){
+            foreach(var n in new[]{"user","owner","primaryGroup","integrity","dacl"})Bytes(writer,(byte[])Get(snapshot,n));writer.Write((uint)Get(snapshot,"userAttributes"));writer.Write((uint)Get(snapshot,"integrityAttributes"));foreach(var n in new[]{"elevation","type","rid","session","tokenType","restricted","appContainer"})writer.Write((uint)Get(facts,n));
+            foreach(var n in new[]{"groups","restricting"})Strings(writer,(string[])Invoke(a,"GroupState",Get(snapshot,n),null,null));Strings(writer,(string[])Invoke(a,"PrivilegeState",Get(snapshot,"privileges")));writer.Flush();}
+            var enabled=new List<string>();foreach(var p in (Array)Get(snapshot,"privileges"))if(((uint)Get(p,"attributes")&2)!=0)enabled.Add(Hash(Encoding.UTF8.GetBytes(Get(p,"low")+":"+Get(p,"high"))));enabled.Sort(StringComparer.Ordinal);
+            var admin=new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null);var bytes=new byte[admin.BinaryLength];admin.GetBinaryForm(bytes,0);int admins=0;bool deny=true;foreach(var g in (Array)Get(snapshot,"groups"))if(Convert.ToBase64String((byte[])Get(g,"sid"))==Convert.ToBase64String(bytes)){admins++;uint attrs=(uint)Get(g,"attributes");deny=deny&&(attrs&0x10)!=0&&(attrs&6)==0;}
+            return new Dictionary<string,object>{{"security_sha256",Hash(memory.ToArray())},{"restricting_sid_count",((Array)Get(snapshot,"restricting")).Length},{"admin_deny_only",admins==1&&deny},{"enabled_privilege_hashes",enabled},{"default_acl_sha256",Hash((byte[])Get(snapshot,"dacl"))},{"group_count",((Array)Get(snapshot,"groups")).Length}};
+           }}finally{CloseHandle(h);}}
+          }
+          '@
+          Add-Type -TypeDefinition $securityProofSource
+          $callerSecurityBefore=[WinsmuxActorSecurityProofRead]::Read()
           function Invoke-PipeBareCommand {
            param([string]$Image,[string[]]$Arguments,[string]$Stage)
            $row=[ordered]@{stage=$Stage;returned=$false;exit_code=$null;errors=@();stdout_bytes=0;stdout_sha256=$null;stdout_truncated=$false;safe_text=$null;node_spawn=$null}
-           $retained=[IO.MemoryStream]::new();$total=0;$LASTEXITCODE=$null
+           $retained=[IO.MemoryStream]::new();$total=0;$global:LASTEXITCODE=$null
            try {
             $PSNativeCommandUseErrorActionPreference=$false
             & $Image @Arguments 2>&1 | ForEach-Object { $part=[Text.Encoding]::UTF8.GetBytes([string]$_+[char]10);$total+=$part.Length;$keep=[Math]::Min($part.Length,16384-[int]$retained.Length);if($keep -gt 0){$retained.Write($part,0,$keep)} }
-            $row.returned=$true;$row.exit_code=$LASTEXITCODE
+            $row.returned=$true;$row.exit_code=$global:LASTEXITCODE
            }catch{$row.errors=@(Get-GitDiagnosticErrors $_.Exception)}
            $bytes=$retained.ToArray();$retained.Dispose();$row.stdout_bytes=$total;$row.stdout_truncated=$total -gt 16384;$row.stdout_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
            $safe=[Text.Encoding]::UTF8.GetString($bytes).Trim()
@@ -279,6 +306,42 @@ jobs:
            $r.token_security_unchanged=($r.token_before|ConvertTo-Json -Depth 8 -Compress) -ceq $afterTokenJson
            return $r
           }
+
+          function Test-ActorProofOwned($Value,[string]$Head) {
+           try {
+            if($null -eq $Value -or -not $Value.lease_obtained -or -not $Value.identity_unchanged -or $Value.selected_count -ne 1 -or @($Value.commands).Count -ne 3){return $false}
+            $stages=@('version','head','dirty')
+            for($i=0;$i -lt 3;$i++){$v=$Value.commands[$i];if($v.stage -cne $stages[$i] -or -not $v.started -or -not $v.terminal -or -not $v.owned_job_zero -or $v.exit_code -ne 0 -or @($v.errors).Count -ne 0 -or $v.stdout.truncated -or $v.stderr.truncated -or $v.stderr.bytes -ne 0){return $false}}
+            return $Value.commands[0].stdout.safe_text -cmatch '^git version [A-Za-z0-9.+-]{1,64}$' -and $Value.commands[1].stdout.safe_text -ceq $Head -and $Value.commands[2].stdout.bytes -eq 0
+           }catch{return $false}
+          }
+          function Test-ActorProofBare($Value,[string]$Head,[string]$ExpectedNodeSha) {
+           try {
+            if($null -eq $Value -or $Value.git_selected_count -ne 1 -or -not $Value.git_identity_unchanged -or -not $Value.token_security_unchanged -or $Value.node_input.sha256 -cne $ExpectedNodeSha -or @($Value.commands).Count -ne 4){return $false}
+            $stages=@('bare_git_version','bare_git_head','bare_git_dirty','bare_node_spawn')
+            for($i=0;$i -lt 4;$i++){$v=$Value.commands[$i];if($v.stage -cne $stages[$i] -or -not $v.returned -or $v.exit_code -ne 0 -or @($v.errors).Count -ne 0 -or $v.stdout_truncated){return $false}}
+            if($Value.commands[0].safe_text -cnotmatch '^git version [A-Za-z0-9.+-]{1,64}$' -or $Value.commands[1].safe_text -cne $Head -or $Value.commands[2].stdout_bytes -ne 0){return $false}
+            $n=$Value.commands[3].node_spawn
+            if($null -eq $n -or $n.node_version -cnotmatch '^v24\.[0-9]+\.[0-9]+$' -or @($n.git).Count -ne 3){return $false}
+            for($i=0;$i -lt 3;$i++){$v=$n.git[$i];if($v.stage -cne @('version','head','dirty')[$i] -or $v.status -ne 0 -or $null -ne $v.signal -or $null -ne $v.error -or $v.stderr_bytes -ne 0){return $false}}
+            return $n.git[0].safe_text -cmatch '^git version [A-Za-z0-9.+-]{1,64}$' -and $n.git[1].safe_text -ceq $Head -and $n.git[2].stdout_bytes -eq 0
+           }catch{return $false}
+          }
+          function Test-ActorProofAcl($Before,$After) {
+           try {
+            if(-not $Before.opened -or -not $After.opened -or -not $Before.token_closed -or -not $After.token_closed -or $Before.default_dacl_null -or $After.default_dacl_null -or $Before.aces_truncated -or $After.aces_truncated -or $Before.user_sid_sha256 -cne $After.user_sid_sha256 -or $After.owner.role -cne 'current_user' -or $After.owner.sid_sha256 -cne $After.user_sid_sha256){return $false}
+            $exact=@($Before.aces|Where-Object{$_.sid_sha256 -ceq $Before.user_sid_sha256 -and $_.mask -eq 268435456 -and $_.type -eq 0 -and $_.flags -eq 0}).Count
+            if($exact -gt 1){return $false}
+            foreach($ace in @($Before.aces)+@($After.aces)){if($ace.type -ne 0 -or $ace.flags -ne 0){return $false}}
+            $added=if($exact -eq 0){1}else{0}
+            if($After.ace_count -ne $Before.ace_count+$added){return $false}
+            for($i=0;$i -lt $Before.ace_count;$i++){if(($Before.aces[$i]|ConvertTo-Json -Compress) -cne ($After.aces[$i]|ConvertTo-Json -Compress)){return $false}}
+            if($added -eq 0){return $Before.default_dacl_sha256 -ceq $After.default_dacl_sha256}
+            $last=$After.aces[-1]
+            return $last.sid_sha256 -ceq $After.user_sid_sha256 -and $last.sid_role -ceq 'current_user' -and $last.mask -eq 268435456 -and $last.type -eq 0 -and $last.flags -eq 0
+           }catch{return $false}
+          }
+
           $high=Get-GitDiagnosticObservation -Repo $repo -ExpectedHead $caller
           $actorBefore=[WinsmuxDesktopActorProbe]::Query()
           $nodeRaw=@(Microsoft.PowerShell.Core\Get-Command node -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue)
@@ -292,10 +355,14 @@ jobs:
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__ACTOR__')))
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__READER__')))
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TOKEN__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SECURITY__')))
           . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__FUNCTIONS__'))))
           $repo=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REPO__'))
           $nodePath=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NODE__'))
+          $securityBefore=[WinsmuxActorSecurityProofRead]::Read()
           $value=[ordered]@{actor=[WinsmuxDesktopActorProbe]::Query();bare=(Get-PipeBareObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA) -NodePath $nodePath -NodeSha256 '__NODESHA__')}
+          $value.security_before=$securityBefore
+          $value.security_after=[WinsmuxActorSecurityProofRead]::Read()
           $value|ConvertTo-Json -Depth 16 -Compress
           '@
           $childScript=@'
@@ -305,16 +372,20 @@ jobs:
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__OWNER__')))
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__READER__')))
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TOKEN__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__SECURITY__')))
           . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__FUNCTIONS__'))))
           $repo=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REPO__'))
           $nodePath=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NODE__'))
+          $securityBefore=[WinsmuxActorSecurityProofRead]::Read()
           $value=[ordered]@{actor=[WinsmuxDesktopActorProbe]::Query();git=(Get-GitDiagnosticObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA));bare=(Get-PipeBareObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA) -NodePath $nodePath -NodeSha256 '__NODESHA__')}
+          $value.security_before=$securityBefore
+          $value.security_after=[WinsmuxActorSecurityProofRead]::Read()
           $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($value|ConvertTo-Json -Depth 16 -Compress)+[char]10)
           if($bytes.Length -gt 16384){throw 'pipe_diagnostic_child_receipt_bound'}
           $file=[IO.FileStream]::new((Join-Path $PSScriptRoot 'child-result.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
           try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
           '@
-          foreach($pair in @(@('__ACTOR__',$actorSource),@('__OWNER__',$ownerSource),@('__READER__',$readerSource),@('__TOKEN__',$tokenSource),@('__FUNCTIONS__',$functions),@('__REPO__',$repo),@('__NODE__',$nodePath))){$encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair[1]));$childScript=$childScript.Replace($pair[0],$encoded);$bareScript=$bareScript.Replace($pair[0],$encoded)}
+          foreach($pair in @(@('__ACTOR__',$actorSource),@('__OWNER__',$ownerSource),@('__READER__',$readerSource),@('__TOKEN__',$tokenSource),@('__SECURITY__',$securityProofSource),@('__FUNCTIONS__',$functions),@('__REPO__',$repo),@('__NODE__',$nodePath))){$encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair[1]));$childScript=$childScript.Replace($pair[0],$encoded);$bareScript=$bareScript.Replace($pair[0],$encoded)}
           $childScript=$childScript.Replace('__NODESHA__',$nodeSha);$bareScript=$bareScript.Replace('__NODESHA__',$nodeSha)
           $root=Join-Path $env:RUNNER_TEMP ('winsmux-pipe-access-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$caller)
           $highRoot=$root+'-high'
@@ -345,8 +416,24 @@ jobs:
            foreach($key in $actor['child_before_resume'].Keys){if($child['actor']['facts'][$key] -cne $actor['child_before_resume'][$key]){throw 'pipe_diagnostic_child_actor_changed'}}
           }
           $unchanged=(Hash-File $sourcePath)-ceq $sourceSha -and (Hash-File $ownerPath)-ceq $ownerSha
+          $callerSecurityAfter=[WinsmuxActorSecurityProofRead]::Read()
           $complete=$actor['outcome'] -ceq 'child_terminal' -and $actor['child_exit_code'] -eq 0 -and $actor['job_active_processes'] -eq 0 -and $null -ne $child -and $null -ne $highBare -and $highProcess.terminal -and $highProcess.active_members -eq 0 -and $highProcess.exit_code -eq 0 -and $unchanged
-          $answer=[ordered]@{schema='task880-readonly-pipe-actor-diagnostic/v1';diagnostic_complete=$complete;source_commit=$caller;native_reference_commit='fa9fc803a2126444a51beac57d281411046744d6';source_sha256=$sourceSha;owner_sha256=$ownerSha;observed_owner_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($ownerSource))).ToLowerInvariant();high_actor=$actorBefore;high_git=$high;high_bare_process=$highProcess;high_bare=$highBare;actor_process=$actor;derived=$child;inputs_unchanged=$unchanged;installer_started=$false;build_started=$false;git_write_started=$false;token_or_acl_changed=$false;environment_dumped=$false;limitation='New Windows-2025 VM; exact stream API slots and token default object security are observations, not an installer result. Node actual version is measured if reached, not assumed equal to original CI.'}
+
+          $checks=[ordered]@{caller_security_unchanged=($callerSecurityBefore.security_sha256 -ceq $callerSecurityAfter.security_sha256);high_owned_git=$false;high_bare_git_node=$false;derived_owned_git=$false;derived_bare_git_node=$false;derived_security_unchanged=$false;derived_empty_restricting_sids=$false;derived_admin_deny_only=$false;private_user_acl_exact=$false;no_new_enabled_privilege=$false}
+          $checks.high_owned_git=Test-ActorProofOwned $high $caller
+          if($null -ne $highBare){$checks.high_bare_git_node=Test-ActorProofBare $highBare.bare $caller $nodeSha}
+          if($null -ne $child){
+           $checks.derived_owned_git=Test-ActorProofOwned $child.git $caller
+           $checks.derived_bare_git_node=Test-ActorProofBare $child.bare $caller $nodeSha
+           $checks.derived_security_unchanged=$child.security_before.security_sha256 -ceq $child.security_after.security_sha256
+           $checks.derived_empty_restricting_sids=$child.security_before.restricting_sid_count -eq 0 -and $child.security_after.restricting_sid_count -eq 0
+           $checks.derived_admin_deny_only=$child.security_before.admin_deny_only -eq $true -and $child.security_after.admin_deny_only -eq $true
+           if($null -ne $highBare){$checks.private_user_acl_exact=Test-ActorProofAcl $highBare.bare.token_before $child.bare.token_before}
+           $checks.no_new_enabled_privilege=@($child.security_before.enabled_privilege_hashes|Where-Object{$_ -cnotin @($callerSecurityBefore.enabled_privilege_hashes)}).Count -eq 0
+          }
+          $complete=$complete -and @($checks.Values|Where-Object{$_ -ne $true}).Count -eq 0
+
+          $answer=[ordered]@{schema='task880-derived-object-security-actor-proof/v1';outcome=$(if($complete){'passed'}else{'failed'});proof_complete=$complete;caller_security_before=$callerSecurityBefore;caller_security_after=$callerSecurityAfter;proof_checks=$checks;source_commit=$caller;native_reference_commit='fa9fc803a2126444a51beac57d281411046744d6';source_sha256=$sourceSha;owner_sha256=$ownerSha;observed_owner_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($ownerSource))).ToLowerInvariant();high_actor=$actorBefore;high_git=$high;high_bare_process=$highProcess;high_bare=$highBare;actor_process=$actor;derived=$child;inputs_unchanged=$unchanged;installer_started=$false;build_started=$false;git_write_started=$false;caller_security_changed=($callerSecurityBefore.security_sha256 -cne $callerSecurityAfter.security_sha256);fresh_default_acl_adjustment_only=$complete;environment_dumped=$false;limitation='Fresh Windows-2025 actor/security proof only; no installer/native lifecycle result. Factory checks full caller state and fresh RID/defaultACL-only transition before child creation. Node version is actually parsed.'}
           $json=$answer|ConvertTo-Json -Depth 20 -Compress
           $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($json+[char]10)
           if($bytes.Length -gt 16384){throw 'pipe_diagnostic_final_receipt_bound'}
@@ -355,7 +442,7 @@ jobs:
           try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
           $json
           if(-not $complete){exit 1}
-      - name: Preserve only the bounded pipe actor diagnostic
+      - name: Preserve only the bounded derived security actor proof
         if: always()
         uses: actions/upload-artifact@v7
         with:
