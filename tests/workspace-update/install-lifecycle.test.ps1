@@ -90,8 +90,8 @@ function Read-ProtectedInventory([string]$Root) {
         $path=Join-Path $Root $name
         if(-not [IO.File]::Exists($path) -and -not [IO.Directory]::Exists($path)){ $rows.Add('absent:'+$name);continue }
         if([IO.Directory]::Exists($path)) {
-            foreach($item in [IO.Directory]::EnumerateFiles($path,'*',[IO.SearchOption]::AllDirectories)) { $rows.Add($name+'/'+[IO.Path]::GetRelativePath($path,$item)+':'+(Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes($item)))) }
-        } else { $rows.Add($name+':'+(Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes($path)))) }
+            foreach($item in [IO.Directory]::EnumerateFiles($path,'*',[IO.SearchOption]::AllDirectories)) { $rows.Add($name+'/'+[IO.Path]::GetRelativePath($path,$item)+':'+(Get-FileHash -LiteralPath $item -Algorithm SHA256).Hash.ToLowerInvariant()) }
+        } else { $rows.Add($name+':'+(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()) }
     }
     return (($rows.ToArray()|Sort-Object -CaseSensitive)-join "`n")
 }
@@ -492,6 +492,106 @@ Run-Case 'volume-guid-same-serial-distinct' {
     }
     $one=Get-WinsmuxInstallVolume $first File;$two=Get-WinsmuxInstallVolume $second File
     Assert-Condition ($one -cne $two -and $one -like '*11111111*' -and $two -like '*22222222*') 'Same serial collapsed distinct physical Volume GUIDs.'
+}
+
+
+# Profile bytes stay typed and separate from existence through stage and rollback.
+function New-ProfileSupport($Lease) {
+    $ResolvedVersion='0.38.0';$ResolvedReleaseTag='v0.38.0'
+    $download=(Get-Item Function:Download-File).ScriptBlock
+    $optional=(Get-Item Function:Download-OptionalFile).ScriptBlock
+    try {
+        Set-Item Function:Download-File {
+            param($Relative,$Destination)
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Destination))
+            [IO.File]::WriteAllText($Destination,('fixture-'+$Relative),[Text.UTF8Encoding]::new($false))
+        }
+        Set-Item Function:Download-OptionalFile {param($Relative,$Destination) Download-File $Relative $Destination}
+        return (New-WinsmuxSupportStage $Lease 'full' $true)
+    } finally {Set-Item Function:Download-File $download;Set-Item Function:Download-OptionalFile $optional}
+}
+function Assert-ProfileBytes([string]$Path,[byte[]]$Expected) {
+    $actual=[IO.File]::ReadAllBytes($Path)
+    Assert-Condition ($actual.Length -eq $Expected.Length -and [Convert]::ToBase64String($actual) -ceq [Convert]::ToBase64String($Expected)) 'Profile bytes differ.'
+}
+foreach($shape in @('missing','empty','one')) {
+    Run-Case ('profile-shape-'+$shape) {
+        param($root)
+        $bin=New-Fixture $root
+        $prior=[byte[]]::new(0)
+        if($shape -ceq 'missing'){[IO.File]::Delete($script:ProfilePath)}
+        else {if($shape -ceq 'one'){$prior=[byte[]]@(35)};[IO.File]::WriteAllBytes($script:ProfilePath,$prior)}
+        $before=Read-ProtectedInventory $root;$snapshot=Get-WinsmuxInstallSnapshot $script:ProfilePath File
+        $lease=Open-WinsmuxInstallLease $bin
+        try {
+            $support=New-ProfileSupport $lease
+            $member=@($support.Members|Where-Object Name -ceq 'profile')[0]
+            $expected=[byte[]]($prior+$utf8.GetBytes("`n# winsmux`n"+$support.ProfileLine+"`n"))
+            Assert-ProfileBytes $member.Stage $expected
+            Assert-Condition ((Read-ProtectedInventory $root) -ceq $before -and -not [IO.File]::Exists($lease.Marker)) 'Profile stage changed canonical state.'
+            [void](Assert-WinsmuxInstallSnapshot $script:ProfilePath $snapshot)
+        } finally {$lease.Stream.Dispose()}
+    }
+}
+$profileEncodings=@(
+    @{Name='utf8';Encoding=[Text.UTF8Encoding]::new($false,$true)},
+    @{Name='utf8bom';Encoding=[Text.UTF8Encoding]::new($true,$true)},
+    @{Name='utf16le';Encoding=[Text.UnicodeEncoding]::new($false,$true)},
+    @{Name='utf16be';Encoding=[Text.UnicodeEncoding]::new($true,$true)},
+    @{Name='utf32le';Encoding=[Text.UTF32Encoding]::new($false,$true)},
+    @{Name='utf32be';Encoding=[Text.UTF32Encoding]::new($true,$true)}
+)
+foreach($encodingCase in $profileEncodings) {
+    foreach($profileMode in @('append','existing','mixed')) {
+        Run-Case ('profile-encoding-'+$encodingCase.Name+'-'+$profileMode) {
+            param($root)
+            $bin=New-Fixture $root;$encoding=$encodingCase.Encoding
+            $line='$env:PATH = "'+(Join-Path $root '.winsmux/bin')+';$env:PATH"'
+            $block="# winsmux`r`n"+$line+"`r`n"
+            $prefix="# unrelated alpha`r`n";$suffix="# unrelated omega`n"
+            $text=switch($profileMode){'append'{$prefix+$suffix};'existing'{$block};'mixed'{$prefix+$block+$suffix}}
+            $original=[byte[]]($encoding.GetPreamble()+$encoding.GetBytes($text))
+            [IO.File]::WriteAllBytes($script:ProfilePath,$original)
+            if($profileMode -ceq 'append'){Remove-WinsmuxProfileBlock $script:ProfilePath $line;Assert-ProfileBytes $script:ProfilePath $original}
+            $before=Read-ProtectedInventory $root;$lease=Open-WinsmuxInstallLease $bin
+            try {
+                $support=New-ProfileSupport $lease;$member=@($support.Members|Where-Object Name -ceq 'profile')[0]
+                $expected=$original
+                if($profileMode -ceq 'append'){$expected=[byte[]]($original+$encoding.GetBytes("`n# winsmux`n"+$line+"`n"))}
+                Assert-ProfileBytes $member.Stage $expected
+                Assert-Condition ((Read-ProtectedInventory $root) -ceq $before -and -not [IO.File]::Exists($lease.Marker)) 'Encoding stage changed canonical state.'
+                Remove-WinsmuxProfileBlock $member.Stage $line
+                $afterText=switch($profileMode){'append'{$text+"`n"};'existing'{''};'mixed'{$prefix+$suffix}}
+                $after=[byte[]]($encoding.GetPreamble()+$encoding.GetBytes($afterText))
+                Assert-ProfileBytes $member.Stage $after
+            } finally {$lease.Stream.Dispose()}
+        }
+    }
+}
+foreach($shape in @('missing','empty')) {
+    Run-Case ('profile-restore-'+$shape) {
+        param($root)
+        $bin=New-Fixture $root
+        if($shape -ceq 'missing'){[IO.File]::Delete($script:ProfilePath)}else{[IO.File]::WriteAllBytes($script:ProfilePath,[byte[]]::new(0))}
+        $before=Read-ProtectedInventory $root;$snapshot=Get-WinsmuxInstallSnapshot $script:ProfilePath File
+        $priorPath=Get-InstallUserPath;$processPath=$env:Path;$lease=Open-WinsmuxInstallLease $bin
+        try {
+            $support=New-ProfileSupport $lease;$script:FaultReached=$false
+            Set-Item Function:Invoke-WinsmuxInstallCheckpoint {
+                param($Phase)
+                if($Phase -ceq 'before-readback'){
+                    $script:FaultReached=$true
+                    Assert-Condition ([IO.File]::Exists($script:ProfilePath) -and [IO.File]::ReadAllBytes($script:ProfilePath).Length -gt 0) 'Profile publication was not reached.'
+                    throw 'Injected failure after profile publication.'
+                }
+            }
+            $failed=$false;try{Invoke-Generation $lease $support}catch{$failed=$true}
+            Assert-Condition ($failed -and $script:FaultReached) 'Profile rollback fault was not reached.'
+            [void](Assert-WinsmuxInstallSnapshot $script:ProfilePath $snapshot)
+            Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Profile rollback changed protected bytes.'
+            Assert-Condition ((Get-InstallUserPath) -ceq $priorPath -and $env:Path -ceq $processPath -and -not [IO.File]::Exists($lease.Marker)) 'Profile rollback changed registration or retained pending marker.'
+        } finally {$lease.Stream.Dispose()}
+    }
 }
 
 $receipt=@{schema='winsmux-install-lifecycle-proof/v1';scope='isolated Windows native filesystem; synthetic binary/sidecar/support; mocked profile/user PATH registration; class-wide update/rollback/recovery and uninstall preservation; no network or real user installation';passed=@($results|Where-Object passed).Count;failed=@($results|Where-Object {-not $_.passed}).Count;cases=$results.ToArray()}

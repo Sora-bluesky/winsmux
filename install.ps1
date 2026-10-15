@@ -1569,14 +1569,17 @@ exit /b %ERRORLEVEL%
     $profilePath = Get-InstallPowerShellProfilePath
     $profileStage = Join-Path $stageRoot 'profile.ps1'
     [void](Assert-WinsmuxInstallPath $profilePath File -AllowMissing)
-    $profileBytes = if ([IO.File]::Exists($profilePath)) { [IO.File]::ReadAllBytes($profilePath) } else { [byte[]]@() }
-    # Preserve existing profile bytes and encoding while appending the exact block.
+    $profileBytes = [byte[]]::new(0)
+    if ([IO.File]::Exists($profilePath)) { $profileBytes = [IO.File]::ReadAllBytes($profilePath) }
+    # Preserve existing bytes; inspect the managed block in the body after its BOM.
     $encoding = [Text.UTF8Encoding]::new($false, $true)
-    if ($profileBytes.Length -ge 4 -and $profileBytes[0] -eq 255 -and $profileBytes[1] -eq 254 -and $profileBytes[2] -eq 0 -and $profileBytes[3] -eq 0) { $encoding = [Text.UTF32Encoding]::new($false, $true) }
-    elseif ($profileBytes.Length -ge 4 -and $profileBytes[0] -eq 0 -and $profileBytes[1] -eq 0 -and $profileBytes[2] -eq 254 -and $profileBytes[3] -eq 255) { $encoding = [Text.UTF32Encoding]::new($true, $true) }
-    elseif ($profileBytes.Length -ge 2 -and $profileBytes[0] -eq 255 -and $profileBytes[1] -eq 254) { $encoding = [Text.UnicodeEncoding]::new($false, $true) }
-    elseif ($profileBytes.Length -ge 2 -and $profileBytes[0] -eq 254 -and $profileBytes[1] -eq 255) { $encoding = [Text.UnicodeEncoding]::new($true, $true) }
-    $text = $encoding.GetString($profileBytes)
+    $preambleLength = 0
+    if ($profileBytes.Length -ge 4 -and $profileBytes[0] -eq 255 -and $profileBytes[1] -eq 254 -and $profileBytes[2] -eq 0 -and $profileBytes[3] -eq 0) { $encoding = [Text.UTF32Encoding]::new($false, $true); $preambleLength = 4 }
+    elseif ($profileBytes.Length -ge 4 -and $profileBytes[0] -eq 0 -and $profileBytes[1] -eq 0 -and $profileBytes[2] -eq 254 -and $profileBytes[3] -eq 255) { $encoding = [Text.UTF32Encoding]::new($true, $true); $preambleLength = 4 }
+    elseif ($profileBytes.Length -ge 3 -and $profileBytes[0] -eq 239 -and $profileBytes[1] -eq 187 -and $profileBytes[2] -eq 191) { $preambleLength = 3 }
+    elseif ($profileBytes.Length -ge 2 -and $profileBytes[0] -eq 255 -and $profileBytes[1] -eq 254) { $encoding = [Text.UnicodeEncoding]::new($false, $true); $preambleLength = 2 }
+    elseif ($profileBytes.Length -ge 2 -and $profileBytes[0] -eq 254 -and $profileBytes[1] -eq 255) { $encoding = [Text.UnicodeEncoding]::new($true, $true); $preambleLength = 2 }
+    $text = $encoding.GetString($profileBytes, $preambleLength, $profileBytes.Length - $preambleLength)
     if ($text -cnotmatch ('(?m)^# winsmux\r?\n' + [regex]::Escape($profileLine) + '(?:\r?$)')) {
         $profileBytes = [byte[]]($profileBytes + $encoding.GetBytes("`n# winsmux`n" + $profileLine + "`n"))
     }
