@@ -433,7 +433,41 @@ jobs:
           }
           $complete=$complete -and @($checks.Values|Where-Object{$_ -ne $true}).Count -eq 0
 
-          $answer=[ordered]@{schema='task880-derived-object-security-actor-proof/v1';outcome=$(if($complete){'passed'}else{'failed'});proof_complete=$complete;caller_security_before=$callerSecurityBefore;caller_security_after=$callerSecurityAfter;proof_checks=$checks;source_commit=$caller;native_reference_commit='fa9fc803a2126444a51beac57d281411046744d6';source_sha256=$sourceSha;owner_sha256=$ownerSha;observed_owner_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($ownerSource))).ToLowerInvariant();high_actor=$actorBefore;high_git=$high;high_bare_process=$highProcess;high_bare=$highBare;actor_process=$actor;derived=$child;inputs_unchanged=$unchanged;installer_started=$false;build_started=$false;git_write_started=$false;caller_security_changed=($callerSecurityBefore.security_sha256 -cne $callerSecurityAfter.security_sha256);fresh_default_acl_adjustment_only=$complete;environment_dumped=$false;limitation='Fresh Windows-2025 actor/security proof only; no installer/native lifecycle result. Factory checks full caller state and fresh RID/defaultACL-only transition before child creation. Node version is actually parsed.'}
+          function Select-ActorProofFields($Value,[string[]]$Keys) {
+           if($null -eq $Value){return $null}
+           $r=[ordered]@{};foreach($key in $Keys){$r[$key]=$Value[$key]};return $r
+          }
+          function Get-ActorProofErrorProjection($Value) {
+           $all=@();if($null -ne $Value){$all=@($Value)};$codes=@($all|Select-Object -First 4|ForEach-Object{if($null -eq $_){$null}else{$_['winerror']}})
+           return [ordered]@{count=$all.Count;winerrors=$codes;truncated=($all.Count -gt 4)}
+          }
+          function Get-ActorProofRuntimeProjection($Git,$Bare) {
+           $owned=@();if($null -ne $Git){$owned=@(foreach($row in $Git['commands']){[ordered]@{stage=$row['stage'];started=$row['started'];terminal=$row['terminal'];exit_code=$row['exit_code'];job_zero=$row['owned_job_zero'];errors=(Get-ActorProofErrorProjection $row['errors']);stdout=(Select-ActorProofFields $row['stdout'] @('bytes','safe_text'));stderr=(Select-ActorProofFields $row['stderr'] @('bytes'))}})}
+           $bareRows=@();$node=$null
+           if($null -ne $Bare){foreach($row in $Bare['commands']){
+            $summary=[ordered]@{stage=$row['stage'];returned=$row['returned'];exit_code=$row['exit_code'];errors=(Get-ActorProofErrorProjection $row['errors']);stdout_bytes=$row['stdout_bytes'];safe_text=$row['safe_text']}
+            if($row['stage'] -ceq 'bare_node_spawn'){
+             $payload=$row['node_spawn'];$spawn=@();if($null -ne $payload){$spawn=@(foreach($entry in $payload['git']){Select-ActorProofFields $entry @('stage','status','signal','error','stdout_bytes','safe_text','stderr_bytes')})}
+             $node=[ordered]@{execution=$summary;image=(Select-ActorProofFields $Bare['node_input'] @('file_identity','bytes','sha256'));version=$(if($null -eq $payload){$null}else{$payload['node_version']});git=$spawn}
+            }else{$bareRows+=,$summary}
+           }}
+           return [ordered]@{git_before=$(if($null -eq $Git){$null}else{Select-ActorProofFields $Git['before'] @('file_identity','bytes','sha256')});git_after=$(if($null -eq $Git){$null}else{Select-ActorProofFields $Git['after'] @('file_identity','bytes','sha256')});git_identity_unchanged=$(if($null -eq $Git){$false}else{$Git['identity_unchanged']});owned_git=$owned;bare_git=$bareRows;bare_git_identity_unchanged=$(if($null -eq $Bare){$false}else{$Bare['git_identity_unchanged']});bare_token_unchanged=$(if($null -eq $Bare){$false}else{$Bare['token_security_unchanged']});node=$node}
+          }
+          function Get-ActorProofAclProjection($Value) {
+           if($null -eq $Value){return $null}
+           $rows=@(foreach($ace in $Value['aces']){Select-ActorProofFields $ace @('type','flags','mask','sid_sha256','ace_sha256')})
+           return [ordered]@{user_sid_sha256=$Value['user_sid_sha256'];owner=(Select-ActorProofFields $Value['owner'] @('role','sid_sha256'));default_dacl_sha256=$Value['default_dacl_sha256'];default_dacl_bytes=$Value['default_dacl_bytes'];ace_count=$Value['ace_count'];aces_truncated=$Value['aces_truncated'];aces=$rows}
+          }
+          function Get-ActorProofReceipt($Complete,$Checks,$CallerBefore,$CallerAfter,$Actor,$HighProcess,$HighGit,$HighBare,$Child,[string]$SourceCommit,[string]$SourceSha,[string]$OwnerSha,$Unchanged) {
+           $derivedSecurity=$null;$derivedRuntime=$null;$derivedAcl=$null;$childFacts=$null
+           if($null -ne $Child){$derivedSecurity=[ordered]@{before=(Select-ActorProofFields $Child['security_before'] @('security_sha256','restricting_sid_count','admin_deny_only'));after=(Select-ActorProofFields $Child['security_after'] @('security_sha256','restricting_sid_count','admin_deny_only'))};$derivedRuntime=Get-ActorProofRuntimeProjection $Child['git'] $Child['bare'];$derivedAcl=Get-ActorProofAclProjection $Child['bare']['token_before'];$childFacts=$Child['actor']['facts']}
+           $highRuntime=Get-ActorProofRuntimeProjection $HighGit $null;$highAcl=$null
+           if($null -ne $HighBare){$highRuntime=Get-ActorProofRuntimeProjection $HighGit $HighBare['bare'];$highAcl=Get-ActorProofAclProjection $HighBare['bare']['token_before']}
+           $process=Select-ActorProofFields $Actor @('outcome','created','resumed','image_sha256','child_script_sha256','child_pid','child_creation_time','resume_previous_count','child_exit_code','job_active_processes','caller','derived_initial','derived')
+           return [ordered]@{schema='task880-derived-object-security-actor-proof/v1';outcome=$(if($Complete){'passed'}else{'failed'});proof_complete=$Complete;proof_checks=$Checks;source_commit=$SourceCommit;source_sha256=$SourceSha;owner_sha256=$OwnerSha;caller_security_before_sha256=$CallerBefore['security_sha256'];caller_security_after_sha256=$CallerAfter['security_sha256'];derived_security=$derivedSecurity;acl_before=$highAcl;acl_after=$derivedAcl;actor_process=$process;child_actor_matches_retained=($null -ne $Child);high_bare_process=(Select-ActorProofFields $HighProcess @('created','terminal','active_members','exit_code','stderr_bytes'));high_runtime=$highRuntime;derived_runtime=$derivedRuntime;inputs_unchanged=$Unchanged;installer_started=$false;build_started=$false;git_write_started=$false;caller_security_changed=($CallerBefore['security_sha256'] -cne $CallerAfter['security_sha256']);fresh_default_acl_adjustment_only=$Complete;environment_dumped=$false}
+          }
+
+          $answer=Get-ActorProofReceipt $complete $checks $callerSecurityBefore $callerSecurityAfter $actor $highProcess $high $highBare $child $caller $sourceSha $ownerSha $unchanged
           $json=$answer|ConvertTo-Json -Depth 20 -Compress
           $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($json+[char]10)
           if($bytes.Length -gt 16384){throw 'pipe_diagnostic_final_receipt_bound'}
