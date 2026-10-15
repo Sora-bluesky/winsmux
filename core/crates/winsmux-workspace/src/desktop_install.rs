@@ -258,11 +258,361 @@ fn parse_wire_receipt(
     Ok(receipt)
 }
 
+// Diagnostic-only MSI observation. No path or caller-controlled value is retained.
+mod msi_path_observation {
+    use super::DesktopInstallError;
+    use std::cell::Cell;
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Site { MsiRoot, MsiPlanFile, MsiMemberParent, MsiMemberFile, SharedGuiParent, SharedGuiFile, TempParent, OperationRoot, LoadedGuiImage }
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum Reason { InfoNotFound, InfoAccessDenied, InfoSharing, InfoInvalidName, InfoNameTooLong, InfoOther, FinalQueryNotFound, FinalQueryAccessDenied, FinalQuerySharing, FinalQueryInvalidName, FinalQueryNameTooLong, FinalQueryOther, FinalReadNotFound, FinalReadAccessDenied, FinalReadSharing, FinalReadInvalidName, FinalReadNameTooLong, FinalReadOther, Reparse, FinalReadLength, FinalUtf16, FinalNamespace, DirectoryOpenNotFound, DirectoryOpenAccessDenied, DirectoryOpenSharing, DirectoryOpenInvalidName, DirectoryOpenNameTooLong, DirectoryOpenOther, NotDirectory, CanonicalMismatch, DriveShape, ComponentUnsafe, TildeExpandsStrict, TildeRemainsLong, TildeLookupUnconfirmed, IsDirectory, LinkCount, PathTextNonunicode, LoadedNameUtf16 }
+    #[derive(Clone, Copy)]
+    struct State {
+        active: bool,
+        site: Option<Site>,
+        reason: Option<Reason>,
+        first: Option<i32>,
+    }
+    impl State { const fn inactive() -> Self {
+        Self { active: false, site: None, reason: None, first: None }
+    } }
+    thread_local! { static STATE: Cell<State> = const { Cell::new(State::inactive()) }; }
+    pub(super) struct Session(State);
+    impl Session {
+        pub(super) fn begin() -> Self {
+            Self(STATE.with(|s| s.replace(State { active: true, ..State::inactive() })))
+        }
+    }
+    impl Drop for Session {
+        fn drop(&mut self) { STATE.with(|s| s.set(self.0)); }
+    }
+    struct Scope(State);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            STATE.with(|s| {
+                let first = s.get().first;
+                s.set(State { first, ..self.0 });
+            });
+        }
+    }
+    pub(super) fn active_site() -> bool {
+        STATE.with(|s| { let v=s.get(); v.active && v.site.is_some() })
+    }
+    pub(super) fn note(reason: Reason) {
+        STATE.with(|s| {
+            let mut v=s.get();
+            if v.active && v.site.is_some() && v.reason.is_none() { v.reason=Some(reason); s.set(v); }
+        });
+    }
+    pub(super) fn boundary<T>(site: Site, call: impl FnOnce() -> Result<T, DesktopInstallError>) -> Result<T, DesktopInstallError> {
+        let before=STATE.with(Cell::get);
+        if !before.active { return call(); }
+        STATE.with(|s| s.set(State { site: Some(site), reason: None, ..before }));
+        let scope=Scope(before);
+        let result=call();
+        if matches!(&result, Err(DesktopInstallError::Path)) {
+            STATE.with(|s| {
+                let mut v=s.get();
+                if v.first.is_none() {
+                    v.first=Some(v.reason.and_then(|reason| code(site,reason)).unwrap_or(66));
+                    s.set(v);
+                }
+            });
+        }
+        drop(scope);
+        result
+    }
+    pub(super) fn path_exit() -> i32 { STATE.with(|s| s.get().first.unwrap_or(66)) }
+    pub(super) fn code(site: Site, reason: Reason) -> Option<i32> {
+        match (site,reason) {
+            (Site::MsiRoot, Reason::InfoNotFound) => Some(1000),
+            (Site::MsiRoot, Reason::InfoAccessDenied) => Some(1001),
+            (Site::MsiRoot, Reason::InfoSharing) => Some(1002),
+            (Site::MsiRoot, Reason::InfoInvalidName) => Some(1003),
+            (Site::MsiRoot, Reason::InfoNameTooLong) => Some(1004),
+            (Site::MsiRoot, Reason::InfoOther) => Some(1005),
+            (Site::MsiRoot, Reason::FinalQueryNotFound) => Some(1006),
+            (Site::MsiRoot, Reason::FinalQueryAccessDenied) => Some(1007),
+            (Site::MsiRoot, Reason::FinalQuerySharing) => Some(1008),
+            (Site::MsiRoot, Reason::FinalQueryInvalidName) => Some(1009),
+            (Site::MsiRoot, Reason::FinalQueryNameTooLong) => Some(1010),
+            (Site::MsiRoot, Reason::FinalQueryOther) => Some(1011),
+            (Site::MsiRoot, Reason::FinalReadNotFound) => Some(1012),
+            (Site::MsiRoot, Reason::FinalReadAccessDenied) => Some(1013),
+            (Site::MsiRoot, Reason::FinalReadSharing) => Some(1014),
+            (Site::MsiRoot, Reason::FinalReadInvalidName) => Some(1015),
+            (Site::MsiRoot, Reason::FinalReadNameTooLong) => Some(1016),
+            (Site::MsiRoot, Reason::FinalReadOther) => Some(1017),
+            (Site::MsiRoot, Reason::Reparse) => Some(1018),
+            (Site::MsiRoot, Reason::FinalReadLength) => Some(1019),
+            (Site::MsiRoot, Reason::FinalUtf16) => Some(1020),
+            (Site::MsiRoot, Reason::FinalNamespace) => Some(1021),
+            (Site::MsiRoot, Reason::DirectoryOpenNotFound) => Some(1022),
+            (Site::MsiRoot, Reason::DirectoryOpenAccessDenied) => Some(1023),
+            (Site::MsiRoot, Reason::DirectoryOpenSharing) => Some(1024),
+            (Site::MsiRoot, Reason::DirectoryOpenInvalidName) => Some(1025),
+            (Site::MsiRoot, Reason::DirectoryOpenNameTooLong) => Some(1026),
+            (Site::MsiRoot, Reason::DirectoryOpenOther) => Some(1027),
+            (Site::MsiRoot, Reason::NotDirectory) => Some(1028),
+            (Site::MsiRoot, Reason::CanonicalMismatch) => Some(1029),
+            (Site::MsiRoot, Reason::DriveShape) => Some(1030),
+            (Site::MsiRoot, Reason::ComponentUnsafe) => Some(1031),
+            (Site::MsiRoot, Reason::TildeExpandsStrict) => Some(1032),
+            (Site::MsiRoot, Reason::TildeRemainsLong) => Some(1033),
+            (Site::MsiRoot, Reason::TildeLookupUnconfirmed) => Some(1034),
+            (Site::MsiPlanFile, Reason::InfoNotFound) => Some(1035),
+            (Site::MsiPlanFile, Reason::InfoAccessDenied) => Some(1036),
+            (Site::MsiPlanFile, Reason::InfoSharing) => Some(1037),
+            (Site::MsiPlanFile, Reason::InfoInvalidName) => Some(1038),
+            (Site::MsiPlanFile, Reason::InfoNameTooLong) => Some(1039),
+            (Site::MsiPlanFile, Reason::InfoOther) => Some(1040),
+            (Site::MsiPlanFile, Reason::FinalQueryNotFound) => Some(1041),
+            (Site::MsiPlanFile, Reason::FinalQueryAccessDenied) => Some(1042),
+            (Site::MsiPlanFile, Reason::FinalQuerySharing) => Some(1043),
+            (Site::MsiPlanFile, Reason::FinalQueryInvalidName) => Some(1044),
+            (Site::MsiPlanFile, Reason::FinalQueryNameTooLong) => Some(1045),
+            (Site::MsiPlanFile, Reason::FinalQueryOther) => Some(1046),
+            (Site::MsiPlanFile, Reason::FinalReadNotFound) => Some(1047),
+            (Site::MsiPlanFile, Reason::FinalReadAccessDenied) => Some(1048),
+            (Site::MsiPlanFile, Reason::FinalReadSharing) => Some(1049),
+            (Site::MsiPlanFile, Reason::FinalReadInvalidName) => Some(1050),
+            (Site::MsiPlanFile, Reason::FinalReadNameTooLong) => Some(1051),
+            (Site::MsiPlanFile, Reason::FinalReadOther) => Some(1052),
+            (Site::MsiPlanFile, Reason::Reparse) => Some(1053),
+            (Site::MsiPlanFile, Reason::FinalReadLength) => Some(1054),
+            (Site::MsiPlanFile, Reason::FinalUtf16) => Some(1055),
+            (Site::MsiPlanFile, Reason::FinalNamespace) => Some(1056),
+            (Site::MsiPlanFile, Reason::IsDirectory) => Some(1057),
+            (Site::MsiPlanFile, Reason::LinkCount) => Some(1058),
+            (Site::MsiPlanFile, Reason::CanonicalMismatch) => Some(1059),
+            (Site::MsiMemberParent, Reason::InfoNotFound) => Some(1060),
+            (Site::MsiMemberParent, Reason::InfoAccessDenied) => Some(1061),
+            (Site::MsiMemberParent, Reason::InfoSharing) => Some(1062),
+            (Site::MsiMemberParent, Reason::InfoInvalidName) => Some(1063),
+            (Site::MsiMemberParent, Reason::InfoNameTooLong) => Some(1064),
+            (Site::MsiMemberParent, Reason::InfoOther) => Some(1065),
+            (Site::MsiMemberParent, Reason::FinalQueryNotFound) => Some(1066),
+            (Site::MsiMemberParent, Reason::FinalQueryAccessDenied) => Some(1067),
+            (Site::MsiMemberParent, Reason::FinalQuerySharing) => Some(1068),
+            (Site::MsiMemberParent, Reason::FinalQueryInvalidName) => Some(1069),
+            (Site::MsiMemberParent, Reason::FinalQueryNameTooLong) => Some(1070),
+            (Site::MsiMemberParent, Reason::FinalQueryOther) => Some(1071),
+            (Site::MsiMemberParent, Reason::FinalReadNotFound) => Some(1072),
+            (Site::MsiMemberParent, Reason::FinalReadAccessDenied) => Some(1073),
+            (Site::MsiMemberParent, Reason::FinalReadSharing) => Some(1074),
+            (Site::MsiMemberParent, Reason::FinalReadInvalidName) => Some(1075),
+            (Site::MsiMemberParent, Reason::FinalReadNameTooLong) => Some(1076),
+            (Site::MsiMemberParent, Reason::FinalReadOther) => Some(1077),
+            (Site::MsiMemberParent, Reason::Reparse) => Some(1078),
+            (Site::MsiMemberParent, Reason::FinalReadLength) => Some(1079),
+            (Site::MsiMemberParent, Reason::FinalUtf16) => Some(1080),
+            (Site::MsiMemberParent, Reason::FinalNamespace) => Some(1081),
+            (Site::MsiMemberParent, Reason::DirectoryOpenNotFound) => Some(1082),
+            (Site::MsiMemberParent, Reason::DirectoryOpenAccessDenied) => Some(1083),
+            (Site::MsiMemberParent, Reason::DirectoryOpenSharing) => Some(1084),
+            (Site::MsiMemberParent, Reason::DirectoryOpenInvalidName) => Some(1085),
+            (Site::MsiMemberParent, Reason::DirectoryOpenNameTooLong) => Some(1086),
+            (Site::MsiMemberParent, Reason::DirectoryOpenOther) => Some(1087),
+            (Site::MsiMemberParent, Reason::NotDirectory) => Some(1088),
+            (Site::MsiMemberParent, Reason::CanonicalMismatch) => Some(1089),
+            (Site::MsiMemberFile, Reason::InfoNotFound) => Some(1090),
+            (Site::MsiMemberFile, Reason::InfoAccessDenied) => Some(1091),
+            (Site::MsiMemberFile, Reason::InfoSharing) => Some(1092),
+            (Site::MsiMemberFile, Reason::InfoInvalidName) => Some(1093),
+            (Site::MsiMemberFile, Reason::InfoNameTooLong) => Some(1094),
+            (Site::MsiMemberFile, Reason::InfoOther) => Some(1095),
+            (Site::MsiMemberFile, Reason::FinalQueryNotFound) => Some(1096),
+            (Site::MsiMemberFile, Reason::FinalQueryAccessDenied) => Some(1097),
+            (Site::MsiMemberFile, Reason::FinalQuerySharing) => Some(1098),
+            (Site::MsiMemberFile, Reason::FinalQueryInvalidName) => Some(1099),
+            (Site::MsiMemberFile, Reason::FinalQueryNameTooLong) => Some(1100),
+            (Site::MsiMemberFile, Reason::FinalQueryOther) => Some(1101),
+            (Site::MsiMemberFile, Reason::FinalReadNotFound) => Some(1102),
+            (Site::MsiMemberFile, Reason::FinalReadAccessDenied) => Some(1103),
+            (Site::MsiMemberFile, Reason::FinalReadSharing) => Some(1104),
+            (Site::MsiMemberFile, Reason::FinalReadInvalidName) => Some(1105),
+            (Site::MsiMemberFile, Reason::FinalReadNameTooLong) => Some(1106),
+            (Site::MsiMemberFile, Reason::FinalReadOther) => Some(1107),
+            (Site::MsiMemberFile, Reason::Reparse) => Some(1108),
+            (Site::MsiMemberFile, Reason::FinalReadLength) => Some(1109),
+            (Site::MsiMemberFile, Reason::FinalUtf16) => Some(1110),
+            (Site::MsiMemberFile, Reason::FinalNamespace) => Some(1111),
+            (Site::MsiMemberFile, Reason::IsDirectory) => Some(1112),
+            (Site::MsiMemberFile, Reason::LinkCount) => Some(1113),
+            (Site::MsiMemberFile, Reason::CanonicalMismatch) => Some(1114),
+            (Site::SharedGuiParent, Reason::InfoNotFound) => Some(1115),
+            (Site::SharedGuiParent, Reason::InfoAccessDenied) => Some(1116),
+            (Site::SharedGuiParent, Reason::InfoSharing) => Some(1117),
+            (Site::SharedGuiParent, Reason::InfoInvalidName) => Some(1118),
+            (Site::SharedGuiParent, Reason::InfoNameTooLong) => Some(1119),
+            (Site::SharedGuiParent, Reason::InfoOther) => Some(1120),
+            (Site::SharedGuiParent, Reason::FinalQueryNotFound) => Some(1121),
+            (Site::SharedGuiParent, Reason::FinalQueryAccessDenied) => Some(1122),
+            (Site::SharedGuiParent, Reason::FinalQuerySharing) => Some(1123),
+            (Site::SharedGuiParent, Reason::FinalQueryInvalidName) => Some(1124),
+            (Site::SharedGuiParent, Reason::FinalQueryNameTooLong) => Some(1125),
+            (Site::SharedGuiParent, Reason::FinalQueryOther) => Some(1126),
+            (Site::SharedGuiParent, Reason::FinalReadNotFound) => Some(1127),
+            (Site::SharedGuiParent, Reason::FinalReadAccessDenied) => Some(1128),
+            (Site::SharedGuiParent, Reason::FinalReadSharing) => Some(1129),
+            (Site::SharedGuiParent, Reason::FinalReadInvalidName) => Some(1130),
+            (Site::SharedGuiParent, Reason::FinalReadNameTooLong) => Some(1131),
+            (Site::SharedGuiParent, Reason::FinalReadOther) => Some(1132),
+            (Site::SharedGuiParent, Reason::Reparse) => Some(1133),
+            (Site::SharedGuiParent, Reason::FinalReadLength) => Some(1134),
+            (Site::SharedGuiParent, Reason::FinalUtf16) => Some(1135),
+            (Site::SharedGuiParent, Reason::FinalNamespace) => Some(1136),
+            (Site::SharedGuiParent, Reason::DirectoryOpenNotFound) => Some(1137),
+            (Site::SharedGuiParent, Reason::DirectoryOpenAccessDenied) => Some(1138),
+            (Site::SharedGuiParent, Reason::DirectoryOpenSharing) => Some(1139),
+            (Site::SharedGuiParent, Reason::DirectoryOpenInvalidName) => Some(1140),
+            (Site::SharedGuiParent, Reason::DirectoryOpenNameTooLong) => Some(1141),
+            (Site::SharedGuiParent, Reason::DirectoryOpenOther) => Some(1142),
+            (Site::SharedGuiParent, Reason::NotDirectory) => Some(1143),
+            (Site::SharedGuiParent, Reason::CanonicalMismatch) => Some(1144),
+            (Site::SharedGuiFile, Reason::InfoNotFound) => Some(1145),
+            (Site::SharedGuiFile, Reason::InfoAccessDenied) => Some(1146),
+            (Site::SharedGuiFile, Reason::InfoSharing) => Some(1147),
+            (Site::SharedGuiFile, Reason::InfoInvalidName) => Some(1148),
+            (Site::SharedGuiFile, Reason::InfoNameTooLong) => Some(1149),
+            (Site::SharedGuiFile, Reason::InfoOther) => Some(1150),
+            (Site::SharedGuiFile, Reason::FinalQueryNotFound) => Some(1151),
+            (Site::SharedGuiFile, Reason::FinalQueryAccessDenied) => Some(1152),
+            (Site::SharedGuiFile, Reason::FinalQuerySharing) => Some(1153),
+            (Site::SharedGuiFile, Reason::FinalQueryInvalidName) => Some(1154),
+            (Site::SharedGuiFile, Reason::FinalQueryNameTooLong) => Some(1155),
+            (Site::SharedGuiFile, Reason::FinalQueryOther) => Some(1156),
+            (Site::SharedGuiFile, Reason::FinalReadNotFound) => Some(1157),
+            (Site::SharedGuiFile, Reason::FinalReadAccessDenied) => Some(1158),
+            (Site::SharedGuiFile, Reason::FinalReadSharing) => Some(1159),
+            (Site::SharedGuiFile, Reason::FinalReadInvalidName) => Some(1160),
+            (Site::SharedGuiFile, Reason::FinalReadNameTooLong) => Some(1161),
+            (Site::SharedGuiFile, Reason::FinalReadOther) => Some(1162),
+            (Site::SharedGuiFile, Reason::Reparse) => Some(1163),
+            (Site::SharedGuiFile, Reason::FinalReadLength) => Some(1164),
+            (Site::SharedGuiFile, Reason::FinalUtf16) => Some(1165),
+            (Site::SharedGuiFile, Reason::FinalNamespace) => Some(1166),
+            (Site::SharedGuiFile, Reason::IsDirectory) => Some(1167),
+            (Site::SharedGuiFile, Reason::LinkCount) => Some(1168),
+            (Site::SharedGuiFile, Reason::CanonicalMismatch) => Some(1169),
+            (Site::TempParent, Reason::InfoNotFound) => Some(1170),
+            (Site::TempParent, Reason::InfoAccessDenied) => Some(1171),
+            (Site::TempParent, Reason::InfoSharing) => Some(1172),
+            (Site::TempParent, Reason::InfoInvalidName) => Some(1173),
+            (Site::TempParent, Reason::InfoNameTooLong) => Some(1174),
+            (Site::TempParent, Reason::InfoOther) => Some(1175),
+            (Site::TempParent, Reason::FinalQueryNotFound) => Some(1176),
+            (Site::TempParent, Reason::FinalQueryAccessDenied) => Some(1177),
+            (Site::TempParent, Reason::FinalQuerySharing) => Some(1178),
+            (Site::TempParent, Reason::FinalQueryInvalidName) => Some(1179),
+            (Site::TempParent, Reason::FinalQueryNameTooLong) => Some(1180),
+            (Site::TempParent, Reason::FinalQueryOther) => Some(1181),
+            (Site::TempParent, Reason::FinalReadNotFound) => Some(1182),
+            (Site::TempParent, Reason::FinalReadAccessDenied) => Some(1183),
+            (Site::TempParent, Reason::FinalReadSharing) => Some(1184),
+            (Site::TempParent, Reason::FinalReadInvalidName) => Some(1185),
+            (Site::TempParent, Reason::FinalReadNameTooLong) => Some(1186),
+            (Site::TempParent, Reason::FinalReadOther) => Some(1187),
+            (Site::TempParent, Reason::Reparse) => Some(1188),
+            (Site::TempParent, Reason::FinalReadLength) => Some(1189),
+            (Site::TempParent, Reason::FinalUtf16) => Some(1190),
+            (Site::TempParent, Reason::FinalNamespace) => Some(1191),
+            (Site::TempParent, Reason::DirectoryOpenNotFound) => Some(1192),
+            (Site::TempParent, Reason::DirectoryOpenAccessDenied) => Some(1193),
+            (Site::TempParent, Reason::DirectoryOpenSharing) => Some(1194),
+            (Site::TempParent, Reason::DirectoryOpenInvalidName) => Some(1195),
+            (Site::TempParent, Reason::DirectoryOpenNameTooLong) => Some(1196),
+            (Site::TempParent, Reason::DirectoryOpenOther) => Some(1197),
+            (Site::TempParent, Reason::NotDirectory) => Some(1198),
+            (Site::TempParent, Reason::CanonicalMismatch) => Some(1199),
+            (Site::TempParent, Reason::DriveShape) => Some(1200),
+            (Site::TempParent, Reason::ComponentUnsafe) => Some(1201),
+            (Site::TempParent, Reason::TildeExpandsStrict) => Some(1202),
+            (Site::TempParent, Reason::TildeRemainsLong) => Some(1203),
+            (Site::TempParent, Reason::TildeLookupUnconfirmed) => Some(1204),
+            (Site::TempParent, Reason::PathTextNonunicode) => Some(1205),
+            (Site::OperationRoot, Reason::InfoNotFound) => Some(1206),
+            (Site::OperationRoot, Reason::InfoAccessDenied) => Some(1207),
+            (Site::OperationRoot, Reason::InfoSharing) => Some(1208),
+            (Site::OperationRoot, Reason::InfoInvalidName) => Some(1209),
+            (Site::OperationRoot, Reason::InfoNameTooLong) => Some(1210),
+            (Site::OperationRoot, Reason::InfoOther) => Some(1211),
+            (Site::OperationRoot, Reason::FinalQueryNotFound) => Some(1212),
+            (Site::OperationRoot, Reason::FinalQueryAccessDenied) => Some(1213),
+            (Site::OperationRoot, Reason::FinalQuerySharing) => Some(1214),
+            (Site::OperationRoot, Reason::FinalQueryInvalidName) => Some(1215),
+            (Site::OperationRoot, Reason::FinalQueryNameTooLong) => Some(1216),
+            (Site::OperationRoot, Reason::FinalQueryOther) => Some(1217),
+            (Site::OperationRoot, Reason::FinalReadNotFound) => Some(1218),
+            (Site::OperationRoot, Reason::FinalReadAccessDenied) => Some(1219),
+            (Site::OperationRoot, Reason::FinalReadSharing) => Some(1220),
+            (Site::OperationRoot, Reason::FinalReadInvalidName) => Some(1221),
+            (Site::OperationRoot, Reason::FinalReadNameTooLong) => Some(1222),
+            (Site::OperationRoot, Reason::FinalReadOther) => Some(1223),
+            (Site::OperationRoot, Reason::Reparse) => Some(1224),
+            (Site::OperationRoot, Reason::FinalReadLength) => Some(1225),
+            (Site::OperationRoot, Reason::FinalUtf16) => Some(1226),
+            (Site::OperationRoot, Reason::FinalNamespace) => Some(1227),
+            (Site::OperationRoot, Reason::DirectoryOpenNotFound) => Some(1228),
+            (Site::OperationRoot, Reason::DirectoryOpenAccessDenied) => Some(1229),
+            (Site::OperationRoot, Reason::DirectoryOpenSharing) => Some(1230),
+            (Site::OperationRoot, Reason::DirectoryOpenInvalidName) => Some(1231),
+            (Site::OperationRoot, Reason::DirectoryOpenNameTooLong) => Some(1232),
+            (Site::OperationRoot, Reason::DirectoryOpenOther) => Some(1233),
+            (Site::OperationRoot, Reason::NotDirectory) => Some(1234),
+            (Site::OperationRoot, Reason::CanonicalMismatch) => Some(1235),
+            (Site::LoadedGuiImage, Reason::InfoNotFound) => Some(1236),
+            (Site::LoadedGuiImage, Reason::InfoAccessDenied) => Some(1237),
+            (Site::LoadedGuiImage, Reason::InfoSharing) => Some(1238),
+            (Site::LoadedGuiImage, Reason::InfoInvalidName) => Some(1239),
+            (Site::LoadedGuiImage, Reason::InfoNameTooLong) => Some(1240),
+            (Site::LoadedGuiImage, Reason::InfoOther) => Some(1241),
+            (Site::LoadedGuiImage, Reason::FinalQueryNotFound) => Some(1242),
+            (Site::LoadedGuiImage, Reason::FinalQueryAccessDenied) => Some(1243),
+            (Site::LoadedGuiImage, Reason::FinalQuerySharing) => Some(1244),
+            (Site::LoadedGuiImage, Reason::FinalQueryInvalidName) => Some(1245),
+            (Site::LoadedGuiImage, Reason::FinalQueryNameTooLong) => Some(1246),
+            (Site::LoadedGuiImage, Reason::FinalQueryOther) => Some(1247),
+            (Site::LoadedGuiImage, Reason::FinalReadNotFound) => Some(1248),
+            (Site::LoadedGuiImage, Reason::FinalReadAccessDenied) => Some(1249),
+            (Site::LoadedGuiImage, Reason::FinalReadSharing) => Some(1250),
+            (Site::LoadedGuiImage, Reason::FinalReadInvalidName) => Some(1251),
+            (Site::LoadedGuiImage, Reason::FinalReadNameTooLong) => Some(1252),
+            (Site::LoadedGuiImage, Reason::FinalReadOther) => Some(1253),
+            (Site::LoadedGuiImage, Reason::Reparse) => Some(1254),
+            (Site::LoadedGuiImage, Reason::FinalReadLength) => Some(1255),
+            (Site::LoadedGuiImage, Reason::FinalUtf16) => Some(1256),
+            (Site::LoadedGuiImage, Reason::FinalNamespace) => Some(1257),
+            (Site::LoadedGuiImage, Reason::IsDirectory) => Some(1258),
+            (Site::LoadedGuiImage, Reason::LinkCount) => Some(1259),
+            (Site::LoadedGuiImage, Reason::CanonicalMismatch) => Some(1260),
+            (Site::LoadedGuiImage, Reason::DriveShape) => Some(1261),
+            (Site::LoadedGuiImage, Reason::ComponentUnsafe) => Some(1262),
+            (Site::LoadedGuiImage, Reason::TildeExpandsStrict) => Some(1263),
+            (Site::LoadedGuiImage, Reason::TildeRemainsLong) => Some(1264),
+            (Site::LoadedGuiImage, Reason::TildeLookupUnconfirmed) => Some(1265),
+            (Site::LoadedGuiImage, Reason::LoadedNameUtf16) => Some(1266),
+            _ => None,
+        }
+    }
+    pub(super) fn api_reason(api: u8, error: u32) -> Reason {
+        let bucket = match error { 2|3 => 0, 5 => 1, 32|33 => 2, 123|161 => 3, 206 => 4, _ => 5 };
+        const REASONS: [[Reason;6];4] = [
+            [Reason::InfoNotFound, Reason::InfoAccessDenied, Reason::InfoSharing, Reason::InfoInvalidName, Reason::InfoNameTooLong, Reason::InfoOther],
+            [Reason::FinalQueryNotFound, Reason::FinalQueryAccessDenied, Reason::FinalQuerySharing, Reason::FinalQueryInvalidName, Reason::FinalQueryNameTooLong, Reason::FinalQueryOther],
+            [Reason::FinalReadNotFound, Reason::FinalReadAccessDenied, Reason::FinalReadSharing, Reason::FinalReadInvalidName, Reason::FinalReadNameTooLong, Reason::FinalReadOther],
+            [Reason::DirectoryOpenNotFound, Reason::DirectoryOpenAccessDenied, Reason::DirectoryOpenSharing, Reason::DirectoryOpenInvalidName, Reason::DirectoryOpenNameTooLong, Reason::DirectoryOpenOther],
+        ];
+        REASONS[api as usize][bucket]
+    }
+}
+
 /// Called before legacy CLI cleanup. Failure output is a fixed classification.
 pub fn run_internal_desktop_installer(arguments: &[String]) -> i32 {
     if arguments.first().is_some_and(|verb| matches!(verb.as_str(), "nsis-install" | "nsis-uninstall")) {
         return crate::desktop_nsis::run(arguments);
     }
+    let _msi_path_session = msi_path_observation::Session::begin();
     let result = parse_msi_arguments(arguments).and_then(run_msi_verifier);
     match result {
         Ok(receipt) => match serde_json::to_string(&receipt) {
@@ -280,7 +630,7 @@ pub fn run_internal_desktop_installer(arguments: &[String]) -> i32 {
             match error {
                 DesktopInstallError::Usage => 64,
                 DesktopInstallError::Plan => 65,
-                DesktopInstallError::Path => 66,
+                DesktopInstallError::Path => msi_path_observation::path_exit(),
                 DesktopInstallError::Member => 67,
                 DesktopInstallError::Actor => 68,
                 DesktopInstallError::Isolation => 69,
@@ -387,6 +737,7 @@ impl StartupProbeContext {
 #[cfg(windows)]
 mod native {
     use super::*;
+    use super::msi_path_observation::{self as path_observation, Reason, Site};
     use std::{
         ffi::{c_void, OsStr},
         fs::{File, OpenOptions},
@@ -409,7 +760,7 @@ mod native {
         Security::{GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER},
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, FlushFileBuffers, GetFileInformationByHandle,
-            GetFinalPathNameByHandleW, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
+            GetFinalPathNameByHandleW, GetLongPathNameW, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
@@ -554,30 +905,44 @@ mod native {
         }
         Ok(())
     }
+    fn failed_path(reason: Reason) -> DesktopInstallError {
+        path_observation::note(reason);
+        DesktopInstallError::Path
+    }
+    fn failed_path_api(api: u8, error: u32) -> DesktopInstallError {
+        failed_path(path_observation::api_reason(api,error))
+    }
     fn info(handle: HANDLE) -> Result<BY_HANDLE_FILE_INFORMATION, DesktopInstallError> {
         let mut data = BY_HANDLE_FILE_INFORMATION::default();
-        if unsafe { GetFileInformationByHandle(handle, &mut data) } == 0
-            || data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
-        {
-            return Err(DesktopInstallError::Path);
+        if unsafe { GetFileInformationByHandle(handle, &mut data) } == 0 {
+            let error=unsafe { GetLastError() };
+            return Err(failed_path_api(0,error));
+        }
+        if data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(failed_path(Reason::Reparse));
         }
         Ok(data)
     }
     fn final_path(handle: HANDLE) -> Result<PathBuf, DesktopInstallError> {
         let n = unsafe { GetFinalPathNameByHandleW(handle, null_mut(), 0, 0) };
         if n == 0 {
-            return Err(DesktopInstallError::Path);
+            let error=unsafe { GetLastError() };
+            return Err(failed_path_api(1,error));
         }
         let mut data = vec![0u16; n as usize + 1];
         let written =
             unsafe { GetFinalPathNameByHandleW(handle, data.as_mut_ptr(), data.len() as u32, 0) };
-        if written == 0 || written as usize >= data.len() {
-            return Err(DesktopInstallError::Path);
+        if written == 0 {
+            let error=unsafe { GetLastError() };
+            return Err(failed_path_api(2,error));
+        }
+        if written as usize >= data.len() {
+            return Err(failed_path(Reason::FinalReadLength));
         }
         let text =
-            String::from_utf16(&data[..written as usize]).map_err(|_| DesktopInstallError::Path)?;
+            String::from_utf16(&data[..written as usize]).map_err(|_| failed_path(Reason::FinalUtf16))?;
         if !text.starts_with(r"\\?\") || text.starts_with(r"\\?\UNC\") {
-            return Err(DesktopInstallError::Path);
+            return Err(failed_path(Reason::FinalNamespace));
         }
         Ok(PathBuf::from(&text[4..]))
     }
@@ -598,10 +963,45 @@ mod native {
             && a.nFileIndexHigh == b.nFileIndexHigh
             && a.nFileIndexLow == b.nFileIndexLow
     }
+    // Failure-only probe. It never retries acceptance, changes the returned error, or records a path.
+    fn failed_tilde_reason(path: &Path) -> Reason {
+        fn raw_identity(path: &Path) -> Option<(Handle,BY_HANDLE_FILE_INFORMATION)> {
+            let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let raw=unsafe { CreateFileW(name.as_ptr(),FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ|FILE_SHARE_WRITE,null(),OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS|FILE_FLAG_OPEN_REPARSE_POINT,null_mut()) };
+            let handle=Handle::new(raw,DesktopInstallError::Path).ok()?;
+            let mut value=BY_HANDLE_FILE_INFORMATION::default();
+            if unsafe { GetFileInformationByHandle(handle.0,&mut value) }==0
+                || value.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 { return None; }
+            Some((handle,value))
+        }
+        let fallback=Reason::TildeLookupUnconfirmed;
+        if !path_observation::active_site() { return fallback; }
+        let input:Vec<u16>=path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let required=unsafe { GetLongPathNameW(input.as_ptr(),null_mut(),0) };
+        if required==0 || required>32768 { return fallback; }
+        let mut output=vec![0u16;required as usize+1];
+        let used=unsafe { GetLongPathNameW(input.as_ptr(),output.as_mut_ptr(),output.len() as u32) };
+        if used==0 || used as usize>=output.len() { return fallback; }
+        let Ok(expanded)=String::from_utf16(&output[..used as usize]) else { return fallback; };
+        let expanded_path=PathBuf::from(&expanded);
+        let Some((_original_handle,original))=raw_identity(path) else { return fallback; };
+        let Some((_expanded_handle,other))=raw_identity(&expanded_path) else { return fallback; };
+        if !same_file(&original,&other) { return fallback; }
+        if expanded.contains('~') { return Reason::TildeRemainsLong; }
+        let normalized=expanded.replace('/',"\\");
+        let bytes=normalized.as_bytes();
+        if bytes.len()>=3 && bytes[0].is_ascii_alphabetic() && bytes[1]==b':'
+            && bytes[2]==b'\\' && (normalized.len()==3
+                || normalized[3..].trim_end_matches('\\').split('\\').all(safe_component)) {
+            Reason::TildeExpandsStrict
+        } else { fallback }
+    }
     fn strict_absolute(path: &Path) -> Result<(), DesktopInstallError> {
         let text = path
             .to_str()
-            .ok_or(DesktopInstallError::Path)?
+            .ok_or_else(|| failed_path(Reason::PathTextNonunicode))?
             .replace('/', "\\");
         let text = if text.len() > 3 {
             text.trim_end_matches('\\')
@@ -609,13 +1009,16 @@ mod native {
             &text
         };
         let bytes = text.as_bytes();
-        if bytes.len() < 3
-            || !bytes[0].is_ascii_alphabetic()
-            || bytes[1] != b':'
-            || bytes[2] != b'\\'
-            || (text.len() > 3 && !text[3..].split('\\').all(safe_component))
-        {
-            return Err(DesktopInstallError::Path);
+        if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':' || bytes[2] != b'\\' {
+            return Err(failed_path(Reason::DriveShape));
+        }
+        if text.len() > 3 && !text[3..].split('\\').all(safe_component) {
+            let reason=if text.contains('~')
+                && text[3..].split('\\').all(|part| safe_component(&part.replace('~',"x"))) {
+                    failed_tilde_reason(path)
+                } else { Reason::ComponentUnsafe };
+            return Err(failed_path(reason));
         }
         Ok(())
     }
@@ -661,11 +1064,16 @@ mod native {
                         )
                     },
                     DesktopInstallError::Path,
-                )?;
-                if info(handle.0)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
-                    || !same_path(&current, &final_path(handle.0)?)
-                {
-                    return Err(DesktopInstallError::Path);
+                ).map_err(|error| {
+                    let code=unsafe { GetLastError() };
+                    path_observation::note(path_observation::api_reason(3,code));
+                    error
+                })?;
+                if info(handle.0)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+                    return Err(failed_path(Reason::NotDirectory));
+                }
+                if !same_path(&current, &final_path(handle.0)?) {
+                    return Err(failed_path(Reason::CanonicalMismatch));
                 }
                 handles.push(handle);
             }
@@ -682,7 +1090,7 @@ mod native {
                 info(handle.0)?;
             }
             if !same_path(&self.path, &final_path(self.handles.last().unwrap().0)?) {
-                return Err(DesktopInstallError::Path);
+                return Err(failed_path(Reason::CanonicalMismatch));
             }
             Ok(())
         }
@@ -703,11 +1111,14 @@ mod native {
                 .open(path)
                 .map_err(|_| DesktopInstallError::Member)?;
             let identity = info(file.as_raw_handle())?;
-            if identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
-                || identity.nNumberOfLinks != 1
-                || !same_path(path, &final_path(file.as_raw_handle())?)
-            {
-                return Err(DesktopInstallError::Path);
+            if identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                return Err(failed_path(Reason::IsDirectory));
+            }
+            if identity.nNumberOfLinks != 1 {
+                return Err(failed_path(Reason::LinkCount));
+            }
+            if !same_path(path, &final_path(file.as_raw_handle())?) {
+                return Err(failed_path(Reason::CanonicalMismatch));
             }
             let mut reader = &file;
             let mut hash = Sha256::new();
@@ -746,9 +1157,9 @@ mod native {
         args: MsiVerifyArguments,
     ) -> Result<StartupReceipt, DesktopInstallError> {
         actor(&args.user_sid)?;
-        let root = DirectoryHold::open(&args.root)?;
+        let root = path_observation::boundary(Site::MsiRoot, || DirectoryHold::open(&args.root))?;
         let plan_path = root.path.join("winsmux.install-plan.json");
-        let plan_file = ImageHold::open(&plan_path)?;
+        let plan_file = path_observation::boundary(Site::MsiPlanFile, || ImageHold::open(&plan_path))?;
         let bytes = std::fs::read(&plan_file.path).map_err(|_| DesktopInstallError::Plan)?;
         let plan = parse_install_plan(&bytes, args.plan_sha256, "msi", &args.version)?;
         let mut directories = Vec::new();
@@ -756,10 +1167,10 @@ mod native {
         let mut gui = None;
         for member in &plan.files {
             let path = root.path.join(&member.path);
-            directories.push(DirectoryHold::open(
+            directories.push(path_observation::boundary(Site::MsiMemberParent, || DirectoryHold::open(
                 path.parent().ok_or(DesktopInstallError::Path)?,
-            )?);
-            let file = ImageHold::open(&path)?;
+            ))?);
+            let file = path_observation::boundary(Site::MsiMemberFile, || ImageHold::open(&path))?;
             if file.len() != member.bytes || file.digest != parse_sha256(&member.sha256)? {
                 return Err(DesktopInstallError::Member);
             }
@@ -768,10 +1179,10 @@ mod native {
             }
             members.push(file);
         }
-        root.reobserve()?;
-        plan_file.reobserve()?;
+        path_observation::boundary(Site::MsiRoot, || root.reobserve())?;
+        path_observation::boundary(Site::MsiPlanFile, || plan_file.reobserve())?;
         for file in &members {
-            file.reobserve()?;
+            path_observation::boundary(Site::MsiMemberFile, || file.reobserve())?;
         }
         let (gui_path, expected_gui_sha256) = gui.ok_or(DesktopInstallError::Plan)?;
         let receipt = verify_startup(StartupVerifyRequest {
@@ -780,9 +1191,9 @@ mod native {
             expected_version: args.version,
             expected_actor_sid: args.user_sid,
         })?;
-        root.reobserve()?;
+        path_observation::boundary(Site::MsiRoot, || root.reobserve())?;
         for file in &members {
-            file.reobserve()?;
+            path_observation::boundary(Site::MsiMemberFile, || file.reobserve())?;
         }
         Ok(receipt)
     }
@@ -793,7 +1204,7 @@ mod native {
     }
     impl OperationDirectory {
         fn create(id: &str, sid: &str) -> Result<Self, DesktopInstallError> {
-            let parent = DirectoryHold::open(&std::env::temp_dir())?;
+            let parent = path_observation::boundary(Site::TempParent, || DirectoryHold::open(&std::env::temp_dir()))?;
             let path = parent.path.join(format!("winsmux-installer-{id}"));
             let security = Security::actor(sid)?;
             let attributes = security.attributes();
@@ -801,7 +1212,7 @@ mod native {
             if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
                 return Err(DesktopInstallError::Isolation);
             }
-            let hold = DirectoryHold::open(&path)?;
+            let hold = path_observation::boundary(Site::OperationRoot, || DirectoryHold::open(&path))?;
             let mut result = Self {
                 path,
                 hold: Some(hold),
@@ -820,7 +1231,7 @@ mod native {
                 .initial_head("main");
             git2::Repository::init_opts(result.path.join("project"), &options)
                 .map_err(|_| DesktopInstallError::Isolation)?;
-            result.hold.as_ref().unwrap().reobserve()?;
+            path_observation::boundary(Site::OperationRoot, || result.hold.as_ref().unwrap().reobserve())?;
             result.terminal = true;
             Ok(result)
         }
@@ -995,16 +1406,18 @@ mod native {
             {
                 return Err(DesktopInstallError::Member);
             }
-            let path = PathBuf::from(
-                String::from_utf16(&data[..size as usize])
-                    .map_err(|_| DesktopInstallError::Path)?,
-            );
-            let loaded = ImageHold::open(&path)?;
+            let loaded = path_observation::boundary(Site::LoadedGuiImage, || {
+                let path = PathBuf::from(
+                    String::from_utf16(&data[..size as usize])
+                        .map_err(|_| failed_path(Reason::LoadedNameUtf16))?,
+                );
+                ImageHold::open(&path)
+            })?;
             if !same_file(&expected.identity, &loaded.identity) || expected.digest != loaded.digest
             {
                 return Err(DesktopInstallError::Member);
             }
-            expected.reobserve()
+            path_observation::boundary(Site::SharedGuiFile, || expected.reobserve())
         }
         fn stop(&mut self) -> Result<(), DesktopInstallError> {
             if self.terminal {
@@ -1188,9 +1601,9 @@ mod native {
             return Err(DesktopInstallError::Usage);
         }
         actor(&request.expected_actor_sid)?;
-        let root =
-            DirectoryHold::open(request.gui_path.parent().ok_or(DesktopInstallError::Path)?)?;
-        let image = ImageHold::open(&request.gui_path)?;
+        let root = path_observation::boundary(Site::SharedGuiParent, ||
+            DirectoryHold::open(request.gui_path.parent().ok_or(DesktopInstallError::Path)?))?;
+        let image = path_observation::boundary(Site::SharedGuiFile, || ImageHold::open(&request.gui_path))?;
         if image.digest != request.expected_gui_sha256 {
             return Err(DesktopInstallError::Member);
         }
@@ -1212,8 +1625,8 @@ mod native {
         let cleanup = owned.stop();
         directory.terminal = cleanup.is_ok();
         cleanup?;
-        root.reobserve()?;
-        image.reobserve()?;
+        path_observation::boundary(Site::SharedGuiParent, || root.reobserve())?;
+        path_observation::boundary(Site::SharedGuiFile, || image.reobserve())?;
         let mut receipt = result?;
         receipt.probe_processes_exited = true;
         Ok(receipt)

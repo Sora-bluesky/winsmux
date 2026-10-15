@@ -11,13 +11,14 @@
     "Require the hook-defined generation path",
     "Include generation-owned utils and plugin directory",
     "Replace exactly three template and seven utils plugin namespaces",
-    "Replace the inherited lifecycle operations with the generation-bound native NSIS install, rollback and uninstall adapter"
+    "Replace the inherited lifecycle operations with the generation-bound native NSIS install, rollback and uninstall adapter",
+    "Expand only the NSIS-owned transaction workspace to its long DOS spelling and share bounded helper, source and context paths across install and uninstall"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 17696,
-      "sha256": "c4fc0d1f02ac01ff06b74dfb10ffd5f7259eb7d2a8a58ac44a3e334f81cf72dc"
+      "bytes": 25170,
+      "sha256": "8761857c6b0a96b747f240029704fa2edccf97da00d6d6cb0c008b1d07f369f7"
     },
     {
       "path": "winsmux-utils.nsh",

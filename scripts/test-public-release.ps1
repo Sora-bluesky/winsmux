@@ -4151,12 +4151,14 @@ function ConvertTo-DesktopNativeMsiLogProjection {
     $actionNames = @('AppSearch','CostFinalize','CostInitialize','CreateFolders','CreateShortcuts','CreateUpdateTask','DeleteUpdateTask','DownloadAndInvokeBootstrapper','FileCost','FindRelatedProducts','InstallFiles','InstallFinalize','InstallInitialize','InstallValidate','InvokeBootstrapper','InvokeStandalone','LaunchApplication','MigrateFeatureStates','ProcessComponents','PublishFeatures','PublishProduct','RegisterProduct','RegisterUser','RemoveExistingProducts','RemoveFiles','RemoveFolders','RemoveRegistryValues','RemoveShortcuts','SetARPINSTALLLOCATION','SetARPNOMODIFY','UnpublishFeatures','UpdateWebView2ViaEdgeUpdate','ValidateProductID','WinsmuxVerifyStartup','WixUIPrintEula','WixUIValidatePath','WriteRegistryValues')
     $helperNames = @('usage','plan_refused','path_refused','member_unconfirmed','actor_refused','isolation_failed','launch_failed','startup_unconfirmed','startup_timeout','probe_exit_unconfirmed')
     $diagnosticMsiExitNames = [ordered]@{'64'='usage';'65'='plan_refused';'66'='path_refused';'67'='member_unconfirmed';'68'='actor_refused';'69'='isolation_failed';'70'='launch_failed';'71'='startup_unconfirmed';'72'='startup_timeout';'73'='probe_exit_unconfirmed'}
+    $diagnosticMsiPathCodes = @('1000','1001','1002','1003','1004','1005','1006','1007','1008','1009','1010','1011','1012','1013','1014','1015','1016','1017','1018','1019','1020','1021','1022','1023','1024','1025','1026','1027','1028','1029','1030','1031','1032','1033','1034','1035','1036','1037','1038','1039','1040','1041','1042','1043','1044','1045','1046','1047','1048','1049','1050','1051','1052','1053','1054','1055','1056','1057','1058','1059','1060','1061','1062','1063','1064','1065','1066','1067','1068','1069','1070','1071','1072','1073','1074','1075','1076','1077','1078','1079','1080','1081','1082','1083','1084','1085','1086','1087','1088','1089','1090','1091','1092','1093','1094','1095','1096','1097','1098','1099','1100','1101','1102','1103','1104','1105','1106','1107','1108','1109','1110','1111','1112','1113','1114','1115','1116','1117','1118','1119','1120','1121','1122','1123','1124','1125','1126','1127','1128','1129','1130','1131','1132','1133','1134','1135','1136','1137','1138','1139','1140','1141','1142','1143','1144','1145','1146','1147','1148','1149','1150','1151','1152','1153','1154','1155','1156','1157','1158','1159','1160','1161','1162','1163','1164','1165','1166','1167','1168','1169','1170','1171','1172','1173','1174','1175','1176','1177','1178','1179','1180','1181','1182','1183','1184','1185','1186','1187','1188','1189','1190','1191','1192','1193','1194','1195','1196','1197','1198','1199','1200','1201','1202','1203','1204','1205','1206','1207','1208','1209','1210','1211','1212','1213','1214','1215','1216','1217','1218','1219','1220','1221','1222','1223','1224','1225','1226','1227','1228','1229','1230','1231','1232','1233','1234','1235','1236','1237','1238','1239','1240','1241','1242','1243','1244','1245','1246','1247','1248','1249','1250','1251','1252','1253','1254','1255','1256','1257','1258','1259','1260','1261','1262','1263','1264','1265','1266')
     $errorCodes = @('112','1303','1304','1305','1307','1317','1335','1603','1618','1619','1620','1638','1708','1721','1722','2203')
     $actions = [ordered]@{}
     foreach ($name in $actionNames) {
         $returns = [ordered]@{}; foreach ($number in 0..8) { $returns[[string]$number] = 0 }
         $actions[$name] = [ordered]@{ start_count = 0; end_returns = $returns; custom_errors = [ordered]@{'2'=0;'3'=0} }
     }
+    foreach ($number in $diagnosticMsiPathCodes) { $actions['WinsmuxVerifyStartup'].custom_errors[$number] = 0 }
     $errors = [ordered]@{}; foreach ($number in $errorCodes) { $errors[$number] = 0 }
     $helper = [ordered]@{}; foreach ($name in $helperNames) { $helper[$name] = 0 }
     $status = [string]$ObservationInput['status']
@@ -4186,7 +4188,9 @@ function ConvertTo-DesktopNativeMsiLogProjection {
             } else { $result.unknown.action_count += 1 }
         } elseif ($record -cmatch '^CustomAction ([A-Za-z][A-Za-z0-9_]{0,63}) returned actual error code ([0-9]{1,5})(?: \(note this may not be 100% accurate if translation happened inside sandbox\))?$') {
             $name = $Matches[1]; $number = $Matches[2]
-            if ($name -ceq 'WinsmuxVerifyStartup' -and $diagnosticMsiExitNames.Contains($number)) {
+            if ($name -ceq 'WinsmuxVerifyStartup' -and $diagnosticMsiPathCodes -ccontains $number) {
+                $actions[$name].custom_errors[$number] += 1; $helper.path_refused += 1; $recognized += 1
+            } elseif ($name -ceq 'WinsmuxVerifyStartup' -and $diagnosticMsiExitNames.Contains($number)) {
                 $helper[$diagnosticMsiExitNames[$number]] += 1; $recognized += 1
             } elseif ($actionNames -ccontains $name) {
                 if (@('2','3') -ccontains $number) { $actions[$name].custom_errors[$number] += 1; $recognized += 1 } else { $result.unknown.return_count += 1 }
@@ -5301,14 +5305,13 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($sections.Count -eq 1) 'Desktop NSIS native uninstall section must be unique.'
     $body = $sections[0].Groups['body'].Value
     foreach ($line in @(
-        '  InitPluginsDir',
-        '  StrCpy $WinsmuxSource "$PLUGINSDIR\winsmux-source"',
-        '  StrCpy $WinsmuxHelper "$PLUGINSDIR\winsmux-bootstrap\winsmux.exe"',
-        '  StrCpy $WinsmuxContext "$PLUGINSDIR\winsmux-context.txt"',
+        '  Call un.WinsmuxInitWorkspace',
+        '  SetOutPath "$WinsmuxWorkspace\winsmux-bootstrap"',
+        '  SetOutPath $WinsmuxSource',
         '  File /oname=winsmux.exe "${WINSMUX_NSIS_HELPER_PATH}"',
         '  File /oname=winsmux.install-plan.json "${WINSMUX_NSIS_PLAN_PATH}"',
         '  Call un.WinsmuxWriteUninstallContext',
-        '  nsExec::ExecToStack ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"''',
+        '  nsExec::ExecToStack $WinsmuxCommand',
         '  Pop $0',
         '  Pop $1'
     )) {
@@ -5323,6 +5326,24 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     $failure = $failure.Replace(([string][char]13 + [char]10), [string][char]10)
     Assert-Condition ($body.Contains($failure)) 'Desktop NSIS native uninstall must stop on helper failure.'
     Assert-Condition (-not [regex]::IsMatch($body, '(?im)^\s*(?:DeleteRegKey|DeleteRegValue|WriteReg[A-Za-z]*|Delete|RMDir)\b')) 'Desktop NSIS uninstall must delegate owned mutations to the native helper.'
+    $workspaces = [regex]::Matches($template, '(?ms)^!macro WINSMUX_WORKSPACE_FUNCTION NAME ACTION COMMAND_OVERHEAD\n(?<body>.*?)^!macroend$')
+    Assert-Condition ($workspaces.Count -eq 1) 'Desktop NSIS workspace initialization must be shared and unique.'
+    foreach ($line in @(
+        '  StrCpy $0 $PLUGINSDIR',
+        '  System::Call ''kernel32::GetLongPathNameW(w r0, w .r1, i ${NSIS_MAX_STRLEN}) i.r2''',
+        '  StrCpy $WinsmuxSource "$WinsmuxWorkspace\winsmux-source"',
+        '  StrCpy $WinsmuxHelper "$WinsmuxWorkspace\winsmux-bootstrap\winsmux.exe"',
+        '  StrCpy $WinsmuxContext "$WinsmuxWorkspace\winsmux-context.txt"',
+        '  StrCpy $WinsmuxCommand ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-${ACTION} --context $\"$WinsmuxContext$\"'''
+    )) {
+        Assert-Condition ([regex]::Matches($workspaces[0].Groups['body'].Value, '(?m)^' + [regex]::Escape($line) + '$').Count -eq 1) 'Desktop NSIS workspace source, helper, context or command differs.'
+    }
+    foreach ($line in @(
+        '!insertmacro WINSMUX_WORKSPACE_FUNCTION WinsmuxInitWorkspace install 115',
+        '!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117'
+    )) {
+        Assert-Condition ([regex]::Matches($template, '(?m)^' + [regex]::Escape($line) + '$').Count -eq 1) 'Desktop NSIS workspace action or command bound differs.'
+    }
     $contexts = [regex]::Matches($template, '(?ms)^!macro WINSMUX_CONTEXT_FUNCTION NAME ACTION\n(?<body>.*?)^!macroend$')
     Assert-Condition ($contexts.Count -eq 1) 'Desktop NSIS native context writer must be unique.'
     $keys = @([regex]::Matches($contexts[0].Groups['body'].Value, '(?m)^  FileWriteUTF16LE \$0 "(?<key>[a-z0-9_]+)=') | ForEach-Object { $_.Groups['key'].Value })
@@ -5509,10 +5530,14 @@ function Invoke-SelfTest {
             $nsisTemplateSource = [IO.File]::ReadAllText($nsisTemplatePath)
             Assert-DesktopNativeNsisUninstallAdapterSource -HookSource $nsisHookSource -TemplateSource $nsisTemplateSource
             $caseIds.Add('desktop_native_uninstall_adapter')
-            $nativeUninstallDispatch = '  nsExec::ExecToStack ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"'''
+            $nativeUninstallDispatch = '  nsExec::ExecToStack $WinsmuxCommand'
+            $uninstallSection = [regex]::Matches($nsisTemplateSource, '(?ms)^Section Uninstall\n.*?^SectionEnd$')
+            Assert-Condition ($uninstallSection.Count -eq 1) 'Desktop NSIS uninstall mutation section differs.'
+            $uninstallSource = $uninstallSection[0].Value
+            Assert-Condition ([regex]::Matches($uninstallSource, [regex]::Escape($nativeUninstallDispatch)).Count -eq 1) 'Desktop NSIS uninstall mutation dispatch differs.'
             $adapterMutations = [ordered]@{
-                missing_dispatch = $nsisTemplateSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing')
-                wrong_action = $nsisTemplateSource.Replace(' nsis-uninstall --context ', ' nsis-install --context ')
+                missing_dispatch = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing'))
+                wrong_action = $nsisTemplateSource.Replace('!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117', '!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace install 115')
                 missing_failure_guard = $nsisTemplateSource.Replace('${If} $0 != 0', '${If} $0 = 0')
                 direct_registry_delete = $nsisTemplateSource.Replace('Section Uninstall', ('Section Uninstall' + [char]10 + '  DeleteRegKey HKCU "Software\github\winsmux"'))
             }

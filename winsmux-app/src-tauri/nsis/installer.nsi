@@ -257,6 +257,8 @@ ${StrLoc}
 Var PassiveMode
 Var UpdateMode
 Var NoShortcutMode
+Var WinsmuxWorkspace
+Var WinsmuxCommand
 Var WinsmuxSource
 Var WinsmuxContext
 Var WinsmuxHelper
@@ -559,11 +561,8 @@ Section WebView2
 SectionEnd
 
 Section Install
-  InitPluginsDir
-  StrCpy $WinsmuxSource "$PLUGINSDIR\winsmux-source"
-  StrCpy $WinsmuxHelper "$PLUGINSDIR\winsmux-bootstrap\winsmux.exe"
-  StrCpy $WinsmuxContext "$PLUGINSDIR\winsmux-context.txt"
-  SetOutPath "$PLUGINSDIR\winsmux-bootstrap"
+  Call WinsmuxInitWorkspace
+  SetOutPath "$WinsmuxWorkspace\winsmux-bootstrap"
   File /oname=winsmux.exe "${WINSMUX_NSIS_HELPER_PATH}"
   SetOutPath $WinsmuxSource
   File "${MAINBINARYSRCPATH}"
@@ -589,7 +588,7 @@ Section Install
     !insertmacro SetLnkAppUserModelId "$WinsmuxSource\shortcuts\desktop.lnk"
   ${EndIf}
   Call WinsmuxWriteInstallContext
-  nsExec::ExecToStack '$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-install --context $\"$WinsmuxContext$\"'
+  nsExec::ExecToStack $WinsmuxCommand
   Pop $0
   Pop $1
   ${If} $0 != 0
@@ -647,16 +646,13 @@ Function un.onInit
 FunctionEnd
 
 Section Uninstall
-  InitPluginsDir
-  StrCpy $WinsmuxSource "$PLUGINSDIR\winsmux-source"
-  StrCpy $WinsmuxHelper "$PLUGINSDIR\winsmux-bootstrap\winsmux.exe"
-  StrCpy $WinsmuxContext "$PLUGINSDIR\winsmux-context.txt"
-  SetOutPath "$PLUGINSDIR\winsmux-bootstrap"
+  Call un.WinsmuxInitWorkspace
+  SetOutPath "$WinsmuxWorkspace\winsmux-bootstrap"
   File /oname=winsmux.exe "${WINSMUX_NSIS_HELPER_PATH}"
   SetOutPath $WinsmuxSource
   File /oname=winsmux.install-plan.json "${WINSMUX_NSIS_PLAN_PATH}"
   Call un.WinsmuxWriteUninstallContext
-  nsExec::ExecToStack '$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"'
+  nsExec::ExecToStack $WinsmuxCommand
   Pop $0
   Pop $1
   ${If} $0 != 0
@@ -705,6 +701,73 @@ Function WinsmuxDesktopChoiceLeave
   ${EndIf}
   SendMessage $WinsmuxDesktopCheckbox ${BM_GETCHECK} 0 0 $WinsmuxDesktop
 FunctionEnd
+
+!macro WINSMUX_WORKSPACE_FUNCTION NAME ACTION COMMAND_OVERHEAD
+Function ${NAME}
+  Push $0
+  Push $1
+  Push $2
+  Push $3
+  StrCpy $WinsmuxWorkspace ""
+  StrCpy $WinsmuxCommand ""
+  StrCpy $WinsmuxSource ""
+  StrCpy $WinsmuxHelper ""
+  StrCpy $WinsmuxContext ""
+  InitPluginsDir
+  StrCpy $0 $PLUGINSDIR
+  StrCpy $1 ""
+  StrCpy $2 0
+  ${If} $0 == ""
+    Goto winsmux_workspace_refused
+  ${EndIf}
+  System::Call 'kernel32::GetLongPathNameW(w r0, w .r1, i ${NSIS_MAX_STRLEN}) i.r2'
+  StrCmp $2 "error" winsmux_workspace_refused
+  ${If} $2 <= 0
+  ${OrIf} $2 >= ${NSIS_MAX_STRLEN}
+    Goto winsmux_workspace_refused
+  ${EndIf}
+  StrLen $3 $1
+  ${If} $3 != $2
+    Goto winsmux_workspace_refused
+  ${EndIf}
+  ; L is the returned UTF-16 length. Before expansion, bound both commands:
+  ; install = 2L+115; uninstall = 2L+117; source/member <= L+95.
+  IntOp $3 $2 * 2
+  IntOp $3 $3 + 117
+  ${If} $3 >= ${NSIS_MAX_STRLEN}
+    Goto winsmux_workspace_refused
+  ${EndIf}
+  StrCpy $WinsmuxWorkspace $1
+  StrCpy $WinsmuxSource "$WinsmuxWorkspace\winsmux-source"
+  StrCpy $WinsmuxHelper "$WinsmuxWorkspace\winsmux-bootstrap\winsmux.exe"
+  StrCpy $WinsmuxContext "$WinsmuxWorkspace\winsmux-context.txt"
+  StrCpy $WinsmuxCommand '$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-${ACTION} --context $\"$WinsmuxContext$\"'
+  IntOp $3 $2 * 2
+  IntOp $3 $3 + ${COMMAND_OVERHEAD}
+  StrLen $0 $WinsmuxCommand
+  ${If} $0 != $3
+    Goto winsmux_workspace_refused
+  ${EndIf}
+  Goto winsmux_workspace_finish
+winsmux_workspace_refused:
+  StrCpy $WinsmuxWorkspace ""
+  StrCpy $WinsmuxCommand ""
+  StrCpy $WinsmuxSource ""
+  StrCpy $WinsmuxHelper ""
+  StrCpy $WinsmuxContext ""
+winsmux_workspace_finish:
+  Pop $3
+  Pop $2
+  Pop $1
+  Pop $0
+  ${If} $WinsmuxWorkspace == ""
+    SetErrorLevel 2
+    Abort "$(WINSMUX_TRANSACTION_FAILED)"
+  ${EndIf}
+FunctionEnd
+!macroend
+!insertmacro WINSMUX_WORKSPACE_FUNCTION WinsmuxInitWorkspace install 115
+!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117
 
 !macro WINSMUX_CONTEXT_FUNCTION NAME ACTION
 Function ${NAME}
