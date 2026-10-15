@@ -16,8 +16,8 @@
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 17696,
-      "sha256": "c4fc0d1f02ac01ff06b74dfb10ffd5f7259eb7d2a8a58ac44a3e334f81cf72dc"
+      "bytes": 17697,
+      "sha256": "e55d7398d60f58488cba357b3f5dbef1da2835bb6830ccbdf70f1619e95b9187"
     },
     {
       "path": "winsmux-utils.nsh",

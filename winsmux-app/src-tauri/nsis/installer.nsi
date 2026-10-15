@@ -385,7 +385,7 @@ Section Install
   File "${MAINBINARYSRCPATH}"
   File /oname=winsmux.install-plan.json "${WINSMUX_NSIS_PLAN_PATH}"
   {{#each resources_dirs}}
-    CreateDirectory "$WinsmuxSource\{{this}}"
+    CreateDirectory "$WinsmuxSource\\{{this}}"
   {{/each}}
   {{#each resources}}
     File /a "/oname={{this.[1]}}" "{{no-escape @key}}"
