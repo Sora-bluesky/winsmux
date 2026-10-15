@@ -1722,7 +1722,7 @@ switch (`$args[0]) {
         $readmeJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.ja.md') -Raw -Encoding UTF8
         $compatibility = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\docs\compatibility.md') -Raw -Encoding UTF8
         $thirdPartyNotices = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'THIRD_PARTY_NOTICES.md') -Raw -Encoding UTF8
-        $inventory = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\powershell-adapter-inventory.md') -Raw -Encoding UTF8
+        $inventory = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\legacy-compat-surface-inventory.json') -Raw -Encoding UTF8
 
         foreach ($content in @($readme, $readmeJa, $compatibility, $thirdPartyNotices)) {
             $content | Should -Match 'psmux'
@@ -1732,8 +1732,11 @@ switch (`$args[0]) {
             $content | Should -Match 'no longer ship|no longer shipped|配布しません'
         }
 
-        $inventory | Should -Match 'TASK-296'
-        $inventory | Should -Match 'legacy alias sunset'
+        $inventoryContract = $inventory | ConvertFrom-Json -Depth 32
+        $inventoryContract.task | Should -Be 'TASK-408'
+        foreach ($term in @('psmux', 'pmux', 'tmux')) {
+            $inventoryContract.terms | Should -Contain $term
+        }
         $compatibility | Should -Match 'does not remove tmux-compatible configuration support'
         $thirdPartyNotices | Should -Match 'no longer ships the legacy binary aliases'
     }

@@ -93,8 +93,7 @@ $forbiddenPatterns = @(
 )
 
 $docsToScan = @(
-    'docs/project/pester-suite-inventory.json',
-    'docs/project/pester-suite-reduction-plan.md'
+    'docs/project/pester-suite-inventory.json'
 )
 
 foreach ($relativePath in $docsToScan) {

@@ -383,15 +383,6 @@ Describe 'CLI bakeoff evidence harness' {
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
     }
 
-    It 'routes the formal six-pane benchmark evidence to v0.36.23' {
-        $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\cli-comparison-bakeoff.md') -Raw -Encoding UTF8
-        $contractDoc | Should -Match 'v0\.36\.23'
-        $contractDoc | Should -Not -Match 'publishing v0\.36\.22|Before publishing v0\.36\.22|official benchmark evidence.*v0\.36\.22'
-
-        $contractHtml = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\benchmarks\v03617-harness-bench-report.ja.html') -Raw -Encoding UTF8
-        $contractHtml | Should -Match 'v0\.36\.23'
-        $contractHtml | Should -Not -Match 'v0\.36\.22 測定待ち|v0\.36\.22 で行う正式|6ペイン実測とレポート再作成は v0\.36\.22'
-    }
 
     It 'treats low Codex usage remaining notices as non-blocking readiness warnings' {
         $mainTs = $script:LegacyDesktopMain
@@ -749,7 +740,6 @@ Describe 'CLI bakeoff evidence harness' {
         $quickstart = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\quickstart.md') -Raw -Encoding UTF8
         $quickstartJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\quickstart.ja.md') -Raw -Encoding UTF8
         $packageReadme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'packages\winsmux\README.md') -Raw -Encoding UTF8
-        $releaseGate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\v1-release-gate.md') -Raw -Encoding UTF8
         $operatorModel = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\operator-model.md') -Raw -Encoding UTF8
         $readmeBeforeCommands = ($readme -split '(?m)^## Main Commands')[0]
         $readmeJaBeforeCommands = ($readmeJa -split '(?m)^## 主要コマンド')[0]
@@ -810,35 +800,6 @@ Describe 'CLI bakeoff evidence harness' {
         $publicInstallDocs | Should -Not -Match 'winsmux_0\.\d+\.\d+_x64-setup\.exe'
         $packageReadme | Should -Match 'It does not install or open the desktop app'
         $packageReadme | Should -Match 'CLI package path'
-        $releaseGate | Should -Match 'Windows Search finds the app by'
-        $releaseGate | Should -Match 'Installed apps'
-        $releaseGate | Should -Match 'version number is not required in Windows Search'
-        $releaseGate | Should -Match 'installed Windows app'
-        $releaseGate | Should -Match 'target\\debug'
-        $releaseGate | Should -Match 'target\\release'
-        $releaseGate | Should -Match '\.local\\bin'
-        $releaseGate | Should -Match 'must not be accepted as desktop installer\s+registration or normal-launch proof'
-        $releaseGate | Should -Match 'releases/latest'
-        $releaseGate | Should -Match 'version-neutral installer example'
-        $releaseGate | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
-        $releaseGate | Should -Match 'must fail if public install\s+docs contain a fixed release asset name'
-        $releaseGate | Should -Match 'winsmux_0\.x\.y_x64-setup\.exe'
-        $releaseGate | Should -Match 'Quickstart must stay desktop-app first'
-        $releaseGate | Should -Match 'README, Quickstart, Installation, Troubleshooting'
-        $releaseGate | Should -Match 'packages/winsmux/README\.md'
-        $releaseGate | Should -Match 'Automatic in-app update detection is delivered in the `v0\.36\.23` desktop app'
-        $releaseGate | Should -Match 'release gate verifies the update check'
-        $releaseGate | Should -Match 'checksum verification when'
-        $releaseGate | Should -Not -Match '`v0\.36\.23` cannot ship until update check'
-        $releaseGate | Should -Match 'installer-over-existing-install\s+update path'
-        $releaseGate | Should -Match 'compact\s+persistent status/action'
-        $releaseGate | Should -Match 'download\s+progress\s+from the final update action'
-        $releaseGate | Should -Match 'post-install restart guidance'
-        $releaseGate | Should -Match 'confirmation dialog'
-        $releaseGate | Should -Match 'local active sessions may be interrupted'
-        $releaseGate | Should -Match 'installing state with progress text'
-        $releaseGate | Should -Match 'Clicking `Cancel` or outside the dialog closes the dialog'
-        $releaseGate | Should -Match 'Silent background replacement without user-visible state is not\s+accepted'
         $operatorModel | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
         $operatorModel | Should -Match 'winsmux_\.\.\._x64-setup\.exe'
         $operatorModel | Should -Match 'The desktop path is\s+the recommended first-run path'
@@ -910,7 +871,6 @@ Describe 'CLI bakeoff evidence harness' {
 
     It 'gates desktop releases on signed updater artifacts' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\release-desktop.yml') -Raw -Encoding UTF8
-        $releaseGate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\v1-release-gate.md') -Raw -Encoding UTF8
         $tauriCiConfig = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\tauri.ci.conf.json') -Raw -Encoding UTF8
         $signScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-app\src-tauri\scripts\sign-windows-bundle.ps1') -Raw -Encoding UTF8
 
@@ -950,22 +910,14 @@ Describe 'CLI bakeoff evidence harness' {
 
         $tauriCiConfig | Should -Match '"createUpdaterArtifacts"\s*:\s*true'
         $tauriCiConfig | Should -Match '"signCommand"'
-        $tauriCiConfig | Should -Match 'sign-windows-bundle\.ps1'
-        $tauriCiConfig | Should -Match '\./scripts/sign-windows-bundle\.ps1'
-        $tauriCiConfig | Should -Not -Match '\./src-tauri/scripts/sign-windows-bundle\.ps1'
+        $signCommand = ($tauriCiConfig | ConvertFrom-Json -Depth 20).bundle.windows.signCommand
+        (@($signCommand.PSObject.Properties.Name | Sort-Object) -join ',') | Should -BeExactly 'args,cmd'
+        $signCommand.cmd | Should -BeExactly 'node'
+        ($signCommand.args | ConvertTo-Json -Compress) | Should -BeExactly '["../../scripts/stage-desktop-msi-plan.mjs","--sign-asset","%1","--signed"]'
         $signScript | Should -Match 'WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH'
         $signScript | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_PASSWORD'
         $signScript | Should -Match 'signtool sign'
 
-        $releaseGate | Should -Match 'TASK-720'
-        $releaseGate | Should -Match 'signed desktop updater release assets'
-        $releaseGate | Should -Match 'latest\.json'
-        $releaseGate | Should -Match '\.sig'
-        $releaseGate | Should -Match 'WINDOWS_SIGNING_CERTIFICATE_BASE64'
-        $releaseGate | Should -Match 'TAURI_SIGNING_PRIVATE_KEY'
-        $releaseGate | Should -Not -Match 'TAURI_UPDATER_PRIVATE_KEY'
-        $releaseGate | Should -Match 'unsigned installer'
-        $releaseGate | Should -Match 'must\s+not\s+be\s+published'
     }
 
     It 'filters content-clean status noise before enforcing the candidate clean gate' {

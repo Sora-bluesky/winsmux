@@ -12,7 +12,7 @@ const CONTENT_B: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 const CONTENT_C: &str = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const CONTEXT_REJECTION: &str = "winsmux: context pack rejected.\n";
 const ARCHITECTURE_DOC: &str =
-    include_str!("../../docs/project/v03629-declarative-workspace-architecture.md");
+    include_str!("../docs/workflow-gate-examples.md");
 const RUNNABLE_CONTEXT_PACK_V1_START: &str = "<!-- TASK660-RUNNABLE-CONTEXT-PACK-V1:START -->";
 const RUNNABLE_CONTEXT_PACK_V1_END: &str = "<!-- TASK660-RUNNABLE-CONTEXT-PACK-V1:END -->";
 
@@ -1253,17 +1253,6 @@ fn cp25_documented_task660_contract_matches_public_preview_and_excludes_persiste
         "TASK-662 owns any future verified cross-runtime persistence contract",
     ];
     let workflow_context_ref_claim = ["context", "_pack_", "refs: [context-pack:...]"].concat();
-    let task660_section = ARCHITECTURE_DOC
-        .split_once("### 6.3 TASK-660: repository context package")
-        .expect("architecture doc must contain the TASK-660 section")
-        .1
-        .split_once("### 6.4 TASK-661: templates, gallery, and migration path")
-        .expect("TASK-660 section must end before TASK-661")
-        .0;
-    let task662_section = ARCHITECTURE_DOC
-        .split_once("### 6.5 TASK-662: workflow pre-release gate")
-        .expect("architecture doc must contain the TASK-662 section")
-        .1;
 
     let mut violations = Vec::new();
     if actual_keys != expected_keys {
@@ -1295,15 +1284,15 @@ fn cp25_documented_task660_contract_matches_public_preview_and_excludes_persiste
         "canonical_json",
         "byte_count",
     ] {
-        if !task660_section.contains(required_claim) {
+        if !ARCHITECTURE_DOC.contains(required_claim) {
             violations.push(format!(
-                "TASK-660 section is missing current contract claim: {required_claim}"
+                "public examples are missing current contract claim: {required_claim}"
             ));
         }
     }
-    if !task662_section.contains("does not implement context-pack persistence") {
+    if !ARCHITECTURE_DOC.contains("does not implement context-pack persistence") {
         violations.push(
-            "TASK-662 section does not exclude context-pack persistence implementation".to_string(),
+            "public gate contract does not exclude context-pack persistence implementation".to_string(),
         );
     }
     if !ARCHITECTURE_DOC

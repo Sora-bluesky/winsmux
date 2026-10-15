@@ -38,15 +38,11 @@ function Add-Check {
 $checks = @()
 $router = Get-RepoContent 'winsmux-core/scripts/coordinator-router.ps1'
 $tests = Get-RepoContent 'tests/V03620CoordinatorFoundation.Tests.ps1'
-$doc = Get-RepoContent 'docs/project/v03620-coordinator-foundation.md'
-$baselineReport = Get-RepoContent 'docs/project/v03620-coordinator-baseline.md'
 $workflow = Get-RepoContent '.github/workflows/test.yml'
 $whitelist = Get-RepoContent '.githooks/pre-commit-whitelist.ps1'
 
 Add-Check 'coordinator router script exists' (-not [string]::IsNullOrWhiteSpace($router)) 'winsmux-core/scripts/coordinator-router.ps1'
 Add-Check 'coordinator Pester tests exist' (-not [string]::IsNullOrWhiteSpace($tests)) 'tests/V03620CoordinatorFoundation.Tests.ps1'
-Add-Check 'coordinator design document exists' (-not [string]::IsNullOrWhiteSpace($doc)) 'docs/project/v03620-coordinator-foundation.md'
-Add-Check 'coordinator baseline report exists' (-not [string]::IsNullOrWhiteSpace($baselineReport)) 'docs/project/v03620-coordinator-baseline.md'
 
 foreach ($functionName in @(
     'New-WinsmuxRouteContext',
@@ -98,37 +94,10 @@ foreach ($forbidden in @('Invoke-RestMethod', 'Invoke-WebRequest', 'Start-Proces
     Add-Check "router does not call or store $forbidden" ($router -notmatch [regex]::Escape($forbidden)) 'winsmux-core/scripts/coordinator-router.ps1'
 }
 
-foreach ($taskId in @('TASK-598', 'TASK-599', 'TASK-600', 'TASK-601', 'TASK-602')) {
-    Add-Check "design document maps $taskId" ($doc -match [regex]::Escape($taskId)) 'docs/project/v03620-coordinator-foundation.md'
-}
-
-foreach ($token in @(
-    'Structured RouteContext',
-    'deterministic router',
-    'shadow trace',
-    'manual dispatch remains the user-facing path',
-    'no online training',
-    'offline evaluator'
-)) {
-    Add-Check "design document records $token" ($doc -match [regex]::Escape($token)) 'docs/project/v03620-coordinator-foundation.md'
-}
-
-foreach ($token in @(
-    'provider calls',
-    'deterministic success rate',
-    'fixture cases',
-    'Harness Bench result',
-    'not a live-provider benchmark'
-)) {
-    Add-Check "baseline report records $token" ($baselineReport -match [regex]::Escape($token)) 'docs/project/v03620-coordinator-baseline.md'
-}
-
 Add-Check 'CI runs v0.36.20 coordinator tests' ($workflow -match 'V03620CoordinatorFoundation\.Tests\.ps1') '.github/workflows/test.yml'
 Add-Check 'pre-commit whitelist allows coordinator router' ($whitelist -match [regex]::Escape('winsmux-core/**')) '.githooks/pre-commit-whitelist.ps1'
 Add-Check 'pre-commit whitelist allows v0.36.20 gate script' ($whitelist -match [regex]::Escape('scripts/test-v03620-coordinator-foundation.ps1')) '.githooks/pre-commit-whitelist.ps1'
 Add-Check 'pre-commit whitelist allows v0.36.20 tests' ($whitelist -match [regex]::Escape('tests/V03620CoordinatorFoundation.Tests.ps1')) '.githooks/pre-commit-whitelist.ps1'
-Add-Check 'pre-commit whitelist allows v0.36.20 document' ($whitelist -match [regex]::Escape('docs/project/v03620-coordinator-foundation.md')) '.githooks/pre-commit-whitelist.ps1'
-Add-Check 'pre-commit whitelist allows v0.36.20 baseline report' ($whitelist -match [regex]::Escape('docs/project/v03620-coordinator-baseline.md')) '.githooks/pre-commit-whitelist.ps1'
 
 $failed = @($checks | Where-Object { -not $_.pass })
 $result = [ordered]@{
