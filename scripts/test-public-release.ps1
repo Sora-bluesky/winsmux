@@ -408,7 +408,9 @@ function Get-GitBlobSha256 {
     $process = $null
     try {
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = (Get-Command git -ErrorAction Stop).Source
+        $gitCommand = Get-Command git -CommandType Application -TotalCount 1 -ErrorAction Stop
+        $gitPath = [string]$gitCommand.Source
+        $startInfo.FileName = $gitPath
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardOutput = $true
@@ -4506,12 +4508,13 @@ function Get-DesktopNativeBootstrapBinding {
     $path = Join-Path (Join-Path $InputRoot 'evidence') 'bootstrap-input.json'
     $scriptWitness = [WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)
     if ($Create) {
-        $command = Get-Command node -CommandType Application -ErrorAction Stop
-        Assert-Condition ($command.CommandType -eq [Management.Automation.CommandTypes]::Application -and [IO.Path]::IsPathFullyQualified($command.Source) -and [IO.Path]::GetFileName($command.Source) -ieq 'node.exe') 'desktop_native_node_image_refused'
-        $node = [WinsmuxDesktopNativeActor]::NativeFile($command.Source)
-        $version = Invoke-DesktopOwnedNativeProcess -FilePath $command.Source -ArgumentList @('--version') -Environment @{} -TimeoutSeconds 180
+        $command = Get-Command node -CommandType Application -TotalCount 1 -ErrorAction Stop
+        $nodePath = [string]$command.Source
+        Assert-Condition ($command.CommandType -eq [Management.Automation.CommandTypes]::Application -and [IO.Path]::IsPathFullyQualified($nodePath) -and [IO.Path]::GetFileName($nodePath) -ieq 'node.exe') 'desktop_native_node_image_refused'
+        $node = [WinsmuxDesktopNativeActor]::NativeFile($nodePath)
+        $version = Invoke-DesktopOwnedNativeProcess -FilePath $nodePath -ArgumentList @('--version') -Environment @{} -TimeoutSeconds 180
         Assert-Condition ($version.exit_code -eq 0 -and $version.stdout.Trim() -cmatch '^v24\.[0-9]+\.[0-9]+$' -and [string]::IsNullOrWhiteSpace($version.stderr) -and -not $version.stdout_metadata.truncated) 'desktop_native_node_version_refused'
-        $binding = [ordered]@{ schema = 'winsmux-desktop-native-bootstrap-helper/v1'; source_commit = $DesktopNativeSourceCommit; script_sha256 = $scriptWitness['sha256']; node_path = [IO.Path]::GetFullPath($command.Source); node_sha256 = $node['sha256']; node_identity = $node['identity'] }
+        $binding = [ordered]@{ schema = 'winsmux-desktop-native-bootstrap-helper/v1'; source_commit = $DesktopNativeSourceCommit; script_sha256 = $scriptWitness['sha256']; node_path = [IO.Path]::GetFullPath($nodePath); node_sha256 = $node['sha256']; node_identity = $node['identity'] }
         Write-DesktopNativeEvidence 'bootstrap-input.json' $binding
     }
     $before = [WinsmuxDesktopNativeActor]::NativeFile($path)

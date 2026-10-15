@@ -59,7 +59,9 @@ function Get-GitBlobSha256 {
     $process = $null
     try {
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = (Get-Command git -ErrorAction Stop).Source
+        $gitCommand = Get-Command git -CommandType Application -TotalCount 1 -ErrorAction Stop
+        $gitPath = [string]$gitCommand.Source
+        $startInfo.FileName = $gitPath
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardOutput = $true
