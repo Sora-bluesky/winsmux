@@ -106,7 +106,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Observe only high and derived Git resolution and readonly commands
+      - name: Observe exact pipe slots, default object security and readonly runtime starts
         shell: pwsh
         env:
           SOURCE_COMMIT: ${{ github.sha }}
@@ -132,6 +132,10 @@ jobs:
           if($assignment.Count -ne 1 -or $assignment[0].Right -isnot [Management.Automation.Language.CommandExpressionAst] -or $assignment[0].Right.Expression -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $assignment[0].Right.Expression.StringConstantType -ne [Management.Automation.Language.StringConstantType]::SingleQuotedHereString){throw 'git_diagnostic_actor_literal'}
           $actorSource=[string]$assignment[0].Right.Expression.Value
           $ownerSource=[IO.File]::ReadAllText($ownerPath)
+          $labels=@('desktop_owner_stdin_create_failed','desktop_owner_stdin_noinherit_failed','desktop_owner_stdout_create_failed','desktop_owner_stdout_noinherit_failed','desktop_owner_stderr_create_failed','desktop_owner_stderr_noinherit_failed')
+          $at=0
+          foreach($label in $labels){$needle='"desktop_owner_pipe_failed"';$pos=$ownerSource.IndexOf($needle,$at,[StringComparison]::Ordinal);if($pos -lt 0){throw 'pipe_diagnostic_owner_labels'};$ownerSource=$ownerSource.Substring(0,$pos)+'"'+$label+'"'+$ownerSource.Substring($pos+$needle.Length);$at=$pos+$label.Length+2}
+          if($ownerSource.Contains('"desktop_owner_pipe_failed"')){throw 'pipe_diagnostic_extra_owner_label'}
           # Exact existing actor factory and DesktopProcessOwner: no token/ACL/guard edits.
           Add-Type -TypeDefinition $actorSource
           Add-Type -TypeDefinition $ownerSource
@@ -185,7 +189,7 @@ jobs:
            $git=$selected[0].Source
            $result.selected=[ordered]@{source=$git;source_type=$git.GetType().FullName;command_type=[string]$selected[0].CommandType}
            if($git -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($git) -or [IO.Path]::GetFileName($git) -ine 'git.exe'){return $result}
-           $result.before=[WinsmuxGitReadObservation]::Read($git)
+           $result.before=[WinsmuxGitReadObservation]::Read($git);[void]$result.before.Remove('chain')
            $lease=$null;$commands=[Collections.Generic.List[object]]::new()
            try {
             try{$lease=[IO.File]::Open($git,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$result.lease_obtained=$true}catch{$result.lease_errors=@(Get-GitDiagnosticErrors $_.Exception)}
@@ -207,50 +211,151 @@ jobs:
              $commands.Add($row)
             }
            }finally{if($null -ne $lease){$lease.Dispose()}}
-           $result.commands=$commands.ToArray();$result.after=[WinsmuxGitReadObservation]::Read($git)
+           $result.commands=$commands.ToArray();$result.after=[WinsmuxGitReadObservation]::Read($git);[void]$result.after.Remove('chain')
            $result.identity_unchanged=$result.before.ContainsKey('file_identity') -and $result.after.ContainsKey('file_identity') -and $result.before.ContainsKey('sha256') -and $result.after.ContainsKey('sha256') -and $result.before['file_identity'] -ceq $result.after['file_identity'] -and $result.before['sha256'] -ceq $result.after['sha256']
            return $result
           }
+          $tokenSource=@'
+          using System;
+          using System.Collections.Generic;
+          using System.Security.Principal;
+          using System.Security.AccessControl;
+          using System.Security.Cryptography;
+          using System.Runtime.InteropServices;
+          public static class WinsmuxPipeTokenRead {
+           [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+           [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+           [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr p,uint a,out IntPtr h);
+           [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr t,int c,IntPtr b,uint n,out uint used);
+           static IntPtr Info(IntPtr t,int c){uint n;bool ok=GetTokenInformation(t,c,IntPtr.Zero,0,out n);int error=Marshal.GetLastWin32Error();if(ok||error!=122||n<(uint)IntPtr.Size||n>65536)throw new InvalidOperationException("pipe_token_size_"+c+"_"+error);IntPtr p=Marshal.AllocHGlobal((int)n);try{uint actual;if(!GetTokenInformation(t,c,p,n,out actual)||actual!=n)throw new InvalidOperationException("pipe_token_read_"+c+"_"+Marshal.GetLastWin32Error());return p;}catch{Marshal.FreeHGlobal(p);throw;}}
+           static string Hash(byte[] bytes){return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();}
+           static string SidHash(SecurityIdentifier sid){var b=new byte[sid.BinaryLength];sid.GetBinaryForm(b,0);return Hash(b);}
+           static string Role(SecurityIdentifier s,SecurityIdentifier user){if(s.Equals(user))return "current_user";if(s.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid))return "builtin_administrators";if(s.IsWellKnown(WellKnownSidType.LocalSystemSid))return "local_system";if(s.IsWellKnown(WellKnownSidType.WorldSid))return "everyone";if(s.IsWellKnown(WellKnownSidType.AuthenticatedUserSid))return "authenticated_users";if(s.IsWellKnown(WellKnownSidType.CreatorOwnerSid))return "creator_owner";if(s.IsWellKnown(WellKnownSidType.LogonIdsSid))return "logon_sid";return "other_hashed";}
+           public static Dictionary<string,object> Read(){var r=new Dictionary<string,object>();IntPtr t;if(!OpenProcessToken(GetCurrentProcess(),8,out t)){r["opened"]=false;r["winerror"]=Marshal.GetLastWin32Error();return r;}r["opened"]=true;try{IntPtr u=IntPtr.Zero,o=IntPtr.Zero,d=IntPtr.Zero;try{u=Info(t,1);o=Info(t,4);d=Info(t,6);var user=new SecurityIdentifier(Marshal.ReadIntPtr(u));var owner=new SecurityIdentifier(Marshal.ReadIntPtr(o));r["user_sid_sha256"]=SidHash(user);r["owner"]=new Dictionary<string,object>{{"role",Role(owner,user)},{"sid_sha256",SidHash(owner)}};IntPtr p=Marshal.ReadIntPtr(d);r["default_dacl_null"]=p==IntPtr.Zero;if(p!=IntPtr.Zero){int length=(ushort)Marshal.ReadInt16(p,2);if(length<8||length>65535)throw new InvalidOperationException("pipe_dacl_length");byte[] b=new byte[length];Marshal.Copy(p,b,0,length);var acl=new RawAcl(b,0);r["default_dacl_sha256"]=Hash(b);r["default_dacl_bytes"]=length;r["ace_count"]=acl.Count;var rows=new List<Dictionary<string,object>>();for(int i=0;i<Math.Min(acl.Count,16);i++){var ace=acl[i];var row=new Dictionary<string,object>{{"type",(int)ace.AceType},{"flags",(int)ace.AceFlags}};var q=ace as QualifiedAce;if(q!=null){row["qualifier"]=(int)q.AceQualifier;row["mask"]=unchecked((uint)q.AccessMask);row["sid_role"]=Role(q.SecurityIdentifier,user);row["sid_sha256"]=SidHash(q.SecurityIdentifier);}else{byte[] raw=new byte[ace.BinaryLength];ace.GetBinaryForm(raw,0);row["unclassified_ace_sha256"]=Hash(raw);}rows.Add(row);}r["aces"]=rows;r["aces_truncated"]=acl.Count>16;}return r;}finally{foreach(var p in new[]{u,o,d})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);}}finally{r["token_closed"]=CloseHandle(t);}}
+          }
+          '@
+          Add-Type -TypeDefinition $tokenSource
+          function Invoke-PipeBareCommand {
+           param([string]$Image,[string[]]$Arguments,[string]$Stage)
+           $row=[ordered]@{stage=$Stage;returned=$false;exit_code=$null;errors=@();stdout_bytes=0;stdout_sha256=$null;stdout_truncated=$false;safe_text=$null;node_spawn=$null}
+           $retained=[IO.MemoryStream]::new();$total=0;$LASTEXITCODE=$null
+           try {
+            $PSNativeCommandUseErrorActionPreference=$false
+            & $Image @Arguments 2>&1 | ForEach-Object { $part=[Text.Encoding]::UTF8.GetBytes([string]$_+[char]10);$total+=$part.Length;$keep=[Math]::Min($part.Length,16384-[int]$retained.Length);if($keep -gt 0){$retained.Write($part,0,$keep)} }
+            $row.returned=$true;$row.exit_code=$LASTEXITCODE
+           }catch{$row.errors=@(Get-GitDiagnosticErrors $_.Exception)}
+           $bytes=$retained.ToArray();$retained.Dispose();$row.stdout_bytes=$total;$row.stdout_truncated=$total -gt 16384;$row.stdout_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+           $safe=[Text.Encoding]::UTF8.GetString($bytes).Trim()
+           if($Stage -ceq 'bare_git_version' -and $safe -cmatch '^git version [A-Za-z0-9.+-]{1,64}$'){$row.safe_text=$safe}
+           if($Stage -ceq 'bare_git_head' -and $safe -cmatch '^[a-f0-9]{40}$'){$row.safe_text=$safe}
+           if($Stage -ceq 'bare_node_spawn' -and $row.returned -and $row.exit_code -eq 0 -and -not $row.stdout_truncated){try{$row.node_spawn=$safe|ConvertFrom-Json -AsHashtable}catch{$row.errors=@(Get-GitDiagnosticErrors $_.Exception)}}
+           return $row
+          }
+          function Get-PipeBareObservation {
+           param([string]$Repo,[string]$ExpectedHead,[string]$NodePath,[string]$NodeSha256)
+           $git=@(Microsoft.PowerShell.Core\Get-Command git -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue)
+           $r=[ordered]@{git_selected_count=$git.Count;git_source=$null;git_before=$null;git_after=$null;git_identity_unchanged=$false;commands=@();node_input=$null;token_before=[WinsmuxPipeTokenRead]::Read();token_after=$null;token_security_unchanged=$false}
+           if($git.Count -eq 1 -and $git[0].Source -is [string]){
+            $path=[string]$git[0].Source;$r.git_source=$path;$r.git_before=[WinsmuxGitReadObservation]::Read($path);[void]$r.git_before.Remove('chain')
+            $commands=[Collections.Generic.List[object]]::new()
+            $commands.Add((Invoke-PipeBareCommand $path @('--version') 'bare_git_version'))
+            $commands.Add((Invoke-PipeBareCommand $path @('-C',$Repo,'rev-parse','--verify','HEAD') 'bare_git_head'))
+            $commands.Add((Invoke-PipeBareCommand $path @('-C',$Repo,'diff','--quiet','--exit-code','--no-ext-diff','HEAD','--') 'bare_git_dirty'))
+            if(-not [string]::IsNullOrEmpty($NodePath)){
+             $node=[WinsmuxGitReadObservation]::Read($NodePath);[void]$node.Remove('chain');$r.node_input=$node
+             if($node.ContainsKey('sha256') -and $node['sha256'] -ceq $NodeSha256){
+              $js=@'
+          const {spawnSync}=require('node:child_process');const {createHash}=require('node:crypto');const [git,repo]=process.argv.slice(1);const hash=b=>createHash('sha256').update(b).digest('hex');const rows=[];for(const [stage,args] of [['version',['--version']],['head',['-C',repo,'rev-parse','--verify','HEAD']],['dirty',['-C',repo,'diff','--quiet','--exit-code','--no-ext-diff','HEAD','--']]]){const r=spawnSync(git,args,{windowsHide:true,maxBuffer:16384});const out=r.stdout??Buffer.alloc(0),err=r.stderr??Buffer.alloc(0),text=out.toString('utf8').trim();rows.push({stage,status:r.status,signal:r.signal,error:r.error?{code:r.error.code??null,errno:r.error.errno??null}:null,stdout_bytes:out.length,stdout_sha256:hash(out),safe_text:(stage==='head'&&/^[a-f0-9]{40}$/.test(text)||stage==='version'&&/^git version [A-Za-z0-9.+-]{1,64}$/.test(text))?text:null,stderr_bytes:err.length,stderr_sha256:hash(err)});}console.log(JSON.stringify({node_version:process.version,git:rows}));
+          '@
+              $commands.Add((Invoke-PipeBareCommand $NodePath @('--eval',$js,$path,$Repo) 'bare_node_spawn'))
+             }
+            }
+            $r.commands=$commands.ToArray();$r.git_after=[WinsmuxGitReadObservation]::Read($path);[void]$r.git_after.Remove('chain')
+            $r.git_identity_unchanged=$r.git_before.ContainsKey('sha256') -and $r.git_after.ContainsKey('sha256') -and $r.git_before['sha256'] -ceq $r.git_after['sha256'] -and $r.git_before['file_identity'] -ceq $r.git_after['file_identity']
+           }
+           $afterToken=[WinsmuxPipeTokenRead]::Read()
+           $afterTokenJson=$afterToken|ConvertTo-Json -Depth 8 -Compress
+           $r.token_after=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($afterTokenJson))).ToLowerInvariant()
+           $r.token_security_unchanged=($r.token_before|ConvertTo-Json -Depth 8 -Compress) -ceq $afterTokenJson
+           return $r
+          }
           $high=Get-GitDiagnosticObservation -Repo $repo -ExpectedHead $caller
           $actorBefore=[WinsmuxDesktopActorProbe]::Query()
-          $functions='function Get-GitDiagnosticErrors {'+(Get-Item Function:Get-GitDiagnosticErrors).ScriptBlock.ToString()+'}'+[char]10+'function Get-GitDiagnosticObservation {'+(Get-Item Function:Get-GitDiagnosticObservation).ScriptBlock.ToString()+'}'
+          $nodeRaw=@(Microsoft.PowerShell.Core\Get-Command node -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue)
+          $nodePath='';$nodeSha=''
+          if($nodeRaw.Count -eq 1 -and $nodeRaw[0].Source -is [string] -and [IO.Path]::IsPathFullyQualified($nodeRaw[0].Source) -and [IO.Path]::GetFileName($nodeRaw[0].Source) -ieq 'node.exe'){$nodePath=[string]$nodeRaw[0].Source;$nodeSha=Hash-File $nodePath}
+          $functions=''
+          foreach($name in @('Get-GitDiagnosticErrors','Get-GitDiagnosticObservation','Invoke-PipeBareCommand','Get-PipeBareObservation')){$functions+='function '+$name+' {'+(Get-Item ('Function:'+ $name)).ScriptBlock.ToString()+'}'+[char]10}
+          $bareScript=@'
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__ACTOR__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__READER__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TOKEN__')))
+          . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__FUNCTIONS__'))))
+          $repo=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REPO__'))
+          $nodePath=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NODE__'))
+          $value=[ordered]@{actor=[WinsmuxDesktopActorProbe]::Query();bare=(Get-PipeBareObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA) -NodePath $nodePath -NodeSha256 '__NODESHA__')}
+          $value|ConvertTo-Json -Depth 16 -Compress
+          '@
           $childScript=@'
           $ErrorActionPreference='Stop'
           Set-StrictMode -Version Latest
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__ACTOR__')))
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__OWNER__')))
           Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__READER__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__TOKEN__')))
           . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__FUNCTIONS__'))))
           $repo=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REPO__'))
-          $value=[ordered]@{actor=[WinsmuxDesktopActorProbe]::Query();git=(Get-GitDiagnosticObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA))}
-          $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($value|ConvertTo-Json -Depth 14 -Compress)+[char]10)
-          if($bytes.Length -gt 16384){throw 'git_diagnostic_child_receipt_bound'}
+          $nodePath=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__NODE__'))
+          $value=[ordered]@{actor=[WinsmuxDesktopActorProbe]::Query();git=(Get-GitDiagnosticObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA));bare=(Get-PipeBareObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA) -NodePath $nodePath -NodeSha256 '__NODESHA__')}
+          $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($value|ConvertTo-Json -Depth 16 -Compress)+[char]10)
+          if($bytes.Length -gt 16384){throw 'pipe_diagnostic_child_receipt_bound'}
           $file=[IO.FileStream]::new((Join-Path $PSScriptRoot 'child-result.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
           try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
           '@
-          foreach($pair in @(@('__ACTOR__',$actorSource),@('__OWNER__',$ownerSource),@('__READER__',$readerSource),@('__FUNCTIONS__',$functions),@('__REPO__',$repo))){$childScript=$childScript.Replace($pair[0],[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair[1])))}
-          $root=Join-Path $env:RUNNER_TEMP ('winsmux-git-access-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$caller)
-          if(Test-Path -LiteralPath $root){throw 'git_diagnostic_namespace_exists'}
+          foreach($pair in @(@('__ACTOR__',$actorSource),@('__OWNER__',$ownerSource),@('__READER__',$readerSource),@('__TOKEN__',$tokenSource),@('__FUNCTIONS__',$functions),@('__REPO__',$repo),@('__NODE__',$nodePath))){$encoded=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair[1]));$childScript=$childScript.Replace($pair[0],$encoded);$bareScript=$bareScript.Replace($pair[0],$encoded)}
+          $childScript=$childScript.Replace('__NODESHA__',$nodeSha);$bareScript=$bareScript.Replace('__NODESHA__',$nodeSha)
+          $root=Join-Path $env:RUNNER_TEMP ('winsmux-pipe-access-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$caller)
+          $highRoot=$root+'-high'
+          if((Test-Path -LiteralPath $root) -or (Test-Path -LiteralPath $highRoot)){throw 'pipe_diagnostic_namespace_exists'}
+          New-Item -ItemType Directory -Path $highRoot -ErrorAction Stop|Out-Null
+          $highScript=Join-Path $highRoot 'bare-readonly.ps1'
+          $file=[IO.FileStream]::new($highScript,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+          try{$b=[Text.UTF8Encoding]::new($false).GetBytes($bareScript);$file.Write($b,0,$b.Length);$file.Flush($true)}finally{$file.Dispose()}
+          $scriptSha=Hash-File $highScript;$scriptLease=[IO.File]::Open($highScript,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
           $pwsh=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+          $highBare=$null;$highProcess=[ordered]@{created=$false;terminal=$false;active_members=$null;exit_code=$null;errors=@();stderr_bytes=$null;stderr_sha256=$null};$own=$null;$terminal=$false
+          try{
+           $own=[Winsmux.DesktopNative.DesktopProcessOwner]::Start($pwsh,@('-NoLogo','-NoProfile','-NonInteractive','-File',$highScript),@{},$false,16384,10000);$highProcess.created=$true
+           $terminal=$own.WaitTerminal(60000,500)
+           if(-not $terminal){$own.ForceFailureCleanup(10000,500);$terminal=$true;throw 'pipe_diagnostic_high_bare_timeout'}
+           $highProcess.terminal=$true;$highProcess.active_members=$own.ActiveMembers;$highProcess.exit_code=$own.ExitCode
+           $out=$own.StdoutTask.GetAwaiter().GetResult();$err=$own.StderrTask.GetAwaiter().GetResult()
+           $highProcess.stderr_bytes=$err.TotalBytes;$highProcess.stderr_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($err.RetainedBytes)).ToLowerInvariant()
+           if($own.ExitCode -eq 0 -and -not $out.Truncated){$highBare=[Text.UTF8Encoding]::new($false,$true).GetString($out.RetainedBytes)|ConvertFrom-Json -AsHashtable}
+          } catch{$highProcess.errors=@(Get-GitDiagnosticErrors $_.Exception)}
+          finally{if($null -ne $own){if(-not $terminal){$own.ForceFailureCleanup(10000,500);$terminal=$true};if($terminal){$own.Dispose()}};$scriptLease.Dispose()}
+          if((Hash-File $highScript) -cne $scriptSha){throw 'pipe_diagnostic_high_script_changed'}
           $actor=[WinsmuxDesktopActorProbe]::Probe($pwsh,$root,$childScript)
           $child=$null
           if($actor['outcome'] -ceq 'child_terminal'){
            $child=[WinsmuxDesktopActorProbe]::ReadChild((Join-Path $root 'child-result.json'))|ConvertFrom-Json -AsHashtable
-           if($child['actor']['pid'] -ne $actor['child_pid'] -or $child['actor']['existing_profile_hive'] -ne $true -or $child['actor']['local_app_data_exists'] -ne $true){throw 'git_diagnostic_child_identity'}
-           foreach($key in $actor['child_before_resume'].Keys){if($child['actor']['facts'][$key] -cne $actor['child_before_resume'][$key]){throw 'git_diagnostic_child_actor_changed'}}
+           if($child['actor']['pid'] -ne $actor['child_pid'] -or $child['actor']['existing_profile_hive'] -ne $true -or $child['actor']['local_app_data_exists'] -ne $true){throw 'pipe_diagnostic_child_identity'}
+           foreach($key in $actor['child_before_resume'].Keys){if($child['actor']['facts'][$key] -cne $actor['child_before_resume'][$key]){throw 'pipe_diagnostic_child_actor_changed'}}
           }
           $unchanged=(Hash-File $sourcePath)-ceq $sourceSha -and (Hash-File $ownerPath)-ceq $ownerSha
-          $complete=$actor['outcome'] -ceq 'child_terminal' -and $actor['child_exit_code'] -eq 0 -and $actor['job_active_processes'] -eq 0 -and $null -ne $child -and $unchanged
-          $answer=[ordered]@{schema='task880-readonly-git-actor-diagnostic/v1';diagnostic_complete=$complete;source_commit=$caller;native_reference_commit='fa9fc803a2126444a51beac57d281411046744d6';source_sha256=$sourceSha;owner_sha256=$ownerSha;high_actor=$actorBefore;high_git=$high;actor_process=$actor;derived=$child;inputs_unchanged=$unchanged;installer_started=$false;build_started=$false;git_write_started=$false;environment_dumped=$false;limitation='New Windows-2025 diagnostic VM, not the original failed VM. Git resolution/read/start evidence only; no installer outcome or exact original CI cause is inferred.'}
-          $json=$answer|ConvertTo-Json -Depth 18 -Compress
+          $complete=$actor['outcome'] -ceq 'child_terminal' -and $actor['child_exit_code'] -eq 0 -and $actor['job_active_processes'] -eq 0 -and $null -ne $child -and $null -ne $highBare -and $highProcess.terminal -and $highProcess.active_members -eq 0 -and $highProcess.exit_code -eq 0 -and $unchanged
+          $answer=[ordered]@{schema='task880-readonly-pipe-actor-diagnostic/v1';diagnostic_complete=$complete;source_commit=$caller;native_reference_commit='fa9fc803a2126444a51beac57d281411046744d6';source_sha256=$sourceSha;owner_sha256=$ownerSha;observed_owner_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($ownerSource))).ToLowerInvariant();high_actor=$actorBefore;high_git=$high;high_bare_process=$highProcess;high_bare=$highBare;actor_process=$actor;derived=$child;inputs_unchanged=$unchanged;installer_started=$false;build_started=$false;git_write_started=$false;token_or_acl_changed=$false;environment_dumped=$false;limitation='New Windows-2025 VM; exact stream API slots and token default object security are observations, not an installer result. Node actual version is measured if reached, not assumed equal to original CI.'}
+          $json=$answer|ConvertTo-Json -Depth 20 -Compress
           $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($json+[char]10)
-          if($bytes.Length -gt 16384){throw 'git_diagnostic_final_receipt_bound'}
+          if($bytes.Length -gt 16384){throw 'pipe_diagnostic_final_receipt_bound'}
           $output=Join-Path $env:RUNNER_TEMP ('winsmux-actor-receipt-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$caller+'.json')
           $file=[IO.FileStream]::new($output,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
           try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
           $json
           if(-not $complete){exit 1}
-      - name: Preserve only the bounded Git actor diagnostic
+      - name: Preserve only the bounded pipe actor diagnostic
         if: always()
         uses: actions/upload-artifact@v7
         with:
