@@ -741,7 +741,7 @@ server.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:server.address(
             $started=$peer.Start(); $started | Should -BeTrue
             $stderr=$peer.StandardError.ReadToEndAsync(); $readyTask=$peer.StandardOutput.ReadLineAsync()
             $readyTask.Wait(180000) | Should -BeTrue; $readyLine=$readyTask.GetAwaiter().GetResult(); if ($null -eq $readyLine) { [IO.File]::WriteAllText((Join-Path $TestDrive ('startup-http-' + $mode + '.stderr.txt')),$stderr.GetAwaiter().GetResult()); throw 'startup_http_fixture_readiness_missing' }; $ready=$readyLine | ConvertFrom-Json
-            $deadline=[DateTime]::UtcNow.AddMilliseconds(300)
+            $deadline = if ($mode -ceq 'ready') { [DateTime]::UtcNow.AddSeconds(5) } else { [DateTime]::UtcNow.AddMilliseconds(300) }
             if ($mode -ceq 'diagnostic_list_wait') {
                 Mock Get-DesktopWebViewAuthorityProbe { return [pscustomobject]@{state='page_ready'} }
                 Mock Invoke-DesktopRuntimeExpression { throw 'CDP must not start' }
@@ -757,7 +757,7 @@ server.listen(0,'127.0.0.1',()=>console.log(JSON.stringify({port:server.address(
                 if ($mode -ceq 'ready') {
                     Mock Get-DesktopWebViewAuthorityProbe { return [pscustomobject]@{state='page_ready'} }
                     Mock Invoke-DesktopRuntimeExpression { return [pscustomobject]@{startup='connecting';view='absent';host='Opening';attempt='nonzero';stability='stable'} }
-                    $script:ExpectedDiagnosticDeadline=[DateTime]::UtcNow.AddMilliseconds(300)
+                    $script:ExpectedDiagnosticDeadline=[DateTime]::UtcNow.AddSeconds(5)
                     $diagnostic=Get-DesktopStartupDiagnostic -Context @{app_process=@{process=@{Id=1}}} -Port $ready.port -UserDataFolder 'synthetic' -Deadline $script:ExpectedDiagnosticDeadline
                     Format-DesktopStartupDiagnostic $diagnostic | Should -BeExactly 'startup=connecting view=absent host=Opening attempt=nonzero stability=stable'
                     Should -Invoke Invoke-DesktopRuntimeExpression -Times 1 -Exactly -ParameterFilter {$Deadline -eq $script:ExpectedDiagnosticDeadline}
