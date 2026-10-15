@@ -478,7 +478,7 @@ function New-WinsmuxMissingSourceFixture {
     $binary=$binaryCalls[0]
     $shape=@($binary.CommandElements|ForEach-Object {$_.Extent.Text}) -join ' '
     if($shape -cne 'Install-WinsmuxBinary -Lease $lease -SupportProfile $profile -IsUpdate:$IsUpdate'){throw 'Unsupported current lifecycle dispatch.'}
-    $insertion=[Environment]::NewLine+"    Write-Output 'TASK880_DEFECT_MISSING_SOURCE_READY'"+[Environment]::NewLine+"    Download-File 'winsmux.ps1' (Join-Path `$BIN_DIR 'winsmux.ps1')"
+    $insertion=[Environment]::NewLine+"    Write-Host 'TASK880_DEFECT_MISSING_SOURCE_READY'"+[Environment]::NewLine+"    Download-File 'winsmux.ps1' (Join-Path `$BIN_DIR 'winsmux.ps1')"
     $replacement='$null = New-WinsmuxSupportStage $lease $profile ([bool]$IsUpdate)'+[Environment]::NewLine+"        throw 'Historical missing-source download unexpectedly succeeded.'"
     $edits=@(@{start=$selected.Extent.EndOffset;length=0;text=$insertion},@{start=$binary.Extent.StartOffset;length=$binary.Extent.EndOffset-$binary.Extent.StartOffset;text=$replacement})
     $broken=$Source

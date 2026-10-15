@@ -135,7 +135,7 @@ function Get-InstallPowerShellProfilePath {
     if ($redirectedInstallerE2e) {
         return (Join-Path $redirectedStateRoot 'Microsoft.PowerShell_profile.ps1')
     }
-    return $PROFILE.CurrentUserAllHosts
+    return $global:PROFILE.CurrentUserAllHosts
 }
 
 function Remove-WinsmuxProfileBlock {

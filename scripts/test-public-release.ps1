@@ -4507,13 +4507,13 @@ function Get-DesktopNativeMsiProperties {
         $installer = New-Object -ComObject WindowsInstaller.Installer
         $database = $installer.OpenDatabase($Path, 0)
         $view = $database.OpenView('SELECT `Property`, `Value` FROM `Property`')
-        $view.Execute()
+        [void]$view.Execute()
         while ($null -ne ($record = $view.Fetch())) {
             $key = [string]$record.StringData(1)
             if ($key -cin @('ProductCode', 'UpgradeCode', 'ProductVersion', 'ProductLanguage', 'ProductName', 'Manufacturer')) { Assert-Condition (-not $values.Contains($key)) 'desktop_native_msi_property_duplicate'; $values[$key] = [string]$record.StringData(2) }
             [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($record); $record = $null
         }
-        $view.Close()
+        [void]$view.Close()
     } finally {
         foreach ($com in @($record, $view, $database, $installer)) { if ($null -ne $com) { [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($com) } }
     }
@@ -5216,6 +5216,7 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Abort "$(WINSMUX_TRANSACTION_FAILED)"
   ${EndIf}
 '@
+    $failure = $failure.Replace(([string][char]13 + [char]10), [string][char]10)
     Assert-Condition ($body.Contains($failure)) 'Desktop NSIS native uninstall must stop on helper failure.'
     Assert-Condition (-not [regex]::IsMatch($body, '(?im)^\s*(?:DeleteRegKey|DeleteRegValue|WriteReg[A-Za-z]*|Delete|RMDir)\b')) 'Desktop NSIS uninstall must delegate owned mutations to the native helper.'
     $contexts = [regex]::Matches($template, '(?ms)^!macro WINSMUX_CONTEXT_FUNCTION NAME ACTION\n(?<body>.*?)^!macroend$')
