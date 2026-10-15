@@ -22,7 +22,7 @@ pub enum Error {
     Context,
     Plan,
     Actor,
-    Path(u8),
+    Path(u16),
     Member,
     Registration,
     LegacyIncomplete,
@@ -200,12 +200,153 @@ fn tilde_role_code(role: PathRole, shape: TildeShape) -> u8 {
         (PathRole::DerivedPath, TildeShape::LookupFailed) => 225,
     }
 }
+// T-only: classify an already-refused native handle, never retry or admit it.
+#[derive(Clone, Copy)]
+enum HandleScope {
+    ContextArgumentParent,
+    ContextRoot,
+    ContextSource,
+    CurrentHelperParent,
+    KnownFolderDesktop,
+    KnownFolderPrograms,
+    DerivedPath,
+    DirectoryFlush,
+    ExclusionMutex,
+    ProcessSnapshot,
+    OwnedDirectoryCleanup,
+}
+#[derive(Clone, Copy)]
+enum HandleBucket {
+    AccessDenied,
+    SharingOrLock,
+    NotFound,
+    InvalidNameOrLength,
+    InvalidParameter,
+    PrivilegeNotHeld,
+    Resource,
+    Other,
+}
+fn handle_bucket(error: u32) -> HandleBucket {
+    match error {
+        5 => HandleBucket::AccessDenied,
+        32 | 33 => HandleBucket::SharingOrLock,
+        2 | 3 => HandleBucket::NotFound,
+        123 | 161 | 206 => HandleBucket::InvalidNameOrLength,
+        87 => HandleBucket::InvalidParameter,
+        1314 => HandleBucket::PrivilegeNotHeld,
+        8 | 14 | 1450 => HandleBucket::Resource,
+        _ => HandleBucket::Other,
+    }
+}
+fn directory_handle_scope(role: PathRole) -> HandleScope {
+    match role {
+        PathRole::ContextArgumentParent => HandleScope::ContextArgumentParent,
+        PathRole::ContextRoot => HandleScope::ContextRoot,
+        PathRole::ContextSource => HandleScope::ContextSource,
+        PathRole::CurrentHelperParent => HandleScope::CurrentHelperParent,
+        PathRole::KnownFolderDesktop => HandleScope::KnownFolderDesktop,
+        PathRole::KnownFolderPrograms => HandleScope::KnownFolderPrograms,
+        PathRole::DerivedPath => HandleScope::DerivedPath,
+    }
+}
+fn handle_code(scope: HandleScope, bucket: HandleBucket) -> u16 {
+    match (scope, bucket) {
+        (HandleScope::ContextArgumentParent, HandleBucket::AccessDenied) => 226,
+        (HandleScope::ContextArgumentParent, HandleBucket::SharingOrLock) => 227,
+        (HandleScope::ContextArgumentParent, HandleBucket::NotFound) => 228,
+        (HandleScope::ContextArgumentParent, HandleBucket::InvalidNameOrLength) => 229,
+        (HandleScope::ContextArgumentParent, HandleBucket::InvalidParameter) => 230,
+        (HandleScope::ContextArgumentParent, HandleBucket::PrivilegeNotHeld) => 231,
+        (HandleScope::ContextArgumentParent, HandleBucket::Resource) => 232,
+        (HandleScope::ContextArgumentParent, HandleBucket::Other) => 233,
+        (HandleScope::ContextRoot, HandleBucket::AccessDenied) => 234,
+        (HandleScope::ContextRoot, HandleBucket::SharingOrLock) => 235,
+        (HandleScope::ContextRoot, HandleBucket::NotFound) => 236,
+        (HandleScope::ContextRoot, HandleBucket::InvalidNameOrLength) => 237,
+        (HandleScope::ContextRoot, HandleBucket::InvalidParameter) => 238,
+        (HandleScope::ContextRoot, HandleBucket::PrivilegeNotHeld) => 239,
+        (HandleScope::ContextRoot, HandleBucket::Resource) => 240,
+        (HandleScope::ContextRoot, HandleBucket::Other) => 241,
+        (HandleScope::ContextSource, HandleBucket::AccessDenied) => 242,
+        (HandleScope::ContextSource, HandleBucket::SharingOrLock) => 243,
+        (HandleScope::ContextSource, HandleBucket::NotFound) => 244,
+        (HandleScope::ContextSource, HandleBucket::InvalidNameOrLength) => 245,
+        (HandleScope::ContextSource, HandleBucket::InvalidParameter) => 246,
+        (HandleScope::ContextSource, HandleBucket::PrivilegeNotHeld) => 247,
+        (HandleScope::ContextSource, HandleBucket::Resource) => 248,
+        (HandleScope::ContextSource, HandleBucket::Other) => 249,
+        (HandleScope::CurrentHelperParent, HandleBucket::AccessDenied) => 250,
+        (HandleScope::CurrentHelperParent, HandleBucket::SharingOrLock) => 251,
+        (HandleScope::CurrentHelperParent, HandleBucket::NotFound) => 252,
+        (HandleScope::CurrentHelperParent, HandleBucket::InvalidNameOrLength) => 253,
+        (HandleScope::CurrentHelperParent, HandleBucket::InvalidParameter) => 254,
+        (HandleScope::CurrentHelperParent, HandleBucket::PrivilegeNotHeld) => 255,
+        (HandleScope::CurrentHelperParent, HandleBucket::Resource) => 256,
+        (HandleScope::CurrentHelperParent, HandleBucket::Other) => 257,
+        (HandleScope::KnownFolderDesktop, HandleBucket::AccessDenied) => 258,
+        (HandleScope::KnownFolderDesktop, HandleBucket::SharingOrLock) => 259,
+        (HandleScope::KnownFolderDesktop, HandleBucket::NotFound) => 260,
+        (HandleScope::KnownFolderDesktop, HandleBucket::InvalidNameOrLength) => 261,
+        (HandleScope::KnownFolderDesktop, HandleBucket::InvalidParameter) => 262,
+        (HandleScope::KnownFolderDesktop, HandleBucket::PrivilegeNotHeld) => 263,
+        (HandleScope::KnownFolderDesktop, HandleBucket::Resource) => 264,
+        (HandleScope::KnownFolderDesktop, HandleBucket::Other) => 265,
+        (HandleScope::KnownFolderPrograms, HandleBucket::AccessDenied) => 266,
+        (HandleScope::KnownFolderPrograms, HandleBucket::SharingOrLock) => 267,
+        (HandleScope::KnownFolderPrograms, HandleBucket::NotFound) => 268,
+        (HandleScope::KnownFolderPrograms, HandleBucket::InvalidNameOrLength) => 269,
+        (HandleScope::KnownFolderPrograms, HandleBucket::InvalidParameter) => 270,
+        (HandleScope::KnownFolderPrograms, HandleBucket::PrivilegeNotHeld) => 271,
+        (HandleScope::KnownFolderPrograms, HandleBucket::Resource) => 272,
+        (HandleScope::KnownFolderPrograms, HandleBucket::Other) => 273,
+        (HandleScope::DerivedPath, HandleBucket::AccessDenied) => 274,
+        (HandleScope::DerivedPath, HandleBucket::SharingOrLock) => 275,
+        (HandleScope::DerivedPath, HandleBucket::NotFound) => 276,
+        (HandleScope::DerivedPath, HandleBucket::InvalidNameOrLength) => 277,
+        (HandleScope::DerivedPath, HandleBucket::InvalidParameter) => 278,
+        (HandleScope::DerivedPath, HandleBucket::PrivilegeNotHeld) => 279,
+        (HandleScope::DerivedPath, HandleBucket::Resource) => 280,
+        (HandleScope::DerivedPath, HandleBucket::Other) => 281,
+        (HandleScope::DirectoryFlush, HandleBucket::AccessDenied) => 282,
+        (HandleScope::DirectoryFlush, HandleBucket::SharingOrLock) => 283,
+        (HandleScope::DirectoryFlush, HandleBucket::NotFound) => 284,
+        (HandleScope::DirectoryFlush, HandleBucket::InvalidNameOrLength) => 285,
+        (HandleScope::DirectoryFlush, HandleBucket::InvalidParameter) => 286,
+        (HandleScope::DirectoryFlush, HandleBucket::PrivilegeNotHeld) => 287,
+        (HandleScope::DirectoryFlush, HandleBucket::Resource) => 288,
+        (HandleScope::DirectoryFlush, HandleBucket::Other) => 289,
+        (HandleScope::ExclusionMutex, HandleBucket::AccessDenied) => 290,
+        (HandleScope::ExclusionMutex, HandleBucket::SharingOrLock) => 291,
+        (HandleScope::ExclusionMutex, HandleBucket::NotFound) => 292,
+        (HandleScope::ExclusionMutex, HandleBucket::InvalidNameOrLength) => 293,
+        (HandleScope::ExclusionMutex, HandleBucket::InvalidParameter) => 294,
+        (HandleScope::ExclusionMutex, HandleBucket::PrivilegeNotHeld) => 295,
+        (HandleScope::ExclusionMutex, HandleBucket::Resource) => 296,
+        (HandleScope::ExclusionMutex, HandleBucket::Other) => 297,
+        (HandleScope::ProcessSnapshot, HandleBucket::AccessDenied) => 298,
+        (HandleScope::ProcessSnapshot, HandleBucket::SharingOrLock) => 299,
+        (HandleScope::ProcessSnapshot, HandleBucket::NotFound) => 300,
+        (HandleScope::ProcessSnapshot, HandleBucket::InvalidNameOrLength) => 301,
+        (HandleScope::ProcessSnapshot, HandleBucket::InvalidParameter) => 302,
+        (HandleScope::ProcessSnapshot, HandleBucket::PrivilegeNotHeld) => 303,
+        (HandleScope::ProcessSnapshot, HandleBucket::Resource) => 304,
+        (HandleScope::ProcessSnapshot, HandleBucket::Other) => 305,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::AccessDenied) => 306,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::SharingOrLock) => 307,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::NotFound) => 308,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::InvalidNameOrLength) => 309,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::InvalidParameter) => 310,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::PrivilegeNotHeld) => 311,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::Resource) => 312,
+        (HandleScope::OwnedDirectoryCleanup, HandleBucket::Other) => 313,
+    }
+}
 fn strict_absolute(path: &Path) -> Result<()> {
     strict_absolute_role(path, PathRole::DerivedPath)
 }
 fn strict_absolute_role(path: &Path, role: PathRole) -> Result<()> {
     match strict_absolute_original(path) {
-        Err(Error::Path(203)) => Err(Error::Path(tilde_role_code(role, tilde_shape(path)))),
+        Err(Error::Path(203)) => Err(Error::Path(u16::from(tilde_role_code(role, tilde_shape(path))))),
         unchanged => unchanged,
     }
 }
@@ -716,7 +857,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
             match error {
-                Error::Path(code @ (100..=160 | 200..=225)) => i32::from(code),
+                Error::Path(code @ (100..=160 | 200..=315)) => i32::from(code),
                 Error::Pending => 3,
                 _ => 2,
             }
@@ -822,12 +963,17 @@ mod native {
     }
     struct Handle(HANDLE);
     impl Handle {
-        fn new(h: HANDLE) -> Result<Self> {
+        fn new(h: HANDLE, refused: u16) -> Result<Self> {
             if h.is_null() || h == INVALID_HANDLE_VALUE {
-                Err(Error::Path(102))
+                Err(Error::Path(refused))
             } else {
                 Ok(Self(h))
             }
+        }
+    }
+    impl Handle {
+        fn win32(h: HANDLE, scope: HandleScope, error: u32) -> Result<Self> {
+            Self::new(h, handle_code(scope, handle_bucket(error)))
         }
     }
     impl Drop for Handle {
@@ -927,7 +1073,7 @@ mod native {
                     cur.push(part);
                 }
                 let n = path_wide(&cur)?;
-                let h = Handle::new(unsafe {
+                let raw = unsafe {
                     CreateFileW(
                         n.as_ptr(),
                         FILE_READ_ATTRIBUTES,
@@ -937,7 +1083,9 @@ mod native {
                         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                         null_mut(),
                     )
-                })?;
+                };
+                let error = unsafe { GetLastError() };
+                let h = Handle::win32(raw, directory_handle_scope(role), error)?;
                 if info(h.0)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
                     || !same_path(&cur, &canonical(h.0)?)
                 {
@@ -955,7 +1103,7 @@ mod native {
         fn flush(&self) -> Result<()> {
             self.reobserve()?;
             let name = path_wide(&self.path)?;
-            let h = Handle::new(unsafe {
+            let raw = unsafe {
                 CreateFileW(
                     name.as_ptr(),
                     FILE_READ_ATTRIBUTES | FILE_ADD_FILE | 0x100000,
@@ -967,7 +1115,9 @@ mod native {
                         | FILE_FLAG_WRITE_THROUGH,
                     null_mut(),
                 )
-            })?;
+            };
+            let error = unsafe { GetLastError() };
+            let h = Handle::win32(raw, HandleScope::DirectoryFlush, error)?;
             if identity(h.0)? != self.id || !same_path(&self.path, &canonical(h.0)?) {
                 return Err(Error::Pending);
             }
@@ -1119,7 +1269,7 @@ mod native {
         if result < 0 {
             return Err(Error::Pending);
         }
-        let held = Handle::new(raw)?;
+        let held = Handle::new(raw, 314)?;
         if status.information != 2
             || info(held.0)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
             || !same_path(p, &canonical(held.0)?)
@@ -1457,7 +1607,7 @@ mod native {
             {
                 return Err(Error::Actor);
             }
-            let token = Handle::new(raw)?;
+            let token = Handle::new(raw, 315)?;
             let mut elevation = TOKEN_ELEVATION::default();
             let mut n = 0;
             if unsafe {
@@ -1559,14 +1709,16 @@ mod native {
         let name = wide(OsStr::new(&name))?;
         let raw = unsafe { CreateMutexW(null(), 1, name.as_ptr()) };
         let error = unsafe { GetLastError() };
-        let handle = Handle::new(raw)?;
+        let handle = Handle::win32(raw, HandleScope::ExclusionMutex, error)?;
         if error == ERROR_ALREADY_EXISTS {
             return Err(Error::Busy);
         }
         Ok(Exclusion(handle))
     }
     fn no_running(root: &Path) -> Result<()> {
-        let snap = Handle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })?;
+        let raw = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        let error = unsafe { GetLastError() };
+        let snap = Handle::win32(raw, HandleScope::ProcessSnapshot, error)?;
         let mut p = PROCESSENTRY32W {
             dwSize: size_of::<PROCESSENTRY32W>() as u32,
             ..Default::default()
@@ -2946,7 +3098,7 @@ mod native {
             // Hold ancestors, never an incompatible duplicate handle of this leaf.
             let parent = Dirs::open(path.parent().ok_or(Error::Path(151))?)?;
             let name = path_wide(&path)?;
-            let held = Handle::new(unsafe {
+            let raw = unsafe {
                 CreateFileW(
                     name.as_ptr(),
                     DELETE_ACCESS | FILE_READ_ATTRIBUTES | FILE_ADD_FILE | 0x100000,
@@ -2958,7 +3110,9 @@ mod native {
                         | FILE_FLAG_WRITE_THROUGH,
                     null_mut(),
                 )
-            })?;
+            };
+            let error = unsafe { GetLastError() };
+            let held = Handle::win32(raw, HandleScope::OwnedDirectoryCleanup, error)?;
             if identity(held.0)? != row.identity
                 || !same_path(&path, &canonical(held.0)?)
                 || info(held.0)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
