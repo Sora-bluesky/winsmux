@@ -20,6 +20,96 @@ ManifestDPIAwareness PerMonitorV2
 !include FileFunc.nsh
 !include x64.nsh
 !include WordFunc.nsh
+
+; Diagnostic-only finite observation. Remove with the exact three-file overlay.
+; $0/$1 remain the existing plugin return/combined output; only $2 is diagnostic.
+!macro WINSMUX_OBSERVE_FAILURE STAGE
+  StrCpy $2 59
+  !if "${STAGE}" == "context-write"
+    StrCpy $2 52
+  !else if "${STAGE}" == "helper"
+    ${If} $0 S== "error"
+      StrCpy $2 50
+    ${ElseIf} $0 S== "timeout"
+      StrCpy $2 51
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: usage$\n"
+      StrCpy $2 60
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: usage$\r$\n"
+      StrCpy $2 60
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: context_refused$\n"
+      StrCpy $2 61
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: context_refused$\r$\n"
+      StrCpy $2 61
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: plan_refused$\n"
+      StrCpy $2 62
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: plan_refused$\r$\n"
+      StrCpy $2 62
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: actor_refused$\n"
+      StrCpy $2 63
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: actor_refused$\r$\n"
+      StrCpy $2 63
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: path_refused$\n"
+      StrCpy $2 64
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: path_refused$\r$\n"
+      StrCpy $2 64
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: member_unconfirmed$\n"
+      StrCpy $2 65
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: member_unconfirmed$\r$\n"
+      StrCpy $2 65
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: registration_conflict$\n"
+      StrCpy $2 66
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: registration_conflict$\r$\n"
+      StrCpy $2 66
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_inventory_incomplete$\n"
+      StrCpy $2 67
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_inventory_incomplete$\r$\n"
+      StrCpy $2 67
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\n"
+      StrCpy $2 68
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\r$\n"
+      StrCpy $2 68
+    ${ElseIf} $0 S== "3"
+    ${AndIf} $1 S== "winsmux installer: pending_unconfirmed$\n"
+      StrCpy $2 69
+    ${ElseIf} $0 S== "3"
+    ${AndIf} $1 S== "winsmux installer: pending_unconfirmed$\r$\n"
+      StrCpy $2 69
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: io_unconfirmed$\n"
+      StrCpy $2 70
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: io_unconfirmed$\r$\n"
+      StrCpy $2 70
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: startup_unconfirmed$\n"
+      StrCpy $2 71
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: startup_unconfirmed$\r$\n"
+      StrCpy $2 71
+    ${EndIf}
+  !else
+    !error "Unsupported diagnostic observation stage."
+  !endif
+!macroend
+
 {{#if installer_hooks}}
 !include "{{installer_hooks}}"
 {{/if}}
@@ -409,7 +499,8 @@ Section Install
   Pop $0
   Pop $1
   ${If} $0 != 0
-    SetErrorLevel 2
+    !insertmacro WINSMUX_OBSERVE_FAILURE helper
+    SetErrorLevel $2
     Abort "$(WINSMUX_TRANSACTION_FAILED)"
   ${EndIf}
   StrCpy $WinsmuxCommitted 1
@@ -475,7 +566,8 @@ Section Uninstall
   Pop $0
   Pop $1
   ${If} $0 != 0
-    SetErrorLevel 2
+    !insertmacro WINSMUX_OBSERVE_FAILURE helper
+    SetErrorLevel $2
     Abort "$(WINSMUX_TRANSACTION_FAILED)"
   ${EndIf}
   ${If} $PassiveMode = 1
@@ -536,7 +628,8 @@ Function ${NAME}
   FileWriteUTF16LE $0 "update=$UpdateMode$\r$\n"
   FileClose $0
   ${If} ${Errors}
-    SetErrorLevel 2
+    !insertmacro WINSMUX_OBSERVE_FAILURE context-write
+    SetErrorLevel $2
     Abort "$(WINSMUX_TRANSACTION_FAILED)"
   ${EndIf}
 FunctionEnd
