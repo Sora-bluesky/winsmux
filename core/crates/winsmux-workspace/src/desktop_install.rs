@@ -398,9 +398,9 @@ mod native {
         Security::{GetTokenInformation, TokenUser, SECURITY_ATTRIBUTES, TOKEN_QUERY, TOKEN_USER},
         Storage::FileSystem::{
             CreateDirectoryW, CreateFileW, FlushFileBuffers, GetFileInformationByHandle,
-            GetFinalPathNameByHandleW, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
+            GetFinalPathNameByHandleW, GetLongPathNameW, ReadFile, WriteFile, BY_HANDLE_FILE_INFORMATION,
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-            FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+            FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_TRAVERSE,
             FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_INBOUND,
         },
         System::Diagnostics::ToolHelp::{
@@ -641,7 +641,7 @@ mod native {
                     unsafe {
                         CreateFileW(
                             name.as_ptr(),
-                            FILE_READ_ATTRIBUTES,
+                            FILE_READ_ATTRIBUTES | FILE_TRAVERSE,
                             FILE_SHARE_READ | FILE_SHARE_WRITE,
                             null(),
                             OPEN_EXISTING,
@@ -775,25 +775,305 @@ mod native {
         }
         Ok(receipt)
     }
+    // Only the internally selected operation-temp producer may expand DOS aliases.
+    // Installed roots, plans, members and GUI images still use strict consumers.
+    fn operation_temp_input(path: &Path) -> Result<PathBuf, DesktopInstallError> {
+        let text = path.to_str().ok_or(DesktopInstallError::Path)?.replace('/', "\\");
+        let text = if text.len() > 3 { text.trim_end_matches('\\') } else { &text };
+        let bytes = text.as_bytes();
+        if bytes.len() < 3 || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':' || bytes[2] != b'\\'
+            || text.encode_utf16().count() >= 32768
+            || (text.len() > 3 && !text[3..].split('\\')
+                .all(|part| safe_component(&part.replace('~', "x"))))
+        {
+            return Err(DesktopInstallError::Path);
+        }
+        Ok(PathBuf::from(text))
+    }
+    fn operation_temp_capacity(required: u32) -> Result<usize, DesktopInstallError> {
+        if required == 0 || required > 32768 {
+            return Err(DesktopInstallError::Path);
+        }
+        Ok(required as usize)
+    }
+    fn operation_temp_long_result(
+        buffer: &[u16],
+        written: u32,
+    ) -> Result<PathBuf, DesktopInstallError> {
+        if buffer.is_empty() || buffer.len() > 32768
+            || written == 0 || written as usize >= buffer.len()
+        {
+            return Err(DesktopInstallError::Path);
+        }
+        let text = String::from_utf16(&buffer[..written as usize])
+            .map_err(|_| DesktopInstallError::Path)?;
+        let path = PathBuf::from(text);
+        strict_absolute(&path)?;
+        Ok(path)
+    }
+    fn operation_temp_same_identity(
+        before: &BY_HANDLE_FILE_INFORMATION,
+        raw_now: &BY_HANDLE_FILE_INFORMATION,
+        long_now: &BY_HANDLE_FILE_INFORMATION,
+    ) -> bool {
+        before.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+            == FILE_ATTRIBUTE_DIRECTORY
+            && raw_now.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                == FILE_ATTRIBUTE_DIRECTORY
+            && long_now.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                == FILE_ATTRIBUTE_DIRECTORY
+            && same_file(before, raw_now)
+            && same_file(raw_now, long_now)
+    }
+    fn operation_temp_parent() -> Result<DirectoryHold, DesktopInstallError> {
+        let source = std::env::temp_dir();
+        let input = operation_temp_input(&source)?;
+        let text = input.to_str().ok_or(DesktopInstallError::Path)?;
+        if !text.contains('~') {
+            return DirectoryHold::open(&source);
+        }
+
+        // Pin every raw ancestor before conversion, so a junction cannot be hidden.
+        let mut raw = Vec::new();
+        let mut current = PathBuf::from(&text[..3]);
+        for component in std::iter::once(None).chain(
+            text[3..].split('\\').filter(|part| !part.is_empty()).map(Some),
+        ) {
+            if let Some(component) = component { current.push(component); }
+            let name = wide(current.as_os_str())?;
+            let handle = Handle::new(
+                unsafe {
+                    CreateFileW(
+                        name.as_ptr(), FILE_READ_ATTRIBUTES | FILE_TRAVERSE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                        null(), OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, null_mut(),
+                    )
+                },
+                DesktopInstallError::Path,
+            )?;
+            let identity = info(handle.0)?;
+            if identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0 {
+                return Err(DesktopInstallError::Path);
+            }
+            raw.push((handle, identity));
+        }
+        let name = wide(input.as_os_str())?;
+        let required = unsafe { GetLongPathNameW(name.as_ptr(), null_mut(), 0) };
+        let mut buffer = vec![0u16; operation_temp_capacity(required)?];
+        let written = unsafe {
+            GetLongPathNameW(name.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32)
+        };
+        let expanded = operation_temp_long_result(&buffer, written)?;
+        let long = DirectoryHold::open(&expanded)?;
+        long.reobserve()?;
+        if raw.len() != long.handles.len() {
+            return Err(DesktopInstallError::Path);
+        }
+        for ((handle, before), other) in raw.iter().zip(long.handles.iter()) {
+            if !operation_temp_same_identity(before, &info(handle.0)?, &info(other.0)?) {
+                return Err(DesktopInstallError::Path);
+            }
+        }
+        long.reobserve()?;
+        // The long leases overlap all raw leases, then the operation's own ancestor leases.
+        Ok(long)
+    }
+
+    #[repr(C)]
+    struct OperationIoStatus {
+        status: isize,
+        information: usize,
+    }
+    #[repr(C)]
+    struct OperationUnicodeName {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+    #[repr(C)]
+    struct OperationObjectAttributes {
+        length: u32,
+        root: HANDLE,
+        name: *mut OperationUnicodeName,
+        attributes: u32,
+        security: *mut c_void,
+        quality: *mut c_void,
+    }
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtCreateFile(
+            file: *mut HANDLE,
+            access: u32,
+            object: *mut OperationObjectAttributes,
+            status: *mut OperationIoStatus,
+            allocation: *const i64,
+            attributes: u32,
+            share: u32,
+            disposition: u32,
+            options: u32,
+            ea: *const c_void,
+            ea_length: u32,
+        ) -> i32;
+    }
+    fn operation_leaf(name: &OsStr) -> Result<Vec<u16>, DesktopInstallError> {
+        let text = name.to_str().ok_or(DesktopInstallError::Cleanup)?;
+        if text.is_empty() || matches!(text, "." | "..")
+            || text.chars().any(|c| matches!(c, '\0' | '/' | '\\' | ':'))
+        {
+            return Err(DesktopInstallError::Cleanup);
+        }
+        wide(name).map_err(|_| DesktopInstallError::Cleanup)
+    }
+    // Exact parent-relative NT transport; Win32 BACKUP_SEMANTICS is not an NT option.
+    fn operation_relative_handle(
+        parent: HANDLE,
+        leaf: &OsStr,
+        access: u32,
+        share: u32,
+        disposition: u32,
+        options: u32,
+        security: *mut c_void,
+    ) -> Result<Handle, i32> {
+        let mut name = operation_leaf(leaf).map_err(|_| 0i32)?;
+        let length = (name.len() - 1).checked_mul(2).ok_or(0i32)?;
+        let mut unicode = OperationUnicodeName {
+            length: length.try_into().map_err(|_| 0i32)?,
+            maximum_length: (length + 2).try_into().map_err(|_| 0i32)?,
+            buffer: name.as_mut_ptr(),
+        };
+        let mut object = OperationObjectAttributes {
+            length: size_of::<OperationObjectAttributes>() as u32,
+            root: parent,
+            name: &mut unicode,
+            attributes: 0x40,
+            security,
+            quality: null_mut(),
+        };
+        let mut status = OperationIoStatus { status: 0, information: 0 };
+        let mut raw = null_mut();
+        let result = unsafe {
+            NtCreateFile(&mut raw, access, &mut object, &mut status, null(),
+                if options & 1 != 0 { FILE_ATTRIBUTE_DIRECTORY } else { 0 },
+                share, disposition, options, null(), 0)
+        };
+        // FILE_CREATE must report FILE_CREATED; FILE_OPEN must report FILE_OPENED.
+        let expected = if disposition == 2 { 2 } else { 1 };
+        let handle = Handle::new(raw, DesktopInstallError::Cleanup).map_err(|_| result)?;
+        if result != 0 || status.information != expected {
+            return Err(result);
+        }
+        Ok(handle)
+    }
+    fn operation_create_root(
+        parent: &DirectoryHold,
+        leaf: &OsStr,
+        security: &Security,
+    ) -> Result<(Handle, BY_HANDLE_FILE_INFORMATION), DesktopInstallError> {
+        parent.reobserve()?;
+        let attributes = security.attributes();
+        let handle = operation_relative_handle(
+            parent.handles.last().ok_or(DesktopInstallError::Isolation)?.0,
+            leaf, FILE_READ_ATTRIBUTES | FILE_TRAVERSE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, 2,
+            0x00000001 | 0x00200000, attributes.lpSecurityDescriptor,
+        ).map_err(|_| DesktopInstallError::Isolation)?;
+        let identity = info(handle.0)?;
+        if identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+            || !same_path(&parent.path.join(leaf), &final_path(handle.0)?)
+        {
+            return Err(DesktopInstallError::Isolation);
+        }
+        parent.reobserve()?;
+        Ok((handle, identity))
+    }
+    struct OperationCleanupNode {
+        handle: Handle,
+        path: PathBuf,
+        identity: BY_HANDLE_FILE_INFORMATION,
+        directory: bool,
+    }
+    impl OperationCleanupNode {
+        fn open(
+            parent: HANDLE,
+            parent_path: &Path,
+            leaf: &OsStr,
+            directory: bool,
+        ) -> Result<Self, DesktopInstallError> {
+            operation_leaf(leaf)?;
+            let path = parent_path.join(leaf);
+            let access = 0x00010000 | FILE_READ_ATTRIBUTES | 0x00100000
+                | if directory { FILE_TRAVERSE } else { 0 };
+            let options = 0x00200000 | 0x00000020
+                | if directory { 0x00000001 } else { 0x00000040 };
+            let handle = operation_relative_handle(
+                parent, leaf, access, FILE_SHARE_READ, 1, options, null_mut(),
+            ).map_err(|_| DesktopInstallError::Cleanup)?;
+            let identity = info(handle.0).map_err(|_| DesktopInstallError::Cleanup)?;
+            if (identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
+                || !same_path(&path, &final_path(handle.0).map_err(|_| DesktopInstallError::Cleanup)?)
+            {
+                return Err(DesktopInstallError::Cleanup);
+            }
+            Ok(Self { handle, path, identity, directory })
+        }
+        fn reobserve(&self) -> Result<(), DesktopInstallError> {
+            let now = info(self.handle.0).map_err(|_| DesktopInstallError::Cleanup)?;
+            if !same_file(&self.identity, &now)
+                || (now.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != self.directory
+                || !same_path(&self.path, &final_path(self.handle.0).map_err(|_| DesktopInstallError::Cleanup)?)
+            {
+                return Err(DesktopInstallError::Cleanup);
+            }
+            Ok(())
+        }
+        fn delete(self) -> Result<(), DesktopInstallError> {
+            self.reobserve()?;
+            let flag = windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO {
+                DeleteFile: true,
+            };
+            if unsafe {
+                windows_sys::Win32::Storage::FileSystem::SetFileInformationByHandle(
+                    self.handle.0, windows_sys::Win32::Storage::FileSystem::FileDispositionInfo,
+                    (&flag as *const windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO).cast(),
+                    size_of::<windows_sys::Win32::Storage::FileSystem::FILE_DISPOSITION_INFO>() as u32,
+                )
+            } == 0 {
+                return Err(DesktopInstallError::Cleanup);
+            }
+            Ok(())
+        }
+    }
+
     struct OperationDirectory {
         path: PathBuf,
         hold: Option<DirectoryHold>,
+        identity: BY_HANDLE_FILE_INFORMATION,
         terminal: bool,
     }
     impl OperationDirectory {
         fn create(id: &str, sid: &str) -> Result<Self, DesktopInstallError> {
-            let parent = DirectoryHold::open(&std::env::temp_dir())?;
+            let parent = operation_temp_parent()?;
             let path = parent.path.join(format!("winsmux-installer-{id}"));
             let security = Security::actor(sid)?;
             let attributes = security.attributes();
-            let name = wide(path.as_os_str())?;
-            if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
+            let (created, identity) = operation_create_root(
+                &parent, path.file_name().ok_or(DesktopInstallError::Isolation)?, &security,
+            )?;
+            let hold = DirectoryHold::open(&path)?;
+            if !same_file(&identity, &info(created.0)?)
+                || !same_file(&identity, &info(hold.handles.last().unwrap().0)?)
+                || !same_path(&path, &final_path(created.0)?)
+            {
                 return Err(DesktopInstallError::Isolation);
             }
-            let hold = DirectoryHold::open(&path)?;
+            parent.reobserve()?;
+            hold.reobserve()?;
+            drop(created);
             let mut result = Self {
                 path,
                 hold: Some(hold),
+                identity,
                 terminal: true,
             };
             for child in ["project", "webview", "profile", "local", "roaming"] {
@@ -814,27 +1094,58 @@ mod native {
             Ok(result)
         }
     }
-    fn remove_private_tree(path: &Path) -> Result<(), DesktopInstallError> {
-        let metadata = std::fs::symlink_metadata(path).map_err(|_| DesktopInstallError::Cleanup)?;
-        use std::os::windows::fs::MetadataExt;
-        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+    fn cleanup_operation_node(node: OperationCleanupNode) -> Result<(), DesktopInstallError> {
+        node.reobserve()?;
+        if node.directory {
+            for entry in std::fs::read_dir(&node.path).map_err(|_| DesktopInstallError::Cleanup)? {
+                let entry = entry.map_err(|_| DesktopInstallError::Cleanup)?;
+                let name = entry.file_name();
+                operation_leaf(&name)?;
+                // Enumeration supplies only a type hint; the relative open is the authority.
+                let hint = entry.file_type().map_err(|_| DesktopInstallError::Cleanup)?;
+                if hint.is_symlink() || (!hint.is_dir() && !hint.is_file()) {
+                    return Err(DesktopInstallError::Cleanup);
+                }
+                node.reobserve()?;
+                let child = OperationCleanupNode::open(
+                    node.handle.0, &node.path, &name, hint.is_dir(),
+                )?;
+                cleanup_operation_node(child)?;
+                node.reobserve()?;
+            }
+        }
+        node.delete()
+    }
+
+    fn cleanup_operation_root(
+        parents: &DirectoryHold,
+        path: &Path,
+        identity: &BY_HANDLE_FILE_INFORMATION,
+    ) -> Result<(), DesktopInstallError> {
+        parents.reobserve().map_err(|_| DesktopInstallError::Cleanup)?;
+        let leaf = path.file_name().ok_or(DesktopInstallError::Cleanup)?;
+        let root = OperationCleanupNode::open(
+            parents.handles.last().ok_or(DesktopInstallError::Cleanup)?.0,
+            &parents.path, leaf, true,
+        )?;
+        if !same_file(identity, &root.identity) {
             return Err(DesktopInstallError::Cleanup);
         }
-        if metadata.is_dir() {
-            for entry in std::fs::read_dir(path).map_err(|_| DesktopInstallError::Cleanup)? {
-                remove_private_tree(&entry.map_err(|_| DesktopInstallError::Cleanup)?.path())?;
-            }
-            std::fs::remove_dir(path).map_err(|_| DesktopInstallError::Cleanup)
-        } else {
-            std::fs::remove_file(path).map_err(|_| DesktopInstallError::Cleanup)
-        }
+        cleanup_operation_node(root)?;
+        parents.reobserve().map_err(|_| DesktopInstallError::Cleanup)
     }
     impl Drop for OperationDirectory {
         fn drop(&mut self) {
-            if self.terminal && self.hold.as_ref().is_some_and(|h| h.reobserve().is_ok()) {
-                self.hold.take();
-                let _ = remove_private_tree(&self.path);
+            if !self.terminal || !self.hold.as_ref().is_some_and(|h| h.reobserve().is_ok()) {
+                return;
             }
+            let Some(mut parents) = self.hold.take() else { return; };
+            // Release only this leaf. Every ancestor stays leased throughout cleanup.
+            let Some(leaf) = parents.handles.pop() else { return; };
+            drop(leaf);
+            let Some(parent_path) = self.path.parent() else { return; };
+            parents.path = parent_path.to_path_buf();
+            let _ = cleanup_operation_root(&parents, &self.path, &self.identity);
         }
     }
     struct OwnedJob {
@@ -895,9 +1206,13 @@ mod native {
             .join(" ");
             let mut command = wide(OsStr::new(&command))?;
             let cwd = wide(directory.path.as_os_str())?;
+            let temp_parent = directory.path.parent()
+                .ok_or(DesktopInstallError::Isolation)?.to_path_buf();
             let mut env: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
                 .filter(|(key, _)| {
                     ![
+                        "TMP",
+                        "TEMP",
                         "USERPROFILE",
                         "APPDATA",
                         "LOCALAPPDATA",
@@ -913,6 +1228,8 @@ mod native {
                 })
                 .collect();
             for (name, value) in [
+                ("TMP", temp_parent.clone()),
+                ("TEMP", temp_parent),
                 ("USERPROFILE", directory.path.join("profile")),
                 ("HOME", directory.path.join("profile")),
                 ("LOCALAPPDATA", directory.path.join("local")),

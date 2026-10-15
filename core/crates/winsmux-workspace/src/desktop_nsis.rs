@@ -829,7 +829,7 @@ mod native {
                 let h = Handle::new(unsafe {
                     CreateFileW(
                         n.as_ptr(),
-                        FILE_READ_ATTRIBUTES,
+                        FILE_READ_ATTRIBUTES | 0x20, // FILE_TRAVERSE
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         null(),
                         OPEN_EXISTING,
