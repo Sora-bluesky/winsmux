@@ -341,6 +341,85 @@ fn handle_code(scope: HandleScope, bucket: HandleBucket) -> u16 {
         (HandleScope::OwnedDirectoryCleanup, HandleBucket::Other) => 313,
     }
 }
+// T-only: annotate only an already-propagated DerivedPath/NotFound refusal.
+#[derive(Clone, Copy)]
+#[repr(u16)]
+enum DerivedOrigin {
+    NearestExisting = 316,
+    OwnedExistingOperation = 317,
+    OwnedCreationParent = 318,
+    OwnedPostcreationLeaf = 319,
+    TreeDirectory = 320,
+    JournalParent = 321,
+    JournalOps = 322,
+    ValidateControl = 323,
+    ValidateOps = 324,
+    ValidateOwnedDirectory = 325,
+    CleanupDirectoryParent = 326,
+    CleanupOps = 327,
+    AdmitControl = 328,
+    AdmitOps = 329,
+    TreeFileParent = 330,
+    LegacyMemberParent = 331,
+    LegacyDesktopParent = 332,
+    LegacyProgramsParent = 333,
+    ManagedStateParent = 334,
+    ManagedPlanParent = 335,
+    ManagedMemberParent = 336,
+    ManagedDesktopParent = 337,
+    ManagedProgramsParent = 338,
+    SourcePlanParent = 339,
+    SourceMemberParent = 340,
+    SourceUninstallerParent = 341,
+    SourceDesktopDecodeParent = 342,
+    SourceProgramsDecodeParent = 343,
+    SourceRootRebindParent = 344,
+    SourceDesktopRebindParent = 345,
+    SourceProgramsRebindParent = 346,
+    TransactionSourceTotalParent = 347,
+    TransactionSourceAdmitParent = 348,
+    CopySourceParent = 349,
+    TransactionOldLiveParent = 350,
+    TransactionNewPrivateParent = 351,
+    RestoredStateParent = 352,
+    CommittedStateParent = 353,
+    CommittedMemberParent = 354,
+    PublishedMemberParent = 355,
+    CleanupPrivateMemberParent = 356,
+    RestoreNewMoveSource = 357,
+    RestoreNewMoveDestination = 358,
+    RestoreOldMoveSource = 359,
+    RestoreOldMoveDestination = 360,
+    BackupOldMoveSource = 361,
+    BackupOldMoveDestination = 362,
+    PublishRootMoveSource = 363,
+    PublishRootMoveDestination = 364,
+    PublishShortcutMoveSource = 365,
+    PublishShortcutMoveDestination = 366,
+    CommitStateMoveSource = 367,
+    CommitStateMoveDestination = 368,
+}
+fn derived_origin<T>(result: Result<T>, origin: Option<DerivedOrigin>) -> Result<T> {
+    match (result, origin) {
+        (Err(Error::Path(276)), Some(origin)) => Err(Error::Path(origin as u16)),
+        (unchanged, _) => unchanged,
+    }
+}
+fn source_rebind_origin(domain: &str) -> Option<DerivedOrigin> {
+    match domain {
+        "root" => Some(DerivedOrigin::SourceRootRebindParent),
+        "desktop" => Some(DerivedOrigin::SourceDesktopRebindParent),
+        "start_menu" => Some(DerivedOrigin::SourceProgramsRebindParent),
+        _ => None,
+    }
+}
+fn shortcut_origin(kind: &str, desktop: DerivedOrigin, programs: DerivedOrigin) -> Option<DerivedOrigin> {
+    match kind {
+        "desktop" => Some(desktop),
+        "start_menu" => Some(programs),
+        _ => None,
+    }
+}
 fn strict_absolute(path: &Path) -> Result<()> {
     strict_absolute_role(path, PathRole::DerivedPath)
 }
@@ -857,7 +936,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
             match error {
-                Error::Path(code @ (100..=160 | 200..=315)) => i32::from(code),
+                Error::Path(code @ (100..=160 | 200..=368)) => i32::from(code),
                 Error::Pending => 3,
                 _ => 2,
             }
@@ -1076,7 +1155,7 @@ mod native {
                 let raw = unsafe {
                     CreateFileW(
                         n.as_ptr(),
-                        FILE_READ_ATTRIBUTES,
+                        FILE_READ_ATTRIBUTES | 0x20, // FILE_TRAVERSE
                         FILE_SHARE_READ | FILE_SHARE_WRITE,
                         null(),
                         OPEN_EXISTING,
@@ -1212,7 +1291,7 @@ mod native {
         if fs::symlink_metadata(&q).map_err(|_| Error::Path(120))?.is_file() {
             q = q.parent().ok_or(Error::Path(121))?.into();
         }
-        Dirs::open(&q)
+        derived_origin(Dirs::open(&q), Some(DerivedOrigin::NearestExisting))
     }
     fn admit_volume(root: &Dirs, paths: &[PathBuf]) -> Result<Vec<Dirs>> {
         let mut holds = Vec::new();
@@ -1298,7 +1377,7 @@ mod native {
         // An existing operation leaf is never adopted by name, including empty X.
         let ops = root.path.join(CONTROL).join("ops");
         if q.starts_with(&ops) && q != ops {
-            let observed = Dirs::open(&q)?;
+            let observed = derived_origin(Dirs::open(&q), Some(DerivedOrigin::OwnedExistingOperation))?;
             if !owned
                 .iter()
                 .any(|d| root.path.join(&d.path) == q && d.identity == observed.id)
@@ -1307,7 +1386,7 @@ mod native {
             }
         }
         for d in missing.into_iter().rev() {
-            let parent = Dirs::open(d.parent().ok_or(Error::Path(132))?)?;
+            let parent = derived_origin(Dirs::open(d.parent().ok_or(Error::Path(132))?), Some(DerivedOrigin::OwnedCreationParent))?;
             let id = create_dir_owned(&d, &parent)?;
             let rel = d.strip_prefix(&root.path).map_err(|_| Error::Path(133))?;
             owned.push(OwnedDir {
@@ -1315,7 +1394,7 @@ mod native {
                 identity: id,
             });
         }
-        let held = Dirs::open(p)?;
+        let held = derived_origin(Dirs::open(p), Some(DerivedOrigin::OwnedPostcreationLeaf))?;
         if owned
             .iter()
             .any(|d| root.path.join(&d.path) == p && d.identity != held.id)
@@ -1333,9 +1412,13 @@ mod native {
         Ok(seen)
     }
     /// Expected object stays leased across the kernel rename and full readback.
+    #[cfg(test)]
     fn move_exact(from: &Path, to: &Path, row: &Member, root: &Dirs) -> Result<()> {
-        let mut source = exact(from, row, true)?;
-        let parent = Dirs::open(to.parent().ok_or(Error::Path(134))?)?;
+        move_exact_with_origins(from, to, row, root, None)
+    }
+    fn move_exact_with_origins(from: &Path, to: &Path, row: &Member, root: &Dirs, origins: Option<(DerivedOrigin, DerivedOrigin)>) -> Result<()> {
+        let mut source = derived_origin(exact(from, row, true), origins.map(|pair| pair.0))?;
+        let parent = derived_origin(Dirs::open(to.parent().ok_or(Error::Path(134))?), origins.map(|pair| pair.1))?;
         if exists(to)?
             || parent.id.volume != row.identity.volume
             || root.id.volume != row.identity.volume
@@ -1409,7 +1492,7 @@ mod native {
         admitted: &Member,
         owned: &mut Vec<OwnedDir>,
     ) -> Result<Member> {
-        let mut src = exact(from, admitted, false)?;
+        let mut src = derived_origin(exact(from, admitted, false), Some(DerivedOrigin::CopySourceParent))?;
         let parent = make_dirs_owned(to.parent().ok_or(Error::Path(137))?, root, owned)?;
         let mut dst = OpenOptions::new()
             .read(true)
@@ -2261,7 +2344,7 @@ mod native {
     }
     fn tree(root: &Path) -> Result<HashSet<String>> {
         fn visit(dir: &Path, prefix: &str, out: &mut HashSet<String>) -> Result<()> {
-            let _held = Dirs::open(dir)?;
+            let _held = derived_origin(Dirs::open(dir), Some(DerivedOrigin::TreeDirectory))?;
             for entry in fs::read_dir(dir).map_err(|_| Error::Path(143))? {
                 let entry = entry.map_err(|_| Error::Path(144))?;
                 let name = entry.file_name().into_string().map_err(|_| Error::Path(145))?;
@@ -2276,7 +2359,7 @@ mod native {
                 if meta.is_dir() {
                     visit(&entry.path(), &format!("{rel}/"), out)?;
                 } else {
-                    observe(&entry.path(), &rel, false)?;
+                    derived_origin(observe(&entry.path(), &rel, false), Some(DerivedOrigin::TreeFileParent))?;
                     if !out.insert(rel) {
                         return Err(Error::Path(149));
                     }
@@ -2303,7 +2386,7 @@ mod native {
     }
     impl Journal {
         fn open(path: &Path, new: bool) -> Result<Self> {
-            let parent = Dirs::open(path.parent().ok_or(Error::Path(150))?)?;
+            let parent = derived_origin(Dirs::open(path.parent().ok_or(Error::Path(150))?), Some(DerivedOrigin::JournalParent))?;
             parent.flush()?;
             let file = OpenOptions::new()
                 .read(true)
@@ -2357,7 +2440,7 @@ mod native {
             {
                 return Err(Error::Pending);
             }
-            let ops = Dirs::open(&self.parent.path.join("ops"))?;
+            let ops = derived_origin(Dirs::open(&self.parent.path.join("ops")), Some(DerivedOrigin::JournalOps))?;
             if ops.id != envelope.payload.ops_identity {
                 return Err(Error::Pending);
             }
@@ -2556,7 +2639,7 @@ mod native {
             {
                 return Err(Error::Plan);
             }
-            let actual = observe(&root.path.join(&row.path), &row.path, true)?.member;
+            let actual = derived_origin(observe(&root.path.join(&row.path), &row.path, true), Some(DerivedOrigin::LegacyMemberParent))?.member;
             if actual.bytes != row.bytes || actual.sha256 != row.sha256 {
                 return Err(Error::Member);
             }
@@ -2571,7 +2654,7 @@ mod native {
                 return Err(Error::Plan);
             }
             let path = known_shortcut(&row.kind)?;
-            let mut leased = observe(&path, "winsmux.lnk", true)?;
+            let mut leased = derived_origin(observe(&path, "winsmux.lnk", true), shortcut_origin(&row.kind, DerivedOrigin::LegacyDesktopParent, DerivedOrigin::LegacyProgramsParent))?;
             if leased.member.bytes != row.bytes {
                 return Err(Error::Member);
             }
@@ -2705,8 +2788,8 @@ mod native {
         if p.journal_identity
             .as_ref()
             .is_none_or(|id| id.volume != root.id.volume)
-            || Dirs::open(&root.path.join(CONTROL))?.id != p.control_identity
-            || Dirs::open(&root.path.join(CONTROL).join("ops"))?.id != p.ops_identity
+            || derived_origin(Dirs::open(&root.path.join(CONTROL)), Some(DerivedOrigin::ValidateControl))?.id != p.control_identity
+            || derived_origin(Dirs::open(&root.path.join(CONTROL).join("ops")), Some(DerivedOrigin::ValidateOps))?.id != p.ops_identity
         {
             return Err(Error::Pending);
         }
@@ -2746,7 +2829,7 @@ mod native {
             {
                 return Err(Error::Pending);
             }
-            if exists(&path)? && Dirs::open(&path)?.id != row.identity {
+            if exists(&path)? && derived_origin(Dirs::open(&path), Some(DerivedOrigin::ValidateOwnedDirectory))?.id != row.identity {
                 return Err(Error::Pending);
             }
         }
@@ -2937,7 +3020,7 @@ mod native {
                 }
                 p.new[i].phase = MovePhase::RestoreIntent;
                 j.save(p)?;
-                move_exact(&live, &new, &row.member, root)?;
+                move_exact_with_origins(&live, &new, &row.member, root, Some((DerivedOrigin::RestoreNewMoveSource, DerivedOrigin::RestoreNewMoveDestination)))?;
             } else if !exists(&new)? || exact(&new, &row.member, true).is_err() {
                 uncertain = true;
                 continue;
@@ -2961,7 +3044,7 @@ mod native {
                 }
                 p.old[i].phase = MovePhase::RestoreIntent;
                 j.save(p)?;
-                move_exact(&old, &live, &row.member, root)?;
+                move_exact_with_origins(&old, &live, &row.member, root, Some((DerivedOrigin::RestoreOldMoveSource, DerivedOrigin::RestoreOldMoveDestination)))?;
             } else {
                 uncertain = true;
                 continue;
@@ -3008,7 +3091,7 @@ mod native {
                 verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
             }
             if old.generation == "managed"
-                && read_plain(&root.path.join(CONTROL).join("installed.json"))? != *bytes
+                && derived_origin(read_plain(&root.path.join(CONTROL).join("installed.json")), Some(DerivedOrigin::RestoredStateParent))? != *bytes
             {
                 return Err(Error::Pending);
             }
@@ -3039,14 +3122,14 @@ mod native {
         }
         if p.action == Action::Install {
             let bytes = p.commit_bytes.as_ref().ok_or(Error::Pending)?;
-            if read_plain(&root.path.join(CONTROL).join("installed.json"))? != *bytes {
+            if derived_origin(read_plain(&root.path.join(CONTROL).join("installed.json")), Some(DerivedOrigin::CommittedStateParent))? != *bytes {
                 return Err(Error::Pending);
             }
             let state: Installed = serde_json::from_slice(bytes).map_err(|_| Error::Pending)?;
             validate_installed(&state, root, &p.actor_sid)?;
             for m in &p.new {
                 let path = live_path(&root.path, m)?;
-                let mut held = exact(&path, &m.member, false)?;
+                let mut held = derived_origin(exact(&path, &m.member, false), Some(DerivedOrigin::CommittedMemberParent))?;
                 if matches!(m.domain.as_str(), "desktop" | "start_menu") {
                     verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
                 }
@@ -3066,7 +3149,7 @@ mod native {
             for row in rows {
                 let path = private_path(&root.path, &p.operation_id, area, row);
                 if exists(&path)? {
-                    let h = exact(&path, &row.member, true)?;
+                    let h = derived_origin(exact(&path, &row.member, true), Some(DerivedOrigin::CleanupPrivateMemberParent))?;
                     cut("cleanup_file_before")?;
                     delete_held(&h.file)?;
                     let Observed {
@@ -3096,7 +3179,7 @@ mod native {
                 continue;
             }
             // Hold ancestors, never an incompatible duplicate handle of this leaf.
-            let parent = Dirs::open(path.parent().ok_or(Error::Path(151))?)?;
+            let parent = derived_origin(Dirs::open(path.parent().ok_or(Error::Path(151))?), Some(DerivedOrigin::CleanupDirectoryParent))?;
             let name = path_wide(&path)?;
             let raw = unsafe {
                 CreateFileW(
@@ -3143,7 +3226,7 @@ mod native {
             }
             cut("cleanup_dir_after")?;
         }
-        let ops = Dirs::open(&root.path.join(CONTROL).join("ops"))?;
+        let ops = derived_origin(Dirs::open(&root.path.join(CONTROL).join("ops")), Some(DerivedOrigin::CleanupOps))?;
         if ops.id != p.ops_identity || ops.id.volume != root.id.volume {
             return Err(Error::Pending);
         }
@@ -3269,7 +3352,7 @@ mod native {
             }
             terminal_prior
         } else if exists(&state_path)? {
-            let mut leased = observe(&state_path, "installed.json", true)?;
+            let mut leased = derived_origin(observe(&state_path, "installed.json", true), Some(DerivedOrigin::ManagedStateParent))?;
             let mut bytes = Vec::new();
             leased
                 .file
@@ -3282,15 +3365,15 @@ mod native {
             let mut state: Installed = serde_json::from_slice(&bytes).map_err(|_| Error::Plan)?;
             state.state_member = Some(leased.member.clone());
             validate_installed(&state, root, sid)?;
-            if read_plain(&root.path.join(PLAN_FILE))? != state.plan_bytes {
+            if derived_origin(read_plain(&root.path.join(PLAN_FILE)), Some(DerivedOrigin::ManagedPlanParent))? != state.plan_bytes {
                 return Err(Error::Member);
             }
             for member in &state.members {
-                exact(&root.path.join(&member.path), member, true)?;
+                derived_origin(exact(&root.path.join(&member.path), member, true), Some(DerivedOrigin::ManagedMemberParent))?;
             }
             for link in &state.shortcuts {
                 let path = known_shortcut(&link.kind)?;
-                let mut held = exact(&path, &link.member, true)?;
+                let mut held = derived_origin(exact(&path, &link.member, true), shortcut_origin(&link.kind, DerivedOrigin::ManagedDesktopParent, DerivedOrigin::ManagedProgramsParent))?;
                 verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
             }
             for (id, value) in state.registration.iter().enumerate() {
@@ -3315,11 +3398,11 @@ mod native {
         ctx: &Context,
         plan: &crate::desktop_install::InstallPlan,
     ) -> Result<Vec<(String, String, PathBuf, Member)>> {
-        let mut rows = Vec::new();
+        let mut rows: Vec<(String, String, PathBuf)> = Vec::new();
         if ctx.action == Action::Install {
             for row in &plan.files {
                 let p = ctx.source.join(&row.path);
-                let seen = observe(&p, &row.path, false)?;
+                let seen = derived_origin(observe(&p, &row.path, false), Some(DerivedOrigin::SourceMemberParent))?;
                 if seen.member.bytes != row.bytes || seen.member.sha256 != row.sha256 {
                     return Err(Error::Member);
                 }
@@ -3327,7 +3410,7 @@ mod native {
             }
             rows.push(("root".into(), PLAN_FILE.into(), ctx.source.join(PLAN_FILE)));
             let un = ctx.source.join("uninstall.exe");
-            let u = observe(&un, "uninstall.exe", false)?;
+            let u = derived_origin(observe(&un, "uninstall.exe", false), Some(DerivedOrigin::SourceUninstallerParent))?;
             if u.member.bytes == 0 {
                 return Err(Error::Member);
             }
@@ -3335,7 +3418,7 @@ mod native {
             for (kind, enabled) in [("start_menu", ctx.start_menu), ("desktop", ctx.desktop)] {
                 if enabled {
                     let p = ctx.source.join("shortcuts").join(format!("{kind}.lnk"));
-                    verify_link(&p, &ctx.root.join("winsmux-app.exe"))?;
+                    derived_origin(verify_link(&p, &ctx.root.join("winsmux-app.exe")), shortcut_origin(kind, DerivedOrigin::SourceDesktopDecodeParent, DerivedOrigin::SourceProgramsDecodeParent))?;
                     rows.push((kind.into(), "winsmux.lnk".into(), p));
                 }
             }
@@ -3362,7 +3445,7 @@ mod native {
         let bound = rows
             .into_iter()
             .map(|(domain, relative, path)| {
-                let mut held = observe(&path, &relative, false)?;
+                let mut held = derived_origin(observe(&path, &relative, false), source_rebind_origin(&domain))?;
                 if domain != "root" {
                     verify_link_held(&mut held, &ctx.root.join("winsmux-app.exe"))?;
                 }
@@ -3377,7 +3460,7 @@ mod native {
         if !exists(&control)? {
             return Ok(());
         }
-        let _held = Dirs::open(&control)?;
+        let _held = derived_origin(Dirs::open(&control), Some(DerivedOrigin::AdmitControl))?;
         let entries: HashSet<_> = fs::read_dir(&control)
             .map_err(|_| Error::Path(153))?
             .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
@@ -3401,7 +3484,7 @@ mod native {
         }
         let ops = control.join("ops");
         if exists(&ops)? {
-            let _ops = Dirs::open(&ops)?;
+            let _ops = derived_origin(Dirs::open(&ops), Some(DerivedOrigin::AdmitOps))?;
             if fs::read_dir(&ops)
                 .map_err(|_| Error::Path(156))?
                 .next()
@@ -3427,7 +3510,7 @@ mod native {
                 0u64,
                 |sum, (_, _, path, expected)| {
                     {
-                        exact(path, expected, false)?;
+                        derived_origin(exact(path, expected, false), Some(DerivedOrigin::TransactionSourceTotalParent))?;
                         sum.checked_add(expected.bytes)
                     }
                     .ok_or(Error::Plan)
@@ -3525,7 +3608,7 @@ mod native {
         let mut new_rows = Vec::new();
         if ctx.action == Action::Install {
             for (domain, relative, from, admitted) in sources {
-                exact(&from, &admitted, false)?;
+                derived_origin(exact(&from, &admitted, false), Some(DerivedOrigin::TransactionSourceAdmitParent))?;
                 if domain != "root"
                     && old
                         .as_ref()
@@ -3582,16 +3665,16 @@ mod native {
         let _volumes = admit_volume(root, &paths)?;
         no_running(&root.path)?;
         for row in &old_rows {
-            let held = exact(&live_path(&root.path, row)?, &row.member, true)?;
+            let held = derived_origin(exact(&live_path(&root.path, row)?, &row.member, true), Some(DerivedOrigin::TransactionOldLiveParent))?;
             flush_handle(held.file.as_raw_handle() as HANDLE)?;
             held._parents.flush()?;
         }
         for row in &new_rows {
-            exact(
+            derived_origin(exact(
                 &private_path(&root.path, &id, "new", row),
                 &row.member,
                 true,
-            )?;
+            ), Some(DerivedOrigin::TransactionNewPrivateParent))?;
             let live = live_path(&root.path, row)?;
             if exists(&live)?
                 && !old_rows
@@ -3691,11 +3774,12 @@ mod native {
                 let row = p.old[i].clone();
                 p.old[i].phase = MovePhase::MoveIntent;
                 journal.save(&p)?;
-                move_exact(
+                move_exact_with_origins(
                     &live_path(&root.path, &row)?,
                     &private_path(&root.path, &id, "old", &row),
                     &row.member,
                     root,
+                    Some((DerivedOrigin::BackupOldMoveSource, DerivedOrigin::BackupOldMoveDestination)),
                 )?;
                 p.old[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
@@ -3709,11 +3793,12 @@ mod native {
                 }
                 p.new[i].phase = MovePhase::MoveIntent;
                 journal.save(&p)?;
-                move_exact(
+                move_exact_with_origins(
                     &private_path(&root.path, &id, "new", &row),
                     &live_path(&root.path, &row)?,
                     &row.member,
                     root,
+                    Some((DerivedOrigin::PublishRootMoveSource, DerivedOrigin::PublishRootMoveDestination)),
                 )?;
                 p.new[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
@@ -3742,11 +3827,12 @@ mod native {
                 }
                 p.new[i].phase = MovePhase::MoveIntent;
                 journal.save(&p)?;
-                move_exact(
+                move_exact_with_origins(
                     &private_path(&root.path, &id, "new", &row),
                     &live_path(&root.path, &row)?,
                     &row.member,
                     root,
+                    Some((DerivedOrigin::PublishShortcutMoveSource, DerivedOrigin::PublishShortcutMoveDestination)),
                 )?;
                 p.new[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
@@ -3772,7 +3858,7 @@ mod native {
                 }
             }
             for m in p.new.iter().filter(|m| m.domain != "state") {
-                exact(&live_path(&root.path, m)?, &m.member, false)?;
+                derived_origin(exact(&live_path(&root.path, m)?, &m.member, false), Some(DerivedOrigin::PublishedMemberParent))?;
             }
             for s in &p.slots {
                 if read_slot(s.id)? != s.desired {
@@ -3792,11 +3878,12 @@ mod native {
                 journal.save(&p)?;
                 let row = p.new[index].clone();
                 cut("commit_before")?;
-                move_exact(
+                move_exact_with_origins(
                     &private_path(&root.path, &id, "new", &row),
                     &live_path(&root.path, &row)?,
                     &row.member,
                     root,
+                    Some((DerivedOrigin::CommitStateMoveSource, DerivedOrigin::CommitStateMoveDestination)),
                 )?;
                 cut("commit_after")?;
                 p.new[index].phase = MovePhase::MovedConfirmed;
@@ -3847,7 +3934,7 @@ mod native {
         let sid = actor_sid()?;
         refuse_msi()?;
         let source = Dirs::open_role(&ctx.source, PathRole::ContextSource)?;
-        let plan_bytes = read_plain(&ctx.source.join(PLAN_FILE))?;
+        let plan_bytes = derived_origin(read_plain(&ctx.source.join(PLAN_FILE)), Some(DerivedOrigin::SourcePlanParent))?;
         let plan = checked_plan(&plan_bytes, &sha256_hex(&ctx.plan_sha256))?;
         let helper = plan
             .files

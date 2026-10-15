@@ -13,13 +13,14 @@
     "Replace exactly three template and seven utils plugin namespaces",
     "Replace the inherited lifecycle operations with the generation-bound native NSIS install, rollback and uninstall adapter",
     "Expand only the NSIS-owned transaction workspace to its long DOS spelling and share bounded helper, source and context paths across install and uninstall",
-    "T-only diagnostic: preserve finite native handle refusal origin and Win32 class through 90 exact exit literals; all project to prior path site 102"
+    "T-only diagnostic: preserve finite native handle refusal origin and Win32 class through 90 exact exit literals; all project to prior path site 102",
+    "T-only diagnostic: annotate only propagated DerivedPath NotFound 276 at 53 fixed responsibility origins; no retry or filesystem observation"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 27780,
-      "sha256": "6afdff2e8297b175ecb8f0ba56a4d7bcfcbe8628348522c0f40118ac4621fad3"
+      "bytes": 29317,
+      "sha256": "854e7602642984203bcd1e96e277461c91aa2e4fbf4a3390ad07bf272d3bccab"
     },
     {
       "path": "winsmux-utils.nsh",
