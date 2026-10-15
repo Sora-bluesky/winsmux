@@ -22,7 +22,7 @@ pub enum Error {
     Context,
     Plan,
     Actor,
-    Path,
+    Path(u8),
     Member,
     Registration,
     LegacyIncomplete,
@@ -38,7 +38,7 @@ impl Error {
             Self::Context => "context_refused",
             Self::Plan => "plan_refused",
             Self::Actor => "actor_refused",
-            Self::Path => "path_refused",
+            Self::Path(_) => "path_refused",
             Self::Member => "member_unconfirmed",
             Self::Registration => "registration_conflict",
             Self::LegacyIncomplete => "legacy_inventory_incomplete",
@@ -159,7 +159,7 @@ pub fn parse_context(bytes: &[u8], action: Action) -> Result<Context> {
     })
 }
 fn strict_absolute(path: &Path) -> Result<()> {
-    let t = path.to_str().ok_or(Error::Path)?.replace('/', "\\");
+    let t = path.to_str().ok_or(Error::Path(100))?.replace('/', "\\");
     let b = t.as_bytes();
     if b.len() < 4
         || !b[0].is_ascii_alphabetic()
@@ -167,7 +167,7 @@ fn strict_absolute(path: &Path) -> Result<()> {
         || b[2] != b'\\'
         || !t[3..].split('\\').all(valid_member_path)
     {
-        return Err(Error::Path);
+        return Err(Error::Path(101));
     }
     Ok(())
 }
@@ -617,10 +617,10 @@ pub fn run(args: &[String]) -> i32 {
         },
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
-            if error == Error::Pending {
-                3
-            } else {
-                2
+            match error {
+                Error::Path(code @ 100..=160) => i32::from(code),
+                Error::Pending => 3,
+                _ => 2,
             }
         }
     }
@@ -726,7 +726,7 @@ mod native {
     impl Handle {
         fn new(h: HANDLE) -> Result<Self> {
             if h.is_null() || h == INVALID_HANDLE_VALUE {
-                Err(Error::Path)
+                Err(Error::Path(102))
             } else {
                 Ok(Self(h))
             }
@@ -742,7 +742,7 @@ mod native {
     fn wide(s: &OsStr) -> Result<Vec<u16>> {
         let mut v: Vec<_> = s.encode_wide().collect();
         if v.contains(&0) {
-            return Err(Error::Path);
+            return Err(Error::Path(103));
         }
         v.push(0);
         Ok(v)
@@ -759,7 +759,7 @@ mod native {
         wide(OsStr::new(&format!(r"\\?\{}", text)))
     }
     fn path_text(p: &Path) -> Result<String> {
-        p.to_str().map(|s| s.replace('/', "\\")).ok_or(Error::Path)
+        p.to_str().map(|s| s.replace('/', "\\")).ok_or(Error::Path(104))
     }
     fn same_path(a: &Path, b: &Path) -> bool {
         path_text(a)
@@ -772,7 +772,7 @@ mod native {
         if unsafe { GetFileInformationByHandle(h, &mut i) } == 0
             || i.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         {
-            Err(Error::Path)
+            Err(Error::Path(105))
         } else {
             Ok(i)
         }
@@ -780,21 +780,21 @@ mod native {
     fn final_name(h: HANDLE, flags: u32) -> Result<String> {
         let n = unsafe { GetFinalPathNameByHandleW(h, null_mut(), 0, flags) };
         if n == 0 {
-            return Err(Error::Path);
+            return Err(Error::Path(106));
         }
         let mut v = vec![0; n as usize + 1];
         let n = unsafe { GetFinalPathNameByHandleW(h, v.as_mut_ptr(), v.len() as u32, flags) };
         if n == 0 || n as usize >= v.len() {
-            return Err(Error::Path);
+            return Err(Error::Path(107));
         }
-        String::from_utf16(&v[..n as usize]).map_err(|_| Error::Path)
+        String::from_utf16(&v[..n as usize]).map_err(|_| Error::Path(108))
     }
     fn identity(h: HANDLE) -> Result<Identity> {
         let i = info(h)?;
         let v = final_name(h, VOLUME_NAME_GUID)?;
-        let end = v.find('}').ok_or(Error::Path)?;
+        let end = v.find('}').ok_or(Error::Path(109))?;
         if !v.starts_with(r"\\?\Volume{") {
-            return Err(Error::Path);
+            return Err(Error::Path(110));
         }
         Ok(Identity {
             volume: v[..=end].to_ascii_lowercase(),
@@ -804,7 +804,7 @@ mod native {
     fn canonical(h: HANDLE) -> Result<PathBuf> {
         let n = final_name(h, 0)?;
         if !n.starts_with(r"\\?\") || n.starts_with(r"\\?\UNC\") {
-            return Err(Error::Path);
+            return Err(Error::Path(111));
         }
         Ok(n[4..].into())
     }
@@ -840,11 +840,11 @@ mod native {
                 if info(h.0)?.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
                     || !same_path(&cur, &canonical(h.0)?)
                 {
-                    return Err(Error::Path);
+                    return Err(Error::Path(112));
                 }
                 holds.push(h);
             }
-            let last = holds.last().ok_or(Error::Path)?;
+            let last = holds.last().ok_or(Error::Path(113))?;
             Ok(Self {
                 path: canonical(last.0)?,
                 id: identity(last.0)?,
@@ -876,9 +876,9 @@ mod native {
             for h in &self.holds {
                 info(h.0)?;
             }
-            let h = self.holds.last().ok_or(Error::Path)?;
+            let h = self.holds.last().ok_or(Error::Path(114))?;
             if identity(h.0)? != self.id || !same_path(&self.path, &canonical(h.0)?) {
-                return Err(Error::Path);
+                return Err(Error::Path(115));
             }
             Ok(())
         }
@@ -895,7 +895,7 @@ mod native {
             || i.nNumberOfLinks != 1
             || !same_path(p, &canonical(h)?)
         {
-            return Err(Error::Path);
+            return Err(Error::Path(116));
         }
         file.seek(SeekFrom::Start(0))
             .map_err(|e| diagnostic_io(&e))?;
@@ -910,7 +910,7 @@ mod native {
         })
     }
     fn observe(p: &Path, relative: &str, mutable: bool) -> Result<Observed> {
-        let dirs = Dirs::open(p.parent().ok_or(Error::Path)?)?;
+        let dirs = Dirs::open(p.parent().ok_or(Error::Path(117))?)?;
         let access = if mutable {
             0xC0000000 | DELETE_ACCESS
         } else {
@@ -944,16 +944,16 @@ mod native {
         match fs::symlink_metadata(p) {
             Ok(_) => Ok(true),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(_) => Err(Error::Path),
+            Err(_) => Err(Error::Path(118)),
         }
     }
     fn nearest(p: &Path) -> Result<Dirs> {
         let mut q = p.to_path_buf();
         while !exists(&q)? {
-            q = q.parent().ok_or(Error::Path)?.into();
+            q = q.parent().ok_or(Error::Path(119))?.into();
         }
-        if fs::symlink_metadata(&q).map_err(|_| Error::Path)?.is_file() {
-            q = q.parent().ok_or(Error::Path)?.into();
+        if fs::symlink_metadata(&q).map_err(|_| Error::Path(120))?.is_file() {
+            q = q.parent().ok_or(Error::Path(121))?.into();
         }
         Dirs::open(&q)
     }
@@ -962,7 +962,7 @@ mod native {
         for p in paths {
             let d = nearest(p)?;
             if d.id.volume != root.id.volume {
-                return Err(Error::Path);
+                return Err(Error::Path(122));
             }
             d.flush()?;
             holds.push(d);
@@ -970,20 +970,20 @@ mod native {
         Ok(holds)
     }
     fn create_dir_owned(p: &Path, parent: &Dirs) -> Result<Identity> {
-        let leaf = p.file_name().and_then(|v| v.to_str()).ok_or(Error::Path)?;
+        let leaf = p.file_name().and_then(|v| v.to_str()).ok_or(Error::Path(123))?;
         if !valid_member_path(leaf) || leaf.contains('/') || leaf.contains('\\') {
-            return Err(Error::Path);
+            return Err(Error::Path(124));
         }
         let mut name = wide(OsStr::new(leaf))?;
-        let bytes = (name.len() - 1).checked_mul(2).ok_or(Error::Path)?;
+        let bytes = (name.len() - 1).checked_mul(2).ok_or(Error::Path(125))?;
         let mut unicode = UnicodeName {
-            length: bytes.try_into().map_err(|_| Error::Path)?,
-            maximum_length: (bytes + 2).try_into().map_err(|_| Error::Path)?,
+            length: bytes.try_into().map_err(|_| Error::Path(126))?,
+            maximum_length: (bytes + 2).try_into().map_err(|_| Error::Path(127))?,
             buffer: name.as_mut_ptr(),
         };
         let mut object = ObjectAttributes {
             length: size_of::<ObjectAttributes>() as u32,
-            root: parent.holds.last().ok_or(Error::Path)?.0,
+            root: parent.holds.last().ok_or(Error::Path(128))?.0,
             name: &mut unicode,
             attributes: 0x40,
             security: null_mut(),
@@ -1021,7 +1021,7 @@ mod native {
         }
         let id = identity(held.0)?;
         if id.volume != parent.id.volume {
-            return Err(Error::Path);
+            return Err(Error::Path(129));
         }
         flush_handle(held.0)?;
         parent.flush()?;
@@ -1030,13 +1030,13 @@ mod native {
     fn make_dirs_owned(p: &Path, root: &Dirs, owned: &mut Vec<OwnedDir>) -> Result<Dirs> {
         let nearest = nearest(p)?;
         if nearest.id.volume != root.id.volume {
-            return Err(Error::Path);
+            return Err(Error::Path(130));
         }
         let mut missing = Vec::new();
         let mut q = p.to_path_buf();
         while !exists(&q)? {
             missing.push(q.clone());
-            q = q.parent().ok_or(Error::Path)?.into();
+            q = q.parent().ok_or(Error::Path(131))?.into();
         }
         // An existing operation leaf is never adopted by name, including empty X.
         let ops = root.path.join(CONTROL).join("ops");
@@ -1050,9 +1050,9 @@ mod native {
             }
         }
         for d in missing.into_iter().rev() {
-            let parent = Dirs::open(d.parent().ok_or(Error::Path)?)?;
+            let parent = Dirs::open(d.parent().ok_or(Error::Path(132))?)?;
             let id = create_dir_owned(&d, &parent)?;
-            let rel = d.strip_prefix(&root.path).map_err(|_| Error::Path)?;
+            let rel = d.strip_prefix(&root.path).map_err(|_| Error::Path(133))?;
             owned.push(OwnedDir {
                 path: path_text(rel)?,
                 identity: id,
@@ -1078,12 +1078,12 @@ mod native {
     /// Expected object stays leased across the kernel rename and full readback.
     fn move_exact(from: &Path, to: &Path, row: &Member, root: &Dirs) -> Result<()> {
         let mut source = exact(from, row, true)?;
-        let parent = Dirs::open(to.parent().ok_or(Error::Path)?)?;
+        let parent = Dirs::open(to.parent().ok_or(Error::Path(134))?)?;
         if exists(to)?
             || parent.id.volume != row.identity.volume
             || root.id.volume != row.identity.volume
         {
-            return Err(Error::Path);
+            return Err(Error::Path(135));
         }
         root.reobserve()?;
         source._parents.flush()?;
@@ -1098,7 +1098,7 @@ mod native {
         unsafe {
             (*rename).Anonymous.Flags = 0;
             (*rename).RootDirectory = null_mut();
-            (*rename).FileNameLength = length.try_into().map_err(|_| Error::Path)?;
+            (*rename).FileNameLength = length.try_into().map_err(|_| Error::Path(136))?;
             std::ptr::copy_nonoverlapping(
                 name.as_ptr(),
                 (*rename).FileName.as_mut_ptr(),
@@ -1153,7 +1153,7 @@ mod native {
         owned: &mut Vec<OwnedDir>,
     ) -> Result<Member> {
         let mut src = exact(from, admitted, false)?;
-        let parent = make_dirs_owned(to.parent().ok_or(Error::Path)?, root, owned)?;
+        let parent = make_dirs_owned(to.parent().ok_or(Error::Path(137))?, root, owned)?;
         let mut dst = OpenOptions::new()
             .read(true)
             .write(true)
@@ -1191,9 +1191,9 @@ mod native {
         root: &Dirs,
         owned: &mut Vec<OwnedDir>,
     ) -> Result<Member> {
-        let parent = make_dirs_owned(to.parent().ok_or(Error::Path)?, root, owned)?;
+        let parent = make_dirs_owned(to.parent().ok_or(Error::Path(138))?, root, owned)?;
         if parent.id.volume != root.id.volume {
-            return Err(Error::Path);
+            return Err(Error::Path(139));
         }
         let mut file = OpenOptions::new()
             .read(true)
@@ -1225,7 +1225,7 @@ mod native {
             }
             let handle = file.as_raw_handle() as HANDLE;
             if info(handle)?.nNumberOfLinks != 1 || !same_path(to, &canonical(handle)?) {
-                return Err(Error::Path);
+                return Err(Error::Path(140));
             }
             parent.reobserve()?;
             let member = Member {
@@ -1524,7 +1524,7 @@ mod native {
         };
         let mut raw = null_mut();
         if unsafe { SHGetKnownFolderPath(id, 0, null_mut(), &mut raw) } < 0 || raw.is_null() {
-            return Err(Error::Path);
+            return Err(Error::Path(141));
         }
         let mut n = 0;
         unsafe {
@@ -1533,7 +1533,7 @@ mod native {
             }
         }
         let text = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, n) })
-            .map_err(|_| Error::Path);
+            .map_err(|_| Error::Path(142));
         unsafe {
             CoTaskMemFree(raw.cast());
         }
@@ -2002,23 +2002,23 @@ mod native {
     fn tree(root: &Path) -> Result<HashSet<String>> {
         fn visit(dir: &Path, prefix: &str, out: &mut HashSet<String>) -> Result<()> {
             let _held = Dirs::open(dir)?;
-            for entry in fs::read_dir(dir).map_err(|_| Error::Path)? {
-                let entry = entry.map_err(|_| Error::Path)?;
-                let name = entry.file_name().into_string().map_err(|_| Error::Path)?;
+            for entry in fs::read_dir(dir).map_err(|_| Error::Path(143))? {
+                let entry = entry.map_err(|_| Error::Path(144))?;
+                let name = entry.file_name().into_string().map_err(|_| Error::Path(145))?;
                 if !valid_member_path(&name) {
-                    return Err(Error::Path);
+                    return Err(Error::Path(146));
                 }
                 let rel = format!("{prefix}{name}");
-                let meta = fs::symlink_metadata(entry.path()).map_err(|_| Error::Path)?;
+                let meta = fs::symlink_metadata(entry.path()).map_err(|_| Error::Path(147))?;
                 if meta.file_type().is_symlink() {
-                    return Err(Error::Path);
+                    return Err(Error::Path(148));
                 }
                 if meta.is_dir() {
                     visit(&entry.path(), &format!("{rel}/"), out)?;
                 } else {
                     observe(&entry.path(), &rel, false)?;
                     if !out.insert(rel) {
-                        return Err(Error::Path);
+                        return Err(Error::Path(149));
                     }
                 }
             }
@@ -2043,7 +2043,7 @@ mod native {
     }
     impl Journal {
         fn open(path: &Path, new: bool) -> Result<Self> {
-            let parent = Dirs::open(path.parent().ok_or(Error::Path)?)?;
+            let parent = Dirs::open(path.parent().ok_or(Error::Path(150))?)?;
             parent.flush()?;
             let file = OpenOptions::new()
                 .read(true)
@@ -2836,7 +2836,7 @@ mod native {
                 continue;
             }
             // Hold ancestors, never an incompatible duplicate handle of this leaf.
-            let parent = Dirs::open(path.parent().ok_or(Error::Path)?)?;
+            let parent = Dirs::open(path.parent().ok_or(Error::Path(151))?)?;
             let name = path_wide(&path)?;
             let held = Handle::new(unsafe {
                 CreateFileW(
@@ -3038,7 +3038,7 @@ mod native {
             }
             Some((state, bytes))
         } else if fs::read_dir(&root.path)
-            .map_err(|_| Error::Path)?
+            .map_err(|_| Error::Path(152))?
             .next()
             .is_some()
         {
@@ -3117,10 +3117,10 @@ mod native {
         }
         let _held = Dirs::open(&control)?;
         let entries: HashSet<_> = fs::read_dir(&control)
-            .map_err(|_| Error::Path)?
+            .map_err(|_| Error::Path(153))?
             .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
             .collect::<std::io::Result<_>>()
-            .map_err(|_| Error::Path)?;
+            .map_err(|_| Error::Path(154))?;
         if let Some(journal) = retained {
             if !same_path(&journal.path, &control.join("pending.json"))
                 || !same_path(
@@ -3135,13 +3135,13 @@ mod native {
             !matches!(s.as_str(), "installed.json" | "ops")
                 && !(s == "pending.json" && retained.is_some())
         }) {
-            return Err(Error::Path);
+            return Err(Error::Path(155));
         }
         let ops = control.join("ops");
         if exists(&ops)? {
             let _ops = Dirs::open(&ops)?;
             if fs::read_dir(&ops)
-                .map_err(|_| Error::Path)?
+                .map_err(|_| Error::Path(156))?
                 .next()
                 .is_some()
             {
@@ -3221,7 +3221,7 @@ mod native {
         let ops_identity = ops.id.clone();
         let private = root.path.join(CONTROL).join("ops").join(&id);
         if exists(&private)? {
-            return Err(Error::Path);
+            return Err(Error::Path(157));
         }
         let mut import_guard = ImportGuard {
             root,
@@ -3312,7 +3312,7 @@ mod native {
         paths.extend([control.join("installed.json"), control.join("pending.json")]);
         // Every potential forward/inverse parent exists and is owned before Prepared.
         for target in &paths {
-            let parent = target.parent().ok_or(Error::Path)?;
+            let parent = target.parent().ok_or(Error::Path(158))?;
             if parent.starts_with(&root.path) {
                 make_dirs_owned(parent, root, &mut import_guard.dirs)?;
             }
@@ -3388,7 +3388,7 @@ mod native {
             for area in ["old", "new"] {
                 let target = private_path(&root.path, &id, area, row);
                 make_dirs_owned(
-                    target.parent().ok_or(Error::Path)?,
+                    target.parent().ok_or(Error::Path(159))?,
                     root,
                     &mut import_guard.dirs,
                 )?;
@@ -3611,7 +3611,7 @@ mod native {
         let root = Dirs::open(&ctx.root)?;
         let _exclusion = exclusion(&root, &sid)?;
         if root.id.volume != parent.id.volume {
-            return Err(Error::Path);
+            return Err(Error::Path(160));
         }
         no_running(&root.path)?;
         let (old, inherited) =

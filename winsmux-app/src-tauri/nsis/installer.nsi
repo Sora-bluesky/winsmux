@@ -21,7 +21,7 @@ ManifestDPIAwareness PerMonitorV2
 !include x64.nsh
 !include WordFunc.nsh
 
-; Diagnostic-only finite observation. Remove with the exact three-file overlay.
+; Diagnostic-only finite observation. Remove with the exact four-file overlay.
 ; $0/$1 remain the existing plugin return/combined output; only $2 is diagnostic.
 !macro WINSMUX_OBSERVE_FAILURE STAGE
   StrCpy $2 59
@@ -104,6 +104,74 @@ ManifestDPIAwareness PerMonitorV2
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: startup_unconfirmed$\r$\n"
       StrCpy $2 71
+    ${EndIf}
+    ${If} $2 == 59
+      ${If} $1 S== "winsmux installer: path_refused$\n"
+      ${OrIf} $1 S== "winsmux installer: path_refused$\r$\n"
+        ${If} $0 S== "100"
+        ${OrIf} $0 S== "101"
+        ${OrIf} $0 S== "102"
+        ${OrIf} $0 S== "103"
+        ${OrIf} $0 S== "104"
+        ${OrIf} $0 S== "105"
+        ${OrIf} $0 S== "106"
+        ${OrIf} $0 S== "107"
+        ${OrIf} $0 S== "108"
+        ${OrIf} $0 S== "109"
+        ${OrIf} $0 S== "110"
+        ${OrIf} $0 S== "111"
+        ${OrIf} $0 S== "112"
+        ${OrIf} $0 S== "113"
+        ${OrIf} $0 S== "114"
+        ${OrIf} $0 S== "115"
+        ${OrIf} $0 S== "116"
+        ${OrIf} $0 S== "117"
+        ${OrIf} $0 S== "118"
+        ${OrIf} $0 S== "119"
+        ${OrIf} $0 S== "120"
+        ${OrIf} $0 S== "121"
+        ${OrIf} $0 S== "122"
+        ${OrIf} $0 S== "123"
+        ${OrIf} $0 S== "124"
+        ${OrIf} $0 S== "125"
+        ${OrIf} $0 S== "126"
+        ${OrIf} $0 S== "127"
+        ${OrIf} $0 S== "128"
+        ${OrIf} $0 S== "129"
+        ${OrIf} $0 S== "130"
+        ${OrIf} $0 S== "131"
+        ${OrIf} $0 S== "132"
+        ${OrIf} $0 S== "133"
+        ${OrIf} $0 S== "134"
+        ${OrIf} $0 S== "135"
+        ${OrIf} $0 S== "136"
+        ${OrIf} $0 S== "137"
+        ${OrIf} $0 S== "138"
+        ${OrIf} $0 S== "139"
+        ${OrIf} $0 S== "140"
+        ${OrIf} $0 S== "141"
+        ${OrIf} $0 S== "142"
+        ${OrIf} $0 S== "143"
+        ${OrIf} $0 S== "144"
+        ${OrIf} $0 S== "145"
+        ${OrIf} $0 S== "146"
+        ${OrIf} $0 S== "147"
+        ${OrIf} $0 S== "148"
+        ${OrIf} $0 S== "149"
+        ${OrIf} $0 S== "150"
+        ${OrIf} $0 S== "151"
+        ${OrIf} $0 S== "152"
+        ${OrIf} $0 S== "153"
+        ${OrIf} $0 S== "154"
+        ${OrIf} $0 S== "155"
+        ${OrIf} $0 S== "156"
+        ${OrIf} $0 S== "157"
+        ${OrIf} $0 S== "158"
+        ${OrIf} $0 S== "159"
+        ${OrIf} $0 S== "160"
+          StrCpy $2 $0
+        ${EndIf}
+      ${EndIf}
     ${EndIf}
   !else
     !error "Unsupported diagnostic observation stage."
