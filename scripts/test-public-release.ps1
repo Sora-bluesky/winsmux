@@ -3855,15 +3855,67 @@ function Initialize-DesktopNativeLifecycleActor {
   IntPtr job,process,thread; bool terminal,disposed; uint pid; long creation; TokenFacts caller; string image,imageHash; FileStream lease,scriptLease;
   internal NativeOwned(IntPtr j,PI p,TokenFacts c,string i,string sha,FileStream f,FileStream extra) {scriptLease=extra;job=j;process=p.process;thread=p.thread;pid=p.pid;caller=c;image=i;imageHash=sha;lease=f;long exit,kernel,user;Check(GetProcessTimes(process,out creation,out exit,out kernel,out user),"Native creation");}
 
+
+  static readonly string[] StartupRejectNames={"open_access_denied","open_unavailable","open_other","not_member_expected_image","not_member_other_image","not_member_unobserved","exited","image","hash","sid","session","token_type","app_container","exited_after_actor","held"};
+  readonly Dictionary<string,int> startupObservations=NewStartupObservations();
+  static Dictionary<string,int> NewStartupObservations(){var r=new Dictionary<string,int>();foreach(string n in StartupRejectNames)r.Add(n,0);return r;}
+  static string StartupOpenRejection(int error){return error==5?"open_access_denied":error==87?"open_unavailable":"open_other";}
+  void NoteStartup(string reason){startupObservations[reason]++;}
+  public Dictionary<string,int> StartupObservations(){return new Dictionary<string,int>(startupObservations);}
+  static string NonmemberStartupObservation(IntPtr handle,string expectedImage,string expectedSha){
+   try{uint length=32768;var actual=new StringBuilder((int)length);if(!QueryFullProcessImageNameW(handle,0,actual,ref length))return "not_member_unobserved";if(!String.Equals(Path.GetFullPath(actual.ToString()),Path.GetFullPath(expectedImage),StringComparison.OrdinalIgnoreCase))return "not_member_other_image";return Hash(File.ReadAllBytes(expectedImage))==expectedSha?"not_member_expected_image":"not_member_other_image";}catch{return "not_member_unobserved";}
+  }
   public NativeGui HoldStartupGui(uint guiPid,string expectedImage,string expectedSha) {
-   var h=OpenProcess(0x00101001,false,guiPid);if(h==IntPtr.Zero)return null;bool adopted=false;try{
-    bool member;Check(IsProcessInJob(h,job,out member),"Startup GUI own Job");if(!member||WaitForSingleObject(h,0)==0)return null;
-    uint length=32768;var actual=new StringBuilder((int)length);Check(QueryFullProcessImageNameW(h,0,actual,ref length),"Startup GUI retained image");if(!String.Equals(Path.GetFullPath(actual.ToString()),Path.GetFullPath(expectedImage),StringComparison.OrdinalIgnoreCase)||Hash(File.ReadAllBytes(expectedImage))!=expectedSha)return null;
-    IntPtr token;Check(OpenProcessToken(h,8,out token),"Startup GUI retained actor");TokenFacts facts;try{facts=Observe(token);}finally{CloseHandle(token);}if(!Equal(facts.sid,caller.sid)||facts.session!=caller.session||facts.tokenType!=1||facts.appContainer!=0)return null;
-    if(WaitForSingleObject(h,0)==0)return null;var gui=new NativeGui(h,guiPid,Path.GetFullPath(expectedImage),expectedSha,facts);adopted=true;return gui;
+   var h=OpenProcess(0x00101001,false,guiPid);if(h==IntPtr.Zero){int error=Marshal.GetLastWin32Error();NoteStartup(StartupOpenRejection(error));return null;}bool adopted=false;try{
+    bool member;Check(IsProcessInJob(h,job,out member),"Startup GUI own Job");if(!member){NoteStartup(NonmemberStartupObservation(h,expectedImage,expectedSha));return null;}if(WaitForSingleObject(h,0)==0){NoteStartup("exited");return null;}
+    uint length=32768;var actual=new StringBuilder((int)length);Check(QueryFullProcessImageNameW(h,0,actual,ref length),"Startup GUI retained image");if(!String.Equals(Path.GetFullPath(actual.ToString()),Path.GetFullPath(expectedImage),StringComparison.OrdinalIgnoreCase)){NoteStartup("image");return null;}if(Hash(File.ReadAllBytes(expectedImage))!=expectedSha){NoteStartup("hash");return null;}
+    IntPtr token;Check(OpenProcessToken(h,8,out token),"Startup GUI retained actor");TokenFacts facts;try{facts=Observe(token);}finally{CloseHandle(token);}if(!Equal(facts.sid,caller.sid)){NoteStartup("sid");return null;}if(facts.session!=caller.session){NoteStartup("session");return null;}if(facts.tokenType!=1){NoteStartup("token_type");return null;}if(facts.appContainer!=0){NoteStartup("app_container");return null;}
+    if(WaitForSingleObject(h,0)==0){NoteStartup("exited_after_actor");return null;}var gui=new NativeGui(h,guiPid,Path.GetFullPath(expectedImage),expectedSha,facts);adopted=true;NoteStartup("held");return gui;
    }finally{if(!adopted)CloseHandle(h);}
   }
 
+
+  [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)]static extern bool ReadJobMembers(IntPtr job,uint kind,IntPtr data,uint length,out uint used);
+  delegate bool OwnedWindowCallback(IntPtr window,IntPtr data);
+  [DllImport("user32.dll",SetLastError=true)]static extern bool EnumWindows(OwnedWindowCallback callback,IntPtr data);
+  [DllImport("user32.dll")]static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
+  [DllImport("user32.dll")]static extern bool IsWindowVisible(IntPtr window);
+  [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern int GetClassNameW(IntPtr window,StringBuilder text,int count);
+  public Dictionary<string,object> RootWindowCounts(){
+   var result=new Dictionary<string,object>{{"status","unknown"},{"total",null},{"visible",null},{"native_dialog",null},{"visible_native_dialog",null},{"class_unobserved",null}};
+   if(HasExited)return result;
+   int total=0,visible=0,dialogs=0,visibleDialogs=0,classUnknown=0;
+   OwnedWindowCallback callback=(window,data)=>{uint owner;GetWindowThreadProcessId(window,out owner);if(owner!=pid)return true;total++;bool shown=IsWindowVisible(window);if(shown)visible++;var name=new StringBuilder(256);int length=GetClassNameW(window,name,name.Capacity);if(length<=0)classUnknown++;else if(name.ToString()=="#32770"){dialogs++;if(shown)visibleDialogs++;}return true;};
+   if(!EnumWindows(callback,IntPtr.Zero)||HasExited)return result;
+   result["status"]=classUnknown==0?"observed":"partial";result["class_unobserved"]=classUnknown;result["total"]=total;result["visible"]=visible;result["native_dialog"]=dialogs;result["visible_native_dialog"]=visibleDialogs;return result;
+  }
+  static string OwnedRole(uint observedPid,uint rootPid,string actualPath,string expectedRoot,string actualSha,string cliSha,string guiSha){
+   if(observedPid==rootPid)return "root";
+   if(String.Equals(Path.GetFullPath(actualPath),Path.Combine(Path.GetFullPath(expectedRoot),"winsmux-app.exe"),StringComparison.OrdinalIgnoreCase)&&actualSha==guiSha)return "gui";
+   if(String.Equals(Path.GetFileName(actualPath),"winsmux.exe",StringComparison.OrdinalIgnoreCase)&&actualSha==cliSha)return "cli";
+   return "other";
+  }
+  public Dictionary<string,object> OwnedRoleCounts(string root,string cliSha,string guiSha){
+   var result=new Dictionary<string,object>{{"status","unknown"},{"root",null},{"cli",null},{"gui",null},{"other",null},{"unobserved",null},{"exited_during_snapshot",null}};
+   IntPtr buffer=Marshal.AllocHGlobal(4194304);
+   try{uint used;if(!ReadJobMembers(job,3,buffer,4194304,out used))return result;
+    uint assigned=unchecked((uint)Marshal.ReadInt32(buffer)),listed=unchecked((uint)Marshal.ReadInt32(buffer,4));if(listed>assigned||8UL+(ulong)listed*(ulong)IntPtr.Size>4194304)return result;
+    foreach(string key in new[]{"root","cli","gui","other","unobserved","exited_during_snapshot"})result[key]=0;
+    for(uint index=0;index<listed;index++){
+     ulong raw=IntPtr.Size==8?unchecked((ulong)Marshal.ReadInt64(buffer,8+(int)index*IntPtr.Size)):unchecked((uint)Marshal.ReadInt32(buffer,8+(int)index*IntPtr.Size));
+     if(raw==0||raw>UInt32.MaxValue){result["unobserved"]=(int)result["unobserved"]+1;continue;}
+     var handle=OpenProcess(0x00101000,false,(uint)raw);if(handle==IntPtr.Zero){result["unobserved"]=(int)result["unobserved"]+1;continue;}
+     try{bool member;if(!IsProcessInJob(handle,job,out member)||!member){result["unobserved"]=(int)result["unobserved"]+1;continue;}
+      if(WaitForSingleObject(handle,0)==0){result["exited_during_snapshot"]=(int)result["exited_during_snapshot"]+1;continue;}
+      uint size=32768;var imagePath=new StringBuilder((int)size);if(!QueryFullProcessImageNameW(handle,0,imagePath,ref size)){result["unobserved"]=(int)result["unobserved"]+1;continue;}
+      string actual=imagePath.ToString(),hash=null;
+      if((uint)raw!=pid&&(String.Equals(Path.GetFileName(actual),"winsmux.exe",StringComparison.OrdinalIgnoreCase)||String.Equals(Path.GetFullPath(actual),Path.Combine(Path.GetFullPath(root),"winsmux-app.exe"),StringComparison.OrdinalIgnoreCase))){try{hash=Hash(File.ReadAllBytes(actual));}catch{result["unobserved"]=(int)result["unobserved"]+1;continue;}}
+      string role=OwnedRole((uint)raw,pid,actual,root,hash,cliSha,guiSha);result[role]=(int)result[role]+1;
+     }finally{CloseHandle(handle);}
+    }
+    result["status"]=assigned==listed?"observed":"partial";return result;
+   }finally{Marshal.FreeHGlobal(buffer);}
+  }
   public uint Id { get {return pid;} }
   public bool HasExited { get {return WaitForSingleObject(process,0)==0;} }
   public uint ActiveMembers {get{ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native Job observation");return a.activeProcesses;}}
@@ -3917,6 +3969,31 @@ function Initialize-DesktopNativeLifecycleActor {
      if(text.IndexOf('\0')>=0){result["status"]="unknown_encoding";return result;}
      result["text"]=text;result["status"]="observed";return result;
     } catch(DecoderFallbackException){result["status"]="unknown_encoding";return result;}
+   }
+  } catch(Win32Exception error){result["status"]=error.NativeErrorCode==2||error.NativeErrorCode==3?"absent":"unreadable";return result;}
+  catch(FileNotFoundException){result["status"]="absent";return result;}
+  catch(DirectoryNotFoundException){result["status"]="absent";return result;}
+  catch {return result;}
+ }
+ public static Dictionary<string,object> ReadNsisJournalObservationInput(string path) {
+  var result=new Dictionary<string,object>{{"status","unreadable"},{"bytes",null},{"sha256",null},{"text",null}};
+  try {
+   path=Path.GetFullPath(path);NativePhysical(path);
+   using(var file=OpenPlain(path)) {
+    var before=FileFacts(file.SafeFileHandle.DangerousGetHandle());long length=file.Length;
+    if(length==0){result["status"]="empty";return result;}
+    if(length>4194304){result["status"]="overlong";return result;}
+    var first=new byte[(int)length];int at=0;
+    while(at<first.Length){int count=file.Read(first,at,first.Length-at);if(count==0){result["status"]="changed";return result;}at+=count;}
+    var middle=FileFacts(file.SafeFileHandle.DangerousGetHandle());
+    if(file.Length!=length||middle.links!=1||FileId(middle)!=FileId(before)){result["status"]="changed";return result;}
+    file.Position=0;var second=new byte[(int)length];at=0;
+    while(at<second.Length){int count=file.Read(second,at,second.Length-at);if(count==0){result["status"]="changed";return result;}at+=count;}
+    string sha=Hash(first);
+    var after=FileFacts(file.SafeFileHandle.DangerousGetHandle());
+    if(file.Length!=length||after.links!=1||FileId(after)!=FileId(before)||Hash(second)!=sha){result["status"]="changed";return result;}
+    result["bytes"]=length;result["sha256"]=sha;
+    try{if(first.Length>=3&&first[0]==0xef&&first[1]==0xbb&&first[2]==0xbf){result["status"]="unknown_encoding";return result;}string text=new UTF8Encoding(false,true).GetString(first);if(text.IndexOf('\0')>=0){result["status"]="unknown_encoding";return result;}result["text"]=text;result["status"]="observed";return result;}catch(DecoderFallbackException){result["status"]="unknown_encoding";return result;}
    }
   } catch(Win32Exception error){result["status"]=error.NativeErrorCode==2||error.NativeErrorCode==3?"absent":"unreadable";return result;}
   catch(FileNotFoundException){result["status"]="absent";return result;}
@@ -4220,6 +4297,60 @@ function Get-DesktopNativeMsiLogObservation {
     return $projection
 }
 
+function ConvertTo-DesktopNativeNsisJournalObservation {
+    param($ObservationInput,[string]$ExpectedRoot,[string]$ExpectedPlanSha,[string]$ExpectedActor)
+    $unknown = [ordered]@{ status='unknown'; binding_verified=$false; phase=$null; action=$null; root_matches=$null; plan_matches=$null; actor_matches=$null; old=$null; new=$null; slots=$null }
+    try {
+        if ($ObservationInput.status -cne 'observed' -or $ObservationInput.bytes -le 0 -or $ObservationInput.bytes -gt 4194304) { return $unknown }
+        $envelope = ConvertFrom-DesktopStrictJsonText ([string]$ObservationInput.text)
+        Assert-DesktopInventoryShape $envelope @('schema','sha256','payload')
+        if ($envelope.schema -cne 'winsmux-desktop-nsis-journal/v1') { return $unknown }
+        $p = $envelope.payload
+        Assert-DesktopInventoryShape $p @('schema','operation_id','action','actor_sid','root','root_identity','plan_sha256','plan_bytes','prior_state','old','new','slots','phase','commit_bytes','journal_identity','control_identity','ops_identity','owned_dirs')
+        $phases = @('prepared','backing_up','publishing','startup_verified','registering','commit_intent','committed','restoring','restored','pending_unconfirmed')
+        if ($p.schema -cne 'winsmux-desktop-nsis-pending/v1' -or $p.phase -isnot [string] -or $phases -cnotcontains $p.phase -or $p.action -isnot [string] -or @('install','uninstall') -cnotcontains $p.action) { return $unknown }
+        foreach ($name in @('root','plan_sha256','actor_sid')) { if ($p.$name -isnot [string]) { return $unknown } }
+        $counts = [ordered]@{}
+        foreach ($name in @('old','new','slots')) {
+            if ($p.$name -isnot [array]) { return $unknown }
+            $allowed = if ($name -ceq 'slots') { @('prepared','write_intent','published_confirmed','restore_intent','restored') } else { @('prepared','move_intent','moved_confirmed','restore_intent','restored') }
+            $map = [ordered]@{}; foreach ($phase in $allowed) { $map[$phase] = 0 }
+            foreach ($row in $p.$name) {
+                if ($null -eq $row -or $row.phase -isnot [string] -or $allowed -cnotcontains $row.phase) { return $unknown }
+                $map[$row.phase]++
+            }
+            $counts[$name] = $map
+        }
+        return [ordered]@{ status='unverified'; binding_verified=$false; phase=$p.phase; action=$p.action; root_matches=[string]::Equals($p.root,$ExpectedRoot,[StringComparison]::OrdinalIgnoreCase); plan_matches=($p.plan_sha256 -ceq $ExpectedPlanSha); actor_matches=($p.actor_sid -ceq $ExpectedActor); old=$counts.old; new=$counts.new; slots=$counts.slots }
+    } catch { return $unknown }
+}
+
+function Get-DesktopNativeNsisTimeoutJournal {
+    param([string]$Root)
+    try {
+        $inputObservation = [WinsmuxDesktopNativeActor]::ReadNsisJournalObservationInput((Join-Path $Root '.winsmux-desktop/pending.json'))
+        $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'
+        $planSha = (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actor = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        return ConvertTo-DesktopNativeNsisJournalObservation $inputObservation $Root $planSha $actor
+    } catch { return ConvertTo-DesktopNativeNsisJournalObservation @{status='unreadable'} '' '' '' }
+}
+
+function Get-DesktopNativeNsisTimeoutSnapshot {
+    param($Owned,[string]$Root)
+    $snapshot = [ordered]@{ root_exited=$null; active_members=$null; exit_code=$null; roles=$null; root_windows=$null }
+    try { $snapshot.root_exited = $Owned.HasExited } catch {}
+    try { $snapshot.active_members = $Owned.ActiveMembers } catch {}
+    if ($snapshot.root_exited -eq $true) { try { $snapshot.exit_code = $Owned.ExitCode } catch {} }
+    try {
+        $cli = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'cli')[0]
+        $gui = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'gui')[0]
+        $snapshot.roles = $Owned.OwnedRoleCounts($Root,[string]$cli.sha256,[string]$gui.sha256)
+    } catch {}
+    try { $snapshot.root_windows = $Owned.RootWindowCounts() } catch {}
+    return $snapshot
+}
+
 function Invoke-DesktopNativeOwnedEntry {
     param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '')
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
@@ -4237,6 +4368,10 @@ function Invoke-DesktopNativeOwnedEntry {
                 try { $timeoutObservation.before.root_exited = $owned.HasExited } catch {}
                 try { $timeoutObservation.before.active_members = $owned.ActiveMembers } catch {}
             }
+            if ($Purpose -ceq 'nsis-update') {
+                $nsisTimeout = [ordered]@{ purpose='nsis-update'; before=$null; after=$null; journal=$null }
+                try { $nsisTimeout.before = Get-DesktopNativeNsisTimeoutSnapshot $owned $Root } catch {}
+            }
             $owned.StopOwnedFailure()
             $terminal = $true
             if ($Purpose -ceq 'msi-install-en') {
@@ -4246,6 +4381,12 @@ function Invoke-DesktopNativeOwnedEntry {
                 try { $timeoutObservation.after.exit_code = $owned.ExitCode } catch {}
                 try { $timeoutObservation.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root } catch {}
                 try { Write-DesktopNativeEvidence 'msi-en-timeout.json' $timeoutObservation } catch {}
+            }
+            if ($Purpose -ceq 'nsis-update') {
+                $nsisTimeout.after = [ordered]@{ terminal=$true; snapshot=$null }
+                try { $nsisTimeout.after.snapshot = Get-DesktopNativeNsisTimeoutSnapshot $owned $Root } catch {}
+                try { $nsisTimeout.journal = Get-DesktopNativeNsisTimeoutJournal $Root } catch {}
+                try { Write-DesktopNativeEvidence 'nsis-legacy-update-timeout.json' $nsisTimeout } catch {}
             }
             throw 'desktop_native_entry_timeout'
         }
@@ -4562,6 +4703,8 @@ function Invoke-DesktopNativeStartupFault {
         $terminal = $owned.WaitTerminal(180000)
         if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_startup_fault_timeout' }
         $processReceipt = [ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts(); stopped_gui = $stopped; observed_gui_outside_job = $nonmemberObserved }
+        try { $processReceipt.startup_gui_observations = $owned.StartupObservations() } catch {}
+        if ($Purpose -ceq 'msi-install-en') { try { $processReceipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root } catch {} }
         Write-DesktopNativeEvidence ($DesktopNativeFormat.ToLowerInvariant() + '-startup-fault-process.json') $processReceipt
         Assert-Condition ($null -ne $stopped -and $processReceipt.exit_code -ne 0) 'desktop_native_startup_fault_unmet'
         $restored = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
