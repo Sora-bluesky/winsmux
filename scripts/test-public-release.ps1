@@ -3891,6 +3891,38 @@ function Initialize-DesktopNativeLifecycleActor {
   } catch { if(pi.process!=IntPtr.Zero){bool stopped=assigned?TerminateJobObject(job,124):TerminateProcess(pi.process,124);if(!stopped||WaitForSingleObject(pi.process,10000)!=0)throw new InvalidOperationException("Native failed launch cleanup unconfirmed");if(assigned){ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native failed Job cleanup");if(a.activeProcesses!=0)throw new InvalidOperationException("Native failed Job retains members");}}throw; }
   finally {foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken})if(h!=IntPtr.Zero)CloseHandle(h);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();}
  }
+ public static Dictionary<string,object> ReadMsiLogObservationInput(string path) {
+  var result=new Dictionary<string,object>{{"status","unreadable"},{"bytes",null},{"sha256",null},{"text",null}};
+  try {
+   path=Path.GetFullPath(path);NativePhysical(path);
+   using(var file=OpenPlain(path)) {
+    var before=FileFacts(file.SafeFileHandle.DangerousGetHandle());long length=file.Length;
+    if(length==0){result["status"]="empty";return result;}
+    if(length>4194304){result["status"]="overlong";return result;}
+    var first=new byte[(int)length];int at=0;
+    while(at<first.Length){int count=file.Read(first,at,first.Length-at);if(count==0){result["status"]="changed";return result;}at+=count;}
+    var middle=FileFacts(file.SafeFileHandle.DangerousGetHandle());
+    if(file.Length!=length||middle.links!=1||FileId(middle)!=FileId(before)){result["status"]="changed";return result;}
+    file.Position=0;var second=new byte[(int)length];at=0;
+    while(at<second.Length){int count=file.Read(second,at,second.Length-at);if(count==0){result["status"]="changed";return result;}at+=count;}
+    string sha=Hash(first);
+    var after=FileFacts(file.SafeFileHandle.DangerousGetHandle());
+    if(file.Length!=length||after.links!=1||FileId(after)!=FileId(before)||Hash(second)!=sha){result["status"]="changed";return result;}
+    result["bytes"]=length;result["sha256"]=sha;
+    if((first.Length>=4&&first[0]==0xff&&first[1]==0xfe&&first[2]==0&&first[3]==0)||(first.Length>=4&&first[0]==0&&first[1]==0&&first[2]==0xfe&&first[3]==0xff)||(first.Length>=2&&first[0]==0xfe&&first[1]==0xff)){result["status"]="unknown_encoding";return result;}
+    try {
+     string text;
+     if(first.Length>=2&&first[0]==0xff&&first[1]==0xfe)text=new UnicodeEncoding(false,false,true).GetString(first,2,first.Length-2);
+     else {int offset=first.Length>=3&&first[0]==0xef&&first[1]==0xbb&&first[2]==0xbf?3:0;text=new UTF8Encoding(false,true).GetString(first,offset,first.Length-offset);}
+     if(text.IndexOf('\0')>=0){result["status"]="unknown_encoding";return result;}
+     result["text"]=text;result["status"]="observed";return result;
+    } catch(DecoderFallbackException){result["status"]="unknown_encoding";return result;}
+   }
+  } catch(Win32Exception error){result["status"]=error.NativeErrorCode==2||error.NativeErrorCode==3?"absent":"unreadable";return result;}
+  catch(FileNotFoundException){result["status"]="absent";return result;}
+  catch(DirectoryNotFoundException){result["status"]="absent";return result;}
+  catch {return result;}
+ }
  public static Dictionary<string,object> NativeFile(string path) {NativePhysical(path);using(var f=OpenPlain(Path.GetFullPath(path))){var info=FileFacts(f.SafeFileHandle.DangerousGetHandle());var b=new byte[f.Length];int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Native witness changed");return new Dictionary<string,object>{{"bytes",b.Length},{"sha256",Hash(b)},{"identity",FileId(info)}};}}
 
  [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern int RegOpenKeyExW(IntPtr key,string subkey,uint options,uint access,out IntPtr result);
@@ -4114,6 +4146,73 @@ function Assert-DesktopNativeInstalledPayload {
     }
 }
 
+function ConvertTo-DesktopNativeMsiLogProjection {
+    param([Parameter(Mandatory)][Collections.IDictionary]$ObservationInput)
+    $actionNames = @('AppSearch','CostFinalize','CostInitialize','CreateFolders','CreateShortcuts','CreateUpdateTask','DeleteUpdateTask','DownloadAndInvokeBootstrapper','FileCost','FindRelatedProducts','InstallFiles','InstallFinalize','InstallInitialize','InstallValidate','InvokeBootstrapper','InvokeStandalone','LaunchApplication','MigrateFeatureStates','ProcessComponents','PublishFeatures','PublishProduct','RegisterProduct','RegisterUser','RemoveExistingProducts','RemoveFiles','RemoveFolders','RemoveRegistryValues','RemoveShortcuts','SetARPINSTALLLOCATION','SetARPNOMODIFY','UnpublishFeatures','UpdateWebView2ViaEdgeUpdate','ValidateProductID','WinsmuxVerifyStartup','WixUIPrintEula','WixUIValidatePath','WriteRegistryValues')
+    $helperNames = @('usage','plan_refused','path_refused','member_unconfirmed','actor_refused','isolation_failed','launch_failed','startup_unconfirmed','startup_timeout','probe_exit_unconfirmed')
+    $errorCodes = @('112','1303','1304','1305','1307','1317','1335','1603','1618','1619','1620','1638','1708','1721','1722','2203')
+    $actions = [ordered]@{}
+    foreach ($name in $actionNames) {
+        $returns = [ordered]@{}; foreach ($number in 0..8) { $returns[[string]$number] = 0 }
+        $actions[$name] = [ordered]@{ start_count = 0; end_returns = $returns; custom_errors = [ordered]@{'2'=0;'3'=0} }
+    }
+    $errors = [ordered]@{}; foreach ($number in $errorCodes) { $errors[$number] = 0 }
+    $helper = [ordered]@{}; foreach ($name in $helperNames) { $helper[$name] = 0 }
+    $status = [string]$ObservationInput['status']
+    if (@('observed','absent','unreadable','overlong','empty','unknown_encoding','changed') -cnotcontains $status) { $status = 'unreadable' }
+    $log = $null
+    if ($null -ne $ObservationInput['bytes'] -and [long]$ObservationInput['bytes'] -gt 0 -and [long]$ObservationInput['bytes'] -le 4194304 -and [string]$ObservationInput['sha256'] -cmatch '^[a-f0-9]{64}$') {
+        $log = [ordered]@{ bytes = [long]$ObservationInput['bytes']; sha256 = [string]$ObservationInput['sha256'] }
+    }
+    $result = [ordered]@{ schema = 'winsmux-desktop-native-msi-log-observation/v1'; purpose = 'msi-install-en'; status = $status; log = $log; actions = $actions; markers = [ordered]@{INSTALL_return3=0;ExecuteAction_return3=0;MainEngineThread_return1603=0}; errors = $errors; helper = $helper; unknown = [ordered]@{action_count=0;return_count=0;code_count=0;line_count=0} }
+    if ($status -cne 'observed') { return $result }
+    $text = [string]$ObservationInput['text']
+    if ($null -eq $log -or $text.Length -eq 0 -or $text.Length -gt 4194304) { $result.status = 'unrecognized'; return $result }
+    $recognized = 0
+    foreach ($line in ($text -split '\r?\n')) {
+        if ($line.Length -eq 0) { continue }
+        $record = $line
+        if ($line -cmatch '^MSI \([cs]\) \([0-9A-Fa-f]+:[0-9A-Fa-f]+\) \[[0-9:.]+\]: (.*)$') { $record = $Matches[1] }
+        if ($record -cmatch '^Action start [0-9]{1,2}:[0-9]{2}:[0-9]{2}: ([A-Za-z][A-Za-z0-9_]{0,63})\.$') {
+            $name = $Matches[1]
+            if ($actionNames -ccontains $name) { $actions[$name].start_count += 1; $recognized += 1 } else { $result.unknown.action_count += 1 }
+        } elseif ($record -cmatch '^Action ended [0-9]{1,2}:[0-9]{2}:[0-9]{2}: ([A-Za-z][A-Za-z0-9_]{0,63})\. Return value ([0-9]{1,5})\.$') {
+            $name = $Matches[1]; $number = $Matches[2]
+            if ($name -ceq 'INSTALL' -and $number -ceq '3') { $result.markers.INSTALL_return3 += 1; $recognized += 1 }
+            elseif ($name -ceq 'ExecuteAction' -and $number -ceq '3') { $result.markers.ExecuteAction_return3 += 1; $recognized += 1 }
+            elseif ($actionNames -ccontains $name) {
+                if (@('0','1','2','3','4','5','6','7','8') -ccontains $number) { $actions[$name].end_returns[$number] += 1; $recognized += 1 } else { $result.unknown.return_count += 1 }
+            } else { $result.unknown.action_count += 1 }
+        } elseif ($record -cmatch '^CustomAction ([A-Za-z][A-Za-z0-9_]{0,63}) returned actual error code ([0-9]{1,5})(?: \(note this may not be 100% accurate if translation happened inside sandbox\))?$') {
+            $name = $Matches[1]; $number = $Matches[2]
+            if ($actionNames -ccontains $name) {
+                if (@('2','3') -ccontains $number) { $actions[$name].custom_errors[$number] += 1; $recognized += 1 } else { $result.unknown.return_count += 1 }
+            } else { $result.unknown.action_count += 1 }
+        } elseif ($record -ceq 'MainEngineThread is returning 1603') { $result.markers.MainEngineThread_return1603 += 1; $recognized += 1 }
+        elseif ($record -cmatch '^Error ([0-9]{1,5})(?:[.: ].*)?$' -or $record -cmatch '^Note: 1: ([0-9]{1,5})(?: 2:.*)?$') {
+            $number = $Matches[1]
+            if ($errorCodes -ccontains $number) { $errors[$number] += 1; $recognized += 1 } else { $result.unknown.code_count += 1 }
+        } elseif ($record -cmatch '^winsmux installer: ([a-z_]+)$') {
+            $name = $Matches[1]
+            if ($helperNames -ccontains $name) { $helper[$name] += 1; $recognized += 1 } else { $result.unknown.code_count += 1 }
+        } else { $result.unknown.line_count += 1 }
+    }
+    if ($recognized -eq 0) { $result.status = 'unrecognized' }
+    return $result
+}
+
+function Get-DesktopNativeMsiLogObservation {
+    param([Parameter(Mandatory)][string]$Root)
+    try {
+        $path = Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Root))) 'msi-install-en.log'
+        $observation = [WinsmuxDesktopNativeActor]::ReadMsiLogObservationInput($path)
+    } catch { $observation = @{status='unreadable';bytes=$null;sha256=$null;text=$null} }
+    $projection = ConvertTo-DesktopNativeMsiLogProjection -ObservationInput $observation
+    $encoded = [Text.UTF8Encoding]::new($false,$true).GetBytes(($projection | ConvertTo-Json -Depth 8 -Compress))
+    if ($encoded.Length -gt 16384) { $projection = ConvertTo-DesktopNativeMsiLogProjection -ObservationInput @{status='unreadable';bytes=$null;sha256=$null;text=$null} }
+    return $projection
+}
+
 function Invoke-DesktopNativeOwnedEntry {
     param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '')
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
@@ -4121,7 +4220,9 @@ function Invoke-DesktopNativeOwnedEntry {
     try {
         $terminal = $owned.WaitTerminal(180000)
         if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_entry_timeout' }
-        return [ordered]@{ purpose = $Purpose; exit_code = $owned.ExitCode; process = $owned.Facts() }
+        $receipt = [ordered]@{ purpose = $Purpose; exit_code = $owned.ExitCode; process = $owned.Facts() }
+        if ($Purpose -ceq 'msi-install-en') { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root }
+        return $receipt
     } finally {
         if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true }
         if ($terminal) { $owned.Dispose() }
