@@ -52,7 +52,7 @@
     "preview": "vite preview",
     "prepare:companion-cli": "node ./src-tauri/scripts/prepare-companion-cli.mjs",
     "prepare:companion-cli:release": "node ./src-tauri/scripts/prepare-companion-cli.mjs --release",
-    "tauri": "tauri"
+    "tauri": "node ./scripts/tauri-cli.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",

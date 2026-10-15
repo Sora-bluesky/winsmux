@@ -19,6 +19,7 @@ $whitelistPatterns = @(
     'scripts/stage-desktop-msi-plan.mjs',
     'scripts/stage-desktop-nsis-plan.mjs',
     'tests/workspace-package/desktop-msi-plan.test.mjs',
+    'tests/workspace-package/desktop-build-entry.test.mjs',
     'tests/workspace-package/desktop-nsis-plan.test.mjs',
     'tests/workspace-update/install-lifecycle.test.ps1',
     'winsmux-app/src-tauri/src/install_startup_receipt.rs',

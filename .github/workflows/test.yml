@@ -706,6 +706,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Companion profile and bundled distribution proof failed.' }
           node tests/workspace-package/nsis-generation.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'NSIS generation proof failed.' }
+          node --test tests/workspace-package/desktop-build-entry.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop build entry proof failed.' }
 
       - name: Prepare pinned older CLI for native version-pair proof
         shell: pwsh
