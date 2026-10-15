@@ -159,7 +159,7 @@ Describe 'winsmux version surface' {
         $binding.rustc_commit | Should -BeExactly 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96'
         $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $script:DistributionWorkflows)
         @($producers.id | Sort-Object) -join ',' | Should -BeExactly (
-            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-nsis-lifecycle,test.yml::desktop-release-process,test.yml::fresh-install-candidate')
+            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,desktop-candidate-cdp-gate.yml::desktop-native-lifecycle,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-release-process,test.yml::fresh-install-candidate')
         Test-MeasuredWindowsProducerToolchains -Workflows $script:DistributionWorkflows | Should -BeTrue
         $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
         Test-MeasuredWindowsToolchainAction $action | Should -BeTrue
@@ -232,7 +232,7 @@ Describe 'winsmux version surface' {
     It 'keeps the release app process proof independent of the debug backend job and required by Merge Gate' {
         $workflow = $script:DistributionWorkflows['test.yml']
         $jobs = @{}
-        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'desktop-nsis-lifecycle', 'merge-gate')) {
+        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'native-lifecycle-source', 'merge-gate')) {
             $match = [regex]::Match($workflow,
                 ('(?ms)^  {0}:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)' -f [regex]::Escape($id)))
             $match.Success | Should -BeTrue -Because $id
@@ -251,12 +251,14 @@ Describe 'winsmux version surface' {
         $release | Should -Match ([regex]::Escape("`$shardId = 'desktop-debug-process'"))
         $release | Should -Match 'Upload V03630 desktop debug process results'
         $release | Should -Match 'path: test-results-desktop-debug-v03630.xml'
-        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'desktop-nsis-lifecycle')) {
+        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'native-lifecycle-source')) {
             $jobs['merge-gate'] | Should -Match ('(?m)^      - {0}\s*\r?$' -f [regex]::Escape($id))
             $jobs['merge-gate'] | Should -Match ([regex]::Escape('needs.' + $id + '.result'))
         }
-        $jobs['desktop-nsis-lifecycle'] | Should -Match 'run: npm run tauri -- build --bundles nsis'
-        $jobs['desktop-nsis-lifecycle'] | Should -Not -Match '(?m)^    needs:'
+        $jobs['native-lifecycle-source'] | Should -Match 'run: cargo build --release --manifest-path core/Cargo\.toml --bin winsmux'
+        $jobs['native-lifecycle-source'] | Should -Match 'scripts/test-native-bridge-resolution\.ps1 -CandidateBinary target/release/winsmux\.exe'
+        $jobs['native-lifecycle-source'] | Should -Match '(?m)^    needs: public-surface\s*$'
+        # Installed MSI/NSIS lifecycle evidence is required separately; this job proves source selection only.
     }
 
     It 'keeps release-critical product versions aligned' {
@@ -277,7 +279,7 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'releases/latest'
         $installScript | Should -Match 'releases/tags/\$escapedTag'
         $installScript | Should -Match 'version = \$ResolvedVersion'
-        $installScript | Should -Match '\$ResolvedVersion \| Set-Content \$VERSION_FILE'
+        $installScript | Should -Match '\[IO\.File\]::WriteAllText\(\(Join-Path \$WINSMUX_DIR ''version''\), \$ResolvedVersion \+ "`n", \[Text\.UTF8Encoding\]::new\(\$false\)\)'
         $installScript | Should -Match 'function Get-WinsmuxCommandVersion'
         $installScript | Should -Match 'Installed executable version does not match the selected release'
         $installScript | Should -Match '\$state\.Detected\.Version -ceq \$script:ResolvedVersion'
@@ -689,7 +691,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_requires_owned_state_present,desktop_uninstall_rejects_owned_state_residue,desktop_residue_cleanup_only_removes_uninstaller_and_empty_root,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis,legacy_env_port_and_marker,legacy_env_marker_only,desktop_probe_diag_success_emission,desktop_probe_diag_failure_emission'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,desktop_native_uninstall_adapter,desktop_native_uninstall_missing_dispatch,desktop_native_uninstall_wrong_action,desktop_native_uninstall_missing_failure_guard,desktop_native_uninstall_direct_registry_delete,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_requires_owned_state_present,desktop_uninstall_rejects_owned_state_residue,desktop_residue_cleanup_only_removes_uninstaller_and_empty_root,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis,legacy_env_port_and_marker,legacy_env_marker_only,desktop_probe_diag_success_emission,desktop_probe_diag_failure_emission'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -1280,10 +1282,17 @@ Describe 'winsmux version surface' {
     It 'T615-DESKTOP-CANDIDATE-01 binds the checked-out candidate identity and derives the installer from VERSION without publication' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\desktop-candidate-cdp-gate.yml') -Raw -Encoding UTF8
 
-        $workflow | Should -Match '(?ms)^on:\s*\r?\n\s+workflow_dispatch:'
+        $triggers = [regex]::Match($workflow, '(?ms)^on:\s*\r?\n(?<body>.*?)(?=^permissions:)')
+        $triggers.Success | Should -BeTrue
+        @([regex]::Matches($triggers.Groups['body'].Value, '(?m)^  workflow_dispatch:\s*$')).Count | Should -Be 1
+        @([regex]::Matches($triggers.Groups['body'].Value, '(?m)^  workflow_call:\s*$')).Count | Should -Be 1
         $workflow | Should -Not -Match '(?m)^\s+(push|pull_request|schedule):'
         $workflow | Should -Match '(?ms)^permissions:\s*\r?\n\s+contents:\s+read\s*$'
-        $workflow | Should -Not -Match '(?i)secrets\.|npm publish|softprops/action-gh-release|git (push|tag)|actions/upload-artifact'
+        $workflow | Should -Not -Match '(?i)secrets\.|npm publish|softprops/action-gh-release|git (push|tag)'
+        $candidate = [regex]::Match($workflow, '(?ms)^  desktop-candidate-cdp-gate:.*?(?=^  desktop-native-lifecycle:)')
+        $candidate.Success | Should -BeTrue
+        $candidate.Value | Should -Not -Match 'actions/upload-artifact'
+        # Only the separate native job may upload the bounded local proof artifacts.
         $workflow | Should -Match 'ref:\s+\$\{\{ inputs\.candidate_ref \}\}'
         $workflow | Should -Match 'persist-credentials:\s+false'
         $workflow | Should -Match ('(?m)^\s+default:\s+v{0}\s*$' -f [regex]::Escape($script:ProductVersion))

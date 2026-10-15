@@ -288,15 +288,25 @@ Describe 'winsmux npm release package contract' {
         $testWorkflow | Should -Match 'scripts/test-install-e2e\.ps1 -Route "\$\{\{ matrix\.route \}\}"'
         $testWorkflow | Should -Match 'WINSMUX_INSTALL_E2E_GITHUB_ACCESS:\s+\$\{\{ github\.token \}\}'
         $testWorkflow | Should -Match 'needs:[\s\S]*?- install-e2e[\s\S]*?needs\.install-e2e\.result'
-        $installer | Should -Not -Match 'Download-File "winsmux\.ps1"'
+        $installerTokens = $null; $installerErrors = $null
+        $installerAst = [Management.Automation.Language.Parser]::ParseInput($installer, [ref]$installerTokens, [ref]$installerErrors)
+        $installerErrors.Count | Should -Be 0
+        $downloadCommands = @($installerAst.FindAll({ param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -in @('Download-File', 'Download-OptionalFile') -and
+            $node.CommandElements.Count -eq 3 -and
+            $node.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst]
+        }, $true))
+        $downloadCommands.Count | Should -BeGreaterThan 0
+        @($downloadCommands | Where-Object { $_.CommandElements[1].Value -in @('winsmux.ps1', 'install.ps1') }).Count | Should -Be 0
         $installer | Should -Match 'New-WinsmuxLifecycleState \$lease \(Get-WinsmuxExecutingInstallerSource\) \$script:ResolvedVersion'
         $installer | Should -Match 'Publish-WinsmuxLifecycle \$lease \$lifecycle'
-        $installer | Should -Not -Match 'Download-File "install\.ps1" \(Join-Path \$BIN_DIR "install\.ps1"\)'
-        $downloadDeclarations = @([regex]::Matches($installer, '(?m)^\s*Download-(?:Optional)?File\s+"(?<path>[^"]+)"\s+(?<destination>[^\r\n]+)$') | ForEach-Object {
-            '{0}|{1}' -f $_.Groups['path'].Value, $_.Groups['destination'].Value.Trim()
+        $downloadDeclarations = @($downloadCommands | ForEach-Object {
+            $destination = $_.CommandElements[2].Extent.Text -replace '["'']', ''
+            '{0}|{1}' -f $_.CommandElements[1].Value, $destination
         })
         @($downloadDeclarations | Group-Object | Where-Object Count -gt 1).Count | Should -Be 0
-        ([regex]::Matches($installer, 'Join-Path \$BIN_DIR "winsmux\.cmd"')).Count | Should -Be 1
+        ([regex]::Matches($installer, 'Join-Path \$BIN_DIR [''"]winsmux\.cmd[''"]')).Count | Should -Be 1
         $installer | Should -Match 'winsmux-core\.ps1" %\*'
         $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
         $installer | Should -Not -Match '(?<!-core)winsmux\.ps1" %\*'
@@ -348,8 +358,27 @@ Describe 'winsmux npm release package contract' {
         $installE2e | Should -Match "wrapper.*doctor"
         $installE2e | Should -Match 'installer download failure'
         $installE2e | Should -Not -Match '\$installResult\.Combined -match ''404\|Not Found\|Failed to download'''
-        $installE2e | Should -Match 'Defect fixture skips release binary acquisition'
-        $installE2e | Should -Match 'Install-WinsmuxBinary.*-Lease.*lease.*\[ \\t\]\*\\r\?\$'
+        $fixtureFactory = @($e2eAst.FindAll({ param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-WinsmuxMissingSourceFixture'
+        }, $true))
+        $fixtureFactory.Count | Should -Be 1
+        . ([scriptblock]::Create($fixtureFactory[0].Extent.Text))
+        $defectFixture = New-WinsmuxMissingSourceFixture -Source $installer
+        $defectFixture.source | Should -Not -Be $installer
+        $defectFixture.proof.original_installer_sha256 | Should -BeExactly ((Get-FileHash -LiteralPath $script:InstallerPath -Algorithm SHA256).Hash.ToLowerInvariant())
+        $defectFixture.proof.inverse_projection_exact | Should -BeTrue
+        $defectFixture.proof.core_stage_calls | Should -Be 2
+        $defectFixture.proof.binary_dispatch_calls | Should -Be 1
+        $defectFixture.proof.stage_function | Should -BeExactly 'New-WinsmuxSupportStage'
+        $defectFixture.proof.lifecycle_function | Should -BeExactly 'Invoke-WinsmuxInstallLifecycle'
+        $defectFixture.proof.historical_target | Should -BeExactly 'winsmux.ps1'
+        $defectFixture.proof.stage_reached_marker | Should -BeExactly 'TASK880_DEFECT_MISSING_SOURCE_READY'
+        $defectFixture.proof.release_binary_acquisition | Should -BeExactly 'excluded in this historical-source fixture'
+        $defectFixture.proof.publication_registration | Should -BeExactly 'not reached; fixture invokes only the current own-stage producer'
+        $defectFixture.proof.real_http_404 | Should -BeExactly 'not_run'
+        $fixtureFactory[0].Extent.Text | Should -Match ([regex]::Escape('$broken.Replace($insertion,'''').Replace($replacement,$binary.Extent.Text) -cne $Source){throw ''Missing-source fixture changed bytes beyond its two declared projections.''}'))
+        $installE2e | Should -Match ([regex]::Escape('if($fixture.proof.original_installer_sha256 -cne (Get-GitBlobSha256 -Treeish $SourceCommit -RelativePath ''install.ps1'')){throw ''Historical detection source differs from the committed installer.''}'))
+        $installE2e | Should -Match ([regex]::Escape('if ($result.ExitCode -eq 0 -or $result.Combined -notmatch $fixture.proof.stage_reached_marker -or $result.Combined -notmatch ''winsmux\.ps1'' -or $result.Combined -notmatch ''404|Not Found'') {'))
         $installE2e | Should -Not -Match '\$result\.Combined -notmatch ''404\|Not Found\|Failed to download'''
         $installE2e | Should -Match '\[ValidateRange\(1, 1800\)\]\[int\]\$TimeoutSeconds = 900'
         $installE2e | Should -Match '\$process\.Kill\(\$true\)'
@@ -725,7 +754,7 @@ switch ($Mode) {
     It 'removes only the installer-owned profile block and preserves user content and encoding' {
         $installer = Get-Content -LiteralPath $script:InstallerPath -Raw -Encoding UTF8
         $installer | Should -Not -Match "-notmatch 'winsmux'"
-        $installer | Should -Match '\$managedProfilePattern'
+        $installer | Should -Match '\[regex\]::Escape\(\$ManagedPathLine\)'
         $mainOffset = $installer.IndexOf('# Main', [System.StringComparison]::Ordinal)
         $mainOffset | Should -BeGreaterThan 0
         . ([scriptblock]::Create($installer.Substring(0, $mainOffset)))
@@ -804,9 +833,11 @@ switch ($Mode) {
 
         $invalidInstaller = Join-Path $TestDrive 'install-with-missing-download.ps1'
         $installer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'install.ps1') -Raw -Encoding UTF8
+        $originalDownload = 'Download-File ''scripts/winsmux-core.ps1'' (Join-Path $BIN_DIR ''winsmux-core.ps1'')'
+        @([regex]::Matches($installer, [regex]::Escape($originalDownload))).Count | Should -Be 1
         $invalid = $installer.Replace(
-            'Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")',
-            'Download-File "missing/installer-entrypoint.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")'
+            $originalDownload,
+            'Download-File ''missing/installer-entrypoint.ps1'' (Join-Path $BIN_DIR ''winsmux-core.ps1'')'
         )
         $invalid | Should -Not -Be $installer
         Write-TestFileUtf8 -Path $invalidInstaller -Content $invalid
@@ -820,6 +851,7 @@ switch ($Mode) {
         $missing.ExitCode | Should -Not -Be 0
         $missing.StdErr | Should -Match 'missing/installer-entrypoint\.ps1'
 
+        $configDownload = 'Download-File ''.winsmux.conf'' (Join-Path $stageRoot ''.winsmux.conf'')'
         $invalidCases = @(
             @{
                 Name = 'missing runtime dependency declaration'
@@ -835,31 +867,32 @@ switch ($Mode) {
             },
             @{
                 Name = 'dynamic target'
-                Find = 'Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")'
-                Replace = 'Download-File $dynamicPath (Join-Path $BIN_DIR "winsmux-core.ps1")'
+                Find = $originalDownload
+                Replace = 'Download-File $dynamicPath (Join-Path $BIN_DIR ''winsmux-core.ps1'')'
                 Error = 'static string literal'
             },
             @{
                 Name = 'parent traversal'
-                Find = 'Download-File ".winsmux.conf" $confDest'
-                Replace = 'Download-File "../.winsmux.conf" $confDest'
+                Find = $configDownload
+                Replace = 'Download-File ''../.winsmux.conf'' (Join-Path $stageRoot ''.winsmux.conf'')'
                 Error = 'unsafe relative path'
             },
             @{
                 Name = 'absolute URL'
-                Find = 'Download-File ".winsmux.conf" $confDest'
-                Replace = 'Download-File "https://example.invalid/.winsmux.conf" $confDest'
+                Find = $configDownload
+                Replace = 'Download-File ''https://example.invalid/.winsmux.conf'' (Join-Path $stageRoot ''.winsmux.conf'')'
                 Error = 'unsafe relative path'
             },
             @{
                 Name = 'directory instead of file'
-                Find = 'Download-File ".winsmux.conf" $confDest'
-                Replace = 'Download-File "scripts" $confDest'
+                Find = $configDownload
+                Replace = 'Download-File ''scripts'' (Join-Path $stageRoot ''.winsmux.conf'')'
                 Error = 'not files'
             }
         )
         foreach ($case in $invalidCases) {
             $casePath = Join-Path $TestDrive (($case.Name -replace '[^A-Za-z0-9]+', '-') + '.ps1')
+            @([regex]::Matches($installer, [regex]::Escape($case.Find))).Count | Should -Be 1 -Because $case.Name
             $caseInstaller = $installer.Replace($case.Find, $case.Replace)
             $caseInstaller | Should -Not -Be $installer -Because $case.Name
             Write-TestFileUtf8 -Path $casePath -Content $caseInstaller
@@ -1065,7 +1098,7 @@ switch ($Mode) {
         $stagedInstallScript | Should -Match 'Install-SecuritySupportScripts'
         $stagedInstallScript | Should -Match 'Remove-ProfileExcludedSupportScripts'
         $stagedInstallScript | Should -Match 'Removed profile-excluded support script'
-        $stagedInstallScript | Should -Match 'Sync-WindowsTerminalFragment -Profile \$resolvedInstallProfile'
+        $stagedInstallScript | Should -Match 'Sync-WindowsTerminalFragment \$Profile -FragmentDirectory \(Join-Path \$stageRoot ''fragment''\)'
         $stagedInstallScript | Should -Match 'Missing or ambiguous paired release asset'
         $stagedInstallScript | Should -Match 'Release checksum is missing the exact paired asset'
         $stagedInstallScript | Should -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$downloadPath -ErrorAction Stop'

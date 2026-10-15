@@ -10,18 +10,19 @@
     "Move the existing installer hook include before utils",
     "Require the hook-defined generation path",
     "Include generation-owned utils and plugin directory",
-    "Replace exactly three template and seven utils plugin namespaces"
+    "Replace exactly three template and seven utils plugin namespaces",
+    "Replace the inherited lifecycle operations with the generation-bound native NSIS install, rollback and uninstall adapter"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 32205,
-      "sha256": "1b691a6d9d526a312f95a156e5b52503bd37aa993173e366ebef9db0b66ba9a9"
+      "bytes": 17696,
+      "sha256": "c4fc0d1f02ac01ff06b74dfb10ffd5f7259eb7d2a8a58ac44a3e334f81cf72dc"
     },
     {
       "path": "winsmux-utils.nsh",
-      "bytes": 6412,
-      "sha256": "9e2259d2226398ff4e69c1b322ce480ccb51df5d65525ac706b2179bd1db92c4"
+      "bytes": 1714,
+      "sha256": "923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad"
     }
   ],
   "scope": "compiler-source-provenance"

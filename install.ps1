@@ -1843,6 +1843,7 @@ function Invoke-WinsmuxInstallLifecycle {
         $profile = Resolve-InstallProfile -PreferExisting:$IsUpdate
         Install-WinsmuxBinary -Lease $lease -SupportProfile $profile -IsUpdate:$IsUpdate
         Write-Status "Installed v$ResolvedVersion with profile '$profile'."
+        Write-Status 'Next: run winsmux init in your project, then winsmux launch.'
     } finally { $lease.Stream.Dispose() }
 }
 

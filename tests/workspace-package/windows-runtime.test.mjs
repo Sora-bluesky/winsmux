@@ -23,8 +23,8 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', '1b691a6d9d526a312f95a156e5b52503bd37aa993173e366ebef9db0b66ba9a9'],
-    ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '9e2259d2226398ff4e69c1b322ce480ccb51df5d65525ac706b2179bd1db92c4'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', 'c4fc0d1f02ac01ff06b74dfb10ffd5f7259eb7d2a8a58ac44a3e334f81cf72dc'],
+    ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
   ]);
   const attributes = spawnSync('git', ['check-attr', 'text', '--', ...files.keys()], { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
   assert.equal(attributes.status, 0, attributes.stderr);

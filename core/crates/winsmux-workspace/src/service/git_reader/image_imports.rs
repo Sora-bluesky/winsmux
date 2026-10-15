@@ -49,7 +49,8 @@ fn module_name(bytes: &[u8], sections: usize, count: usize, headers: usize, rva:
     let name = name.to_ascii_lowercase();
     let system = matches!(name.as_str(),
         "advapi32.dll" | "bcrypt.dll" | "bcryptprimitives.dll" | "combase.dll"
-        | "kernel32.dll" | "ntdll.dll" | "secur32.dll" | "shell32.dll"
+        | "kernel32.dll" | "msi.dll" | "ntdll.dll" | "ole32.dll"
+        | "secur32.dll" | "shell32.dll" | "shlwapi.dll"
         | "user32.dll" | "userenv.dll" | "vcruntime140.dll" | "ws2_32.dll");
     if !system && !name.starts_with("api-ms-win-") && !name.starts_with("ext-ms-win-") {
         return Err(ErrorCode::UnsupportedFile);
@@ -114,6 +115,52 @@ pub(super) fn inspect_held_image(handle: HANDLE) -> Result<Vec<String>, ErrorCod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn image_with_import(name: &str, delay: bool) -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x600];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\0\0");
+        bytes[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        bytes[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());
+        bytes[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+        let optional = 0x98;
+        bytes[optional..optional + 2].copy_from_slice(&0x20bu16.to_le_bytes());
+        bytes[optional + 60..optional + 64].copy_from_slice(&0x200u32.to_le_bytes());
+        bytes[optional + 108..optional + 112].copy_from_slice(&16u32.to_le_bytes());
+        let section = optional + 240;
+        for (offset, value) in [(8, 0x400u32), (12, 0x1000), (16, 0x400), (20, 0x200)] {
+            bytes[section + offset..section + offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let (directory, width, name_offset) = if delay { (13, 32, 4) } else { (1, 20, 12) };
+        let entry = optional + 112 + directory * 8;
+        bytes[entry..entry + 4].copy_from_slice(&0x1000u32.to_le_bytes());
+        bytes[entry + 4..entry + 8].copy_from_slice(&((width * 2) as u32).to_le_bytes());
+        if delay { bytes[0x200..0x204].copy_from_slice(&1u32.to_le_bytes()); }
+        bytes[0x200 + name_offset..0x204 + name_offset].copy_from_slice(&0x1100u32.to_le_bytes());
+        bytes[0x300..0x300 + name.len()].copy_from_slice(name.as_bytes());
+        bytes
+    }
+
+    #[test]
+    fn exact_system_imports_are_accepted_in_normal_and_delay_descriptors() {
+        for delay in [false, true] {
+            for name in ["ole32.dll", "shlwapi.dll", "msi.dll"] {
+                assert_eq!(inspect_image_bytes(&image_with_import(name, delay)), Ok(vec![name.to_owned()]),
+                    "name={name} delay={delay}");
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_and_path_imports_are_rejected_in_normal_and_delay_descriptors() {
+        for delay in [false, true] {
+            for name in ["unknown.dll", r"C:\outside\ole32.dll", "sub/ole32.dll", r"..\msi.dll"] {
+                assert_eq!(inspect_image_bytes(&image_with_import(name, delay)).err(),
+                    Some(ErrorCode::UnsupportedFile), "name={name} delay={delay}");
+            }
+        }
+    }
 
     #[test]
     fn installed_image_has_only_expected_import_modules() {

@@ -169,6 +169,72 @@ public static class WinsmuxDesktopActorProbe {
  static bool Equal(byte[] a,byte[] b) { if(a.Length!=b.Length)return false; for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false; return true; }
  static void Medium(TokenFacts t,TokenFacts caller) { if(!Equal(t.sid,caller.sid)||t.session!=caller.session||t.tokenType!=1||t.elevation!=0||t.rid<8192||t.rid>=12288||t.appContainer!=0) throw new InvalidOperationException("Actual medium actor identity refused"); }
  static IntPtr Sid(int kind,out uint n) { n=68; var b=Marshal.AllocHGlobal(68); try { Check(CreateWellKnownSid(kind,IntPtr.Zero,b,ref n),"CreateWellKnownSid"); return b; } catch { Marshal.FreeHGlobal(b); throw; } }
+ // Default object security belongs only to a newly created restricted primary.
+ [StructLayout(LayoutKind.Sequential)] struct GROUPS_HEAD { public uint count; public SA first; }
+ [StructLayout(LayoutKind.Sequential)] struct PRIVILEGE { public uint low; public int high; public uint attributes; }
+ [StructLayout(LayoutKind.Sequential)] struct PRIVILEGES_HEAD { public uint count; public PRIVILEGE first; }
+ sealed class SidAttributes { internal byte[] sid; internal uint attributes; }
+ sealed class TokenSecurity { internal TokenFacts facts; internal byte[] user,owner,primaryGroup,integrity,dacl; internal uint userAttributes,integrityAttributes; internal SidAttributes[] groups,restricting; internal PRIVILEGE[] privileges; }
+ static int SidBytesLength(byte[] bytes,int offset,int limit) {
+  if(bytes==null||offset<0||limit>bytes.Length||offset>limit-8||bytes[offset]!=1||bytes[offset+1]>15)throw new InvalidOperationException("SID bounds refused");
+  int n=8+4*bytes[offset+1];if(n>limit-offset)throw new InvalidOperationException("SID length refused");return n;
+ }
+ static byte[] CopyBytes(byte[] bytes,int offset,int count) {var value=new byte[count];Buffer.BlockCopy(bytes,offset,value,0,count);return value;}
+ static byte[] PointerSid(IntPtr buffer,uint returned,int offset) {
+  if(offset<0||(ulong)offset+(uint)IntPtr.Size>returned)throw new InvalidOperationException("Token SID pointer bounds refused");
+  var sid=Marshal.ReadIntPtr(buffer,offset);long delta=sid.ToInt64()-buffer.ToInt64();if(delta<0||delta>(long)returned-8)throw new InvalidOperationException("Token SID range refused");
+  var head=new byte[8];Marshal.Copy(sid,head,0,8);int size=8+4*head[1];if(head[0]!=1||head[1]>15||size>(long)returned-delta)throw new InvalidOperationException("Token SID bytes refused");
+  var bytes=new byte[size];Marshal.Copy(sid,bytes,0,size);return bytes;
+ }
+ static byte[] TokenSid(IntPtr token,int kind,out uint attributes) {
+  uint n;var p=Info(token,kind,out n);try{var value=PointerSid(p,n,0);attributes=0;if(kind==1||kind==25){if(n<(uint)(IntPtr.Size+4))throw new InvalidOperationException("Token SID attributes bounds refused");attributes=unchecked((uint)Marshal.ReadInt32(p,IntPtr.Size));}return value;}finally{Marshal.FreeHGlobal(p);}
+ }
+ static SidAttributes[] TokenGroups(IntPtr token,int kind) {
+  uint n;var p=Info(token,kind,out n);try{if(n<4)throw new InvalidOperationException("Token group count bounds refused");uint count=unchecked((uint)Marshal.ReadInt32(p));int offset=Marshal.OffsetOf<GROUPS_HEAD>("first").ToInt32(),stride=Marshal.SizeOf<SA>();if(count>0&&(ulong)offset+(ulong)count*(uint)stride>n)throw new InvalidOperationException("Token group array bounds refused");var rows=new SidAttributes[count];for(uint i=0;i<count;i++){int at=checked(offset+(int)i*stride);rows[i]=new SidAttributes{sid=PointerSid(p,n,at),attributes=unchecked((uint)Marshal.ReadInt32(p,at+IntPtr.Size))};}return rows;}finally{Marshal.FreeHGlobal(p);}
+ }
+ static PRIVILEGE[] TokenPrivileges(IntPtr token) {
+  uint n;var p=Info(token,3,out n);try{if(n<4)throw new InvalidOperationException("Token privilege count bounds refused");uint count=unchecked((uint)Marshal.ReadInt32(p));int offset=Marshal.OffsetOf<PRIVILEGES_HEAD>("first").ToInt32(),stride=Marshal.SizeOf<PRIVILEGE>();if((ulong)offset+(ulong)count*(uint)stride>n)throw new InvalidOperationException("Token privilege array bounds refused");var rows=new PRIVILEGE[count];for(uint i=0;i<count;i++)rows[i]=Marshal.PtrToStructure<PRIVILEGE>(IntPtr.Add(p,checked(offset+(int)i*stride)));return rows;}finally{Marshal.FreeHGlobal(p);}
+ }
+ static byte[] TokenDefaultAcl(IntPtr token) {
+  uint n;var p=Info(token,6,out n);try{if(n<(uint)IntPtr.Size)throw new InvalidOperationException("Token default ACL pointer bounds refused");var acl=Marshal.ReadIntPtr(p);if(acl==IntPtr.Zero)return null;long offset=acl.ToInt64()-p.ToInt64();if(offset<0||offset>(long)n-8)throw new InvalidOperationException("Token default ACL range refused");int length=unchecked((ushort)Marshal.ReadInt16(acl,2));if(length<8||length>(long)n-offset)throw new InvalidOperationException("Token default ACL bytes refused");var bytes=new byte[length];Marshal.Copy(acl,bytes,0,length);return bytes;}finally{Marshal.FreeHGlobal(p);}
+ }
+ static TokenSecurity SecuritySnapshot(IntPtr token) {
+  uint unused;var value=new TokenSecurity{facts=Observe(token)};value.user=TokenSid(token,1,out value.userAttributes);value.owner=TokenSid(token,4,out unused);value.primaryGroup=TokenSid(token,5,out unused);value.integrity=TokenSid(token,25,out value.integrityAttributes);value.dacl=TokenDefaultAcl(token);value.groups=TokenGroups(token,2);value.restricting=TokenGroups(token,11);value.privileges=TokenPrivileges(token);if(!Equal(value.user,value.facts.sid))throw new InvalidOperationException("Token user snapshot changed");return value;
+ }
+ static bool NullableBytesEqual(byte[] a,byte[] b) {return a==null?b==null:b!=null&&Equal(a,b);}
+ static string[] GroupState(SidAttributes[] rows,byte[] oldIntegrity,byte[] newIntegrity) {
+  var values=new List<string>();int mapped=0;foreach(var row in rows){var sid=row.sid;if(oldIntegrity!=null&&Equal(sid,oldIntegrity)){sid=newIntegrity;mapped++;}values.Add(Convert.ToBase64String(sid)+":"+row.attributes);}if(mapped>1)throw new InvalidOperationException("Duplicate integrity group refused");values.Sort(StringComparer.Ordinal);return values.ToArray();
+ }
+ static string[] PrivilegeState(PRIVILEGE[] rows) {var values=new List<string>();foreach(var row in rows)values.Add(row.low+":"+row.high+":"+row.attributes);values.Sort(StringComparer.Ordinal);return values.ToArray();}
+ static bool SameStrings(string[] a,string[] b) {if(a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true;}
+ static byte[] MediumIntegritySid() {var sid=new SecurityIdentifier("S-1-16-8192");var b=new byte[sid.BinaryLength];sid.GetBinaryForm(b,0);return b;}
+ static void RequireSecuritySame(TokenSecurity expected,TokenSecurity actual,byte[] expectedDacl,bool mediumRid) {
+  var a=expected.facts;var b=actual.facts;
+  if(!Equal(a.sid,b.sid)||a.elevation!=b.elevation||a.type!=b.type||a.session!=b.session||a.tokenType!=b.tokenType||a.restricted!=b.restricted||a.appContainer!=b.appContainer||b.rid!=(mediumRid?8192u:a.rid)||!Equal(expected.user,actual.user)||expected.userAttributes!=actual.userAttributes||!Equal(expected.owner,actual.owner)||!Equal(expected.primaryGroup,actual.primaryGroup)||expected.integrityAttributes!=actual.integrityAttributes||!Equal(mediumRid?MediumIntegritySid():expected.integrity,actual.integrity)||!NullableBytesEqual(expectedDacl,actual.dacl)||!SameStrings(GroupState(expected.groups,mediumRid?expected.integrity:null,mediumRid?actual.integrity:null),GroupState(actual.groups,null,null))||!SameStrings(GroupState(expected.restricting,null,null),GroupState(actual.restricting,null,null))||!SameStrings(PrivilegeState(expected.privileges),PrivilegeState(actual.privileges)))throw new InvalidOperationException("Token security snapshot changed beyond admitted delta");
+ }
+ static void RequireFreshProfile(TokenSecurity fresh,TokenSecurity caller) {
+  var a=fresh.facts;var c=caller.facts;if(!Equal(a.sid,c.sid)||a.session!=c.session||a.tokenType!=1||a.elevation!=0||a.rid<8192||a.restricted!=1||a.appContainer!=0||!Equal(fresh.owner,fresh.user)||fresh.restricting.Length!=0)throw new InvalidOperationException("Fresh restricted primary profile refused");
+  var admin=new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null);var adminSid=new byte[admin.BinaryLength];admin.GetBinaryForm(adminSid,0);int count=0;foreach(var row in fresh.groups)if(Equal(row.sid,adminSid)){count++;if((row.attributes&0x10)==0||(row.attributes&6)!=0)throw new InvalidOperationException("Administrators deny-only state refused");}if(count!=1)throw new InvalidOperationException("Administrators group profile refused");
+  foreach(var privilege in fresh.privileges)if((privilege.attributes&2)!=0){bool prior=false;foreach(var old in caller.privileges)if(privilege.low==old.low&&privilege.high==old.high&&(old.attributes&2)!=0)prior=true;if(!prior)throw new InvalidOperationException("Fresh privilege enable refused");}
+ }
+ static byte[] PrivateUserDefaultAcl(byte[] before,byte[] user) {
+  if(user==null||SidBytesLength(user,0,user.Length)!=user.Length||before==null||before.Length<8||before.Length>65535||(before[0]!=2&&before[0]!=4)||before[1]!=0||BitConverter.ToUInt16(before,6)!=0||BitConverter.ToUInt16(before,2)!=before.Length)throw new InvalidOperationException("Default ACL header refused");
+  int count=BitConverter.ToUInt16(before,4),at=8,userGa=0;if(count==0)throw new InvalidOperationException("Empty default ACL refused");
+  for(int i=0;i<count;i++){if(at>before.Length-8||before[at]!=0||before[at+1]!=0)throw new InvalidOperationException("Unmodeled default ACE refused");int size=BitConverter.ToUInt16(before,at+2);if(size<16||(size&3)!=0||size>before.Length-at)throw new InvalidOperationException("Default ACE bounds refused");int sidSize=SidBytesLength(before,at+8,at+size);if(size!=8+sidSize)throw new InvalidOperationException("Default ACE SID bounds refused");if(BitConverter.ToUInt32(before,at+4)==0x10000000u&&Equal(CopyBytes(before,at+8,sidSize),user))userGa++;at+=size;}
+  if(at!=before.Length||userGa>1)throw new InvalidOperationException("Default ACL inventory refused");if(userGa==1)return (byte[])before.Clone();int extra=8+user.Length;if(before.Length+extra>65535||count==65535)throw new InvalidOperationException("Default ACL append bounds refused");var after=new byte[before.Length+extra];Buffer.BlockCopy(before,0,after,0,before.Length);Buffer.BlockCopy(BitConverter.GetBytes((ushort)after.Length),0,after,2,2);Buffer.BlockCopy(BitConverter.GetBytes((ushort)(count+1)),0,after,4,2);after[at]=0;after[at+1]=0;Buffer.BlockCopy(BitConverter.GetBytes((ushort)extra),0,after,at+2,2);Buffer.BlockCopy(BitConverter.GetBytes(0x10000000u),0,after,at+4,4);Buffer.BlockCopy(user,0,after,at+8,user.Length);return after;
+ }
+ static void SetFreshDefaultAcl(IntPtr derived,byte[] bytes) {
+  IntPtr acl=IntPtr.Zero,descriptor=IntPtr.Zero;try{acl=Marshal.AllocHGlobal(bytes.Length);Marshal.Copy(bytes,0,acl,bytes.Length);descriptor=Marshal.AllocHGlobal(IntPtr.Size);Marshal.WriteIntPtr(descriptor,acl);Check(SetTokenInformation(derived,6,descriptor,(uint)IntPtr.Size),"Set fresh derived default ACL");}finally{if(descriptor!=IntPtr.Zero)Marshal.FreeHGlobal(descriptor);if(acl!=IntPtr.Zero)Marshal.FreeHGlobal(acl);}
+ }
+ static bool SameActorFacts(TokenFacts a,TokenFacts b) {return Equal(a.sid,b.sid)&&a.elevation==b.elevation&&a.type==b.type&&a.rid==b.rid&&a.session==b.session&&a.tokenType==b.tokenType&&a.restricted==b.restricted&&a.appContainer==b.appContainer;}
+ static IntPtr CreateRestrictedMediumPrimary(IntPtr callerToken,TokenFacts caller,out TokenFacts initial) {
+  var callerBefore=SecuritySnapshot(callerToken);if(!SameActorFacts(callerBefore.facts,caller)||callerBefore.facts.elevation!=1||callerBefore.facts.rid<12288)throw new InvalidOperationException("Fresh primary caller changed");
+  IntPtr derived=IntPtr.Zero,admin=IntPtr.Zero,medium=IntPtr.Zero;bool transfer=false;initial=null;
+  try{uint n;admin=Sid(26,out n);var disabled=new SA{Sid=admin,Attributes=0};Check(CreateRestrictedToken(callerToken,5,1,ref disabled,0,IntPtr.Zero,0,IntPtr.Zero,out derived),"Create fresh restricted primary flags 5");var fresh=SecuritySnapshot(derived);RequireFreshProfile(fresh,callerBefore);initial=fresh.facts;
+   if(fresh.facts.rid>8192){medium=Sid(67,out n);var label=new SA{Sid=medium,Attributes=0x20};var memory=Marshal.AllocHGlobal(Marshal.SizeOf<SA>());try{Marshal.StructureToPtr(label,memory,false);Check(SetTokenInformation(derived,25,memory,(uint)Marshal.SizeOf<SA>()+n),"Set fresh derived medium label");}finally{Marshal.FreeHGlobal(memory);}}
+   var expected=PrivateUserDefaultAcl(fresh.dacl,fresh.user);if(!Equal(fresh.dacl,expected))SetFreshDefaultAcl(derived,expected);var after=SecuritySnapshot(derived);RequireFreshProfile(after,callerBefore);RequireSecuritySame(fresh,after,expected,true);Medium(after.facts,caller);transfer=true;return derived;
+  }finally{bool callerSame=false;try{RequireSecuritySame(callerBefore,SecuritySnapshot(callerToken),callerBefore.dacl,false);callerSame=true;}finally{if((!transfer||!callerSame)&&derived!=IntPtr.Zero)CloseHandle(derived);if(admin!=IntPtr.Zero)Marshal.FreeHGlobal(admin);if(medium!=IntPtr.Zero)Marshal.FreeHGlobal(medium);}}
+ }
  static string DesktopName(IntPtr h) { uint n; var b=new StringBuilder(256); Check(GetUserObjectInformationW(h,2,b,512,out n),"GetUserObjectInformation"); var s=b.ToString(); if(s.Length==0||s.Contains("\\")||s.Contains("\0"))throw new InvalidOperationException("Desktop name refused"); return s; }
  static FileStream OpenPlain(string path) { var handle=CreateFileW(path,0x80000000,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero); if(handle==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Open plain file lease"); var safe=new Microsoft.Win32.SafeHandles.SafeFileHandle(handle,true); try {var facts=FileFacts(handle);if(facts.links!=1||(facts.attributes&0x10)!=0)throw new InvalidOperationException("Plain single-link file required");return new FileStream(safe,FileAccess.Read);}catch{safe.Dispose();throw;} }
  static FILEINFO FileFacts(IntPtr h) { FILEINFO f; Check(GetFileInformationByHandle(h,out f),"GetFileInformationByHandle"); if((f.attributes&0x400)!=0)throw new InvalidOperationException("Reparse object refused"); return f; }
@@ -183,15 +249,14 @@ public static class WinsmuxDesktopActorProbe {
  public static string ReadChild(string path) { using(var f=OpenPlain(path)) {var info=FileFacts(f.SafeFileHandle.DangerousGetHandle()); if(info.links!=1||(info.attributes&0x10)!=0||f.Length<2||f.Length>16384)throw new InvalidOperationException("Child receipt file refused"); byte[] b=new byte[f.Length]; int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Child receipt changed");return new UTF8Encoding(false,true).GetString(b);} }
  public static Dictionary<string,object> Probe(string image,string root,string childScript) {
   var result=new Dictionary<string,object>{{"schema","winsmux-desktop-native-actor-probe/v1"},{"outcome","failed"},{"created",false},{"resumed",false},{"installer_started",false}};
-  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,job=IntPtr.Zero,admin=IntPtr.Zero,medium=IntPtr.Zero,environment=IntPtr.Zero,dir=IntPtr.Zero; PI pi=new PI(); bool assigned=false,terminal=false; FileStream imageLease=null,scriptLease=null;
+  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,job=IntPtr.Zero,environment=IntPtr.Zero,dir=IntPtr.Zero; PI pi=new PI(); bool assigned=false,terminal=false; FileStream imageLease=null,scriptLease=null;
   try {
    IntPtr impersonation; if(OpenThreadToken(GetCurrentThread(),8,true,out impersonation)) { CloseHandle(impersonation); throw new InvalidOperationException("Thread impersonation refused"); } if(Marshal.GetLastWin32Error()!=1008)throw new Win32Exception(Marshal.GetLastWin32Error(),"OpenThreadToken");
    Check(OpenProcessToken(GetCurrentProcess(),0x8b,out callerToken),"OpenProcessToken caller"); var caller=Observe(callerToken); result["caller"]=caller.Public(); uint session; Check(ProcessIdToSessionId(GetCurrentProcessId(),out session),"ProcessIdToSessionId");
    if(caller.tokenType!=1||caller.session!=session||caller.appContainer!=0||caller.sidText=="S-1-5-18"||caller.sidText=="S-1-5-19"||caller.sidText=="S-1-5-20"||caller.sidText.StartsWith("S-1-5-80-",StringComparison.Ordinal))throw new InvalidOperationException("Caller identity refused");
    if(caller.elevation!=1||caller.rid<12288) { result["outcome"]="host_not_applicable"; return result; }
-   uint sidSize; admin=Sid(26,out sidSize); var disabled=new SA{Sid=admin,Attributes=0}; Check(CreateRestrictedToken(callerToken,5,1,ref disabled,0,IntPtr.Zero,0,IntPtr.Zero,out derived),"CreateRestrictedToken flags 5"); result["derived_initial"]=Observe(derived).Public();
-   if(Observe(derived).rid>8192) { medium=Sid(67,out sidSize); var label=new SA{Sid=medium,Attributes=0x20}; IntPtr labelMemory=Marshal.AllocHGlobal(Marshal.SizeOf<SA>()); try { Marshal.StructureToPtr(label,labelMemory,false); Check(SetTokenInformation(derived,25,labelMemory,(uint)Marshal.SizeOf<SA>()+sidSize),"SetTokenInformation own derived medium"); } finally { Marshal.FreeHGlobal(labelMemory); } }
-   var actor=Observe(derived); result["derived"]=actor.Public(); Medium(actor,caller);
+   TokenFacts initial;derived=CreateRestrictedMediumPrimary(callerToken,caller,out initial);result["derived_initial"]=initial.Public();
+   var actor=Observe(derived);result["derived"]=actor.Public();Medium(actor,caller);
    var env=UserEnvironment(derived); string local; if(!env.TryGetValue("LOCALAPPDATA",out local)||!String.Equals(Path.GetFullPath(local),Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Existing same-SID profile refused");
    image=Path.GetFullPath(image); imageLease=OpenPlain(image); var imageInfo=FileFacts(imageLease.SafeFileHandle.DangerousGetHandle()); if(imageInfo.links!=1||(imageInfo.attributes&0x10)!=0)throw new InvalidOperationException("PowerShell image is not a plain single-link file"); var imageBytes=new byte[imageLease.Length]; int read=0; while(read<imageBytes.Length) { int n=imageLease.Read(imageBytes,read,imageBytes.Length-read); if(n==0)throw new EndOfStreamException();read+=n; } string imageHash=Hash(imageBytes); result["image_sha256"]=imageHash;
    Check(CreateDirectoryW(root,IntPtr.Zero),"CreateDirectoryW exclusive probe root"); dir=CreateFileW(root,0,1|2|4,IntPtr.Zero,3,0x02000000|0x00200000,IntPtr.Zero); if(dir==new IntPtr(-1)) {dir=IntPtr.Zero;throw new Win32Exception(Marshal.GetLastWin32Error(),"Open owned probe root");} var rootInfo=FileFacts(dir); if((rootInfo.attributes&0x10)==0||Directory.GetFileSystemEntries(root).Length!=0)throw new InvalidOperationException("Owned empty directory refused"); result["evidence_root_id"]=FileId(rootInfo);
@@ -220,7 +285,7 @@ public static class WinsmuxDesktopActorProbe {
      }
     }
    } catch(Exception e) {result["outcome"]="failed";result["cleanup_error"]=e.GetType().Name+": "+e.Message;}
-   foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken,dir})if(h!=IntPtr.Zero)CloseHandle(h);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();foreach(var p in new[]{admin,medium,environment})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);
+   foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken,dir})if(h!=IntPtr.Zero)CloseHandle(h);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);
   }
   return result;
  }
@@ -3809,13 +3874,13 @@ function Initialize-DesktopNativeLifecycleActor {
   public void Dispose() {if(disposed)return;if(!terminal||ActiveMembers!=0)throw new InvalidOperationException("Native handles retained for nonterminal Job");CloseHandle(thread);CloseHandle(process);CloseHandle(job);lease.Dispose();if(scriptLease!=null)scriptLease.Dispose();disposed=true;}
  }
  public static NativeOwned StartNative(string purpose,string image,string imageSha,string root,string source,string candidate,string baseline,string script) {
-  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,admin=IntPtr.Zero,medium=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;PI pi=new PI();bool assigned=false;FileStream imageLease=null,scriptLease=null;
+  IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;PI pi=new PI();bool assigned=false;FileStream imageLease=null,scriptLease=null;
   try {
    IntPtr impersonation;if(OpenThreadToken(GetCurrentThread(),8,true,out impersonation)){CloseHandle(impersonation);throw new InvalidOperationException("Native thread impersonation refused");}if(Marshal.GetLastWin32Error()!=1008)throw new Win32Exception(Marshal.GetLastWin32Error(),"Native thread token");
    Check(OpenProcessToken(GetCurrentProcess(),0x8b,out callerToken),"Native caller token");var caller=Observe(callerToken);uint session;Check(ProcessIdToSessionId(GetCurrentProcessId(),out session),"Native caller session");if(caller.tokenType!=1||caller.session!=session||caller.appContainer!=0||caller.sidText=="S-1-5-18"||caller.sidText=="S-1-5-19"||caller.sidText=="S-1-5-20"||caller.sidText.StartsWith("S-1-5-80-",StringComparison.Ordinal))throw new InvalidOperationException("Native caller identity refused");
    IntPtr launchToken=callerToken;bool msi=purpose=="msi-install-en"||purpose=="msi-update-ja"||purpose=="msi-uninstall"||purpose=="msi-capacity-install-en"||purpose=="msi-capacity-update-ja"||purpose=="msi-capacity-uninstall";bool bootstrap=purpose=="medium-bootstrap"||purpose=="msi-nsis-conflict";
    if(bootstrap) {
-    if(caller.elevation!=1||caller.rid<12288)throw new InvalidOperationException("Native high bootstrap required");uint n;admin=Sid(26,out n);var disabled=new SA{Sid=admin,Attributes=0};Check(CreateRestrictedToken(callerToken,5,1,ref disabled,0,IntPtr.Zero,0,IntPtr.Zero,out derived),"Native restricted primary");if(Observe(derived).rid>8192){medium=Sid(67,out n);var label=new SA{Sid=medium,Attributes=0x20};var mem=Marshal.AllocHGlobal(Marshal.SizeOf<SA>());try{Marshal.StructureToPtr(label,mem,false);Check(SetTokenInformation(derived,25,mem,(uint)Marshal.SizeOf<SA>()+n),"Native own medium label");}finally{Marshal.FreeHGlobal(mem);}}Medium(Observe(derived),caller);launchToken=derived;
+    if(caller.elevation!=1||caller.rid<12288)throw new InvalidOperationException("Native high bootstrap required");TokenFacts initial;derived=CreateRestrictedMediumPrimary(callerToken,caller,out initial);launchToken=derived;
    } else if(!msi) { Medium(caller,caller); }
    var env=UserEnvironment(launchToken);string local;if(!env.TryGetValue("LOCALAPPDATA",out local)||!String.Equals(Path.GetFullPath(local),Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Native same-SID profile refused");using(var hive=Microsoft.Win32.Registry.Users.OpenSubKey(caller.sidText,false))if(hive==null)throw new InvalidOperationException("Native existing profile hive missing");
    image=Path.GetFullPath(image);NativePhysical(image);if(purpose=="nsis-uninstall"||msi){var h=CreateFileW(image,0x80000000,purpose=="nsis-uninstall"?5u:1u,IntPtr.Zero,3,0x00200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Native image lease");var safe=new Microsoft.Win32.SafeHandles.SafeFileHandle(h,true);try{var f=FileFacts(h);if((f.attributes&0x10)!=0||f.links<1||(purpose=="nsis-uninstall"&&f.links!=1))throw new InvalidOperationException("Native image plain identity refused");imageLease=new FileStream(safe,FileAccess.Read);}catch{safe.Dispose();throw;}}else imageLease=OpenPlain(image);if(Hash(File.ReadAllBytes(image))!=imageSha)throw new InvalidOperationException("Native image identity refused");string command=NativeCommand(purpose,image,root,source,candidate,baseline,script);if(purpose=="medium-bootstrap"){NativePhysical(script);scriptLease=OpenPlain(script);}
@@ -3824,7 +3889,7 @@ function Initialize-DesktopNativeLifecycleActor {
    bool created=bootstrap?CreateProcessAsUserW(launchToken,image,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x404,environment,Path.GetDirectoryName(image),ref si,out pi):CreateProcessW(image,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x404,environment,Path.GetDirectoryName(image),ref si,out pi);Check(created,"Native suspended launch");Check(AssignProcessToJobObject(job,pi.process),"Native Job assignment");assigned=true;bool member;Check(IsProcessInJob(pi.process,job,out member),"Native Job membership");if(!member)throw new InvalidOperationException("Native member refused");IntPtr childToken;Check(OpenProcessToken(pi.process,8,out childToken),"Native retained child token");TokenFacts child;try{child=Observe(childToken);if(msi){if(!Equal(child.sid,caller.sid)||child.session!=caller.session||child.tokenType!=1||child.appContainer!=0||child.elevation!=caller.elevation||child.rid!=caller.rid)throw new InvalidOperationException("Native MSI actor changed");}else Medium(child,caller);}finally{CloseHandle(childToken);}uint length=32768;var actual=new StringBuilder((int)length);Check(QueryFullProcessImageNameW(pi.process,0,actual,ref length),"Native retained child image");if(!String.Equals(Path.GetFullPath(actual.ToString()),image,StringComparison.OrdinalIgnoreCase)||Hash(File.ReadAllBytes(image))!=imageSha)throw new InvalidOperationException("Native retained child image changed");
    var owned=new NativeOwned(job,pi,child,image,imageSha,imageLease,scriptLease);uint count=ResumeThread(pi.thread);if(count!=1)throw new InvalidOperationException("Native resume count refused");job=IntPtr.Zero;pi=new PI();imageLease=null;scriptLease=null;return owned;
   } catch { if(pi.process!=IntPtr.Zero){bool stopped=assigned?TerminateJobObject(job,124):TerminateProcess(pi.process,124);if(!stopped||WaitForSingleObject(pi.process,10000)!=0)throw new InvalidOperationException("Native failed launch cleanup unconfirmed");if(assigned){ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native failed Job cleanup");if(a.activeProcesses!=0)throw new InvalidOperationException("Native failed Job retains members");}}throw; }
-  finally {foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken})if(h!=IntPtr.Zero)CloseHandle(h);foreach(var p in new[]{admin,medium,environment})if(p!=IntPtr.Zero)Marshal.FreeHGlobal(p);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();}
+  finally {foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken})if(h!=IntPtr.Zero)CloseHandle(h);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();}
  }
  public static Dictionary<string,object> NativeFile(string path) {NativePhysical(path);using(var f=OpenPlain(Path.GetFullPath(path))){var info=FileFacts(f.SafeFileHandle.DangerousGetHandle());var b=new byte[f.Length];int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Native witness changed");return new Dictionary<string,object>{{"bytes",b.Length},{"sha256",Hash(b)},{"identity",FileId(info)}};}}
 
@@ -4454,7 +4519,7 @@ function Get-DesktopNativeMsiProperties {
     }
     $after = [WinsmuxDesktopNativeActor]::NativeFile($Path)
     Assert-Condition ($after['identity'] -ceq $witness['identity'] -and $after['sha256'] -ceq $witness['sha256'] -and $values.Count -eq 6) 'desktop_native_msi_property_source_changed'
-    Assert-Condition ($values.ProductCode -cmatch '^\{[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\}$' -and $values.UpgradeCode -ceq '{84F969BF-F0EC-5CE2-8AD2-A093DE3312BB}' -and $values.ProductVersion -ceq '0.38.0' -and $values.ProductName -ceq 'winsmux' -and $values.Manufacturer -ceq 'github') 'desktop_native_msi_product_identity_refused'
+    Assert-Condition ($values.ProductCode -cmatch '^\{[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\}$' -and $values.UpgradeCode -ceq '{5A7BA441-A5F4-5622-B257-7BF2575E6D74}' -and $values.ProductVersion -ceq '0.38.0' -and $values.ProductName -ceq 'winsmux' -and $values.Manufacturer -ceq 'github') 'desktop_native_msi_product_identity_refused'
     return [ordered]@{ properties = $values; file = $witness }
 }
 
@@ -5120,6 +5185,46 @@ function Invoke-DesktopNativeLifecycleSelfTest {
     return [ordered]@{ schema = 'winsmux-desktop-native-input-selftest/v1'; ok = $true; surface = 'Desktop'; passed = $cases.Count; failed = 0; cases = @($cases.ToArray()); native_processes_started = 0; installer_executed = $false; scope = 'Finite native-mode request admission only; physical artifact, real installer/runtime and rollback evidence are separate.' }
 }
 
+function Assert-DesktopNativeNsisUninstallAdapterSource {
+    param([Parameter(Mandatory)][string]$HookSource, [Parameter(Mandatory)][string]$TemplateSource)
+    # The native helper owns exact state/registration/link removal and rollback.
+    # This static check binds the template entry to that authority; it does not prove installation.
+    $hook = $HookSource.Replace(([string][char]13 + [char]10), [string][char]10)
+    $template = $TemplateSource.Replace(([string][char]13 + [char]10), [string][char]10)
+    $anchor = '!define WINSMUX_NSIS_INPUTS "${__FILEDIR__}\binaries\nsis"'
+    Assert-Condition ([regex]::Matches($hook, '(?m)^' + [regex]::Escape($anchor) + '$').Count -eq 1) 'Desktop NSIS generation anchor differs.'
+    $sections = [regex]::Matches($template, '(?ms)^Section Uninstall\n(?<body>.*?)^SectionEnd$')
+    Assert-Condition ($sections.Count -eq 1) 'Desktop NSIS native uninstall section must be unique.'
+    $body = $sections[0].Groups['body'].Value
+    foreach ($line in @(
+        '  InitPluginsDir',
+        '  StrCpy $WinsmuxSource "$PLUGINSDIR\winsmux-source"',
+        '  StrCpy $WinsmuxHelper "$PLUGINSDIR\winsmux-bootstrap\winsmux.exe"',
+        '  StrCpy $WinsmuxContext "$PLUGINSDIR\winsmux-context.txt"',
+        '  File /oname=winsmux.exe "${WINSMUX_NSIS_HELPER_PATH}"',
+        '  File /oname=winsmux.install-plan.json "${WINSMUX_NSIS_PLAN_PATH}"',
+        '  Call un.WinsmuxWriteUninstallContext',
+        '  nsExec::ExecToStack ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"''',
+        '  Pop $0',
+        '  Pop $1'
+    )) {
+        Assert-Condition ([regex]::Matches($body, '(?m)^' + [regex]::Escape($line) + '$').Count -eq 1) 'Desktop NSIS native uninstall helper, plan or dispatch differs.'
+    }
+    $failure = @'
+  ${If} $0 != 0
+    SetErrorLevel 2
+    Abort "$(WINSMUX_TRANSACTION_FAILED)"
+  ${EndIf}
+'@
+    Assert-Condition ($body.Contains($failure)) 'Desktop NSIS native uninstall must stop on helper failure.'
+    Assert-Condition (-not [regex]::IsMatch($body, '(?im)^\s*(?:DeleteRegKey|DeleteRegValue|WriteReg[A-Za-z]*|Delete|RMDir)\b')) 'Desktop NSIS uninstall must delegate owned mutations to the native helper.'
+    $contexts = [regex]::Matches($template, '(?ms)^!macro WINSMUX_CONTEXT_FUNCTION NAME ACTION\n(?<body>.*?)^!macroend$')
+    Assert-Condition ($contexts.Count -eq 1) 'Desktop NSIS native context writer must be unique.'
+    $keys = @([regex]::Matches($contexts[0].Groups['body'].Value, '(?m)^  FileWriteUTF16LE \$0 "(?<key>[a-z0-9_]+)=') | ForEach-Object { $_.Groups['key'].Value })
+    Assert-Condition (($keys -join ',') -ceq 'schema,command,root,source,plan_sha256,version,language,start_menu,desktop,update') 'Desktop NSIS native context keys differ.'
+    Assert-Condition ([regex]::Matches($template, '(?m)^!insertmacro WINSMUX_CONTEXT_FUNCTION un\.WinsmuxWriteUninstallContext uninstall$').Count -eq 1) 'Desktop NSIS native uninstall context action differs.'
+}
+
 function Invoke-SelfTest {
     # GetNewClosure captures factory-local values, not inherited script parameters.
     # Pin the normalized coordinates for every surface and every fixture callback.
@@ -5292,18 +5397,25 @@ function Invoke-SelfTest {
             }) 'PriorInstallerPath was accepted without PriorVersion.'
 
             $nsisHookPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis-installer-hooks.nsh'
+            $nsisTemplatePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis\installer.nsi'
             Assert-Condition (Test-Path -LiteralPath $nsisHookPath -PathType Leaf) 'Desktop NSIS installer hook source was not found.'
-            $nsisHookSource = ([IO.File]::ReadAllText($nsisHookPath) -replace "`r`n", "`n" -replace "`r", "`n")
-            $postUninstallHooks = [regex]::Matches($nsisHookSource, '(?ms)!macro\s+NSIS_HOOK_POSTUNINSTALL(?<body>.*?)!macroend')
-            Assert-Condition ($postUninstallHooks.Count -eq 1) 'Desktop NSIS source must contain exactly one NSIS_HOOK_POSTUNINSTALL macro.'
-            $postUninstallBody = $postUninstallHooks[0].Groups['body'].Value
-            $productDeletePattern = '(?m)^[ \t]*DeleteRegKey[ \t]+HKCU[ \t]+"Software\\github\\winsmux"[ \t]*$'
-            Assert-Condition ([regex]::Matches($postUninstallBody, $productDeletePattern).Count -eq 1) 'Desktop POSTUNINSTALL must contain exactly one HKCU Software\github\winsmux DeleteRegKey.'
-            $silentGuards = [regex]::Matches($postUninstallBody, '(?ms)\$\{If\}[ \t]+\$\{Silent\}(?<body>.*?)\$\{EndIf\}')
-            $guardedProductDeletes = @($silentGuards | Where-Object {
-                [regex]::IsMatch($_.Groups['body'].Value, $productDeletePattern)
-            })
-            Assert-Condition ($guardedProductDeletes.Count -eq 1) 'Desktop POSTUNINSTALL product-key deletion must remain inside the silent-uninstall guard.'
+            Assert-Condition (Test-Path -LiteralPath $nsisTemplatePath -PathType Leaf) 'Desktop NSIS native template source was not found.'
+            $nsisHookSource = [IO.File]::ReadAllText($nsisHookPath)
+            $nsisTemplateSource = [IO.File]::ReadAllText($nsisTemplatePath)
+            Assert-DesktopNativeNsisUninstallAdapterSource -HookSource $nsisHookSource -TemplateSource $nsisTemplateSource
+            $caseIds.Add('desktop_native_uninstall_adapter')
+            $nativeUninstallDispatch = '  nsExec::ExecToStack ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"'''
+            $adapterMutations = [ordered]@{
+                missing_dispatch = $nsisTemplateSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing')
+                wrong_action = $nsisTemplateSource.Replace(' nsis-uninstall --context ', ' nsis-install --context ')
+                missing_failure_guard = $nsisTemplateSource.Replace('${If} $0 != 0', '${If} $0 = 0')
+                direct_registry_delete = $nsisTemplateSource.Replace('Section Uninstall', ('Section Uninstall' + [char]10 + '  DeleteRegKey HKCU "Software\github\winsmux"'))
+            }
+            foreach ($mutation in $adapterMutations.GetEnumerator()) {
+                Assert-Condition ($mutation.Value -cne $nsisTemplateSource) 'Desktop NSIS native adapter negative fixture was unchanged.'
+                Assert-Condition (Test-Throws { Assert-DesktopNativeNsisUninstallAdapterSource -HookSource $nsisHookSource -TemplateSource $mutation.Value }) ('Desktop NSIS native adapter accepted ' + $mutation.Key)
+                $caseIds.Add('desktop_native_uninstall_' + $mutation.Key)
+            }
 
             Assert-DesktopProductVersion -ActualVersion $Version -ExpectedVersion $Version
             $caseIds.Add('product_version_exact')

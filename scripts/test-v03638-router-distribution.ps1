@@ -111,6 +111,59 @@ function Test-DesktopWorkspaceDistributionContract {
     }
 }
 
+function Test-InstallerRouterProfileContract {
+    param([Parameter(Mandatory = $true)][System.Management.Automation.Language.Ast]$InstallerAst)
+
+    # Follow the adopted support-stage call chain; router payload remains full-only.
+    try {
+        $definitions = @{}
+        foreach ($name in @('Get-InstallProfileContents', 'Invoke-Install', 'Invoke-WinsmuxInstallLifecycle', 'Install-WinsmuxBinary', 'New-WinsmuxSupportStage')) {
+            $found = @($InstallerAst.FindAll({ param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name
+            }, $true))
+            if ($found.Count -ne 1) { return $false }
+            $definitions[$name] = $found[0]
+        }
+        $profile = $definitions['Get-InstallProfileContents'].Extent.Text
+        if ($profile -notmatch '(?m)^\s*"full"\s*\{[^\r\n]*"local_router_artifacts"') { return $false }
+        foreach ($name in @('core', 'orchestra', 'security')) {
+            $row = [regex]::Match($profile, ('(?m)^\s*"' + $name + '"\s*\{(?<body>[^\r\n]*)'))
+            if (-not $row.Success -or $row.Groups['body'].Value -match 'local_router_artifacts') { return $false }
+        }
+        foreach ($edge in @(
+            @('Invoke-Install', 'Invoke-WinsmuxInstallLifecycle'),
+            @('Invoke-WinsmuxInstallLifecycle', 'Install-WinsmuxBinary'),
+            @('Install-WinsmuxBinary', 'New-WinsmuxSupportStage')
+        )) {
+            $calls = @($definitions[$edge[0]].FindAll({ param($node)
+                $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq $edge[1]
+            }, $true))
+            if ($calls.Count -ne 1) { return $false }
+            if ($edge[0] -ceq 'Invoke-WinsmuxInstallLifecycle' -and $calls[0].Extent.Text -notmatch '-SupportProfile\s+\$profile\b') { return $false }
+            if ($edge[0] -ceq 'Install-WinsmuxBinary' -and
+                ($calls[0].CommandElements.Count -ne 4 -or $calls[0].CommandElements[2].Extent.Text -cne '$SupportProfile')) { return $false }
+        }
+        $routerCalls = @($InstallerAst.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Install-LocalRouterArtifacts'
+        }, $true))
+        $stageCalls = @($definitions['New-WinsmuxSupportStage'].FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Install-LocalRouterArtifacts'
+        }, $true))
+        if ($routerCalls.Count -ne 1 -or $stageCalls.Count -ne 1) { return $false }
+        $guard = $stageCalls[0].Parent
+        while ($guard -and $guard -isnot [System.Management.Automation.Language.IfStatementAst]) { $guard = $guard.Parent }
+        if (-not $guard -or $guard.Clauses.Count -ne 1 -or $null -ne $guard.ElseClause) { return $false }
+        $condition = $guard.Clauses[0].Item1.PipelineElements
+        if ($condition.Count -ne 1 -or $condition[0] -isnot [System.Management.Automation.Language.CommandAst]) { return $false }
+        $command = $condition[0]
+        return $command.GetCommandName() -ceq 'Test-InstallProfileContent' -and
+            $command.CommandElements.Count -eq 3 -and
+            $command.CommandElements[1].Extent.Text -ceq '$Profile' -and
+            $command.CommandElements[2] -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+            $command.CommandElements[2].Value -ceq 'local_router_artifacts'
+    } catch { return $false }
+}
+
 function Get-TauriResourceInventory {
     $configPath = Join-Path $repoRoot 'winsmux-app/src-tauri/tauri.conf.json'
     $configDirectory = Split-Path -Parent $configPath
@@ -236,8 +289,6 @@ $parseErrors = $null
 $installerAst = [System.Management.Automation.Language.Parser]::ParseFile($installerPath, [ref]$parseTokens, [ref]$parseErrors)
 $functions = @($installerAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true))
 $installRouterFunction = $functions | Where-Object Name -CEQ 'Install-LocalRouterArtifacts' | Select-Object -First 1
-$profileFunction = $functions | Where-Object Name -CEQ 'Get-InstallProfileContents' | Select-Object -First 1
-$invokeInstallFunction = $functions | Where-Object Name -CEQ 'Invoke-Install' | Select-Object -First 1
 $cleanupFunction = $functions | Where-Object Name -CEQ 'Remove-ProfileExcludedSupportScripts' | Select-Object -First 1
 
 $installerInventory = @{}
@@ -253,17 +304,7 @@ if ($null -ne $installRouterFunction) {
     }
 }
 
-$profileText = if ($null -ne $profileFunction) { $profileFunction.Extent.Text } else { '' }
-$invokeInstallText = if ($null -ne $invokeInstallFunction) { $invokeInstallFunction.Extent.Text } else { '' }
 $cleanupText = if ($null -ne $cleanupFunction) { $cleanupFunction.Extent.Text } else { '' }
-$fullOwnsPayload = $profileText -match '(?m)^\s*"full"\s*\{[^\r\n]*"local_router_artifacts"'
-$nonFullExcludePayload = @('core', 'orchestra', 'security') | ForEach-Object {
-    $profileName = $_
-    $lineMatch = [regex]::Match($profileText, ('(?m)^\s*"' + $profileName + '"\s*\{(?<body>[^\r\n]*)'))
-    $lineMatch.Success -and $lineMatch.Groups['body'].Value -notmatch 'local_router_artifacts'
-}
-$installIsFullOnly = $invokeInstallText -match 'Test-InstallProfileContent\s+-Profile\s+\$resolvedInstallProfile\s+-Content\s+"local_router_artifacts"' -and
-    $invokeInstallText -match 'Install-LocalRouterArtifacts'
 $cleanupOwnsExactFiles = @($artifacts | Where-Object {
     $cleanupText -notmatch [regex]::Escape([IO.Path]::GetFileName($_.target))
 }).Count -eq 0
@@ -277,7 +318,7 @@ $sourceReady = @($sourceInventory | Where-Object {
     $_.present -and $_.blob_matches_worktree -and $_.lf_attribute -and
         -not [string]::IsNullOrWhiteSpace([string]$_.blob_sha256)
 }).Count -eq $artifacts.Count
-$profileReady = $fullOwnsPayload -and (@($nonFullExcludePayload | Where-Object { $_ }).Count -eq 3) -and $installIsFullOnly
+$profileReady = Test-InstallerRouterProfileContract -InstallerAst $installerAst
 $cleanupReady = $cleanupOwnsExactFiles -and $cleanupIsNonRecursive
 $allPass = $sourceReady -and $manifestResolvable -and ($parseErrors.Count -eq 0) -and
     $desktopReady -and ($cliFound -eq $artifacts.Count) -and

@@ -201,7 +201,15 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux launch'
         $installer | Should -Not -Match "WINSMUX_AGENT_NAME = 'claude'"
         $installerSingleLine | Should -Match '"orchestra".*"vault"'
-        $installer | Should -Match 'Test-InstallProfileContent -Profile \$resolvedInstallProfile -Content "orchestration_scripts"'
+        $supportStage = [regex]::Match($installer, '(?ms)^function New-WinsmuxSupportStage \{.*?(?=^function |\z)')
+        $supportStage.Success | Should -BeTrue
+        $supportStage.Value | Should -Match 'if \(Test-InstallProfileContent \$Profile ''orchestration_scripts''\) \{ Install-OrchestraSupportScripts \}'
+        $lifecycle = [regex]::Match($installer, '(?ms)^function Invoke-WinsmuxInstallLifecycle \{.*?(?=^function |\z)')
+        $lifecycle.Success | Should -BeTrue
+        $installIndex = $lifecycle.Value.IndexOf('Install-WinsmuxBinary', [StringComparison]::Ordinal)
+        $nextIndex = $lifecycle.Value.IndexOf('Next: run winsmux init', [StringComparison]::Ordinal)
+        $installIndex | Should -BeGreaterThan -1
+        $nextIndex | Should -BeGreaterThan $installIndex
         $installer | Should -Match 'Install-CoreSupportScripts'
         $installer | Should -Match 'winsmux-core/scripts/public-first-run\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/control-plane-commands\.ps1'
@@ -500,7 +508,10 @@ Describe 'Public surface policy' {
         $health.Value | Should -Match 'pester'
         $health.Value | Should -Match 'core-build-test'
         $health.Value | Should -Match 'desktop-build-test'
-        $health.Value | Should -Match 'desktop-nsis-lifecycle'
+        # The closed legacy upload class is retained even when that retired job is absent.
+        $health.Value | Should -Match 'JOB_NSIS = "Desktop NSIS Fresh and Upgrade Lifecycle"'
+        $health.Value | Should -Match 'nsis_jobs = \[job for job in jobs if job\.get\("name"\) == JOB_NSIS\]'
+        $health.Value | Should -Match 'if nsis_jobs:'
         $health.Value | Should -Not -Match 'github-script'
         $health.Value | Should -Not -Match 'gh pr comment'
         $health.Value | Should -Not -Match 'flake-free'
@@ -518,39 +529,29 @@ Describe 'Public surface policy' {
         $gate.Value | Should -Match 'needs\.task811-receipt-bind\.result'
     }
 
-    It 'restores DNS and proves GitHub reachability before publishing NSIS evidence' {
-        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
-        $job = [regex]::Match($workflow, '(?ms)^  desktop-nsis-lifecycle:.*?(?=^  task811-operator-infra:)')
-        $restore = [regex]::Match($job.Value, '(?ms)^      - name: Restore runner outbound networking.*?(?=^      - name: Publish non-sensitive lifecycle evidence)')
-        $publish = [regex]::Match($job.Value, '(?ms)^      - name: Publish non-sensitive lifecycle evidence.*?uses: actions/upload-artifact@v7')
-        $restoreEvidence = [regex]::Match($restore.Value, '(?ms)\$evidence\.stages\.network_restore\s*=\s*\[ordered\]@\{(?<body>.*?)^\s*\}')
-
+    It 'keeps native lifecycle candidate identity and evidence publication within the declared boundary' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/desktop-candidate-cdp-gate.yml') -Raw
+        $job = [regex]::Match($workflow, '(?ms)^  desktop-native-lifecycle:.*\z')
         $job.Success | Should -BeTrue
-        $restore.Success | Should -BeTrue
-        $publish.Success | Should -BeTrue
-        $restore.Value | Should -Match 'if:\s+always\(\)'
-        $publish.Value | Should -Match 'if:\s+always\(\)'
-
-        $removeIndex = $restore.Value.IndexOf('Remove-NetFirewallRule', [StringComparison]::Ordinal)
-        $ruleAbsentIndex = $restore.Value.IndexOf('if (-not $ruleAbsent)', [StringComparison]::Ordinal)
-        $dnsRecoveryIndex = $restore.Value.IndexOf('Clear-DnsClientCache', [StringComparison]::Ordinal)
-        $controlIndex = $restore.Value.IndexOf("'https://github.com/'", [StringComparison]::Ordinal)
-        $controlSuccessIndex = $restore.Value.IndexOf('if (-not $controlRestored)', [StringComparison]::Ordinal)
-        $uploadIndex = $job.Value.IndexOf('uses: actions/upload-artifact@v7', [StringComparison]::Ordinal)
-
-        $removeIndex | Should -BeGreaterThan -1
-        $ruleAbsentIndex | Should -BeGreaterThan $removeIndex
-        $dnsRecoveryIndex | Should -BeGreaterThan $ruleAbsentIndex
-        $controlIndex | Should -BeGreaterThan $dnsRecoveryIndex
-        $controlSuccessIndex | Should -BeGreaterThan $controlIndex
-        $uploadIndex | Should -BeGreaterThan $controlSuccessIndex
-
-        $restoreEvidence.Success | Should -BeTrue
-        $restoreEvidence.Groups['body'].Value | Should -Match 'rule_absent\s*=\s*\$ruleAbsent'
-        $restoreEvidence.Groups['body'].Value | Should -Match 'dns_cache_cleared\s*=\s*\$dnsCacheCleared'
-        $restoreEvidence.Groups['body'].Value | Should -Match 'positive_control_exit_code\s*=\s*\[int\]\$control\.ExitCode'
-        $restoreEvidence.Groups['body'].Value | Should -Match 'positive_control_reachable\s*=\s*\$controlRestored'
-        $restoreEvidence.Groups['body'].Value | Should -Not -Match 'https?://|github\.com|token'
+        $job.Value | Should -Match 'runs-on:\s+windows-2025'
+        $job.Value | Should -Match 'contents:\s+read'
+        $job.Value | Should -Match '\$source -cne \$env:GITHUB_SHA'
+        $job.Value | Should -Match ([Regex]::Escape("`$env:BASELINE_ARTIFACT -cne ('desktop-baseline-ja-root-' + `$source)"))
+        $job.Value | Should -Not -Match 'New-NetFirewallRule|Set-DnsClientServerAddress|Clear-DnsClientCache'
+        $freeze = $job.Value.IndexOf('Freeze and verify the same-job native candidate transport', [StringComparison]::Ordinal)
+        $execute = $job.Value.IndexOf('Execute the finite native lifecycle', [StringComparison]::Ordinal)
+        $publish = $job.Value.IndexOf('Preserve bounded native lifecycle evidence', [StringComparison]::Ordinal)
+        $freeze | Should -BeGreaterThan -1
+        $execute | Should -BeGreaterThan $freeze
+        $publish | Should -BeGreaterThan $execute
+        $job.Value | Should -Match '-DesktopNativeSourceCommit \$env:GITHUB_SHA'
+        $job.Value | Should -Match '-DesktopNativeCandidateDirectory \(Join-Path \$env:WINSMUX_NATIVE_INPUT_ROOT ''candidate''\)'
+        $job.Value | Should -Match '-DesktopNativeBaselineDirectory \(Join-Path \$env:WINSMUX_NATIVE_INPUT_ROOT ''baseline''\)'
+        $job.Value | Should -Match 'if \(\$LASTEXITCODE -ne 0\) \{ throw ''Native lifecycle failed or has an unmet class\.'' \}'
+        $publication = $job.Value.Substring($publish)
+        $publication | Should -Match 'if:\s+always\(\)'
+        $publication | Should -Match 'uses: actions/upload-artifact@v7'
+        $publication | Should -Match 'if-no-files-found:\s+error'
     }
 
     It 'keeps the Pester integration shard on a 30-minute outer budget' {
@@ -572,8 +573,8 @@ Describe 'Public surface policy' {
         $pinFixture = "`$version -cne '$version'"
 
         $version | Should -Match '^\d+\.\d+\.\d+'
-        $workflow | Should -Match ([Regex]::Escape("Get-Content -LiteralPath 'VERSION'"))
-        $workflow | Should -Match ([Regex]::Escape("priorVersion = '0.36.33'"))
+        $workflow | Should -Match '\$version\s*=\s*\(Get-Content\s+-LiteralPath\s+(?:''VERSION''|VERSION)\s+-Raw\)\.Trim\(\)'
+        $workflow | Should -Match 'node scripts/build-core-candidate\.mjs x86_64-pc-windows-msvc "\$env:GITHUB_SHA" "v\$version"'
         $pinFixture | Should -Match $candidatePinClass
         $workflow | Should -Not -Match $candidatePinClass
         $workflow | Should -Not -Match ('\$version\s+-cne\s+[''"]' + [Regex]::Escape($version) + '[''"]')

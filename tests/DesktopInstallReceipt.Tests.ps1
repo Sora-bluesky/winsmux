@@ -1022,13 +1022,22 @@ Describe 'One Desktop receipt contract across every sibling entry' {
     }
 
     It 'makes all real installer producers and consumers use the shared inventory contract' {
-        foreach ($file in @('.github/workflows/test.yml','.github/workflows/desktop-candidate-cdp-gate.yml','.github/workflows/release-desktop.yml')) {
+        foreach ($file in @('.github/workflows/desktop-candidate-cdp-gate.yml','.github/workflows/release-desktop.yml')) {
             $source = Get-Content -LiteralPath (Join-Path $script:RepoRoot $file) -Raw
             $source | Should -Match 'New-DesktopInstallInventory'
         }
-        foreach ($file in @('.github/workflows/test.yml','.github/workflows/desktop-candidate-cdp-gate.yml','.github/workflows/public-smoke-recovery.yml')) {
+        foreach ($file in @('.github/workflows/desktop-candidate-cdp-gate.yml','.github/workflows/public-smoke-recovery.yml')) {
             (Get-Content -LiteralPath (Join-Path $script:RepoRoot $file) -Raw) | Should -Match 'Assert-DesktopInstallReceipt'
         }
+        # Native candidates use their own same-SHA transport; they do not produce the legacy public inventory.
+        $candidateWorkflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github/workflows/desktop-candidate-cdp-gate.yml') -Raw
+        $native = [regex]::Match($candidateWorkflow, '(?ms)^  desktop-native-lifecycle:.*\z')
+        $native.Success | Should -BeTrue
+        $native.Value | Should -Match 'Get-DesktopNativeTransportModule'
+        $native.Value | Should -Match 'node --input-type=module --eval \$module create \$env:GITHUB_SHA \$env:FORMAT \$env:GITHUB_WORKSPACE'
+        $native.Value | Should -Match '-DesktopNativeSourceCommit \$env:GITHUB_SHA'
+        $native.Value | Should -Match '-DesktopNativeCandidateDirectory \(Join-Path \$env:WINSMUX_NATIVE_INPUT_ROOT ''candidate''\)'
+        $native.Value | Should -Match 'if \(\$LASTEXITCODE -ne 0\) \{ throw ''Native lifecycle failed or has an unmet class\.'' \}'
         $helper = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-public-release.ps1') -Raw
         $helper | Should -Match 'Get-DesktopInstalledInventory'
         $helper | Should -Match 'desktop_candidate_inventory_missing'
@@ -1324,23 +1333,24 @@ Describe 'Desktop failure diagnostic retention' {
         [object]::ReferenceEquals($result, $script:DiagnosticCapture) | Should -BeTrue
         $result.exit_code | Should -Be 0
     }
-    It 'collects only the six current helper streams and excludes stray runner inputs' {
-        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github/workflows/test.yml') -Raw
-        $block = [regex]::Match($workflow, '(?ms)^      - name: Preserve available NSIS helper diagnostics\r?\n.*?        run: \|\r?\n(?<run>(?:          [^\r\n]*\r?\n|\r?\n)+)')
-        $block.Success | Should -BeTrue
-        $run = $block.Groups['run'].Value -replace '(?m)^          ', ''
-        $workspace = Join-Path $TestDrive 'diagnostic-workspace'; $runnerTemp = Join-Path $TestDrive 'diagnostic-temp'
-        New-Item -ItemType Directory -Path $workspace, $runnerTemp | Out-Null
-        $allowlist = @('task679-fresh.stdout', 'task679-fresh.stderr', 'task679-upgrade.stdout', 'task679-upgrade.stderr', 'task679-migration.stdout', 'task679-migration.stderr')
-        foreach ($name in ($allowlist + @('task679-fresh.secret', 'other.stdout'))) { [IO.File]::WriteAllText((Join-Path $runnerTemp $name), 'synthetic') }
-        $previousWorkspace = $env:GITHUB_WORKSPACE; $previousTemp = $env:RUNNER_TEMP
-        try { $env:GITHUB_WORKSPACE = $workspace; $env:RUNNER_TEMP = $runnerTemp; & ([scriptblock]::Create($run)) }
-        finally { $env:GITHUB_WORKSPACE = $previousWorkspace; $env:RUNNER_TEMP = $previousTemp }
-        $copied = @(Get-ChildItem -LiteralPath (Join-Path $workspace 'artifacts/task679-nsis-lifecycle/helper-logs') -File | Select-Object -ExpandProperty Name)
-        ($copied | Sort-Object) | Should -Be ($allowlist | Sort-Object)
-        $upload = [regex]::Match($workflow, '(?ms)name: task679-nsis-lifecycle-evidence\r?\n          path: \|\r?\n(?<paths>(?:            [^\r\n]*\r?\n)+)').Groups['paths'].Value
-        foreach ($name in $allowlist) { $upload | Should -Match ([regex]::Escape('helper-logs/' + $name)) }
-        $upload | Should -Not -Match '\*|RUNNER_TEMP|other\.stdout|fresh\.secret'
+    It 'publishes only native lifecycle receipts and transport metadata without stray runner streams' {
+        $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github/workflows/desktop-candidate-cdp-gate.yml') -Raw
+        $publication = [regex]::Match($workflow, '(?ms)^      - name: Preserve bounded native lifecycle evidence.*\z')
+        $publication.Success | Should -BeTrue
+        $publication.Value | Should -Match 'if:\s+always\(\)'
+        $publication.Value | Should -Match 'uses: actions/upload-artifact@v7'
+        $publication.Value | Should -Match 'if-no-files-found:\s+error'
+        $paths = @([regex]::Matches($publication.Value, '(?m)^            (?<path>[^\r\n]+)') | ForEach-Object { $_.Groups['path'].Value.Trim() })
+        $prefix = '${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/'
+        $patterns = @('evidence/**/*.json', 'evidence/vhd-owned-*/ownership.jsonl', 'candidate/desktop-native-candidate.json')
+        ($paths -join '|') | Should -BeExactly (($patterns | ForEach-Object { $prefix + $_ }) -join '|')
+        foreach ($relative in @('evidence/run/result.json', 'evidence/vhd-owned-1/ownership.jsonl', 'candidate/desktop-native-candidate.json')) {
+            @($patterns | Where-Object { $relative -like $_ }).Count | Should -BeGreaterThan 0
+        }
+        foreach ($relative in @('other.stdout', 'runner/secret.json', 'evidence/run/raw.stdout', 'evidence/run/secret.txt', 'candidate/other.json')) {
+            @($patterns | Where-Object { $relative -like $_ }).Count | Should -Be 0
+        }
+        $publication.Value | Should -Not -Match 'RUNNER_TEMP|helper-logs|\.stdout|\.stderr|\.secret'
     }
 }
 
