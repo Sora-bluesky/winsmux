@@ -1467,6 +1467,23 @@ mod native {
         }
     }
 
+    struct ProbeProfilePaths {
+        home: PathBuf,
+        app_data: PathBuf,
+        local: PathBuf,
+        roaming: PathBuf,
+    }
+    fn probe_profile_paths(operation: &Path) -> ProbeProfilePaths {
+        let home = operation.join("profile");
+        let app_data = home.join("AppData");
+        ProbeProfilePaths {
+            home,
+            local: app_data.join("Local"),
+            roaming: app_data.join("Roaming"),
+            app_data,
+        }
+    }
+
     struct OperationDirectory {
         path: PathBuf,
         hold: Option<DirectoryHold>,
@@ -1498,8 +1515,12 @@ mod native {
                 identity,
                 terminal: true,
             };
-            for child in ["project", "webview", "profile", "local", "roaming"] {
-                let name = wide(result.path.join(child).as_os_str())?;
+            let profile = probe_profile_paths(&result.path);
+            for child in [
+                result.path.join("project"), result.path.join("webview"),
+                profile.home, profile.app_data, profile.local, profile.roaming,
+            ] {
+                let name = wide(child.as_os_str())?;
                 if unsafe { CreateDirectoryW(name.as_ptr(), &attributes) } == 0 {
                     return Err(DesktopInstallError::Isolation);
                 }
@@ -1630,6 +1651,7 @@ mod native {
             let cwd = wide(directory.path.as_os_str())?;
             let temp_parent = directory.path.parent()
                 .ok_or(DesktopInstallError::Isolation)?.to_path_buf();
+            let profile = probe_profile_paths(&directory.path);
             let mut env: Vec<(std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os()
                 .filter(|(key, _)| {
                     ![
@@ -1652,10 +1674,10 @@ mod native {
             for (name, value) in [
                 ("TMP", temp_parent.clone()),
                 ("TEMP", temp_parent),
-                ("USERPROFILE", directory.path.join("profile")),
-                ("HOME", directory.path.join("profile")),
-                ("LOCALAPPDATA", directory.path.join("local")),
-                ("APPDATA", directory.path.join("roaming")),
+                ("USERPROFILE", profile.home.clone()),
+                ("HOME", profile.home),
+                ("LOCALAPPDATA", profile.local),
+                ("APPDATA", profile.roaming),
                 ("GIT_CONFIG_GLOBAL", directory.path.join("absent-gitconfig")),
                 ("GIT_CONFIG_SYSTEM", directory.path.join("absent-gitconfig")),
             ] {
@@ -1959,6 +1981,28 @@ mod native {
         )?;
         let project = DirectoryHold::open(&context.project_dir)?;
         let webview = DirectoryHold::open(&context.webview_data_dir)?;
+        let operation = context.project_dir.parent().ok_or(DesktopInstallError::Isolation)?;
+        let profile = probe_profile_paths(operation);
+        for (name, expected) in [
+            ("HOME", &profile.home), ("USERPROFILE", &profile.home),
+            ("LOCALAPPDATA", &profile.local), ("APPDATA", &profile.roaming),
+        ] {
+            let actual = PathBuf::from(std::env::var_os(name).ok_or(DesktopInstallError::Isolation)?);
+            strict_absolute(&actual).map_err(|_| DesktopInstallError::Isolation)?;
+            if !same_path(&actual, expected) {
+                return Err(DesktopInstallError::Isolation);
+            }
+        }
+        let actual_local = crate::store::layout::local_app_data()
+            .map_err(|_| DesktopInstallError::Isolation)?;
+        strict_absolute(&actual_local).map_err(|_| DesktopInstallError::Isolation)?;
+        if !same_path(&actual_local, &profile.local) {
+            return Err(DesktopInstallError::Isolation);
+        }
+        let mut profile_holds = Vec::new();
+        for expected in [&profile.home, &profile.app_data, &profile.local, &profile.roaming] {
+            profile_holds.push(DirectoryHold::open(expected).map_err(|_| DesktopInstallError::Isolation)?);
+        }
         let repository = git2::Repository::open(&context.project_dir)
             .map_err(|_| DesktopInstallError::Isolation)?;
         if repository
@@ -1970,6 +2014,9 @@ mod native {
         root.reobserve()?;
         project.reobserve()?;
         webview.reobserve()?;
+        for hold in &profile_holds {
+            hold.reobserve().map_err(|_| DesktopInstallError::Isolation)?;
+        }
         Ok(())
     }
     fn parent_pid() -> Result<u32, DesktopInstallError> {
