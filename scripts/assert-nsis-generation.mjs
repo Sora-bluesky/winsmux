@@ -9,7 +9,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const validHash = value => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 const exact = (value, keys) => value && typeof value === 'object' && !Array.isArray(value)
   && Object.keys(value).sort().join('\0') === keys.slice().sort().join('\0');
-const pinnedTemplate = '854e7602642984203bcd1e96e277461c91aa2e4fbf4a3390ad07bf272d3bccab';
+const pinnedTemplate = '4a46e2394d91ef64d2f1acae4f762a4a281fb341a42b46f6e1b125eba51197da';
 const pinnedUtils = '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad';
 function requireValue(condition, reason) { if (!condition) throw new Error(reason); }
 function plainFile(file) {

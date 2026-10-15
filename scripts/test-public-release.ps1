@@ -4226,7 +4226,29 @@ function Invoke-DesktopNativeOwnedEntry {
     $terminal = $false
     try {
         $terminal = $owned.WaitTerminal(180000)
-        if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_entry_timeout' }
+        if (-not $terminal) {
+            if ($Purpose -ceq 'msi-install-en') {
+                $timeoutObservation = [ordered]@{
+                    purpose = 'msi-install-en'
+                    before = [ordered]@{ root_exited = $null; active_members = $null }
+                    after = [ordered]@{ terminal = $null; root_exited = $null; active_members = $null; exit_code = $null }
+                    msi_log = $null
+                }
+                try { $timeoutObservation.before.root_exited = $owned.HasExited } catch {}
+                try { $timeoutObservation.before.active_members = $owned.ActiveMembers } catch {}
+            }
+            $owned.StopOwnedFailure()
+            $terminal = $true
+            if ($Purpose -ceq 'msi-install-en') {
+                $timeoutObservation.after.terminal = $true
+                try { $timeoutObservation.after.root_exited = $owned.HasExited } catch {}
+                try { $timeoutObservation.after.active_members = $owned.ActiveMembers } catch {}
+                try { $timeoutObservation.after.exit_code = $owned.ExitCode } catch {}
+                try { $timeoutObservation.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root } catch {}
+                try { Write-DesktopNativeEvidence 'msi-en-timeout.json' $timeoutObservation } catch {}
+            }
+            throw 'desktop_native_entry_timeout'
+        }
         $receipt = [ordered]@{ purpose = $Purpose; exit_code = $owned.ExitCode; process = $owned.Facts() }
         if ($Purpose -ceq 'msi-install-en') { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root }
         return $receipt
