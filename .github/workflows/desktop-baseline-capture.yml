@@ -106,29 +106,151 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Probe only the fixed same-SID medium actor
+      - name: Observe only high and derived Git resolution and readonly commands
         shell: pwsh
         env:
           SOURCE_COMMIT: ${{ github.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $source = [string]$env:SOURCE_COMMIT
-          if ($source -cnotmatch '^[a-f0-9]{40}$' -or $source -cne $env:GITHUB_SHA) { throw 'Actor caller/candidate mismatch.' }
-          $head = (& git rev-parse HEAD | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or $head -cne $source) { throw 'Actor checkout mismatch.' }
-          $receipt = Join-Path $env:RUNNER_TEMP ('winsmux-actor-receipt-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $source + '.json')
-          if (Test-Path -LiteralPath $receipt) { throw 'Actor receipt already exists.' }
-          $raw = & ./scripts/test-public-release.ps1 -Surface Desktop -Version 0.38.0 -ReleaseTag v0.38.0 -Repository Sora-bluesky/winsmux -DesktopNativeActorProbeOnly -DesktopNativeSourceCommit $source -Json
-          $code = $LASTEXITCODE
-          $json = ($raw | Out-String).Trim()
-          if ([Text.Encoding]::UTF8.GetByteCount($json) -gt 16384) { throw 'Actor receipt exceeds the bounded transport.' }
-          $facts = $json | ConvertFrom-Json -AsHashtable
-          if ($facts['schema'] -cne 'winsmux-desktop-native-actor-probe/v1' -or $facts['installer_started'] -ne $false) { throw 'Actor receipt shape mismatch.' }
-          $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($json + [char]10)
-          $file = [IO.FileStream]::new($receipt, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-          try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
-          if ($code -ne 0 -or $facts['outcome'] -cne 'passed' -or $facts['source_commit'] -cne $source) { throw 'Actual medium actor probe did not pass; original receipt was preserved.' }
-      - name: Preserve only the bounded actor receipt
+          Set-StrictMode -Version Latest
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [Console]::OutputEncoding
+          # Evidence-only: no product script, native lifecycle, installer or build invocation.
+          $repo = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE)
+          $caller = [string]$env:GITHUB_SHA
+          if ($env:GITHUB_ACTIONS -cne 'true' -or $env:RUNNER_OS -cne 'Windows' -or $caller -cnotmatch '^[a-f0-9]{40}$' -or $env:SOURCE_COMMIT -cne $caller -or $env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or $env:GITHUB_RUN_ATTEMPT -cnotmatch '^[1-9][0-9]*$') { throw 'git_diagnostic_caller_refused' }
+          $sourcePath = Join-Path $repo 'scripts/test-public-release.ps1'
+          $ownerPath = Join-Path $repo 'scripts/DesktopProcessOwner.cs'
+          function Hash-File([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+          $sourceSha = Hash-File $sourcePath
+          $ownerSha = Hash-File $ownerPath
+          if ($sourceSha -cnotin @('bf9c818f4992e7319a66931a37a5ef33b50571804503b4a5f277b47c7d38bb23','822b400b54c89f3632be26c697f455a91d2dd33d451bd5967b87aa5000e89bc2','74e068f1abd3a565f794e6e74f84a910a0d6e28c8df8d5db469d2782291dd90c','7c0fec8489f4e70a0ce9cb3bcd6949345521a65929b225e4a3e4ee846b598bb2') -or $ownerSha -cnotin @('cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c','b2ec09ebdbc9557e9a09c052186478ce1d71af95d194f88f3c5152bd5324e936')) { throw 'git_diagnostic_fixed_source_changed' }
+          $tokens=$null;$errors=$null
+          $ast=[Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$tokens,[ref]$errors)
+          if(@($errors).Count){throw 'git_diagnostic_source_parse'}
+          $assignment=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -ceq 'actorCSharp'},$true))
+          if($assignment.Count -ne 1 -or $assignment[0].Right -isnot [Management.Automation.Language.CommandExpressionAst] -or $assignment[0].Right.Expression -isnot [Management.Automation.Language.StringConstantExpressionAst] -or $assignment[0].Right.Expression.StringConstantType -ne [Management.Automation.Language.StringConstantType]::SingleQuotedHereString){throw 'git_diagnostic_actor_literal'}
+          $actorSource=[string]$assignment[0].Right.Expression.Value
+          $ownerSource=[IO.File]::ReadAllText($ownerPath)
+          # Exact existing actor factory and DesktopProcessOwner: no token/ACL/guard edits.
+          Add-Type -TypeDefinition $actorSource
+          Add-Type -TypeDefinition $ownerSource
+          $readerSource=@'
+          using System;
+          using System.IO;
+          using System.Text;
+          using System.Collections.Generic;
+          using System.Security.Cryptography;
+          using System.Runtime.InteropServices;
+          public static class WinsmuxGitReadObservation {
+           [StructLayout(LayoutKind.Sequential)] struct INFO { public uint attributes;public System.Runtime.InteropServices.ComTypes.FILETIME creation,access,write;public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow; }
+           [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr CreateFileW(string p,uint a,uint s,IntPtr sa,uint d,uint f,IntPtr t);
+           [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr h,out INFO f);
+           [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern uint GetFinalPathNameByHandleW(IntPtr h,StringBuilder p,uint n,uint f);
+           [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+           public static Dictionary<string,object> Read(string input) {
+            var result=new Dictionary<string,object>();var chain=new List<Dictionary<string,object>>();result["chain"]=chain;
+            string p=Path.GetFullPath(input);int depth=0;
+            for(;;) {
+             var r=new Dictionary<string,object>{{"depth",depth},{"slot",depth==0?"leaf":"ancestor"}};chain.Add(r);
+             var h=CreateFileW(p,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);
+             if(h==new IntPtr(-1)){r["opened"]=false;r["winerror"]=Marshal.GetLastWin32Error();}
+             else {r["opened"]=true;try {INFO f;if(GetFileInformationByHandle(h,out f)){r["directory"]=(f.attributes&16)!=0;r["reparse"]=(f.attributes&1024)!=0;r["links"]=f.links;if(depth==0)result["file_identity"]=f.volume+":"+f.indexHigh+":"+f.indexLow;}else r["information_winerror"]=Marshal.GetLastWin32Error();var b=new StringBuilder(32768);uint n=GetFinalPathNameByHandleW(h,b,(uint)b.Capacity,0);r["final_path_read"]=n>0&&n<b.Capacity;if(n==0)r["final_path_winerror"]=Marshal.GetLastWin32Error();}finally{r["closed"]=CloseHandle(h);}}
+             string parent=Path.GetDirectoryName(p.TrimEnd('\\'));if(String.IsNullOrEmpty(parent))break;if(++depth>=16){result["chain_truncated"]=true;break;}p=parent;
+            }
+            try{var bytes=File.ReadAllBytes(input);result["bytes"]=bytes.Length;result["sha256"]=Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();result["readable"]=true;}catch(Exception e){result["readable"]=false;result["read_error_type"]=e.GetType().FullName;result["read_hresult"]=e.HResult;}
+            return result;
+           }
+          }
+          '@
+          Add-Type -TypeDefinition $readerSource
+          function Get-GitDiagnosticErrors {
+           param([Exception]$Failure)
+           $list=[Collections.Generic.List[object]]::new();$e=$Failure
+           while($null -ne $e){
+            $code=$null;$origin=$null;$stage='other'
+            if($e -is [ComponentModel.Win32Exception]){$code=$e.NativeErrorCode;$origin='Win32Exception.NativeErrorCode'}
+            if($e.Message -cmatch '^(desktop_owner_[a-z_]+):([0-9]+)$'){$stage=$Matches[1];$code=[int]$Matches[2];$origin='existing_owner_encoded_GetLastWin32Error'}
+            $list.Add([ordered]@{type=$e.GetType().FullName;stage=$stage;winerror=$code;error_source=$origin});$e=$e.InnerException
+           }
+           return $list.ToArray()
+          }
+          function Get-GitDiagnosticObservation {
+           param([Parameter(Mandatory)][string]$Repo,[Parameter(Mandatory)][string]$ExpectedHead)
+           $raw=Microsoft.PowerShell.Core\Get-Command git -CommandType Application -ErrorAction SilentlyContinue
+           $all=@($raw)
+           $selected=@(Microsoft.PowerShell.Core\Get-Command git -CommandType Application -TotalCount 1 -ErrorAction SilentlyContinue)
+           $result=[ordered]@{command_count=$all.Count;command_runtime_type=$(if($null -eq $raw){'null'}else{$raw.GetType().FullName});source_count=@($all|ForEach-Object{$_.Source}).Count;source_runtime_type=$(if($all.Count -eq 0){'null'}else{$raw.Source.GetType().FullName});selected_count=$selected.Count;candidates=@($all|Select-Object -First 8|ForEach-Object{[ordered]@{command_type=[string]$_.CommandType;source_type=$_.Source.GetType().FullName;source=[string]$_.Source}});candidates_truncated=($all.Count -gt 8);selected=$null;before=$null;after=$null;lease_obtained=$false;lease_errors=@();commands=@();identity_unchanged=$false}
+           if($selected.Count -ne 1){return $result}
+           $git=$selected[0].Source
+           $result.selected=[ordered]@{source=$git;source_type=$git.GetType().FullName;command_type=[string]$selected[0].CommandType}
+           if($git -isnot [string] -or -not [IO.Path]::IsPathFullyQualified($git) -or [IO.Path]::GetFileName($git) -ine 'git.exe'){return $result}
+           $result.before=[WinsmuxGitReadObservation]::Read($git)
+           $lease=$null;$commands=[Collections.Generic.List[object]]::new()
+           try {
+            try{$lease=[IO.File]::Open($git,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read);$result.lease_obtained=$true}catch{$result.lease_errors=@(Get-GitDiagnosticErrors $_.Exception)}
+            foreach($stage in @('version','head','dirty')){
+             $args_=switch($stage){'version'{,@('--version')};'head'{,@('-C',$Repo,'rev-parse','--verify','HEAD')};'dirty'{,@('-C',$Repo,'diff','--exit-code','--no-ext-diff','HEAD','--')}}
+             $row=[ordered]@{stage=$stage;started=$false;terminal=$false;exit_code=$null;owned_job_zero=$false;errors=@();stdout=$null;stderr=$null};$owned=$null;$terminal=$false
+             try {
+              $owned=[Winsmux.DesktopNative.DesktopProcessOwner]::Start($git,[string[]]$args_,@{GIT_OPTIONAL_LOCKS='0'},$false,16384,10000);$row.started=$true
+              $terminal=$owned.WaitTerminal(60000,500)
+              if(-not $terminal){$owned.ForceFailureCleanup(10000,500);$terminal=$true;throw 'git_diagnostic_owned_timeout'}
+              $row.terminal=$true;$row.owned_job_zero=$true;$row.exit_code=$owned.ExitCode
+              $out=$owned.StdoutTask.GetAwaiter().GetResult();$err=$owned.StderrTask.GetAwaiter().GetResult()
+              $text=[Text.UTF8Encoding]::new($false,$true).GetString($out.RetainedBytes).Trim()
+              $safe=if($stage -ceq 'version' -and $text -cmatch '^git version [A-Za-z0-9.+-]{1,64}$'){$text}elseif($stage -ceq 'head' -and $text -cmatch '^[a-f0-9]{40}$'){$text}elseif($out.TotalBytes -eq 0){''}else{$null}
+              $row.stdout=[ordered]@{bytes=$out.TotalBytes;truncated=$out.Truncated;sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($out.RetainedBytes)).ToLowerInvariant();safe_text=$safe;expected_head=($stage -ceq 'head' -and $text -ceq $ExpectedHead)}
+              $row.stderr=[ordered]@{bytes=$err.TotalBytes;truncated=$err.Truncated;sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($err.RetainedBytes)).ToLowerInvariant()}
+             }catch{$row.errors=@(Get-GitDiagnosticErrors $_.Exception)}
+             finally{if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(10000,500);$terminal=$true};if($terminal){$owned.Dispose()}}}
+             $commands.Add($row)
+            }
+           }finally{if($null -ne $lease){$lease.Dispose()}}
+           $result.commands=$commands.ToArray();$result.after=[WinsmuxGitReadObservation]::Read($git)
+           $result.identity_unchanged=$result.before.ContainsKey('file_identity') -and $result.after.ContainsKey('file_identity') -and $result.before.ContainsKey('sha256') -and $result.after.ContainsKey('sha256') -and $result.before['file_identity'] -ceq $result.after['file_identity'] -and $result.before['sha256'] -ceq $result.after['sha256']
+           return $result
+          }
+          $high=Get-GitDiagnosticObservation -Repo $repo -ExpectedHead $caller
+          $actorBefore=[WinsmuxDesktopActorProbe]::Query()
+          $functions='function Get-GitDiagnosticErrors {'+(Get-Item Function:Get-GitDiagnosticErrors).ScriptBlock.ToString()+'}'+[char]10+'function Get-GitDiagnosticObservation {'+(Get-Item Function:Get-GitDiagnosticObservation).ScriptBlock.ToString()+'}'
+          $childScript=@'
+          $ErrorActionPreference='Stop'
+          Set-StrictMode -Version Latest
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__ACTOR__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__OWNER__')))
+          Add-Type -TypeDefinition ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__READER__')))
+          . ([scriptblock]::Create([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__FUNCTIONS__'))))
+          $repo=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REPO__'))
+          $value=[ordered]@{actor=[WinsmuxDesktopActorProbe]::Query();git=(Get-GitDiagnosticObservation -Repo $repo -ExpectedHead ([string]$env:GITHUB_SHA))}
+          $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($value|ConvertTo-Json -Depth 14 -Compress)+[char]10)
+          if($bytes.Length -gt 16384){throw 'git_diagnostic_child_receipt_bound'}
+          $file=[IO.FileStream]::new((Join-Path $PSScriptRoot 'child-result.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+          try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
+          '@
+          foreach($pair in @(@('__ACTOR__',$actorSource),@('__OWNER__',$ownerSource),@('__READER__',$readerSource),@('__FUNCTIONS__',$functions),@('__REPO__',$repo))){$childScript=$childScript.Replace($pair[0],[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pair[1])))}
+          $root=Join-Path $env:RUNNER_TEMP ('winsmux-git-access-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$caller)
+          if(Test-Path -LiteralPath $root){throw 'git_diagnostic_namespace_exists'}
+          $pwsh=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+          $actor=[WinsmuxDesktopActorProbe]::Probe($pwsh,$root,$childScript)
+          $child=$null
+          if($actor['outcome'] -ceq 'child_terminal'){
+           $child=[WinsmuxDesktopActorProbe]::ReadChild((Join-Path $root 'child-result.json'))|ConvertFrom-Json -AsHashtable
+           if($child['actor']['pid'] -ne $actor['child_pid'] -or $child['actor']['existing_profile_hive'] -ne $true -or $child['actor']['local_app_data_exists'] -ne $true){throw 'git_diagnostic_child_identity'}
+           foreach($key in $actor['child_before_resume'].Keys){if($child['actor']['facts'][$key] -cne $actor['child_before_resume'][$key]){throw 'git_diagnostic_child_actor_changed'}}
+          }
+          $unchanged=(Hash-File $sourcePath)-ceq $sourceSha -and (Hash-File $ownerPath)-ceq $ownerSha
+          $complete=$actor['outcome'] -ceq 'child_terminal' -and $actor['child_exit_code'] -eq 0 -and $actor['job_active_processes'] -eq 0 -and $null -ne $child -and $unchanged
+          $answer=[ordered]@{schema='task880-readonly-git-actor-diagnostic/v1';diagnostic_complete=$complete;source_commit=$caller;native_reference_commit='fa9fc803a2126444a51beac57d281411046744d6';source_sha256=$sourceSha;owner_sha256=$ownerSha;high_actor=$actorBefore;high_git=$high;actor_process=$actor;derived=$child;inputs_unchanged=$unchanged;installer_started=$false;build_started=$false;git_write_started=$false;environment_dumped=$false;limitation='New Windows-2025 diagnostic VM, not the original failed VM. Git resolution/read/start evidence only; no installer outcome or exact original CI cause is inferred.'}
+          $json=$answer|ConvertTo-Json -Depth 18 -Compress
+          $bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes($json+[char]10)
+          if($bytes.Length -gt 16384){throw 'git_diagnostic_final_receipt_bound'}
+          $output=Join-Path $env:RUNNER_TEMP ('winsmux-actor-receipt-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$caller+'.json')
+          $file=[IO.FileStream]::new($output,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+          try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}
+          $json
+          if(-not $complete){exit 1}
+      - name: Preserve only the bounded Git actor diagnostic
         if: always()
         uses: actions/upload-artifact@v7
         with:
