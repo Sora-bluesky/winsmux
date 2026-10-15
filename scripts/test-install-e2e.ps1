@@ -16,6 +16,19 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+function Assert-WinsmuxInstalledEntryChain {
+    param([AllowNull()][byte[]]$WrapperBytes, [AllowNull()][byte[]]$EntryBytes)
+    foreach ($member in @(
+        @{ Bytes=$WrapperBytes; Length=130; Sha256='d059bd613f24aa8ecbc64b0ca56751f87287d69ba71e8f4898859c0391d7428b' },
+        @{ Bytes=$EntryBytes; Length=661; Sha256='6775b2aea0087e596b134857c0d680027efec7d95fb2c54f8624d80f69e3877f' }
+    )) {
+        if ($null -eq $member.Bytes -or $member.Bytes.Length -ne $member.Length -or
+            [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($member.Bytes)).ToLowerInvariant() -cne $member.Sha256) {
+            throw 'Installed CMD/entry chain does not bind the installed native and PowerShell Core entrypoints.'
+        }
+    }
+}
+
 $isGitHubRunner = $env:CI -eq 'true' -and $env:GITHUB_ACTIONS -eq 'true' -and
     -not [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP) -and (Test-Path -LiteralPath $env:RUNNER_TEMP -PathType Container)
 $isAuthorizedRedirect = $AllowRedirectedLocal -and -not [string]::IsNullOrWhiteSpace($RedirectNonce) -and
@@ -545,19 +558,16 @@ if ($installResult.Combined -match '\[winsmux\]\s+Failed to download\b') {
 
 $core = Join-Path $fixtureHome '.winsmux\bin\winsmux-core.ps1'
 $wrapper = Join-Path $fixtureHome '.winsmux\bin\winsmux.cmd'
+$entry = Join-Path $fixtureHome '.winsmux\bin\winsmux-entry.ps1'
 $installedInstaller = Join-Path $fixtureHome '.winsmux\bin\install.ps1'
 $native = Join-Path $fixtureHome '.local\bin\winsmux.exe'
 $manifestPath = Join-Path $fixtureHome '.winsmux\install-profile.json'
 $fragment = Join-Path $localAppData 'Microsoft\Windows Terminal\Fragments\winsmux\winsmux.json'
-foreach ($path in @($core, $wrapper, $installedInstaller, $native, $manifestPath, $fragment)) {
+foreach ($path in @($core, $wrapper, $entry, $installedInstaller, $native, $manifestPath, $fragment)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "installed artifact missing: $path" }
 }
 
-$wrapperText = Get-Content -LiteralPath $wrapper -Raw -Encoding ASCII
-if ($wrapperText -notmatch 'winsmux-core\.ps1' -or $wrapperText -match '(?<!-core)winsmux\.ps1' -or
-    $wrapperText -notmatch 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe') {
-    throw 'winsmux.cmd does not bind the bridge to the installed native and PowerShell entrypoints.'
-}
+Assert-WinsmuxInstalledEntryChain -WrapperBytes ([IO.File]::ReadAllBytes($wrapper)) -EntryBytes ([IO.File]::ReadAllBytes($entry))
 $fragmentText = Get-Content -LiteralPath $fragment -Raw -Encoding UTF8
 if ($fragmentText -notmatch 'winsmux\.cmd' -or $fragmentText -notmatch 'launch --project-dir' -or $fragmentText -match 'winsmux\.ps1|start -C') {
     throw 'Windows Terminal fragment does not use the canonical installed launch entrypoint.'

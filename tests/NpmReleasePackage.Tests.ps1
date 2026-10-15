@@ -307,9 +307,28 @@ Describe 'winsmux npm release package contract' {
         })
         @($downloadDeclarations | Group-Object | Where-Object Count -gt 1).Count | Should -Be 0
         ([regex]::Matches($installer, 'Join-Path \$BIN_DIR [''"]winsmux\.cmd[''"]')).Count | Should -Be 1
-        $installer | Should -Match 'winsmux-core\.ps1" %\*'
-        $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
-        $installer | Should -Not -Match '(?<!-core)winsmux\.ps1" %\*'
+        $chainDefinition = @($e2eAst.FindAll({param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Assert-WinsmuxInstalledEntryChain'
+        }, $true))
+        $chainDefinition.Count | Should -Be 1
+        . ([scriptblock]::Create($chainDefinition[0].Extent.Text))
+        $stageDefinition = @($installerAst.FindAll({param($node)
+            $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-WinsmuxSupportStage'
+        }, $true))
+        $stageDefinition.Count | Should -Be 1
+        $entryChainBytes = @{}
+        foreach ($name in @('wrapper', 'entryScript')) {
+            $literal = @($stageDefinition[0].FindAll({param($node)
+                $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ceq $name -and
+                $node.Right -is [Management.Automation.Language.CommandExpressionAst] -and
+                $node.Right.Expression -is [Management.Automation.Language.StringConstantExpressionAst]
+            }, $true))
+            $literal.Count | Should -Be 1
+            $text = ([string]$literal[0].Right.Expression.Value).Replace(([string][char]13 + [char]10), [string][char]10) + [char]10
+            $entryChainBytes[$name] = [Text.UTF8Encoding]::new($false).GetBytes($text)
+        }
+        { Assert-WinsmuxInstalledEntryChain -WrapperBytes $entryChainBytes.wrapper -EntryBytes $entryChainBytes.entryScript } | Should -Not -Throw
         $installer | Should -Match 'winsmux\.cmd'' launch --project-dir \$dir'
         $installer | Should -Not -Match 'winsmux\.ps1'' start -C \$dir'
         $installE2e | Should -Match 'isGitHubRunner'
@@ -401,7 +420,7 @@ Describe 'winsmux npm release package contract' {
         $installer | Should -Match 'if \(\$installerE2e\) \{ \[string\]\$env:WINSMUX_INSTALL_E2E_GITHUB_ACCESS \} else \{ '''' \}'
         $installer | Should -Match '\$installSourceRef = if \(\$installerE2e -or \$redirectedInstallerE2e\)'
         $installer | Should -Match '\$headers\.Authorization = "Bearer \$e2eGitHubAccess"'
-        $installer | Should -Match 'WINSMUX_RAW_EXE=%USERPROFILE%\\\.local\\bin\\winsmux\.exe'
+        $installE2e | Should -Match ([regex]::Escape('Assert-WinsmuxInstalledEntryChain -WrapperBytes ([IO.File]::ReadAllBytes($wrapper)) -EntryBytes ([IO.File]::ReadAllBytes($entry))'))
         $installE2e | Should -Match 'Invoke-CapturedProcess -FilePath \$wrapper -Arguments @\(''-V''\)'
         $installer | Should -Match 'Get-InstallUserPath'
         $installer | Should -Match 'Get-InstallPowerShellProfilePath'
