@@ -51,6 +51,137 @@ function sourceIdentity() {
   }
   visit(input); return result;
 }
+
+// This scope exercises only producer admission; no compiler, signer or installer is launched.
+function cargoHandoffCases() {
+  const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP };
+  const phase = f => f.gui + '.winsmux-bundle-phase.json';
+  const identity = file => { const s = fs.lstatSync(file, { bigint: true });
+    return { dev: String(s.dev), ino: String(s.ino), nlink: String(s.nlink), sha256: digest(fs.readFileSync(file)) }; };
+  const snapshot = f => Object.fromEntries([f.gui, f.library, f.guiPeer, f.dllPeer, phase(f)]
+    .filter(file => fs.existsSync(file)).map(file => [file, identity(file)]));
+  function fresh({ guiLinks = 2, dllLinks = 2, dll = true, signed = false } = {}) {
+    const id = randomUUID(), output = path.join(root, 'cargo 日本語 & ' + id, 'release');
+    const temp = path.join(root, 'cargo-temp-' + id); fs.mkdirSync(output, { recursive: true }); fs.mkdirSync(temp);
+    process.env.TEMP = temp; process.env.TMP = temp;
+    const gui = path.join(output, 'winsmux-app.exe'), library = path.join(output, 'winsmux_app_lib.dll');
+    const guiPeer = path.join(output, 'deps/winsmux_app.exe'), dllPeer = path.join(output, 'deps/winsmux_app_lib.dll');
+    fs.mkdirSync(path.dirname(guiPeer));
+    fs.writeFileSync(gui, fixturePe({ normal: ['kernel32.dll'], marker: 'Cargo GUI __TAURI_BUNDLE_TYPE_VAR_UNK ' + id }));
+    if (guiLinks === 2) fs.linkSync(gui, guiPeer);
+    if (dll) { fs.writeFileSync(library, fixturePe({ normal: ['kernel32.dll'], marker: 'Cargo DLL ' + id }));
+      if (dllLinks === 2) fs.linkSync(library, dllPeer); }
+    return { gui, library, guiPeer, dllPeer, temp, output,
+      options: { ...options, guiPath: gui, projectOutput: output, signed } };
+  }
+  function reject(name, f, mutate = () => () => {}) {
+    const restore = mutate(), before = snapshot(f);
+    try { assert.throws(() => beginDesktopBundle(f.options), name); assert.deepEqual(snapshot(f), before); pass(name); }
+    finally { restore(); }
+  }
+  function admit(name, f) {
+    const before = snapshot(f); assert.equal(beginDesktopBundle(f.options).status, 'desktop_bundle_admitted');
+    for (const [alias, peer] of [[f.gui, f.guiPeer], [f.library, f.dllPeer]]) if (fs.existsSync(alias)) {
+      assert.equal(identity(alias).nlink, '1'); assert.equal(identity(alias).sha256, before[alias].sha256);
+      if (before[peer]) { const after = identity(peer); assert.equal(after.dev, before[peer].dev);
+        assert.equal(after.ino, before[peer].ino); assert.equal(after.sha256, before[peer].sha256); assert.equal(after.nlink, '1');
+        assert.notEqual(identity(alias).ino, after.ino); }
+      else assert.equal(identity(alias).ino, before[alias].ino);
+    }
+    assert.equal(JSON.parse(fs.readFileSync(phase(f))).phase, 'admitted'); pass(name);
+  }
+  function patchGui(f, tag) { const b = fs.readFileSync(f.gui), prefix = Buffer.from('__TAURI_BUNDLE_TYPE_VAR_');
+    b.write(tag, b.indexOf(prefix) + prefix.length, 'ascii'); fs.writeFileSync(f.gui, b); }
+  function sealed() {
+    const f = fresh({ guiLinks: 1, dllLinks: 1 }); beginDesktopBundle(f.options); patchGui(f, 'MSI');
+    const staged = stageDesktopMsiPlan(f.options), s = JSON.parse(fs.readFileSync(phase(f)));
+    const artifacts = ['en-US', 'ja-JP'].map(label => {
+      const file = path.join(f.output, 'bundle/msi/winsmux_' + binding.version + '_x64_' + label + '.msi');
+      fs.mkdirSync(path.dirname(file), { recursive: true }); const b = Buffer.from('synthetic sealed ' + label); fs.writeFileSync(file, b);
+      return { output: label, bytes: b.length, sha256: digest(b) };
+    });
+    s.phase = 'frozen'; s.expected_pre_sign.msi = null;
+    s.records = [{ flavor: 'msi', gui_sha256: staged.gui_sha256, plan_sha256: staged.plan_sha256,
+      include_sha256: digest(fs.readFileSync(f.gui + '.winsmux-plan.wxi')), compiler_inputs_ready: true, artifacts }];
+    fs.writeFileSync(phase(f), JSON.stringify(s, null, 2) + '\n');
+    // A new Cargo build legitimately replaces these two aliases after the prior sealed compiler interval.
+    fs.unlinkSync(f.gui); fs.unlinkSync(f.library);
+    fs.writeFileSync(f.gui, fixturePe({ normal: ['kernel32.dll'], marker: 'Rebuilt GUI __TAURI_BUNDLE_TYPE_VAR_UNK ' + randomUUID() }));
+    fs.writeFileSync(f.library, fixturePe({ normal: ['kernel32.dll'], marker: 'Rebuilt DLL ' + randomUUID() }));
+    fs.linkSync(f.gui, f.guiPeer); fs.linkSync(f.library, f.dllPeer); return f;
+  }
+  try {
+    for (const [name, config] of [ ['cargo-single-link-without-peers', { guiLinks: 1, dllLinks: 1 }],
+      ['cargo-fixed-peers-both-two', {}], ['cargo-mixed-gui-single', { guiLinks: 1 }],
+      ['cargo-mixed-dll-single', { dllLinks: 1 }], ['cargo-nsis-without-dll', { dll: false }],
+      ['cargo-signed-admission-same-handoff', { signed: true }] ]) admit(name, fresh(config));
+    for (const [name, mutation] of [
+      ['cargo-missing-fixed-peer', f => fs.renameSync(f.guiPeer, f.guiPeer + '.parked')],
+      ['cargo-same-bytes-wrong-peer-id', f => { fs.renameSync(f.guiPeer, f.guiPeer + '.parked'); fs.copyFileSync(f.gui, f.guiPeer); }],
+      ['cargo-third-link', f => fs.linkSync(f.gui, path.join(f.output, 'third.exe'))],
+      ['cargo-wrong-peer-name', f => fs.renameSync(f.guiPeer, path.join(path.dirname(f.guiPeer), 'other.exe'))],
+      ['cargo-orphan-temp', f => fs.writeFileSync(f.library + '.winsmux-cargo-' + randomUUID(), 'orphan')],
+      ['cargo-unknown-adjacent', f => fs.writeFileSync(f.gui + '.winsmux-foreign', 'unknown')],
+      ['cargo-unknown-top-dll', f => fs.writeFileSync(path.join(f.output, 'other.dll'), 'unknown')],
+      ['cargo-unowned-sdk-copy', f => fs.writeFileSync(path.join(f.temp, 'winsmux.exe'), 'unknown')]
+    ]) { const f = fresh(); mutation(f); reject(name, f); }
+    const reparse = fresh(); fs.renameSync(path.join(reparse.output, 'deps'), path.join(reparse.output, 'real-deps'));
+    fs.symlinkSync(path.join(reparse.output, 'real-deps'), path.join(reparse.output, 'deps'), 'junction');
+    reject('cargo-reparse-peer-directory', reparse);
+    for (const [name, file, replacement] of [
+      ['cargo-canonical-before-detach', path.join(source, 'binaries/winsmux-' + binding.host + '.exe'), Buffer.from('tampered')],
+      ['cargo-config-before-detach', path.join(source, 'tauri.conf.json'), Buffer.from('{}')]
+    ]) reject(name, fresh(), () => { const old = fs.readFileSync(file); fs.writeFileSync(file, replacement); return () => fs.writeFileSync(file, old); });
+    const rebuild = sealed(), oldState = fs.readFileSync(phase(rebuild)); admit('cargo-sealed-rebuild-new-gui-dll', rebuild);
+    assert.notDeepEqual(fs.readFileSync(phase(rebuild)), oldState);
+    for (const kind of ['phase', 'plan', 'include', 'artifact', 'sdk-copy']) {
+      const f = sealed();
+      if (kind === 'phase') { const s = JSON.parse(fs.readFileSync(phase(f))); s.phase = 'failed'; fs.writeFileSync(phase(f), JSON.stringify(s, null, 2) + '\n'); }
+      if (kind === 'plan') fs.appendFileSync(f.gui + '.winsmux-msi-plan.json', ' ');
+      if (kind === 'include') fs.appendFileSync(f.gui + '.winsmux-plan.wxi', ' ');
+      if (kind === 'artifact') fs.appendFileSync(path.join(f.output, 'bundle/msi/winsmux_' + binding.version + '_x64_en-US.msi'), ' ');
+      if (kind === 'sdk-copy') fs.writeFileSync(path.join(f.temp, 'winsmux.exe'), 'foreign');
+      reject('cargo-old-' + kind + '-before-detach', f);
+    }
+    // A failure after the first alias is detached must not publish a phase or reconstruct links.
+    const partial = fresh(), partialBefore = snapshot(partial), nativeOpen = fs.openSync;
+    fs.openSync = function(file, ...args) { if (String(file).startsWith(partial.library + '.winsmux-cargo-')) throw new Error('synthetic copy fault'); return nativeOpen.call(this, file, ...args); };
+    try { assert.throws(() => beginDesktopBundle(partial.options)); } finally { fs.openSync = nativeOpen; }
+    assert.equal(fs.existsSync(phase(partial)), false); assert.equal(identity(partial.gui).nlink, '1'); assert.equal(identity(partial.library).nlink, '2');
+    assert.equal(identity(partial.guiPeer).ino, partialBefore[partial.guiPeer].ino); pass('cargo-partial-failure-no-phase-and-peer-preserved');
+    admit('cargo-partial-mixed-reentry', partial);
+    const replace = fresh(), replaceBefore = snapshot(replace), nativeRename = fs.renameSync;
+    fs.renameSync = function(from, to) { if (to === replace.gui) throw new Error('synthetic rename fault'); return nativeRename.call(this, from, to); };
+    try { assert.throws(() => beginDesktopBundle(replace.options)); } finally { fs.renameSync = nativeRename; }
+    assert.deepEqual(snapshot(replace), replaceBefore); assert.equal(fs.readdirSync(replace.output).some(n => n.includes('.winsmux-cargo-')), false);
+    pass('cargo-replace-failure-owned-copy-cleaned'); admit('cargo-replace-failure-reentry', replace);
+    const foreign = fresh(), foreignBefore = snapshot(foreign); let foreignFile;
+    fs.renameSync = function(from, to) { if (to === foreign.gui) {
+      const held = from + '.held'; nativeRename.call(this, from, held); fs.writeFileSync(from, 'foreign replacement'); foreignFile = from;
+      throw new Error('synthetic foreign replacement'); } return nativeRename.call(this, from, to); };
+    try { assert.throws(() => beginDesktopBundle(foreign.options)); } finally { fs.renameSync = nativeRename; }
+    assert.deepEqual(snapshot(foreign), foreignBefore); assert.equal(fs.readFileSync(foreignFile, 'utf8'), 'foreign replacement');
+    pass('cargo-foreign-temp-preserved'); reject('cargo-foreign-orphan-reentry-refused', foreign);
+    const changed = fresh(), changedBefore = snapshot(changed), nativeFsync = fs.fsyncSync;
+    fs.fsyncSync = function(fd) { nativeFsync.call(this, fd); fs.writeFileSync(changed.guiPeer, 'changed peer bytes'); };
+    try { assert.throws(() => beginDesktopBundle(changed.options)); } finally { fs.fsyncSync = nativeFsync; }
+    assert.equal(identity(changed.gui).ino, changedBefore[changed.gui].ino); assert.equal(fs.existsSync(phase(changed)), false);
+    pass('cargo-peer-mutation-during-copy-refused');
+    const partialWrite = fresh(), nativeWrite = fs.writeFileSync; let orphan;
+    fs.writeFileSync = function(file, bytes, ...args) { if (typeof file === 'number') { nativeWrite.call(this, file, Buffer.from('partial')); throw new Error('synthetic short copy'); } return nativeWrite.call(this, file, bytes, ...args); };
+    try { assert.throws(() => beginDesktopBundle(partialWrite.options)); } finally { fs.writeFileSync = nativeWrite; }
+    orphan = fs.readdirSync(partialWrite.output).find(n => n.includes('.winsmux-cargo-'));
+    assert.ok(orphan); assert.equal(fs.readFileSync(path.join(partialWrite.output, orphan), 'utf8'), 'partial');
+    pass('cargo-incomplete-owned-copy-preserved'); reject('cargo-incomplete-orphan-reentry-refused', partialWrite);
+  } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+}
+cargoHandoffCases();
+if (process.argv.includes('--cargo-handoff-only')) {
+  console.log(JSON.stringify({ scope: 'cargo-handoff-only', passed: cases.length, failed: 0, cases,
+    compiler_launched: false, signer_launched: false, installer_launched: false, evidence_root: root }));
+  process.exit(0);
+}
+
 const first = stageDesktopMsiPlan(options), planBytes = fs.readFileSync(planFile), includeBytes = fs.readFileSync(includeFile);
 assert.equal(first.plan_sha256, digest(planBytes));
 const plan = JSON.parse(planBytes);

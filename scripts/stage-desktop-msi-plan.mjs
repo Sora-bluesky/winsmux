@@ -309,12 +309,12 @@ function backupPaths(gui, state, flavor) {
   const prefix = gui + '.winsmux-bundle-old-' + state.invocation_id + '-' + flavor;
   return { planPath: prefix + '-plan', includePath: prefix + '-include' };
 }
-export function assertDesktopBundleNamespace(guiPath) {
+function checkedBundleNamespace(guiPath, readGui = plain) {
   const gui = localPath(guiPath), known = new Set([phasePath(gui)]);
   for (const flavor of Object.keys(tags)) for (const file of Object.values(flavorPair(gui, flavor))) known.add(file);
   const state = exists(phasePath(gui)) ? readPhase(gui) : null;
   if (!state) {
-    const flavor = bundleFlavor(plain(gui), true);
+    const flavor = bundleFlavor(readGui(gui), true);
     for (const other of Object.keys(tags)) if (other !== flavor)
       for (const file of Object.values(flavorPair(gui, other))) requireValue(!exists(file), 'Unbound other-flavor pair exists.');
   }
@@ -329,6 +329,7 @@ export function assertDesktopBundleNamespace(guiPath) {
   for (const name of fs.readdirSync(path.dirname(gui))) if (name.toLowerCase().startsWith(prefix))
     requireValue(known.has(path.join(path.dirname(gui), name)), 'Unknown adjacent desktop bundle output.');
 }
+export function assertDesktopBundleNamespace(guiPath) { return checkedBundleNamespace(guiPath); }
 function generationHash(source) { return digest(plain(path.join(source, 'binaries/distribution-manifest.json'))); }
 function identityMatches(file, row) {
   const bytes = plain(file);
@@ -374,7 +375,7 @@ function validatePlanSources(options, plan, skipGui = false) {
   requireValue(expected.sort().join('\0') === plan.files.map(row => row.path).join('\0'), 'Desktop plan inventory differs.');
   for (const row of planned) if (!skipGui || row.role !== 'gui') identityMatches(row.source, row);
 }
-function checkedInventory(options) {
+function checkedInventory(options, readOutput = plain) {
   const configFile = path.join(options.srcTauri, 'tauri.conf.json');
   const base = parseStrictJson(plain(configFile));
   function merge(left, right) {
@@ -398,7 +399,7 @@ function checkedInventory(options) {
   const dlls = fs.readdirSync(options.projectOutput).filter(name => /\.dll$/iu.test(name));
   requireValue(dlls.length <= 1 && (dlls.length === 0 || dlls[0] === 'winsmux_app_lib.dll')
     && !fs.readdirSync(options.projectOutput).some(name => /\.msm$/iu.test(name)), 'Unsupported desktop DLL/MSM inventory.');
-  if (dlls.length) plain(path.join(options.projectOutput, dlls[0]));
+  if (dlls.length) readOutput(path.join(options.projectOutput, dlls[0]));
 }
 function parentTemp(options) {
   const values = [os.tmpdir()];
@@ -458,11 +459,11 @@ function fullGuard(options, state, allowedGui = null) {
       'Admitted app library changed.');
   }
 }
-function checkedPrevious(options, previous) {
+function checkedPrevious(options, previous, readGui = plain) {
   requireValue(previous.phase === 'frozen' && previous.version === options.version && previous.host === options.host
     && previous.signed === options.signed && previous.generation_manifest_sha256 === generationHash(options.srcTauri)
     && previous.records.every(row => sealed(options.guiPath, previous, row)), 'Prior desktop phase is incomplete or differs.');
-  assertDesktopBundleNamespace(options.guiPath);
+  checkedBundleNamespace(options.guiPath, readGui);
   const latest = new Map();
   for (const row of previous.prior_pairs) {
     const check = verifiedPair(options, row, backupPaths(options.guiPath, previous, row.flavor));
@@ -477,20 +478,86 @@ function checkedPrevious(options, previous) {
   }
   return [...latest.values()];
 }
-export function beginDesktopBundle(options) {
-  const { host, version, signed } = options;
-  options = { ...options, repoRoot: localPath(options.repoRoot), srcTauri: localPath(options.srcTauri),
-    guiPath: localPath(options.guiPath), projectOutput: localPath(options.projectOutput) };
+// Only this producer boundary reads Cargo final aliases before strict bundle admission.
+function compilerState(file) {
+  const stat = fs.lstatSync(localPath(file), { bigint: true });
+  requireValue(stat.isFile() && stat.dev >= 0n && stat.ino > 0n, 'Desktop compiler file identity is unavailable.');
+  return stat;
+}
+function sameCompilerState(left, right) {
+  return ['dev', 'ino', 'nlink', 'size', 'mtimeNs', 'ctimeNs'].every(key => left[key] === right[key]);
+}
+function compilerInput(file, peer) {
+  const before = compilerState(file);
+  requireValue(before.nlink === 1n || before.nlink === 2n, 'Desktop compiler link inventory differs.');
+  const bytes = fs.readFileSync(file), after = compilerState(file);
+  requireValue(sameCompilerState(before, after) && BigInt(bytes.length) === before.size, 'Desktop compiler alias changed.');
+  let peerState = null;
+  if (before.nlink === 2n) {
+    peerState = compilerState(peer);
+    requireValue(peerState.nlink === 2n && peerState.dev === before.dev && peerState.ino === before.ino
+      && peerState.size === before.size && fs.readFileSync(peer).equals(bytes)
+      && sameCompilerState(peerState, compilerState(peer)), 'Desktop compiler peer differs.');
+  }
+  return { file, peer, before, peerState, bytes };
+}
+function unchangedCompilerInput(row) {
+  requireValue(sameCompilerState(row.before, compilerState(row.file)) && fs.readFileSync(row.file).equals(row.bytes),
+    'Desktop compiler alias changed before handoff.');
+  if (row.peerState) requireValue(sameCompilerState(row.peerState, compilerState(row.peer))
+    && fs.readFileSync(row.peer).equals(row.bytes), 'Desktop compiler peer changed before handoff.');
+}
+function compilerInputs(options) {
+  const slots = [[options.guiPath, path.join(options.projectOutput, 'deps/winsmux_app.exe')]];
+  const library = path.join(options.projectOutput, 'winsmux_app_lib.dll');
+  if (exists(library)) slots.push([library, path.join(options.projectOutput, 'deps/winsmux_app_lib.dll')]);
+  // A prior invocation's orphan is never adopted by a later producer.
+  for (const name of fs.readdirSync(options.projectOutput)) for (const base of ['winsmux-app.exe', 'winsmux_app_lib.dll'])
+    requireValue(!name.toLowerCase().startsWith(base + '.winsmux-cargo-'), 'Unknown desktop compiler handoff temporary.');
+  return slots.map(([file, peer]) => compilerInput(file, peer));
+}
+function detachCompilerInputs(rows) {
+  for (const row of rows) unchangedCompilerInput(row);
+  for (const row of rows) {
+    if (row.before.nlink === 1n) continue;
+    const temporary = row.file + '.winsmux-cargo-' + randomUUID(); let owned = null;
+    try {
+      const fd = fs.openSync(temporary, 'wx');
+      try { owned = compilerState(temporary); fs.writeFileSync(fd, row.bytes); fs.fsyncSync(fd); }
+      finally { fs.closeSync(fd); }
+      const copy = compilerState(temporary);
+      requireValue(copy.nlink === 1n && !(copy.dev === row.before.dev && copy.ino === row.before.ino)
+        && copy.dev === row.before.dev && copy.dev === owned.dev && copy.ino === owned.ino
+        && plain(temporary).equals(row.bytes), 'Desktop compiler copy readback differs.');
+      unchangedCompilerInput(row);
+      fs.renameSync(temporary, row.file);
+      const final = compilerState(row.file), peer = compilerState(row.peer);
+      requireValue(final.dev === copy.dev && final.ino === copy.ino && plain(row.file).equals(row.bytes)
+        && peer.dev === row.peerState.dev && peer.ino === row.peerState.ino && peer.nlink === 1n
+        && fs.readFileSync(row.peer).equals(row.bytes), 'Desktop compiler handoff readback differs.');
+    } finally {
+      if (exists(temporary)) {
+        const current = compilerState(temporary);
+        requireValue(owned && current.dev === owned.dev && current.ino === owned.ino && current.nlink === 1n
+          && fs.readFileSync(temporary).equals(row.bytes), 'Unknown desktop compiler temporary preserved.');
+        fs.unlinkSync(temporary);
+      }
+    }
+  }
+}
+
+function desktopBundlePreflight(options, readOutput = plain) {
+  const { host, signed } = options;
   const { repoRoot: repo, srcTauri: source, guiPath: gui, projectOutput: output } = options;
   requireValue(source === localPath(path.join(repo, 'winsmux-app/src-tauri'))
     && gui === localPath(path.join(output, 'winsmux-app.exe')) && path.basename(output) === 'release'
     && path.basename(path.dirname(output)) !== host64 && host === host64 && typeof signed === 'boolean', 'Desktop admission layout differs.');
   for (const protectedPath of [source, path.join(repo, 'distribution')])
     requireValue(!overlap(output, protectedPath), 'Desktop admission overlaps protected source.');
-  assertCanonicalBundledDistribution(options); checkedInventory(options); assertDesktopBundleNamespace(gui);
-  const bytes = plain(gui), expected = expectedHashes(bytes), library = path.join(output, 'winsmux_app_lib.dll');
+  assertCanonicalBundledDistribution(options); checkedInventory(options, readOutput); checkedBundleNamespace(gui, readOutput);
+  const bytes = readOutput(gui), expected = expectedHashes(bytes), library = path.join(output, 'winsmux_app_lib.dll');
   const temp = parentTemp(options), previous = exists(phasePath(gui)) ? readPhase(gui) : null;
-  const retired = previous ? checkedPrevious(options, previous) : [];
+  const retired = previous ? checkedPrevious(options, previous, readOutput) : [];
   const previousMsi = previous?.records.find(row => row.flavor === 'msi');
   for (const name of ['winsmux.exe', 'winsmux-workspace-mcp.exe']) if (exists(path.join(temp, name))) {
     requireValue(previousMsi && previous.sdk_temp_root === temp, 'Unowned preexisting SDK companion copy.');
@@ -499,6 +566,19 @@ export function beginDesktopBundle(options) {
   }
   if (!previous) for (const flavor of Object.keys(tags)) for (const file of Object.values(flavorPair(gui, flavor)))
     requireValue(!exists(file), 'Desktop pair without phase ownership is refused.');
+  return { bytes, expected, library, temp, retired };
+}
+export function beginDesktopBundle(options) {
+  const { host, version, signed } = options;
+  options = { ...options, repoRoot: localPath(options.repoRoot), srcTauri: localPath(options.srcTauri),
+    guiPath: localPath(options.guiPath), projectOutput: localPath(options.projectOutput) };
+  const inputs = compilerInputs(options);
+  const readProducer = file => { const row = inputs.find(item => item.file === file);
+    requireValue(row, 'Unexpected desktop compiler input.'); unchangedCompilerInput(row); return row.bytes; };
+  desktopBundlePreflight(options, readProducer);
+  detachCompilerInputs(inputs);
+  const { bytes, expected, library, temp, retired } = desktopBundlePreflight(options);
+  const { guiPath: gui, srcTauri: source } = options;
   const state = { schema: phaseSchema, invocation_id: randomUUID(), gui_path: gui, host, version, signed,
     generation_manifest_sha256: generationHash(source), input_gui_sha256: digest(bytes),
     input_app_lib_sha256: exists(library) ? digest(plain(library)) : null, sdk_temp_root: temp,
