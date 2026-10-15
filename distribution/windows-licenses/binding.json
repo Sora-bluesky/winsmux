@@ -54,7 +54,7 @@
     },
     {
       "path": "winsmux-app/package.json",
-      "sha256": "f5c9c3e752ef70755a864a31e10934a17402d23a3caf5490839f2ffd81f32398"
+      "sha256": "2f8c8ecb668f70483ca9ea39331de8d2666d761ac01c60e0bdeebeec890722db"
     },
     {
       "path": "winsmux-app/src-tauri/Cargo.toml",
