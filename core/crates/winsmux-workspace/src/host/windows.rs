@@ -12,6 +12,8 @@ use super::process::{spawn_host, spawn_host_at, ChildProcess};
 use super::security::{
     verify_pipe_peer_charged, Identity, SecurityDescriptor, SecurityMode, ServerCapabilityToken,
 };
+#[cfg(debug_assertions)]
+use super::security::{PublicPipeErrorClass, PublicPipeFailureApi, PublicPipeFailures, PublicPipeObservation};
 use super::server_identity::{
     encode_request, parse_request as parse_auth_request, random_challenge, verify_response,
     ServerKey, AUTH_REQUEST_BYTES,
@@ -493,10 +495,65 @@ impl ChildStartupStage {
     }
 }
 
+
+// Tagged, closed debug-only exit values. Values outside the legal set are not
+// observations; this is not an authentication channel or a general serializer.
+#[cfg(debug_assertions)]
+const PUBLIC_PIPE_FAILURE_BASE: u32 = 0x5750_0000;
+
+#[cfg(debug_assertions)]
+impl PublicPipeFailures {
+    fn startup_code(self) -> Option<u32> {
+        let operation = match self.operation {
+            None => 0,
+            Some((PublicPipeFailureApi::DescriptorValidation, PublicPipeErrorClass::Unobserved)) => 25,
+            Some((PublicPipeFailureApi::DescriptorValidation, _)) => return None,
+            Some((api, class)) => (api as u32 - 1) * 6 + class as u32,
+        };
+        if matches!(self.operation, Some((PublicPipeFailureApi::Impersonate, _))) && self.revert.is_some() {
+            return None; // No Revert call follows failed impersonation.
+        }
+        let revert = self.revert.map_or(0, |class| class as u32);
+        if operation == 0 && revert == 0 { return None; }
+        Some(PUBLIC_PIPE_FAILURE_BASE + operation * 7 + revert)
+    }
+
+    fn from_startup_code(code: u32) -> Option<Self> {
+        let value = code.checked_sub(PUBLIC_PIPE_FAILURE_BASE)?;
+        if value > 181 { return None; }
+        let operation = match value / 7 {
+            0 => None,
+            25 => Some((PublicPipeFailureApi::DescriptorValidation, PublicPipeErrorClass::Unobserved)),
+            index @ 1..=24 => {
+                let api = match (index - 1) / 6 {
+                    0 => PublicPipeFailureApi::Impersonate,
+                    1 => PublicPipeFailureApi::SidToString,
+                    2 => PublicPipeFailureApi::SddlToDescriptor,
+                    3 => PublicPipeFailureApi::CreatePipe,
+                    _ => return None,
+                };
+                Some((api, PublicPipeErrorClass::from_index((index - 1) % 6 + 1)?))
+            }
+            _ => return None,
+        };
+        let revert = match value % 7 {
+            0 => None,
+            index => Some(PublicPipeErrorClass::from_index(index)?),
+        };
+        let failures = Self { operation, revert };
+        (failures.startup_code() == Some(code)).then_some(failures)
+    }
+
+    fn labels(self) -> [Option<(&'static str, PublicPipeErrorClass)>; 2] {
+        [self.operation.map(|(api, class)| (api.label(), class)), self.revert.map(|class| ("revert", class))]
+    }
+}
+
 #[cfg(debug_assertions)]
 struct ChildStartupTrace {
     stage: std::cell::Cell<ChildStartupStage>,
     frame_attempted: std::cell::Cell<bool>,
+    public_pipe: std::cell::Cell<PublicPipeFailures>,
 }
 
 #[cfg(debug_assertions)]
@@ -505,6 +562,7 @@ impl ChildStartupTrace {
         Self {
             stage: std::cell::Cell::new(ChildStartupStage::Handle),
             frame_attempted: std::cell::Cell::new(false),
+            public_pipe: std::cell::Cell::new(PublicPipeFailures::default()),
         }
     }
     fn set(&self, stage: ChildStartupStage) {
@@ -512,6 +570,9 @@ impl ChildStartupTrace {
     }
     fn exit_code(&self, error: HostError) -> i32 {
         if !self.frame_attempted.get() && error != HostError::Cancelled {
+            if self.stage.get() == ChildStartupStage::PublicPipe {
+                if let Some(code) = self.public_pipe.get().startup_code() { return code as i32; }
+            }
             self.stage.get().code()
         } else {
             error.exit_code()
@@ -602,6 +663,97 @@ mod child_startup_trace_tests {
             combine_launcher_results(Ok(()), Ok(84), LauncherStartupStage::StartupFrame, true),
             Err(HostError::Transport)
         );
+    }
+
+    #[test]
+    fn public_pipe_failure_all_legal_codes_and_labels_round_trip() {
+        let classes = [PublicPipeErrorClass::AccessDenied, PublicPipeErrorClass::PrivilegeNotHeld,
+            PublicPipeErrorClass::BadImpersonationLevel, PublicPipeErrorClass::InvalidOwner,
+            PublicPipeErrorClass::InvalidSecurityDescriptor, PublicPipeErrorClass::Unobserved];
+        let apis = [PublicPipeFailureApi::Impersonate, PublicPipeFailureApi::SidToString,
+            PublicPipeFailureApi::SddlToDescriptor, PublicPipeFailureApi::CreatePipe,
+            PublicPipeFailureApi::DescriptorValidation];
+        let mut operations = vec![None];
+        for api in apis { for class in classes { operations.push(Some((api, class))); } }
+        let mut reverts = vec![None];
+        reverts.extend(classes.into_iter().map(Some));
+        let mut codes = std::collections::BTreeSet::new();
+        for operation in operations { for revert in &reverts {
+            let record = PublicPipeFailures { operation, revert: *revert };
+            let legal = !(operation.is_none() && revert.is_none())
+                && !matches!(operation, Some((PublicPipeFailureApi::Impersonate, _)) if revert.is_some())
+                && !matches!(operation, Some((PublicPipeFailureApi::DescriptorValidation, class)) if class != PublicPipeErrorClass::Unobserved);
+            assert_eq!(record.startup_code().is_some(), legal);
+            if let Some(code) = record.startup_code() {
+                assert!(code > 92 && code <= i32::MAX as u32);
+                assert!(codes.insert(code));
+                assert_eq!(PublicPipeFailures::from_startup_code(code), Some(record));
+                assert!(ChildStartupStage::from_code(code).is_none());
+                assert_eq!(record.labels()[0], operation.map(|(api, class)| (api.label(), class)));
+                assert_eq!(record.labels()[1], revert.map(|class| ("revert", class)));
+            }
+        } }
+        assert_eq!(codes.len(), 145);
+        for offset in 0..=182 {
+            let code = PUBLIC_PIPE_FAILURE_BASE + offset;
+            assert_eq!(PublicPipeFailures::from_startup_code(code).is_some(), codes.contains(&code));
+        }
+        for code in [0, 1, 79, 80, 90, 92, 93, 101, 124, PUBLIC_PIPE_FAILURE_BASE - 1,
+            PUBLIC_PIPE_FAILURE_BASE + 182, 0xc0000005, u32::MAX] {
+            assert!(PublicPipeFailures::from_startup_code(code).is_none());
+        }
+    }
+
+    #[test]
+    fn public_pipe_failure_scope_frame_cancel_and_siblings_keep_old_behavior() {
+        let first = PublicPipeObservation::new();
+        let sibling = PublicPipeObservation::new();
+        first.operation_failed(PublicPipeFailureApi::CreatePipe, PublicPipeErrorClass::AccessDenied);
+        first.operation_failed(PublicPipeFailureApi::SidToString, PublicPipeErrorClass::InvalidOwner);
+        first.revert_failed(PublicPipeErrorClass::PrivilegeNotHeld);
+        assert_eq!(sibling.failures(), PublicPipeFailures::default());
+        let other_thread = std::thread::spawn(|| {
+            let observation = PublicPipeObservation::new();
+            observation.operation_failed(PublicPipeFailureApi::Impersonate, PublicPipeErrorClass::Unobserved);
+            observation.failures()
+        }).join().expect("isolated observation thread");
+        assert_ne!(first.failures(), other_thread);
+        assert_eq!(first.failures().operation, Some((PublicPipeFailureApi::CreatePipe, PublicPipeErrorClass::AccessDenied)));
+        let trace = ChildStartupTrace::new();
+        trace.set(ChildStartupStage::PublicPipe);
+        assert_eq!(trace.exit_code(HostError::Transport), 90);
+        trace.public_pipe.set(first.failures());
+        let code = trace.exit_code(HostError::Transport);
+        assert_eq!(PublicPipeFailures::from_startup_code(code as u32), Some(first.failures()));
+        assert_eq!(trace.exit_code(HostError::Cancelled), HostError::Cancelled.exit_code());
+        trace.set(ChildStartupStage::AcceptThread);
+        assert_eq!(trace.exit_code(HostError::Transport), 91);
+        trace.set(ChildStartupStage::PublicPipe);
+        attempt_first_startup_frame(Some(&trace), || Err(HostError::Transport)).expect_err("frame error");
+        assert_eq!(trace.exit_code(HostError::Transport), HostError::Transport.exit_code());
+        // No trace (normal/release entry) still uses the HostError result, and
+        // launcher request success/cancellation can never become success from a code.
+        assert_eq!(combine_launcher_results(Err(HostError::Cancelled), Ok(code as u32), LauncherStartupStage::StartupFrame, true), Err(HostError::Cancelled));
+        assert_eq!(combine_launcher_results(Err(HostError::Transport), Ok(code as u32), LauncherStartupStage::StartupFrame, false), Err(HostError::Transport));
+        assert_eq!(combine_launcher_results(Ok(()), Ok(code as u32), LauncherStartupStage::StartupFrame, true), Err(HostError::Transport));
+    }
+
+    #[test]
+    fn public_pipe_failure_last_error_is_closed_without_raw_values() {
+        use windows_sys::Win32::Foundation::{SetLastError, ERROR_ACCESS_DENIED,
+            ERROR_PRIVILEGE_NOT_HELD, ERROR_BAD_IMPERSONATION_LEVEL, ERROR_INVALID_OWNER,
+            ERROR_INVALID_SECURITY_DESCR};
+        for (native, expected) in [
+            (ERROR_ACCESS_DENIED, PublicPipeErrorClass::AccessDenied),
+            (ERROR_PRIVILEGE_NOT_HELD, PublicPipeErrorClass::PrivilegeNotHeld),
+            (ERROR_BAD_IMPERSONATION_LEVEL, PublicPipeErrorClass::BadImpersonationLevel),
+            (ERROR_INVALID_OWNER, PublicPipeErrorClass::InvalidOwner),
+            (ERROR_INVALID_SECURITY_DESCR, PublicPipeErrorClass::InvalidSecurityDescriptor),
+            (0, PublicPipeErrorClass::Unobserved), (u32::MAX, PublicPipeErrorClass::Unobserved),
+        ] {
+            unsafe { SetLastError(native); }
+            assert_eq!(PublicPipeErrorClass::last_error(), expected);
+        }
     }
 }
 
@@ -739,7 +891,12 @@ fn combine_launcher_results(
         && matches!(startup_stage, LauncherStartupStage::StartupFrame)
     {
         if let Ok(code) = child_result {
-            if let Some(stage) = ChildStartupStage::from_code(code) {
+            if let Some(failures) = PublicPipeFailures::from_startup_code(code) {
+                eprintln!("TASK876_CHILD_STARTUP stage=public_pipe");
+                for (api, class) in failures.labels().into_iter().flatten() {
+                    eprintln!("TASK876_CHILD_STARTUP stage=public_pipe_{}_{}", api, class.label());
+                }
+            } else if let Some(stage) = ChildStartupStage::from_code(code) {
                 eprintln!("TASK876_CHILD_STARTUP stage={}", stage.label());
             }
         }
@@ -1082,7 +1239,10 @@ fn run_host(
         trace.set(ChildStartupStage::PublicPipe);
     }
     let listener =
-        create_public_pipe(&pipe_name, &identity, true, &server_capability).map_err(map_io)?;
+        create_initial_public_pipe(
+            &pipe_name, &identity, &server_capability,
+            #[cfg(debug_assertions)] trace,
+        ).map_err(map_io)?;
     let accept_authorization = authorization.clone();
     let accept_cancel = host_cancel.clone();
     let accept_identity = identity.clone();
@@ -2014,8 +2174,36 @@ fn create_public_pipe(
     first: bool,
     capability: &ServerCapabilityToken,
 ) -> Result<OwnedHandle, IoError> {
-    capability.while_impersonating(|| {
-        create_pipe(
+    create_public_pipe_inner(name, identity, first, capability, #[cfg(debug_assertions)] None)
+}
+
+// Only this first-startup entry can attach an observation. Every other caller
+// stays on create_public_pipe/create_pipe with no observation or shared state.
+fn create_initial_public_pipe(
+    name: &str,
+    identity: &Identity,
+    capability: &ServerCapabilityToken,
+    #[cfg(debug_assertions)] trace: Option<&ChildStartupTrace>,
+) -> Result<OwnedHandle, IoError> {
+    #[cfg(debug_assertions)]
+    if let Some(trace) = trace {
+        let observation = PublicPipeObservation::new();
+        let result = create_public_pipe_inner(name, identity, true, capability, Some(&observation));
+        if result.is_err() { trace.public_pipe.set(observation.failures()); }
+        return result;
+    }
+    create_public_pipe(name, identity, true, capability)
+}
+
+fn create_public_pipe_inner(
+    name: &str,
+    identity: &Identity,
+    first: bool,
+    capability: &ServerCapabilityToken,
+    #[cfg(debug_assertions)] observation: Option<&PublicPipeObservation>,
+) -> Result<OwnedHandle, IoError> {
+    let operation = || {
+        create_pipe_inner(
             name,
             identity,
             first,
@@ -2024,8 +2212,14 @@ fn create_public_pipe(
                 server_logon: capability.logon(),
             },
             PIPE_UNLIMITED_INSTANCES,
+            #[cfg(debug_assertions)] observation,
         )
-    })
+    };
+    #[cfg(debug_assertions)]
+    if let Some(observation) = observation {
+        return capability.while_impersonating_observed(observation, operation);
+    }
+    capability.while_impersonating(operation)
 }
 
 pub(super) fn create_pipe(
@@ -2036,7 +2230,25 @@ pub(super) fn create_pipe(
     mode: SecurityMode<'_>,
     max_instances: u32,
 ) -> Result<OwnedHandle, IoError> {
+    create_pipe_inner(name, identity, first, reject_remote, mode, max_instances, #[cfg(debug_assertions)] None)
+}
+
+fn create_pipe_inner(
+    name: &str,
+    identity: &Identity,
+    first: bool,
+    reject_remote: bool,
+    mode: SecurityMode<'_>,
+    max_instances: u32,
+    #[cfg(debug_assertions)] observation: Option<&PublicPipeObservation>,
+) -> Result<OwnedHandle, IoError> {
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    #[cfg(debug_assertions)]
+    let mut descriptor = match observation {
+        Some(observation) => SecurityDescriptor::new_observed(identity, mode, observation)?,
+        None => SecurityDescriptor::new(identity, mode)?,
+    };
+    #[cfg(not(debug_assertions))]
     let mut descriptor = SecurityDescriptor::new(identity, mode)?;
     let attributes = descriptor.attributes(false);
     let mut open_mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
@@ -2059,6 +2271,16 @@ pub(super) fn create_pipe(
             &attributes,
         )
     };
+    #[cfg(debug_assertions)]
+    if handle == INVALID_HANDLE_VALUE {
+        if let Some(observation) = observation {
+            observation.operation_failed(PublicPipeFailureApi::CreatePipe, PublicPipeErrorClass::last_error());
+        }
+    } else if handle.is_null() {
+        if let Some(observation) = observation {
+            observation.operation_failed(PublicPipeFailureApi::CreatePipe, PublicPipeErrorClass::Unobserved);
+        }
+    }
     unsafe { OwnedHandle::from_raw(handle) }
 }
 

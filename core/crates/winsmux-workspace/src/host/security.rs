@@ -41,6 +41,120 @@ pub(crate) const PIPE_DATA_ACCESS: u32 = 0x0012_019b;
 const SE_GROUP_ENABLED: u32 = 0x0000_0004;
 const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x0000_0010;
 
+
+// This observation belongs only to one traced initial public-pipe call. It never
+// contains native error values, identities, names or descriptor strings.
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PublicPipeErrorClass {
+    AccessDenied = 1,
+    PrivilegeNotHeld,
+    BadImpersonationLevel,
+    InvalidOwner,
+    InvalidSecurityDescriptor,
+    Unobserved,
+}
+
+#[cfg(debug_assertions)]
+impl PublicPipeErrorClass {
+    pub(super) fn last_error() -> Self {
+        use windows_sys::Win32::Foundation::{
+            GetLastError, ERROR_ACCESS_DENIED, ERROR_BAD_IMPERSONATION_LEVEL,
+            ERROR_INVALID_OWNER, ERROR_INVALID_SECURITY_DESCR, ERROR_PRIVILEGE_NOT_HELD,
+        };
+        // Called directly after a failed API, before any cleanup or formatting.
+        match unsafe { GetLastError() } {
+            ERROR_ACCESS_DENIED => Self::AccessDenied,
+            ERROR_PRIVILEGE_NOT_HELD => Self::PrivilegeNotHeld,
+            ERROR_BAD_IMPERSONATION_LEVEL => Self::BadImpersonationLevel,
+            ERROR_INVALID_OWNER => Self::InvalidOwner,
+            ERROR_INVALID_SECURITY_DESCR => Self::InvalidSecurityDescriptor,
+            _ => Self::Unobserved,
+        }
+    }
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::AccessDenied => "access_denied",
+            Self::PrivilegeNotHeld => "privilege_not_held",
+            Self::BadImpersonationLevel => "bad_impersonation_level",
+            Self::InvalidOwner => "invalid_owner",
+            Self::InvalidSecurityDescriptor => "invalid_security_descriptor",
+            Self::Unobserved => "unobserved",
+        }
+    }
+
+    pub(super) fn from_index(value: u32) -> Option<Self> {
+        Some(match value {
+            1 => Self::AccessDenied,
+            2 => Self::PrivilegeNotHeld,
+            3 => Self::BadImpersonationLevel,
+            4 => Self::InvalidOwner,
+            5 => Self::InvalidSecurityDescriptor,
+            6 => Self::Unobserved,
+            _ => return None,
+        })
+    }
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PublicPipeFailureApi {
+    Impersonate = 1,
+    SidToString,
+    SddlToDescriptor,
+    CreatePipe,
+    DescriptorValidation,
+}
+
+#[cfg(debug_assertions)]
+impl PublicPipeFailureApi {
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Impersonate => "impersonate",
+            Self::SidToString => "sid_to_string",
+            Self::SddlToDescriptor => "sddl_to_descriptor",
+            Self::CreatePipe => "create_pipe",
+            Self::DescriptorValidation => "descriptor_validation",
+        }
+    }
+}
+
+#[cfg(debug_assertions)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct PublicPipeFailures {
+    pub(super) operation: Option<(PublicPipeFailureApi, PublicPipeErrorClass)>,
+    pub(super) revert: Option<PublicPipeErrorClass>,
+}
+
+#[cfg(debug_assertions)]
+pub(super) struct PublicPipeObservation {
+    failures: std::cell::Cell<PublicPipeFailures>,
+}
+
+#[cfg(debug_assertions)]
+impl PublicPipeObservation {
+    pub(super) fn new() -> Self {
+        Self { failures: std::cell::Cell::new(PublicPipeFailures::default()) }
+    }
+
+    pub(super) fn operation_failed(&self, api: PublicPipeFailureApi, class: PublicPipeErrorClass) {
+        let mut failures = self.failures.get();
+        if failures.operation.is_none() {
+            failures.operation = Some((api, class));
+            self.failures.set(failures);
+        }
+    }
+
+    pub(super) fn revert_failed(&self, class: PublicPipeErrorClass) {
+        let mut failures = self.failures.get();
+        failures.revert = Some(class);
+        self.failures.set(failures);
+    }
+
+    pub(super) fn failures(&self) -> PublicPipeFailures { self.failures.get() }
+}
+
 impl Sid {
     unsafe fn copy_from(source: PSID) -> Result<Self, IoError> {
         if source.is_null() || IsValidSid(source) == 0 {
@@ -71,8 +185,31 @@ impl Sid {
     }
 
     fn sddl(&self) -> Result<String, IoError> {
+        self.sddl_inner(#[cfg(debug_assertions)] None)
+    }
+
+    #[cfg(debug_assertions)]
+    fn sddl_observed(&self, observation: &PublicPipeObservation) -> Result<String, IoError> {
+        self.sddl_inner(Some(observation))
+    }
+
+    fn sddl_inner(
+        &self,
+        #[cfg(debug_assertions)] observation: Option<&PublicPipeObservation>,
+    ) -> Result<String, IoError> {
         let mut value = null_mut();
-        if unsafe { ConvertSidToStringSidW(self.as_ptr(), &mut value) } == 0 || value.is_null() {
+        if unsafe { ConvertSidToStringSidW(self.as_ptr(), &mut value) } == 0 {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation {
+                observation.operation_failed(PublicPipeFailureApi::SidToString, PublicPipeErrorClass::last_error());
+            }
+            return Err(IoError::Failed);
+        }
+        if value.is_null() {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation {
+                observation.operation_failed(PublicPipeFailureApi::DescriptorValidation, PublicPipeErrorClass::Unobserved);
+            }
             return Err(IoError::Failed);
         }
         let mut length = 0usize;
@@ -82,7 +219,13 @@ impl Sid {
             }
         }
         let result = String::from_utf16(unsafe { std::slice::from_raw_parts(value, length) })
-            .map_err(|_| IoError::Failed);
+            .map_err(|_| {
+                #[cfg(debug_assertions)]
+                if let Some(observation) = observation {
+                    observation.operation_failed(PublicPipeFailureApi::DescriptorValidation, PublicPipeErrorClass::Unobserved);
+                }
+                IoError::Failed
+            });
         unsafe {
             LocalFree(value.cast::<c_void>());
         }
@@ -179,16 +322,34 @@ unsafe impl Send for SecurityDescriptor {}
 
 impl SecurityDescriptor {
     pub(crate) fn new(identity: &Identity, mode: SecurityMode<'_>) -> Result<Self, IoError> {
+        Self::new_inner(identity, mode, #[cfg(debug_assertions)] None)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn new_observed(identity: &Identity, mode: SecurityMode<'_>, observation: &PublicPipeObservation) -> Result<Self, IoError> {
+        Self::new_inner(identity, mode, Some(observation))
+    }
+
+    fn new_inner(
+        identity: &Identity,
+        mode: SecurityMode<'_>,
+        #[cfg(debug_assertions)] observation: Option<&PublicPipeObservation>,
+    ) -> Result<Self, IoError> {
+        let sid_sddl = |sid: &Sid| {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation { return sid.sddl_observed(observation); }
+            sid.sddl()
+        };
         let sddl = match mode {
-            SecurityMode::CurrentLogon => format!("D:P(A;;GA;;;{})", identity.logon.sddl()?),
+            SecurityMode::CurrentLogon => format!("D:P(A;;GA;;;{})", sid_sddl(&identity.logon)?),
             SecurityMode::PublicPipe { server_logon } => format!(
                 "D:P(A;;RC;;;OW)(A;;0x{PIPE_DATA_ACCESS:08x};;;{})(A;;GA;;;{})",
-                identity.logon.sddl()?,
-                server_logon.sddl()?,
+                sid_sddl(&identity.logon)?,
+                sid_sddl(server_logon)?,
             ),
             SecurityMode::Mutex => format!(
                 "D:P(A;;RC;;;OW)(A;;0x00100001;;;{})",
-                identity.logon.sddl()?
+                sid_sddl(&identity.logon)?
             ),
             #[cfg(debug_assertions)]
             // Anonymous test tokens have untrusted mandatory integrity. The
@@ -208,9 +369,18 @@ impl SecurityDescriptor {
                 &mut descriptor,
                 null_mut(),
             )
-        } == 0
-            || descriptor.is_null()
-        {
+        } == 0 {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation {
+                observation.operation_failed(PublicPipeFailureApi::SddlToDescriptor, PublicPipeErrorClass::last_error());
+            }
+            return Err(IoError::Failed);
+        }
+        if descriptor.is_null() {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation {
+                observation.operation_failed(PublicPipeFailureApi::DescriptorValidation, PublicPipeErrorClass::Unobserved);
+            }
             return Err(IoError::Failed);
         }
         Ok(Self { descriptor })
@@ -288,11 +458,36 @@ impl ServerCapabilityToken {
         &self,
         operation: impl FnOnce() -> Result<T, IoError>,
     ) -> Result<T, IoError> {
+        self.while_impersonating_inner(operation, #[cfg(debug_assertions)] None)
+    }
+
+    #[cfg(debug_assertions)]
+    pub(super) fn while_impersonating_observed<T>(
+        &self,
+        observation: &PublicPipeObservation,
+        operation: impl FnOnce() -> Result<T, IoError>,
+    ) -> Result<T, IoError> {
+        self.while_impersonating_inner(operation, Some(observation))
+    }
+
+    fn while_impersonating_inner<T>(
+        &self,
+        operation: impl FnOnce() -> Result<T, IoError>,
+        #[cfg(debug_assertions)] observation: Option<&PublicPipeObservation>,
+    ) -> Result<T, IoError> {
         if unsafe { ImpersonateLoggedOnUser(self.token.raw()) } == 0 {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation {
+                observation.operation_failed(PublicPipeFailureApi::Impersonate, PublicPipeErrorClass::last_error());
+            }
             return Err(IoError::Failed);
         }
         let result = operation();
         if unsafe { RevertToSelf() } == 0 {
+            #[cfg(debug_assertions)]
+            if let Some(observation) = observation {
+                observation.revert_failed(PublicPipeErrorClass::last_error());
+            }
             return Err(IoError::Failed);
         }
         result
