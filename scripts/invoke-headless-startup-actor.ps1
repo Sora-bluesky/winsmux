@@ -244,7 +244,7 @@ function Test-HeadlessProjection {
 }
 if($ProjectionSelfTest){try{Test-HeadlessProjection|ConvertTo-Json -Compress;exit 0}catch{[Console]::Out.WriteLine('{"schema":"winsmux-headless-projection-finite/v1","outcome":"failed"}');exit 1}}
 $repoRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$phase='source_admission';$outer=$null;$outerTerminal=$false;$evidenceRoot=$null
+$phase='source_admission';$outer=$null;$outerTerminal=$false;$evidenceRoot=$null;$bindingObservationPoint='unobserved'
 $result=[ordered]@{schema='winsmux-headless-restricted-actor/v1';outcome='unobserved';source_commit=$null;actor_admitted=$false;same_sid=$false;same_session=$false;restricted_medium=$false;tests=@();root_terminal=$false;root_job_zero=$false;forced=$false;failure=$null;nsis_success_proven=$false;normal_gui_success_proven=$false}
 try {
  Assert-Fixed ($env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and $env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'runner_identity'
@@ -261,22 +261,34 @@ try {
  if($HeadlessParent){
   Assert-Fixed (-not $DesktopNativeLifecycle -and $facts['elevation'] -eq 1 -and $facts['integrity_rid'] -ge 12288) 'high_bootstrap'
   $phase='build_binding'
+  $bindingObservationPoint='root'
   $root=Join-Path $env:RUNNER_TEMP ('winsmux-headless-actor-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$source)
   [void][WinsmuxDesktopNativeActor]::NativeDirectory($root,$true)
+  $bindingObservationPoint='inputdirs'
   $inputRoot=Join-Path $root 'input';$evidenceRoot=Join-Path $root 'evidence'
   [void][WinsmuxDesktopNativeActor]::NativeDirectory($inputRoot,$true);[void][WinsmuxDesktopNativeActor]::NativeDirectory($evidenceRoot,$true)
+  $bindingObservationPoint='manifest'
   $producer=Get-HeadlessProducerRoot $source
   $expectedManifest=Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$source+'.jsonl')
   Assert-Fixed ([string]::Equals([IO.Path]::GetFullPath($BuildManifest),[IO.Path]::GetFullPath($expectedManifest),[StringComparison]::OrdinalIgnoreCase)) 'cargo_manifest_path'
+  $bindingObservationPoint='producer'
   $owner=Read-HeadlessCompilerProducer $producer $source $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT
+  $bindingObservationPoint='selector'
   $selected=Read-HeadlessBuildArtifacts $BuildManifest
   $testImage=$selected.test;$cliImage=$selected.cli
+  $bindingObservationPoint='normalize'
   $compilerInputs=[WinsmuxHeadlessOwned.WinsmuxHeadlessCompilerInputs]::Normalize($producer,$owner.identity,$owner.receipt_id,$owner.receipt_sha,[IO.Path]::GetFullPath($BuildManifest),$testImage,$cliImage,$PSCommandPath)
-  $testWitness=[WinsmuxDesktopNativeActor]::NativeFile($testImage);$cliWitness=[WinsmuxDesktopNativeActor]::NativeFile($cliImage)
+  $bindingObservationPoint='nativeTest'
+  $testWitness=[WinsmuxDesktopNativeActor]::NativeFile($testImage);$bindingObservationPoint='nativeCli';$cliWitness=[WinsmuxDesktopNativeActor]::NativeFile($cliImage)
+  $bindingObservationPoint='nativeScript'
   $scriptWitness=[WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)
+  $bindingObservationPoint='bind'
   $binding=[ordered]@{schema='winsmux-headless-actor-input/v1';source_commit=$source;expected_sid=$facts['sid_sha256'];expected_session=$facts['session'];script_sha256=$scriptWitness['sha256'];test_executable=$testImage;test_sha256=$testWitness['sha256'];cli_executable=$cliImage;cli_sha256=$cliWitness['sha256'];tests=$tests;compiler_inputs=$compilerInputs}
+  $bindingObservationPoint='guardBefore'
   Assert-HeadlessBoundInputs $binding $PSCommandPath
+  $bindingObservationPoint='write'
   Write-NewJson (Join-Path $inputRoot 'binding.json') $binding
+  $bindingObservationPoint='guardAfter'
   Assert-HeadlessBoundInputs $binding $PSCommandPath
   $phase='medium_bootstrap'
   $pwsh=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName;$pwshSha=[WinsmuxDesktopNativeActor]::NativeFile($pwsh)['sha256']
@@ -333,7 +345,15 @@ try {
   }
   $result.tests=$observed.ToArray();$result.outcome=if(@($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0){'passed'}else{'observed_failure'}
  }
-}catch{$result.failure=$phase;$result.outcome='unobserved'}
+}catch{
+ if($HeadlessParent -and $phase -is [string] -and $phase -ceq 'build_binding'){
+  try{
+   $bindingObservationProjected='unobserved'
+   if($bindingObservationPoint -is [string] -and $bindingObservationPoint -cin @('root','inputdirs','manifest','producer','selector','normalize','nativeTest','nativeCli','nativeScript','bind','guardBefore','write','guardAfter')){$bindingObservationProjected=$bindingObservationPoint}
+   [Console]::Error.WriteLine('WINSMUX_HEADLESS_BINDING point='+$bindingObservationProjected)
+  }catch{}
+ }
+ $result.failure=$phase;$result.outcome='unobserved'}
 finally{
  if($null -ne $outer){try{if(-not $outerTerminal){$outer.StopOwnedFailure();$outerTerminal=$true;$result.forced=$true};$result.root_terminal=$outerTerminal;$result.root_job_zero=$outer.ActiveMembers -eq 0;if($outerTerminal -and $result.root_job_zero){$outer.Dispose()}}catch{$result.failure='root_convergence';$result.outcome='unobserved'}}
 }
