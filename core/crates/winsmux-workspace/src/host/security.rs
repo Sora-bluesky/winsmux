@@ -259,21 +259,6 @@ mod capability_token_query {
         Some(unsafe { value.assume_init() })
     }
 
-    // Private one-filter comparison; identities and authentication values never leave this scope.
-    pub(super) fn filtered_matches_generation(source: HANDLE, filtered: HANDLE) -> bool {
-        let Some(source_stats) = fixed::<TOKEN_STATISTICS>(source, TokenStatistics) else { return false; };
-        let Some(filtered_stats) = fixed::<TOKEN_STATISTICS>(filtered, TokenStatistics) else { return false; };
-        let (Ok(source_identity), Ok(filtered_identity)) =
-            (Identity::from_token(source), Identity::from_token(filtered)) else { return false; };
-        let Ok(Some(attributes)) = token_group_attributes(filtered, &filtered_identity.logon) else { return false; };
-        matches!(source_stats.TokenType, 1 | 2) && filtered_stats.TokenType == source_stats.TokenType
-            && source_stats.AuthenticationId.LowPart == filtered_stats.AuthenticationId.LowPart
-            && source_stats.AuthenticationId.HighPart == filtered_stats.AuthenticationId.HighPart
-            && source_identity.user.equals(&filtered_identity.user)
-            && source_identity.logon.equals(&filtered_identity.logon)
-            && attributes & SE_GROUP_ENABLED != 0 && attributes & SE_GROUP_USE_FOR_DENY_ONLY == 0
-    }
-
     fn variable(token: HANDLE, class: i32) -> Option<(Vec<u64>, usize)> {
         let mut bytes = 0;
         unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut bytes); }
@@ -313,6 +298,243 @@ mod capability_token_query {
             }
         }
         Some((found.is_some(), found.unwrap_or(false)))
+    }
+
+    // Query-only public attributes. Native SIDs/LUIDs never enter the JSON.
+    const GROUP_KNOWN_ATTRIBUTES: u32 = 0xe000_007f;
+    const PRIVILEGE_KNOWN_ATTRIBUTES: u32 = 0x8000_0007;
+
+    fn bounded_sid(storage: &[u64], bytes: usize, sid: PSID) -> Option<Sid> {
+        let start = storage.as_ptr() as usize;
+        let end = start.checked_add(bytes)?;
+        let address = sid as usize;
+        if sid.is_null() || address < start || address.checked_add(8)? > end { return None; }
+        let header = unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), 8) };
+        let length = 8usize.checked_add(4usize.checked_mul(header[1] as usize)?)?;
+        if header[0] != 1 || header[1] > 15 || length > SID_MAX_BYTES
+            || address.checked_add(length)? > end { return None; }
+        unsafe { Sid::copy_from(sid).ok() }
+    }
+    fn integrity_rid(sid: &Sid) -> Option<u32> {
+        let bytes = sid.bytes();
+        if bytes.len() != 12 || bytes[..8] != [1,1,0,0,0,0,0,16] { return None; }
+        let rid = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+        match rid { 0 | 0x1000 | 0x2000 | 0x2100 | 0x3000 | 0x4000 | 0x5000 | 0x7000 => Some(rid), _ => None }
+    }
+    fn unique_groups(groups: &[(Sid, u32)]) -> bool {
+        groups.iter().enumerate().all(|(i,(sid,attributes))| {
+            attributes & !GROUP_KNOWN_ATTRIBUTES == 0
+                && !(attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0 && attributes & SE_GROUP_ENABLED != 0)
+                && groups[..i].iter().all(|(previous,_)| previous.bytes() != sid.bytes())
+        })
+    }
+    fn groups(token: HANDLE) -> Option<Vec<(Sid, u32)>> {
+        let (storage, bytes) = variable(token, TokenGroups)?;
+        let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+        if bytes < offset { return None; }
+        let count = unsafe { storage.as_ptr().cast::<u32>().read() } as usize;
+        if count > (bytes - offset) / size_of::<SID_AND_ATTRIBUTES>() { return None; }
+        let start = unsafe { storage.as_ptr().cast::<u8>().add(offset).cast::<SID_AND_ATTRIBUTES>() };
+        let mut result = Vec::with_capacity(count);
+        for index in 0..count {
+            let entry = unsafe { start.add(index).read_unaligned() };
+            result.push((bounded_sid(&storage, bytes, entry.Sid)?, entry.Attributes));
+        }
+        unique_groups(&result).then_some(result)
+    }
+    type Privilege = ((u32, i32), u32);
+    fn unique_privileges(privileges: &[Privilege]) -> bool {
+        privileges.iter().enumerate().all(|(i,(luid,attributes))| {
+            attributes & !PRIVILEGE_KNOWN_ATTRIBUTES == 0
+                && !(attributes & 4 != 0 && attributes & 2 != 0)
+                && privileges[..i].iter().all(|(previous,_)| previous != luid)
+        })
+    }
+    fn privileges(token: HANDLE) -> Option<Vec<Privilege>> {
+        let (storage, bytes) = variable(token, TokenPrivileges)?;
+        let offset = std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges);
+        if bytes < offset { return None; }
+        let count = unsafe { storage.as_ptr().cast::<u32>().read() } as usize;
+        if count > (bytes - offset) / size_of::<LUID_AND_ATTRIBUTES>() { return None; }
+        let start = unsafe { storage.as_ptr().cast::<u8>().add(offset).cast::<LUID_AND_ATTRIBUTES>() };
+        let result: Vec<_> = (0..count).map(|index| {
+            let entry = unsafe { start.add(index).read_unaligned() };
+            ((entry.Luid.LowPart, entry.Luid.HighPart), entry.Attributes)
+        }).collect();
+        unique_privileges(&result).then_some(result)
+    }
+    fn integrity(token: HANDLE) -> Option<u32> {
+        use windows_sys::Win32::Security::{TokenIntegrityLevel, TOKEN_MANDATORY_LABEL};
+        let (storage, bytes) = variable(token, TokenIntegrityLevel)?;
+        if bytes < size_of::<TOKEN_MANDATORY_LABEL>() { return None; }
+        let label = unsafe { storage.as_ptr().cast::<TOKEN_MANDATORY_LABEL>().read_unaligned() };
+        if label.Label.Attributes & !0x60 != 0 || label.Label.Attributes & 0x20 == 0 { return None; }
+        integrity_rid(&bounded_sid(&storage, bytes, label.Label.Sid)?)
+    }
+    fn mandatory_policy(value: u32) -> Option<u32> { (value & !3 == 0).then_some(value) }
+    fn elevation_type(value: i32) -> Option<i32> { matches!(value, 1..=3).then_some(value) }
+    #[derive(Default)]
+    struct Constraints {
+        groups: Option<Vec<(Sid, u32)>>, logon: Option<Sid>, privileges: Option<Vec<Privilege>>,
+        integrity: Option<u32>, policy: Option<u32>, elevation: Option<bool>, elevation_type: Option<i32>,
+    }
+    impl Constraints {
+        fn read(token: HANDLE) -> Self {
+            use windows_sys::Win32::Security::{TokenMandatoryPolicy, TokenElevation, TokenElevationType,
+                TOKEN_MANDATORY_POLICY, TOKEN_ELEVATION};
+            Self { groups: groups(token), logon: token_sid(token, TokenLogonSid).ok(),
+                privileges: privileges(token), integrity: integrity(token),
+                policy: fixed::<TOKEN_MANDATORY_POLICY>(token, TokenMandatoryPolicy).and_then(|p| mandatory_policy(p.Policy)),
+                elevation: fixed::<TOKEN_ELEVATION>(token, TokenElevation).map(|e| e.TokenIsElevated != 0),
+                elevation_type: fixed::<i32>(token, TokenElevationType).and_then(elevation_type) }
+        }
+    }
+    fn comparable_group(sid: &Sid, attributes: u32, logon: &Sid, expected_integrity: Option<u32>) -> Option<bool> {
+        if sid.bytes() == logon.bytes() { return Some(false); }
+        if attributes & 0x60 != 0 {
+            if attributes & 0x20 == 0 { return None; }
+            return (integrity_rid(sid)? == expected_integrity?).then_some(false);
+        }
+        Some(true)
+    }
+    fn group_relations(primary: &Constraints, generation: &Constraints) -> Option<(bool,bool)> {
+        let (a,b) = primary.groups.as_ref().zip(generation.groups.as_ref())?;
+        let (old_logon,new_logon) = primary.logon.as_ref().zip(generation.logon.as_ref())?;
+        if !unique_groups(a) || !unique_groups(b) { return None; }
+        // Validate every exemption before evaluating either relation.
+        for (sid,attributes) in a { comparable_group(sid,*attributes,old_logon,primary.integrity)?; }
+        for (sid,attributes) in b { comparable_group(sid,*attributes,new_logon,generation.integrity)?; }
+        let deny = a.iter().filter(|(sid,attributes)| comparable_group(sid,*attributes,old_logon,primary.integrity) == Some(true)
+            && attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0).all(|(sid,_)| {
+                b.iter().any(|(other,attributes)| sid.bytes() == other.bytes() && attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0)
+            });
+        let allow = b.iter().filter(|(sid,attributes)| comparable_group(sid,*attributes,new_logon,generation.integrity) == Some(true)
+            && attributes & SE_GROUP_ENABLED != 0 && attributes & SE_GROUP_USE_FOR_DENY_ONLY == 0).all(|(sid,_)| {
+                a.iter().any(|(other,attributes)| sid.bytes() == other.bytes()
+                    && attributes & SE_GROUP_ENABLED != 0 && attributes & SE_GROUP_USE_FOR_DENY_ONLY == 0)
+            });
+        Some((deny,allow))
+    }
+    fn privilege_relations(primary: &Constraints, generation: &Constraints) -> Option<(bool,bool)> {
+        let (a,b) = primary.privileges.as_ref().zip(generation.privileges.as_ref())?;
+        if !unique_privileges(a) || !unique_privileges(b) { return None; }
+        Some((b.iter().all(|(id,_)| a.iter().any(|(other,_)| id == other)),
+            b.iter().filter(|(_,attributes)| attributes & 2 != 0).all(|(id,_)| {
+                a.iter().any(|(other,attributes)| id == other && attributes & 2 != 0)
+            })))
+    }
+    fn constraint_relations(a: &Constraints, b: &Constraints) -> Value {
+        let groups = group_relations(a,b);
+        let privileges = privilege_relations(a,b);
+        json!({"deny_only_groups_preserved": observed(groups.map(|v|v.0)),
+            "no_new_allow_groups": observed(groups.map(|v|v.1)),
+            "no_added_privileges": observed(privileges.map(|v|v.0)),
+            "no_newly_enabled_privileges": observed(privileges.map(|v|v.1)),
+            "integrity_not_raised": observed(a.integrity.zip(b.integrity).map(|(a,b)|b<=a)),
+            "mandatory_policy_same": observed(a.policy.zip(b.policy).map(|(a,b)|a==b)),
+            "elevation_same": observed(a.elevation.zip(b.elevation).map(|(a,b)|a==b)),
+            "elevation_type_same": observed(a.elevation_type.zip(b.elevation_type).map(|(a,b)|a==b))})
+    }
+
+    #[cfg(test)]
+    mod primary_constraint_relation_tests {
+        use super::*;
+        fn sid(rid: u32) -> Sid {
+            let mut bytes = [0; SID_MAX_BYTES];
+            bytes[..8].copy_from_slice(&[1,1,0,0,0,0,0,5]);
+            bytes[8..12].copy_from_slice(&rid.to_le_bytes());
+            Sid { bytes, byte_len: 12 }
+        }
+        fn sample(groups: &[(u32,u32)], privileges: &[Privilege]) -> Constraints {
+            Constraints { groups: Some(groups.iter().map(|(rid,attrs)|(sid(*rid),*attrs)).collect()),
+                logon: Some(sid(999)), privileges: Some(privileges.to_vec()), ..Constraints::default() }
+        }
+        #[test]
+        fn deny_only_removal_and_reenable_are_expansions() {
+            let a = sample(&[(1,16)],&[]);
+            assert_eq!(group_relations(&a,&sample(&[(1,16)],&[])),Some((true,true)));
+            assert_eq!(group_relations(&a,&sample(&[],&[])),Some((false,true)));
+            assert_eq!(group_relations(&a,&sample(&[(1,4)],&[])),Some((false,false)));
+        }
+        #[test]
+        fn enabled_groups_cannot_be_added_or_newly_enabled() {
+            let a = sample(&[(1,0),(2,4)],&[]);
+            assert_eq!(group_relations(&a,&sample(&[(2,4)],&[])),Some((true,true)));
+            assert_eq!(group_relations(&a,&sample(&[(1,4)],&[])),Some((true,false)));
+            assert_eq!(group_relations(&a,&sample(&[(3,4)],&[])),Some((true,false)));
+        }
+        #[test]
+        fn duplicate_and_unknown_group_inputs_are_missing() {
+            let a = sample(&[(1,4)],&[]);
+            for b in [sample(&[(1,4),(1,4)],&[]),sample(&[(1,0x100)],&[]),sample(&[(1,20)],&[]),sample(&[(1,0x20)],&[])] {
+                assert_eq!(group_relations(&a,&b),None);
+                assert_eq!(group_relations(&b,&a),None);
+            }
+            let mut b=sample(&[],&[]); b.logon=None;
+            assert_eq!(group_relations(&a,&b),None);
+        }
+        #[test]
+        fn exemptions_are_exact_logon_or_known_integrity_only() {
+            let a=sample(&[],&[]); let mut b=sample(&[(999,4)],&[]);
+            assert_eq!(group_relations(&a,&b),Some((true,true)));
+            b.groups.as_mut().unwrap().push((sid(998),4));
+            assert_eq!(group_relations(&a,&b),Some((true,false)));
+            let mut integrity=sid(0x2000); integrity.bytes[7]=16;
+            b.groups=Some(vec![(integrity.clone(),0x60)]);
+            b.integrity=Some(0x2000);
+            assert_eq!(group_relations(&a,&b),Some((true,true)));
+            b.integrity=Some(0x3000);
+            assert_eq!(group_relations(&a,&b),None);
+            b.integrity=None;
+            assert_eq!(group_relations(&a,&b),None);
+            b.integrity=Some(0x2000);
+            b.groups.as_mut().unwrap().push((integrity,0x60));
+            assert_eq!(group_relations(&a,&b),None);
+        }
+        #[test]
+        fn added_and_newly_enabled_privileges_are_distinct_expansions() {
+            let a=sample(&[],&[((1,0),0),((2,1),2)]);
+            assert_eq!(privilege_relations(&a,&sample(&[],&[((2,1),2)])),Some((true,true)));
+            assert_eq!(privilege_relations(&a,&sample(&[],&[((1,0),2)])),Some((true,false)));
+            assert_eq!(privilege_relations(&a,&sample(&[],&[((2,0),0)])),Some((false,true)));
+        }
+        #[test]
+        fn duplicate_and_unknown_privilege_inputs_are_missing() {
+            let a=sample(&[],&[]);
+            for b in [sample(&[],&[((1,0),0),((1,0),0)]),sample(&[],&[((1,0),8)]),sample(&[],&[((1,0),6)])] {
+                assert_eq!(privilege_relations(&a,&b),None);
+                assert_eq!(privilege_relations(&b,&a),None);
+            }
+        }
+        #[test]
+        fn integrity_boundaries_and_independent_missing_are_observed() {
+            let mut a=sample(&[],&[]); let mut b=sample(&[],&[]);
+            a.integrity=Some(0x2000);
+            for (rid,expected) in [(0x1000,true),(0x2000,true),(0x2100,false)] {
+                b.integrity=Some(rid);
+                let value=constraint_relations(&a,&b);
+                assert_eq!(value["integrity_not_raised"],observed(Some(expected)));
+                assert_eq!(value["mandatory_policy_same"],observed::<bool>(None));
+                assert_eq!(value["no_added_privileges"],observed(Some(true)));
+            }
+            b.integrity=None;
+            assert_eq!(constraint_relations(&a,&b)["integrity_not_raised"],observed::<bool>(None));
+        }
+        #[test]
+        fn fixed_policy_and_elevation_domains_do_not_invent_success() {
+            for value in 0..=3 { assert_eq!(mandatory_policy(value),Some(value)); }
+            assert_eq!(mandatory_policy(4),None);
+            for value in 1..=3 { assert_eq!(elevation_type(value),Some(value)); }
+            for value in [0,4,-1] { assert_eq!(elevation_type(value),None); }
+            let mut a=sample(&[],&[]); let mut b=sample(&[],&[]);
+            a.policy=Some(1);b.policy=Some(2);a.elevation=Some(false);b.elevation=Some(true);
+            a.elevation_type=Some(3);b.elevation_type=Some(2);
+            let v=constraint_relations(&a,&b);
+            for key in ["mandatory_policy_same","elevation_same","elevation_type_same"] { assert_eq!(v[key],observed(Some(false))); }
+            b.policy=None;b.elevation=None;b.elevation_type=None;
+            let v=constraint_relations(&a,&b);
+            for key in ["mandatory_policy_same","elevation_same","elevation_type_same"] { assert_eq!(v[key],observed::<bool>(None)); }
+        }
     }
 
     #[derive(Default)]
@@ -365,6 +587,7 @@ mod capability_token_query {
     }
     pub(super) struct Snapshot {
         primary: Facts, generation: Facts, effective: Facts,
+        primary_constraints: Constraints, generation_constraints: Constraints,
         before_absent: Option<bool>, after_absent: Option<bool>,
         identity: &'static str, capability: &'static str, impersonate: &'static str,
         pipe: &'static str, revert: &'static str, result: &'static str,
@@ -372,11 +595,16 @@ mod capability_token_query {
     impl Snapshot {
         pub(super) fn begin() -> Self {
             let mut token = null_mut();
+            let mut primary_constraints = Constraints::default();
             let primary = if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0 {
-                unsafe { OwnedHandle::from_raw(token) }.ok().map(|t| Facts::read(t.raw())).unwrap_or_default()
+                unsafe { OwnedHandle::from_raw(token) }.ok().map(|t| {
+                    primary_constraints = Constraints::read(t.raw());
+                    Facts::read(t.raw())
+                }).unwrap_or_default()
             } else { Facts::default() };
             let (before_absent, _) = thread();
             Self { primary, generation: Facts::default(), effective: Facts::default(), before_absent,
+                primary_constraints, generation_constraints: Constraints::default(),
                 after_absent: None, identity: "not_attempted", capability: "not_attempted",
                 impersonate: "not_attempted", pipe: "not_attempted", revert: "not_attempted", result: "not_attempted" }
         }
@@ -384,7 +612,10 @@ mod capability_token_query {
         pub(super) fn identity(&mut self, success: bool) { self.identity = if success { "succeeded" } else { "failed" }; }
         pub(super) fn capability(&mut self, token: Option<HANDLE>) {
             self.capability = if token.is_some() { "succeeded" } else { "failed" };
-            if let Some(token) = token { self.generation = Facts::read(token); }
+            if let Some(token) = token {
+                self.generation_constraints = Constraints::read(token);
+                self.generation = Facts::read(token);
+            }
         }
         pub(super) fn impersonated(&mut self, success: bool) {
             self.impersonate = if success { "succeeded" } else { "failed" };
@@ -402,6 +633,7 @@ mod capability_token_query {
                 "thread_absent_before": observed(self.before_absent), "thread_absent_after": observed(self.after_absent),
                 "primary": self.primary.json(), "generation": self.generation.json(), "effective": self.effective.json(),
                 "generation_to_primary": relations(&self.generation,&self.primary),
+                "generation_constraints": constraint_relations(&self.primary_constraints,&self.generation_constraints),
                 "effective_to_generation": relations(&self.effective,&self.generation),
                 "operations":{"identity":self.identity,"capability":self.capability,"impersonate":self.impersonate,
                     "pipe":self.pipe,"revert":self.revert,"result":self.result},
@@ -698,27 +930,6 @@ impl ServerCapabilityToken {
             token,
             logon: generated.logon,
         })
-    }
-
-    // Private ignored-test experiment; production generation is unchanged.
-    #[cfg(debug_assertions)]
-    pub(super) fn create_filtered_comparison(original: &Identity) -> Result<Self, IoError> {
-        use windows_sys::Win32::Foundation::GetHandleInformation;
-        use windows_sys::Win32::Security::{CreateRestrictedToken, DISABLE_MAX_PRIVILEGE};
-        let source = Self::create(original)?;
-        let mut raw = null_mut();
-        if unsafe { CreateRestrictedToken(source.token.raw(), DISABLE_MAX_PRIVILEGE,
-            0, std::ptr::null(), 0, std::ptr::null(), 0, std::ptr::null(), &mut raw) } == 0 {
-            return Err(IoError::Failed);
-        }
-        let token = unsafe { OwnedHandle::from_raw(raw)? };
-        let mut flags = HANDLE_FLAG_INHERIT;
-        if unsafe { GetHandleInformation(token.raw(), &mut flags) } == 0
-            || flags & HANDLE_FLAG_INHERIT != 0
-            || !capability_token_query::filtered_matches_generation(source.token.raw(), token.raw()) {
-            return Err(IoError::Failed);
-        }
-        Ok(Self { token, logon: source.logon.clone() })
     }
 
     pub(crate) fn logon(&self) -> &Sid {

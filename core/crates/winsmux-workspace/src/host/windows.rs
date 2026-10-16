@@ -2204,7 +2204,7 @@ pub(super) fn observe_server_capability_token_creation() -> serde_json::Value {
     let identity = Identity::current();
     observation.token_identity(identity.is_ok());
     let Ok(identity) = identity else { return observation.token_json(); };
-    let capability = ServerCapabilityToken::create_filtered_comparison(&identity);
+    let capability = ServerCapabilityToken::create(&identity);
     observation.token_capability(capability.as_ref().ok().map(|c| c.raw()));
     let Ok(capability) = capability else { return observation.token_json(); };
     let name = format!(r"\\.\pipe\winsmux-workspace-capability-token-{}", uuid::Uuid::new_v4());
