@@ -607,6 +607,40 @@ mod msi_path_observation {
     }
 }
 
+// T-only CI fault fixture; never part of the normal distribution source.
+const MSI_FAULT_REQUEST: &str = "msi-startup-fault-request.json";
+const MSI_FAULT_CONSUMED: &str = "msi-startup-fault-consumed.json";
+const MSI_FAULT_REQUEST_SCHEMA: &str = "winsmux-msi-startup-fault-request/v1";
+const MSI_FAULT_CONSUMED_SCHEMA: &str = "winsmux-msi-startup-fault-consumed/v1";
+const MSI_FAULT_REQUEST_LIMIT: usize = b"{\"schema\":\"winsmux-msi-startup-fault-request/v1\",\"nonce\":\"\"}".len() + 36;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MsiFaultRequest { schema: String, nonce: String }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MsiFaultConsumed { schema: String, nonce: String, operation_id: String, applied: bool }
+fn msi_fault_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| id.get_version_num() == 4
+        && id.get_variant() == uuid::Variant::RFC4122 && id.to_string() == value)
+}
+fn msi_fault_request(bytes: &[u8]) -> Option<MsiFaultRequest> {
+    if bytes.len() != MSI_FAULT_REQUEST_LIMIT { return None; }
+    let request: MsiFaultRequest = serde_json::from_slice(bytes).ok()?;
+    if request.schema != MSI_FAULT_REQUEST_SCHEMA || !msi_fault_uuid(&request.nonce)
+        || serde_json::to_vec(&request).ok()?.as_slice() != bytes { return None; }
+    Some(request)
+}
+fn msi_fault_fixture_parent(root: &Path) -> Option<&Path> {
+    if root.file_name()?.to_str()? != "日本語 & winsmux" { return None; }
+    let parent = root.parent()?;
+    if parent.parent()?.file_name()?.to_str()? != "winsmux-task880-native" { return None; }
+    let pieces: Vec<_> = parent.file_name()?.to_str()?.split('.').collect();
+    if pieces.len() != 4 || pieces[3] != "MSI"
+        || pieces[..2].iter().any(|s| s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()))
+        || pieces[2].len() != 40 || !pieces[2].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { return None; }
+    Some(parent)
+}
+
 /// Called before legacy CLI cleanup. Failure output is a fixed classification.
 pub fn run_internal_desktop_installer(arguments: &[String]) -> i32 {
     if arguments.first().is_some_and(|verb| matches!(verb.as_str(), "nsis-install" | "nsis-uninstall")) {
@@ -1185,12 +1219,13 @@ mod native {
             path_observation::boundary(Site::MsiMemberFile, || file.reobserve())?;
         }
         let (gui_path, expected_gui_sha256) = gui.ok_or(DesktopInstallError::Plan)?;
-        let receipt = verify_startup(StartupVerifyRequest {
+        let fault = MsiStartupFaultArm::take(&root);
+        let receipt = verify_startup_inner(StartupVerifyRequest {
             gui_path,
             expected_gui_sha256,
             expected_version: args.version,
             expected_actor_sid: args.user_sid,
-        })?;
+        }, fault)?;
         path_observation::boundary(Site::MsiRoot, || root.reobserve())?;
         for file in &members {
             path_observation::boundary(Site::MsiMemberFile, || file.reobserve())?;
@@ -1591,6 +1626,96 @@ mod native {
             let _ = cleanup_operation_root(&parents, &self.path, &self.identity);
         }
     }
+    // This move-only fixture can affect only the GUI HANDLE already owned by this helper.
+    struct MsiStartupFaultArm {
+        file: Handle,
+        parent: DirectoryHold,
+        identity: BY_HANDLE_FILE_INFORMATION,
+        nonce: String,
+        consumed: bool,
+    }
+    impl MsiStartupFaultArm {
+        fn take(root: &DirectoryHold) -> Option<Self> {
+            let parent = DirectoryHold::open(msi_fault_fixture_parent(&root.path)?).ok()?;
+            root.reobserve().ok()?;
+            parent.reobserve().ok()?;
+            let file = operation_relative_handle(parent.handles.last()?.0, OsStr::new(MSI_FAULT_REQUEST),
+                0x80000000 | 0x40000000 | 0x00010000 | FILE_READ_ATTRIBUTES | 0x00100000,
+                FILE_SHARE_READ, 1, 0x00000040 | 0x00000020 | 0x00200000, null_mut()).ok()?;
+            let identity = info(file.0).ok()?;
+            let length = ((identity.nFileSizeHigh as u64) << 32) | identity.nFileSizeLow as u64;
+            if identity.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 || identity.nNumberOfLinks != 1
+                || length != MSI_FAULT_REQUEST_LIMIT as u64
+                || !same_path(&parent.path.join(MSI_FAULT_REQUEST), &final_path(file.0).ok()?) { return None; }
+            let mut bytes = vec![0; MSI_FAULT_REQUEST_LIMIT]; let mut read = 0;
+            if unsafe { ReadFile(file.0, bytes.as_mut_ptr(), bytes.len() as u32, &mut read, null_mut()) } == 0
+                || read as usize != bytes.len() { return None; }
+            let after = info(file.0).ok()?;
+            if !same_file(&identity, &after) || after.nNumberOfLinks != 1
+                || after.nFileSizeHigh != identity.nFileSizeHigh || after.nFileSizeLow != identity.nFileSizeLow { return None; }
+            let request = msi_fault_request(&bytes)?;
+            parent.reobserve().ok()?; root.reobserve().ok()?;
+            Some(Self { parent, file, identity, nonce: request.nonce, consumed: false })
+        }
+        fn reobserve(&self, leaf: &str) -> Option<()> {
+            self.parent.reobserve().ok()?;
+            let now = info(self.file.0).ok()?;
+            if !same_file(&self.identity, &now) || now.nNumberOfLinks != 1
+                || now.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+                || !same_path(&self.parent.path.join(leaf), &final_path(self.file.0).ok()?) { return None; }
+            Some(())
+        }
+        fn consume(&mut self) -> Option<()> {
+            if self.consumed { return None; }
+            self.reobserve(MSI_FAULT_REQUEST)?;
+            use windows_sys::Win32::Storage::FileSystem::{FILE_RENAME_INFO, FileRenameInfo, SetFileInformationByHandle};
+            // Same non-replacing held-file rename layout as desktop_nsis::move_exact_with_origins.
+            let name = wide(self.parent.path.join(MSI_FAULT_CONSUMED).as_os_str()).ok()?;
+            let length = (name.len() - 1) * 2;
+            let offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+            let size = (offset + length + 2).max(size_of::<FILE_RENAME_INFO>());
+            let mut storage = vec![0usize; size.div_ceil(size_of::<usize>())];
+            let rename = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+            unsafe {
+                (*rename).Anonymous.Flags = 0;
+                (*rename).RootDirectory = null_mut();
+                (*rename).FileNameLength = length.try_into().ok()?;
+                std::ptr::copy_nonoverlapping(name.as_ptr(), (*rename).FileName.as_mut_ptr(), name.len());
+            }
+            if unsafe { SetFileInformationByHandle(self.file.0, FileRenameInfo, rename.cast(), size as u32) } == 0 { return None; }
+            self.consumed = true;
+            self.reobserve(MSI_FAULT_CONSUMED)
+        }
+        fn record(&self, operation: &str, applied: bool) -> Option<()> {
+            use windows_sys::Win32::Storage::FileSystem::{SetFilePointerEx, SetEndOfFile, FILE_BEGIN};
+            self.reobserve(MSI_FAULT_CONSUMED)?;
+            let value = MsiFaultConsumed { schema: MSI_FAULT_CONSUMED_SCHEMA.into(), nonce: self.nonce.clone(), operation_id: operation.into(), applied };
+            let bytes = serde_json::to_vec(&value).ok()?;
+            if unsafe { SetFilePointerEx(self.file.0, 0, null_mut(), FILE_BEGIN) } == 0 { return None; }
+            let mut written = 0;
+            if unsafe { WriteFile(self.file.0, bytes.as_ptr(), bytes.len() as u32, &mut written, null_mut()) } == 0
+                || written as usize != bytes.len() || unsafe { SetEndOfFile(self.file.0) } == 0
+                || unsafe { FlushFileBuffers(self.file.0) } == 0 { return None; }
+            self.reobserve(MSI_FAULT_CONSUMED)
+        }
+        fn apply(&mut self, owned: &OwnedJob, operation: &str, deadline: Instant) {
+            let _ = (|| -> Option<()> {
+                let process = owned.process.as_ref()?;
+                if !owned.assigned || !msi_fault_uuid(operation)
+                    || unsafe { WaitForSingleObject(process.0, 0) } != 258 { return None; }
+                self.consume()?;
+                self.record(operation, false)?;
+                let remaining = deadline.saturating_duration_since(Instant::now()).as_millis();
+                if remaining == 0 || remaining > u32::MAX as u128
+                    || unsafe { WaitForSingleObject(process.0, 0) } != 258 { return None; }
+                if unsafe { TerminateProcess(process.0, 123) } == 0 { return None; }
+                let remaining = deadline.saturating_duration_since(Instant::now()).as_millis();
+                if unsafe { WaitForSingleObject(process.0, remaining.min(u32::MAX as u128) as u32) } != WAIT_OBJECT_0 { return None; }
+                self.record(operation, true)
+            })();
+        }
+    }
+
     struct OwnedJob {
         job: Handle,
         process: Option<Handle>,
@@ -1870,8 +1995,10 @@ mod native {
         image: &ImageHold,
         id: &str,
         request: &StartupVerifyRequest,
+        fault: Option<&mut MsiStartupFaultArm>,
     ) -> Result<StartupReceipt, DesktopInstallError> {
         let deadline = Instant::now() + Duration::from_millis(OBSERVATION_MS);
+        if let Some(arm) = fault { arm.apply(owned, id, deadline); }
         let mut connected = false;
         loop {
             if unsafe {
@@ -1936,6 +2063,12 @@ mod native {
     pub(super) fn verify_startup(
         request: StartupVerifyRequest,
     ) -> Result<StartupReceipt, DesktopInstallError> {
+        verify_startup_inner(request, None)
+    }
+    fn verify_startup_inner(
+        request: StartupVerifyRequest,
+        mut fault: Option<MsiStartupFaultArm>,
+    ) -> Result<StartupReceipt, DesktopInstallError> {
         if !valid_version(&request.expected_version) {
             return Err(DesktopInstallError::Usage);
         }
@@ -1960,7 +2093,7 @@ mod native {
                 &pipe_name,
                 &request.expected_actor_sid,
             )
-            .and_then(|()| read_receipt(&pipe, &owned, &image, &operation, &request));
+            .and_then(|()| read_receipt(&pipe, &owned, &image, &operation, &request, fault.as_mut()));
         let cleanup = owned.stop();
         directory.terminal = cleanup.is_ok();
         cleanup?;

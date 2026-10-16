@@ -4000,6 +4000,50 @@ function Initialize-DesktopNativeLifecycleActor {
   catch(DirectoryNotFoundException){result["status"]="absent";return result;}
   catch {return result;}
  }
+ [StructLayout(LayoutKind.Sequential)] struct MSI_FAULT_SECURITY { public uint length;public IntPtr descriptor;public int inherit; }
+ [DllImport("advapi32.dll",EntryPoint="ConvertStringSecurityDescriptorToSecurityDescriptorW",CharSet=CharSet.Unicode,SetLastError=true)]static extern bool MsiFaultDescriptor(string text,uint revision,out IntPtr descriptor,out uint size);
+ [DllImport("kernel32.dll",EntryPoint="LocalFree")]static extern IntPtr MsiFaultLocalFree(IntPtr value);
+ public static void CreateMsiFaultRequest(string root,string nonce) {
+  Guid id;if(!Guid.TryParseExact(nonce,"D",out id)||id.ToString()!=nonce||nonce[14]!='4'||"89ab".IndexOf(nonce[19])<0)throw new InvalidOperationException("MSI fault nonce refused");
+  string parent=Path.GetDirectoryName(Path.GetFullPath(root));NativePhysical(parent);
+  string sid;using(var identity=System.Security.Principal.WindowsIdentity.GetCurrent()){sid=identity.User.Value;}
+  IntPtr descriptor=IntPtr.Zero,attributes=IntPtr.Zero;uint size;
+  try{
+   Check(MsiFaultDescriptor("O:"+sid+"D:P(A;OICI;FA;;;"+sid+")",1,out descriptor,out size),"MSI fault private file security");if(descriptor==IntPtr.Zero)throw new InvalidOperationException("MSI fault private descriptor missing");
+   var security=new MSI_FAULT_SECURITY{length=(uint)Marshal.SizeOf<MSI_FAULT_SECURITY>(),descriptor=descriptor,inherit=0};attributes=Marshal.AllocHGlobal((int)security.length);Marshal.StructureToPtr(security,attributes,false);
+   var handle=CreateFileW(Path.Combine(parent,"msi-startup-fault-request.json"),0x40000000,0,attributes,1,0x00200000,IntPtr.Zero);
+   if(handle==IntPtr.Zero||handle==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"MSI fault exclusive request");
+   var safe=new Microsoft.Win32.SafeHandles.SafeFileHandle(handle,true);
+   try{var facts=FileFacts(handle);if((facts.attributes&0x10)!=0||facts.links!=1)throw new InvalidOperationException("MSI fault plain request required");using(var file=new FileStream(safe,FileAccess.Write)){var bytes=Encoding.UTF8.GetBytes("{\"schema\":\"winsmux-msi-startup-fault-request/v1\",\"nonce\":\""+nonce+"\"}");file.Write(bytes,0,bytes.Length);file.Flush(true);}}
+   finally{safe.Dispose();}
+  }finally{if(attributes!=IntPtr.Zero)Marshal.FreeHGlobal(attributes);if(descriptor!=IntPtr.Zero)MsiFaultLocalFree(descriptor);}
+ }
+
+ public static Dictionary<string,object> ReadMsiFaultControlInput(string path) {
+  var result=new Dictionary<string,object>{{"status","unreadable"},{"bytes",null},{"sha256",null},{"text",null},{"identity",null}};
+  try {
+   path=Path.GetFullPath(path);NativePhysical(path);
+   using(var file=OpenPlain(path)) {
+    var before=FileFacts(file.SafeFileHandle.DangerousGetHandle());long length=file.Length;
+    if(length==0){result["status"]="empty";return result;}
+    if(length>Encoding.UTF8.GetByteCount("{\"schema\":\"winsmux-msi-startup-fault-consumed/v1\",\"nonce\":\""+new string('0',36)+"\",\"operation_id\":\""+new string('0',36)+"\",\"applied\":false}")){result["status"]="overlong";return result;}
+    var first=new byte[(int)length];int at=0;
+    while(at<first.Length){int count=file.Read(first,at,first.Length-at);if(count==0){result["status"]="changed";return result;}at+=count;}
+    var middle=FileFacts(file.SafeFileHandle.DangerousGetHandle());
+    if(file.Length!=length||middle.links!=1||FileId(middle)!=FileId(before)){result["status"]="changed";return result;}
+    file.Position=0;var second=new byte[(int)length];at=0;
+    while(at<second.Length){int count=file.Read(second,at,second.Length-at);if(count==0){result["status"]="changed";return result;}at+=count;}
+    string sha=Hash(first);
+    var after=FileFacts(file.SafeFileHandle.DangerousGetHandle());
+    if(file.Length!=length||after.links!=1||FileId(after)!=FileId(before)||Hash(second)!=sha){result["status"]="changed";return result;}
+    result["bytes"]=length;result["sha256"]=sha;result["identity"]=FileId(before);
+    try{if(first.Length>=3&&first[0]==0xef&&first[1]==0xbb&&first[2]==0xbf){result["status"]="unknown_encoding";return result;}string text=new UTF8Encoding(false,true).GetString(first);if(text.IndexOf('\0')>=0){result["status"]="unknown_encoding";return result;}result["text"]=text;result["status"]="observed";return result;}catch(DecoderFallbackException){result["status"]="unknown_encoding";return result;}
+   }
+  } catch(Win32Exception error){result["status"]=error.NativeErrorCode==2||error.NativeErrorCode==3?"absent":"unreadable";return result;}
+  catch(FileNotFoundException){result["status"]="absent";return result;}
+  catch(DirectoryNotFoundException){result["status"]="absent";return result;}
+  catch {return result;}
+ }
  public static Dictionary<string,object> NativeFile(string path) {NativePhysical(path);using(var f=OpenPlain(Path.GetFullPath(path))){var info=FileFacts(f.SafeFileHandle.DangerousGetHandle());var b=new byte[f.Length];int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Native witness changed");return new Dictionary<string,object>{{"bytes",b.Length},{"sha256",Hash(b)},{"identity",FileId(info)}};}}
 
  [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern int RegOpenKeyExW(IntPtr key,string subkey,uint options,uint access,out IntPtr result);
@@ -4351,6 +4395,13 @@ function Get-DesktopNativeNsisTimeoutSnapshot {
     return $snapshot
 }
 
+function Get-DesktopNativeTerminalExitCode {
+    param([Parameter(Mandatory)]$Owned)
+    $code = $Owned.ExitCode
+    Assert-Condition ($code -is [uint32] -and $code -ne [uint32]259) 'desktop_native_terminal_exit_unobserved'
+    return $code
+}
+
 function Invoke-DesktopNativeOwnedEntry {
     param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '')
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
@@ -4390,7 +4441,7 @@ function Invoke-DesktopNativeOwnedEntry {
             }
             throw 'desktop_native_entry_timeout'
         }
-        $receipt = [ordered]@{ purpose = $Purpose; exit_code = $owned.ExitCode; process = $owned.Facts() }
+        $receipt = [ordered]@{ purpose = $Purpose; exit_code = (Get-DesktopNativeTerminalExitCode $owned); process = $owned.Facts() }
         if ($Purpose -ceq 'msi-install-en') { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root }
         return $receipt
     } finally {
@@ -4676,8 +4727,72 @@ function Invoke-DesktopNativeMsiJourney {
 }
 
 
+function New-DesktopNativeMsiStartupFaultArm {
+    param([string]$Root)
+    $parent = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Root))
+    $admission = Read-DesktopStrictJson (Join-Path $script:DesktopNativeEvidenceRoot 'fresh-root-admission.json')
+    Assert-Condition ([string]::Equals([string]$admission.root,[IO.Path]::GetFullPath($Root),[StringComparison]::OrdinalIgnoreCase) -and [string]::Equals([string]$admission.parent,$parent,[StringComparison]::OrdinalIgnoreCase) -and [WinsmuxDesktopNativeActor]::NativeDirectory($parent,$false) -ceq $admission.identity) 'desktop_native_msi_fault_fixture_refused'
+    $nonce = [guid]::NewGuid().ToString('D')
+    $text = [ordered]@{schema='winsmux-msi-startup-fault-request/v1';nonce=$nonce} | ConvertTo-Json -Compress
+    $path = Join-Path $parent 'msi-startup-fault-request.json'
+    $consumed = Join-Path $parent 'msi-startup-fault-consumed.json'
+    Assert-Condition (-not [IO.File]::Exists($consumed) -and -not [IO.Directory]::Exists($consumed)) 'desktop_native_msi_fault_already_consumed'
+    [WinsmuxDesktopNativeActor]::CreateMsiFaultRequest($Root,$nonce)
+    $actual = [WinsmuxDesktopNativeActor]::ReadMsiFaultControlInput($path)
+    Assert-Condition ($actual['status'] -ceq 'observed' -and $actual['text'] -ceq $text -and $null -ne $actual['identity'] -and [WinsmuxDesktopNativeActor]::NativeDirectory($parent,$false) -ceq $admission.identity) 'desktop_native_msi_fault_arm_refused'
+    return [ordered]@{nonce=$nonce;identity=$actual['identity']}
+}
+
+function ConvertTo-DesktopNativeMsiStartupFaultObservation {
+    param($InputObservation,[string]$ExpectedNonce,[string]$ExpectedIdentity)
+    $result = [ordered]@{ consumed=$false; identity_matches=$false; nonce_matches=$false; operation_valid=$false; applied=$false }
+    try {
+        if ($InputObservation['status'] -cne 'observed') { return $result }
+        $claim = ConvertFrom-DesktopStrictJsonText ([string]$InputObservation['text'])
+        Assert-DesktopInventoryShape $claim @('schema','nonce','operation_id','applied')
+        if ($claim.schema -cne 'winsmux-msi-startup-fault-consumed/v1' -or $claim.nonce -isnot [string] -or $claim.operation_id -isnot [string] -or $claim.applied -isnot [bool]) { return $result }
+        $result.consumed = $true
+        $result.identity_matches = ($InputObservation['identity'] -ceq $ExpectedIdentity)
+        $result.nonce_matches = ($claim.nonce -ceq $ExpectedNonce)
+        $id = [guid]::Empty
+        $result.operation_valid = [guid]::TryParseExact($claim.operation_id,'D',[ref]$id) -and $id.ToString('D') -ceq $claim.operation_id -and $claim.operation_id[14] -ceq '4' -and '89ab'.Contains($claim.operation_id[19])
+        $result.applied = $claim.applied -and $result.identity_matches -and $result.nonce_matches -and $result.operation_valid
+    } catch {}
+    return $result
+}
+
+function Invoke-DesktopNativeMsiOwnedStartupFault {
+    param([string]$Image,[string]$ImageSha256,[string]$Root,[string]$Sentinel,[string]$Package)
+    $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+    $arm = New-DesktopNativeMsiStartupFaultArm -Root $Root
+    $owned = [WinsmuxDesktopNativeActor]::StartNative('msi-install-en',$Image,$ImageSha256,$Root,$DesktopNativeSourceCommit,$Package,$DesktopNativeBaselineDirectory,$PSCommandPath)
+    $terminal = $false
+    try {
+        $terminal = $owned.WaitTerminal(180000)
+        if (-not $terminal) { $owned.StopOwnedFailure();$terminal=$true;throw 'desktop_native_startup_fault_timeout' }
+        $observation = ConvertTo-DesktopNativeMsiStartupFaultObservation @{'status'='unreadable'} $arm.nonce $arm.identity
+        try {
+            $inputObservation = [WinsmuxDesktopNativeActor]::ReadMsiFaultControlInput((Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Root))) 'msi-startup-fault-consumed.json'))
+            $observation = ConvertTo-DesktopNativeMsiStartupFaultObservation $inputObservation $arm.nonce $arm.identity
+        } catch {}
+        $receipt = [ordered]@{exit_code=(Get-DesktopNativeTerminalExitCode $owned);process=$owned.Facts();owned_startup_fault=$observation;msi_log=$null}
+        try { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root } catch {}
+        Write-DesktopNativeEvidence 'msi-startup-fault-process.json' $receipt
+        $realReceiptFailure = $null -ne $receipt.msi_log -and $receipt.msi_log.status -ceq 'observed' -and $receipt.msi_log.actions.WinsmuxVerifyStartup.start_count -eq 1 -and $receipt.msi_log.actions.WinsmuxVerifyStartup.end_returns['3'] -gt 0 -and $receipt.msi_log.helper.startup_unconfirmed -gt 0 -and $receipt.msi_log.helper.probe_exit_unconfirmed -eq 0
+        Assert-Condition ($observation.applied -and $receipt.exit_code -ne 0 -and $realReceiptFailure) 'desktop_native_startup_fault_unmet'
+        $restored = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+        Assert-DesktopNativeWitnessEqual $prior $restored
+        Write-DesktopNativeEvidence 'msi-startup-fault-restored.json' $restored
+        return 'passed'
+    } finally {
+        if (-not $terminal) { $owned.StopOwnedFailure();$terminal=$true }
+        if ($terminal) { $owned.Dispose() }
+    }
+}
+
 function Invoke-DesktopNativeStartupFault {
     param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$GuiSha256, [Parameter(Mandatory)][string]$Sentinel, [string]$Package = '')
+    if ($Purpose -ceq 'msi-install-en') { return Invoke-DesktopNativeMsiOwnedStartupFault -Image $Image -ImageSha256 $ImageSha256 -Root $Root -Sentinel $Sentinel -Package $Package }
     $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
     $terminal = $false; $stopped = $null; $nonmemberObserved = $false
@@ -4702,7 +4817,7 @@ function Invoke-DesktopNativeStartupFault {
         }
         $terminal = $owned.WaitTerminal(180000)
         if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_startup_fault_timeout' }
-        $processReceipt = [ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts(); stopped_gui = $stopped; observed_gui_outside_job = $nonmemberObserved }
+        $processReceipt = [ordered]@{ exit_code = (Get-DesktopNativeTerminalExitCode $owned); process = $owned.Facts(); stopped_gui = $stopped; observed_gui_outside_job = $nonmemberObserved }
         try { $processReceipt.startup_gui_observations = $owned.StartupObservations() } catch {}
         if ($Purpose -ceq 'msi-install-en') { try { $processReceipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root } catch {} }
         Write-DesktopNativeEvidence ($DesktopNativeFormat.ToLowerInvariant() + '-startup-fault-process.json') $processReceipt
