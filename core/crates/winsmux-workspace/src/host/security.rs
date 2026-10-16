@@ -259,17 +259,19 @@ mod capability_token_query {
         Some(unsafe { value.assume_init() })
     }
 
-    // Private comparison only: use the existing exact-width statistics query.
-    pub(super) fn duplicate_matches_generation(source: HANDLE, duplicate: HANDLE) -> bool {
+    // Private one-filter comparison; identities and authentication values never leave this scope.
+    pub(super) fn filtered_matches_generation(source: HANDLE, filtered: HANDLE) -> bool {
         let Some(source_stats) = fixed::<TOKEN_STATISTICS>(source, TokenStatistics) else { return false; };
-        let Some(duplicate_stats) = fixed::<TOKEN_STATISTICS>(duplicate, TokenStatistics) else { return false; };
-        let (Ok(source_identity), Ok(duplicate_identity)) =
-            (Identity::from_token(source), Identity::from_token(duplicate)) else { return false; };
-        duplicate_stats.TokenType == 2 && duplicate_stats.ImpersonationLevel == 2
-            && source_stats.AuthenticationId.LowPart == duplicate_stats.AuthenticationId.LowPart
-            && source_stats.AuthenticationId.HighPart == duplicate_stats.AuthenticationId.HighPart
-            && source_identity.user.equals(&duplicate_identity.user)
-            && source_identity.logon.equals(&duplicate_identity.logon)
+        let Some(filtered_stats) = fixed::<TOKEN_STATISTICS>(filtered, TokenStatistics) else { return false; };
+        let (Ok(source_identity), Ok(filtered_identity)) =
+            (Identity::from_token(source), Identity::from_token(filtered)) else { return false; };
+        let Ok(Some(attributes)) = token_group_attributes(filtered, &filtered_identity.logon) else { return false; };
+        matches!(source_stats.TokenType, 1 | 2) && filtered_stats.TokenType == source_stats.TokenType
+            && source_stats.AuthenticationId.LowPart == filtered_stats.AuthenticationId.LowPart
+            && source_stats.AuthenticationId.HighPart == filtered_stats.AuthenticationId.HighPart
+            && source_identity.user.equals(&filtered_identity.user)
+            && source_identity.logon.equals(&filtered_identity.logon)
+            && attributes & SE_GROUP_ENABLED != 0 && attributes & SE_GROUP_USE_FOR_DENY_ONLY == 0
     }
 
     fn variable(token: HANDLE, class: i32) -> Option<(Vec<u64>, usize)> {
@@ -698,23 +700,22 @@ impl ServerCapabilityToken {
         })
     }
 
-    // Private ignored-test experiment; never used by production capability callers.
+    // Private ignored-test experiment; production generation is unchanged.
     #[cfg(debug_assertions)]
-    pub(super) fn create_explicit_comparison(original: &Identity) -> Result<Self, IoError> {
+    pub(super) fn create_filtered_comparison(original: &Identity) -> Result<Self, IoError> {
         use windows_sys::Win32::Foundation::GetHandleInformation;
-        use windows_sys::Win32::Security::{DuplicateTokenEx, SecurityImpersonation,
-            TokenImpersonation, TOKEN_IMPERSONATE};
+        use windows_sys::Win32::Security::{CreateRestrictedToken, DISABLE_MAX_PRIVILEGE};
         let source = Self::create(original)?;
         let mut raw = null_mut();
-        if unsafe { DuplicateTokenEx(source.token.raw(), TOKEN_QUERY | TOKEN_IMPERSONATE,
-            std::ptr::null(), SecurityImpersonation, TokenImpersonation, &mut raw) } == 0 {
+        if unsafe { CreateRestrictedToken(source.token.raw(), DISABLE_MAX_PRIVILEGE,
+            0, std::ptr::null(), 0, std::ptr::null(), 0, std::ptr::null(), &mut raw) } == 0 {
             return Err(IoError::Failed);
         }
         let token = unsafe { OwnedHandle::from_raw(raw)? };
         let mut flags = HANDLE_FLAG_INHERIT;
         if unsafe { GetHandleInformation(token.raw(), &mut flags) } == 0
             || flags & HANDLE_FLAG_INHERIT != 0
-            || !capability_token_query::duplicate_matches_generation(source.token.raw(), token.raw()) {
+            || !capability_token_query::filtered_matches_generation(source.token.raw(), token.raw()) {
             return Err(IoError::Failed);
         }
         Ok(Self { token, logon: source.logon.clone() })
