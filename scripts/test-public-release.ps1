@@ -4778,7 +4778,7 @@ function Invoke-DesktopNativeMsiOwnedStartupFault {
         $receipt = [ordered]@{exit_code=(Get-DesktopNativeTerminalExitCode $owned);process=$owned.Facts();owned_startup_fault=$observation;msi_log=$null}
         try { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root } catch {}
         Write-DesktopNativeEvidence 'msi-startup-fault-process.json' $receipt
-        $realReceiptFailure = $null -ne $receipt.msi_log -and $receipt.msi_log.status -ceq 'observed' -and $receipt.msi_log.actions.WinsmuxVerifyStartup.start_count -eq 1 -and $receipt.msi_log.actions.WinsmuxVerifyStartup.end_returns['3'] -gt 0 -and $receipt.msi_log.helper.startup_unconfirmed -gt 0 -and $receipt.msi_log.helper.probe_exit_unconfirmed -eq 0
+        $realReceiptFailure = $null -ne $receipt.msi_log -and $receipt.msi_log.status -ceq 'observed' -and $receipt.msi_log.actions.WinsmuxVerifyStartup.start_count -eq 1 -and $receipt.msi_log.actions.InstallFinalize.end_returns['3'] -gt 0 -and $receipt.msi_log.markers.INSTALL_return3 -gt 0 -and $receipt.msi_log.helper.startup_unconfirmed -gt 0 -and $receipt.msi_log.helper.probe_exit_unconfirmed -eq 0
         Assert-Condition ($observation.applied -and $receipt.exit_code -ne 0 -and $realReceiptFailure) 'desktop_native_startup_fault_unmet'
         $restored = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
         Assert-DesktopNativeWitnessEqual $prior $restored
