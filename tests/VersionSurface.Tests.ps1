@@ -212,9 +212,8 @@ Describe 'winsmux version surface' {
         Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
     }
 
-    It 'prepares licensed debug companions before the first debug Tauri backend test' {
+    It 'keeps debug backend verification in the canonical Tests job' {
         foreach ($producer in @(
-            @{ File = 'build-desktop.yml'; Job = 'build' },
             @{ File = 'test.yml'; Job = 'desktop-build-test' }
         )) {
             $job = [regex]::Match($script:DistributionWorkflows[$producer.File],
@@ -227,6 +226,9 @@ Describe 'winsmux version surface' {
             $preparation[0].Index | Should -BeLessThan $backend[0].Index
             $job.Groups['body'].Value | Should -Not -Match '(?m)^        run: npm run prepare:companion-cli:release\s*\r?$'
         }
+        $build = $script:DistributionWorkflows['build-desktop.yml']
+        $build | Should -Not -Match 'run: cargo test|prepare-legacy-cli.ps1'
+        $build | Should -Match 'run: npm run tauri -- build --no-bundle'
     }
 
     It 'keeps the release app process proof independent of the debug backend job and required by Merge Gate' {
