@@ -5239,8 +5239,10 @@ function Invoke-DesktopNativeVhdDiskPart {
 function Assert-DesktopNativeVhdDiskFacts {
  param($Image,$Disk,$State)
  Assert-DesktopNativeVhdCondition ($null -ne $Image -and $Image.Attached -is [bool] -and $Image.Attached -and [int]$Image.StorageType -eq 3 -and [string]$Image.ImagePath -ceq $State.ImagePath -and [uint64]$Image.Size -eq [uint64]$State.Capacity) 'owned_vhd_image_mapping'
- Assert-DesktopNativeVhdCondition ($null -ne $Disk -and $Disk.IsBoot -is [bool] -and $Disk.IsSystem -is [bool] -and -not $Disk.IsBoot -and -not $Disk.IsSystem -and [int]$Disk.BusType -eq 15 -and [uint64]$Disk.Size -eq [uint64]$State.Capacity -and -not [string]::IsNullOrWhiteSpace([string]$Disk.Path)) 'owned_vhd_nonboot_filebacked_disk'
- $key=[ordered]@{number=[uint32]$Disk.Number;path=[string]$Disk.Path;serial=[string]$Disk.SerialNumber;size=[uint64]$Disk.Size;bus_type=[int]$Disk.BusType;device_path=[string]$Image.DevicePath}
+ $busTypeProperty=if($null -ne $Disk){$Disk.psBase.CimInstanceProperties['BusType']}else{$null}
+ $busType=if($null -ne $busTypeProperty){$busTypeProperty.Value}else{$null}
+ Assert-DesktopNativeVhdCondition ($null -ne $Disk -and $Disk.IsBoot -is [bool] -and $Disk.IsSystem -is [bool] -and -not $Disk.IsBoot -and -not $Disk.IsSystem -and $null -ne $busTypeProperty -and $busTypeProperty.CimType -eq [Microsoft.Management.Infrastructure.CimType]::UInt16 -and $busType -is [uint16] -and $busType -eq 15 -and [uint64]$Disk.Size -eq [uint64]$State.Capacity -and -not [string]::IsNullOrWhiteSpace([string]$Disk.Path)) 'owned_vhd_nonboot_filebacked_disk'
+ $key=[ordered]@{number=[uint32]$Disk.Number;path=[string]$Disk.Path;serial=[string]$Disk.SerialNumber;size=[uint64]$Disk.Size;bus_type=[int]$busType;device_path=[string]$Image.DevicePath}
  Assert-DesktopNativeVhdCondition ($key.device_path -cmatch '^\\\\\.\\PHYSICALDRIVE[0-9]+$' -and $key.device_path -ceq ('\\.\PHYSICALDRIVE'+$key.number)) 'owned_vhd_device_number'
  if($null -ne $State.DiskAnchor){Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $key) -ceq $State.DiskAnchor) 'owned_vhd_disk_identity_changed'}
  return $key

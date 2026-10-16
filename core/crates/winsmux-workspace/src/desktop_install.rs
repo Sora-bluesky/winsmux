@@ -2001,13 +2001,14 @@ mod native {
         if let Some(arm) = fault { arm.apply(owned, id, deadline); }
         let mut connected = false;
         loop {
-            if unsafe {
+            let mut timeout_phase = None;
+            let root_wait = unsafe {
                 WaitForSingleObject(
                     owned.process.as_ref().ok_or(DesktopInstallError::Launch)?.0,
                     0,
                 )
-            } == WAIT_OBJECT_0
-            {
+            };
+            if root_wait == WAIT_OBJECT_0 {
                 return Err(DesktopInstallError::Receipt);
             }
             if !connected {
@@ -2019,7 +2020,8 @@ mod native {
                 };
                 match error {
                     ERROR_PIPE_CONNECTED => connected = true,
-                    ERROR_PIPE_LISTENING | ERROR_NO_DATA => {}
+                    ERROR_PIPE_LISTENING => timeout_phase = Some("awaiting_pipe_listening"),
+                    ERROR_NO_DATA => timeout_phase = Some("awaiting_pipe_no_data"),
                     _ => return Err(DesktopInstallError::Receipt),
                 }
             }
@@ -2050,11 +2052,23 @@ mod native {
                     if read != 0 {
                         return parse_wire_receipt(&buffer[..read as usize], id, request);
                     }
-                } else if !matches!(unsafe { GetLastError() }, ERROR_NO_DATA) {
-                    return Err(DesktopInstallError::Receipt);
+                    timeout_phase = Some("verified_peer_read_zero");
+                } else {
+                    let read_error = unsafe { GetLastError() };
+                    if !matches!(read_error, ERROR_NO_DATA) {
+                        return Err(DesktopInstallError::Receipt);
+                    }
+                    timeout_phase = Some("verified_peer_read_no_data");
                 }
             }
             if Instant::now() >= deadline {
+                let root_wait = match root_wait {
+                    windows_sys::Win32::Foundation::WAIT_TIMEOUT => "timeout",
+                    windows_sys::Win32::Foundation::WAIT_FAILED => "failed",
+                    _ => "other",
+                };
+                let timeout_phase = timeout_phase.unwrap_or("phase_unobserved");
+                eprintln!("winsmux installer: startup_timeout_phase root_wait={root_wait} phase={timeout_phase}");
                 return Err(DesktopInstallError::Timeout);
             }
             std::thread::sleep(Duration::from_millis(10));

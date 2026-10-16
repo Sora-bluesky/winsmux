@@ -15,13 +15,14 @@
     "Expand only the NSIS-owned transaction workspace to its long DOS spelling and share bounded helper, source and context paths across install and uninstall",
     "T-only diagnostic: preserve finite native handle refusal origin and Win32 class through 90 exact exit literals; all project to prior path site 102",
     "T-only diagnostic: annotate only propagated DerivedPath NotFound 276 at 53 fixed responsibility origins; no retry or filesystem observation",
-    "T-only diagnostic: preserve all ten DesktopInstallError startup classes through exact stderr labels and NSIS exit codes 380-389; retain generic startup 71"
+    "T-only diagnostic: preserve all ten DesktopInstallError startup classes through exact stderr labels and NSIS exit codes 380-389; retain generic startup 71",
+    "T-only diagnostic: at original startup timeout preserve last existing root wait and receiver phase in one fixed stderr line; map 12 finite two-line classes to 390-401, retaining single-line 388"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 31528,
-      "sha256": "e34701b3795b7986a5523891915a2d619a5b3ce23b81b4d8d353163b218733e4"
+      "bytes": 41284,
+      "sha256": "be7a7d29a2d2086d73ef63fef6f0d2a43b3de55ff85f810907c3450689bb75d6"
     },
     {
       "path": "winsmux-utils.nsh",
