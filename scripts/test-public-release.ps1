@@ -4974,7 +4974,7 @@ function Invoke-DesktopNativeVhdDiskPart {
  try{
   Assert-DesktopNativeVhdCondition ($process.Start()) 'owned_vhd_diskpart_start_failed'
   $outTask=$process.StandardOutput.BaseStream.CopyToAsync($out);$errTask=$process.StandardError.BaseStream.CopyToAsync($err)
-  $process.WaitForExit();$outTask.GetAwaiter().GetResult();$errTask.GetAwaiter().GetResult()
+  $process.WaitForExit();[void]$outTask.GetAwaiter().GetResult();[void]$errTask.GetAwaiter().GetResult()
   $exit=$process.ExitCode;$out.Flush($true);$err.Flush($true)
   Write-DesktopNativeVhdReceipt $State ($Operation+'-terminal') @{exit_code=$exit;command_file=$commandPath}
   Assert-DesktopNativeVhdCondition ($exit -eq 0) ('owned_vhd_diskpart_'+$Operation+'_failed')
