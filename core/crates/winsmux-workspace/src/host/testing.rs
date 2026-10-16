@@ -2009,6 +2009,12 @@ pub fn run_os_authentication_probes() -> Result<OsAuthenticationEvidence, ProbeE
     })
 }
 
+
+/// One ignored-test observation, with no host, provider, additional instance or client.
+pub fn server_capability_token_creation_snapshot() -> serde_json::Value {
+    super::windows::observe_server_capability_token_creation()
+}
+
 /// Prove on the current Windows host that generation-specific server creation
 /// and original-logon client data access are separate capabilities.
 pub fn run_server_capability_probes() -> Result<ServerCapabilityEvidence, ProbeError> {

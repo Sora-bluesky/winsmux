@@ -4281,3 +4281,12 @@ fn real_host_without_provider_path_keeps_launch_unadvertised() {
     assert_success(&stopped, "host.stop");
     assert_eq!(host.wait_for_exit().code, 0);
 }
+
+
+#[cfg(debug_assertions)]
+#[test]
+#[ignore = "private one-call capability token observation"]
+fn server_capability_token_creation_snapshot() {
+    let snapshot = winsmux_workspace::host::testing::server_capability_token_creation_snapshot();
+    println!("WINSMUX_CAPABILITY_TOKEN_SNAPSHOT {}", serde_json::to_string(&snapshot).expect("fixed token snapshot"));
+}

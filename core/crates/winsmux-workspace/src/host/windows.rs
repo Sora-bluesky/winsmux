@@ -2195,6 +2195,26 @@ fn create_initial_public_pipe(
     create_public_pipe(name, identity, true, capability)
 }
 
+
+// Private ignored-test entry: the same operation body as normal initial creation.
+#[cfg(debug_assertions)]
+pub(super) fn observe_server_capability_token_creation() -> serde_json::Value {
+    let observation = PublicPipeObservation::with_token_query();
+    if !observation.token_context_canonical() { return observation.token_json(); }
+    let identity = Identity::current();
+    observation.token_identity(identity.is_ok());
+    let Ok(identity) = identity else { return observation.token_json(); };
+    let capability = ServerCapabilityToken::create(&identity);
+    observation.token_capability(capability.as_ref().ok().map(|c| c.raw()));
+    let Ok(capability) = capability else { return observation.token_json(); };
+    let name = format!(r"\\.\pipe\winsmux-workspace-capability-token-{}", uuid::Uuid::new_v4());
+    let result = create_public_pipe_inner(&name, &identity, true, &capability, Some(&observation));
+    observation.token_finish(result.is_ok());
+    drop(result);
+    drop(capability);
+    observation.token_json()
+}
+
 fn create_public_pipe_inner(
     name: &str,
     identity: &Identity,
@@ -2281,6 +2301,8 @@ fn create_pipe_inner(
             observation.operation_failed(PublicPipeFailureApi::CreatePipe, PublicPipeErrorClass::Unobserved);
         }
     }
+    #[cfg(debug_assertions)]
+    if let Some(observation) = observation { observation.token_pipe(handle != INVALID_HANDLE_VALUE && !handle.is_null()); }
     unsafe { OwnedHandle::from_raw(handle) }
 }
 

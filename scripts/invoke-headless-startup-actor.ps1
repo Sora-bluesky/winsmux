@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
  [switch]$HeadlessParent,
+ [switch]$ObserveCapabilityToken,
  [switch]$ProjectionSelfTest,
  [switch]$SourceAdmissionOnly,
  [switch]$PrepareCompilerRoot,
@@ -18,7 +19,7 @@ $tests=@('real_host_without_provider_path_keeps_launch_unadvertised','host_start
 function Assert-Fixed([bool]$Condition,[string]$Code) { if(-not $Condition){throw $Code} }
 function Assert-CanonicalSourceInputs([string]$Root) {
  # One raw-byte choke point; no newline conversion or alternate hashes are accepted.
- $pins=ConvertFrom-Json -AsHashtable '[{"path":"scripts/test-public-release.ps1","bytes":579080,"sha256":"4c215216c9d8d90a3cafb6797e249b2bbc26bf8efb2683bc2a3e72a9eb5768b7"},{"path":"scripts/DesktopProcessOwner.cs","bytes":24379,"sha256":"cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c"},{"path":"core/tests-rs/workspace_host_e2e.rs","bytes":176005,"sha256":"db8fb3814aab6944d21bc72ea4ea1560cf1b875f7f7ecc647786416e7d69fbfc"},{"path":"core/tests-rs/support/conpty_json.rs","bytes":12923,"sha256":"8da14f11218bd84c6d2de17d1904705c56b64c44346c3d73138936a2d05859e9"},{"path":"core/crates/winsmux-workspace/src/host/windows.rs","bytes":108300,"sha256":"77b982a704fba88230c680fa9b38fd9f43364e0502d009c4970e3c592f47818a"},{"path":"core/crates/winsmux-workspace/src/host/process.rs","bytes":10135,"sha256":"a667b3ee876166f5a88366dd2979ccc9f8d70e84d25de594bae7a6403abacc74"},{"path":"core/crates/winsmux-workspace/src/host/security.rs","bytes":29126,"sha256":"334cbc33dd149e0f8dbd6b4e50a9a5f8d4bc589a29b691038ab5ff072f047161"},{"path":"core/crates/winsmux-workspace/src/host/mod.rs","bytes":4569,"sha256":"2854949034e622b7bf1fc31118080ec2ee0df04aba4ff895ded241a6a4675dd6"},{"path":"core/crates/winsmux-workspace/src/client/mod.rs","bytes":73120,"sha256":"4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1"},{"path":"Cargo.toml","bytes":556,"sha256":"3c50db3d0d7650d46dd3342eef78c678c1261a2b3f75dce6d79b1d648a30b5a3"},{"path":"Cargo.lock","bytes":165475,"sha256":"26d1bef4c5a4fc47330468a719d8ff59e0fb85e483aa84d0e0752bba99d85c30"},{"path":"core/Cargo.toml","bytes":4498,"sha256":"a52039539867a3fcdaa3e0fdf8a5a0eea670d0ba5ff0445c046e63d60bd8085d"},{"path":".github/actions/setup-windows-distribution-toolchain/action.yml","bytes":677,"sha256":"7811950cfe808ec3ab951033da4a4760bd37c4348a668739dd074c86fe56b6f2"}]'
+ $pins=ConvertFrom-Json -AsHashtable '[{"path":"scripts/test-public-release.ps1","bytes":579080,"sha256":"4c215216c9d8d90a3cafb6797e249b2bbc26bf8efb2683bc2a3e72a9eb5768b7"},{"path":"scripts/DesktopProcessOwner.cs","bytes":24379,"sha256":"cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c"},{"path":"core/tests-rs/workspace_host_e2e.rs","bytes":176368,"sha256":"4c3cfa6b7e1ab781e153298fb0c8189b0efc93a167861a964b6bb96f8bcaedb7"},{"path":"core/tests-rs/support/conpty_json.rs","bytes":12923,"sha256":"8da14f11218bd84c6d2de17d1904705c56b64c44346c3d73138936a2d05859e9"},{"path":"core/crates/winsmux-workspace/src/host/windows.rs","bytes":109489,"sha256":"b2b46b173d2cd8a6285c9d0df641e39d612d2425a04cce5e5033e4bc8774517f"},{"path":"core/crates/winsmux-workspace/src/host/process.rs","bytes":10135,"sha256":"a667b3ee876166f5a88366dd2979ccc9f8d70e84d25de594bae7a6403abacc74"},{"path":"core/crates/winsmux-workspace/src/host/security.rs","bytes":42687,"sha256":"364911697ae0be7a6ad342ee476ad4e5589f6d6078e669c04ceff2189d21be78"},{"path":"core/crates/winsmux-workspace/src/host/mod.rs","bytes":4569,"sha256":"2854949034e622b7bf1fc31118080ec2ee0df04aba4ff895ded241a6a4675dd6"},{"path":"core/crates/winsmux-workspace/src/client/mod.rs","bytes":73120,"sha256":"4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1"},{"path":"Cargo.toml","bytes":556,"sha256":"3c50db3d0d7650d46dd3342eef78c678c1261a2b3f75dce6d79b1d648a30b5a3"},{"path":"Cargo.lock","bytes":165475,"sha256":"26d1bef4c5a4fc47330468a719d8ff59e0fb85e483aa84d0e0752bba99d85c30"},{"path":"core/Cargo.toml","bytes":4498,"sha256":"a52039539867a3fcdaa3e0fdf8a5a0eea670d0ba5ff0445c046e63d60bd8085d"},{"path":".github/actions/setup-windows-distribution-toolchain/action.yml","bytes":677,"sha256":"7811950cfe808ec3ab951033da4a4760bd37c4348a668739dd074c86fe56b6f2"},{"path":"core/crates/winsmux-workspace/src/host/testing.rs","bytes":89695,"sha256":"58b303cdbca1728a804b09bd6dcb32a95fd203b5a4dc6d15ee50fdbe7634f2b5"}]'
  $attribute=ConvertFrom-Json -AsHashtable '{"path":".gitattributes","bytes":1481,"sha256":"1288f24e7629cbec0701a6d17ce78ecbce87b9cc13fec4d7efb2a841ab7d354d"}'
  $attributePaths=ConvertFrom-Json '[".gitattributes",".github/.gitattributes",".github/actions/.gitattributes",".github/actions/setup-windows-distribution-toolchain/.gitattributes",".github/workflows/.gitattributes","core/.gitattributes","core/crates/.gitattributes","core/crates/winsmux-workspace/.gitattributes","core/crates/winsmux-workspace/src/.gitattributes","core/crates/winsmux-workspace/src/client/.gitattributes","core/crates/winsmux-workspace/src/host/.gitattributes","core/tests-rs/.gitattributes","core/tests-rs/support/.gitattributes","scripts/.gitattributes"]'
  foreach($name in $attributePaths){Assert-Fixed ((Test-Path -LiteralPath (Join-Path $Root $name)) -eq ($name -ceq '.gitattributes')) 'input_attribute_inventory_changed'}
@@ -153,6 +154,157 @@ function Assert-HeadlessBoundInputs($Binding,[string]$ExpectedScript) {
  Assert-Fixed ([string]::Equals($Binding.test_executable,$Binding.compiler_inputs.test,[StringComparison]::OrdinalIgnoreCase) -and [string]::Equals($Binding.cli_executable,$Binding.compiler_inputs.cli,[StringComparison]::OrdinalIgnoreCase) -and $Binding.test_sha256 -ceq $Binding.compiler_inputs.test_sha -and $Binding.cli_sha256 -ceq $Binding.compiler_inputs.cli_sha -and $Binding.script_sha256 -ceq $Binding.compiler_inputs.script_sha -and [string]::Equals($ExpectedScript,$Binding.compiler_inputs.script,[StringComparison]::OrdinalIgnoreCase)) 'actual_execution_path'
  [WinsmuxHeadlessOwned.WinsmuxHeadlessCompilerInputs]::Verify($Binding.compiler_inputs)
 }
+function Assert-CapabilityKeys($Value,[string[]]$Keys) {
+ Assert-Fixed ($Value -is [Collections.IDictionary] -and ((@($Value.Keys|Sort-Object -CaseSensitive)-join [char]10) -ceq (@($Keys|Sort-Object -CaseSensitive)-join [char]10))) 'snapshot_keys'
+}
+function Assert-CapabilityObserved($Field,[string]$Kind,[string[]]$Enums=@()) {
+ Assert-CapabilityKeys $Field @('observed','value')
+ Assert-Fixed ($Field.observed -is [bool]) 'snapshot_observed'
+ if(-not $Field.observed){Assert-Fixed ($null -eq $Field.value) 'snapshot_missing';return}
+ if($Kind -ceq 'bool'){Assert-Fixed ($Field.value -is [bool]) 'snapshot_bool'}else{Assert-Fixed ($Field.value -is [string] -and $Field.value -cin $Enums) 'snapshot_enum'}
+}
+function Assert-CapabilityTokenSnapshot($Value) {
+ Assert-CapabilityKeys $Value @('schema','thread_absent_before','thread_absent_after','primary','generation','effective','generation_to_primary','effective_to_generation','operations','operation_failure','revert_failure')
+ Assert-Fixed ($Value.schema -is [string] -and $Value.schema -ceq 'winsmux-server-capability-token-observation/v1') 'snapshot_schema'
+ foreach($name in @('thread_absent_before','thread_absent_after')){Assert-CapabilityObserved $Value[$name] 'bool'}
+ foreach($name in @('primary','generation','effective')){
+  $f=$Value[$name];Assert-CapabilityKeys $f @('token_type','impersonation_level','has_restrictions','restricting_sids_empty','se_impersonate_present','se_impersonate_enabled')
+  Assert-CapabilityObserved $f.token_type 'enum' @('primary','impersonation')
+  Assert-CapabilityObserved $f.impersonation_level 'enum' @('not_applicable','anonymous','identification','impersonation','delegation')
+  foreach($key in @('has_restrictions','restricting_sids_empty','se_impersonate_present','se_impersonate_enabled')){Assert-CapabilityObserved $f[$key] 'bool'}
+  Assert-Fixed ($f.token_type.observed -eq $f.impersonation_level.observed) 'snapshot_level_presence'
+  if($f.token_type.observed){Assert-Fixed (($f.token_type.value -ceq 'primary') -eq ($f.impersonation_level.value -ceq 'not_applicable')) 'snapshot_level_type'}
+  Assert-Fixed ($f.se_impersonate_present.observed -eq $f.se_impersonate_enabled.observed) 'snapshot_privilege_presence'
+  if($f.se_impersonate_present.observed -and -not $f.se_impersonate_present.value){Assert-Fixed (-not $f.se_impersonate_enabled.value) 'snapshot_privilege_state'}
+ }
+ foreach($name in @('generation_to_primary','effective_to_generation')){
+  Assert-CapabilityKeys $Value[$name] @('same_user','same_logon','same_authentication_id')
+  foreach($key in @('same_user','same_logon','same_authentication_id')){Assert-CapabilityObserved $Value[$name][$key] 'bool'}
+ }
+ Assert-CapabilityKeys $Value.operations @('identity','capability','impersonate','pipe','revert','result')
+ foreach($key in @('identity','capability','impersonate','pipe','revert','result')){Assert-Fixed ($Value.operations[$key] -is [string] -and $Value.operations[$key] -cin @('not_attempted','succeeded','failed')) 'snapshot_operation'}
+ $failure=$Value.operation_failure;Assert-CapabilityKeys $failure @('observed','value');Assert-Fixed ($failure.observed -is [bool]) 'snapshot_failure_presence'
+ if($failure.observed){
+  Assert-CapabilityKeys $failure.value @('api','class')
+  Assert-Fixed ($failure.value.api -is [string] -and $failure.value.api -cin @('impersonate','sid_to_string','sddl_to_descriptor','create_pipe','descriptor_validation')) 'snapshot_api'
+  Assert-Fixed ($failure.value.class -is [string] -and $failure.value.class -cin @('access_denied','privilege_not_held','bad_impersonation_level','invalid_owner','invalid_security_descriptor','unobserved')) 'snapshot_class'
+ }else{Assert-Fixed ($null -eq $failure.value) 'snapshot_failure_missing'}
+ Assert-CapabilityObserved $Value.revert_failure 'enum' @('access_denied','privilege_not_held','bad_impersonation_level','invalid_owner','invalid_security_descriptor','unobserved')
+ $op=$Value.operations
+ if(-not $Value.thread_absent_before.observed -or -not $Value.thread_absent_before.value){
+  foreach($key in @('identity','capability','impersonate','pipe','revert','result')){Assert-Fixed ($op[$key] -ceq 'not_attempted') 'snapshot_precondition'}
+ }
+ if($op.capability -cne 'not_attempted'){Assert-Fixed ($op.identity -ceq 'succeeded') 'snapshot_identity_order'}
+ if($op.impersonate -cne 'not_attempted'){Assert-Fixed ($op.capability -ceq 'succeeded') 'snapshot_generation_order'}
+ if($op.pipe -cne 'not_attempted'){Assert-Fixed ($op.impersonate -ceq 'succeeded') 'snapshot_pipe_order'}
+ Assert-Fixed (($op.impersonate -ceq 'succeeded') -eq ($op.revert -cne 'not_attempted')) 'snapshot_revert_order'
+ Assert-Fixed (($op.revert -ceq 'failed') -eq $Value.revert_failure.observed) 'snapshot_revert_failure'
+ if($op.result -ceq 'succeeded'){Assert-Fixed ($op.pipe -ceq 'succeeded' -and $op.revert -ceq 'succeeded' -and -not $failure.observed) 'snapshot_result_success'}
+ if($op.result -ceq 'failed'){Assert-Fixed ($failure.observed -or $Value.revert_failure.observed) 'snapshot_result_failure'}
+ if($failure.observed){
+  $api=$failure.value.api
+  if($api -ceq 'impersonate'){Assert-Fixed ($op.impersonate -ceq 'failed' -and $op.pipe -ceq 'not_attempted') 'snapshot_impersonate_failure'}
+  elseif($api -ceq 'create_pipe'){Assert-Fixed ($op.pipe -ceq 'failed') 'snapshot_create_failure'}
+  else{Assert-Fixed ($op.impersonate -ceq 'succeeded' -and $op.pipe -ceq 'not_attempted') 'snapshot_descriptor_failure'}
+  Assert-Fixed ($op.result -ceq 'failed') 'snapshot_failure_result'
+ }
+
+ foreach($pair in @(@('generation','capability'),@('effective','impersonate'))){
+  if($op[$pair[1]] -cne 'succeeded'){
+   foreach($f in $Value[$pair[0]].Values){Assert-Fixed (-not $f.observed) 'snapshot_token_not_reached'}
+   $relation=if($pair[0] -ceq 'generation'){'generation_to_primary'}else{'effective_to_generation'}
+   foreach($f in $Value[$relation].Values){Assert-Fixed (-not $f.observed) 'snapshot_relation_not_reached'}
+  }
+ }
+ if($op.revert -ceq 'not_attempted'){Assert-Fixed (-not $Value.thread_absent_after.observed) 'snapshot_after_not_reached'}
+ if($Value.thread_absent_before.observed -and $Value.thread_absent_before.value){Assert-Fixed ($op.identity -cne 'not_attempted') 'snapshot_identity_reached'}
+ if($op.identity -ceq 'succeeded'){Assert-Fixed ($op.capability -cne 'not_attempted') 'snapshot_capability_reached'}
+ if($op.capability -ceq 'succeeded'){Assert-Fixed ($op.impersonate -cne 'not_attempted') 'snapshot_impersonate_reached'}
+ if($op.impersonate -cne 'not_attempted'){Assert-Fixed ($op.result -cne 'not_attempted') 'snapshot_result_reached'}
+ if($op.result -ceq 'not_attempted'){Assert-Fixed (-not $failure.observed -and $op.impersonate -ceq 'not_attempted') 'snapshot_result_not_reached'}
+ if($op.pipe -ceq 'failed'){Assert-Fixed ($failure.observed -and $failure.value.api -ceq 'create_pipe') 'snapshot_pipe_failure'}
+ if($op.pipe -ceq 'succeeded' -and $op.result -ceq 'failed'){Assert-Fixed ($Value.revert_failure.observed -and -not $failure.observed) 'snapshot_successful_pipe_failure'}
+}
+function ConvertFrom-CapabilityTokenPayload([string]$Payload) {
+ $doc=[System.Text.Json.JsonDocument]::Parse($Payload,[System.Text.Json.JsonDocumentOptions]::new())
+ try{
+  function Assert-UniqueSnapshotObject($Node){
+   if($Node.ValueKind -eq [System.Text.Json.JsonValueKind]::Object){
+    $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach($p in $Node.EnumerateObject()){Assert-Fixed ($seen.Add($p.Name)) 'snapshot_duplicate';Assert-UniqueSnapshotObject $p.Value}
+   }elseif($Node.ValueKind -eq [System.Text.Json.JsonValueKind]::Array){throw 'snapshot_array'}
+  }
+  Assert-UniqueSnapshotObject $doc.RootElement
+  $value=$Payload|ConvertFrom-Json -AsHashtable -Depth 16
+  Assert-CapabilityTokenSnapshot $value
+  return $value
+ }finally{$doc.Dispose()}
+}
+function Read-CapabilityTokenSnapshot([byte[]]$Stdout,[byte[]]$Stderr,[bool]$Truncated) {
+ Assert-Fixed (-not $Truncated) 'snapshot_truncated'
+ $decoder=[Text.UTF8Encoding]::new($false,$true);$output=$decoder.GetString($Stdout);$errors=$decoder.GetString($Stderr)
+ $prefix='WINSMUX_CAPABILITY_TOKEN_SNAPSHOT '
+ Assert-Fixed (-not $errors.Contains('WINSMUX_CAPABILITY_TOKEN_SNAPSHOT')) 'snapshot_stderr'
+ $lines=@($output -split '\r?\n'|Where-Object{$_.Contains('WINSMUX_CAPABILITY_TOKEN_SNAPSHOT')})
+ Assert-Fixed ($lines.Count -eq 1) 'snapshot_count'
+ $line=$lines[0];$at=$line.IndexOf($prefix,[StringComparison]::Ordinal)
+ Assert-Fixed ($at -ge 0 -and ($at -eq 0 -or $line.Substring(0,$at) -ceq 'test server_capability_token_creation_snapshot ... ')) 'snapshot_prefix'
+ return ConvertFrom-CapabilityTokenPayload $line.Substring($at+$prefix.Length)
+}
+function Test-CapabilityTokenSnapshotComplete($Value) {
+ foreach($f in @($Value.thread_absent_before,$Value.thread_absent_after)){if(-not $f.observed){return $false}}
+ foreach($name in @('primary','generation','effective','generation_to_primary','effective_to_generation')){foreach($f in $Value[$name].Values){if(-not $f.observed){return $false}}}
+ return $true
+}
+
+function New-CapabilityTokenCapture([string]$Source) {
+ return [ordered]@{schema='winsmux-server-capability-token-capture/v1';source_commit=$Source;actor_admitted=$false;same_sid=$false;same_session=$false;restricted_medium=$false;diagnostic_received=$false;query_complete=$false;observation=$null;capture=[ordered]@{process_exit='unobserved';terminal=$false;job_zero=$false;forced=$false;capture_complete=$false};raw=$null;root_terminal=$false;root_job_zero=$false;forced=$false;failure=$null;product_success_proven=$false;nsis_success_proven=$false;normal_gui_success_proven=$false}
+}
+function Assert-CapabilityTokenCapture($Value,[string]$Source) {
+ Assert-CapabilityKeys $Value @('schema','source_commit','actor_admitted','same_sid','same_session','restricted_medium','diagnostic_received','query_complete','observation','capture','raw','root_terminal','root_job_zero','forced','failure','product_success_proven','nsis_success_proven','normal_gui_success_proven')
+ Assert-Fixed ($Value.schema -is [string] -and $Value.schema -ceq 'winsmux-server-capability-token-capture/v1' -and $Value.source_commit -is [string] -and $Value.source_commit -ceq $Source) 'capture_schema'
+ foreach($key in @('actor_admitted','same_sid','same_session','restricted_medium','diagnostic_received','query_complete','root_terminal','root_job_zero','forced','product_success_proven','nsis_success_proven','normal_gui_success_proven')){Assert-Fixed ($Value[$key] -is [bool]) 'capture_bool'}
+ Assert-Fixed (-not $Value.product_success_proven -and -not $Value.nsis_success_proven -and -not $Value.normal_gui_success_proven) 'capture_scope'
+ Assert-Fixed ($Value.actor_admitted -eq ($Value.same_sid -and $Value.same_session -and $Value.restricted_medium)) 'capture_actor'
+ Assert-Fixed ($null -eq $Value.failure -or ($Value.failure -is [string] -and $Value.failure -cin @('source_admission','build_binding','medium_bootstrap','token_child_result','token_observation','root_convergence','result_preservation'))) 'capture_failure'
+ Assert-CapabilityKeys $Value.capture @('process_exit','terminal','job_zero','forced','capture_complete')
+ Assert-Fixed ($Value.capture.process_exit -is [string] -and $Value.capture.process_exit -cin @('unobserved','zero','test_failure','owned_stop','other')) 'capture_exit'
+ foreach($key in @('terminal','job_zero','forced','capture_complete')){Assert-Fixed ($Value.capture[$key] -is [bool]) 'capture_ownership'}
+ if($null -ne $Value.raw){
+  Assert-CapabilityKeys $Value.raw @('stdout_total_bytes','stdout_retained_bytes','stdout_retained_sha256','stderr_total_bytes','stderr_retained_bytes','stderr_retained_sha256')
+  foreach($stream in @('stdout','stderr')){
+   $total=$Value.raw[($stream+'_total_bytes')];$retained=$Value.raw[($stream+'_retained_bytes')];$sha=$Value.raw[($stream+'_retained_sha256')]
+   Assert-Fixed (($total -is [int] -or $total -is [long]) -and ($retained -is [int] -or $retained -is [long]) -and $total -ge 0 -and $retained -ge 0 -and $retained -le $total -and $retained -le 16384 -and $sha -is [string] -and $sha -cmatch '^[a-f0-9]{64}$') 'capture_raw_shape'
+  }
+ }
+ if($Value.diagnostic_received){
+  Assert-CapabilityTokenSnapshot $Value.observation
+  Assert-Fixed ($null -ne $Value.raw -and $Value.query_complete -eq (Test-CapabilityTokenSnapshotComplete $Value.observation)) 'capture_observation'
+ }else{Assert-Fixed ($null -eq $Value.observation -and -not $Value.query_complete) 'capture_missing'}
+}
+function Invoke-CapabilityTokenCapture($Binding,[string]$ExpectedScript,$Envelope) {
+ Assert-HeadlessBoundInputs $Binding $ExpectedScript
+ $testImage=[string]$Binding.test_executable;$cliImage=[string]$Binding.cli_executable
+ Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $Binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $Binding.cli_sha256) 'test_input_changed'
+ $owned=$null;$terminal=$false
+ try{
+  $owned=[Winsmux.DesktopNative.DesktopProcessOwner]::Start($testImage,[string[]]@('--exact','server_capability_token_creation_snapshot','--ignored','--test-threads=1','--nocapture'),@{},$false,16384,180000)
+  $terminal=$owned.WaitTerminal(180000,500)
+  if(-not $terminal){$owned.ForceFailureCleanup(180000,500);$terminal=$owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted}
+  $out=$owned.StdoutTask.GetAwaiter().GetResult();$err=$owned.StderrTask.GetAwaiter().GetResult()
+  $Envelope.capture=[ordered]@{process_exit=$(if($owned.ExitCode -eq 0){'zero'}elseif($owned.ExitCode -eq 101){'test_failure'}elseif($owned.ExitCode -eq 124){'owned_stop'}else{'other'});terminal=$terminal;job_zero=($owned.ActiveMembers -eq 0);forced=$owned.Forced;capture_complete=($owned.CaptureCompleted -and -not $out.Truncated -and -not $err.Truncated)}
+  $Envelope.raw=[ordered]@{stdout_total_bytes=$out.TotalBytes;stdout_retained_bytes=$out.RetainedBytes.LongLength;stdout_retained_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($out.RetainedBytes)).ToLowerInvariant();stderr_total_bytes=$err.TotalBytes;stderr_retained_bytes=$err.RetainedBytes.LongLength;stderr_retained_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($err.RetainedBytes)).ToLowerInvariant()}
+  $Envelope.observation=Read-CapabilityTokenSnapshot $out.RetainedBytes $err.RetainedBytes ($out.Truncated -or $err.Truncated)
+  $Envelope.diagnostic_received=$true;$Envelope.query_complete=Test-CapabilityTokenSnapshotComplete $Envelope.observation
+  # Test raw bytes are memory-only, including failures and arbitrary panic text.
+  $out=$null;$err=$null
+ }finally{
+  if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(180000,500)};if($owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted){$owned.Dispose()}}
+ }
+ Assert-HeadlessBoundInputs $Binding $ExpectedScript
+ Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $Binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $Binding.cli_sha256) 'test_output_changed_inputs'
+}
+
 function Initialize-HeadlessNativeTypes([string]$repoRoot) {
  $sourcePath=Join-Path $repoRoot 'scripts/test-public-release.ps1'
  $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$tokens,[ref]$errors)
@@ -263,16 +415,20 @@ function Test-HeadlessProjection {
 if($ProjectionSelfTest){try{Test-HeadlessProjection|ConvertTo-Json -Compress;exit 0}catch{[Console]::Out.WriteLine('{"schema":"winsmux-headless-projection-finite/v1","outcome":"failed"}');exit 1}}
 $repoRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $phase='source_admission';$outer=$null;$outerTerminal=$false;$evidenceRoot=$null;$bindingObservationPoint='unobserved'
+$capabilityMode=$HeadlessParent -and $ObserveCapabilityToken;$capabilityResult=$null;$capabilityOuterExitZero=$false
+if($capabilityMode){$tests=@('server_capability_token_creation_snapshot')}
 $result=[ordered]@{schema='winsmux-headless-restricted-actor/v1';outcome='unobserved';source_commit=$null;actor_admitted=$false;same_sid=$false;same_session=$false;restricted_medium=$false;tests=@();root_terminal=$false;root_job_zero=$false;forced=$false;failure=$null;nsis_success_proven=$false;normal_gui_success_proven=$false}
 try {
  Assert-Fixed ($env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and $env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'runner_identity'
  $source=if($HeadlessParent -or $SourceAdmissionOnly -or $PrepareCompilerRoot){$SourceCommit}else{$DesktopNativeSourceCommit}
  Assert-Fixed ($source -cmatch '^[a-f0-9]{40}$' -and $source -ceq $env:GITHUB_SHA) 'source_identity'
  $result.source_commit=$source
+ Assert-Fixed (-not $ObserveCapabilityToken -or $HeadlessParent) 'token_parent_mode'
+ if($capabilityMode){$capabilityResult=New-CapabilityTokenCapture $source}
  Assert-CanonicalSourceInputs $repoRoot
- if($SourceAdmissionOnly){[Console]::Out.WriteLine('{"schema":"winsmux-headless-source-admission/v1","outcome":"passed","runtime_inputs":13,"attribute_policy":"fixed"}');exit 0}
+ if($SourceAdmissionOnly){[Console]::Out.WriteLine('{"schema":"winsmux-headless-source-admission/v1","outcome":"passed","runtime_inputs":14,"attribute_policy":"fixed"}');exit 0}
  $ast=Initialize-HeadlessNativeTypes $repoRoot
- if($PrepareCompilerRoot){New-HeadlessCompilerProducer (Get-HeadlessProducerRoot $source) $source $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT;[Console]::Out.WriteLine('{"schema":"winsmux-headless-source-admission/v1","outcome":"passed","runtime_inputs":13,"attribute_policy":"fixed"}');exit 0}
+ if($PrepareCompilerRoot){New-HeadlessCompilerProducer (Get-HeadlessProducerRoot $source) $source $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT;[Console]::Out.WriteLine('{"schema":"winsmux-headless-source-admission/v1","outcome":"passed","runtime_inputs":14,"attribute_policy":"fixed"}');exit 0}
  $query=[WinsmuxDesktopNativeActor]::Query();$facts=$query['facts']
  Assert-Fixed ($query['existing_profile_hive'] -eq $true -and $query['local_app_data_exists'] -eq $true -and $facts['token_type'] -eq 1 -and $facts['app_container'] -eq 0) 'actor_profile'
  function Read-OwnedJson([string]$Path){return ([WinsmuxDesktopNativeActor]::ReadChild($Path)|ConvertFrom-Json -AsHashtable)}
@@ -316,10 +472,17 @@ try {
   $outerTerminal=$outer.WaitTerminal((Get-DesktopNativeNsisJourneyBudgetMilliseconds))
   if(-not $outerTerminal){$outer.StopOwnedFailure();$outerTerminal=$true;$result.forced=$true}
   $nativeFacts=$outer.Facts();$medium=$nativeFacts['actor']
+  if($capabilityMode){$capabilityOuterExitZero=$outer.ExitCode -eq 0}
   $result.root_terminal=$outerTerminal;$result.root_job_zero=$nativeFacts['active_members'] -eq 0
   $result.same_sid=$medium['sid_sha256'] -ceq $facts['sid_sha256'];$result.same_session=$medium['session'] -eq $facts['session']
   $result.restricted_medium=$medium['elevation'] -eq 0 -and $medium['integrity_rid'] -ge 8192 -and $medium['integrity_rid'] -lt 12288 -and $medium['restricted'] -eq 1
   $result.actor_admitted=$result.same_sid -and $result.same_session -and $result.restricted_medium
+  if($capabilityMode){
+   $phase='token_child_result'
+   $capabilityResult=Read-OwnedJson (Join-Path $evidenceRoot 'capability-token-child.json')
+   Assert-CapabilityTokenCapture $capabilityResult $source
+   Assert-Fixed ($capabilityResult.actor_admitted -and $capabilityResult.same_sid -and $capabilityResult.same_session -and $capabilityResult.restricted_medium) 'token_child_actor'
+  }else{
   $phase='bounded_child_result'
   $child=Read-OwnedJson (Join-Path $evidenceRoot 'child-result.json')
   Assert-Fixed ($child.schema -ceq 'winsmux-headless-restricted-actor/v1' -and $child.source_commit -ceq $source -and $child.actor_admitted -eq $true -and @($child.tests).Count -eq 2) 'child_binding'
@@ -329,10 +492,12 @@ try {
   for($i=0;$i -lt 2;$i++){Assert-HeadlessProjectionShape $child.tests[$i] $tests[$i]}
   $result.tests=@($child.tests)
   $result.outcome=if($result.actor_admitted -and $result.root_terminal -and $result.root_job_zero -and -not $result.forced -and @($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0 -and $outer.ExitCode -eq 0){'passed'}else{'observed_failure'}
+  }
  }else{
   Assert-Fixed ($DesktopNativeLifecycle -and $DesktopNativeFormat -ceq 'NSIS' -and $Surface -ceq 'Desktop' -and $Version -ceq '0.38.0' -and $ReleaseTag -ceq 'v0.38.0' -and $Repository -ceq 'Sora-bluesky/winsmux' -and $Json) 'fixed_child_arguments'
   $inputRoot=[IO.Path]::GetFullPath($DesktopNativeCandidateDirectory);$evidenceRoot=[IO.Path]::GetFullPath($DesktopNativeBaselineDirectory)
   $binding=Read-OwnedJson (Join-Path $inputRoot 'binding.json')
+  if(@($binding.tests).Count -eq 1 -and $binding.tests[0] -is [string] -and $binding.tests[0] -ceq 'server_capability_token_creation_snapshot'){$capabilityMode=$true;$tests=@('server_capability_token_creation_snapshot');$capabilityResult=New-CapabilityTokenCapture $source}
   Assert-Fixed ($binding.schema -ceq 'winsmux-headless-actor-input/v1' -and $binding.source_commit -ceq $source -and $binding.script_sha256 -ceq [WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)['sha256'] -and (@($binding.tests)-join [char]10) -ceq ($tests-join [char]10)) 'child_input_binding'
   $result.same_sid=$facts['sid_sha256'] -ceq $binding.expected_sid;$result.same_session=$facts['session'] -eq $binding.expected_session
   $result.restricted_medium=$facts['elevation'] -eq 0 -and $facts['integrity_rid'] -ge 8192 -and $facts['integrity_rid'] -lt 12288 -and $facts['restricted'] -eq 1
@@ -341,6 +506,10 @@ try {
   Assert-HeadlessBoundInputs $binding $PSCommandPath
   Add-Type -Path (Join-Path $repoRoot 'scripts/DesktopProcessOwner.cs') -ErrorAction Stop 2>$null
   $testImage=[string]$binding.test_executable;$cliImage=[string]$binding.cli_executable
+  if($capabilityMode){
+   $phase='token_observation'
+   Invoke-CapabilityTokenCapture $binding $PSCommandPath $capabilityResult
+  }else{
   $phase='headless_cases';$observed=[Collections.Generic.List[object]]::new()
   foreach($test in $tests){
    Assert-HeadlessBoundInputs $binding $PSCommandPath
@@ -362,6 +531,7 @@ try {
    Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $binding.cli_sha256) 'test_output_changed_inputs'
   }
   $result.tests=$observed.ToArray();$result.outcome=if(@($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0){'passed'}else{'observed_failure'}
+  }
  }
 }catch{
  if($HeadlessParent -and $phase -is [string] -and $phase -ceq 'build_binding'){
@@ -375,6 +545,20 @@ try {
 finally{
  if($null -ne $outer){try{if(-not $outerTerminal){$outer.StopOwnedFailure();$outerTerminal=$true;$result.forced=$true};$result.root_terminal=$outerTerminal;$result.root_job_zero=$outer.ActiveMembers -eq 0;if($outerTerminal -and $result.root_job_zero){$outer.Dispose()}}catch{$result.failure='root_convergence';$result.outcome='unobserved'}}
 }
+if($capabilityMode){
+ if($null -eq $capabilityResult){$capabilityResult=New-CapabilityTokenCapture $result.source_commit}
+ foreach($name in @('actor_admitted','same_sid','same_session','restricted_medium','root_terminal','root_job_zero','forced')){$capabilityResult[$name]=$result[$name]}
+ if($null -ne $result.failure){$capabilityResult.failure=$result.failure}
+ try{
+  Assert-CapabilityTokenCapture $capabilityResult $result.source_commit
+  if($null -ne $evidenceRoot){$name=if($HeadlessParent){'capability-token-result.json'}else{'capability-token-child.json'};Write-NewJson (Join-Path $evidenceRoot $name) $capabilityResult}
+ }catch{$capabilityResult.failure='result_preservation'}
+ $capabilityResult|ConvertTo-Json -Depth 16 -Compress
+ $closed=$capabilityResult.capture.terminal -and $capabilityResult.capture.job_zero -and $capabilityResult.capture.capture_complete -and -not $capabilityResult.capture.forced -and $capabilityResult.capture.process_exit -ceq 'zero'
+ $rootClosed=(-not $HeadlessParent) -or ($capabilityResult.root_terminal -and $capabilityResult.root_job_zero -and -not $capabilityResult.forced -and $capabilityOuterExitZero)
+ exit $(if($capabilityResult.diagnostic_received -and $capabilityResult.query_complete -and $capabilityResult.actor_admitted -and $closed -and $rootClosed -and $null -eq $capabilityResult.failure){0}else{1})
+}
+
 if(-not $HeadlessParent -and $null -ne $evidenceRoot){try{Write-NewJson (Join-Path $evidenceRoot 'child-result.json') $result}catch{$result.failure='result_preservation';$result.outcome='unobserved'}}
 if($HeadlessParent -and $null -ne $evidenceRoot){try{Write-NewJson (Join-Path $evidenceRoot 'headless-result.json') $result}catch{$result.failure='result_preservation';$result.outcome='unobserved'}}
 $result|ConvertTo-Json -Depth 12 -Compress

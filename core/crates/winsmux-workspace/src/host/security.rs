@@ -130,12 +130,13 @@ pub(super) struct PublicPipeFailures {
 #[cfg(debug_assertions)]
 pub(super) struct PublicPipeObservation {
     failures: std::cell::Cell<PublicPipeFailures>,
+    token_query: Option<std::cell::RefCell<capability_token_query::Snapshot>>,
 }
 
 #[cfg(debug_assertions)]
 impl PublicPipeObservation {
     pub(super) fn new() -> Self {
-        Self { failures: std::cell::Cell::new(PublicPipeFailures::default()) }
+        Self { failures: std::cell::Cell::new(PublicPipeFailures::default()), token_query: None }
     }
 
     pub(super) fn operation_failed(&self, api: PublicPipeFailureApi, class: PublicPipeErrorClass) {
@@ -153,6 +154,245 @@ impl PublicPipeObservation {
     }
 
     pub(super) fn failures(&self) -> PublicPipeFailures { self.failures.get() }
+
+    pub(super) fn with_token_query() -> Self {
+        Self { failures: std::cell::Cell::new(PublicPipeFailures::default()),
+            token_query: Some(std::cell::RefCell::new(capability_token_query::Snapshot::begin())) }
+    }
+    pub(super) fn token_context_canonical(&self) -> bool {
+        self.token_query.as_ref().is_some_and(|s| s.borrow().canonical())
+    }
+    pub(super) fn token_identity(&self, success: bool) {
+        if let Some(s) = &self.token_query { s.borrow_mut().identity(success); }
+    }
+    pub(super) fn token_capability(&self, token: Option<HANDLE>) {
+        if let Some(s) = &self.token_query { s.borrow_mut().capability(token); }
+    }
+    fn token_impersonated(&self, success: bool) {
+        if let Some(s) = &self.token_query { s.borrow_mut().impersonated(success); }
+    }
+    pub(super) fn token_pipe(&self, success: bool) {
+        if let Some(s) = &self.token_query { s.borrow_mut().pipe(success); }
+    }
+    fn token_reverted(&self, success: bool) {
+        if let Some(s) = &self.token_query { s.borrow_mut().reverted(success); }
+    }
+    pub(super) fn token_finish(&self, success: bool) {
+        if let Some(s) = &self.token_query { s.borrow_mut().finish(success); }
+    }
+    pub(super) fn token_json(&self) -> serde_json::Value {
+        self.token_query.as_ref().expect("token observation scope").borrow().json(self.failures())
+    }
+
+}
+
+
+// One private ignored-test observation. Native identities stay inside this scope;
+// only nullable fixed enums, booleans and equality relations are serialized.
+#[cfg(debug_assertions)]
+mod capability_token_query {
+    use super::*;
+    use serde_json::{json, Value};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_TOKEN, LUID};
+    use windows_sys::Win32::Security::{LookupPrivilegeValueW, TokenHasRestrictions,
+        TokenPrivileges, TokenRestrictedSids, TokenStatistics, TOKEN_PRIVILEGES,
+        TOKEN_STATISTICS, SID_AND_ATTRIBUTES, LUID_AND_ATTRIBUTES};
+
+    // TokenHasRestrictions has measured BOOLEAN (1 byte) and DWORD (4 byte)
+    // providers. Only this class permits those two widths; zero/nonzero is BOOL.
+    fn decode_has_restrictions(success: bool, returned: u32, capacity: u32, bytes: [u8; 4]) -> Option<bool> {
+        if !success || !matches!(capacity, 1 | 4) || returned > capacity { return None; }
+        match returned {
+            1 => Some(bytes[0] != 0),
+            4 => Some(u32::from_ne_bytes(bytes) != 0),
+            _ => None,
+        }
+    }
+
+    fn has_restrictions(token: HANDLE) -> Option<bool> {
+        let mut required = 0;
+        unsafe { GetTokenInformation(token, TokenHasRestrictions, null_mut(), 0, &mut required); }
+        if !matches!(required, 1 | 4) { return None; }
+        let capacity = required;
+        let mut value = 0u32;
+        let success = unsafe { GetTokenInformation(token, TokenHasRestrictions,
+            (&mut value as *mut u32).cast(), capacity, &mut required) } != 0;
+        decode_has_restrictions(success, required, capacity, value.to_ne_bytes())
+    }
+
+    #[cfg(test)]
+    mod restriction_width_tests {
+        use super::decode_has_restrictions;
+        #[test]
+        fn has_restrictions_accepts_only_returned_boolean_or_dword() {
+            let samples = [[0,0,0,0], [1,0,0,0], [2,0,0,0], [0,128,0,0], [0,0,0,128], [255,255,255,255]];
+            for capacity in [1,4] {
+                for bytes in samples {
+                    assert_eq!(decode_has_restrictions(true,1,capacity,bytes),Some(bytes[0]!=0));
+                    let expected = if capacity==4 {Some(u32::from_ne_bytes(bytes)!=0)} else {None};
+                    assert_eq!(decode_has_restrictions(true,4,capacity,bytes),expected);
+                }
+            }
+            // A one-byte return must ignore any unwritten/previous upper bytes.
+            assert_eq!(decode_has_restrictions(true,1,4,[0,255,255,255]),Some(false));
+            assert_eq!(decode_has_restrictions(true,1,4,[128,0,0,0]),Some(true));
+        }
+        #[test]
+        fn has_restrictions_rejects_failure_bad_width_and_overrun() {
+            for capacity in [0,1,2,3,4,5] {
+                for returned in [0,1,2,3,4,5] {
+                    assert_eq!(decode_has_restrictions(false,returned,capacity,[255;4]),None);
+                    if !matches!(capacity,1|4) || !matches!(returned,1|4) || returned>capacity {
+                        assert_eq!(decode_has_restrictions(true,returned,capacity,[255;4]),None);
+                    }
+                }
+            }
+        }
+    }
+
+    fn fixed<T>(token: HANDLE, class: i32) -> Option<T> {
+        let mut value = std::mem::MaybeUninit::<T>::zeroed();
+        let mut bytes = 0;
+        let ok = unsafe { GetTokenInformation(token, class, value.as_mut_ptr().cast(),
+            size_of::<T>() as u32, &mut bytes) };
+        if ok == 0 || bytes as usize != size_of::<T>() { return None; }
+        Some(unsafe { value.assume_init() })
+    }
+
+    fn variable(token: HANDLE, class: i32) -> Option<(Vec<u64>, usize)> {
+        let mut bytes = 0;
+        unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut bytes); }
+        if bytes == 0 || bytes as usize > TOKEN_GROUPS_BYTES { return None; }
+        let mut storage = vec![0u64; (bytes as usize + 7) / 8];
+        let capacity = (storage.len() * 8) as u32;
+        if unsafe { GetTokenInformation(token, class, storage.as_mut_ptr().cast(),
+            capacity, &mut bytes) } == 0 || bytes == 0 || bytes > capacity { return None; }
+        Some((storage, bytes as usize))
+    }
+
+    fn restricting_empty(token: HANDLE) -> Option<bool> {
+        let (storage, bytes) = variable(token, TokenRestrictedSids)?;
+        if bytes < size_of::<u32>() { return None; }
+        let count = unsafe { storage.as_ptr().cast::<u32>().read() } as usize;
+        let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+        if count != 0 && (bytes < offset || count > (bytes - offset) / size_of::<SID_AND_ATTRIBUTES>()) { return None; }
+        Some(count == 0)
+    }
+
+    fn impersonate_privilege(token: HANDLE) -> Option<(bool, bool)> {
+        let name = wide("SeImpersonatePrivilege");
+        let mut luid = LUID { LowPart: 0, HighPart: 0 };
+        if unsafe { LookupPrivilegeValueW(std::ptr::null(), name.as_ptr(), &mut luid) } == 0 { return None; }
+        let (storage, bytes) = variable(token, TokenPrivileges)?;
+        if bytes < size_of::<u32>() { return None; }
+        let count = unsafe { storage.as_ptr().cast::<u32>().read() } as usize;
+        let offset = std::mem::offset_of!(TOKEN_PRIVILEGES, Privileges);
+        if bytes < offset || count > (bytes - offset) / size_of::<LUID_AND_ATTRIBUTES>() { return None; }
+        let start = unsafe { storage.as_ptr().cast::<u8>().add(offset).cast::<LUID_AND_ATTRIBUTES>() };
+        let mut found = None;
+        for index in 0..count {
+            let value = unsafe { start.add(index).read_unaligned() };
+            if value.Luid.LowPart == luid.LowPart && value.Luid.HighPart == luid.HighPart {
+                if found.is_some() { return None; }
+                found = Some(value.Attributes & 2 != 0);
+            }
+        }
+        Some((found.is_some(), found.unwrap_or(false)))
+    }
+
+    #[derive(Default)]
+    struct Facts {
+        kind: Option<&'static str>, level: Option<&'static str>,
+        restricted: Option<bool>, restricting_empty: Option<bool>,
+        privilege: Option<(bool, bool)>, identity: Option<Identity>,
+        authentication: Option<(u32, i32)>,
+    }
+    impl Facts {
+        fn read(token: HANDLE) -> Self {
+            let statistics = fixed::<TOKEN_STATISTICS>(token, TokenStatistics);
+            let kind = statistics.as_ref().and_then(|s| match s.TokenType {
+                1 => Some("primary"), 2 => Some("impersonation"), _ => None });
+            let level = statistics.as_ref().and_then(|s| match s.TokenType {
+                1 => Some("not_applicable"),
+                2 => match s.ImpersonationLevel { 0 => Some("anonymous"), 1 => Some("identification"),
+                    2 => Some("impersonation"), 3 => Some("delegation"), _ => None }, _ => None });
+            Self { kind, level,
+                restricted: has_restrictions(token),
+                restricting_empty: restricting_empty(token), privilege: impersonate_privilege(token),
+                identity: Identity::from_token(token).ok(),
+                authentication: statistics.map(|s| (s.AuthenticationId.LowPart, s.AuthenticationId.HighPart)) }
+        }
+        fn json(&self) -> Value {
+            json!({"token_type": observed(self.kind), "impersonation_level": observed(self.level),
+                "has_restrictions": observed(self.restricted), "restricting_sids_empty": observed(self.restricting_empty),
+                "se_impersonate_present": observed(self.privilege.map(|p| p.0)),
+                "se_impersonate_enabled": observed(self.privilege.map(|p| p.1))})
+        }
+    }
+    fn observed<T: serde::Serialize>(value: Option<T>) -> Value {
+        json!({"observed": value.is_some(), "value": value})
+    }
+    fn thread() -> (Option<bool>, Facts) {
+        let mut token = null_mut();
+        if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
+            let absent = if unsafe { GetLastError() } == ERROR_NO_TOKEN { Some(true) } else { None };
+            return (absent, Facts::default());
+        }
+        match unsafe { OwnedHandle::from_raw(token) } {
+            Ok(token) => (Some(false), Facts::read(token.raw())),
+            Err(_) => (None, Facts::default()),
+        }
+    }
+    fn relations(a: &Facts, b: &Facts) -> Value {
+        json!({"same_user": observed(a.identity.as_ref().zip(b.identity.as_ref()).map(|(a,b)| a.user.equals(&b.user))),
+            "same_logon": observed(a.identity.as_ref().zip(b.identity.as_ref()).map(|(a,b)| a.logon.equals(&b.logon))),
+            "same_authentication_id": observed(a.authentication.zip(b.authentication).map(|(a,b)| a == b))})
+    }
+    pub(super) struct Snapshot {
+        primary: Facts, generation: Facts, effective: Facts,
+        before_absent: Option<bool>, after_absent: Option<bool>,
+        identity: &'static str, capability: &'static str, impersonate: &'static str,
+        pipe: &'static str, revert: &'static str, result: &'static str,
+    }
+    impl Snapshot {
+        pub(super) fn begin() -> Self {
+            let mut token = null_mut();
+            let primary = if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0 {
+                unsafe { OwnedHandle::from_raw(token) }.ok().map(|t| Facts::read(t.raw())).unwrap_or_default()
+            } else { Facts::default() };
+            let (before_absent, _) = thread();
+            Self { primary, generation: Facts::default(), effective: Facts::default(), before_absent,
+                after_absent: None, identity: "not_attempted", capability: "not_attempted",
+                impersonate: "not_attempted", pipe: "not_attempted", revert: "not_attempted", result: "not_attempted" }
+        }
+        pub(super) fn canonical(&self) -> bool { self.before_absent == Some(true) }
+        pub(super) fn identity(&mut self, success: bool) { self.identity = if success { "succeeded" } else { "failed" }; }
+        pub(super) fn capability(&mut self, token: Option<HANDLE>) {
+            self.capability = if token.is_some() { "succeeded" } else { "failed" };
+            if let Some(token) = token { self.generation = Facts::read(token); }
+        }
+        pub(super) fn impersonated(&mut self, success: bool) {
+            self.impersonate = if success { "succeeded" } else { "failed" };
+            if success { self.effective = thread().1; }
+        }
+        pub(super) fn pipe(&mut self, success: bool) { self.pipe = if success { "succeeded" } else { "failed" }; }
+        pub(super) fn reverted(&mut self, success: bool) {
+            self.revert = if success { "succeeded" } else { "failed" };
+            self.after_absent = thread().0;
+        }
+        pub(super) fn finish(&mut self, result: bool) { self.result = if result { "succeeded" } else { "failed" }; }
+        pub(super) fn json(&self, failures: PublicPipeFailures) -> Value {
+            let operation = failures.operation.map(|(api,class)| json!({"api":api.label(),"class":class.label()}));
+            json!({"schema":"winsmux-server-capability-token-observation/v1",
+                "thread_absent_before": observed(self.before_absent), "thread_absent_after": observed(self.after_absent),
+                "primary": self.primary.json(), "generation": self.generation.json(), "effective": self.effective.json(),
+                "generation_to_primary": relations(&self.generation,&self.primary),
+                "effective_to_generation": relations(&self.effective,&self.generation),
+                "operations":{"identity":self.identity,"capability":self.capability,"impersonate":self.impersonate,
+                    "pipe":self.pipe,"revert":self.revert,"result":self.result},
+                "operation_failure": observed(operation), "revert_failure": observed(failures.revert.map(|class|class.label()))})
+        }
+    }
 }
 
 impl Sid {
@@ -479,17 +719,23 @@ impl ServerCapabilityToken {
             #[cfg(debug_assertions)]
             if let Some(observation) = observation {
                 observation.operation_failed(PublicPipeFailureApi::Impersonate, PublicPipeErrorClass::last_error());
+                observation.token_impersonated(false);
             }
             return Err(IoError::Failed);
         }
+        #[cfg(debug_assertions)]
+        if let Some(observation) = observation { observation.token_impersonated(true); }
         let result = operation();
         if unsafe { RevertToSelf() } == 0 {
             #[cfg(debug_assertions)]
             if let Some(observation) = observation {
                 observation.revert_failed(PublicPipeErrorClass::last_error());
+                observation.token_reverted(false);
             }
             return Err(IoError::Failed);
         }
+        #[cfg(debug_assertions)]
+        if let Some(observation) = observation { observation.token_reverted(true); }
         result
     }
 }

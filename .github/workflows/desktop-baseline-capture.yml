@@ -201,15 +201,15 @@ jobs:
         run: |
           & ./scripts/invoke-headless-startup-actor.ps1 -ProjectionSelfTest
           if ($LASTEXITCODE -ne 0) { throw 'headless_projection_failed' }
-      - name: Execute the two existing tests once as the owned restricted medium actor
+      - name: Observe one capability token creation as the same owned restricted medium actor
         run: |
           $manifest = Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $env:GITHUB_SHA + '.jsonl')
-          & ./scripts/invoke-headless-startup-actor.ps1 -HeadlessParent -SourceCommit $env:GITHUB_SHA -BuildManifest $manifest
-          if ($LASTEXITCODE -ne 0) { throw 'headless_actor_evidence_not_passed_original_result_preserved' }
-      - name: Preserve only the bounded headless actor result
+          & ./scripts/invoke-headless-startup-actor.ps1 -HeadlessParent -ObserveCapabilityToken -SourceCommit $env:GITHUB_SHA -BuildManifest $manifest
+          if ($LASTEXITCODE -ne 0) { throw 'capability_token_observation_incomplete_original_results_preserved' }
+      - name: Preserve only the bounded capability token observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: headless-startup-actor-${{ github.sha }}
-          path: ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/headless-result.json
+          name: capability-token-observation-${{ github.sha }}
+          path: ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/capability-token-result.json
           if-no-files-found: error
