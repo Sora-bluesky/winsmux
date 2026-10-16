@@ -146,6 +146,7 @@ $whitelistPatterns = @(
     'scripts/package-remote-helper.sh',
     'scripts/test-public-remote-helper.sh',
     'scripts/test-public-release.ps1',
+    'scripts/invoke-headless-startup-actor.ps1',
     'scripts/desktop-install-inventory.ps1',
     'scripts/capture-desktop-baseline.ps1',
     'scripts/DesktopProcessOwner.cs',

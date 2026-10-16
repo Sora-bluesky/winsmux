@@ -7,8 +7,13 @@ on:
         description: Full candidate commit SHA; must equal this workflow revision
         required: true
         type: string
+      headless_actor:
+        description: Run only the fixed restricted medium headless startup proof on its dedicated diagnostic ref
+        required: false
+        default: false
+        type: boolean
   push:
-    branches: [codex/task880-native-lifecycle, codex/task880-actor-probe]
+    branches: [codex/task880-native-lifecycle, codex/task880-actor-probe, codex/task880-headless-startup]
 
 permissions:
   contents: read
@@ -150,4 +155,61 @@ jobs:
         with:
           name: desktop-native-actor-${{ github.sha }}
           path: ${{ runner.temp }}/winsmux-actor-receipt-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}.json
+          if-no-files-found: error
+
+  headless-startup-actor:
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/task880-headless-startup' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.headless_actor))
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Bind the same caller and candidate without starting installer jobs
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref || github.sha }}
+        run: |
+          if ($env:CANDIDATE_REF -cnotmatch '^[a-f0-9]{40}$' -or $env:CANDIDATE_REF -cne $env:GITHUB_SHA) { throw 'headless_candidate_identity_refused' }
+      - uses: actions/checkout@v6
+        env:
+          GIT_ATTR_NOSYSTEM: '1'
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'false'
+          GIT_CONFIG_KEY_1: core.attributesFile
+          GIT_CONFIG_VALUE_1: NUL
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+          persist-credentials: false
+      - name: Admit all canonical source bytes before toolchain and build
+        run: |
+          & ./scripts/invoke-headless-startup-actor.ps1 -SourceAdmissionOnly -SourceCommit $env:GITHUB_SHA
+          if ($LASTEXITCODE -ne 0) { throw 'headless_canonical_input_refused' }
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
+      - name: Build only the existing debug headless test and companion
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/winsmux-headless-build-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}
+        run: |
+          $head = (& git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) { throw 'headless_checkout_identity_refused' }
+          $manifest = Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $env:GITHUB_SHA + '.jsonl')
+          if (Test-Path -LiteralPath $manifest) { throw 'headless_build_manifest_exists' }
+          & cargo test --locked --manifest-path core/Cargo.toml --test workspace_host_e2e --no-run --message-format=json > $manifest
+          if ($LASTEXITCODE -ne 0) { throw 'headless_debug_build_failed' }
+      - name: Verify only the finite fixed-output projection
+        run: |
+          & ./scripts/invoke-headless-startup-actor.ps1 -ProjectionSelfTest
+          if ($LASTEXITCODE -ne 0) { throw 'headless_projection_failed' }
+      - name: Execute the two existing tests once as the owned restricted medium actor
+        run: |
+          $manifest = Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $env:GITHUB_SHA + '.jsonl')
+          & ./scripts/invoke-headless-startup-actor.ps1 -HeadlessParent -SourceCommit $env:GITHUB_SHA -BuildManifest $manifest
+          if ($LASTEXITCODE -ne 0) { throw 'headless_actor_evidence_not_passed_original_result_preserved' }
+      - name: Preserve only the bounded headless actor result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-startup-actor-${{ github.sha }}
+          path: ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/headless-result.json
           if-no-files-found: error
