@@ -259,6 +259,19 @@ mod capability_token_query {
         Some(unsafe { value.assume_init() })
     }
 
+    // Private comparison only: use the existing exact-width statistics query.
+    pub(super) fn duplicate_matches_generation(source: HANDLE, duplicate: HANDLE) -> bool {
+        let Some(source_stats) = fixed::<TOKEN_STATISTICS>(source, TokenStatistics) else { return false; };
+        let Some(duplicate_stats) = fixed::<TOKEN_STATISTICS>(duplicate, TokenStatistics) else { return false; };
+        let (Ok(source_identity), Ok(duplicate_identity)) =
+            (Identity::from_token(source), Identity::from_token(duplicate)) else { return false; };
+        duplicate_stats.TokenType == 2 && duplicate_stats.ImpersonationLevel == 2
+            && source_stats.AuthenticationId.LowPart == duplicate_stats.AuthenticationId.LowPart
+            && source_stats.AuthenticationId.HighPart == duplicate_stats.AuthenticationId.HighPart
+            && source_identity.user.equals(&duplicate_identity.user)
+            && source_identity.logon.equals(&duplicate_identity.logon)
+    }
+
     fn variable(token: HANDLE, class: i32) -> Option<(Vec<u64>, usize)> {
         let mut bytes = 0;
         unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut bytes); }
@@ -683,6 +696,28 @@ impl ServerCapabilityToken {
             token,
             logon: generated.logon,
         })
+    }
+
+    // Private ignored-test experiment; never used by production capability callers.
+    #[cfg(debug_assertions)]
+    pub(super) fn create_explicit_comparison(original: &Identity) -> Result<Self, IoError> {
+        use windows_sys::Win32::Foundation::GetHandleInformation;
+        use windows_sys::Win32::Security::{DuplicateTokenEx, SecurityImpersonation,
+            TokenImpersonation, TOKEN_IMPERSONATE};
+        let source = Self::create(original)?;
+        let mut raw = null_mut();
+        if unsafe { DuplicateTokenEx(source.token.raw(), TOKEN_QUERY | TOKEN_IMPERSONATE,
+            std::ptr::null(), SecurityImpersonation, TokenImpersonation, &mut raw) } == 0 {
+            return Err(IoError::Failed);
+        }
+        let token = unsafe { OwnedHandle::from_raw(raw)? };
+        let mut flags = HANDLE_FLAG_INHERIT;
+        if unsafe { GetHandleInformation(token.raw(), &mut flags) } == 0
+            || flags & HANDLE_FLAG_INHERIT != 0
+            || !capability_token_query::duplicate_matches_generation(source.token.raw(), token.raw()) {
+            return Err(IoError::Failed);
+        }
+        Ok(Self { token, logon: source.logon.clone() })
     }
 
     pub(crate) fn logon(&self) -> &Sid {
