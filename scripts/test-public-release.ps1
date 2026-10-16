@@ -3853,6 +3853,96 @@ function Initialize-DesktopNativeLifecycleActor {
   }
  }
  public sealed class NativeOwned : IDisposable {
+
+  // Private, query-only seam for the NSIS update's existing wait loop.
+  sealed class StartupWindowProcess { internal IntPtr Handle;internal uint Pid,Session,Wait;internal long Creation;internal string Image;internal TokenFacts Actor;internal bool Member; }
+  sealed class StartupWindow { internal IntPtr Handle;internal uint Pid,Thread; }
+  static class StartupWindowApi {
+   [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern int GetWindowTextW(IntPtr window,StringBuilder text,int capacity);
+   [DllImport("user32.dll")]static extern bool IsWindow(IntPtr window);
+   internal static string CurrentDesktop(){return DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(GetCurrentThreadId()));}
+   internal static string WindowDesktop(uint thread){return DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(thread));}
+   internal static uint CurrentPid(){return GetCurrentProcessId();}
+   internal static uint[] Pids(IntPtr job){IntPtr b=Marshal.AllocHGlobal(4194304);try{uint used;if(!ReadJobMembers(job,3,b,4194304,out used))throw new InvalidOperationException("window_job_unobserved");uint assigned=unchecked((uint)Marshal.ReadInt32(b)),listed=unchecked((uint)Marshal.ReadInt32(b,4));if(assigned!=listed||8UL+(ulong)listed*(ulong)IntPtr.Size>4194304)throw new InvalidOperationException("window_job_partial");var rows=new List<uint>();for(uint n=0;n<listed;n++){ulong raw=IntPtr.Size==8?unchecked((ulong)Marshal.ReadInt64(b,8+(int)n*IntPtr.Size)):unchecked((uint)Marshal.ReadInt32(b,8+(int)n*IntPtr.Size));if(raw==0||raw>UInt32.MaxValue||rows.Contains((uint)raw))throw new InvalidOperationException("window_job_pid_unobserved");rows.Add((uint)raw);}return rows.ToArray();}finally{Marshal.FreeHGlobal(b);}}
+   static StartupWindowProcess Read(IntPtr handle,IntPtr job,uint pid){bool member;Check(IsProcessInJob(handle,job,out member),"window_job_member");if(!member)throw new InvalidOperationException("window_job_nonmember");uint wait=WaitForSingleObject(handle,0);if(wait!=0&&wait!=258)throw new InvalidOperationException("window_gui_wait_unobserved");long creation,exit,kernel,user;Check(GetProcessTimes(handle,out creation,out exit,out kernel,out user),"window_gui_creation");var r=new StartupWindowProcess{Handle=handle,Pid=pid,Creation=creation,Wait=wait,Member=member};if(wait==0)return r;uint count=32768;var text=new StringBuilder((int)count);Check(QueryFullProcessImageNameW(handle,0,text,ref count),"window_gui_image");r.Image=Path.GetFullPath(text.ToString());Check(ProcessIdToSessionId(pid,out r.Session),"window_gui_session");IntPtr token;Check(OpenProcessToken(handle,8,out token),"window_gui_actor");try{r.Actor=Observe(token);}finally{CloseHandle(token);}return r;}
+   internal static StartupWindowProcess Open(IntPtr job,uint pid){IntPtr h=OpenProcess(0x101000,false,pid);if(h==IntPtr.Zero)throw new InvalidOperationException("window_gui_open_unobserved");try{return Read(h,job,pid);}catch{CloseHandle(h);throw;}}
+   internal static StartupWindowProcess Reobserve(StartupWindowProcess p,IntPtr job){return Read(p.Handle,job,p.Pid);}
+   internal static string ImageSha(string image){return Hash(File.ReadAllBytes(image));}
+   internal static void Close(IntPtr handle){if(handle!=IntPtr.Zero)Check(CloseHandle(handle),"window_observer_handle_close");}
+   internal static StartupWindow[] Windows(uint expectedPid){var rows=new List<StartupWindow>();OwnedWindowCallback callback=(window,data)=>{uint pid;uint thread=GetWindowThreadProcessId(window,out pid);if(pid==expectedPid)rows.Add(new StartupWindow{Handle=window,Pid=pid,Thread=thread});return true;};if(!EnumWindows(callback,IntPtr.Zero))throw new InvalidOperationException("window_enumeration_unobserved");return rows.ToArray();}
+   internal static bool Owned(StartupWindow w,uint pid){uint now;uint thread=GetWindowThreadProcessId(w.Handle,out now);return thread!=0&&thread==w.Thread&&now==pid&&IsWindow(w.Handle);}
+   internal static bool Visible(StartupWindow w){return IsWindowVisible(w.Handle);}
+   internal static string Class(StartupWindow w){var text=new StringBuilder(256);int n=GetClassNameW(w.Handle,text,text.Capacity);return n<=0||n>=text.Capacity-1?"unobserved":text.ToString()=="#32770"?"native_dialog":text.ToString()=="Window Class"?"known_app_default":"other";}
+   internal static string Caption(StartupWindow w){var text=new StringBuilder(8192);int n=GetWindowTextW(w.Handle,text,text.Capacity);return n<=0||n>=text.Capacity-1?null:text.ToString();}
+  }
+
+  sealed class StartupWindowObserver {
+   readonly IntPtr job;readonly TokenFacts caller;readonly string expectedImage,expectedSha,launchDesktop;
+   StartupWindowProcess held;Dictionary<string,object> lastObserved;string status="not_seen";bool closed,handleCloseUnconfirmed;
+   internal StartupWindowObserver(IntPtr j,TokenFacts c,string image,string sha,string desktop){job=j;caller=c;expectedImage=Path.GetFullPath(image);expectedSha=sha;launchDesktop=desktop;if(sha==null||!System.Text.RegularExpressions.Regex.IsMatch(sha,@"\A[0-9a-f]{64}\z",System.Text.RegularExpressions.RegexOptions.CultureInvariant))status="configuration_refused";}
+   bool Actor(StartupWindowProcess p){return p.Member&&p.Wait==258&&p.Session==caller.session&&p.Actor!=null&&SameActorFacts(p.Actor,caller)&&String.Equals(p.Image,expectedImage,StringComparison.OrdinalIgnoreCase);}
+   void CloseProcess(StartupWindowProcess p){if(p!=null&&p.Handle!=IntPtr.Zero){IntPtr h=p.Handle;p.Handle=IntPtr.Zero;try{StartupWindowApi.Close(h);}catch{handleCloseUnconfirmed=true;status="handle_close_unobserved";}}}
+   void Release(){if(held!=null){var p=held;held=null;try{CloseProcess(p);}catch{status="handle_close_unobserved";}}}
+   internal void Sample(){try{SampleInner();}catch{status="observation_unobserved";}}
+   void SampleInner(){
+    if(closed||status=="configuration_refused")return;
+    if(!String.Equals(StartupWindowApi.CurrentDesktop(),launchDesktop,StringComparison.OrdinalIgnoreCase)){status="desktop_unconfirmed";return;}
+    var candidates=new List<StartupWindowProcess>();bool uncertain=false;string uncertainStatus="candidate_unconfirmed";
+    try{
+     foreach(uint id in StartupWindowApi.Pids(job)){
+      if(held!=null&&id==held.Pid){var current=StartupWindowApi.Reobserve(held,job);if(current.Creation!=held.Creation||!Actor(current)){uncertain=true;if(current.Wait==0)uncertainStatus="candidate_exited";continue;}candidates.Add(held);continue;}
+      StartupWindowProcess p=null;try{p=StartupWindowApi.Open(job,id);if(p.Wait==258&&String.Equals(p.Image,expectedImage,StringComparison.OrdinalIgnoreCase)){candidates.Add(p);p=null;}}catch{uncertain=true;}finally{CloseProcess(p);}
+     }
+     if(uncertain){status=uncertainStatus;Release();return;}
+     if(candidates.Count!=1){status=candidates.Count>1?"multiple_candidates":held!=null?"candidate_disappeared":"not_seen";if(held!=null)Release();return;}
+     var candidate=candidates[0];
+     if(!Actor(candidate)){status="candidate_refused";if(ReferenceEquals(candidate,held))Release();return;}
+     if(!ReferenceEquals(candidate,held)){
+      if(held!=null)Release();
+      if(!String.Equals(StartupWindowApi.ImageSha(expectedImage),expectedSha,StringComparison.Ordinal)){status="candidate_refused";return;}
+      var after=StartupWindowApi.Reobserve(candidate,job);if(after.Creation!=candidate.Creation||!Actor(after)){status="candidate_unconfirmed";return;}
+      held=candidate;
+     }
+     ReadWindows();
+    }finally{foreach(var p in candidates)if(!ReferenceEquals(p,held))CloseProcess(p);}
+   }
+   void ReadWindows(){
+    int total=0,visible=0,hidden=0;bool desktop=true,captionObserved=false,captionUnknown=false,accelerator=false,noToken=false,webview=false;
+    var classes=new Dictionary<string,int>{{"native_dialog",0},{"known_app_default",0},{"other",0},{"unobserved",0}};
+    foreach(var w in StartupWindowApi.Windows(held.Pid)){
+     if(w.Pid!=held.Pid)continue;
+     if(!StartupWindowApi.Owned(w,held.Pid)){status="window_identity_unconfirmed";return;}
+     if(!String.Equals(StartupWindowApi.WindowDesktop(w.Thread),launchDesktop,StringComparison.OrdinalIgnoreCase)){desktop=false;continue;}
+     total++;bool shown=StartupWindowApi.Visible(w);if(shown)visible++;else hidden++;
+     if(!StartupWindowApi.Owned(w,held.Pid)){status="window_identity_unconfirmed";return;}
+     string kind=StartupWindowApi.Class(w);classes[kind]++;
+     if(kind=="native_dialog"){
+      if(held.Pid==StartupWindowApi.CurrentPid()||!StartupWindowApi.Owned(w,held.Pid)){status="window_identity_unconfirmed";return;}
+      string caption=StartupWindowApi.Caption(w);
+      if(!StartupWindowApi.Owned(w,held.Pid)){status="window_identity_unconfirmed";return;}
+      if(caption==null){captionUnknown=true;continue;}
+      captionObserved=true;
+      accelerator|=caption=="winsmux — 起動を確認できません";
+      noToken|=System.Text.RegularExpressions.Regex.IsMatch(caption,@"(?<![A-Za-z0-9])(?:ERROR_NO_TOKEN|0x800703f0|0x3f0)(?![A-Za-z0-9])",System.Text.RegularExpressions.RegexOptions.IgnoreCase|System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+      webview|=System.Text.RegularExpressions.Regex.IsMatch(caption,@"\bWebView2\b",System.Text.RegularExpressions.RegexOptions.IgnoreCase|System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+     }
+    }
+    if(!desktop){status="desktop_unconfirmed";return;}
+    if(total==0){status="scope_limited_no_owned_window";return;}
+    var after=StartupWindowApi.Reobserve(held,job);if(after.Creation!=held.Creation||!Actor(after)){status="candidate_unconfirmed";Release();return;}
+    status=classes["unobserved"]==0?"observed":"partial";
+    lastObserved=new Dictionary<string,object>{{"pid",held.Pid},{"creation_time",held.Creation},{"gui_sha256",expectedSha},{"actor",caller.Public()},{"owned_job_member",true},{"desktop_scope","owned_window_threads_match_launch"},{"window_count",total},{"visible_count",visible},{"hidden_count",hidden},{"class_counts",classes},{"caption_status",captionObserved?(captionUnknown?"partial":"observed"):"unobserved"},{"body_status","not_observed"},{"marker_scope","caption_only"},{"accelerator_failure_title",accelerator?(object)true:captionObserved&&!captionUnknown?(object)false:null},{"error_no_token_marker",noToken?(object)true:captionObserved&&!captionUnknown?(object)false:null},{"webview2_marker",webview?(object)true:captionObserved&&!captionUnknown?(object)false:null}};
+   }
+   internal void Finish(){Release();closed=true;}
+   internal Dictionary<string,object> Snapshot(){return new Dictionary<string,object>{{"schema","winsmux-owned-startup-gui-window/v1"},{"last_attempt_status",status},{"last_observed",lastObserved},{"snapshot_is_current",false},{"snapshot_scope","last_observation_during_installer_wait"},{"observer_handle_closed",held==null&&!handleCloseUnconfirmed}};}
+  }
+  StartupWindowObserver startupWindowObserver;
+  internal string startupLaunchDesktop;
+  public void ArmStartupWindowObservation(string expectedImage,string expectedSha){try{if(startupWindowObserver==null)startupWindowObserver=new StartupWindowObserver(job,caller,expectedImage,expectedSha,startupLaunchDesktop);}catch{startupWindowObserver=null;}}
+  void SampleStartupWindowObservation(){if(startupWindowObserver!=null)startupWindowObserver.Sample();}
+  void FinishStartupWindowObservation(){if(startupWindowObserver!=null)startupWindowObserver.Finish();}
+  public Dictionary<string,object> StartupWindowObservation(){return startupWindowObserver==null?new Dictionary<string,object>{{"schema","winsmux-owned-startup-gui-window/v1"},{"last_attempt_status","not_armed"},{"last_observed",null},{"snapshot_is_current",false}}:startupWindowObserver.Snapshot();}
+
   IntPtr job,process,thread; bool terminal,disposed; uint pid; long creation; TokenFacts caller; string image,imageHash; FileStream lease,scriptLease;
   internal NativeOwned(IntPtr j,PI p,TokenFacts c,string i,string sha,FileStream f,FileStream extra) {scriptLease=extra;job=j;process=p.process;thread=p.thread;pid=p.pid;caller=c;image=i;imageHash=sha;lease=f;long exit,kernel,user;Check(GetProcessTimes(process,out creation,out exit,out kernel,out user),"Native creation");}
 
@@ -3921,10 +4011,10 @@ function Initialize-DesktopNativeLifecycleActor {
   public bool HasExited { get {return WaitForSingleObject(process,0)==0;} }
   public uint ActiveMembers {get{ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native Job observation");return a.activeProcesses;}}
   public uint ExitCode {get{uint code;Check(GetExitCodeProcess(process,out code),"Native exit code");if(code==259)throw new InvalidOperationException("Native child still active");return code;}}
-  public bool WaitTerminal(int milliseconds) {var end=DateTime.UtcNow.AddMilliseconds(milliseconds);do {if(HasExited&&ActiveMembers==0){terminal=true;return true;}System.Threading.Thread.Sleep(50);}while(DateTime.UtcNow<end);return false;}
+  public bool WaitTerminal(int milliseconds) {var end=DateTime.UtcNow.AddMilliseconds(milliseconds);do {SampleStartupWindowObservation();if(HasExited&&ActiveMembers==0){FinishStartupWindowObservation();terminal=true;return true;}System.Threading.Thread.Sleep(50);}while(DateTime.UtcNow<end);return false;}
   public void StopOwnedFailure() {Check(TerminateJobObject(job,124),"Stop native owned Job");if(!WaitTerminal(10000))throw new InvalidOperationException("Native owned Job did not terminate");}
   public Dictionary<string,object> Facts() {return new Dictionary<string,object>{{"pid",pid},{"creation_time",creation},{"image",image},{"image_sha256",imageHash},{"actor",caller.Public()},{"active_members",ActiveMembers},{"terminal",terminal}};}
-  public void Dispose() {if(disposed)return;if(!terminal||ActiveMembers!=0)throw new InvalidOperationException("Native handles retained for nonterminal Job");CloseHandle(thread);CloseHandle(process);CloseHandle(job);lease.Dispose();if(scriptLease!=null)scriptLease.Dispose();disposed=true;}
+  public void Dispose() {if(disposed)return;if(!terminal||ActiveMembers!=0)throw new InvalidOperationException("Native handles retained for nonterminal Job");FinishStartupWindowObservation();CloseHandle(thread);CloseHandle(process);CloseHandle(job);lease.Dispose();if(scriptLease!=null)scriptLease.Dispose();disposed=true;}
  }
  public static NativeOwned StartNative(string purpose,string image,string imageSha,string root,string source,string candidate,string baseline,string script) {
   IntPtr callerToken=IntPtr.Zero,derived=IntPtr.Zero,environment=IntPtr.Zero,job=IntPtr.Zero;PI pi=new PI();bool assigned=false;FileStream imageLease=null,scriptLease=null;
@@ -3940,7 +4030,7 @@ function Initialize-DesktopNativeLifecycleActor {
    var keys=new List<string>(env.Keys);keys.Sort(StringComparer.OrdinalIgnoreCase);var text=new StringBuilder();foreach(var key in keys)text.Append(key).Append('=').Append(env[key]).Append('\0');text.Append('\0');environment=Marshal.StringToHGlobalUni(text.ToString());
    job=CreateJobObjectW(IntPtr.Zero,null);Check(job!=IntPtr.Zero,"Native unnamed Job");var limits=new LIMIT();limits.basic.flags=0x2000;Check(SetInformationJobObject(job,9,ref limits,(uint)Marshal.SizeOf<LIMIT>()),"Native kill-on-close");var si=new SI{cb=(uint)Marshal.SizeOf<SI>(),desktop=DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(GetCurrentThreadId()))};
    bool created=bootstrap?CreateProcessAsUserW(launchToken,image,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x404,environment,Path.GetDirectoryName(image),ref si,out pi):CreateProcessW(image,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,false,0x404,environment,Path.GetDirectoryName(image),ref si,out pi);Check(created,"Native suspended launch");Check(AssignProcessToJobObject(job,pi.process),"Native Job assignment");assigned=true;bool member;Check(IsProcessInJob(pi.process,job,out member),"Native Job membership");if(!member)throw new InvalidOperationException("Native member refused");IntPtr childToken;Check(OpenProcessToken(pi.process,8,out childToken),"Native retained child token");TokenFacts child;try{child=Observe(childToken);if(msi){if(!Equal(child.sid,caller.sid)||child.session!=caller.session||child.tokenType!=1||child.appContainer!=0||child.elevation!=caller.elevation||child.rid!=caller.rid)throw new InvalidOperationException("Native MSI actor changed");}else Medium(child,caller);}finally{CloseHandle(childToken);}uint length=32768;var actual=new StringBuilder((int)length);Check(QueryFullProcessImageNameW(pi.process,0,actual,ref length),"Native retained child image");if(!String.Equals(Path.GetFullPath(actual.ToString()),image,StringComparison.OrdinalIgnoreCase)||Hash(File.ReadAllBytes(image))!=imageSha)throw new InvalidOperationException("Native retained child image changed");
-   var owned=new NativeOwned(job,pi,child,image,imageSha,imageLease,scriptLease);uint count=ResumeThread(pi.thread);if(count!=1)throw new InvalidOperationException("Native resume count refused");job=IntPtr.Zero;pi=new PI();imageLease=null;scriptLease=null;return owned;
+   var owned=new NativeOwned(job,pi,child,image,imageSha,imageLease,scriptLease);owned.startupLaunchDesktop=si.desktop;uint count=ResumeThread(pi.thread);if(count!=1)throw new InvalidOperationException("Native resume count refused");job=IntPtr.Zero;pi=new PI();imageLease=null;scriptLease=null;return owned;
   } catch { if(pi.process!=IntPtr.Zero){bool stopped=assigned?TerminateJobObject(job,124):TerminateProcess(pi.process,124);if(!stopped||WaitForSingleObject(pi.process,10000)!=0)throw new InvalidOperationException("Native failed launch cleanup unconfirmed");if(assigned){ACCOUNT a;Check(QueryInformationJobObject(job,1,out a,(uint)Marshal.SizeOf<ACCOUNT>(),IntPtr.Zero),"Native failed Job cleanup");if(a.activeProcesses!=0)throw new InvalidOperationException("Native failed Job retains members");}}throw; }
   finally {foreach(var h in new[]{pi.thread,pi.process,job,derived,callerToken})if(h!=IntPtr.Zero)CloseHandle(h);if(environment!=IntPtr.Zero)Marshal.FreeHGlobal(environment);if(imageLease!=null)imageLease.Dispose();if(scriptLease!=null)scriptLease.Dispose();}
  }
@@ -4429,12 +4519,13 @@ function Get-DesktopNativeNsisJourneyRemainingMilliseconds {
 }
 
 function Invoke-DesktopNativeOwnedEntry {
-    param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '', [switch]$NsisJourney)
+    param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '', [switch]$NsisJourney, [string]$StartupGuiSha256 = '')
     if ($NsisJourney) {
         Assert-Condition ($Purpose -cin @('nsis-update','nsis-fresh','nsis-uninstall')) 'desktop_native_nsis_journey_purpose_refused'
         [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds)
     }
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
+    if ($Purpose -ceq 'nsis-update') { try { $owned.ArmStartupWindowObservation((Join-Path $Root 'winsmux-app.exe'), $StartupGuiSha256) } catch { } }
     $terminal = $false
     try {
         $terminal = $owned.WaitTerminal($(if ($NsisJourney) { Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired } else { 180000 }))
@@ -4472,6 +4563,7 @@ function Invoke-DesktopNativeOwnedEntry {
             throw 'desktop_native_entry_timeout'
         }
         $receipt = [ordered]@{ purpose = $Purpose; exit_code = (Get-DesktopNativeTerminalExitCode $owned); process = $owned.Facts() }
+        if ($Purpose -ceq 'nsis-update') { try { $receipt.startup_gui_observation = $owned.StartupWindowObservation() } catch { $receipt.startup_gui_observation = [ordered]@{ schema='winsmux-owned-startup-gui-window/v1'; last_attempt_status='observation_unobserved'; last_observed=$null; snapshot_is_current=$false } } }
         if ($Purpose -ceq 'msi-install-en') { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root }
         return $receipt
     } finally {
@@ -4688,7 +4780,7 @@ function Invoke-DesktopNativeNsisJourney {
     $legacyRoot = Invoke-DesktopNativeBaselineRecapture $Legacy
     $legacyBefore = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
     Write-DesktopNativeEvidence 'legacy-before.json' $legacyBefore
-    $first = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-update' -Image $setup -ImageSha256 $setupSha -Root $legacyRoot -NsisJourney
+    $first = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-update' -Image $setup -ImageSha256 $setupSha -Root $legacyRoot -NsisJourney -StartupGuiSha256 $gui.sha256
     Write-DesktopNativeEvidence 'legacy-update-process.json' $first
     Assert-Condition ($first.exit_code -eq 0) 'LegacyProfileMismatch-or-native-update-failed'
     $state = Assert-DesktopNativeInstalledPayload -Root $legacyRoot -Plan $script:DesktopNativePlan -PlanSha256 $planSha -Managed
