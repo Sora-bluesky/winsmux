@@ -4922,7 +4922,7 @@ function Invoke-DesktopNativeVhdDiskPart {
  }
  $text=([string]::Join("`r`n",@($commands)+@('exit')))+"`r`n"
  $commandPath=Join-Path $State.Root ($Operation+'.diskpart.txt')
- $ascii=[Text.ASCIIEncoding]::new();$ascii.EncoderFallback=[Text.EncoderExceptionFallback]::new()
+ $ascii=[Text.ASCIIEncoding]::new().Clone();$ascii.EncoderFallback=[Text.EncoderExceptionFallback]::new()
  $cmdStream=[IO.FileStream]::new($commandPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
  try{$b=$ascii.GetBytes($text);$cmdStream.Write($b,0,$b.Length);$cmdStream.Flush($true)}finally{$cmdStream.Dispose()}
  $start=[Diagnostics.ProcessStartInfo]::new();$start.FileName=Join-Path ([Environment]::SystemDirectory) 'diskpart.exe';$start.UseShellExecute=$false;$start.CreateNoWindow=$true
