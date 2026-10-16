@@ -112,8 +112,23 @@ export function agentReadDue(input: {
   return input.selectionChanged || input.nudged || input.eventsStatus === 'events' || input.eventsStatus === 'gap';
 }
 
+// BEGIN PRIVATE FRONTEND CLAIM QUEUE
+type InstallerStartupClaim = "mount_entered" | "policy_entered" | "policy_completed" | "listeners_entered" | "listeners_completed" | "input_entered" | "input_completed" | "connect_entered" | "open_entered" | "open_completed" | "host_entered" | "host_completed" | "initial_project_entered" | "initial_project_completed" | "refresh_entered" | "refresh_completed" | "reveal_entered" | "reveal_completed" | "confirm_entered" | "confirm_completed" | "catch_entered" | "catch_observe_entered" | "catch_observe_completed" | "catch_reveal_entered" | "catch_reveal_completed" | "early_return";
+function createInstallerStartupClaims(): (claim: InstallerStartupClaim) => void {
+  const enabled = Object.getOwnPropertyDescriptor(window, '__WINSMUX_INSTALLER_PROBE__')?.value === true;
+  let queue = Promise.resolve();
+  return claim => {
+    if (!enabled) return;
+    queue = queue.then(() => invoke<void>('installer_startup_observed', { requestJson: JSON.stringify({ claim }) })).catch(() => {});
+  };
+}
+// END PRIVATE FRONTEND CLAIM QUEUE
+
 export async function mountWorkspaceMain(root: HTMLElement) {
+  const startupClaim = createInstallerStartupClaims();
+  startupClaim('mount_entered'); startupClaim('policy_entered');
   await invoke<void>('startup_main_policy_ready');
+  startupClaim('policy_completed');
   let disposed = false; let generation = 0; let frame: number | null = null; let unlisten: (() => void) | null = null;
   let active: (() => void) | null = null; let reconnecting = false; let shown = false;
   let details: ReturnType<typeof createDetailsController> | null = null;
@@ -262,23 +277,25 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   const recoveryWatch = input.observe(() => { if (recoveryPending) showRecoveryShell(); });
   const dispose = () => { if (disposed) return; disposed = true; requestGate?.retire(); requestGate = null; generation++; creations.dispose(); input.disconnect(); window.removeEventListener('storage', observeCreation); active?.(); active = null; connectionView?.dispose(); connectionView = null; connectionOwner?.retire(); connectionOwner = null; retiringAgent?.retireHost(); retiringAgent = null; if (connectedHost) admission.retireHost(connectedHost); connectedHost = null; closeDetails?.(); closeDetails = null; details?.disconnect(); details = null; recoveryWatch(); input.dispose(); if (frame !== null) cancelAnimationFrame(frame); frame = null; unlisten?.(); unlisten = null; reconnect.onclick = null; forceExit.onclick = null; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('unload', dispose); root.dataset.startupState = 'disposed'; delete root.dataset.session; };
   window.addEventListener('unload', dispose, { once: true });
-  async function connect() {
-    if (disposed || reconnecting) return;
+  async function connect(automatic = false) {
+    const claim = (stage: InstallerStartupClaim) => { if (automatic) startupClaim(stage); };
+    claim('connect_entered');
+    if (disposed || reconnecting) { claim('early_return'); return; }
     if (ownerMismatch) {
       const probeEpoch = ++generation; hostObservation = null; hostBlocked = true; probeIssued++;
       const phase = await observeHost(probeEpoch, connectedHost, false);
       if (phase === 'Ready' || phase === 'Busy') {
         const observed: OwnerKey = { instanceId: hostObservation!.instance!, ownerGeneration: hostObservation!.generation.toString() };
-        if (ownerSection && sameOwner(ownerSection, observed)) { ownerMismatch = false; recoveryPending = false; void connect(); return; }
+        if (ownerSection && sameOwner(ownerSection, observed)) { ownerMismatch = false; recoveryPending = false; void connect(); claim('early_return'); return; }
       }
       if (phase !== 'Unknown') {
         showRecoveryShell();
         status.textContent = '元のhostと別世代のため旧操作は確認できません。元の操作番号と入力を保持しています。';
       }
-      return;
+      claim('early_return'); return;
     }
-    if (input.hasPendingComposition()) { reconnect.hidden = false; status.textContent = '変換中の文字を確定または取消してから接続を確認し直してください。'; return; }
-    if (recoveryPending && !input.inspect().resumeAllowed) { void input.recoverGuard(); showRecoveryShell(); return; }
+    if (input.hasPendingComposition()) { reconnect.hidden = false; status.textContent = '変換中の文字を確定または取消してから接続を確認し直してください。'; claim('early_return'); return; }
+    if (recoveryPending && !input.inspect().resumeAllowed) { void input.recoverGuard(); showRecoveryShell(); claim('early_return'); return; }
     recoveryPending = false;
     reconnecting = true; requestGate?.retire(); requestGate = null; creations.beginReconnect(); retiringAgent?.setConnected(false); input.disconnect(); active?.(); active = null; connectionView?.dispose(); connectionView = null; if (frame !== null) cancelAnimationFrame(frame); frame = null;
     const epoch = ++generation; const current = () => !disposed && epoch === generation;
@@ -287,19 +304,23 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     let openReturned = false;
     const wire = createWorkspaceCopyGate(); requestGate = wire;
     try {
+      claim('open_entered');
       const session = await openWorkspaceSession();
+      claim('open_completed');
       openReturned = true;
-      if (!current()) return;
+      if (!current()) { claim('early_return'); return; }
       if (!validSession(session)) throw new Error('protocol_failed');
+      claim('host_entered');
       const initialPhase = await observeHost(epoch, session.instance_id, false);
-      if (!current()) return;
+      claim('host_completed');
+      if (!current()) { claim('early_return'); return; }
       if (initialPhase !== 'Ready' && initialPhase !== 'Busy') throw new Error(initialPhase === 'Unknown' ? 'transport_uncertain' : 'host_observation_unavailable');
       const observedOwner: OwnerKey = Object.freeze({ instanceId: session.instance_id, ownerGeneration: hostObservation!.generation.toString() });
       if (ownerSection?.instanceId === observedOwner.instanceId && !sameOwner(ownerSection, observedOwner)) {
         ownerMismatch = true;
         showRecoveryShell();
         status.textContent = '元のhostと別世代のため旧操作は確認できません。元の操作番号と入力を保持しています。';
-        await revealOnce(); return;
+        await revealOnce(); claim('early_return'); return;
       }
       if (connectedHost !== null && connectedHost !== session.instance_id) {
         connectionOwner?.retire(); connectionOwner = null;
@@ -318,8 +339,10 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       });
       detailsButton.disabled = false;
       const identity = crypto.randomUUID(); root.dataset.session = JSON.stringify(session); root.dataset.generation = identity;
+      claim('initial_project_entered');
       const initialPath = await invoke<unknown>('desktop_initial_project_dir');
-      if (!current()) return;
+      claim('initial_project_completed');
+      if (!current()) { claim('early_return'); return; }
       if (initialPath !== null && (typeof initialPath !== 'string' || initialPath.length === 0)) throw new Error('protocol_failed');
       let launchPath = initialPath as string | null; let launchReserved = false; let launchTicket: number | null = null; let stopped = false;
       root.dataset.initialPath = launchPath ?? ''; root.dataset.initialOutcome = launchPath === null ? 'not_requested' : 'pending'; delete root.dataset.initialProjectId;
@@ -746,7 +769,8 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       });
       const admissionChanges=admission.observe(() => { if (current()) updateAgentLocal(controller.getSnapshot()); schedule(); });
       const teardown = active; active = () => { admissionChanges();inputChanges();document.removeEventListener('visibilitychange', resume); window.removeEventListener('focus', wakeAgent); agentMount.removeEventListener('focusin', wakeAgent); teardown(); };
-      await controller.refresh(); if (!current()) return;
+      claim('refresh_entered');
+      await controller.refresh(); claim('refresh_completed'); if (!current()) { claim('early_return'); return; }
       if (connectionOwner.snapshot().original && ['unconfirmed', 'accepted', 'in_progress', 'read_failed'].includes(connectionOwner.snapshot().original!.phase)) void connectionOwner.recheck();
       else void connectionOwner.refresh();
       // A held old Q must not hold the mounted UI or its visible recovery control.
@@ -754,28 +778,34 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       void details.recoverSameHost().catch(() => {}).finally(() => { if (current()) updateAgentLocal(controller.getSnapshot()); });
       root.dataset.startupState = 'mounted'; status.textContent = '明示的な操作だけでペインを起動します。';
       updateAgentLocal(controller.getSnapshot());
-      await revealOnce(); if (!current()) return;
-      await invoke<void>('installer_startup_confirmed'); if (!current()) return; schedule();
-    } catch (error) { wire.retire(); if (current()) { active?.(); active = null; connectionView?.dispose(); connectionView = null;
+      claim('reveal_entered');
+      await revealOnce(); claim('reveal_completed'); if (!current()) { claim('early_return'); return; }
+      claim('confirm_entered');
+      await invoke<void>('installer_startup_confirmed'); claim('confirm_completed'); if (!current()) { claim('early_return'); return; } schedule();
+    } catch (error) { claim('catch_entered'); wire.retire(); if (current()) { active?.(); active = null; connectionView?.dispose(); connectionView = null;
       const shutdown = error === 'shutdown_in_progress' || error instanceof Error && error.message === 'shutdown_in_progress';
       if (!openReturned && shutdown) {
         showRecoveryShell();
-        void observeHost(epoch, null).then(phase => { if (!current()) return; if (phase === 'Unknown') blockHost(true); else showRecoveryShell(); });
+        claim('catch_observe_entered');
+        void observeHost(epoch, null).then(phase => { claim('catch_observe_completed'); if (!current()) return; if (phase === 'Unknown') blockHost(true); else showRecoveryShell(); });
         void input.recoverGuard();
-        delete root.dataset.session; await revealOnce(); return;
+        delete root.dataset.session; claim('catch_reveal_entered'); await revealOnce(); claim('catch_reveal_completed'); claim('early_return'); return;
       }
-      if (!openReturned) await observeHost(epoch, null);
+      if (!openReturned) { claim('catch_observe_entered'); await observeHost(epoch, null); claim('catch_observe_completed'); }
       if (!hostUnknown()) blockHost(false);
-      delete root.dataset.session; await revealOnce(); } }
+      delete root.dataset.session; claim('catch_reveal_entered'); await revealOnce(); claim('catch_reveal_completed'); } }
     finally { reconnecting = false; }
   }
   reconnect.onclick = () => { void connect(); };
+  startupClaim('listeners_entered');
   try {
     const closeRelease = await listen('workspace-close-refused', event => { if (!disposed) status.textContent = closeRefusalMessage(event?.payload); });
     const offerRelease = await listen('workspace-force-offer', () => { if (!disposed) void refreshForceOffer(); });
+    startupClaim('listeners_completed');
     const release = () => { closeRelease(); offerRelease(); };
     if (disposed) release(); else unlisten = release;
   }
   catch { status.textContent = '閉鎖通知の購読を確認できません。'; }
-  await input.initialize();await connect(); return { dispose };
+  startupClaim('input_entered');
+  await input.initialize(); startupClaim('input_completed');await connect(true); return { dispose };
 }

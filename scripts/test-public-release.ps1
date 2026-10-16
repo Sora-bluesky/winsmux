@@ -3860,6 +3860,8 @@ function Initialize-DesktopNativeLifecycleActor {
   static class StartupWindowApi {
    [DllImport("user32.dll",CharSet=CharSet.Unicode,SetLastError=true)]static extern int GetWindowTextW(IntPtr window,StringBuilder text,int capacity);
    [DllImport("user32.dll")]static extern bool IsWindow(IntPtr window);
+   [DllImport("user32.dll",CharSet=CharSet.Unicode)]static extern IntPtr GetPropW(IntPtr window,string name);
+   internal static long Property(StartupWindow window,string name){return GetPropW(window.Handle,name).ToInt64();}
    internal static string CurrentDesktop(){return DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(GetCurrentThreadId()));}
    internal static string WindowDesktop(uint thread){return DesktopName(GetProcessWindowStation())+"\\"+DesktopName(GetThreadDesktop(thread));}
    internal static uint CurrentPid(){return GetCurrentProcessId();}
@@ -3876,7 +3878,40 @@ function Initialize-DesktopNativeLifecycleActor {
    internal static string Caption(StartupWindow w){var text=new StringBuilder(8192);int n=GetWindowTextW(w.Handle,text,text.Capacity);return n<=0||n>=text.Capacity-1?null:text.ToString();}
   }
 
+  // BEGIN PRIVATE PROPERTY DECODER
+  sealed class StartupPropertyWindow { internal IntPtr Handle; internal uint Thread; internal long Native,Frontend; internal bool Stable; }
+  sealed class WindowPropertyClaims {
+   internal const string NativeName="Winsmux.InstallerProbe.Native.v1",FrontendName="Winsmux.InstallerProbe.Frontend.v1";
+   internal const ulong Tag=(0x5753UL<<40)|(1UL<<32);
+   internal static readonly string[] NativeNames=new string[]{"context_valid","hwnd_bound","policy_pending","policy_ready","policy_failed","policy_closed","confirm_entered","confirm_origin_refused","confirm_window_refused","confirm_policy_refused","send_entered","send_completed","send_refused","trace_stopped"};
+   internal static readonly string[] FrontendNames=new string[]{"mount_entered","policy_entered","policy_completed","listeners_entered","listeners_completed","input_entered","input_completed","connect_entered","open_entered","open_completed","host_entered","host_completed","initial_project_entered","initial_project_completed","refresh_entered","refresh_completed","reveal_entered","reveal_completed","confirm_entered","confirm_completed","catch_entered","catch_observe_entered","catch_observe_completed","catch_reveal_entered","catch_reveal_completed","early_return"};
+   uint priorNative,priorFrontend,pid;long creation;IntPtr window;uint thread;Dictionary<string,object> last;
+   internal static bool ValidMask(uint mask,bool frontend){
+    if(frontend){if((mask&~((1U<<26)-1))!=0)return false;foreach(var pair in new[]{new[]{1,2},new[]{3,4},new[]{5,6},new[]{8,9},new[]{10,11},new[]{12,13},new[]{14,15},new[]{16,17},new[]{18,19},new[]{21,22},new[]{23,24}})if((mask&(1U<<pair[1]))!=0&&(mask&(1U<<pair[0]))==0)return false;}
+    else {if((mask&~((1U<<14)-1))!=0)return false;if(mask!=0&&(mask&1)==0)return false;if((mask&((1U<<3)|(1U<<4)|(1U<<5)))!=0&&(mask&(1U<<2))==0)return false;if((mask&(1U<<3))!=0&&(mask&(1U<<4))!=0)return false;if((mask&(1U<<6))!=0&&(mask&(1U<<1))==0)return false;if((mask&((1U<<7)|(1U<<8)|(1U<<9)|(1U<<10)))!=0&&(mask&(1U<<6))==0)return false;if((mask&((1U<<11)|(1U<<12)))!=0&&(mask&(1U<<10))==0)return false;if((mask&(1U<<11))!=0&&(mask&(1U<<12))!=0)return false;}
+    return true;
+   }
+   internal static bool Decode(long value,bool frontend,out uint mask){mask=0;if(value<=0||((ulong)value&~(ulong)UInt32.MaxValue)!=Tag)return false;mask=(uint)value;return ValidMask(mask,frontend);}
+   static string[] Names(uint mask,string[] names){var result=new List<string>();for(int i=0;i<names.Length;i++)if((mask&(1U<<i))!=0)result.Add(names[i]);return result.ToArray();}
+   internal Dictionary<string,object> Observe(uint observedPid,long observedCreation,StartupPropertyWindow[] rows,bool readFailed){
+    string status="unobserved";
+    if(readFailed)status="unobserved";
+    else if(rows.Length>1)status="ambiguous";
+    else if(rows.Length==1){var row=rows[0];uint n,f;
+     if(!row.Stable)status="changed";
+     else if(!Decode(row.Native,false,out n)||!Decode(row.Frontend,true,out f))status="invalid";
+     else if((n&3U)!=3U)status="invalid";
+     else if(window!=IntPtr.Zero&&(pid!=observedPid||creation!=observedCreation||window!=row.Handle||thread!=row.Thread))status="stale_identity";
+     else if((n&priorNative)!=priorNative||(f&priorFrontend)!=priorFrontend)status="changed";
+     else {pid=observedPid;creation=observedCreation;window=row.Handle;thread=row.Thread;priorNative=n;priorFrontend=f;last=new Dictionary<string,object>{{"native",Names(n,NativeNames)},{"frontend",Names(f,FrontendNames)}};status="observed";}
+    }
+    return new Dictionary<string,object>{{"schema","winsmux-private-startup-window-claims/v1"},{"last_attempt_status",status},{"last_observed",last},{"snapshot_is_current",false},{"scope","mutable_owned_window_claims"},{"native_source","native_self_report"},{"frontend_source","frontend_self_report"}};
+   }
+  }
+  // END PRIVATE PROPERTY DECODER
+
   sealed class StartupWindowObserver {
+   readonly WindowPropertyClaims startupClaims=new WindowPropertyClaims();
    readonly IntPtr job;readonly TokenFacts caller;readonly string expectedImage,expectedSha,launchDesktop;
    StartupWindowProcess held;Dictionary<string,object> lastObserved;string status="not_seen";bool closed,handleCloseUnconfirmed;
    internal StartupWindowObserver(IntPtr j,TokenFacts c,string image,string sha,string desktop){job=j;caller=c;expectedImage=Path.GetFullPath(image);expectedSha=sha;launchDesktop=desktop;if(sha==null||!System.Text.RegularExpressions.Regex.IsMatch(sha,@"\A[0-9a-f]{64}\z",System.Text.RegularExpressions.RegexOptions.CultureInvariant))status="configuration_refused";}
@@ -3907,6 +3942,7 @@ function Initialize-DesktopNativeLifecycleActor {
     }finally{foreach(var p in candidates)if(!ReferenceEquals(p,held))CloseProcess(p);}
    }
    void ReadWindows(){
+    var propertyWindows=new List<StartupPropertyWindow>();bool propertyReadFailed=false;
     int total=0,visible=0,hidden=0;bool desktop=true,captionObserved=false,captionUnknown=false,accelerator=false,noToken=false,webview=false;
     var classes=new Dictionary<string,int>{{"native_dialog",0},{"known_app_default",0},{"other",0},{"unobserved",0}};
     foreach(var w in StartupWindowApi.Windows(held.Pid)){
@@ -3916,6 +3952,11 @@ function Initialize-DesktopNativeLifecycleActor {
      total++;bool shown=StartupWindowApi.Visible(w);if(shown)visible++;else hidden++;
      if(!StartupWindowApi.Owned(w,held.Pid)){status="window_identity_unconfirmed";return;}
      string kind=StartupWindowApi.Class(w);classes[kind]++;
+     try {
+      long native=StartupWindowApi.Property(w,WindowPropertyClaims.NativeName),frontend=StartupWindowApi.Property(w,WindowPropertyClaims.FrontendName);
+      bool stable=StartupWindowApi.Owned(w,held.Pid)&&native==StartupWindowApi.Property(w,WindowPropertyClaims.NativeName)&&frontend==StartupWindowApi.Property(w,WindowPropertyClaims.FrontendName);
+      if(native!=0||frontend!=0||!stable)propertyWindows.Add(new StartupPropertyWindow{Handle=w.Handle,Thread=w.Thread,Native=native,Frontend=frontend,Stable=stable});
+     }catch{propertyReadFailed=true;}
      if(kind=="native_dialog"){
       if(held.Pid==StartupWindowApi.CurrentPid()||!StartupWindowApi.Owned(w,held.Pid)){status="window_identity_unconfirmed";return;}
       string caption=StartupWindowApi.Caption(w);
@@ -3932,6 +3973,7 @@ function Initialize-DesktopNativeLifecycleActor {
     var after=StartupWindowApi.Reobserve(held,job);if(after.Creation!=held.Creation||!Actor(after)){status="candidate_unconfirmed";Release();return;}
     status=classes["unobserved"]==0?"observed":"partial";
     lastObserved=new Dictionary<string,object>{{"pid",held.Pid},{"creation_time",held.Creation},{"gui_sha256",expectedSha},{"actor",caller.Public()},{"owned_job_member",true},{"desktop_scope","owned_window_threads_match_launch"},{"window_count",total},{"visible_count",visible},{"hidden_count",hidden},{"class_counts",classes},{"caption_status",captionObserved?(captionUnknown?"partial":"observed"):"unobserved"},{"body_status","not_observed"},{"marker_scope","caption_only"},{"accelerator_failure_title",accelerator?(object)true:captionObserved&&!captionUnknown?(object)false:null},{"error_no_token_marker",noToken?(object)true:captionObserved&&!captionUnknown?(object)false:null},{"webview2_marker",webview?(object)true:captionObserved&&!captionUnknown?(object)false:null}};
+    try{lastObserved["startup_boundary_claims"]=startupClaims.Observe(held.Pid,held.Creation,propertyWindows.ToArray(),propertyReadFailed);}catch{lastObserved["startup_boundary_claims"]=new Dictionary<string,object>{{"schema","winsmux-private-startup-window-claims/v1"},{"last_attempt_status","unobserved"},{"last_observed",null},{"snapshot_is_current",false},{"scope","mutable_owned_window_claims"}};}
    }
    internal void Finish(){Release();closed=true;}
    internal Dictionary<string,object> Snapshot(){return new Dictionary<string,object>{{"schema","winsmux-owned-startup-gui-window/v1"},{"last_attempt_status",status},{"last_observed",lastObserved},{"snapshot_is_current",false},{"snapshot_scope","last_observation_during_installer_wait"},{"observer_handle_closed",held==null&&!handleCloseUnconfirmed}};}

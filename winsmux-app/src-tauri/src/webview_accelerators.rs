@@ -68,6 +68,12 @@ impl Gate {
         }
     }
 
+    fn diagnostic(&self, label: &str, hwnd: usize) -> Option<(u64, Phase)> {
+        let rows = self.rows.try_lock().ok()?;
+        let row = rows.get(label)?;
+        (row.hwnd == Some(hwnd)).then_some((row.id, row.phase))
+    }
+
     fn ready(&self, label: &str, hwnd: usize) -> bool {
         self.rows.lock().is_ok_and(|rows| rows.get(label).is_some_and(|row| row.hwnd == Some(hwnd) && row.phase == Phase::Ready))
     }
@@ -99,6 +105,22 @@ fn disable_browser_accelerators(view: tauri::webview::PlatformWebview) -> bool {
     matches!(result, Ok(true))
 }
 
+#[cfg(windows)]
+fn diagnostic_policy<R: Runtime>(app: &tauri::AppHandle<R>, label: &str, hwnd: Option<usize>, generation: u64, phase: Phase) {
+    if label != "main" { return; }
+    let Some(hwnd) = hwnd else { return; };
+    let Some(gate) = app.try_state::<Arc<Gate>>() else { return; };
+    if gate.diagnostic(label, hwnd) != Some((generation, phase)) { return; }
+    let phase = match phase { Phase::Pending => 0, Phase::Ready => 1, Phase::Failed => 2, Phase::Closed => 3 };
+    crate::install_startup_receipt::diagnostic_policy(app, hwnd, generation, phase);
+}
+#[cfg(windows)]
+pub(crate) fn diagnostic_generation<R: Runtime>(window: &WebviewWindow<R>) -> Option<u64> {
+    let gate = window.app_handle().try_state::<Arc<Gate>>()?;
+    let (generation, phase) = gate.diagnostic(window.label(), hwnd(window).ok()?)?;
+    (phase != Phase::Closed).then_some(generation)
+}
+
 pub fn install<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     #[cfg(windows)]
     {
@@ -110,19 +132,27 @@ pub fn install<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
                 let window = webview.window();
                 let window_hwnd = window.hwnd().ok().map(|value| value.0 as usize);
                 let Some(id) = on_ready_gate.register(label.clone(), window_hwnd) else { return; };
+                diagnostic_policy(window.app_handle(), &label, window_hwnd, id, Phase::Pending);
                 let close_gate = Arc::clone(&on_ready_gate);
                 let close_label = label.clone();
+                let close_app = window.app_handle().clone();
                 window.on_window_event(move |event| {
-                    if matches!(event, tauri::WindowEvent::Destroyed) { close_gate.close(&close_label, id); }
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        close_gate.close(&close_label, id);
+                        diagnostic_policy(&close_app, &close_label, window_hwnd, id, Phase::Closed);
+                    }
                 });
                 if window_hwnd.is_none() { return; }
                 let callback_gate = Arc::clone(&on_ready_gate);
                 let callback_label = label.clone();
+                let callback_app = window.app_handle().clone();
                 if webview.with_webview(move |view| {
-                    callback_gate.finish(&callback_label, id,
-                        if disable_browser_accelerators(view) { Phase::Ready } else { Phase::Failed });
+                    let phase = if disable_browser_accelerators(view) { Phase::Ready } else { Phase::Failed };
+                    callback_gate.finish(&callback_label, id, phase);
+                    diagnostic_policy(&callback_app, &callback_label, window_hwnd, id, phase);
                 }).is_err() {
                     on_ready_gate.finish(&label, id, Phase::Failed);
+                    diagnostic_policy(window.app_handle(), &label, window_hwnd, id, Phase::Failed);
                 }
             }).build());
     }

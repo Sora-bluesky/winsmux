@@ -2168,6 +2168,7 @@ pub enum DesktopLoopOutcome {
 pub fn run_windows_desktop_loop<F:FnMut(&AppHandle,tauri::RunEvent)+'static>(app:tauri::App,mut observer:F)->DesktopLoopOutcome {
     let manager=Arc::clone(app.state::<Arc<workspace_transport::WorkspaceManager>>().inner());
     let runtime_code=app.run_return(move|handle,event| {
+        install_startup_receipt::diagnostic_stop_before_dispatch(handle, &event);
         workspace_transport::dispatch_desktop_event(handle,&event);
         observer(handle,event);
     });
@@ -2218,7 +2219,9 @@ pub fn run() {
                 window_builder = window_builder.additional_browser_args(&args);
             }
             if let Some(directory) = app.state::<install_startup_receipt::ProbeState>().data_directory() {
-                window_builder = window_builder.data_directory(directory);
+                window_builder = window_builder.data_directory(directory).initialization_script(
+                    "Object.defineProperty(window, '__WINSMUX_INSTALLER_PROBE__', { value: true, writable: false, configurable: false });"
+                );
             }
             let main_window = window_builder.build()?;
             app.state::<install_startup_receipt::ProbeState>().bind(&main_window)?;
@@ -2228,6 +2231,7 @@ pub fn run() {
             webview_accelerators::startup_main_policy_ready,
             webview_accelerators::startup_main_show,
             install_startup_receipt::installer_startup_confirmed,
+            install_startup_receipt::installer_startup_observed,
             remote_debug_gate::startup_secondary_creation_policy,
             startup_secondary_native::startup_secondary_request,
             desktop_summary_snapshot,
