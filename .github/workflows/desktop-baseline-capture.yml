@@ -182,9 +182,9 @@ jobs:
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
           persist-credentials: false
-      - name: Admit all canonical source bytes before toolchain and build
+      - name: Admit canonical bytes and prepare the exclusive compiler producer
         run: |
-          & ./scripts/invoke-headless-startup-actor.ps1 -SourceAdmissionOnly -SourceCommit $env:GITHUB_SHA
+          & ./scripts/invoke-headless-startup-actor.ps1 -PrepareCompilerRoot -SourceCommit $env:GITHUB_SHA
           if ($LASTEXITCODE -ne 0) { throw 'headless_canonical_input_refused' }
       - uses: ./.github/actions/setup-windows-distribution-toolchain
       - name: Build only the existing debug headless test and companion

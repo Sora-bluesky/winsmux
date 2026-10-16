@@ -3,6 +3,7 @@ param(
  [switch]$HeadlessParent,
  [switch]$ProjectionSelfTest,
  [switch]$SourceAdmissionOnly,
+ [switch]$PrepareCompilerRoot,
  [string]$SourceCommit,
  [string]$BuildManifest,
  [string]$Surface,[string]$Version,[string]$ReleaseTag,[string]$Repository,
@@ -22,6 +23,151 @@ function Assert-CanonicalSourceInputs([string]$Root) {
  $attributePaths=ConvertFrom-Json '[".gitattributes",".github/.gitattributes",".github/actions/.gitattributes",".github/actions/setup-windows-distribution-toolchain/.gitattributes",".github/workflows/.gitattributes","core/.gitattributes","core/crates/.gitattributes","core/crates/winsmux-workspace/.gitattributes","core/crates/winsmux-workspace/src/.gitattributes","core/crates/winsmux-workspace/src/client/.gitattributes","core/crates/winsmux-workspace/src/host/.gitattributes","core/tests-rs/.gitattributes","core/tests-rs/support/.gitattributes","scripts/.gitattributes"]'
  foreach($name in $attributePaths){Assert-Fixed ((Test-Path -LiteralPath (Join-Path $Root $name)) -eq ($name -ceq '.gitattributes')) 'input_attribute_inventory_changed'}
  foreach($pin in @($attribute)+@($pins)){$p=Join-Path $Root $pin.path;Assert-Fixed ((Get-Item -LiteralPath $p).Length -eq $pin.bytes -and (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() -ceq $pin.sha256) 'input_source_changed'}
+}
+function Get-HeadlessCompilerNativeSource {
+ return @'
+namespace WinsmuxHeadlessOwned {
+using System;
+using System.IO;
+using System.Text;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
+public static class WinsmuxHeadlessCompilerInputs {
+ const string ReceiptName="winsmux-headless-producer.json";
+ const string TemporaryName=".winsmux-headless-cli.tmp";
+ const string BackupName=".winsmux-headless-cli.backup";
+ [StructLayout(LayoutKind.Sequential)] struct FT {public uint low,high;}
+ [StructLayout(LayoutKind.Sequential)] struct FI {public uint attributes;public FT creation,access,write;public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow;}
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern IntPtr CreateFileW(string path,uint access,uint share,IntPtr security,uint creation,uint flags,IntPtr template);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandle(IntPtr handle,out FI info);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr handle,StringBuilder text,uint size,uint flags);
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFileAttributesW(string path);
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+ static void Need(bool ok){if(!ok)throw new InvalidOperationException("Headless compiler input refused");}
+ static string Id(FI info){return info.volume+":"+info.indexHigh+":"+info.indexLow;}
+ static FI Facts(IntPtr handle){FI info;if(!GetFileInformationByHandle(handle,out info))throw new Win32Exception(Marshal.GetLastWin32Error());Need((info.attributes&0x400)==0);return info;}
+ static string Hash(byte[] bytes){using(var sha=SHA256.Create())return BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-","").ToLowerInvariant();}
+ static bool Equal(byte[] a,byte[] b){if(a.Length!=b.Length)return false;for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;return true;}
+ static string Canonical(string value){Need(!String.IsNullOrEmpty(value)&&!value.StartsWith("\\\\",StringComparison.Ordinal)&&value.Length>=3&&value[1]==':'&&value.IndexOf(':',2)<0);string full=Path.GetFullPath(value);Need(String.Equals(full,value,StringComparison.OrdinalIgnoreCase));foreach(char ch in value)Need(ch>=32);return full;}
+ static void Physical(string value){string current=Canonical(value);for(;;){var h=CreateFileW(current,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error());try{Facts(h);var text=new StringBuilder(32768);uint n=GetFinalPathNameByHandleW(h,text,(uint)text.Capacity,0);Need(n!=0&&n<text.Capacity);string resolved=text.ToString();if(resolved.StartsWith("\\\\?\\",StringComparison.Ordinal))resolved=resolved.Substring(4);Need(String.Equals(Path.GetFullPath(resolved).TrimEnd('\\'),current.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase));}finally{CloseHandle(h);}string parent=Path.GetDirectoryName(current.TrimEnd('\\'));if(String.IsNullOrEmpty(parent))break;current=parent;}}
+ static bool Absent(string value){uint attrs=GetFileAttributesW(value);if(attrs!=UInt32.MaxValue)return false;int error=Marshal.GetLastWin32Error();if(error==2||error==3)return true;throw new Win32Exception(error);}
+ sealed class W {public string id,sha;public uint links;public byte[] bytes;public FI info;}
+ sealed class Lease:IDisposable {
+  readonly string path;readonly FileStream file;
+  public Lease(string value){path=Canonical(value);Physical(path);var handle=CreateFileW(path,0x80000000,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero);if(handle==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error());var safe=new SafeFileHandle(handle,true);try{var info=Facts(handle);Need((info.attributes&0x10)==0);file=new FileStream(safe,FileAccess.Read);}catch{safe.Dispose();throw;}}
+  public W Read(){var info=Facts(file.SafeFileHandle.DangerousGetHandle());Need(file.Length<=Int32.MaxValue);var bytes=new byte[(int)file.Length];file.Position=0;int at=0;while(at<bytes.Length){int n=file.Read(bytes,at,bytes.Length-at);Need(n>0);at+=n;}var after=Facts(file.SafeFileHandle.DangerousGetHandle());Need(SameInfo(info,after));return new W{id=Id(info),sha=Hash(bytes),links=info.links,bytes=bytes,info=info};}
+  public void Check(W old){var now=Read();Need(Same(old,now));using(var named=new Lease(path)){Need(Same(old,named.Read()));}}
+  public void Dispose(){file.Dispose();}
+ }
+ static bool SameInfo(FI a,FI b){return Id(a)==Id(b)&&a.links==b.links&&a.sizeHigh==b.sizeHigh&&a.sizeLow==b.sizeLow&&a.write.low==b.write.low&&a.write.high==b.write.high&&a.attributes==b.attributes;}
+ static bool Same(W a,W b){return SameInfo(a.info,b.info)&&Equal(a.bytes,b.bytes);}
+ static W Read(string path){using(var lease=new Lease(path))return lease.Read();}
+ static W Plain(string path){var native=global::WinsmuxDesktopNativeActor.NativeFile(path);var value=Read(path);Need(value.links==1&&value.id==(string)native["identity"]&&value.sha==(string)native["sha256"]&&value.bytes.Length==Convert.ToInt64(native["bytes"]));return value;}
+ public static string ReceiptIdentity(FileStream stream){Need(stream!=null&&stream.CanWrite&&stream.Length==0);var info=Facts(stream.SafeFileHandle.DangerousGetHandle());Need(info.links==1&&(info.attributes&0x10)==0);return Id(info);}
+ static void MatchPlain(string path,string id,string sha){var current=Plain(path);Need(current.id==id&&current.sha==sha);}
+ static void Fire(Action<string> fault,string stage){if(fault!=null)fault(stage);}
+ static string Macro(string path,string cli){var first=Plain(path);string text=new UTF8Encoding(false,true).GetString(first.bytes);Need(text.IndexOf('\0')<0);const string prefix="# env-dep:CARGO_BIN_EXE_winsmux=";string value=null;int count=0;foreach(string raw in text.Split('\n')){string line=raw.EndsWith("\r",StringComparison.Ordinal)?raw.Substring(0,raw.Length-1):raw;if(line.StartsWith(prefix,StringComparison.Ordinal)){count++;value=line.Substring(prefix.Length);}}Need(count==1);var decoded=new StringBuilder();for(int i=0;i<value.Length;i++){char ch=value[i];if(ch=='\\'){Need(i+1<value.Length&&value[i+1]=='\\');decoded.Append('\\');i++;}else{Need(ch>=32);decoded.Append(ch);}}Need(String.Equals(Canonical(decoded.ToString()),cli,StringComparison.OrdinalIgnoreCase));var last=Plain(path);Need(Same(first,last));return first.sha;}
+ static string S(IDictionary state,string key){Need(state.Contains(key)&&state[key] is string);return (string)state[key];}
+ static readonly string[] Keys={"root","root_id","receipt_id","receipt_sha","manifest","manifest_id","manifest_sha","test","test_id","test_sha","macro","macro_id","macro_sha","script","script_id","script_sha","cli","cli_id","cli_sha","kind","old_id"};
+ static void Shape(IDictionary state){Need(state!=null&&state.Count==Keys.Length);foreach(string key in Keys)S(state,key);}
+ static string A(string root){return Path.Combine(root,"debug","winsmux.exe");}
+ static string B(string root){return Path.Combine(root,"debug","deps","winsmux.exe");}
+ static string T(string root){return Path.Combine(root,"debug",TemporaryName);}
+ static string K(string root){return Path.Combine(root,"debug",BackupName);}
+ static void Producer(string root,string rootId,string receiptId,string receiptSha){Physical(root);Need(global::WinsmuxDesktopNativeActor.NativeDirectory(root,false)==rootId);MatchPlain(Path.Combine(root,ReceiptName),receiptId,receiptSha);}
+ static void Paths(string root,string test,string cli,string macro){Canonical(root);Need(String.Equals(Canonical(cli),A(root),StringComparison.OrdinalIgnoreCase));Need(String.Equals(Path.GetDirectoryName(Canonical(test)),Path.Combine(root,"debug","deps"),StringComparison.OrdinalIgnoreCase));Need(System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(test),"^workspace_host_e2e-[a-f0-9]+\\.exe$",System.Text.RegularExpressions.RegexOptions.CultureInvariant));Need(String.Equals(Canonical(macro),Path.ChangeExtension(test,".d"),StringComparison.OrdinalIgnoreCase));Physical(test);Physical(cli);Physical(macro);}
+ public static void Verify(IDictionary state){Shape(state);string root=S(state,"root"),test=S(state,"test"),cli=S(state,"cli"),macro=S(state,"macro");Paths(root,test,cli,macro);Producer(root,S(state,"root_id"),S(state,"receipt_id"),S(state,"receipt_sha"));MatchPlain(S(state,"manifest"),S(state,"manifest_id"),S(state,"manifest_sha"));MatchPlain(test,S(state,"test_id"),S(state,"test_sha"));MatchPlain(S(state,"script"),S(state,"script_id"),S(state,"script_sha"));MatchPlain(cli,S(state,"cli_id"),S(state,"cli_sha"));MatchPlain(macro,S(state,"macro_id"),S(state,"macro_sha"));Need(Macro(macro,cli)==S(state,"macro_sha")&&Absent(T(root)));string kind=S(state,"kind");if(kind=="plain"){Need(Absent(K(root))&&S(state,"old_id")=="");}else{Need(kind=="detached");using(var b=new Lease(B(root)))using(var k=new Lease(K(root))){var wb=b.Read();var wk=k.Read();Need(wb.links==2&&wk.links==2&&wb.id==S(state,"old_id")&&wk.id==wb.id&&wb.id!=S(state,"cli_id")&&wb.sha==S(state,"cli_sha")&&Equal(wb.bytes,wk.bytes));b.Check(wb);k.Check(wk);}}}
+ public static Dictionary<string,object> Normalize(string root,string rootId,string receiptId,string receiptSha,string manifest,string test,string cli,string script){return NormalizeCore(root,rootId,receiptId,receiptSha,manifest,test,cli,script,null);}
+ // The same transaction is exercised with declared fault callbacks only by the local finite runner.
+ public static Dictionary<string,object> NormalizeForProof(string root,string rootId,string receiptId,string receiptSha,string manifest,string test,string cli,string script,Action<string> fault){return NormalizeCore(root,rootId,receiptId,receiptSha,manifest,test,cli,script,fault);}
+ static Dictionary<string,object> NormalizeCore(string root,string rootId,string receiptId,string receiptSha,string manifest,string test,string cli,string script,Action<string> fault){
+  root=Canonical(root);test=Canonical(test);cli=Canonical(cli);manifest=Canonical(manifest);script=Canonical(script);string macro=Path.ChangeExtension(test,".d");Paths(root,test,cli,macro);Producer(root,rootId,receiptId,receiptSha);Need(Absent(T(root))&&Absent(K(root)));
+  var wm=Plain(manifest);var wt=Plain(test);var ws=Plain(script);var wd=Plain(macro);Need(Macro(macro,cli)==wd.sha);Fire(fault,"input_read");
+  string kind="plain",oldId="";W final;
+  using(var a=new Lease(cli)){
+   var original=a.Read();Need(original.links==1||original.links==2);
+   if(original.links==1){a.Check(original);final=original;}
+   else{
+    kind="detached";oldId=original.id;
+    using(var b=new Lease(B(root))){var peer=b.Read();Need(peer.links==2&&peer.id==original.id&&Equal(peer.bytes,original.bytes));Fire(fault,"copy");
+     using(var output=new FileStream(T(root),FileMode.CreateNew,FileAccess.Write,FileShare.None)){output.Write(original.bytes,0,original.bytes.Length);Fire(fault,"flush");output.Flush(true);}
+     Fire(fault,"temporary_witness");var temporary=Plain(T(root));Need(temporary.id!=original.id&&Equal(temporary.bytes,original.bytes));a.Check(original);b.Check(peer);Producer(root,rootId,receiptId,receiptSha);MatchPlain(manifest,wm.id,wm.sha);MatchPlain(test,wt.id,wt.sha);MatchPlain(script,ws.id,ws.sha);MatchPlain(macro,wd.id,wd.sha);Need(Macro(macro,cli)==wd.sha&&Absent(K(root)));Fire(fault,"before_replace");a.Check(original);b.Check(peer);MatchPlain(T(root),temporary.id,temporary.sha);Need(Absent(K(root)));
+     // Close all leases that deny delete before the one replacement below.
+     final=temporary;
+    }
+   }
+  }
+  if(kind=="detached"){
+   Fire(fault,"replace");Producer(root,rootId,receiptId,receiptSha);MatchPlain(manifest,wm.id,wm.sha);MatchPlain(test,wt.id,wt.sha);MatchPlain(script,ws.id,ws.sha);MatchPlain(macro,wd.id,wd.sha);Need(Macro(macro,cli)==wd.sha);var lastA=Read(cli);var lastB=Read(B(root));Need(lastA.links==2&&lastB.links==2&&lastA.id==oldId&&lastB.id==oldId&&Equal(lastA.bytes,final.bytes)&&Equal(lastB.bytes,final.bytes));MatchPlain(T(root),final.id,final.sha);Need(Absent(K(root)));File.Replace(T(root),cli,K(root));Fire(fault,"after_replace");
+   var output=Plain(cli);Need(output.id==final.id&&Equal(output.bytes,final.bytes)&&Absent(T(root)));
+   using(var b=new Lease(B(root)))using(var k=new Lease(K(root))){var peer=b.Read();var backup=k.Read();Need(peer.links==2&&backup.links==2&&peer.id==oldId&&backup.id==oldId&&Equal(peer.bytes,final.bytes)&&Equal(backup.bytes,final.bytes));b.Check(peer);k.Check(backup);}final=output;
+  }else{var current=Plain(cli);Need(current.id==final.id&&Equal(current.bytes,final.bytes));final=current;}
+  var state=new Dictionary<string,object>{{"root",root},{"root_id",rootId},{"receipt_id",receiptId},{"receipt_sha",receiptSha},{"manifest",manifest},{"manifest_id",wm.id},{"manifest_sha",wm.sha},{"test",test},{"test_id",wt.id},{"test_sha",wt.sha},{"macro",macro},{"macro_id",wd.id},{"macro_sha",wd.sha},{"script",script},{"script_id",ws.id},{"script_sha",ws.sha},{"cli",cli},{"cli_id",final.id},{"cli_sha",final.sha},{"kind",kind},{"old_id",oldId}};
+  Fire(fault,"post_verify");Verify(state);return state;
+ }
+}
+}
+'@
+}
+function Write-NewJson([string]$Path,$Value){$bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($Value|ConvertTo-Json -Depth 12 -Compress)+[char]10);$file=[IO.FileStream]::new($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
+function Get-HeadlessProducerRoot([string]$Source) {
+ return [IO.Path]::GetFullPath((Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$Source)))
+}
+function New-HeadlessCompilerProducer([string]$Root,[string]$Source,[string]$Run,[string]$Attempt) {
+ Assert-Fixed ($Source -cmatch '^[a-f0-9]{40}$' -and $Run -cmatch '^[1-9][0-9]*$' -and $Attempt -cmatch '^[1-9][0-9]*$') 'producer_identity'
+ $Root=[IO.Path]::GetFullPath($Root)
+ $id=[WinsmuxDesktopNativeActor]::NativeDirectory($Root,$true)
+ $stream=[IO.FileStream]::new((Join-Path $Root 'winsmux-headless-producer.json'),[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+ try{$receiptId=[WinsmuxHeadlessOwned.WinsmuxHeadlessCompilerInputs]::ReceiptIdentity($stream);$record=[ordered]@{schema='winsmux-headless-compiler-producer/v1';root=$Root;identity=$id;receipt_identity=$receiptId;source_commit=$Source;run=$Run;attempt=$Attempt};$bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($record|ConvertTo-Json -Compress)+[char]10);$stream.Write($bytes,0,$bytes.Length);$stream.Flush($true)}finally{$stream.Dispose()}
+ [void](Read-HeadlessCompilerProducer $Root $Source $Run $Attempt)
+}
+function Read-HeadlessCompilerProducer([string]$Root,[string]$Source,[string]$Run,[string]$Attempt) {
+ $Root=[IO.Path]::GetFullPath($Root);$path=Join-Path $Root 'winsmux-headless-producer.json'
+ $before=[WinsmuxDesktopNativeActor]::NativeFile($path)
+ $row=[WinsmuxDesktopNativeActor]::ReadChild($path)|ConvertFrom-Json -AsHashtable
+ $keys=@('schema','root','identity','receipt_identity','source_commit','run','attempt')
+ Assert-Fixed ((@($row.Keys|Sort-Object -CaseSensitive)-join [char]10) -ceq (@($keys|Sort-Object -CaseSensitive)-join [char]10)) 'producer_shape'
+ Assert-Fixed ($row.schema -ceq 'winsmux-headless-compiler-producer/v1' -and [string]::Equals($row.root,$Root,[StringComparison]::OrdinalIgnoreCase) -and $row.source_commit -ceq $Source -and $row.run -ceq $Run -and $row.attempt -ceq $Attempt -and $row.identity -ceq [WinsmuxDesktopNativeActor]::NativeDirectory($Root,$false) -and $row.receipt_identity -ceq $before['identity']) 'producer_binding'
+ $after=[WinsmuxDesktopNativeActor]::NativeFile($path)
+ Assert-Fixed ($after['identity'] -ceq $before['identity'] -and $after['sha256'] -ceq $before['sha256']) 'producer_changed'
+ return @{identity=$row.identity;receipt_id=$after['identity'];receipt_sha=$after['sha256']}
+}
+function Read-HeadlessBuildArtifacts([string]$Manifest) {
+ $before=[WinsmuxDesktopNativeActor]::NativeFile($Manifest)
+ $artifacts=[Collections.Generic.List[object]]::new();$finished=0
+ foreach($line in [IO.File]::ReadLines($Manifest,[Text.UTF8Encoding]::new($false,$true))){if([string]::IsNullOrWhiteSpace($line)){continue};$row=$line|ConvertFrom-Json -AsHashtable;if($row.reason -ceq 'compiler-artifact' -and $null -ne $row.executable){$artifacts.Add($row)}elseif($row.reason -ceq 'build-finished'){Assert-Fixed ($row.success -is [bool] -and $row.success -eq $true) 'cargo_failed';$finished++}}
+ $after=[WinsmuxDesktopNativeActor]::NativeFile($Manifest)
+ Assert-Fixed ($finished -eq 1 -and $after['identity'] -ceq $before['identity'] -and $after['sha256'] -ceq $before['sha256']) 'cargo_terminal'
+ $testRows=@($artifacts|Where-Object{$_.target.name -ceq 'workspace_host_e2e' -and $_.target.kind -is [Collections.IList] -and $_.target.kind.Count -eq 1 -and 'test' -cin $_.target.kind -and $_.profile.test -is [bool] -and $_.profile.test -eq $true -and $_.executable -is [string]})
+ $cliRows=@($artifacts|Where-Object{$_.target.name -ceq 'winsmux' -and $_.target.kind -is [Collections.IList] -and $_.target.kind.Count -eq 1 -and 'bin' -cin $_.target.kind -and $_.profile.test -is [bool] -and $_.profile.test -eq $false -and $_.executable -is [string]})
+ Assert-Fixed ($testRows.Count -eq 1 -and $cliRows.Count -eq 1) 'cargo_artifact_identity'
+ foreach($entry in @($testRows[0],$cliRows[0])){Assert-Fixed ([string]::Equals([IO.Path]::GetFullPath($entry.executable),$entry.executable,[StringComparison]::OrdinalIgnoreCase)) 'cargo_path_spelling'}
+ return @{test=[IO.Path]::GetFullPath([string]$testRows[0].executable);cli=[IO.Path]::GetFullPath([string]$cliRows[0].executable)}
+}
+function Assert-HeadlessBoundInputs($Binding,[string]$ExpectedScript) {
+ Assert-Fixed ($Binding.compiler_inputs -is [Collections.IDictionary]) 'compiler_binding'
+ Assert-Fixed ([string]::Equals($Binding.test_executable,$Binding.compiler_inputs.test,[StringComparison]::OrdinalIgnoreCase) -and [string]::Equals($Binding.cli_executable,$Binding.compiler_inputs.cli,[StringComparison]::OrdinalIgnoreCase) -and $Binding.test_sha256 -ceq $Binding.compiler_inputs.test_sha -and $Binding.cli_sha256 -ceq $Binding.compiler_inputs.cli_sha -and $Binding.script_sha256 -ceq $Binding.compiler_inputs.script_sha -and [string]::Equals($ExpectedScript,$Binding.compiler_inputs.script,[StringComparison]::OrdinalIgnoreCase)) 'actual_execution_path'
+ [WinsmuxHeadlessOwned.WinsmuxHeadlessCompilerInputs]::Verify($Binding.compiler_inputs)
+}
+function Initialize-HeadlessNativeTypes([string]$repoRoot) {
+ $sourcePath=Join-Path $repoRoot 'scripts/test-public-release.ps1'
+ $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$tokens,[ref]$errors)
+ Assert-Fixed (@($errors).Count -eq 0) 'actor_source_parse'
+ $initializers=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Initialize-DesktopNativeLifecycleActor'},$false))
+ Assert-Fixed ($initializers.Count -eq 1) 'actor_initializer'
+ function Read-FixedLiteral($Scope,[string]$Name){
+  $rows=@($Scope.FindAll({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ceq $Name -and $node.Right -is [Management.Automation.Language.CommandExpressionAst] -and $node.Right.Expression -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Right.Expression.StringConstantType -eq [Management.Automation.Language.StringConstantType]::SingleQuotedHereString},$true))
+  Assert-Fixed ($rows.Count -eq 1) 'actor_literal';return [string]$rows[0].Right.Expression.Value
+ }
+ $actor=Read-FixedLiteral $ast 'actorCSharp';$native=Read-FixedLiteral $initializers[0] 'native'
+ $actor=$actor.Replace('public static class WinsmuxDesktopActorProbe {','public static class WinsmuxDesktopNativeActor {').Replace('sealed class TokenFacts {','internal sealed class TokenFacts {').Replace('struct PI {','internal struct PI {')
+ $closing=$actor.LastIndexOf('}');Assert-Fixed ($closing -gt 0) 'actor_assembly'
+ Add-Type -TypeDefinition ($actor.Substring(0,$closing)+$native+$actor.Substring($closing)+[char]10+(Get-HeadlessCompilerNativeSource)) -ErrorAction Stop 2>$null
+ return $ast
 }
 function ConvertTo-HeadlessFixedProjection {
  param([byte[]]$Stdout,[byte[]]$Stderr,[bool]$Truncated,[string]$Test,[int]$ExitCode,[bool]$Terminal,[bool]$JobZero,[bool]$Forced)
@@ -102,27 +248,15 @@ $phase='source_admission';$outer=$null;$outerTerminal=$false;$evidenceRoot=$null
 $result=[ordered]@{schema='winsmux-headless-restricted-actor/v1';outcome='unobserved';source_commit=$null;actor_admitted=$false;same_sid=$false;same_session=$false;restricted_medium=$false;tests=@();root_terminal=$false;root_job_zero=$false;forced=$false;failure=$null;nsis_success_proven=$false;normal_gui_success_proven=$false}
 try {
  Assert-Fixed ($env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and $env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'runner_identity'
- $source=if($HeadlessParent -or $SourceAdmissionOnly){$SourceCommit}else{$DesktopNativeSourceCommit}
+ $source=if($HeadlessParent -or $SourceAdmissionOnly -or $PrepareCompilerRoot){$SourceCommit}else{$DesktopNativeSourceCommit}
  Assert-Fixed ($source -cmatch '^[a-f0-9]{40}$' -and $source -ceq $env:GITHUB_SHA) 'source_identity'
  $result.source_commit=$source
  Assert-CanonicalSourceInputs $repoRoot
  if($SourceAdmissionOnly){[Console]::Out.WriteLine('{"schema":"winsmux-headless-source-admission/v1","outcome":"passed","runtime_inputs":13,"attribute_policy":"fixed"}');exit 0}
- $sourcePath=Join-Path $repoRoot 'scripts/test-public-release.ps1'
- $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile($sourcePath,[ref]$tokens,[ref]$errors)
- Assert-Fixed (@($errors).Count -eq 0) 'actor_source_parse'
- $initializers=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Initialize-DesktopNativeLifecycleActor'},$false))
- Assert-Fixed ($initializers.Count -eq 1) 'actor_initializer'
- function Read-FixedLiteral($Scope,[string]$Name){
-  $rows=@($Scope.FindAll({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ceq $Name -and $node.Right -is [Management.Automation.Language.CommandExpressionAst] -and $node.Right.Expression -is [Management.Automation.Language.StringConstantExpressionAst] -and $node.Right.Expression.StringConstantType -eq [Management.Automation.Language.StringConstantType]::SingleQuotedHereString},$true))
-  Assert-Fixed ($rows.Count -eq 1) 'actor_literal';return [string]$rows[0].Right.Expression.Value
- }
- $actor=Read-FixedLiteral $ast 'actorCSharp';$native=Read-FixedLiteral $initializers[0] 'native'
- $actor=$actor.Replace('public static class WinsmuxDesktopActorProbe {','public static class WinsmuxDesktopNativeActor {').Replace('sealed class TokenFacts {','internal sealed class TokenFacts {').Replace('struct PI {','internal struct PI {')
- $closing=$actor.LastIndexOf('}');Assert-Fixed ($closing -gt 0) 'actor_assembly'
- Add-Type -TypeDefinition ($actor.Substring(0,$closing)+$native+$actor.Substring($closing)) -ErrorAction Stop 2>$null
+ $ast=Initialize-HeadlessNativeTypes $repoRoot
+ if($PrepareCompilerRoot){New-HeadlessCompilerProducer (Get-HeadlessProducerRoot $source) $source $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT;[Console]::Out.WriteLine('{"schema":"winsmux-headless-source-admission/v1","outcome":"passed","runtime_inputs":13,"attribute_policy":"fixed"}');exit 0}
  $query=[WinsmuxDesktopNativeActor]::Query();$facts=$query['facts']
  Assert-Fixed ($query['existing_profile_hive'] -eq $true -and $query['local_app_data_exists'] -eq $true -and $facts['token_type'] -eq 1 -and $facts['app_container'] -eq 0) 'actor_profile'
- function Write-NewJson([string]$Path,$Value){$bytes=[Text.UTF8Encoding]::new($false,$true).GetBytes(($Value|ConvertTo-Json -Depth 12 -Compress)+[char]10);$file=[IO.FileStream]::new($Path,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None);try{$file.Write($bytes,0,$bytes.Length);$file.Flush($true)}finally{$file.Dispose()}}
  function Read-OwnedJson([string]$Path){return ([WinsmuxDesktopNativeActor]::ReadChild($Path)|ConvertFrom-Json -AsHashtable)}
  if($HeadlessParent){
   Assert-Fixed (-not $DesktopNativeLifecycle -and $facts['elevation'] -eq 1 -and $facts['integrity_rid'] -ge 12288) 'high_bootstrap'
@@ -131,18 +265,19 @@ try {
   [void][WinsmuxDesktopNativeActor]::NativeDirectory($root,$true)
   $inputRoot=Join-Path $root 'input';$evidenceRoot=Join-Path $root 'evidence'
   [void][WinsmuxDesktopNativeActor]::NativeDirectory($inputRoot,$true);[void][WinsmuxDesktopNativeActor]::NativeDirectory($evidenceRoot,$true)
-  $buildWitness=[WinsmuxDesktopNativeActor]::NativeFile($BuildManifest)
-  $artifacts=[Collections.Generic.List[object]]::new();$finished=0
-  foreach($line in [IO.File]::ReadLines($BuildManifest,$utf8)){if([string]::IsNullOrWhiteSpace($line)){continue};$row=$line|ConvertFrom-Json -AsHashtable;if($row.reason -ceq 'compiler-artifact' -and $null -ne $row.executable){$artifacts.Add($row)}elseif($row.reason -ceq 'build-finished'){Assert-Fixed ($row.success -eq $true) 'cargo_failed';$finished++}}
-  Assert-Fixed ($finished -eq 1 -and [WinsmuxDesktopNativeActor]::NativeFile($BuildManifest)['sha256'] -ceq $buildWitness['sha256']) 'cargo_terminal'
-  $testRows=@($artifacts|Where-Object{$_.target.name -ceq 'workspace_host_e2e' -and 'test' -cin $_.target.kind})
-  $cliRows=@($artifacts|Where-Object{$_.target.name -ceq 'winsmux' -and 'bin' -cin $_.target.kind -and -not $_.profile.test})
-  Assert-Fixed ($testRows.Count -eq 1 -and $cliRows.Count -eq 1) 'cargo_artifact_identity'
-  $testImage=[IO.Path]::GetFullPath([string]$testRows[0].executable);$cliImage=[IO.Path]::GetFullPath([string]$cliRows[0].executable)
+  $producer=Get-HeadlessProducerRoot $source
+  $expectedManifest=Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$source+'.jsonl')
+  Assert-Fixed ([string]::Equals([IO.Path]::GetFullPath($BuildManifest),[IO.Path]::GetFullPath($expectedManifest),[StringComparison]::OrdinalIgnoreCase)) 'cargo_manifest_path'
+  $owner=Read-HeadlessCompilerProducer $producer $source $env:GITHUB_RUN_ID $env:GITHUB_RUN_ATTEMPT
+  $selected=Read-HeadlessBuildArtifacts $BuildManifest
+  $testImage=$selected.test;$cliImage=$selected.cli
+  $compilerInputs=[WinsmuxHeadlessOwned.WinsmuxHeadlessCompilerInputs]::Normalize($producer,$owner.identity,$owner.receipt_id,$owner.receipt_sha,[IO.Path]::GetFullPath($BuildManifest),$testImage,$cliImage,$PSCommandPath)
   $testWitness=[WinsmuxDesktopNativeActor]::NativeFile($testImage);$cliWitness=[WinsmuxDesktopNativeActor]::NativeFile($cliImage)
   $scriptWitness=[WinsmuxDesktopNativeActor]::NativeFile($PSCommandPath)
-  $binding=[ordered]@{schema='winsmux-headless-actor-input/v1';source_commit=$source;expected_sid=$facts['sid_sha256'];expected_session=$facts['session'];script_sha256=$scriptWitness['sha256'];test_executable=$testImage;test_sha256=$testWitness['sha256'];cli_executable=$cliImage;cli_sha256=$cliWitness['sha256'];tests=$tests}
+  $binding=[ordered]@{schema='winsmux-headless-actor-input/v1';source_commit=$source;expected_sid=$facts['sid_sha256'];expected_session=$facts['session'];script_sha256=$scriptWitness['sha256'];test_executable=$testImage;test_sha256=$testWitness['sha256'];cli_executable=$cliImage;cli_sha256=$cliWitness['sha256'];tests=$tests;compiler_inputs=$compilerInputs}
+  Assert-HeadlessBoundInputs $binding $PSCommandPath
   Write-NewJson (Join-Path $inputRoot 'binding.json') $binding
+  Assert-HeadlessBoundInputs $binding $PSCommandPath
   $phase='medium_bootstrap'
   $pwsh=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName;$pwshSha=[WinsmuxDesktopNativeActor]::NativeFile($pwsh)['sha256']
   $outer=[WinsmuxDesktopNativeActor]::StartNative('medium-bootstrap',$pwsh,$pwshSha,$root,$source,$inputRoot,$evidenceRoot,$PSCommandPath)
@@ -173,10 +308,12 @@ try {
   $result.restricted_medium=$facts['elevation'] -eq 0 -and $facts['integrity_rid'] -ge 8192 -and $facts['integrity_rid'] -lt 12288 -and $facts['restricted'] -eq 1
   $result.actor_admitted=$result.same_sid -and $result.same_session -and $result.restricted_medium
   Assert-Fixed $result.actor_admitted 'restricted_actor'
+  Assert-HeadlessBoundInputs $binding $PSCommandPath
   Add-Type -Path (Join-Path $repoRoot 'scripts/DesktopProcessOwner.cs') -ErrorAction Stop 2>$null
   $testImage=[string]$binding.test_executable;$cliImage=[string]$binding.cli_executable
   $phase='headless_cases';$observed=[Collections.Generic.List[object]]::new()
   foreach($test in $tests){
+   Assert-HeadlessBoundInputs $binding $PSCommandPath
    Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $binding.cli_sha256) 'test_input_changed'
    $owned=$null;$terminal=$false
    try{
@@ -191,6 +328,7 @@ try {
    }finally{
     if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(180000,500)};if($owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted){$owned.Dispose()}}
    }
+   Assert-HeadlessBoundInputs $binding $PSCommandPath
    Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $binding.cli_sha256) 'test_output_changed_inputs'
   }
   $result.tests=$observed.ToArray();$result.outcome=if(@($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0){'passed'}else{'observed_failure'}
