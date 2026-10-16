@@ -23,6 +23,28 @@ CLI versions used for the actual journey. Untested combinations remain
 unverified. Use [Troubleshooting](TROUBLESHOOTING.md) when detection or launch
 fails after an update.
 
+### Observed CLI versions in the v0.38.0 candidate
+
+On 2026-10-16, the v0.38.0 GUI candidate was used to launch the following
+installed CLIs and run the same fixed file-writing task:
+
+| CLI | Version | Explicit model | Reasoning setting | Observed task result |
+| --- | --- | --- | --- | --- |
+| Codex | 0.163.0 | gpt-6.1-sol | high | Expected file bytes matched; CLI exit code 0. |
+| Claude Code | 2.1.301 | claude-opus-5-5 | medium | Expected file bytes matched; CLI exit code 0. |
+
+The recorded machine was Windows 11 Pro build 26300, x64, with PowerShell
+7.6.5. The Claude Code journey also recorded the actual WebView2 runtime as
+155.0.4283.45. These results belong to the tested GUI candidate, not a published
+v0.38.0 installer.
+
+The complete journey checks did not pass: process accounting and observation
+checks remain unresolved. The task results above do not establish that every
+launch, interruption, update, recovery, or installation workflow passed. They
+also do not establish support for ARM64, Windows Server, other Windows builds,
+or future CLI versions. The model and reasoning settings identify these
+observations; choose settings available to your own CLI and account.
+
 ## Earlier worker and adapter paths
 
 The remaining sections describe earlier worker-slot and adapter paths. Their
