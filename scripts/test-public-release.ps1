@@ -1075,9 +1075,10 @@ function Start-OwnedProcess {
 }
 
 function Invoke-DesktopOwnedNativeProcess {
-    param([string]$FilePath, [string[]]$ArgumentList, [hashtable]$Environment, [int]$TimeoutSeconds)
+    param([string]$FilePath, [string[]]$ArgumentList, [hashtable]$Environment, [int]$TimeoutSeconds, [switch]$NsisJourney)
+    if ($NsisJourney) { [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds) }
     $owned = Start-OwnedProcess -FilePath $FilePath -ArgumentList $ArgumentList -Environment $Environment
-    return Wait-DesktopOwnedNativeProcess -Owned $owned -TimeoutSeconds $TimeoutSeconds
+    return Wait-DesktopOwnedNativeProcess -Owned $owned -TimeoutSeconds $TimeoutSeconds -NsisJourney:$NsisJourney
 }
 
 function Invoke-DesktopNsisProcess {
@@ -1123,9 +1124,9 @@ function Invoke-DesktopNsisProcess {
 }
 
 function Wait-DesktopOwnedNativeProcess {
-    param([Parameter(Mandatory)]$Owned, [int]$TimeoutSeconds)
+    param([Parameter(Mandatory)]$Owned, [int]$TimeoutSeconds, [switch]$NsisJourney)
     try {
-        if (-not $owned.owner.WaitTerminal(($TimeoutSeconds * 1000), $script:DesktopObservationPollMilliseconds)) {
+        if (-not $owned.owner.WaitTerminal($(if ($NsisJourney) { Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired } else { $TimeoutSeconds * 1000 }), $script:DesktopObservationPollMilliseconds)) {
             $failure = [TimeoutException]::new('desktop_owned_child_timeout')
             $failure.Data['native_observation'] = Get-DesktopOwnedProcessObservation $owned
             try { $owned.owner.ForceFailureCleanup($script:DesktopObservationTimeoutMilliseconds, $script:DesktopObservationPollMilliseconds) }
@@ -4213,12 +4214,48 @@ function Get-DesktopNativeMsiLogObservation {
     return $projection
 }
 
+function Get-DesktopNativeTerminalExitCode {
+    param([Parameter(Mandatory)]$Owned)
+    $code = $Owned.ExitCode
+    Assert-Condition ($code -is [uint32] -and $code -ne [uint32]259) 'desktop_native_terminal_exit_unobserved'
+    return $code
+}
+
+function Get-DesktopNativeNsisJourneyObservationSlots {
+    return @('transport-before', 'legacy-capture', 'legacy-update', 'hash', 'missing', 'same-version', 'legacy-uninstall', 'fresh', 'startup-observe', 'startup-terminal', 'crash-observe', 'crash-terminal', 'crash-reentry', 'fresh-uninstall', 'transport-after')
+}
+function Get-DesktopNativeNsisJourneyBudgetMilliseconds {
+    return [int](180000 * @(Get-DesktopNativeNsisJourneyObservationSlots).Count)
+}
+function Start-DesktopNativeNsisJourneyDeadline {
+    Assert-Condition ($null -eq (Get-Variable -Name DesktopNativeNsisJourneyDeadline -Scope Script -ErrorAction SilentlyContinue)) 'desktop_native_nsis_journey_already_started'
+    $budget=Get-DesktopNativeNsisJourneyBudgetMilliseconds
+    $started=[DateTime]::UtcNow
+    $script:DesktopNativeNsisJourneyDeadline=[pscustomobject]@{started=$started;deadline=$started.AddMilliseconds($budget);budget=$budget;clock=[Diagnostics.Stopwatch]::StartNew()}
+}
+function Get-DesktopNativeNsisJourneyRemainingMilliseconds {
+    param([switch]$AllowExpired)
+    $variable=Get-Variable -Name DesktopNativeNsisJourneyDeadline -Scope Script -ErrorAction SilentlyContinue
+    Assert-Condition ($null -ne $variable -and $null -ne $variable.Value) 'desktop_native_nsis_journey_context_missing'
+    $context=$variable.Value
+    Assert-Condition ($context.started -is [DateTime] -and $context.started.Kind -eq [DateTimeKind]::Utc -and $context.deadline -is [DateTime] -and $context.deadline.Kind -eq [DateTimeKind]::Utc -and $context.budget -is [int] -and $context.budget -eq (Get-DesktopNativeNsisJourneyBudgetMilliseconds) -and $context.deadline -eq $context.started.AddMilliseconds($context.budget) -and $context.clock -is [Diagnostics.Stopwatch] -and $context.clock.IsRunning) 'desktop_native_nsis_journey_context_invalid'
+    $elapsed=$context.clock.ElapsedMilliseconds
+    Assert-Condition ($elapsed -ge 0) 'desktop_native_nsis_journey_context_invalid'
+    $remaining=[int][Math]::Max(0,[Math]::Floor([Math]::Min(($context.deadline-[DateTime]::UtcNow).TotalMilliseconds,($context.budget-$elapsed))))
+    Assert-Condition ($AllowExpired -or $remaining -gt 0) 'desktop_native_nsis_journey_expired'
+    return $remaining
+}
+
 function Invoke-DesktopNativeOwnedEntry {
-    param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '')
+    param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [string]$Package = '', [switch]$NsisJourney)
+    if ($NsisJourney) {
+        Assert-Condition ($Purpose -cin @('nsis-update','nsis-fresh','nsis-uninstall')) 'desktop_native_nsis_journey_purpose_refused'
+        [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds)
+    }
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
     $terminal = $false
     try {
-        $terminal = $owned.WaitTerminal(180000)
+        $terminal = $owned.WaitTerminal($(if ($NsisJourney) { Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired } else { 180000 }))
         if (-not $terminal) {
             if ($Purpose -ceq 'msi-install-en') {
                 $timeoutObservation = [ordered]@{
@@ -4242,7 +4279,7 @@ function Invoke-DesktopNativeOwnedEntry {
             }
             throw 'desktop_native_entry_timeout'
         }
-        $receipt = [ordered]@{ purpose = $Purpose; exit_code = $owned.ExitCode; process = $owned.Facts() }
+        $receipt = [ordered]@{ purpose = $Purpose; exit_code = (Get-DesktopNativeTerminalExitCode $owned); process = $owned.Facts() }
         if ($Purpose -ceq 'msi-install-en') { $receipt.msi_log = Get-DesktopNativeMsiLogObservation -Root $Root }
         return $receipt
     } finally {
@@ -4252,8 +4289,8 @@ function Invoke-DesktopNativeOwnedEntry {
 }
 
 function Invoke-DesktopNativeTransportCheck {
-    param([Parameter(Mandatory)][string]$NodeImage)
-    $result = Invoke-DesktopOwnedNativeProcess -FilePath $NodeImage -ArgumentList @('--input-type=module', '--eval', (Get-DesktopNativeTransportModule), 'verify', $DesktopNativeSourceCommit, $DesktopNativeFormat, $script:RepositoryRoot) -Environment @{} -TimeoutSeconds 180
+    param([Parameter(Mandatory)][string]$NodeImage, [switch]$NsisJourney)
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $NodeImage -ArgumentList @('--input-type=module', '--eval', (Get-DesktopNativeTransportModule), 'verify', $DesktopNativeSourceCommit, $DesktopNativeFormat, $script:RepositoryRoot) -Environment @{} -TimeoutSeconds 180 -NsisJourney:$NsisJourney
     Assert-Condition ($result.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace($result.stderr) -and -not $result.stdout_metadata.truncated) 'desktop_native_transport_refused'
     $receipt = ConvertFrom-DesktopStrictJsonText $result.Stdout
     Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-native-transport-check/v1' -and $receipt.mode -ceq 'verify' -and $receipt.source_commit -ceq $DesktopNativeSourceCommit -and $receipt.format -ceq $DesktopNativeFormat -and $receipt.files -eq 9 -and $receipt.runtime_pe_count -eq 4) 'desktop_native_transport_result_refused'
@@ -4293,7 +4330,7 @@ function Invoke-DesktopNativeBaselineRecapture {
     $output = Join-Path $script:DesktopNativeEvidenceRoot 'legacy-actual'
     Assert-Condition (-not (Test-Path -LiteralPath $output) -and -not (Test-Path -LiteralPath $Legacy.registration_profile.root)) 'desktop_native_legacy_fixture_exists'
     $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $result = Invoke-DesktopOwnedNativeProcess -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $capture, '-Installer', (Join-Path $DesktopNativeBaselineDirectory 'winsmux_0.38.0_x64-setup.exe'), '-Profile', 'ja-root', '-OutputDirectory', $output) -Environment @{} -TimeoutSeconds 180
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $pwsh -ArgumentList @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $capture, '-Installer', (Join-Path $DesktopNativeBaselineDirectory 'winsmux_0.38.0_x64-setup.exe'), '-Profile', 'ja-root', '-OutputDirectory', $output) -Environment @{} -NsisJourney
     Assert-Condition ($result.exit_code -eq 0 -and -not $result.stderr_metadata.truncated) 'desktop_native_actual_legacy_capture_failed'
     $receipt = Read-DesktopStrictJson (Join-Path $output 'capture.json')
     Assert-DesktopNativeBaselineReceipt $receipt $Legacy
@@ -4350,7 +4387,7 @@ function Invoke-DesktopNativeNsisAction {
     $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'
     $expectedCli = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'cli')[0]
     Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($cli)['sha256'] -ceq $expectedCli.sha256) 'desktop_native_action_cli_mismatch'
-    $result = Invoke-DesktopOwnedNativeProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', ('nsis-' + $Command), '--context', $path) -Environment @{} -TimeoutSeconds 180
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', ('nsis-' + $Command), '--context', $path) -Environment @{} -NsisJourney
     Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($path)['identity'] -ceq $witness['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($path)['sha256'] -ceq $witness['sha256']) 'desktop_native_action_context_changed'
     Write-DesktopNativeEvidence ($Case + '-action.json') ([ordered]@{ schema = 'winsmux-desktop-native-action-observation/v1'; command = $Command; context = $witness; process = $result })
     return $result
@@ -4459,7 +4496,7 @@ function Invoke-DesktopNativeNsisJourney {
     $legacyRoot = Invoke-DesktopNativeBaselineRecapture $Legacy
     $legacyBefore = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
     Write-DesktopNativeEvidence 'legacy-before.json' $legacyBefore
-    $first = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-update' -Image $setup -ImageSha256 $setupSha -Root $legacyRoot
+    $first = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-update' -Image $setup -ImageSha256 $setupSha -Root $legacyRoot -NsisJourney
     Write-DesktopNativeEvidence 'legacy-update-process.json' $first
     Assert-Condition ($first.exit_code -eq 0) 'LegacyProfileMismatch-or-native-update-failed'
     $state = Assert-DesktopNativeInstalledPayload -Root $legacyRoot -Plan $script:DesktopNativePlan -PlanSha256 $planSha -Managed
@@ -4483,7 +4520,7 @@ function Invoke-DesktopNativeNsisJourney {
     Write-DesktopNativeEvidence 'nsis-same-version-ja-state.json' $same
     $uninstallPrior = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
     $uninstaller = Join-Path $legacyRoot 'uninstall.exe'; $unSha = [WinsmuxDesktopNativeActor]::NativeFile($uninstaller)['sha256']
-    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $legacyRoot
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $legacyRoot -NsisJourney
     Write-DesktopNativeEvidence 'legacy-managed-uninstall-process.json' $removed
     Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_managed_uninstall_failed'
     $after = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
@@ -4530,12 +4567,14 @@ function Invoke-DesktopNativeMsiJourney {
 
 function Invoke-DesktopNativeStartupFault {
     param([Parameter(Mandatory)][string]$Purpose, [Parameter(Mandatory)][string]$Image, [Parameter(Mandatory)][string]$ImageSha256, [Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$GuiSha256, [Parameter(Mandatory)][string]$Sentinel, [string]$Package = '')
+    $nsisJourney = $Purpose -ceq 'nsis-update'
+    if ($nsisJourney) { [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds) }
     $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
     $owned = [WinsmuxDesktopNativeActor]::StartNative($Purpose, $Image, $ImageSha256, $Root, $DesktopNativeSourceCommit, $Package, $DesktopNativeBaselineDirectory, $PSCommandPath)
     $terminal = $false; $stopped = $null; $nonmemberObserved = $false
     try {
-        $watch = [Diagnostics.Stopwatch]::StartNew()
-        while (-not $owned.HasExited -and $watch.ElapsedMilliseconds -lt 180000 -and $null -eq $stopped) {
+        $watch = if ($nsisJourney) { $null } else { [Diagnostics.Stopwatch]::StartNew() }
+        while (-not $owned.HasExited -and $(if ($nsisJourney) { (Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired) -gt 0 } else { $watch.ElapsedMilliseconds -lt 180000 }) -and $null -eq $stopped) {
             foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='winsmux-app.exe'")) {
                 $held = $owned.HoldStartupGui([uint32]$process.ProcessId, (Join-Path $Root 'winsmux-app.exe'), $GuiSha256)
                 if ($null -eq $held) { $nonmemberObserved = $true; continue }
@@ -4552,9 +4591,9 @@ function Invoke-DesktopNativeStartupFault {
             }
             if ($null -eq $stopped) { Start-Sleep -Milliseconds 20 }
         }
-        $terminal = $owned.WaitTerminal(180000)
+        $terminal = $owned.WaitTerminal($(if ($nsisJourney) { Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired } else { 180000 }))
         if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_startup_fault_timeout' }
-        $processReceipt = [ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts(); stopped_gui = $stopped; observed_gui_outside_job = $nonmemberObserved }
+        $processReceipt = [ordered]@{ exit_code = (Get-DesktopNativeTerminalExitCode $owned); process = $owned.Facts(); stopped_gui = $stopped; observed_gui_outside_job = $nonmemberObserved }
         Write-DesktopNativeEvidence ($DesktopNativeFormat.ToLowerInvariant() + '-startup-fault-process.json') $processReceipt
         Assert-Condition ($null -ne $stopped -and $processReceipt.exit_code -ne 0) 'desktop_native_startup_fault_unmet'
         $restored = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
@@ -4579,11 +4618,11 @@ function Invoke-DesktopNativeNsisCrashFault {
     $stream = [IO.FileStream]::new($context, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
     $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'
+    [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds)
     $owned = Start-OwnedProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', 'nsis-install', '--context', $context) -Environment @{}
     $observed = $null; $terminal = $false
     try {
-        $watch = [Diagnostics.Stopwatch]::StartNew()
-        while (-not $owned.process.HasExited -and $watch.ElapsedMilliseconds -lt 180000) {
+        while (-not $owned.process.HasExited -and (Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired) -gt 0) {
             try {
                 $published = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
                 if ($published['identity'] -cne $before['identity'] -and $published['sha256'] -ceq $first.sha256 -and $published['bytes'] -eq $first.bytes) { $observed = $published; break }
@@ -4669,7 +4708,7 @@ function Invoke-DesktopNativeFreshNsis {
     $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'; $setupSha = [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']
     $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'; $plan = Read-DesktopStrictJson $planPath; $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']; $gui = @($plan.files | Where-Object role -CEQ 'gui')[0]
     Assert-NoDesktopProtectedState -State (Get-DesktopProtectedState -InstallRoot $Root) -Phase 'native NSIS fresh preflight'
-    $installed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-fresh' -Image $setup -ImageSha256 $setupSha -Root $Root
+    $installed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-fresh' -Image $setup -ImageSha256 $setupSha -Root $Root -NsisJourney
     Write-DesktopNativeEvidence 'nsis-fresh-process.json' $installed
     Assert-Condition ($installed.exit_code -eq 0) 'desktop_native_nsis_fresh_failed'
     [void](Assert-DesktopNativeInstalledPayload -Root $Root -Plan $plan -PlanSha256 $sha -Managed)
@@ -4681,7 +4720,7 @@ function Invoke-DesktopNativeFreshNsis {
     $uninstallState = Read-DesktopStrictJson (Join-Path $Root '.winsmux-desktop/installed.json')
     $uninstallPrior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
     $uninstaller = Join-Path $Root 'uninstall.exe'; $unSha = [WinsmuxDesktopNativeActor]::NativeFile($uninstaller)['sha256']
-    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $Root
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $Root -NsisJourney
     Write-DesktopNativeEvidence 'nsis-fresh-uninstall-process.json' $removed
     Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_nsis_fresh_uninstall_failed'
     $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
@@ -4732,9 +4771,12 @@ function Invoke-DesktopNativeLifecycle {
         [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $false)
         $binding = Get-DesktopNativeBootstrapBinding -InputRoot $inputRoot
     }
-    $transport = Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path
+    $capacityStage = $medium -and $DesktopNativeFormat -ceq 'NSIS' -and (Test-Path -LiteralPath (Join-Path $script:DesktopNativeEvidenceRoot 'capacity-request.json'))
+    $normalNsisJourney = $medium -and $DesktopNativeFormat -ceq 'NSIS' -and -not $capacityStage
+    if ($normalNsisJourney) { Start-DesktopNativeNsisJourneyDeadline }
+    $transport = Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path -NsisJourney:$normalNsisJourney
     $legacy = Assert-DesktopNativeBaselineArtifact
-    if ($medium -and $DesktopNativeFormat -ceq 'NSIS' -and (Test-Path -LiteralPath (Join-Path $script:DesktopNativeEvidenceRoot 'capacity-request.json'))) { return Invoke-DesktopNativeCapacityStage -InputRoot $inputRoot }
+    if ($capacityStage) { return Invoke-DesktopNativeCapacityStage -InputRoot $inputRoot }
     Write-DesktopNativeEvidence $(if ($bootstrap) { 'high-parent-admission.json' } else { 'native-admission.json' }) ([ordered]@{ transport = $transport; actor = $actor; baseline_artifact = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeBaselineDirectory 'capture.json')); script_sha256 = $binding.script_sha256 })
     if ($bootstrap) {
         $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
@@ -4742,8 +4784,7 @@ function Invoke-DesktopNativeLifecycle {
         $owned = [WinsmuxDesktopNativeActor]::StartNative('medium-bootstrap', $pwsh, $sha, $inputRoot, $DesktopNativeSourceCommit, $DesktopNativeCandidateDirectory, $DesktopNativeBaselineDirectory, $PSCommandPath)
         $terminal = $false
         try {
-            $observationSlots = @('transport-before', 'legacy-capture', 'legacy-update', 'hash', 'missing', 'same-version', 'legacy-uninstall', 'fresh', 'startup-observe', 'startup-terminal', 'crash-observe', 'crash-terminal', 'crash-reentry', 'fresh-uninstall', 'transport-after')
-            $terminal = $owned.WaitTerminal($script:DesktopObservationTimeoutMilliseconds * $observationSlots.Count)
+            $terminal = $owned.WaitTerminal((Get-DesktopNativeNsisJourneyBudgetMilliseconds))
             if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_medium_bootstrap_timeout' }
             Write-DesktopNativeEvidence 'medium-bootstrap-process.json' ([ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts() })
             $resultPath = Join-Path $script:DesktopNativeEvidenceRoot 'native-journey-result.json'
@@ -4780,7 +4821,7 @@ function Invoke-DesktopNativeLifecycle {
         $after = [WinsmuxDesktopNativeActor]::NativeFile($sentinel)
         Assert-Condition ($after['identity'] -ceq $user['identity'] -and $after['sha256'] -ceq $user['sha256']) 'desktop_native_final_user_preservation_failed'
         $result.preserved_user = $after
-        [void](Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path)
+        [void](Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path -NsisJourney:$normalNsisJourney)
         $result.outcome = if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { 'journey_passed' } else { 'passed' }
         if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { $result.schema = 'winsmux-desktop-native-journey-ci/v1' }
     } catch { $result.failure = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }
@@ -5320,14 +5361,13 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($sections.Count -eq 1) 'Desktop NSIS native uninstall section must be unique.'
     $body = $sections[0].Groups['body'].Value
     foreach ($line in @(
-        '  InitPluginsDir',
-        '  StrCpy $WinsmuxSource "$PLUGINSDIR\winsmux-source"',
-        '  StrCpy $WinsmuxHelper "$PLUGINSDIR\winsmux-bootstrap\winsmux.exe"',
-        '  StrCpy $WinsmuxContext "$PLUGINSDIR\winsmux-context.txt"',
+        '  Call un.WinsmuxInitWorkspace',
+        '  SetOutPath "$WinsmuxWorkspace\winsmux-bootstrap"',
+        '  SetOutPath $WinsmuxSource',
         '  File /oname=winsmux.exe "${WINSMUX_NSIS_HELPER_PATH}"',
         '  File /oname=winsmux.install-plan.json "${WINSMUX_NSIS_PLAN_PATH}"',
         '  Call un.WinsmuxWriteUninstallContext',
-        '  nsExec::ExecToStack ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"''',
+        '  nsExec::ExecToStack $WinsmuxCommand',
         '  Pop $0',
         '  Pop $1'
     )) {
@@ -5342,6 +5382,24 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     $failure = $failure.Replace(([string][char]13 + [char]10), [string][char]10)
     Assert-Condition ($body.Contains($failure)) 'Desktop NSIS native uninstall must stop on helper failure.'
     Assert-Condition (-not [regex]::IsMatch($body, '(?im)^\s*(?:DeleteRegKey|DeleteRegValue|WriteReg[A-Za-z]*|Delete|RMDir)\b')) 'Desktop NSIS uninstall must delegate owned mutations to the native helper.'
+    $workspaces = [regex]::Matches($template, '(?ms)^!macro WINSMUX_WORKSPACE_FUNCTION NAME ACTION COMMAND_OVERHEAD\n(?<body>.*?)^!macroend$')
+    Assert-Condition ($workspaces.Count -eq 1) 'Desktop NSIS workspace initialization must be shared and unique.'
+    foreach ($line in @(
+        '  StrCpy $0 $PLUGINSDIR',
+        '  System::Call ''kernel32::GetLongPathNameW(w r0, w .r1, i ${NSIS_MAX_STRLEN}) i.r2''',
+        '  StrCpy $WinsmuxSource "$WinsmuxWorkspace\winsmux-source"',
+        '  StrCpy $WinsmuxHelper "$WinsmuxWorkspace\winsmux-bootstrap\winsmux.exe"',
+        '  StrCpy $WinsmuxContext "$WinsmuxWorkspace\winsmux-context.txt"',
+        '  StrCpy $WinsmuxCommand ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-${ACTION} --context $\"$WinsmuxContext$\"'''
+    )) {
+        Assert-Condition ([regex]::Matches($workspaces[0].Groups['body'].Value, '(?m)^' + [regex]::Escape($line) + '$').Count -eq 1) 'Desktop NSIS workspace source, helper, context or command differs.'
+    }
+    foreach ($line in @(
+        '!insertmacro WINSMUX_WORKSPACE_FUNCTION WinsmuxInitWorkspace install 115',
+        '!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117'
+    )) {
+        Assert-Condition ([regex]::Matches($template, '(?m)^' + [regex]::Escape($line) + '$').Count -eq 1) 'Desktop NSIS workspace action or command bound differs.'
+    }
     $contexts = [regex]::Matches($template, '(?ms)^!macro WINSMUX_CONTEXT_FUNCTION NAME ACTION\n(?<body>.*?)^!macroend$')
     Assert-Condition ($contexts.Count -eq 1) 'Desktop NSIS native context writer must be unique.'
     $keys = @([regex]::Matches($contexts[0].Groups['body'].Value, '(?m)^  FileWriteUTF16LE \$0 "(?<key>[a-z0-9_]+)=') | ForEach-Object { $_.Groups['key'].Value })
@@ -5528,10 +5586,14 @@ function Invoke-SelfTest {
             $nsisTemplateSource = [IO.File]::ReadAllText($nsisTemplatePath)
             Assert-DesktopNativeNsisUninstallAdapterSource -HookSource $nsisHookSource -TemplateSource $nsisTemplateSource
             $caseIds.Add('desktop_native_uninstall_adapter')
-            $nativeUninstallDispatch = '  nsExec::ExecToStack ''$\"$WinsmuxHelper$\" --winsmux-internal-desktop-installer nsis-uninstall --context $\"$WinsmuxContext$\"'''
+            $nativeUninstallDispatch = '  nsExec::ExecToStack $WinsmuxCommand'
+            $uninstallSection = [regex]::Matches($nsisTemplateSource, '(?ms)^Section Uninstall\n.*?^SectionEnd$')
+            Assert-Condition ($uninstallSection.Count -eq 1) 'Desktop NSIS uninstall mutation section differs.'
+            $uninstallSource = $uninstallSection[0].Value
+            Assert-Condition ([regex]::Matches($uninstallSource, [regex]::Escape($nativeUninstallDispatch)).Count -eq 1) 'Desktop NSIS uninstall mutation dispatch differs.'
             $adapterMutations = [ordered]@{
-                missing_dispatch = $nsisTemplateSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing')
-                wrong_action = $nsisTemplateSource.Replace(' nsis-uninstall --context ', ' nsis-install --context ')
+                missing_dispatch = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing'))
+                wrong_action = $nsisTemplateSource.Replace('!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117', '!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace install 115')
                 missing_failure_guard = $nsisTemplateSource.Replace('${If} $0 != 0', '${If} $0 = 0')
                 direct_registry_delete = $nsisTemplateSource.Replace('Section Uninstall', ('Section Uninstall' + [char]10 + '  DeleteRegKey HKCU "Software\github\winsmux"'))
             }
