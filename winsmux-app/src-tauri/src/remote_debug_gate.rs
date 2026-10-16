@@ -101,6 +101,37 @@ pub(crate) fn compose_browser_args(port: u16) -> String {
     format!("{WRY_DEFAULT_BROWSER_ARGS} --remote-debugging-port={port}")
 }
 
+/// One immutable policy per app; never modifies process environment.
+pub(crate) struct WebviewCreationPolicy {
+    pub(crate) additional_browser_args: Option<String>,
+}
+
+impl WebviewCreationPolicy {
+    pub(crate) fn from_gate(gate: RemoteDebugGate) -> Result<Self, RemoteDebugGateReason> {
+        match gate {
+            RemoteDebugGate::Disabled => Ok(Self { additional_browser_args: None }),
+            RemoteDebugGate::Enabled { port } => Ok(Self { additional_browser_args: Some(compose_browser_args(port)) }),
+            RemoteDebugGate::Rejected(reason) => Err(reason),
+        }
+    }
+}
+
+#[tauri::command]
+pub(crate) fn startup_secondary_creation_policy(
+    window: tauri::WebviewWindow,
+    invocation: tauri::ipc::Request<'_>,
+    policy: tauri::State<'_, WebviewCreationPolicy>,
+) -> Result<serde_json::Value, String> {
+    if !crate::startup_secondary_native::main_local_caller(&window, &invocation) {
+        return Err("creation_policy_denied".into());
+    }
+    match invocation.body() {
+        tauri::ipc::InvokeBody::Json(value) if value.as_object().is_some_and(|body| body.is_empty()) => {},
+        _ => return Err("creation_policy_invalid_request".into()),
+    }
+    Ok(serde_json::json!({ "additional_browser_args": policy.additional_browser_args }))
+}
+
 pub(crate) fn resolve_from_env() -> RemoteDebugGate {
     let profile = env::var_os(WINSMUX_DESKTOP_TEST_PROFILE_ENV);
     let port = env::var_os(WINSMUX_DESKTOP_REMOTE_DEBUG_PORT_ENV);

@@ -1,0 +1,3355 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "AcceptedPhase": {
+      "enum": [
+        "accepted"
+      ],
+      "type": "string"
+    },
+    "ArtifactChoiceData": {
+      "additionalProperties": false,
+      "properties": {
+        "kept_artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "left_artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "right_artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        }
+      },
+      "required": [
+        "kept_artifact_id",
+        "left_artifact_id",
+        "right_artifact_id"
+      ],
+      "type": "object"
+    },
+    "ArtifactChoiceListData": {
+      "additionalProperties": false,
+      "properties": {
+        "choices": {
+          "items": {
+            "$ref": "#/definitions/ArtifactChoiceData"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "choices"
+      ],
+      "type": "object"
+    },
+    "ArtifactDiffData": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "binary"
+            },
+            "text": {
+              "type": "null"
+            },
+            "truncated": {
+              "const": false
+            }
+          }
+        }
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "kind": {
+          "$ref": "#/definitions/FileKind"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "kind",
+        "text",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ArtifactId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ArtifactListData": {
+      "additionalProperties": false,
+      "properties": {
+        "git_candidates": {
+          "$ref": "#/definitions/StringSet_RelativePath"
+        },
+        "git_candidates_error": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GitCandidatesError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "registered": {
+          "items": {
+            "$ref": "#/definitions/ArtifactRef"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "git_candidates",
+        "registered"
+      ],
+      "type": "object"
+    },
+    "ArtifactReadData": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "text"
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "binary"
+            },
+            "text": {
+              "type": "null"
+            },
+            "truncated": {
+              "const": false
+            }
+          }
+        }
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "kind": {
+          "$ref": "#/definitions/FileKind"
+        },
+        "size_bytes": {
+          "$ref": "#/definitions/U"
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "kind",
+        "size_bytes",
+        "text",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "association": {
+              "type": "null"
+            },
+            "run_id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "association": {
+              "const": "caller_selected"
+            },
+            "run_id": {
+              "$ref": "#/definitions/RunId"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "#/definitions/ArtifactId"
+        },
+        "association": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Association"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "relative_path": {
+          "$ref": "#/definitions/RelativePath"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "artifact_id",
+        "association",
+        "project_id",
+        "relative_path",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "ArtifactRegisterData": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/definitions/ArtifactRef"
+        }
+      },
+      "required": [
+        "artifact"
+      ],
+      "type": "object"
+    },
+    "Association": {
+      "enum": [
+        "caller_selected"
+      ],
+      "type": "string"
+    },
+    "Axis": {
+      "enum": [
+        "horizontal",
+        "vertical"
+      ],
+      "type": "string"
+    },
+    "CapabilitiesData": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "providers": {
+              "type": "null"
+            },
+            "shell_profile_ids": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "providers": {
+              "type": "array"
+            },
+            "shell_profile_ids": {
+              "type": "array"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "max_message_bytes": {
+          "$ref": "#/definitions/MessageLimit"
+        },
+        "operations": {
+          "$ref": "#/definitions/StringSet_OperationName"
+        },
+        "providers": {
+          "items": {
+            "$ref": "#/definitions/ProviderCapability"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "replay_capacity": {
+          "$ref": "#/definitions/ReplayCapacity"
+        },
+        "schema_version": {
+          "$ref": "#/definitions/Version"
+        },
+        "shell_profile_ids": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringSet_NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "max_message_bytes",
+        "operations",
+        "providers",
+        "replay_capacity",
+        "schema_version",
+        "shell_profile_ids"
+      ],
+      "type": "object"
+    },
+    "CleanupRunGetData": {
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "cleanup_complete": {
+            "const": true
+          }
+        }
+      },
+      "properties": {
+        "cleanup_complete": {
+          "type": "boolean"
+        },
+        "run": {
+          "$ref": "#/definitions/RunObservation"
+        }
+      },
+      "required": [
+        "cleanup_complete",
+        "run"
+      ],
+      "then": {
+        "properties": {
+          "run": {
+            "properties": {
+              "evidence": {
+                "const": "process_exit"
+              },
+              "process": {
+                "const": "exited"
+              }
+            }
+          }
+        }
+      },
+      "type": "object"
+    },
+    "ConnectionDecideData": {
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "state": {
+            "const": "revoked"
+          }
+        }
+      },
+      "properties": {
+        "connection_id": {
+          "$ref": "#/definitions/ConnectionId"
+        },
+        "project_ids": {
+          "$ref": "#/definitions/StringSet_ProjectId"
+        },
+        "scopes": {
+          "$ref": "#/definitions/StringSet_Scope"
+        },
+        "state": {
+          "$ref": "#/definitions/DecidedState"
+        }
+      },
+      "required": [
+        "connection_id",
+        "project_ids",
+        "scopes",
+        "state"
+      ],
+      "then": {
+        "properties": {
+          "project_ids": {
+            "maxItems": 0
+          },
+          "scopes": {
+            "maxItems": 0
+          }
+        }
+      },
+      "type": "object"
+    },
+    "ConnectionId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ConnectionInfo": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "executable_name": {
+              "type": "null"
+            },
+            "granted_project_ids": {
+              "maxItems": 0
+            },
+            "granted_scopes": {
+              "maxItems": 0
+            },
+            "requested_project_ids": {
+              "maxItems": 0
+            },
+            "requested_scopes": {
+              "maxItems": 0
+            },
+            "state": {
+              "const": "authenticating"
+            }
+          }
+        },
+        {
+          "properties": {
+            "executable_name": {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            "granted_project_ids": {
+              "maxItems": 0
+            },
+            "granted_scopes": {
+              "maxItems": 0
+            },
+            "requested_project_ids": {
+              "maxItems": 0
+            },
+            "requested_scopes": {
+              "maxItems": 0
+            },
+            "state": {
+              "const": "unpaired"
+            }
+          }
+        },
+        {
+          "properties": {
+            "executable_name": {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            "granted_project_ids": {
+              "maxItems": 0
+            },
+            "granted_scopes": {
+              "maxItems": 0
+            },
+            "state": {
+              "const": "pending"
+            }
+          }
+        },
+        {
+          "properties": {
+            "executable_name": {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            "state": {
+              "const": "granted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "granted_project_ids": {
+              "maxItems": 0
+            },
+            "granted_scopes": {
+              "maxItems": 0
+            },
+            "state": {
+              "const": "closing"
+            }
+          }
+        },
+        {
+          "properties": {
+            "granted_project_ids": {
+              "maxItems": 0
+            },
+            "granted_scopes": {
+              "maxItems": 0
+            },
+            "state": {
+              "const": "finished"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "connection_id": {
+          "$ref": "#/definitions/ConnectionId"
+        },
+        "executable_name": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "granted_project_ids": {
+          "$ref": "#/definitions/StringSet_ProjectId"
+        },
+        "granted_scopes": {
+          "$ref": "#/definitions/StringSet_Scope"
+        },
+        "requested_project_ids": {
+          "$ref": "#/definitions/StringSet_ProjectId"
+        },
+        "requested_scopes": {
+          "$ref": "#/definitions/StringSet_Scope"
+        },
+        "state": {
+          "$ref": "#/definitions/LiveConnectionState"
+        }
+      },
+      "required": [
+        "connection_id",
+        "executable_name",
+        "granted_project_ids",
+        "granted_scopes",
+        "requested_project_ids",
+        "requested_scopes",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ConnectionListData": {
+      "additionalProperties": false,
+      "properties": {
+        "connections": {
+          "items": {
+            "$ref": "#/definitions/ConnectionInfo"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "connections"
+      ],
+      "type": "object"
+    },
+    "ConnectionRequestData": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "$ref": "#/definitions/ConnectionId"
+        },
+        "state": {
+          "$ref": "#/definitions/PendingState"
+        }
+      },
+      "required": [
+        "connection_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ConnectionRevokeData": {
+      "additionalProperties": false,
+      "properties": {
+        "connection_id": {
+          "$ref": "#/definitions/ConnectionId"
+        },
+        "state": {
+          "$ref": "#/definitions/RevokedState"
+        }
+      },
+      "required": [
+        "connection_id",
+        "state"
+      ],
+      "type": "object"
+    },
+    "ConnectionState": {
+      "enum": [
+        "unpaired",
+        "pending",
+        "granted",
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "DecidedState": {
+      "enum": [
+        "granted",
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "DiagnosticsData": {
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "$ref": "#/definitions/StringSet_OperationName"
+        },
+        "connection_state": {
+          "$ref": "#/definitions/ConnectionState"
+        },
+        "failure_codes": {
+          "$ref": "#/definitions/StringSet_ErrorCode"
+        },
+        "product_version": {
+          "$ref": "#/definitions/ProductVersion"
+        },
+        "protocol_version": {
+          "$ref": "#/definitions/Version"
+        }
+      },
+      "required": [
+        "capabilities",
+        "connection_state",
+        "failure_codes",
+        "product_version",
+        "protocol_version"
+      ],
+      "type": "object"
+    },
+    "ErrorCode": {
+      "enum": [
+        "invalid_request",
+        "unsupported_version",
+        "permission_denied",
+        "target_not_found",
+        "stale_topology",
+        "operation_conflict",
+        "in_progress",
+        "not_running",
+        "already_running",
+        "unsupported_capability",
+        "output_gap",
+        "persistence_failed",
+        "runtime_failed",
+        "state_unknown",
+        "resource_exhausted",
+        "root_changed",
+        "unsupported_file",
+        "not_a_repository"
+      ],
+      "type": "string"
+    },
+    "EventData": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "topology_changed"
+              ],
+              "type": "string"
+            },
+            "pane_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PaneId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "project_id": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "topology_revision": {
+              "$ref": "#/definitions/U"
+            }
+          },
+          "required": [
+            "kind",
+            "pane_id",
+            "project_id",
+            "topology_revision"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "run_state_changed"
+              ],
+              "type": "string"
+            },
+            "run": {
+              "$ref": "#/definitions/RunObservation"
+            }
+          },
+          "required": [
+            "kind",
+            "run"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "operation_state_changed"
+              ],
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/definitions/OperationStatus"
+            }
+          },
+          "required": [
+            "kind",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "connection_id": {
+              "$ref": "#/definitions/ConnectionId"
+            },
+            "kind": {
+              "enum": [
+                "connection_state_changed"
+              ],
+              "type": "string"
+            },
+            "state": {
+              "$ref": "#/definitions/ConnectionState"
+            }
+          },
+          "required": [
+            "connection_id",
+            "kind",
+            "state"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EventsWaitData": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "events": {
+              "minItems": 1
+            },
+            "status": {
+              "const": "events"
+            }
+          }
+        },
+        {
+          "properties": {
+            "events": {
+              "maxItems": 0
+            },
+            "status": {
+              "const": "no_change"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "gap"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "events": {
+          "items": {
+            "$ref": "#/definitions/MetadataEvent"
+          },
+          "type": "array"
+        },
+        "next_event_seq": {
+          "$ref": "#/definitions/U"
+        },
+        "status": {
+          "$ref": "#/definitions/WaitStatus"
+        }
+      },
+      "required": [
+        "events",
+        "next_event_seq",
+        "status"
+      ],
+      "type": "object"
+    },
+    "Evidence": {
+      "enum": [
+        "process_exit",
+        "provider_event",
+        "unavailable"
+      ],
+      "type": "string"
+    },
+    "ExitCode": {
+      "maximum": 2147483647.0,
+      "minimum": -2147483648.0,
+      "type": "integer"
+    },
+    "FileKind": {
+      "enum": [
+        "text",
+        "binary"
+      ],
+      "type": "string"
+    },
+    "GitCandidatesError": {
+      "enum": [
+        "resource_exhausted",
+        "unsupported_file"
+      ],
+      "type": "string"
+    },
+    "HostStopData": {
+      "additionalProperties": false,
+      "properties": {
+        "saved_generation": {
+          "$ref": "#/definitions/U"
+        },
+        "saved_topology_revision": {
+          "$ref": "#/definitions/U"
+        },
+        "stopped": {
+          "$ref": "#/definitions/True"
+        }
+      },
+      "required": [
+        "saved_generation",
+        "saved_topology_revision",
+        "stopped"
+      ],
+      "type": "object"
+    },
+    "InputKey": {
+      "enum": [
+        "enter",
+        "interrupt",
+        "tab",
+        "escape"
+      ],
+      "type": "string"
+    },
+    "InputKeyData": {
+      "additionalProperties": false,
+      "properties": {
+        "input_seq": {
+          "$ref": "#/definitions/P"
+        },
+        "key": {
+          "$ref": "#/definitions/InputKey"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        },
+        "sent": {
+          "$ref": "#/definitions/True"
+        },
+        "written_bytes": {
+          "$ref": "#/definitions/OneByte"
+        }
+      },
+      "required": [
+        "input_seq",
+        "key",
+        "pane_id",
+        "run_id",
+        "sent",
+        "written_bytes"
+      ],
+      "type": "object"
+    },
+    "InputWriteData": {
+      "additionalProperties": false,
+      "properties": {
+        "input_seq": {
+          "$ref": "#/definitions/P"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        },
+        "written_bytes": {
+          "$ref": "#/definitions/U"
+        }
+      },
+      "required": [
+        "input_seq",
+        "pane_id",
+        "run_id",
+        "written_bytes"
+      ],
+      "type": "object"
+    },
+    "InstanceId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "LaunchData": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "phase": {
+          "$ref": "#/definitions/AcceptedPhase"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "pane_id",
+        "phase",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "LayoutRestoreData": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/U"
+        },
+        "restored": {
+          "$ref": "#/definitions/True"
+        }
+      },
+      "required": [
+        "generation",
+        "restored"
+      ],
+      "type": "object"
+    },
+    "LayoutSaveData": {
+      "additionalProperties": false,
+      "properties": {
+        "generation": {
+          "$ref": "#/definitions/U"
+        },
+        "saved_topology_revision": {
+          "$ref": "#/definitions/U"
+        }
+      },
+      "required": [
+        "generation",
+        "saved_topology_revision"
+      ],
+      "type": "object"
+    },
+    "LegacyRunGetData": {
+      "additionalProperties": false,
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/RunObservation"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "type": "object"
+    },
+    "LiveConnectionState": {
+      "enum": [
+        "authenticating",
+        "unpaired",
+        "pending",
+        "granted",
+        "closing",
+        "finished"
+      ],
+      "type": "string"
+    },
+    "MessageLimit": {
+      "maximum": 1048576.0,
+      "minimum": 1048576.0,
+      "type": "integer"
+    },
+    "MetadataEvent": {
+      "additionalProperties": false,
+      "properties": {
+        "data": {
+          "$ref": "#/definitions/EventData"
+        },
+        "event_seq": {
+          "$ref": "#/definitions/U"
+        },
+        "observed_at": {
+          "$ref": "#/definitions/Timestamp"
+        }
+      },
+      "required": [
+        "data",
+        "event_seq",
+        "observed_at"
+      ],
+      "type": "object"
+    },
+    "Node": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "leaf"
+              ],
+              "type": "string"
+            },
+            "pane_id": {
+              "$ref": "#/definitions/PaneId"
+            }
+          },
+          "required": [
+            "kind",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axis": {
+              "$ref": "#/definitions/Axis"
+            },
+            "first": {
+              "$ref": "#/definitions/Node"
+            },
+            "kind": {
+              "enum": [
+                "split"
+              ],
+              "type": "string"
+            },
+            "ratio": {
+              "$ref": "#/definitions/Ratio"
+            },
+            "second": {
+              "$ref": "#/definitions/Node"
+            }
+          },
+          "required": [
+            "axis",
+            "first",
+            "kind",
+            "ratio",
+            "second"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NonEmpty": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "OneByte": {
+      "maximum": 1.0,
+      "minimum": 1.0,
+      "type": "integer"
+    },
+    "OperationGetData": {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "$ref": "#/definitions/OperationStatus"
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "type": "object"
+    },
+    "OperationId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "OperationName": {
+      "enum": [
+        "capabilities.get",
+        "connection.request",
+        "connection.list",
+        "connection.decide",
+        "connection.revoke",
+        "host.stop",
+        "project.list",
+        "project.open",
+        "project.select",
+        "project.forget",
+        "pane.list",
+        "pane.create",
+        "pane.split",
+        "pane.select",
+        "pane.close",
+        "pane.resize",
+        "shell.launch",
+        "agent.launch",
+        "input.write",
+        "input.key",
+        "run.get",
+        "run.interrupt",
+        "operation.get",
+        "output.read",
+        "events.wait",
+        "layout.save",
+        "layout.restore",
+        "artifact.register",
+        "artifact.list",
+        "artifact.read",
+        "artifact.diff",
+        "artifact.choose",
+        "artifact.choice.list",
+        "diagnostics.get"
+      ],
+      "type": "string"
+    },
+    "OperationPhase": {
+      "enum": [
+        "accepted",
+        "in_progress",
+        "completed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "OperationStatus": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "error_code": {
+              "type": "null"
+            },
+            "outcome": {
+              "type": "null"
+            },
+            "phase": {
+              "enum": [
+                "accepted",
+                "in_progress",
+                "unknown"
+              ]
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "type": "null"
+            },
+            "outcome": {
+              "const": "succeeded"
+            },
+            "phase": {
+              "const": "completed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "error_code": {
+              "$ref": "#/definitions/ErrorCode"
+            },
+            "outcome": {
+              "const": "failed"
+            },
+            "phase": {
+              "const": "completed"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "error_code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ErrorCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation_id": {
+          "$ref": "#/definitions/OperationId"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Outcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "$ref": "#/definitions/OperationPhase"
+        }
+      },
+      "required": [
+        "error_code",
+        "operation_id",
+        "outcome",
+        "phase"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "enum": [
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "OutputReadData": {
+      "additionalProperties": false,
+      "properties": {
+        "gap": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "$ref": "#/definitions/NonEmpty"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        },
+        "text": {
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "gap",
+        "next_cursor",
+        "run_id",
+        "text",
+        "truncated"
+      ],
+      "type": "object"
+    },
+    "P": {
+      "maximum": 9007199254740991.0,
+      "minimum": 1.0,
+      "type": "integer"
+    },
+    "PaneCloseData": {
+      "additionalProperties": false,
+      "properties": {
+        "closed": {
+          "$ref": "#/definitions/True"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "selected_pane_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PaneId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "closed",
+        "pane_id",
+        "selected_pane_id"
+      ],
+      "type": "object"
+    },
+    "PaneCreatedData": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "pane_id",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "PaneId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "PaneListData": {
+      "additionalProperties": false,
+      "properties": {
+        "panes": {
+          "items": {
+            "$ref": "#/definitions/PaneSummary"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Node"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_pane_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PaneId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "panes",
+        "project_id",
+        "root",
+        "selected_pane_id"
+      ],
+      "type": "object"
+    },
+    "PaneResizeParams": {
+      "additionalProperties": false,
+      "properties": {
+        "cols": {
+          "$ref": "#/definitions/P"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "rows": {
+          "$ref": "#/definitions/P"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "cols",
+        "pane_id",
+        "rows",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "PaneSummary": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "current_run_id": {
+              "type": "null"
+            },
+            "observation": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "current_run_id": {
+              "$ref": "#/definitions/RunId"
+            },
+            "observation": {
+              "$ref": "#/definitions/RunObservation"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "current_run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        }
+      },
+      "required": [
+        "current_run_id",
+        "display_name",
+        "observation",
+        "pane_id",
+        "path",
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "PendingState": {
+      "enum": [
+        "pending"
+      ],
+      "type": "string"
+    },
+    "Process": {
+      "enum": [
+        "starting",
+        "running",
+        "exited",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ProductVersion": {
+      "enum": [
+        "0.38.0"
+      ],
+      "type": "string"
+    },
+    "ProjectForgetData": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "removed": {
+          "$ref": "#/definitions/True"
+        }
+      },
+      "required": [
+        "project_id",
+        "removed"
+      ],
+      "type": "object"
+    },
+    "ProjectId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ProjectListData": {
+      "additionalProperties": false,
+      "properties": {
+        "projects": {
+          "items": {
+            "$ref": "#/definitions/ProjectSummary"
+          },
+          "type": "array"
+        },
+        "selected_project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "projects",
+        "selected_project_id"
+      ],
+      "type": "object"
+    },
+    "ProjectOpenData": {
+      "additionalProperties": false,
+      "properties": {
+        "created": {
+          "type": "boolean"
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        }
+      },
+      "required": [
+        "created",
+        "project_id"
+      ],
+      "type": "object"
+    },
+    "ProjectSelectData": {
+      "additionalProperties": false,
+      "properties": {
+        "selected_pane_id": {
+          "type": "null"
+        },
+        "selected_project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "selected_pane_id",
+        "selected_project_id"
+      ],
+      "type": "object"
+    },
+    "ProjectSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "root_state": {
+          "$ref": "#/definitions/RootState"
+        }
+      },
+      "required": [
+        "display_name",
+        "path",
+        "project_id",
+        "root_state"
+      ],
+      "type": "object"
+    },
+    "Provider": {
+      "enum": [
+        "codex",
+        "claude"
+      ],
+      "type": "string"
+    },
+    "ProviderCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "$ref": "#/definitions/Provider"
+        },
+        "version": {
+          "$ref": "#/definitions/NonEmpty"
+        }
+      },
+      "required": [
+        "provider",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Ratio": {
+      "exclusiveMaximum": 1.0,
+      "exclusiveMinimum": 0.0,
+      "type": "number"
+    },
+    "RelativePath": {
+      "minLength": 1,
+      "pattern": "(?:^(?![\\s\\S]*[\\\\:\\u0000-\\u001f\\u007f-\\u009f])(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Nn][Ii][Nn]\\$|[Cc][Oo][Nn][Oo][Uu][Tt]\\$|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])(?:\\.|/|$))[^/]*[^/ .](?:/(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Nn][Ii][Nn]\\$|[Cc][Oo][Nn][Oo][Uu][Tt]\\$|[Cc][Oo][Mm][1-9¹²³]|[Ll][Pp][Tt][1-9¹²³])(?:\\.|/|$))[^/]*[^/ .])*$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ReplayCapacity": {
+      "additionalProperties": false,
+      "properties": {
+        "active_bytes": {
+          "$ref": "#/definitions/P"
+        },
+        "retained_bytes": {
+          "$ref": "#/definitions/P"
+        }
+      },
+      "required": [
+        "active_bytes",
+        "retained_bytes"
+      ],
+      "type": "object"
+    },
+    "RevokedState": {
+      "enum": [
+        "revoked"
+      ],
+      "type": "string"
+    },
+    "RootState": {
+      "enum": [
+        "verified",
+        "unavailable",
+        "changed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "RunGetData": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LegacyRunGetData"
+        },
+        {
+          "$ref": "#/definitions/CleanupRunGetData"
+        }
+      ]
+    },
+    "RunId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "RunInterruptData": {
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "$ref": "#/definitions/AcceptedPhase"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        }
+      },
+      "required": [
+        "phase",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "RunObservation": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "evidence": {
+              "const": "unavailable"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "starting"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "running"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "unavailable"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "running"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "running"
+            },
+            "work": {
+              "const": "running"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "running"
+            },
+            "work": {
+              "const": "awaiting_input"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "running"
+            },
+            "work": {
+              "const": "succeeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "running"
+            },
+            "work": {
+              "const": "failed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "unavailable"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "succeeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "succeeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "succeeded"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "not": {
+                "const": 0
+              },
+              "type": "integer"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "failed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "failed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "failed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "not": {
+                "const": 0
+              },
+              "type": "integer"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "failed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "interrupted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "interrupted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "process_exit"
+            },
+            "exit_code": {
+              "not": {
+                "const": 0
+              },
+              "type": "integer"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "interrupted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "interrupted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "const": 0
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "interrupted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "provider_event"
+            },
+            "exit_code": {
+              "not": {
+                "const": 0
+              },
+              "type": "integer"
+            },
+            "process": {
+              "const": "exited"
+            },
+            "work": {
+              "const": "interrupted"
+            }
+          }
+        },
+        {
+          "properties": {
+            "evidence": {
+              "const": "unavailable"
+            },
+            "exit_code": {
+              "type": "null"
+            },
+            "process": {
+              "const": "unknown"
+            },
+            "work": {
+              "const": "unknown"
+            }
+          }
+        }
+      ],
+      "properties": {
+        "current": {
+          "type": "boolean"
+        },
+        "evidence": {
+          "$ref": "#/definitions/Evidence"
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ExitCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "observed_at": {
+          "$ref": "#/definitions/Timestamp"
+        },
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "process": {
+          "$ref": "#/definitions/Process"
+        },
+        "run_id": {
+          "$ref": "#/definitions/RunId"
+        },
+        "work": {
+          "$ref": "#/definitions/Work"
+        }
+      },
+      "required": [
+        "current",
+        "evidence",
+        "exit_code",
+        "observed_at",
+        "pane_id",
+        "process",
+        "run_id",
+        "work"
+      ],
+      "type": "object"
+    },
+    "Scope": {
+      "enum": [
+        "metadata",
+        "read_output",
+        "control"
+      ],
+      "type": "string"
+    },
+    "Selection": {
+      "additionalProperties": false,
+      "if": {
+        "properties": {
+          "selected_project_id": {
+            "type": "null"
+          }
+        }
+      },
+      "properties": {
+        "selected_pane_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PaneId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected_project_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProjectId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "selected_pane_id",
+        "selected_project_id"
+      ],
+      "then": {
+        "properties": {
+          "selected_pane_id": {
+            "type": "null"
+          }
+        }
+      },
+      "type": "object"
+    },
+    "StringSet_ErrorCode": {
+      "items": {
+        "$ref": "#/definitions/ErrorCode"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "StringSet_NonEmpty": {
+      "items": {
+        "$ref": "#/definitions/NonEmpty"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "StringSet_OperationName": {
+      "items": {
+        "$ref": "#/definitions/OperationName"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "StringSet_ProjectId": {
+      "items": {
+        "$ref": "#/definitions/ProjectId"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "StringSet_RelativePath": {
+      "items": {
+        "$ref": "#/definitions/RelativePath"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "StringSet_Scope": {
+      "items": {
+        "$ref": "#/definitions/Scope"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "Success": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/CapabilitiesData"
+            },
+            "operation": {
+              "enum": [
+                "capabilities.get"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ConnectionRequestData"
+            },
+            "operation": {
+              "enum": [
+                "connection.request"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ConnectionListData"
+            },
+            "operation": {
+              "enum": [
+                "connection.list"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ConnectionDecideData"
+            },
+            "operation": {
+              "enum": [
+                "connection.decide"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ConnectionRevokeData"
+            },
+            "operation": {
+              "enum": [
+                "connection.revoke"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/HostStopData"
+            },
+            "operation": {
+              "enum": [
+                "host.stop"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ProjectListData"
+            },
+            "operation": {
+              "enum": [
+                "project.list"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ProjectOpenData"
+            },
+            "operation": {
+              "enum": [
+                "project.open"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ProjectSelectData"
+            },
+            "operation": {
+              "enum": [
+                "project.select"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ProjectForgetData"
+            },
+            "operation": {
+              "enum": [
+                "project.forget"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/PaneListData"
+            },
+            "operation": {
+              "enum": [
+                "pane.list"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/PaneCreatedData"
+            },
+            "operation": {
+              "enum": [
+                "pane.create"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/PaneCreatedData"
+            },
+            "operation": {
+              "enum": [
+                "pane.split"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/Selection"
+            },
+            "operation": {
+              "enum": [
+                "pane.select"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/PaneCloseData"
+            },
+            "operation": {
+              "enum": [
+                "pane.close"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/PaneResizeParams"
+            },
+            "operation": {
+              "enum": [
+                "pane.resize"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/LaunchData"
+            },
+            "operation": {
+              "enum": [
+                "shell.launch"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/LaunchData"
+            },
+            "operation": {
+              "enum": [
+                "agent.launch"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/InputWriteData"
+            },
+            "operation": {
+              "enum": [
+                "input.write"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/InputKeyData"
+            },
+            "operation": {
+              "enum": [
+                "input.key"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/RunGetData"
+            },
+            "operation": {
+              "enum": [
+                "run.get"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/RunInterruptData"
+            },
+            "operation": {
+              "enum": [
+                "run.interrupt"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/OperationGetData"
+            },
+            "operation": {
+              "enum": [
+                "operation.get"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/OutputReadData"
+            },
+            "operation": {
+              "enum": [
+                "output.read"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/EventsWaitData"
+            },
+            "operation": {
+              "enum": [
+                "events.wait"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/LayoutSaveData"
+            },
+            "operation": {
+              "enum": [
+                "layout.save"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/LayoutRestoreData"
+            },
+            "operation": {
+              "enum": [
+                "layout.restore"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ArtifactRegisterData"
+            },
+            "operation": {
+              "enum": [
+                "artifact.register"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ArtifactListData"
+            },
+            "operation": {
+              "enum": [
+                "artifact.list"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ArtifactReadData"
+            },
+            "operation": {
+              "enum": [
+                "artifact.read"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ArtifactDiffData"
+            },
+            "operation": {
+              "enum": [
+                "artifact.diff"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ArtifactChoiceData"
+            },
+            "operation": {
+              "enum": [
+                "artifact.choose"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/ArtifactChoiceListData"
+            },
+            "operation": {
+              "enum": [
+                "artifact.choice.list"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "data": {
+              "$ref": "#/definitions/DiagnosticsData"
+            },
+            "operation": {
+              "enum": [
+                "diagnostics.get"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "data",
+            "operation"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "TargetId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "Timestamp": {
+      "pattern": "(?:^(?:[0-9]{4}-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]+)?Z$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "True": {
+      "const": true,
+      "type": "boolean"
+    },
+    "U": {
+      "maximum": 9007199254740991.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "Version": {
+      "maximum": 1.0,
+      "minimum": 1.0,
+      "type": "integer"
+    },
+    "WaitStatus": {
+      "enum": [
+        "events",
+        "no_change",
+        "gap"
+      ],
+      "type": "string"
+    },
+    "WireError": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "code": {
+              "const": "invalid_request"
+            },
+            "message": {
+              "const": "Invalid request."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "unsupported_version"
+            },
+            "message": {
+              "const": "Unsupported protocol version."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "permission_denied"
+            },
+            "message": {
+              "const": "Permission denied."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "target_not_found"
+            },
+            "message": {
+              "const": "Target not found."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "stale_topology"
+            },
+            "message": {
+              "const": "Topology changed."
+            },
+            "retryable": {
+              "const": true
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "operation_conflict"
+            },
+            "message": {
+              "const": "Operation identifier conflict."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "in_progress"
+            },
+            "message": {
+              "const": "Operation is in progress."
+            },
+            "retryable": {
+              "const": true
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "not_running"
+            },
+            "message": {
+              "const": "Run is not running."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "already_running"
+            },
+            "message": {
+              "const": "Run is already running."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "unsupported_capability"
+            },
+            "message": {
+              "const": "Capability is unavailable."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "output_gap"
+            },
+            "message": {
+              "const": "Output history is incomplete."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "persistence_failed"
+            },
+            "message": {
+              "const": "Persistence failed."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "runtime_failed"
+            },
+            "message": {
+              "const": "Runtime operation failed."
+            },
+            "retryable": {
+              "const": true
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "state_unknown"
+            },
+            "message": {
+              "const": "Operation state is unknown."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "resource_exhausted"
+            },
+            "message": {
+              "const": "Resource limit reached."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "root_changed"
+            },
+            "message": {
+              "const": "Root identity changed."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "unsupported_file"
+            },
+            "message": {
+              "const": "File type is unsupported."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        },
+        {
+          "properties": {
+            "code": {
+              "const": "not_a_repository"
+            },
+            "message": {
+              "const": "Git repository is unavailable."
+            },
+            "retryable": {
+              "const": false
+            },
+            "target_id": {}
+          }
+        }
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/definitions/ErrorCode"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "target_id": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TargetId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable",
+        "target_id"
+      ],
+      "type": "object"
+    },
+    "Work": {
+      "enum": [
+        "unknown",
+        "running",
+        "awaiting_input",
+        "succeeded",
+        "failed",
+        "interrupted"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "Structural projection of the Rust contract. Raw-byte validation additionally enforces duplicate keys, integer lexemes, byte/container-depth limits, cross-references, request correlation and runtime authorization/state. No runtime effects are implemented here.",
+  "oneOf": [
+    {
+      "properties": {
+        "accepted": {
+          "const": true
+        },
+        "error": {
+          "type": "null"
+        },
+        "result": {
+          "$ref": "#/definitions/Success"
+        }
+      }
+    },
+    {
+      "properties": {
+        "accepted": {
+          "const": false
+        },
+        "error": {
+          "$ref": "#/definitions/WireError"
+        },
+        "result": {
+          "type": "null"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "accepted": {
+      "type": "boolean"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WireError"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_seq": {
+      "$ref": "#/definitions/U"
+    },
+    "instance_id": {
+      "$ref": "#/definitions/InstanceId"
+    },
+    "operation_id": {
+      "$ref": "#/definitions/OperationId"
+    },
+    "result": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Success"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "schema_version": {
+      "$ref": "#/definitions/Version"
+    },
+    "topology_revision": {
+      "$ref": "#/definitions/U"
+    }
+  },
+  "required": [
+    "accepted",
+    "error",
+    "event_seq",
+    "instance_id",
+    "operation_id",
+    "result",
+    "schema_version",
+    "topology_revision"
+  ],
+  "title": "Response",
+  "type": "object"
+}

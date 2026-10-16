@@ -11,6 +11,25 @@
 name: desktop-candidate-cdp-gate
 
 on:
+  workflow_call:
+    inputs:
+      candidate_ref:
+        required: true
+        type: string
+      release_tag:
+        required: false
+        default: v0.38.0
+        type: string
+      version:
+        required: false
+        default: 0.38.0
+        type: string
+      native_lifecycle:
+        required: true
+        type: boolean
+      baseline_artifact:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       candidate_ref:
@@ -20,12 +39,22 @@ on:
       release_tag:
         description: Release tag for smoke helper
         required: false
-        default: v0.36.38
+        default: v0.38.0
         type: string
       version:
         description: Version for smoke helper
         required: false
-        default: 0.36.38
+        default: 0.38.0
+        type: string
+      native_lifecycle:
+        description: Finite native install/update/rollback/uninstall proof
+        required: false
+        default: false
+        type: boolean
+      baseline_artifact:
+        description: Same-run fixed ja baseline artifact (native mode only)
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -33,6 +62,7 @@ permissions:
 
 jobs:
   desktop-candidate-cdp-gate:
+    if: ${{ !inputs.native_lifecycle }}
     runs-on: windows-latest
     timeout-minutes: 45
     defaults:
@@ -95,8 +125,7 @@ jobs:
           cache: npm
           cache-dependency-path: winsmux-app/package-lock.json
 
-      - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
 
       - name: Install frontend dependencies
         working-directory: winsmux-app
@@ -228,6 +257,12 @@ jobs:
           if (-not (Test-Path -LiteralPath $installer)) {
             throw "Leg B failed: installer missing at $installer"
           }
+          . ./scripts/desktop-install-inventory.ps1
+          $inventoryPath = Join-Path $env:RUNNER_TEMP "winsmux_${version}_x64-setup.inventory.json"
+          New-DesktopInstallInventory -RepositoryRoot $env:GITHUB_WORKSPACE -InstallerPath $installer -OutputPath $inventoryPath | Out-Null
+          $inventoryHash = (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          $installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sourceCommit = (& git rev-parse HEAD | Out-String).Trim().ToLowerInvariant()
 
           $stdoutPath = Join-Path $env:RUNNER_TEMP 'leg-b-stdout.txt'
           $stderrPath = Join-Path $env:RUNNER_TEMP 'leg-b-stderr.txt'
@@ -242,6 +277,7 @@ jobs:
             '-ReleaseTag', $releaseTag,
             '-Repository', '${{ github.repository }}',
             '-CandidateInstallerPath', $installer,
+            '-DesktopInventoryPath', $inventoryPath,
             '-DesktopLegacyEnvMode', 'MarkerOnly',
             '-Json'
           ) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
@@ -254,26 +290,30 @@ jobs:
           $rawTrim = $raw.TrimEnd("`n")
 
           if ($proc.ExitCode -ne 0) {
-            $errText = ''
-            if (Test-Path -LiteralPath $stderrPath) {
-              $errText = [System.IO.File]::ReadAllText($stderrPath)
-            }
-            throw "Leg B failed: helper exit code $($proc.ExitCode). stderr=$errText stdout=$raw"
+            # Raw child output can contain private discovery/browser data. Publish only the safe failure receipt.
+            try {
+              $failure = $rawTrim | ConvertFrom-Json -Depth 12
+              Assert-DesktopInventoryShape $failure @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
+              if ($failure.schema -cne 'winsmux-desktop-smoke-failure/v1') { throw 'unexpected receipt' }
+              $failure | ConvertTo-Json -Compress | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'desktop-helper-failure.json') -Encoding utf8
+            } catch { Write-Host 'Desktop helper failure receipt unavailable.' }
+            throw "Leg B failed: helper exit code $($proc.ExitCode)."
           }
           Write-Host "LEG_B_EXIT PASS: exit code 0"
 
           $lines = @($rawTrim -split "`n" | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -ne '' })
           if ($lines.Count -ne 1) {
-            throw "Leg B failed: expected exactly one non-empty stdout line, got $($lines.Count). stdout=$raw"
+            throw "Leg B failed: expected exactly one non-empty stdout line, got $($lines.Count)."
           }
           Write-Host "LEG_B_STDOUT_LINES PASS: exactly one non-empty line"
 
           try {
             $json = $lines[0] | ConvertFrom-Json
           } catch {
-            throw "Leg B failed: stdout line is not valid JSON. line=$($lines[0])"
+            throw 'Leg B failed: stdout line is not valid JSON.'
           }
           Write-Host "LEG_B_JSON PASS: stdout parses as JSON"
+          Assert-DesktopInstallReceipt -Receipt $json -Version $version -InstallerSha256 $installerHash -SourceCommit $sourceCommit -InventorySha256 $inventoryHash | Out-Null
 
           if ($json.ok -ne $true) {
             throw "Leg B failed: ok is not true (value=$($json.ok))"
@@ -321,3 +361,105 @@ jobs:
           $line = "desktop-candidate-cdp-gate candidate_ref=$candidate resolved_commit=$resolvedCommit leg_a=$legAOutcome leg_b=$legBOutcome evidence.page_url=$pageUrl"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $line
           Write-Host $line
+          $failurePath = Join-Path $env:RUNNER_TEMP 'desktop-helper-failure.json'
+          if (Test-Path -LiteralPath $failurePath -PathType Leaf) {
+            . ./scripts/desktop-install-inventory.ps1
+            $failure = Read-DesktopStrictJson $failurePath
+            Assert-DesktopInventoryShape $failure @('schema', 'ok', 'surface', 'version', 'release_tag', 'stage', 'reason_code', 'helper_exit_code', 'native_exit_code', 'stdout_bytes', 'stderr_bytes', 'observation_state', 'operation_failure', 'cleanup_failure', 'cleanup_stage', 'cleanup')
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ($failure | ConvertTo-Json -Compress)
+          }
+
+  desktop-native-lifecycle:
+    if: github.repository == 'Sora-bluesky/winsmux' && inputs.native_lifecycle
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [MSI, NSIS]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Admit only the same caller and fixed native release
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BASELINE_ARTIFACT: ${{ inputs.baseline_artifact }}
+        run: |
+          $source = [string]$env:CANDIDATE_REF
+          if ($source -cnotmatch '^[a-f0-9]{40}$' -or $source -cne $env:GITHUB_SHA -or $env:VERSION_INPUT -cne '0.38.0' -or $env:RELEASE_TAG -cne 'v0.38.0' -or $env:BASELINE_ARTIFACT -cne ('desktop-baseline-ja-root-' + $source)) { throw 'Native caller/release/baseline identity refused.' }
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref }}
+          persist-credentials: false
+      - name: Bind actual source and isolated build namespaces
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: |
+          $source = (& git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA -or (Get-Content -LiteralPath VERSION -Raw -Encoding UTF8).Trim() -cne '0.38.0') { throw 'Native checkout differs from caller.' }
+          $root = Join-Path $env:RUNNER_TEMP ('winsmux-native-input-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $source + '.' + $env:FORMAT)
+          if (Test-Path -LiteralPath $root) { throw 'Native namespace already exists.' }
+          New-Item -ItemType Directory -Path $root | Out-Null
+          foreach ($name in @('sdk-temp', 'build', 'candidate', 'baseline')) { New-Item -ItemType Directory -Path (Join-Path $root $name) | Out-Null }
+          'WINSMUX_NATIVE_INPUT_ROOT=' + $root | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
+          'TEMP=' + (Join-Path $root 'sdk-temp') | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
+          'TMP=' + (Join-Path $root 'sdk-temp') | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
+          'CARGO_TARGET_DIR=' + (Join-Path $root 'build') | Out-File -LiteralPath $env:GITHUB_ENV -Encoding utf8 -Append
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+      - uses: ./.github/actions/setup-windows-distribution-toolchain
+      - name: Install frontend build inputs
+        working-directory: winsmux-app
+        run: npm ci
+      - name: Build the same native candidate with standard Tauri CRT settings
+        working-directory: winsmux-app
+        env:
+          STATIC_VCRUNTIME: 'true'
+        run: npm run tauri -- build
+      - name: Freeze and verify the same-job native candidate transport
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: |
+          $tokens = $null; $errors = $null
+          $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE 'scripts/test-public-release.ps1'), [ref]$tokens, [ref]$errors)
+          if (@($errors).Count -ne 0) { throw 'Native source parse refused.' }
+          $functions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Get-DesktopNativeTransportModule' }, $false))
+          if ($functions.Count -ne 1) { throw 'Native transport module definition refused.' }
+          . ([scriptblock]::Create($functions[0].Extent.Text))
+          $module = Get-DesktopNativeTransportModule
+          & node --input-type=module --eval $module create $env:GITHUB_SHA $env:FORMAT $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw 'Native transport publication refused.' }
+      - name: Obtain the same-run fixed baseline artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.baseline_artifact }}
+          path: ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/baseline
+      - name: Obtain only the approved baseline capture source
+        uses: actions/checkout@v6
+        with:
+          ref: 0eaed56da31826b48fc153293c9407ec49547c91
+          path: .native-baseline-source
+          persist-credentials: false
+      - name: Execute the finite native lifecycle
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: |
+          & ./scripts/test-public-release.ps1 -Surface Desktop -Version 0.38.0 -ReleaseTag v0.38.0 -Repository Sora-bluesky/winsmux -DesktopNativeLifecycle -DesktopNativeFormat $env:FORMAT -DesktopNativeSourceCommit $env:GITHUB_SHA -DesktopNativeCandidateDirectory (Join-Path $env:WINSMUX_NATIVE_INPUT_ROOT 'candidate') -DesktopNativeBaselineDirectory (Join-Path $env:WINSMUX_NATIVE_INPUT_ROOT 'baseline') -Json
+          if ($LASTEXITCODE -ne 0) { throw 'Native lifecycle failed or has an unmet class.' }
+      - name: Preserve bounded native lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-native-lifecycle-${{ matrix.format }}-${{ github.sha }}
+          path: |
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/**/*.json
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/vhd-owned-*/ownership.jsonl
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/desktop-native-candidate.json
+          if-no-files-found: error

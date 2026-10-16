@@ -6,7 +6,6 @@
   "permissions": [
     "core:default",
     "core:window:allow-maximize",
-    "core:window:allow-show",
     "core:webview:allow-create-webview-window",
     "dialog:default",
     "opener:default"

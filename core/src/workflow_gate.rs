@@ -22,7 +22,7 @@ pub(crate) const USAGE: &str =
     "usage: winsmux workflow-gate --json [--project-dir <path>]";
 
 const ARCHITECTURE_DOC: &str =
-    include_str!("../../docs/project/v03629-declarative-workspace-architecture.md");
+    include_str!("../docs/workflow-gate-examples.md");
 const OPERATOR_MODEL: &str = include_str!("../../docs/operator-model.md");
 const COMBINED_RECIPE_ID: &str = "bugfix-two-slot";
 const COMBINED_WORKFLOW_ID: &str = "bugfix";

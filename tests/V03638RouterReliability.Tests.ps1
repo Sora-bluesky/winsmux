@@ -1,6 +1,74 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+Describe 'workspace desktop distribution contract' {
+    BeforeAll {
+        $script:distributionRepo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path $script:distributionRepo 'scripts/test-v03638-router-distribution.ps1'),
+            [ref]$tokens, [ref]$errors)
+        if ($errors.Count -ne 0) { throw 'Distribution gate does not parse' }
+        $definition = @($ast.FindAll({ param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -ceq 'Test-DesktopWorkspaceDistributionContract'
+        }, $true))
+        if ($definition.Count -ne 1) { throw 'Distribution contract authority is ambiguous' }
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+        function New-DesktopConfig {
+            Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $script:distributionRepo 'winsmux-app/src-tauri/tauri.conf.json') | ConvertFrom-Json
+        }
+    }
+
+    It 'accepts the paired native desktop and preserves the legacy full-profile source gate' {
+        Test-DesktopWorkspaceDistributionContract (New-DesktopConfig) | Should -BeTrue
+        $output = & pwsh -NoProfile -File (Join-Path $script:distributionRepo 'scripts/test-v03638-router-distribution.ps1') -Json
+        $LASTEXITCODE | Should -Be 0
+        $proof = $output | ConvertFrom-Json
+        $proof.all_pass | Should -BeTrue
+        $proof.source.found | Should -Be 4
+        $proof.cli_full.found | Should -Be 4
+        $proof.cli_full.profile_full_only | Should -BeTrue
+        $proof.cli_full.exact_file_cleanup | Should -BeTrue
+        $proof.desktop.paired_native_contract | Should -BeTrue
+        $proof.desktop.legacy_resources_absent | Should -BeTrue
+    }
+
+    It 'rejects either missing companion, duplicates and unexpected companions' {
+        foreach ($bins in @(
+            ,@('binaries/winsmux'), ,@('binaries/winsmux-workspace-mcp'),
+            ,@('binaries/winsmux', 'binaries/winsmux'),
+            ,@('binaries/winsmux', 'binaries/winsmux-workspace-mcp', 'binaries/other')
+        )) {
+            $config = New-DesktopConfig
+            $config.bundle.externalBin = $bins
+            Test-DesktopWorkspaceDistributionContract $config | Should -BeFalse
+        }
+    }
+
+    It 'rejects legacy desktop payloads and an absent or redirected license root' {
+        foreach ($resources in @(
+            @{ 'binaries/licenses' = 'licenses'; 'old-router' = 'winsmux-core/router' },
+            @{}, @{ 'binaries/licenses' = 'other' }
+        )) {
+            $config = New-DesktopConfig
+            $config.bundle.resources = [pscustomobject]$resources
+            Test-DesktopWorkspaceDistributionContract $config | Should -BeFalse
+        }
+    }
+
+    It 'rejects skipping release preparation or the checked bundle entrance' {
+        $config = New-DesktopConfig
+        $config.build.beforeBuildCommand = 'npm run build'
+        Test-DesktopWorkspaceDistributionContract $config | Should -BeFalse
+        $config = New-DesktopConfig
+        $config.build.beforeBundleCommand = 'node unchecked.mjs'
+        Test-DesktopWorkspaceDistributionContract $config | Should -BeFalse
+        Test-DesktopWorkspaceDistributionContract ([pscustomobject]@{}) | Should -BeFalse
+    }
+}
+
 Describe 'v0.36.38 router reliability gate' {
     BeforeAll {
         $script:repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))

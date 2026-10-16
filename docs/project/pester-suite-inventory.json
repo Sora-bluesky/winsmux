@@ -161,6 +161,44 @@
         "core/tests/test_startup_perf.ps1",
         "core/tests/test_stress*.ps1"
       ]
+    },
+    {
+      "bucket": "keep-smoke",
+      "owner": "current PowerShell validation entrypoints",
+      "contract": "Current repository-boundary, public documentation, release, and runtime smoke checks remain covered until equivalent replacement evidence exists.",
+      "target": "keep until an equivalent current-contract replacement is verified",
+      "batch": "407-a",
+      "paths": [
+        "tests/AgentReadiness.Tests.ps1",
+        "tests/CliBakeoff.Tests.ps1",
+        "tests/DeclarativeWorkflow.Tests.ps1",
+        "tests/DesktopInstallReceipt.Tests.ps1",
+        "tests/EnterpriseStrategyAlignment.Tests.ps1",
+        "tests/GitGuard.Tests.ps1",
+        "tests/Integration.PluginHookLoader.Tests.ps1",
+        "tests/PesterGitIsolation.Tests.ps1",
+        "tests/ReviewLatencyHardening.Tests.ps1",
+        "tests/Task781RuntimeCompatibility.Tests.ps1",
+        "tests/Task800OperatorShellBoundary.Tests.ps1",
+        "tests/Task810PesterRunner.Tests.ps1",
+        "tests/Task811OperatorInfraGate.Tests.ps1",
+        "tests/Task839WorktreeReviewState.Tests.ps1",
+        "tests/ThreatModelContract.Tests.ps1",
+        "tests/UpstreamReevaluation.Tests.ps1",
+        "tests/V03618ReleaseHardening.Tests.ps1",
+        "tests/V03619RepoAudit.Tests.ps1",
+        "tests/V03620CoordinatorFoundation.Tests.ps1",
+        "tests/V03621LocalRouterShadow.Tests.ps1",
+        "tests/V03626DesktopSplitGate.Tests.ps1",
+        "tests/V03627CompatPerformanceGate.Tests.ps1",
+        "tests/V03628PackagedRestoreGate.Tests.ps1",
+        "tests/V03628RaceAbnormalSoak.Tests.ps1",
+        "tests/V03628RuntimeReliabilityGate.Tests.ps1",
+        "tests/V03630DesktopDebugGate.Tests.ps1",
+        "tests/V03630DesktopDebugGateProcess.Tests.ps1",
+        "tests/V03638RouterReliability.Tests.ps1",
+        "tests/planning-model.Tests.ps1"
+      ]
     }
   ]
 }
