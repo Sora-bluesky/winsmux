@@ -189,7 +189,7 @@ jobs:
       - uses: ./.github/actions/setup-windows-distribution-toolchain
       - name: Build only the existing debug headless test and companion
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/winsmux-headless-build-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}\winsmux-headless-build-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}
         run: |
           $head = (& git rev-parse HEAD | Out-String).Trim()
           if ($LASTEXITCODE -ne 0 -or $head -cne $env:GITHUB_SHA) { throw 'headless_checkout_identity_refused' }
