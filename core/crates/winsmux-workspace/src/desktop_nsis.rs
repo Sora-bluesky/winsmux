@@ -30,6 +30,8 @@ pub enum Error {
     Pending,
     Io,
     Startup,
+    // T-only finite observation; the original startup error carries no private text.
+    StartupClass(crate::desktop_install::DesktopInstallError),
 }
 impl Error {
     pub fn classification(self) -> &'static str {
@@ -46,6 +48,18 @@ impl Error {
             Self::Pending => "pending_unconfirmed",
             Self::Io => "io_unconfirmed",
             Self::Startup => "startup_unconfirmed",
+            Self::StartupClass(error) => match error {
+                crate::desktop_install::DesktopInstallError::Usage => "nsis_startup_usage",
+                crate::desktop_install::DesktopInstallError::Plan => "nsis_startup_plan",
+                crate::desktop_install::DesktopInstallError::Path => "nsis_startup_path",
+                crate::desktop_install::DesktopInstallError::Member => "nsis_startup_member",
+                crate::desktop_install::DesktopInstallError::Actor => "nsis_startup_actor",
+                crate::desktop_install::DesktopInstallError::Isolation => "nsis_startup_isolation",
+                crate::desktop_install::DesktopInstallError::Launch => "nsis_startup_launch",
+                crate::desktop_install::DesktopInstallError::Receipt => "nsis_startup_receipt",
+                crate::desktop_install::DesktopInstallError::Timeout => "nsis_startup_timeout",
+                crate::desktop_install::DesktopInstallError::Cleanup => "nsis_startup_cleanup",
+            },
         }
     }
 }
@@ -2172,7 +2186,7 @@ mod native {
         }) {
             return result;
         }
-        crate::desktop_install::verify_desktop_startup(request).map_err(|_| Error::Startup)
+        crate::desktop_install::verify_desktop_startup(request).map_err(Error::StartupClass)
     }
     fn verify_link(p: &Path, target: &Path) -> Result<()> {
         let mut leased = observe(p, "winsmux.lnk", false)?;

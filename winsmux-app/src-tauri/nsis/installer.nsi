@@ -104,6 +104,66 @@ ManifestDPIAwareness PerMonitorV2
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: startup_unconfirmed$\r$\n"
       StrCpy $2 71
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_usage$\n"
+      StrCpy $2 380
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_usage$\r$\n"
+      StrCpy $2 380
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_plan$\n"
+      StrCpy $2 381
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_plan$\r$\n"
+      StrCpy $2 381
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_path$\n"
+      StrCpy $2 382
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_path$\r$\n"
+      StrCpy $2 382
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_member$\n"
+      StrCpy $2 383
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_member$\r$\n"
+      StrCpy $2 383
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_actor$\n"
+      StrCpy $2 384
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_actor$\r$\n"
+      StrCpy $2 384
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_isolation$\n"
+      StrCpy $2 385
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_isolation$\r$\n"
+      StrCpy $2 385
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_launch$\n"
+      StrCpy $2 386
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_launch$\r$\n"
+      StrCpy $2 386
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_receipt$\n"
+      StrCpy $2 387
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_receipt$\r$\n"
+      StrCpy $2 387
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_timeout$\n"
+      StrCpy $2 388
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_timeout$\r$\n"
+      StrCpy $2 388
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_cleanup$\n"
+      StrCpy $2 389
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: nsis_startup_cleanup$\r$\n"
+      StrCpy $2 389
     ${EndIf}
     ${If} $2 == 59
       ${If} $1 S== "winsmux installer: path_refused$\n"

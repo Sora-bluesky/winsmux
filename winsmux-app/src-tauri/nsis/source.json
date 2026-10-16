@@ -14,13 +14,14 @@
     "Replace the inherited lifecycle operations with the generation-bound native NSIS install, rollback and uninstall adapter",
     "Expand only the NSIS-owned transaction workspace to its long DOS spelling and share bounded helper, source and context paths across install and uninstall",
     "T-only diagnostic: preserve finite native handle refusal origin and Win32 class through 90 exact exit literals; all project to prior path site 102",
-    "T-only diagnostic: annotate only propagated DerivedPath NotFound 276 at 53 fixed responsibility origins; no retry or filesystem observation"
+    "T-only diagnostic: annotate only propagated DerivedPath NotFound 276 at 53 fixed responsibility origins; no retry or filesystem observation",
+    "T-only diagnostic: preserve all ten DesktopInstallError startup classes through exact stderr labels and NSIS exit codes 380-389; retain generic startup 71"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 29318,
-      "sha256": "4a46e2394d91ef64d2f1acae4f762a4a281fb341a42b46f6e1b125eba51197da"
+      "bytes": 31528,
+      "sha256": "e34701b3795b7986a5523891915a2d619a5b3ce23b81b4d8d353163b218733e4"
     },
     {
       "path": "winsmux-utils.nsh",
