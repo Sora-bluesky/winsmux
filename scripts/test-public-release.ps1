@@ -5243,7 +5243,9 @@ function Assert-DesktopNativeVhdDiskFacts {
  $busType=if($null -ne $busTypeProperty){$busTypeProperty.Value}else{$null}
  Assert-DesktopNativeVhdCondition ($null -ne $Disk -and $Disk.IsBoot -is [bool] -and $Disk.IsSystem -is [bool] -and -not $Disk.IsBoot -and -not $Disk.IsSystem -and $null -ne $busTypeProperty -and $busTypeProperty.CimType -eq [Microsoft.Management.Infrastructure.CimType]::UInt16 -and $busType -is [uint16] -and $busType -eq 15 -and [uint64]$Disk.Size -eq [uint64]$State.Capacity -and -not [string]::IsNullOrWhiteSpace([string]$Disk.Path)) 'owned_vhd_nonboot_filebacked_disk'
  $key=[ordered]@{number=[uint32]$Disk.Number;path=[string]$Disk.Path;serial=[string]$Disk.SerialNumber;size=[uint64]$Disk.Size;bus_type=[int]$busType;device_path=[string]$Image.DevicePath}
- Assert-DesktopNativeVhdCondition ($key.device_path -cmatch '^\\\\\.\\PHYSICALDRIVE[0-9]+$' -and $key.device_path -ceq ('\\.\PHYSICALDRIVE'+$key.number)) 'owned_vhd_device_number'
+ $expectedDevicePath='\\.\PHYSICALDRIVE'+$key.number.ToString([Globalization.CultureInfo]::InvariantCulture)
+ Assert-DesktopNativeVhdCondition ([regex]::IsMatch($key.device_path,'\A[\x00-\x7F]+\z',[Text.RegularExpressions.RegexOptions]::CultureInvariant) -and [string]::Equals($key.device_path,$expectedDevicePath,[StringComparison]::OrdinalIgnoreCase)) 'owned_vhd_device_number'
+ $key.device_path=$expectedDevicePath
  if($null -ne $State.DiskAnchor){Assert-DesktopNativeVhdCondition ((Get-DesktopNativeVhdJson $key) -ceq $State.DiskAnchor) 'owned_vhd_disk_identity_changed'}
  return $key
 }
