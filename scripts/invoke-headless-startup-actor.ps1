@@ -390,7 +390,145 @@ function ConvertTo-CapabilityFailureSiteObservation($Binding,[byte[]]$Stdout,[by
  return $result
 }
 
-function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$Actor,[string]$Class,[Collections.IDictionary]$FailureSiteObservation=$null) {
+function Get-StopStoreNativeSource {
+ return @'
+using System;
+using System.IO;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
+public static class WinsmuxStopStoreObservation {
+ [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern SafeFileHandle CreateFileW(string p,uint a,uint share,IntPtr sa,uint d,uint f,IntPtr t);
+ [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetFileInformationByHandleEx(SafeFileHandle h,int k,byte[] b,uint n);
+ [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+ [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+ [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr h,uint a,out IntPtr t);
+ [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr h,int k,IntPtr b,uint n,out uint returned);
+ [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(SafeFileHandle h,int type,uint info,out IntPtr o,out IntPtr g,out IntPtr d,out IntPtr s,out IntPtr sd);
+ [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr sd);
+ [DllImport("shell32.dll")] static extern int SHGetKnownFolderPath(ref Guid id,uint flags,IntPtr token,out IntPtr p);
+ static string Policy(byte[] b){if(b==null||b.Length!=4)return "unknown";uint value=BitConverter.ToUInt32(b,0);return (value&~3u)!=0?"unknown":(value&1)!=0?"yes":"no";}
+ static string Hash(byte[] b){using(var h=SHA256.Create())return BitConverter.ToString(h.ComputeHash(b)).Replace("-","").ToLowerInvariant();}
+ static byte[] Info(IntPtr token,int kind){uint n;GetTokenInformation(token,kind,IntPtr.Zero,0,out n);if(n<4||n>65536)throw new Exception();IntPtr p=Marshal.AllocHGlobal((int)n);try{uint got;if(!GetTokenInformation(token,kind,p,n,out got)||got>n)throw new Exception();byte[] b=new byte[got];Marshal.Copy(p,b,0,(int)got);if(kind==1||kind==25){long off=Marshal.ReadIntPtr(p).ToInt64()-p.ToInt64();if(off<0||off>b.Length-8||b[off]!=1||b[off+1]>15)throw new Exception();int len=8+4*b[off+1];if(len>b.Length-off)throw new Exception();byte[] sid=new byte[len];Buffer.BlockCopy(b,(int)off,sid,0,len);return sid;}return b;}finally{Marshal.FreeHGlobal(p);}}
+ static RawSecurityDescriptor Security(SafeFileHandle h,uint flags){IntPtr o,g,d,s,sd;uint e=GetSecurityInfo(h,1,flags,out o,out g,out d,out s,out sd);try{if(e!=0||sd==IntPtr.Zero)throw new Exception();uint n=GetSecurityDescriptorLength(sd);if(n<20||n>65536)throw new Exception();byte[] b=new byte[n];Marshal.Copy(sd,b,0,(int)n);return new RawSecurityDescriptor(b,0);}finally{if(sd!=IntPtr.Zero)LocalFree(sd);}}
+ static Dictionary<string,object> Empty(){return new Dictionary<string,object>{{"presence","unknown"},{"fingerprint",null},{"owner","unknown"},{"private_dacl","unknown"},{"dacl_protected","unknown"},{"user_full_access","unknown"},{"label_rid",null},{"label_source","unknown"},{"no_write_up","unknown"},{"actor_no_write_up","unknown"}};}
+ static bool KnownRid(uint r){return r==0||r==4096||r==8192||r==8448||r==12288||r==16384||r==20480;}
+ static bool Ordinary(SafeFileHandle h,bool dir,out byte[] basic){basic=new byte[40];if(!GetFileInformationByHandleEx(h,0,basic,40))return false;uint a=BitConverter.ToUInt32(basic,32);return (a&0x400)==0&&((a&0x10)!=0)==dir;}
+ static SafeFileHandle Open(string p){return CreateFileW(p,0x20080,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);}
+ static string ChainState(string p){string full=Path.GetFullPath(p),root=Path.GetPathRoot(full);string cur=root;using(var h=Open(cur)){byte[] b;if(h.IsInvalid||!Ordinary(h,true,out b))return "unknown";}foreach(string part in full.Substring(root.Length).Split(new[]{Path.DirectorySeparatorChar},StringSplitOptions.RemoveEmptyEntries)){cur=Path.Combine(cur,part);using(var h=Open(cur)){byte[] b;if(h.IsInvalid){int e=Marshal.GetLastWin32Error();return e==2||e==3?"absent":"unknown";}if(!Ordinary(h,true,out b))return "unknown";}}return "present";}
+ static void Access(RawSecurityDescriptor sd,SecurityIdentifier user,Dictionary<string,object> r){var admin=new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid,null);var system=new SecurityIdentifier(WellKnownSidType.LocalSystemSid,null);r["owner"]=sd.Owner==null?"unknown":sd.Owner.Equals(user)?"user":sd.Owner.Equals(admin)?"administrators":sd.Owner.Equals(system)?"system":"other";r["dacl_protected"]=(sd.ControlFlags&ControlFlags.DiscretionaryAclProtected)!=0?"yes":"no";bool good=sd.DiscretionaryAcl!=null,saw=false,full=false,unsupported=false;if(sd.DiscretionaryAcl!=null)foreach(GenericAce ace in sd.DiscretionaryAcl){var a=ace as CommonAce;if(a==null||a.AceQualifier!=AceQualifier.AccessAllowed||a.IsCallback){good=false;unsupported=true;continue;}bool u=a.SecurityIdentifier.Equals(user);if(!u&&!a.SecurityIdentifier.Equals(admin)&&!a.SecurityIdentifier.Equals(system))good=false;if(u){saw=true;if((a.AceFlags&AceFlags.InheritOnly)==0&&((uint)a.AccessMask&0x1f01ff)==0x1f01ff)full=true;}}r["private_dacl"]=good&&saw?"yes":"no";r["user_full_access"]=unsupported?"unknown":full?"yes":"no";}
+ static void ParseLabel(byte[] acl,Dictionary<string,object> r){if(acl==null||acl.Length<8)return;int size=BitConverter.ToUInt16(acl,2),aces=BitConverter.ToUInt16(acl,4);if(size!=acl.Length||aces>(size-8)/4||(acl[0]!=2&&acl[0]!=4))return;int at=8,count=0;uint rid=0,mask=0;bool valid=true;for(int i=0;i<aces;i++){if(at>size-4)return;int n=BitConverter.ToUInt16(acl,at+2);if(n<4||n>size-at)return;if(acl[at]!=17)valid=false;if(acl[at]==17){count++;if(n!=20||(acl[at+1]&~0x17)!=0){valid=false;}else{mask=BitConverter.ToUInt32(acl,at+4);if((mask&~7u)!=0||acl[at+8]!=1||acl[at+9]!=1||acl[at+10]!=0||acl[at+11]!=0||acl[at+12]!=0||acl[at+13]!=0||acl[at+14]!=0||acl[at+15]!=16)valid=false;rid=BitConverter.ToUInt32(acl,at+16);if(!KnownRid(rid))valid=false;}}at+=n;}if(count==0&&valid){r["label_source"]="unlabeled";r["label_rid"]=8192u;r["no_write_up"]="yes";}else if(count==1&&valid){r["label_source"]="explicit";r["label_rid"]=rid;r["no_write_up"]=(mask&1)!=0?"yes":"no";}}
+ static void Label(SafeFileHandle h,Dictionary<string,object> r){IntPtr o,g,d,s,sd;uint e=GetSecurityInfo(h,1,0x10,out o,out g,out d,out s,out sd);try{if(e!=0||sd==IntPtr.Zero)return;if(s==IntPtr.Zero){r["label_source"]="unlabeled";r["label_rid"]=8192u;r["no_write_up"]="yes";return;}uint total=GetSecurityDescriptorLength(sd);long off=s.ToInt64()-sd.ToInt64();if(total<20||total>65536||off<0||off>total-8)return;int size=(ushort)Marshal.ReadInt16(s,2);if(size<8||size>total-off)return;byte[] acl=new byte[size];Marshal.Copy(s,acl,0,size);ParseLabel(acl,r);}finally{if(sd!=IntPtr.Zero)LocalFree(sd);}}
+ static Dictionary<string,object> Observe(string p,bool directory,SecurityIdentifier user){var r=Empty();string parent=ChainState(Path.GetDirectoryName(p));if(parent!="present"){if(parent=="absent")r["presence"]="absent";return r;}using(var h=Open(p)){if(h.IsInvalid){int e=Marshal.GetLastWin32Error();if(e==2||e==3)r["presence"]="absent";return r;}byte[] basic;if(!Ordinary(h,directory,out basic))return r;byte[] id=new byte[24];if(!GetFileInformationByHandleEx(h,18,id,24))return r;byte[] identity=new byte[33];Buffer.BlockCopy(id,0,identity,0,24);Buffer.BlockCopy(basic,0,identity,24,8);identity[32]=(byte)(directory?1:0);r["presence"]="present";r["fingerprint"]=Hash(identity);
+  try{Access(Security(h,5),user,r);}catch{}
+  try{Label(h,r);}catch{}
+ }return r;}
+ public static Dictionary<string,object> Snapshot(string expectedSid,uint expectedRid,uint expectedSession){var result=new Dictionary<string,object>();IntPtr token=IntPtr.Zero;IntPtr folder=IntPtr.Zero;try{if(!OpenProcessToken(GetCurrentProcess(),8,out token))return result;byte[] sid=Info(token,1),il=Info(token,25),session=Info(token,12),type=Info(token,8);if(il.Length!=12||il[2]!=0||il[3]!=0||il[4]!=0||il[5]!=0||il[6]!=0||il[7]!=16||!KnownRid(BitConverter.ToUInt32(il,8))||session.Length!=4||type.Length!=4||BitConverter.ToUInt32(type,0)!=1||Hash(sid)!=expectedSid||BitConverter.ToUInt32(il,8)!=expectedRid||BitConverter.ToUInt32(session,0)!=expectedSession)return result;string policy="unknown";try{policy=Policy(Info(token,27));}catch{}var user=new SecurityIdentifier(sid,0);Guid id=new Guid("F1B32785-6FBA-4FCF-9D55-7B8E7F157091");if(SHGetKnownFolderPath(ref id,0,IntPtr.Zero,out folder)!=0||folder==IntPtr.Zero)return result;string root=Marshal.PtrToStringUni(folder);if(String.IsNullOrEmpty(root)||!Path.IsPathFullyQualified(root)||ChainState(root)!="present")return result;string store=Path.Combine(root,"winsmux","workspace","v1");result["known_folder"]=Observe(root,true,user);result["store"]=Observe(store,true,user);result["lease"]=Observe(Path.Combine(store,"lease"),false,user);result["confirmed"]=Observe(Path.Combine(store,"confirmed.json"),false,user);result["backup"]=Observe(Path.Combine(store,"backup.json"),false,user);result["temp"]=Observe(Path.Combine(store,"temp.json"),false,user);foreach(var entry in result){((Dictionary<string,object>)entry.Value)["actor_no_write_up"]=policy;}return result;}catch{return new Dictionary<string,object>();}finally{if(folder!=IntPtr.Zero)Marshal.FreeCoTaskMem(folder);if(token!=IntPtr.Zero)CloseHandle(token);}}
+}
+'@
+}
+function Get-StopStoreSnapshot($Actor) {
+ try { if(-not ('WinsmuxStopStoreObservation' -as [type])){Add-Type -TypeDefinition (Get-StopStoreNativeSource) -ErrorAction Stop 2>$null};return [WinsmuxStopStoreObservation]::Snapshot([string]$Actor.sid_sha256,[uint32]$Actor.integrity_rid,[uint32]$Actor.session) }catch{return @{}}
+}
+
+function Get-StopErrorCodeTable {
+ return (ConvertFrom-Json -AsHashtable '{"invalid_request":[false,"Invalid request."],"unsupported_version":[false,"Unsupported protocol version."],"permission_denied":[false,"Permission denied."],"target_not_found":[false,"Target not found."],"stale_topology":[true,"Topology changed."],"operation_conflict":[false,"Operation identifier conflict."],"in_progress":[true,"Operation is in progress."],"not_running":[false,"Run is not running."],"already_running":[false,"Run is already running."],"unsupported_capability":[false,"Capability is unavailable."],"output_gap":[false,"Output history is incomplete."],"persistence_failed":[false,"Persistence failed."],"runtime_failed":[true,"Runtime operation failed."],"state_unknown":[false,"Operation state is unknown."],"resource_exhausted":[false,"Resource limit reached."],"root_changed":[false,"Root identity changed."],"unsupported_file":[false,"File type is unsupported."],"not_a_repository":[false,"Git repository is unavailable."]}')
+}
+function Read-StopErrorCode([byte[]]$Stdout,[byte[]]$Stderr,$Site) {
+ $result=[ordered]@{observation='unknown';code='unknown';phase='unknown';api_role='unknown'}
+ try {
+  if($Site.observation -cne 'site_observed' -or @($Site.stdout_sites).Count -ne 0 -or @($Site.stderr_sites).Count -ne 1 -or $Site.stderr_sites[0] -cne 'stop_refusal_code'){return $result}
+  $encoding=[Text.UTF8Encoding]::new($false,$true);$texts=@($encoding.GetString($Stdout),$encoding.GetString($Stderr));$payload=$null;$count=0
+  for($stream=0;$stream -lt 2;$stream++){
+   $lines=$texts[$stream].Split([char]10)
+   for($i=0;$i -lt $lines.Length;$i++){
+    if(-not $lines[$i].Contains('assertion `left == right` failed:')){continue};$count++
+    $line=$lines[$i];if($line.EndsWith("`r",[StringComparison]::Ordinal)){$line=$line.Substring(0,$line.Length-1)}
+    $prefix='assertion `left == right` failed: '
+    if($stream -ne 1 -or $i -eq $lines.Length-1 -or -not $line.StartsWith($prefix,[StringComparison]::Ordinal) -or [regex]::IsMatch($line,'[\x00-\x1f\x7f]')){return $result}
+    $payload=$line.Substring($prefix.Length)
+   }
+  }
+  if($count -ne 1 -or $null -eq $payload){return $result}
+  $doc=[Text.Json.JsonDocument]::Parse($payload)
+  try{
+   function Assert-StopUniqueJson($node){if($node.ValueKind -eq [Text.Json.JsonValueKind]::Object){$seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal);foreach($p in $node.EnumerateObject()){if(-not $seen.Add($p.Name)){throw 'duplicate'};Assert-StopUniqueJson $p.Value}}elseif($node.ValueKind -eq [Text.Json.JsonValueKind]::Array){foreach($v in $node.EnumerateArray()){Assert-StopUniqueJson $v}}}
+   Assert-StopUniqueJson $doc.RootElement
+   $v=ConvertFrom-Json -InputObject $payload -AsHashtable
+   Assert-CapabilityKeys $v @('schema_version','instance_id','operation_id','accepted','topology_revision','event_seq','result','error')
+   if($v.schema_version -isnot [long] -and $v.schema_version -isnot [int]){return $result}
+   if($v.schema_version -ne 1 -or $v.accepted -isnot [bool] -or $v.accepted -or $null -ne $v.result){return $result}
+   foreach($key in @('instance_id','operation_id')){if($v[$key] -isnot [string] -or $v[$key] -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'){return $result}}
+   foreach($key in @('topology_revision','event_seq')){[void]$doc.RootElement.GetProperty($key).GetUInt64()}
+   $e=$v.error;Assert-CapabilityKeys $e @('code','retryable','message','target_id');$table=Get-StopErrorCodeTable
+   if($e.code -isnot [string] -or -not $table.Contains($e.code) -or $e.retryable -isnot [bool] -or $e.retryable -ne $table[$e.code][0] -or $e.message -isnot [string] -or $e.message -cne $table[$e.code][1]){return $result}
+   if($null -ne $e.target_id -and ($e.target_id -isnot [string] -or $e.target_id -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')){return $result}
+   if($null -ne $e.target_id -and $e.code -cin @('invalid_request','unsupported_version','resource_exhausted')){return $result}
+   $result.observation='observed';$result.code=$e.code
+  }finally{$doc.Dispose()}
+ }catch{}
+ return $result
+}
+function Test-StopStoreObject($Value) {
+ try{
+  Assert-CapabilityKeys $Value @('presence','fingerprint','owner','private_dacl','dacl_protected','user_full_access','label_rid','label_source','no_write_up','actor_no_write_up')
+  if($Value.presence -isnot [string] -or $Value.presence -cnotin @('unknown','absent','present')){return $false}
+  if($Value.presence -ceq 'present'){if($Value.fingerprint -isnot [string] -or $Value.fingerprint -cnotmatch '^[a-f0-9]{64}$'){return $false}}elseif($null -ne $Value.fingerprint){return $false}
+  if($Value.owner -isnot [string] -or $Value.owner -cnotin @('unknown','user','administrators','system','other')){return $false}
+  foreach($k in @('private_dacl','dacl_protected','user_full_access','no_write_up','actor_no_write_up')){if($Value[$k] -isnot [string] -or $Value[$k] -cnotin @('unknown','yes','no')){return $false}}
+  if($Value.label_source -isnot [string] -or $Value.label_source -cnotin @('unknown','explicit','unlabeled')){return $false}
+  if(($Value.label_source -ceq 'unknown' -and ($null -ne $Value.label_rid -or $Value.no_write_up -cne 'unknown')) -or ($Value.label_source -ceq 'unlabeled' -and ($Value.label_rid -ne 8192 -or $Value.no_write_up -cne 'yes')) -or ($Value.label_source -ceq 'explicit' -and ($null -eq $Value.label_rid -or $Value.no_write_up -ceq 'unknown'))){return $false}
+  if($null -ne $Value.label_rid -and (($Value.label_rid -isnot [int] -and $Value.label_rid -isnot [long] -and $Value.label_rid -isnot [uint32]) -or $Value.label_rid -notin @(0,4096,8192,8448,12288,16384,20480))){return $false}
+  if($Value.presence -cne 'present' -and ($Value.owner -cne 'unknown' -or $Value.private_dacl -cne 'unknown' -or $Value.dacl_protected -cne 'unknown' -or $Value.user_full_access -cne 'unknown' -or $null -ne $Value.label_rid -or $Value.label_source -cne 'unknown' -or $Value.no_write_up -cne 'unknown')){return $false}
+  return $true
+ }catch{return $false}
+}
+function New-StopStoreWitness($Binding,$Actor,$Capture,$Row) {
+ return [ordered]@{schema='winsmux-private-stop-store-witness/v1';producer='ci_high';source_commit=$Binding.source_commit;script_sha256=$Binding.script_sha256;test_sha256=$Binding.test_sha256;cli_sha256=$Binding.cli_sha256;sid_sha256=$Actor.sid_sha256;session=$Actor.session;integrity_rid=$Actor.integrity_rid;first_passed=($null -ne $Row.tests[0] -and $Row.tests[0].outcome -ceq 'passed' -and $null -ne $Row.test_actors[0]);before=$Capture.before;after=$Capture.after}
+}
+function ConvertTo-StopStoreSecurity($Object,[uint32]$ActorRid) {
+ $s=[ordered]@{owner='unknown';private_dacl='unknown';dacl_protected='unknown';user_full_access='unknown';label_vs_actor='unknown';label_source='unknown';no_write_up='unknown';actor_no_write_up='unknown'}
+ if((Test-StopStoreObject $Object) -and $Object.presence -ceq 'present'){foreach($k in @('owner','private_dacl','dacl_protected','user_full_access','label_source','no_write_up','actor_no_write_up')){$s[$k]=$Object[$k]};if($null -ne $Object.label_rid){$s.label_vs_actor=if($Object.label_rid -gt $ActorRid){'higher'}elseif($Object.label_rid -eq $ActorRid){'equal'}else{'lower'}}};return $s
+}
+function ConvertTo-StopProvenance($Binding,$Actor,$Capture,$Witness) {
+ $result=[ordered]@{stop_error=[ordered]@{observation='unknown';code='unknown';phase='unknown';api_role='unknown'};high_witness='unknown';objects=@()}
+ try{Assert-CapabilityKeys $Capture.error @('observation','code','phase','api_role');$e=$Capture.error;if($e.observation -is [string] -and $e.code -is [string] -and $e.phase -ceq 'unknown' -and $e.api_role -ceq 'unknown' -and (($e.observation -ceq 'unknown' -and $e.code -ceq 'unknown') -or ($e.observation -ceq 'observed' -and (Get-StopErrorCodeTable).Contains($e.code)))){$result.stop_error=[ordered]@{observation=$e.observation;code=$e.code;phase='unknown';api_role='unknown'}}}catch{}
+ $valid=$false
+ try{
+  Assert-CapabilityKeys $Witness @('schema','producer','source_commit','script_sha256','test_sha256','cli_sha256','sid_sha256','session','integrity_rid','first_passed','before','after')
+  $valid=$Witness.schema -ceq 'winsmux-private-stop-store-witness/v1' -and $Witness.producer -ceq 'ci_high' -and $Witness.first_passed -is [bool] -and $Witness.first_passed -and $Witness.sid_sha256 -ceq $Binding.expected_sid -and $Witness.sid_sha256 -ceq $Actor.sid_sha256 -and ($Witness.session -is [int] -or $Witness.session -is [long]) -and $Witness.session -ge 0 -and $Witness.session -le [uint32]::MaxValue -and $Witness.session -eq $Binding.expected_session -and $Witness.session -eq $Actor.session -and ($Witness.integrity_rid -is [int] -or $Witness.integrity_rid -is [long]) -and $Witness.integrity_rid -ge 12288 -and $Witness.integrity_rid -in @(12288,16384,20480)
+  foreach($k in @('source_commit','script_sha256','test_sha256','cli_sha256')){if($Witness[$k] -isnot [string] -or $Witness[$k] -cne $Binding[$k]){$valid=$false}}
+  foreach($set in @($Witness.before,$Witness.after)){Assert-CapabilityKeys $set @('known_folder','store','lease','confirmed','backup','temp')}
+ }catch{$valid=$false}
+ if($valid){$result.high_witness='bound'}
+ $rows=[Collections.Generic.List[object]]::new()
+ foreach($role in @('known_folder','store','lease','confirmed','backup','temp')){
+  $r=[ordered]@{role=$role;high_before_security=(ConvertTo-StopStoreSecurity $null 0);high_after_security=(ConvertTo-StopStoreSecurity $null 0);high_before='unknown';high_after='unknown';medium_before='unknown';high_before_after='unknown';high_after_medium='unknown';created_during_high='unknown';owner='unknown';private_dacl='unknown';dacl_protected='unknown';user_full_access='unknown';label_vs_medium='unknown';label_source='unknown';no_write_up='unknown';actor_no_write_up='unknown';mic_write_barrier='unknown'}
+  try{
+   $m=$Capture.before[$role];$mok=Test-StopStoreObject $m
+   if($mok){$r.medium_before=$m.presence;if($m.presence -ceq 'present'){foreach($k in @('owner','private_dacl','dacl_protected','user_full_access','label_source','no_write_up','actor_no_write_up')){$r[$k]=$m[$k]};if($null -ne $m.label_rid){$r.label_vs_medium=if($m.label_rid -gt $Actor.integrity_rid){'higher'}elseif($m.label_rid -eq $Actor.integrity_rid){'equal'}else{'lower'}}}}
+   if($valid){$b=$Witness.before[$role];$a=$Witness.after[$role];$bok=Test-StopStoreObject $b;$aok=Test-StopStoreObject $a
+    if($bok){$r.high_before=$b.presence;$r.high_before_security=ConvertTo-StopStoreSecurity $b ([uint32]$Witness.integrity_rid)};if($aok){$r.high_after=$a.presence;$r.high_after_security=ConvertTo-StopStoreSecurity $a ([uint32]$Witness.integrity_rid)}
+    if($bok -and $aok -and $b.presence -ceq 'present' -and $a.presence -ceq 'present'){$r.high_before_after=if($b.fingerprint -ceq $a.fingerprint){'same'}else{'different'}}
+    if($bok -and $aok -and $b.presence -ceq 'absent' -and $a.presence -ceq 'present'){$r.created_during_high='yes'}elseif($bok -and $b.presence -ceq 'present'){$r.created_during_high='no'}
+    if($mok -and $aok -and $m.presence -ceq 'present' -and $a.presence -ceq 'present'){$r.high_after_medium=if($m.fingerprint -ceq $a.fingerprint){'same'}else{'different'}}
+    if($r.high_after_medium -ceq 'same' -and $r.label_vs_medium -cne 'unknown' -and $r.no_write_up -cne 'unknown' -and $r.actor_no_write_up -cne 'unknown'){$r.mic_write_barrier=if($r.label_vs_medium -ceq 'higher' -and $r.no_write_up -ceq 'yes' -and $r.actor_no_write_up -ceq 'yes'){'yes'}else{'no'}}
+   }
+  }catch{}
+  $rows.Add($r)
+ }
+ $result.objects=$rows.ToArray();return $result
+}
+function New-StopFailureSidecar($Site,$Provenance) {
+ return [ordered]@{schema='winsmux-ci-medium-failure-site/v2';site=$Site;stop_provenance=$Provenance}
+}
+
+function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$Actor,[string]$Class,[Collections.IDictionary]$FailureSiteObservation=$null,[Collections.IDictionary]$StopStoreCapture=$null) {
  Assert-Fixed ($Class -cin @('ci_high','ci_restricted_medium','local_uac_limited')) 'compatibility_class'
  Assert-CapabilityKeys $Actor @('sid_sha256','session','token_type','elevation','elevation_type','integrity_rid','restricted','app_container')
  Assert-Fixed ($Actor.token_type -eq 1 -and $Actor.app_container -eq 0) 'compatibility_primary'
@@ -403,6 +541,7 @@ function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$A
  foreach($test in @('real_host_without_provider_path_keeps_launch_unadvertised','host_startup_fails_closed_before_discovery_when_security_primitives_fail')){
   Assert-HeadlessBoundInputs $Binding $ExpectedScript
   $owned=$null;$terminal=$false;$case=$null;$caller=$null
+  if($null -ne $StopStoreCapture -and $test -ceq 'real_host_without_provider_path_keeps_launch_unadvertised'){try{$StopStoreCapture.before=Get-StopStoreSnapshot $Actor}catch{}}
   try{
    $owned=[Winsmux.DesktopNative.DesktopProcessOwner]::Start([string]$Binding.test_executable,[string[]]@('--exact',$test,'--test-threads=1','--nocapture'),@{},$false,16384,180000)
    $terminal=$owned.WaitTerminal(180000,500)
@@ -414,12 +553,14 @@ function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$A
     try{
      $site=ConvertTo-CapabilityFailureSiteObservation $Binding $out.RetainedBytes $err.RetainedBytes $case ([IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $ExpectedScript) '..')))
      foreach($key in $site.Keys){$FailureSiteObservation[$key]=$site[$key]}
+     if($null -ne $StopStoreCapture){$StopStoreCapture.error=Read-StopErrorCode $out.RetainedBytes $err.RetainedBytes $site}
     }catch{} # Observation cannot change the existing case, cleanup, or acceptance.
    }
    $out=$null;$err=$null
   }catch{$row.failure='case_capture'}finally{
    if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(180000,500)};if($owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted){$owned.Dispose()}}
   }
+  if($null -ne $StopStoreCapture -and $Class -ceq 'ci_high' -and $test -ceq 'real_host_without_provider_path_keeps_launch_unadvertised'){try{$StopStoreCapture.after=Get-StopStoreSnapshot $Actor}catch{}}
   $observed.Add($case);$callers.Add($caller);$row.tests=$observed.ToArray();$row.test_actors=$callers.ToArray()
   Assert-HeadlessBoundInputs $Binding $ExpectedScript
  }
@@ -627,8 +768,10 @@ try {
   $highRow=$null
   if(-not $capabilityMode){
    Add-Type -Path (Join-Path $repoRoot 'scripts/DesktopProcessOwner.cs') -ErrorAction Stop 2>$null
-   $highRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_high'
+   $stopHigh=[ordered]@{before=@{};after=@{};error=$null}
+   $highRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_high' $null $stopHigh
    Write-NewJson (Join-Path $evidenceRoot 'ci-high-compatibility.json') $highRow
+   try{Write-NewJson (Join-Path $inputRoot 'stop-store-high-witness.json') (New-StopStoreWitness $binding $facts $stopHigh $highRow)}catch{} # Private input only; never uploaded. Missing witness remains unknown.
    Assert-CapabilityCompatibilityRow $highRow $binding $facts 'ci_high'
   }
   $phase='medium_bootstrap'
@@ -681,9 +824,11 @@ try {
   }else{
   $phase='headless_cases'
   $failureSite=New-CapabilityFailureSiteObservation $binding
-  $mediumRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_restricted_medium' $failureSite
+  $stopMedium=[ordered]@{before=@{};after=@{};error=$null};$stopWitness=$null
+  try{$stopWitness=Read-OwnedJson (Join-Path $inputRoot 'stop-store-high-witness.json')}catch{}
+  $mediumRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_restricted_medium' $failureSite $stopMedium
   Write-NewJson (Join-Path $evidenceRoot 'ci-medium-compatibility.json') $mediumRow
-  try{Write-NewJson (Join-Path $evidenceRoot 'ci-medium-failure-site.json') $failureSite}catch{} # Missing sidecar stays missing evidence; it cannot alter the original result.
+  try{$stopProvenance=ConvertTo-StopProvenance $binding $facts $stopMedium $stopWitness;Write-NewJson (Join-Path $evidenceRoot 'ci-medium-failure-site.json') (New-StopFailureSidecar $failureSite $stopProvenance)}catch{} # Observation failure cannot alter the original result.
   Assert-CapabilityCompatibilityRow $mediumRow $binding $facts 'ci_restricted_medium'
   $result.tests=@($mediumRow.tests);$result.outcome=$mediumRow.outcome
   }
