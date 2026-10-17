@@ -15,6 +15,9 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const binding = JSON.parse(fs.readFileSync('distribution/windows-licenses/binding.json'));
 const input = path.join(root, 'space 日本語 & fixture'), source = path.join(input, 'winsmux-app/src-tauri');
 fs.mkdirSync(input);
+const currentAuthorityPath = 'core/crates/winsmux-workspace/src/desktop_current_licenses_v0380.json';
+fs.mkdirSync(path.join(input, path.dirname(currentAuthorityPath)), { recursive: true });
+fs.copyFileSync(path.join(repo, currentAuthorityPath), path.join(input, currentAuthorityPath));
 for (const row of binding.sources) {
   const target = path.join(input, row.path); fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.copyFileSync(path.join(repo, row.path), target);
@@ -185,7 +188,9 @@ if (process.argv.includes('--cargo-handoff-only')) {
 const first = stageDesktopMsiPlan(options), planBytes = fs.readFileSync(planFile), includeBytes = fs.readFileSync(includeFile);
 assert.equal(first.plan_sha256, digest(planBytes));
 const plan = JSON.parse(planBytes);
-assert.equal(plan.files.length, 323); assert.equal(plan.files.filter(row => row.role === 'license').length, 319);
+const currentLicenses = JSON.parse(fs.readFileSync(path.join(input, currentAuthorityPath))).files;
+assert.equal(plan.files.length, currentLicenses.length + 4);
+assert.deepEqual(plan.files.filter(row=>row.role==='license').map(({path,bytes,sha256})=>({path,bytes,sha256})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),currentLicenses);
 assert.equal(plan.files.find(row => row.role === 'gui').sha256, digest(fs.readFileSync(gui)));
 assert.equal(stageDesktopMsiPlan(options).plan_sha256, first.plan_sha256);
 assert.deepEqual(fs.readFileSync(includeFile), includeBytes);

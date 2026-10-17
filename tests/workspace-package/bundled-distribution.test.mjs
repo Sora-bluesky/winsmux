@@ -6,6 +6,8 @@ import { stageBundledDistribution, assertCanonicalBundledDistribution } from '..
 import { assertNsisGeneration } from '../../scripts/assert-nsis-generation.mjs';
 import { buildDistributionLicenses } from '../../scripts/stage-distribution-licenses.mjs';
 import { fixturePe } from './fixture-pe.mjs';
+import { checkedWindowsLicenseBuildInputs, renderDesktopCurrentLicenseAuthority, desktopCurrentLicenseSourcePath } from '../../scripts/windows-license-build-inputs.mjs';
+import { assertCoreTargetMeasurement } from '../../scripts/build-core-candidate.mjs';
 
 const repo = process.cwd();
 const root = path.resolve('.evidence/workspace-package', `bundled-generation-${randomUUID()}`);
@@ -27,6 +29,9 @@ function snapshot(directory) {
 function fixture(name) {
   const directory = path.join(root, name); const input = path.join(directory, 'repo');
   fs.mkdirSync(input, { recursive: true });
+  const currentAuthorityPath = 'core/crates/winsmux-workspace/src/desktop_current_licenses_v0380.json';
+  fs.mkdirSync(path.join(input, path.dirname(currentAuthorityPath)), { recursive: true });
+  fs.copyFileSync(path.join(repo, currentAuthorityPath), path.join(input, currentAuthorityPath));
   for (const row of binding.sources) { const out = path.join(input, row.path);
     fs.mkdirSync(path.dirname(out), { recursive: true }); fs.copyFileSync(path.join(repo, row.path), out); }
   fs.cpSync(path.join(repo, 'distribution/windows-licenses'), path.join(input, 'distribution/windows-licenses'), { recursive: true });
@@ -51,7 +56,14 @@ function run(name, mutate, accepted = false, partialStage = false) {
   const protectedBefore = snapshot(f.input); const priorBefore = snapshot(f.previous);
   if (accepted) {
     const result = stageBundledDistribution(f.options);
-    assert.equal(result.files, 325); assert.equal(result.distribution_complete, false);
+    const licenseRows = JSON.parse(renderDesktopCurrentLicenseAuthority(f.options).sourceBytes).files;
+    const expectedPaths = [...licenseRows.map(row => row.path), 'winsmux-' + binding.host + '.exe',
+      'winsmux-workspace-mcp-' + binding.host + '.exe', 'nsis/plugins/winsmux_nsis_utils.dll', 'nsis/winsmux-utils.nsh', 'old-exe', 'old-license'].sort();
+    const actualManifest = JSON.parse(fs.readFileSync(path.join(f.options.destination, 'distribution-manifest.json')));
+    assert.deepEqual(actualManifest.files.map(row => row.path).sort(), expectedPaths);
+    assert.deepEqual(actualManifest.files.filter(row => row.path.startsWith('licenses/')).sort((a,b)=>a.path.localeCompare(b.path)),
+      licenseRows.sort((a,b)=>a.path.localeCompare(b.path)));
+    assert.equal(result.files, expectedPaths.length); assert.equal(result.distribution_complete, false);
     assert.equal(fs.readFileSync(path.join(f.options.destination, 'old-exe'), 'utf8'), 'existing executable');
     assert.equal(fs.readFileSync(path.join(f.options.destination, 'old-license'), 'utf8'), 'existing license generation');
     assert.ok(fs.statSync(path.join(f.options.destination, 'unrelated-empty-directory')).isDirectory());
@@ -64,7 +76,7 @@ function run(name, mutate, accepted = false, partialStage = false) {
     fs.cpSync(f.options.destination, path.join(source, 'binaries'), { recursive: true });
     const proof = assertNsisGeneration({ srcTauri: source, projectOutput: path.join(f.directory, 'target/release'),
       manifestSha256: result.manifest_sha256, hookSha256: result.hook_sha256 });
-    assert.equal(proof.files, 325); assert.equal(proof.compiler_launched, false);
+    assert.equal(proof.files, expectedPaths.length); assert.equal(proof.compiler_launched, false);
   } else {
     assert.throws(() => stageBundledDistribution(f.options), name);
     if (partialStage) assert.ok(fs.existsSync(path.join(f.options.destination, '.distribution.pending')));
@@ -145,11 +157,11 @@ run('incomplete-canonical-stage', f => fs.writeFileSync(path.join(f.previous, '.
 run('changed-full-text', f => {
   const text = fs.readdirSync(path.join(f.input, 'distribution/windows-licenses/texts'))[0];
   fs.appendFileSync(path.join(f.input, 'distribution/windows-licenses/texts', text), 'changed');
-}, false, true);
+}, false);
 run('missing-covered-source', f => {
   const source = fs.readdirSync(path.join(f.input, 'distribution/windows-licenses/sources'))[0];
   fs.renameSync(path.join(f.input, 'distribution/windows-licenses/sources', source), path.join(f.directory, source));
-}, false, true);
+}, false);
 const failing = fixture('owned-stage-write-failure'); const prior = snapshot(failing.previous); const inputs = snapshot(failing.input);
 const write = fs.writeFileSync;
 try {
@@ -187,7 +199,8 @@ const beforeExpected = snapshot(family.input);
 const expected = buildDistributionLicenses({ policyPath: path.join(assets, 'policy.json'), policySha256: binding.policy_sha256,
   inputPath: path.join(assets, 'input.json'), catalogPath: path.join(assets, 'manifest.json'), catalogSha256: binding.catalog_sha256,
   textRoot: path.join(assets, 'texts'), sourceRoot: assets, version: binding.version });
-assert.equal(expected.files.size, 319);
+assert.deepEqual([...expected.files].map(([relative,bytes])=>({path:'licenses/'+relative,bytes:bytes.length,sha256:hash(bytes)})).sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0),
+  JSON.parse(renderDesktopCurrentLicenseAuthority(family.options).sourceBytes).files);
 for (const [relative, bytes] of expected.files) {
   assert.ok(fs.readFileSync(path.join(family.previous, 'licenses', relative)).equals(bytes), relative);
 }
@@ -198,7 +211,7 @@ const outputs = [path.join(family.directory, 'target/release'), path.join(family
 for (const projectOutput of outputs) {
   assert.equal(assertCanonicalBundledDistribution({ ...family.options, projectOutput }).compiler_launched, false);
 }
-cases.push({ name: 'complete-319-file-renderer-and-shared-guard-both-layouts', result: 'passed', files: expected.files.size,
+cases.push({ name: 'complete-renderer-and-shared-guard-both-layouts', result: 'passed', files: expected.files.size,
   inputs_and_existing_generation_unchanged: true });
 function familyCase(name, mutate) {
   const restore = mutate();
@@ -265,5 +278,51 @@ familyCase('complete-files-with-altered-outer-inventory', () => {
   return () => {};
 });
 assert.deepEqual(snapshot(family.input), beforeExpected);
+
+// The same renderer owns generation and the exact fixed Desktop source.
+{
+  const f = fixture('embedded-current-authority');
+  const request = {repoRoot:f.input, host:binding.host, version:binding.version, rustcCommit:binding.rustc_commit};
+  const file = path.join(f.input, desktopCurrentLicenseSourcePath), original = fs.readFileSync(file);
+  assert.deepEqual(renderDesktopCurrentLicenseAuthority(request).sourceBytes, original);
+  checkedWindowsLicenseBuildInputs(request);
+  const current = JSON.parse(original);
+  const mutations = [
+    ['missing-tuple', a => a.files.pop()],
+    ['surplus-tuple', a => a.files.push({...a.files[0],path:'licenses/unknown.txt'})],
+    ['duplicate-tuple', a => a.files.push({...a.files[0]})],
+    ['case-tuple', a => {a.files[0].path=a.files[0].path.toLowerCase()}],
+    ['bytes-tuple', a => {a.files[0].bytes++}],
+    ['hash-tuple', a => {a.files[0].sha256='0'.repeat(64)}],
+    ['role-tuple', a => {a.files[0].role='license'}],
+    ['unsafe-path', a => {a.files[0].path='licenses/../unknown'}],
+    ['alternate-path', a => {a.files[0].path='licenses/another.txt'}],
+    ['unknown-field', a => {a.unknown=true}],
+    ['unknown-row-field', a => {a.files[0].unknown=true}],
+    ...['schema','version','host','binding_sha256','policy_sha256','input_sha256','catalog_sha256'].map(key =>
+      [key, a => {a[key]='wrong'}]),
+  ];
+  for (const [name, mutate] of mutations) {
+    const changed = structuredClone(current); mutate(changed);
+    try { fs.writeFileSync(file, JSON.stringify(changed,null,2)+'\n'); assert.throws(()=>checkedWindowsLicenseBuildInputs(request),name); }
+    finally { fs.writeFileSync(file,original); }
+    cases.push({name:'current-source-'+name,result:'passed',inputs_restored:true});
+  }
+  try { fs.writeFileSync(file,Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),original])); assert.throws(()=>checkedWindowsLicenseBuildInputs(request)); }
+  finally { fs.writeFileSync(file,original); }
+  const measurementBytes=fs.readFileSync(path.join(repo,'distribution/windows-licenses/core-targets.json'));
+  const measured=JSON.parse(measurementBytes),compiler={host:binding.host,commit:binding.rustc_commit};
+  for (const target of ['x86_64-pc-windows-msvc','aarch64-pc-windows-msvc']) {
+    checkedWindowsLicenseBuildInputs({...request,host:compiler.host});
+    const options={target,version:binding.version,compiler,bindingSha256:current.binding_sha256,dependency:measured.targets[target]};
+    assertCoreTargetMeasurement(options,measurementBytes);
+    for (const changed of [{...options,target:'unknown'}, {...options,compiler:{...compiler,host:target==='x86_64-pc-windows-msvc'?'aarch64-pc-windows-msvc':'other'}}, {...options,dependency:{...options.dependency,sha256:'0'.repeat(64)}}])
+      assert.throws(()=>assertCoreTargetMeasurement(changed,measurementBytes));
+    cases.push({name:'x64-compiler-current-source-and-Core-target-'+target,result:'passed'});
+  }
+  assert.throws(()=>checkedWindowsLicenseBuildInputs({...request,host:'aarch64-pc-windows-msvc'}));
+  checkedWindowsLicenseBuildInputs(request); assert.deepEqual(fs.readFileSync(file),original);
+}
+
 fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({ scope: 'bound generation staging, no compiler or installer execution', passed: cases.length, failed: 0, cases }, null, 2) + '\n');
 console.log(JSON.stringify({ result: path.join(root, 'result.json'), passed: cases.length, failed: 0 }));

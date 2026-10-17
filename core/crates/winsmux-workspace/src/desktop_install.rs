@@ -182,7 +182,7 @@ fn safe_component(value: &str) -> bool {
 pub fn valid_member_path(value: &str) -> bool {
     value.split('/').all(safe_component)
 }
-pub fn parse_install_plan(
+pub(crate) fn parse_install_plan_shape(
     bytes: &[u8],
     expected: [u8; 32],
     flavor: &str,
@@ -237,6 +237,79 @@ pub fn parse_install_plan(
     }
     Ok(plan)
 }
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentLicenseAuthority {
+    schema: String,
+    version: String,
+    host: String,
+    binding_sha256: String,
+    policy_sha256: String,
+    input_sha256: String,
+    catalog_sha256: String,
+    files: Vec<CurrentLicenseTuple>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentLicenseTuple {
+    path: String,
+    bytes: u64,
+    sha256: String,
+}
+
+pub(crate) fn current_license_inventory() -> Result<&'static [InstallMember], DesktopInstallError> {
+    static CURRENT: std::sync::OnceLock<Result<Vec<InstallMember>, DesktopInstallError>> = std::sync::OnceLock::new();
+    CURRENT.get_or_init(|| {
+        let source: CurrentLicenseAuthority = serde_json::from_str(include_str!("desktop_current_licenses_v0380.json"))
+            .map_err(|_| DesktopInstallError::Plan)?;
+        if source.schema != "winsmux-desktop-current-licenses/v1" || source.version != "0.38.0" || source.host != HOST
+            || source.binding_sha256 != "09ab1b3e70f351394e20eed58139906630d682ae03b456b2dc5bfd2c0f903d05"
+            || source.policy_sha256 != "de38d6689d89a3b285ce1eb4f1dfd4c3cbbbe9a848c674d23600ab8c45fee4f3"
+            || source.input_sha256 != "f02548cd0a814bafab541e60ba46301fcd6736dbab5c3f67d2dd9306d6d15531"
+            || source.catalog_sha256 != "54528dec9f8066ee11824eadb799ca4dca9104df77544d32eb3875216e431f7f"
+            || source.files.is_empty()
+        { return Err(DesktopInstallError::Plan); }
+        let mut names = HashSet::new();
+        let mut previous: Option<String> = None;
+        let mut rows = Vec::new();
+        for row in source.files {
+            if !valid_member_path(&row.path) || !row.path.starts_with("licenses/") || row.bytes == 0
+                || parse_sha256(&row.sha256).is_err() || !names.insert(row.path.to_lowercase())
+                || previous.as_ref().is_some_and(|last| last >= &row.path)
+            { return Err(DesktopInstallError::Plan); }
+            previous = Some(row.path.clone());
+            rows.push(InstallMember { role: "license".into(), path: row.path, bytes: row.bytes, sha256: row.sha256 });
+        }
+        if !names.contains("licenses/manifest.json") || !names.contains("licenses/third_party_notices.txt") {
+            return Err(DesktopInstallError::Plan);
+        }
+        Ok(rows)
+    }).as_ref().map(Vec::as_slice).map_err(|error| *error)
+}
+
+/// Complete tuple equality. Callers first validate the plan shape and case uniqueness.
+pub(crate) fn license_inventory_matches(rows: &[InstallMember], expected: &[InstallMember]) -> bool {
+    let expected: Vec<_> = expected.iter().filter(|row| row.role == "license").collect();
+    let received: Vec<_> = rows.iter().filter(|row| row.role == "license").collect();
+    !expected.is_empty() && received.len() == expected.len() && received.iter().all(|row| {
+        expected.iter().any(|known| row.path == known.path && row.bytes == known.bytes && row.sha256 == known.sha256)
+    })
+}
+
+pub(crate) fn validate_current_license_inventory(rows: &[InstallMember]) -> Result<(), DesktopInstallError> {
+    if !license_inventory_matches(rows, current_license_inventory()?) { return Err(DesktopInstallError::Plan); }
+    Ok(())
+}
+
+/// Incoming Desktop payloads always use the complete current embedded authority.
+pub fn parse_install_plan(bytes: &[u8], expected: [u8; 32], flavor: &str, version: &str) -> Result<InstallPlan, DesktopInstallError> {
+    let plan = parse_install_plan_shape(bytes, expected, flavor, version)?;
+    if plan.version != "0.38.0" { return Err(DesktopInstallError::Plan); }
+    validate_current_license_inventory(&plan.files)?;
+    Ok(plan)
+}
+
 fn parse_wire_receipt(
     bytes: &[u8],
     operation: &str,

@@ -1,7 +1,8 @@
 //! One owner for the current-user x64 NSIS publication and its inverse.
 //! Context, persisted state and package bytes are inputs, never authorization.
 use crate::desktop_install::{
-    parse_install_plan, parse_sha256, sha256_hex, valid_member_path, StartupReceipt,
+    parse_install_plan, parse_install_plan_shape, parse_sha256, sha256_hex, valid_member_path,
+    license_inventory_matches, validate_current_license_inventory, StartupReceipt,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -779,31 +780,31 @@ pub fn legacy_admission_complete() -> Result<()> {
     Ok(())
 }
 fn checked_plan(bytes: &[u8], sha: &str) -> Result<crate::desktop_install::InstallPlan> {
-    let plan = parse_install_plan(
-        bytes,
-        parse_sha256(sha).map_err(|_| Error::Plan)?,
-        "nsis",
-        VERSION,
-    )
-    .map_err(|_| Error::Plan)?;
-    let fixed = legacy()?;
-    let allowed: HashSet<_> = fixed
-        .files
-        .iter()
-        .filter(|f| f.role == "license")
-        .map(|f| f.path.as_str())
-        .collect();
-    if plan
-        .files
-        .iter()
-        .any(|r| r.role == "license" && !allowed.contains(r.path.as_str()))
-    {
-        return Err(Error::Plan);
+    let expected = parse_sha256(sha).map_err(|_| Error::Plan)?;
+    let current = parse_install_plan(bytes, expected, "nsis", VERSION).map_err(|_| Error::Plan);
+    #[cfg(all(test, windows))]
+    if current.is_err() {
+        let plan = parse_install_plan_shape(bytes, expected, "nsis", VERSION).map_err(|_| Error::Plan)?;
+        if native::synthetic_license_profile(&plan) { return Ok(plan); }
     }
-    Ok(plan)
+    current
+}
+
+// Persisted ownership can be the complete current profile or the complete known historical profile.
+// This recognizer never authorizes a new incoming historical install.
+fn checked_owned_plan(bytes: &[u8], sha: &str) -> Result<crate::desktop_install::InstallPlan> {
+    let plan = parse_install_plan_shape(bytes, parse_sha256(sha).map_err(|_| Error::Plan)?, "nsis", VERSION)
+        .map_err(|_| Error::Plan)?;
+    let historical: Legacy = serde_json::from_str(LEGACY).map_err(|_| Error::Plan)?;
+    if validate_current_license_inventory(&plan.files).is_ok()
+        || license_inventory_matches(&plan.files, &historical.files)
+    { return Ok(plan); }
+    #[cfg(all(test, windows))]
+    if native::synthetic_license_profile(&plan) { return Ok(plan); }
+    Err(Error::Plan)
 }
 fn member_inventory_valid(rows: &[Member], plan_bytes: &[u8], plan_sha: &str) -> Result<()> {
-    let plan = checked_plan(plan_bytes, plan_sha)?;
+    let plan = checked_owned_plan(plan_bytes, plan_sha)?;
     let mut required: Vec<_> = plan
         .files
         .iter()
@@ -1004,6 +1005,17 @@ mod native {
         },
         UI::Shell::{FOLDERID_Desktop, FOLDERID_Programs, SHGetKnownFolderPath},
     };
+    #[cfg(test)]
+    pub(super) fn synthetic_license_profile(plan: &crate::desktop_install::InstallPlan) -> bool {
+        // Exact synthetic payload is restricted to the active Native Mock, never production.
+        if !hooks::MOCK.with(|m| m.borrow().is_some()) { return false; }
+        let fixed: Legacy = serde_json::from_str(LEGACY).expect("fixed legacy source");
+        let path = fixed.files.iter().find(|row| row.role == "license").expect("legacy license").path.as_str();
+        let rows: Vec<_> = plan.files.iter().filter(|row| row.role == "license").collect();
+        rows.len() == 1 && rows[0].path == path && rows[0].bytes == b"synthetic license".len() as u64
+            && rows[0].sha256 == hash(b"synthetic license")
+    }
+
     const DELETE_ACCESS: u32 = 0x10000;
     // SDK ABI: pointer-sized NTSTATUS/Pointer union, then ULONG_PTR Information.
     #[repr(C)]
@@ -2864,7 +2876,7 @@ mod native {
                 return Err(Error::Pending);
             }
         }
-        let plan = checked_plan(&p.plan_bytes, &p.plan_sha256)?;
+        let plan = checked_owned_plan(&p.plan_bytes, &p.plan_sha256)?;
         let mut old_expected = Vec::new();
         if let Some(bytes) = &p.prior_state {
             let s: Installed = serde_json::from_slice(bytes).map_err(|_| Error::Pending)?;
@@ -3957,7 +3969,11 @@ mod native {
         refuse_msi()?;
         let source = Dirs::open_role(&ctx.source, PathRole::ContextSource)?;
         let plan_bytes = derived_origin(read_plain(&ctx.source.join(PLAN_FILE)), Some(DerivedOrigin::SourcePlanParent))?;
-        let plan = checked_plan(&plan_bytes, &sha256_hex(&ctx.plan_sha256))?;
+        let plan = if action == Action::Install {
+            checked_plan(&plan_bytes, &sha256_hex(&ctx.plan_sha256))?
+        } else {
+            checked_owned_plan(&plan_bytes, &sha256_hex(&ctx.plan_sha256))?
+        };
         let helper = plan
             .files
             .iter()
@@ -4026,6 +4042,203 @@ mod native {
             ctx: Context,
             plan_bytes: Vec<u8>,
         }
+        #[derive(Clone, Copy)]
+        enum FullLicenseProfile { Current, OldManaged }
+        fn full_rows(profile: FullLicenseProfile) -> Vec<crate::desktop_install::InstallMember> {
+            match profile {
+                FullLicenseProfile::Current => crate::desktop_install::current_license_inventory().unwrap().to_vec(),
+                FullLicenseProfile::OldManaged => {
+                    let fixed:Legacy=serde_json::from_str(LEGACY).unwrap();
+                    fixed.files.into_iter().filter(|row|row.role=="license").collect()
+                }
+            }
+        }
+        fn full_payload(profile: FullLicenseProfile, row: &crate::desktop_install::InstallMember) -> Vec<u8> {
+            // Test data supplies bytes only. Production embedded tuples remain the authority.
+            let root=PathBuf::from(option_env!("WINSMUX_DESKTOP_LICENSE_FIXTURE_ROOT").expect("fixed full-license test inputs required"));
+            let label=match profile {FullLicenseProfile::Current=>"current",FullLicenseProfile::OldManaged=>"old-managed"};
+            let bytes=fs::read(root.join(label).join(&row.path)).unwrap();
+            assert_eq!(bytes.len() as u64,row.bytes);assert_eq!(hash(&bytes),row.sha256);bytes
+        }
+        fn set_full_source(f:&mut Fixture,profile:FullLicenseProfile) {
+            let mut value:serde_json::Value=serde_json::from_slice(&f.plan_bytes).unwrap();
+            value["files"].as_array_mut().unwrap().retain(|row|row["role"]!="license");
+            for row in full_rows(profile) {
+                let bytes=full_payload(profile,&row);let file=f.ctx.source.join(&row.path);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();fs::write(file,bytes).unwrap();
+                value["files"].as_array_mut().unwrap().push(serde_json::json!({"role":"license","path":row.path,"bytes":row.bytes,"sha256":row.sha256}));
+            }
+            f.plan_bytes=serde_json::to_vec(&value).unwrap();f.ctx.plan_sha256=Sha256::digest(&f.plan_bytes).into();
+            fs::write(f.ctx.source.join(PLAN_FILE),&f.plan_bytes).unwrap();
+        }
+        fn seed_old_managed(f:&Fixture) {
+            assert!(checked_plan(&f.plan_bytes,&hash(&f.plan_bytes)).is_err());
+            let plan=checked_owned_plan(&f.plan_bytes,&hash(&f.plan_bytes)).unwrap();
+            let (previous,inherited)=admit_previous(&f.root,"S-1-5-21-100",&f.plan_bytes,&hash(&f.plan_bytes)).unwrap();
+            let sources=source_rows(&f.ctx,&plan).unwrap();
+            // Reconstruct a historical owned transaction; this does not admit an old incoming install.
+            run_transaction(&f.ctx,&f.root,"S-1-5-21-100".into(),f.plan_bytes.clone(),plan,previous,sources,inherited).unwrap();
+            let state=old(f).unwrap().0;
+            assert!(checked_owned_plan(&state.plan_bytes,&state.plan_sha256).is_ok());
+        }
+        fn full_legacy_setup(f:&Fixture) {
+            let mut baseline:Legacy=serde_json::from_str(LEGACY).unwrap();
+            for row in &mut baseline.files {
+                let bytes=if row.role=="license" {full_payload(FullLicenseProfile::OldManaged,row)} else {format!("old full legacy Mock {}",row.path).into_bytes()};
+                let file=f.root.path.join(&row.path);fs::create_dir_all(file.parent().unwrap()).unwrap();fs::write(file,&bytes).unwrap();
+                row.bytes=bytes.len() as u64;row.sha256=hash(&bytes);
+            }
+            let mut registration=vec![None;22];registration[0]=Some(sz("old full legacy Mock"));registration[4]=Some(sz(&path_text(&f.root.path).unwrap()));
+            baseline.registration_profile=Some(LegacyProfile{root:path_text(&f.root.path).unwrap(),language:None,registration:registration.clone(),shortcuts:Vec::new()});
+            hooks::MOCK.with(|m|{let mut m=m.borrow_mut();let mock=m.as_mut().unwrap();mock.slots[..22].clone_from_slice(&registration);mock.legacy=Some(baseline)});
+        }
+        fn full_mode_fixture(mode:&str)->Fixture {
+            let mut f=fixture();
+            match mode {
+                "fresh"=>set_full_source(&mut f,FullLicenseProfile::Current),
+                "managed-current"=>{set_full_source(&mut f,FullLicenseProfile::Current);execute(&f).unwrap();},
+                "managed-old"=>{set_full_source(&mut f,FullLicenseProfile::OldManaged);seed_old_managed(&f);set_full_source(&mut f,FullLicenseProfile::Current);},
+                "legacy-old"=>{set_full_source(&mut f,FullLicenseProfile::Current);full_legacy_setup(&f);},
+                _=>panic!("unknown full fixture mode"),
+            }
+            reset_steps(None,false);f
+        }
+        fn add_project(f:&Fixture) {
+            fs::create_dir_all(f.root.path.join("project/src")).unwrap();fs::write(f.root.path.join("project/src/sentinel.txt"),b"user project preserved").unwrap();
+            fs::write(f.root.path.join("unknown-user-file.bin"),b"unknown bytes preserved").unwrap();
+        }
+        fn assert_project(f:&Fixture) {
+            assert_eq!(fs::read(f.root.path.join("project/src/sentinel.txt")).unwrap(),b"user project preserved");
+            assert_eq!(fs::read(f.root.path.join("unknown-user-file.bin")).unwrap(),b"unknown bytes preserved");
+        }
+        fn profile_state(f:&Fixture,current:bool) {
+            let state=old(f).unwrap().0;
+            let plan=checked_owned_plan(&state.plan_bytes,&state.plan_sha256).unwrap();
+            assert_eq!(validate_current_license_inventory(&plan.files).is_ok(),current);
+            assert_previous(f,&state);
+        }
+        #[test]
+        #[ignore = "requires fixed authentic current/old license byte fixture"]
+        fn current_plan_authority_family_full_install_update_and_uninstall() {
+            for mode in ["fresh"] {
+                let mut f=full_mode_fixture(mode);
+                if mode!="fresh" {add_project(&f);}
+                assert!(execute(&f).unwrap().durable_commit);profile_state(&f,true);
+                if mode=="fresh" {add_project(&f);}
+                assert_project(&f);assert!(execute(&f).unwrap().durable_commit);profile_state(&f,true);assert_project(&f);
+                f.ctx.action=Action::Uninstall;
+                assert!(execute(&f).unwrap().durable_commit);assert_project(&f);
+                assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+                for row in full_rows(FullLicenseProfile::Current) {assert!(!exists(&f.root.path.join(row.path)).unwrap());}
+                assert!(hooks::MOCK.with(|m|m.borrow().as_ref().unwrap().slots.iter().all(Option::is_none)));
+            }
+            let mut old_fixture=fixture();set_full_source(&mut old_fixture,FullLicenseProfile::OldManaged);seed_old_managed(&old_fixture);
+            add_project(&old_fixture);old_fixture.ctx.action=Action::Uninstall;
+            assert!(execute(&old_fixture).unwrap().durable_commit);assert_project(&old_fixture);
+        }
+        fn fail_at_full_phase(call:impl FnOnce()->Result<()>,phase:Option<Phase>,label:&'static str) {
+            hooks::MOCK.with(|m|m.borrow_mut().as_mut().unwrap().barrier=Some(Box::new(move|seen|{
+                let matches=phase.is_none_or(|phase|hooks::MOCK.with(|m|m.borrow().as_ref().unwrap().proof_key.starts_with(&format!("{phase:?}|"))));
+                if seen==label&&matches {std::panic::panic_any("full profile phase cut");}
+            })));
+            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)).is_err());
+            hooks::MOCK.with(|m|m.borrow_mut().as_mut().unwrap().barrier=None);reset_steps(None,false);
+        }
+        fn crash_full_phase(f:&Fixture,phase:Phase) {
+            fail_at_full_phase(||execute(f).map(|_|()),Some(phase),"journal_after");
+        }
+        #[test]
+        #[ignore = "requires fixed authentic current/old license byte fixture"]
+        fn current_plan_authority_family_publishing_commit_and_restore_reentry() {
+            for mode in ["managed-current","managed-old","legacy-old"] {
+                for phase in [Phase::Publishing,Phase::CommitIntent] {
+                    let f=full_mode_fixture(mode);add_project(&f);
+                    let prior=admit_previous(&f.root,"S-1-5-21-100",&f.plan_bytes,&hash(&f.plan_bytes)).unwrap().0.unwrap().0;
+                    crash_full_phase(&f,phase);
+                    let pending=read_plain(&f.root.path.join(CONTROL).join("pending.json")).unwrap();
+                    let envelope:JournalEnvelope=serde_json::from_slice(&pending).unwrap();assert_eq!(envelope.payload.phase,phase);
+                    recover_if_readable(&f).unwrap();assert_project(&f);assert_previous(&f,&prior);
+                    assert!(execute(&f).unwrap().durable_commit);profile_state(&f,true);assert_project(&f);
+                }
+                // State publication happened, but its confirmation journal did not: confirm the actual current commit.
+                let committed=full_mode_fixture(mode);add_project(&committed);
+                fail_at_full_phase(||execute(&committed).map(|_|()),None,"commit_after");
+                recover_if_readable(&committed).unwrap();profile_state(&committed,true);assert_project(&committed);
+                let mut f=full_mode_fixture(mode);add_project(&f);let prior=admit_previous(&f.root,"S-1-5-21-100",&f.plan_bytes,&hash(&f.plan_bytes)).unwrap().0.unwrap().0;
+                crash_full_phase(&f,Phase::Publishing);
+                fail_at_full_phase(||recover_if_readable(&f),Some(Phase::Restoring),"journal_after");
+                recover_if_readable(&f).unwrap();assert_previous(&f,&prior);assert_project(&f);
+                assert!(execute(&f).unwrap().durable_commit);profile_state(&f,true);assert_project(&f);
+                f.ctx.action=Action::Uninstall;assert!(execute(&f).unwrap().durable_commit);assert_project(&f);
+                assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            }
+        }
+        #[test]
+        #[ignore = "requires fixed authentic current/old license byte fixture"]
+        fn current_plan_authority_family_uninstall_restore_and_commit_confirmation() {
+            for phase in [Phase::Publishing,Phase::CommitIntent] {
+                let mut f=full_mode_fixture("managed-current");add_project(&f);let prior=old(&f).unwrap().0;
+                f.ctx.action=Action::Uninstall;crash_full_phase(&f,phase);
+                recover_if_readable(&f).unwrap();assert_project(&f);
+                if phase==Phase::Publishing {assert_previous(&f,&prior);assert!(execute(&f).unwrap().durable_commit);}
+                else {assert!(hooks::MOCK.with(|m|m.borrow().as_ref().unwrap().slots.iter().all(Option::is_none)));}
+                assert_project(&f);assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            }
+            let mut restoring=full_mode_fixture("managed-current");add_project(&restoring);let prior=old(&restoring).unwrap().0;
+            restoring.ctx.action=Action::Uninstall;crash_full_phase(&restoring,Phase::Publishing);
+            fail_at_full_phase(||recover_if_readable(&restoring),Some(Phase::Restoring),"journal_after");
+            recover_if_readable(&restoring).unwrap();assert_previous(&restoring,&prior);assert_project(&restoring);
+            assert!(execute(&restoring).unwrap().durable_commit);assert_project(&restoring);
+            let mut committed=full_mode_fixture("managed-current");add_project(&committed);committed.ctx.action=Action::Uninstall;
+            crash_full_phase(&committed,Phase::Committed);
+            recover_if_readable(&committed).unwrap();assert_project(&committed);
+            assert!(!exists(&committed.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert!(hooks::MOCK.with(|m|m.borrow().as_ref().unwrap().slots.iter().all(Option::is_none)));
+        }
+        fn forge_installed_profile(bytes:&[u8])->Vec<u8> {
+            let mut state:Installed=serde_json::from_slice(bytes).unwrap();
+            let mut plan:serde_json::Value=serde_json::from_slice(&state.plan_bytes).unwrap();
+            let row=plan["files"].as_array_mut().unwrap().iter_mut().find(|row|row["role"]=="license").unwrap();
+            let path=row["path"].as_str().unwrap().to_string();row["sha256"]="00".repeat(32).into();
+            state.plan_bytes=serde_json::to_vec(&plan).unwrap();state.plan_sha256=hash(&state.plan_bytes);
+            state.members.iter_mut().find(|row|row.path==path).unwrap().sha256="00".repeat(32);
+            let plan_member=state.members.iter_mut().find(|row|row.path==PLAN_FILE).unwrap();plan_member.bytes=state.plan_bytes.len() as u64;plan_member.sha256=state.plan_sha256.clone();
+            serde_json::to_vec(&state).unwrap()
+        }
+        fn full_tree_state(f:&Fixture)->Vec<Member> {
+            let mut names:Vec<_>=tree(&f.root.path).unwrap().into_iter().collect();names.sort();
+            names.into_iter().map(|name|observe(&f.root.path.join(&name),&name,false).unwrap().member.clone()).collect()
+        }
+
+        #[test]
+        #[ignore = "requires fixed authentic current/old license byte fixture"]
+        fn current_plan_authority_family_forged_persisted_profiles_refuse_without_mutation() {
+            for mode in ["managed-current","managed-old"] {
+                let f=full_mode_fixture(mode);add_project(&f);
+                let state=old(&f).unwrap().0;let before=tree(&f.root.path).unwrap();
+                let slots:Vec<_>=(0..23).map(|i|read_slot(i).unwrap()).collect();
+                let forged:Installed=serde_json::from_slice(&forge_installed_profile(&serde_json::to_vec(&state).unwrap())).unwrap();
+                assert!(validate_installed(&forged,&f.root,"S-1-5-21-100").is_err());
+                assert_eq!(tree(&f.root.path).unwrap(),before);assert_eq!((0..23).map(|i|read_slot(i).unwrap()).collect::<Vec<_>>(),slots);assert_previous(&f,&state);
+                let f=full_mode_fixture(mode);add_project(&f);crash_full_phase(&f,Phase::Publishing);
+                let file=f.root.path.join(CONTROL).join("pending.json");let bytes=read_plain(&file).unwrap();let envelope:JournalEnvelope=serde_json::from_slice(&bytes).unwrap();let p=envelope.payload;let snapshot=full_tree_state(&f);let prior_slots:Vec<_>=(0..23).map(|i|read_slot(i).unwrap()).collect();
+                for which in ["plan","prior","commit"] {
+                    let mut bad=p.clone();
+                    if which=="plan" {
+                        let mut plan:serde_json::Value=serde_json::from_slice(&p.plan_bytes).unwrap();
+                        plan["files"].as_array_mut().unwrap().iter_mut().find(|row|row["role"]=="license").unwrap()["sha256"]="00".repeat(32).into();
+                        bad.plan_bytes=serde_json::to_vec(&plan).unwrap();bad.plan_sha256=hash(&bad.plan_bytes);
+                    }
+                    else if which=="prior" {bad.prior_state=Some(forge_installed_profile(p.prior_state.as_ref().unwrap()));}
+                    else {bad.commit_bytes=Some(forge_installed_profile(p.commit_bytes.as_ref().unwrap()));}
+                    assert!(validate_pending(&bad,&f.root,"S-1-5-21-100").is_err(),"forged {which}");
+                    assert_eq!(read_plain(&file).unwrap(),bytes);assert_eq!(full_tree_state(&f),snapshot);assert_eq!((0..23).map(|i|read_slot(i).unwrap()).collect::<Vec<_>>(),prior_slots);assert_project(&f);
+                }
+                recover_if_readable(&f).unwrap();assert_project(&f);assert!(execute(&f).unwrap().durable_commit);
+                // All original bytes and registration were checked immediately after the refused validator.
+            }
+        }
+
         fn identity_cut_selection(mode: &str) -> Vec<usize> {
             let trace = hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().proof_trace.clone());
             let mut groups = std::collections::BTreeMap::<(String, String), Vec<usize>>::new();
@@ -4777,7 +4990,11 @@ mod native {
                 &f.plan_bytes,
                 &sha256_hex(&f.ctx.plan_sha256),
             )?;
-            let plan = checked_plan(&f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).unwrap();
+            let plan = if f.ctx.action == Action::Install {
+                checked_plan(&f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).unwrap()
+            } else {
+                checked_owned_plan(&f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).unwrap()
+            };
             let sources = if f.ctx.action == Action::Install {
                 source_rows(&f.ctx, &plan)?
             } else {
@@ -5647,5 +5864,69 @@ mod legacy_language_tests {
             1,
         );
         assert!(serde_json::from_str::<LegacyProfile>(&duplicate).is_err());
+    }
+}
+
+#[cfg(test)]
+mod license_authority_tests {
+    use super::*;
+    fn plan(current: bool) -> Vec<u8> {
+        let mut rows=vec![
+            serde_json::json!({"role":"gui","path":"winsmux-app.exe","bytes":1,"sha256":"01".repeat(32)}),
+            serde_json::json!({"role":"cli","path":"winsmux.exe","bytes":1,"sha256":"01".repeat(32)}),
+            serde_json::json!({"role":"mcp","path":"winsmux-workspace-mcp.exe","bytes":1,"sha256":"01".repeat(32)}),
+        ];
+        if current {
+            let authority:serde_json::Value=serde_json::from_str(include_str!("desktop_current_licenses_v0380.json")).unwrap();
+            rows.extend(authority["files"].as_array().unwrap().iter().map(|tuple|{let mut row=tuple.clone();row["role"]="license".into();row}));
+        } else {
+            let fixed:Legacy=serde_json::from_str(LEGACY).unwrap();
+            rows.extend(fixed.files.iter().filter(|row|row.role=="license").map(|row|serde_json::json!({"role":"license","path":row.path,"bytes":row.bytes,"sha256":row.sha256})));
+        }
+        serde_json::to_vec(&serde_json::json!({"schema":"winsmux-desktop-install-plan/v1","flavor":"nsis","version":VERSION,"host":HOST,"files":rows})).unwrap()
+    }
+    fn owned(bytes:&[u8])->bool {checked_owned_plan(bytes,&hash(bytes)).is_ok()}
+    fn members(bytes:&[u8])->Vec<Member> {
+        let p:crate::desktop_install::InstallPlan=serde_json::from_slice(bytes).unwrap();
+        let mut rows:Vec<_>=p.files.iter().enumerate().map(|(i,row)|Member{path:row.path.clone(),bytes:row.bytes,sha256:row.sha256.clone(),identity:Identity{volume:"test-only".into(),index:i as u64+1}}).collect();
+        for (path,length,digest) in [(PLAN_FILE,bytes.len() as u64,hash(bytes)),("uninstall.exe",1,"01".repeat(32))] {
+            rows.push(Member{path:path.into(),bytes:length,sha256:digest,identity:Identity{volume:"test-only".into(),index:rows.len() as u64+1}});
+        }
+        rows
+    }
+    #[test]
+    fn current_incoming_and_exact_current_or_historical_ownership_are_distinct() {
+        let current=plan(true);let old=plan(false);
+        assert!(checked_plan(&current,&hash(&current)).is_ok());assert!(checked_plan(&old,&hash(&old)).is_err());
+        for bytes in [&current,&old] {assert!(owned(bytes));assert!(member_inventory_valid(&members(bytes),bytes,&hash(bytes)).is_ok());}
+        let current_value:serde_json::Value=serde_json::from_slice(&current).unwrap();
+        let mut hybrid:serde_json::Value=serde_json::from_slice(&old).unwrap();
+        for row in current_value["files"].as_array().unwrap().iter().filter(|row|row["role"]=="license") {
+            if !hybrid["files"].as_array().unwrap().iter().any(|known|known["path"]==row["path"]) {hybrid["files"].as_array_mut().unwrap().push(row.clone());}
+        }
+        let bytes=serde_json::to_vec(&hybrid).unwrap();assert!(!owned(&bytes));
+        assert!(member_inventory_valid(&members(&bytes),&bytes,&hash(&bytes)).is_err());
+    }
+    #[test]
+    fn complete_profiles_reject_subsets_hybrids_and_self_consistent_forged_member_state() {
+        for current in [false,true] {
+            let good=plan(current);let value:serde_json::Value=serde_json::from_slice(&good).unwrap();
+            for mode in ["missing","extra","duplicate","case","bytes","hash","role"] {
+                let mut bad=value.clone();let index=bad["files"].as_array().unwrap().iter().position(|r|r["role"]=="license").unwrap();
+                match mode {
+                    "missing"=>{bad["files"].as_array_mut().unwrap().remove(index);},
+                    "extra"=>{let mut row=bad["files"][index].clone();row["path"]="licenses/extra.txt".into();bad["files"].as_array_mut().unwrap().push(row);},
+                    "duplicate"=>{let row=bad["files"][index].clone();bad["files"].as_array_mut().unwrap().push(row);},
+                    "case"=>bad["files"][index]["path"]=bad["files"][index]["path"].as_str().unwrap().to_uppercase().into(),
+                    "bytes"=>bad["files"][index]["bytes"]=(bad["files"][index]["bytes"].as_u64().unwrap()+1).into(),
+                    "hash"=>bad["files"][index]["sha256"]="00".repeat(32).into(),
+                    "role"=>bad["files"][index]["role"]="unknown".into(),
+                    _=>unreachable!(),
+                }
+                let bytes=serde_json::to_vec(&bad).unwrap();assert!(!owned(&bytes),"{current} {mode}");
+                assert!(member_inventory_valid(&members(&bytes),&bytes,&hash(&bytes)).is_err(),"forged self-consistent state {current} {mode}");
+            }
+            let mut rows=members(&good);rows[0].sha256="00".repeat(32);assert!(member_inventory_valid(&rows,&good,&hash(&good)).is_err());
+        }
     }
 }

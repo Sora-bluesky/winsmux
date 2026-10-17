@@ -144,3 +144,17 @@ fn nullable_raw_slot_class_all_phases() {
 fn measured_legacy_capture_is_complete_and_joined() {
     legacy_admission_complete().unwrap();
 }
+
+#[test]
+fn incoming_nsis_plan_uses_the_production_complete_current_authority() {
+    use sha2::{Digest,Sha256};
+    use winsmux_workspace::desktop_install::parse_install_plan;
+    let source:serde_json::Value=serde_json::from_str(include_str!("../src/desktop_current_licenses_v0380.json")).unwrap();
+    let mut rows:Vec<_>=source["files"].as_array().unwrap().iter().map(|tuple|{let mut row=tuple.clone();row["role"]="license".into();row}).collect();
+    for (role,path) in [("gui","winsmux-app.exe"),("cli","winsmux.exe"),("mcp","winsmux-workspace-mcp.exe")] {rows.push(serde_json::json!({"role":role,"path":path,"bytes":1,"sha256":"01".repeat(32)}));}
+    let plan=serde_json::json!({"schema":"winsmux-desktop-install-plan/v1","flavor":"nsis","version":"0.38.0","host":"x86_64-pc-windows-msvc","files":rows});
+    let admits=|value:&serde_json::Value|{let bytes=serde_json::to_vec(value).unwrap();parse_install_plan(&bytes,Sha256::digest(&bytes).into(),"nsis","0.38.0").is_ok()};
+    assert!(admits(&plan));
+    let mut arm=plan.clone();arm["host"]="aarch64-pc-windows-msvc".into();assert!(!admits(&arm));
+    for index in [0,rows.len()-4] {let mut subset=plan.clone();subset["files"].as_array_mut().unwrap().remove(index);assert!(!admits(&subset));}
+}

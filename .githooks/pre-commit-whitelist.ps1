@@ -19,6 +19,7 @@ $whitelistPatterns = @(
     'core/crates/winsmux-workspace/src/desktop_install.rs',
     'core/crates/winsmux-workspace/src/desktop_nsis.rs',
     'core/crates/winsmux-workspace/src/desktop_nsis_legacy_v0380.json',
+    'core/crates/winsmux-workspace/src/desktop_current_licenses_v0380.json',
     'core/crates/winsmux-workspace/tests/desktop_install.rs',
     'core/crates/winsmux-workspace/tests/desktop_nsis.rs',
     'scripts/stage-desktop-msi-plan.mjs',

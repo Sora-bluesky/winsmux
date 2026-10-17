@@ -18,6 +18,9 @@ const binding = JSON.parse(fs.readFileSync('distribution/windows-licenses/bindin
 const input = path.join(root, "source 日本語 & quote's");
 const source = path.join(input, 'winsmux-app/src-tauri');
 fs.mkdirSync(input);
+const currentAuthorityPath = 'core/crates/winsmux-workspace/src/desktop_current_licenses_v0380.json';
+fs.mkdirSync(path.join(input, path.dirname(currentAuthorityPath)), { recursive: true });
+fs.copyFileSync(path.join(repo, currentAuthorityPath), path.join(input, currentAuthorityPath));
 for (const row of binding.sources) {
   const file = path.join(input, row.path); fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.copyFileSync(path.join(repo, row.path), file);

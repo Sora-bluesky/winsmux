@@ -7,12 +7,17 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 fn plan() -> serde_json::Value {
-    serde_json::json!({"schema":"winsmux-desktop-install-plan/v1","flavor":"msi","version":"0.38.0","host":"x86_64-pc-windows-msvc","files":[
-    {"role":"gui","path":"winsmux-app.exe","bytes":1,"sha256":"01".repeat(32)},
-    {"role":"cli","path":"winsmux.exe","bytes":1,"sha256":"01".repeat(32)},
-    {"role":"mcp","path":"winsmux-workspace-mcp.exe","bytes":1,"sha256":"01".repeat(32)},
-    {"role":"app_lib","path":"winsmux_app_lib.dll","bytes":1,"sha256":"01".repeat(32)},
-    {"role":"license","path":"licenses/winsmux/LICENSE","bytes":1,"sha256":"01".repeat(32)}]})
+    let authority: serde_json::Value = serde_json::from_str(include_str!("../src/desktop_current_licenses_v0380.json")).unwrap();
+    let mut rows = vec![
+        serde_json::json!({"role":"gui","path":"winsmux-app.exe","bytes":1,"sha256":"01".repeat(32)}),
+        serde_json::json!({"role":"cli","path":"winsmux.exe","bytes":1,"sha256":"01".repeat(32)}),
+        serde_json::json!({"role":"mcp","path":"winsmux-workspace-mcp.exe","bytes":1,"sha256":"01".repeat(32)}),
+        serde_json::json!({"role":"app_lib","path":"winsmux_app_lib.dll","bytes":1,"sha256":"01".repeat(32)}),
+    ];
+    for tuple in authority["files"].as_array().unwrap() {
+        let mut row = tuple.clone(); row["role"] = "license".into(); rows.push(row);
+    }
+    serde_json::json!({"schema":"winsmux-desktop-install-plan/v1","flavor":"msi","version":"0.38.0","host":"x86_64-pc-windows-msvc","files":rows})
 }
 fn accepts(value: &serde_json::Value) -> bool {
     let bytes = serde_json::to_vec(value).unwrap();
@@ -89,7 +94,7 @@ fn paths_reject_traversal_aliases_ads_reserved_names_and_case_collision() {
     }
     let mut collision = plan();
     let mut row = collision["files"][4].clone();
-    row["path"] = "licenses/winsmux/license".into();
+    row["path"] = row["path"].as_str().unwrap().to_lowercase().into();
     collision["files"].as_array_mut().unwrap().push(row);
     assert!(!accepts(&collision));
     let mut misplaced = plan();
@@ -173,4 +178,38 @@ fn wrong_actor_or_image_hash_cannot_launch_or_succeed() {
         verify_desktop_startup(request),
         Err(DesktopInstallError::Actor) | Err(DesktopInstallError::Member)
     ));
+}
+
+#[test]
+fn current_license_authority_checks_every_complete_tuple_and_both_flavors() {
+    let good = plan();
+    assert!(accepts(&good));
+    let mut future=good.clone();future["version"]="0.39.0".into();let future_bytes=serde_json::to_vec(&future).unwrap();
+    assert!(parse_install_plan(&future_bytes,digest(&future_bytes),"msi","0.39.0").is_err());
+    let mut nsis = good.clone(); nsis["flavor"] = "nsis".into(); nsis["files"].as_array_mut().unwrap().remove(3);
+    let bytes = serde_json::to_vec(&nsis).unwrap();
+    assert!(parse_install_plan(&bytes,digest(&bytes),"nsis","0.38.0").is_ok());
+    for index in 4..good["files"].as_array().unwrap().len() {
+        for field in ["missing","duplicate","bytes","sha256","path","case","role"] {
+            let mut bad=good.clone();
+            match field {
+                "missing" => { bad["files"].as_array_mut().unwrap().remove(index); },
+                "duplicate" => {let row=bad["files"][index].clone();bad["files"].as_array_mut().unwrap().push(row);},
+                "bytes" => bad["files"][index]["bytes"]=(bad["files"][index]["bytes"].as_u64().unwrap()+1).into(),
+                "sha256" => bad["files"][index]["sha256"]="00".repeat(32).into(),
+                "path" => bad["files"][index]["path"]="licenses/unknown-owned.txt".into(),
+                "case" => bad["files"][index]["path"]=bad["files"][index]["path"].as_str().unwrap().to_uppercase().into(),
+                "role" => bad["files"][index]["role"]="unknown".into(),
+                _=>unreachable!(),
+            }
+            assert!(!accepts(&bad),"tuple {index} {field}");
+        }
+    }
+    let mut extra=good.clone();let mut row=extra["files"][4].clone();row["path"]="licenses/extra.txt".into();extra["files"].as_array_mut().unwrap().push(row);assert!(!accepts(&extra));
+    let legacy:serde_json::Value=serde_json::from_str(include_str!("../src/desktop_nsis_legacy_v0380.json")).unwrap();
+    let mut old=good.clone();old["files"].as_array_mut().unwrap().truncate(4);
+    old["files"].as_array_mut().unwrap().extend(legacy["files"].as_array().unwrap().iter().filter(|row|row["role"]=="license").cloned());
+    assert!(!accepts(&old));
+    let mut hybrid=old.clone();let incoming=good["files"].as_array().unwrap();for row in incoming.iter().filter(|row|row["role"]=="license") {if !hybrid["files"].as_array().unwrap().iter().any(|old|old["path"]==row["path"]) {hybrid["files"].as_array_mut().unwrap().push(row.clone());}}
+    assert!(!accepts(&hybrid));
 }

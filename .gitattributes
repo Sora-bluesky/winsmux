@@ -31,3 +31,4 @@ distribution/windows-licenses/** -text
 # These upstream NSIS compiler inputs are verified by their exact raw SHA-256.
 winsmux-app/src-tauri/nsis/installer.nsi -text
 winsmux-app/src-tauri/nsis/winsmux-utils.nsh -text
+core/crates/winsmux-workspace/src/desktop_current_licenses_v0380.json -text
