@@ -155,10 +155,12 @@ test('compiler bytes keep BOM absence or presence with LF and CRLF across forwar
 });
 
 
-test('diagnostic normal C artifact saves the exact ten public assets after transport and before D preparation',()=>{
+test('normal C artifact saves the exact ten public assets after transport and before native execution',()=>{
   const actual=fs.readFileSync(new URL('../../.github/workflows/desktop-candidate-cdp-gate.yml',import.meta.url),'utf8');
-  const start=actual.indexOf('      - name: Preserve the verified normal C public inputs before diagnostic preparation');
-  const end=actual.indexOf('      - name: Build private result-only NSIS observer',start);assert.ok(start>actual.indexOf("throw 'Native transport publication refused.'"));assert.ok(end>start);
+  const start=actual.indexOf('      - name: Preserve the verified normal C public inputs before native execution');
+  const end=actual.indexOf('      - name: Obtain the same-run fixed baseline artifact',start);assert.ok(start>actual.indexOf("throw 'Native transport publication refused.'"));assert.ok(end>start);
+  assert.doesNotMatch(actual,/desktop-native-nsis-observer\.mjs|desktop-nsis-observer-/u);
+  assert.match(actual,/Preserve bounded native lifecycle evidence\r?\n        if: always\(\)/u);
   const step=actual.slice(start,end);assert.ok(step.includes("if: github.ref == 'refs/heads/codex/task880-native-lifecycle'"));assert.ok(step.includes('uses: actions/upload-artifact@v7'));assert.ok(!step.includes('always()'));
   const paths=step.split(/\r?\n/u).filter(line=>line.startsWith('            ')).map(line=>line.trim());
   const prefix='$'+'{{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/';

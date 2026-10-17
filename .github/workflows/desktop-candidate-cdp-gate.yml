@@ -436,7 +436,7 @@ jobs:
           $module = Get-DesktopNativeTransportModule
           & node --input-type=module --eval $module create $env:GITHUB_SHA $env:FORMAT $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) { throw 'Native transport publication refused.' }
-      - name: Preserve the verified normal C public inputs before diagnostic preparation
+      - name: Preserve the verified normal C public inputs before native execution
         if: github.ref == 'refs/heads/codex/task880-native-lifecycle'
         uses: actions/upload-artifact@v7
         with:
@@ -453,11 +453,6 @@ jobs:
             ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux-workspace-mcp.exe
             ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/desktop-native-candidate.json
           if-no-files-found: error
-      - name: Build private result-only NSIS observer
-        if: github.ref == 'refs/heads/codex/task880-native-lifecycle'
-        run: |
-          & node ./scripts/desktop-native-nsis-observer.mjs compile $env:GITHUB_SHA $env:GITHUB_WORKSPACE
-          if ($LASTEXITCODE -ne 0) { throw 'NSIS diagnostic build refused.' }
       - name: Obtain the same-run fixed baseline artifact
         uses: actions/download-artifact@v8
         with:
@@ -475,27 +470,8 @@ jobs:
         run: |
           & ./scripts/test-public-release.ps1 -Surface Desktop -Version 0.38.0 -ReleaseTag v0.38.0 -Repository Sora-bluesky/winsmux -DesktopNativeLifecycle -DesktopNativeFormat $env:FORMAT -DesktopNativeSourceCommit $env:GITHUB_SHA -DesktopNativeCandidateDirectory (Join-Path $env:WINSMUX_NATIVE_INPUT_ROOT 'candidate') -DesktopNativeBaselineDirectory (Join-Path $env:WINSMUX_NATIVE_INPUT_ROOT 'baseline') -Json
           if ($LASTEXITCODE -ne 0) { throw 'Native lifecycle failed or has an unmet class.' }
-      - name: Collect sanitized result-only NSIS observation
-        if: always() && github.ref == 'refs/heads/codex/task880-native-lifecycle'
-        run: |
-          & node ./scripts/desktop-native-nsis-observer.mjs collect $env:GITHUB_SHA $env:GITHUB_WORKSPACE
-          if ($LASTEXITCODE -ne 0) { throw 'NSIS diagnostic collection refused.' }
-      - name: Preserve only individual sanitized NSIS diagnostic files
-        if: always() && github.ref == 'refs/heads/codex/task880-native-lifecycle'
-        uses: actions/upload-artifact@v7
-        with:
-          name: desktop-nsis-observer-${{ github.sha }}
-          path: |
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/nsis-observer-build.json
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/nsis-actual-callee-observer.json
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/nsis-observer-before.json
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/nsis-observer-after.json
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/nsis-observer-update-process.json
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/evidence/nsis-observer-uninstall-process.json
-            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/desktop-native-candidate.json
-          if-no-files-found: error
       - name: Preserve bounded native lifecycle evidence
-        if: always() && github.ref != 'refs/heads/codex/task880-native-lifecycle'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: desktop-native-lifecycle-${{ matrix.format }}-${{ github.sha }}
