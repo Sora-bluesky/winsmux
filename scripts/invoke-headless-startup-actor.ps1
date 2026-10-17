@@ -327,7 +327,70 @@ function Assert-CapabilityCallerFacts($value,$Expected) {
  foreach($key in $value.Keys){Assert-Fixed ($value[$key] -ceq $Expected[$key]) 'caller_worker_mismatch'}
 }
 
-function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$Actor,[string]$Class) {
+function Get-CapabilityFailureSiteMap {
+ # Coordinates are private lookup inputs only. Source bytes are admitted by Assert-CanonicalSourceInputs.
+ return (ConvertFrom-Json -AsHashtable '{"schema":"winsmux-fixed-first-test-panic-map/v1","test":"real_host_without_provider_path_keeps_launch_unadvertised","sources":[{"source":"e2e","path":"core/tests-rs/workspace_host_e2e.rs","bytes":177724,"sha256":"658436e22e71073faf3cf69f30918e6c8544300a05dd43e5a9b0b8674c85e717","lines":4319,"relative_spellings":["core/tests-rs/workspace_host_e2e.rs","tests-rs/workspace_host_e2e.rs"]},{"source":"reader","path":"core/tests-rs/support/conpty_json.rs","bytes":12923,"sha256":"8da14f11218bd84c6d2de17d1904705c56b64c44346c3d73138936a2d05859e9","lines":371,"relative_spellings":["core/tests-rs/support/conpty_json.rs","tests-rs/support/conpty_json.rs"]}],"entries":[{"source":"e2e","line":4283,"column_min":5,"column_max":69,"site":"test_lock"},{"source":"e2e","line":3026,"column_min":9,"column_max":56,"site":"caller_facts"},{"source":"e2e","line":4287,"column_min":5,"column_max":65,"site":"isolated_home"},{"source":"e2e","line":4288,"column_min":5,"column_max":74,"site":"system_root"},{"source":"e2e","line":752,"column_min":13,"column_max":62,"site":"local_app_data"},{"source":"e2e","line":768,"column_min":13,"column_max":36,"site":"conpty_open"},{"source":"e2e","line":790,"column_min":13,"column_max":57,"site":"conpty_spawn"},{"source":"e2e","line":792,"column_min":13,"column_max":65,"site":"conpty_child_ownership"},{"source":"e2e","line":798,"column_min":9,"column_max":83,"site":"conpty_reader"},{"source":"e2e","line":799,"column_min":9,"column_max":81,"site":"conpty_writer"},{"source":"e2e","line":805,"column_min":13,"column_max":51,"site":"conpty_cursor_reply"},{"source":"e2e","line":681,"column_min":13,"column_max":45,"site":"receive_process_handle"},{"source":"e2e","line":687,"column_min":13,"column_max":42,"site":"receive_output"},{"source":"e2e","line":700,"column_min":17,"column_max":90,"site":"receive_final_output"},{"source":"e2e","line":706,"column_min":17,"column_max":24,"site":"receive_json_ended"},{"source":"e2e","line":837,"column_min":9,"column_max":76,"site":"discovery_host_kind"},{"source":"e2e","line":838,"column_min":9,"column_max":74,"site":"discovery_once"},{"source":"e2e","line":840,"column_min":9,"column_max":17,"site":"discovery_shape"},{"source":"e2e","line":4297,"column_min":5,"column_max":76,"site":"discovery_instance"},{"source":"e2e","line":850,"column_min":13,"column_max":89,"site":"request_input"},{"source":"e2e","line":1782,"column_min":5,"column_max":72,"site":"request_canonical"},{"source":"e2e","line":1783,"column_min":5,"column_max":54,"site":"request_write"},{"source":"e2e","line":1784,"column_min":5,"column_max":59,"site":"request_terminator"},{"source":"e2e","line":1785,"column_min":5,"column_max":44,"site":"request_flush"},{"source":"e2e","line":853,"column_min":9,"column_max":17,"site":"response_shape"},{"source":"e2e","line":1792,"column_min":9,"column_max":67,"site":"response_json"},{"source":"e2e","line":1794,"column_min":5,"column_max":78,"site":"response_correlation"},{"source":"e2e","line":1819,"column_min":5,"column_max":70,"site":"request_json"},{"source":"e2e","line":1820,"column_min":9,"column_max":64,"site":"request_parse"},{"source":"e2e","line":1824,"column_min":5,"column_max":58,"site":"response_value"},{"source":"e2e","line":1835,"column_min":5,"column_max":65,"site":"response_accepted"},{"source":"e2e","line":1836,"column_min":5,"column_max":67,"site":"response_operation"},{"source":"e2e","line":4302,"column_min":5,"column_max":72,"site":"providers_empty"},{"source":"e2e","line":4303,"column_min":5,"column_max":58,"site":"launch_unadvertised"},{"source":"e2e","line":4305,"column_min":9,"column_max":30,"site":"operations_array"},{"source":"e2e","line":1829,"column_min":5,"column_max":66,"site":"stop_refusal_shape"},{"source":"e2e","line":1830,"column_min":5,"column_max":70,"site":"stop_refusal_code"},{"source":"e2e","line":1848,"column_min":9,"column_max":17,"site":"stop_cleanup_deadline"},{"source":"e2e","line":966,"column_min":13,"column_max":36,"site":"exit_child"},{"source":"e2e","line":968,"column_min":13,"column_max":41,"site":"exit_wait"},{"source":"e2e","line":977,"column_min":9,"column_max":89,"site":"exit_output"},{"source":"e2e","line":990,"column_min":13,"column_max":21,"site":"output_request_echo"},{"source":"e2e","line":998,"column_min":9,"column_max":20,"site":"output_json_count"},{"source":"e2e","line":1005,"column_min":13,"column_max":77,"site":"output_host_kind"},{"source":"e2e","line":1006,"column_min":13,"column_max":75,"site":"output_discovery_shape"},{"source":"e2e","line":1008,"column_min":13,"column_max":68,"site":"output_discovery_count"},{"source":"e2e","line":1011,"column_min":13,"column_max":21,"site":"output_response_shape"},{"source":"e2e","line":4309,"column_min":5,"column_max":46,"site":"host_exit_code"},{"source":"reader","line":27,"column_min":9,"column_max":71,"site":"reader_event"},{"source":"reader","line":132,"column_min":13,"column_max":99,"site":"reader_pending_initial"},{"source":"reader","line":137,"column_min":21,"column_max":80,"site":"reader_pending_chunk"},{"source":"reader","line":158,"column_min":33,"column_max":92,"site":"reader_pending_exit_chunk"},{"source":"reader","line":168,"column_min":29,"column_max":92,"site":"reader_pending_exit_json"},{"source":"reader","line":175,"column_min":17,"column_max":87,"site":"reader_wait_failed"},{"source":"reader","line":178,"column_min":17,"column_max":82,"site":"reader_wait_result"},{"source":"reader","line":184,"column_min":9,"column_max":61,"site":"reader_capture"},{"source":"reader","line":188,"column_min":9,"column_max":78,"site":"reader_join_state"},{"source":"reader","line":189,"column_min":9,"column_max":95,"site":"reader_pending_final"},{"source":"reader","line":194,"column_min":17,"column_max":76,"site":"reader_pending_final_chunk"},{"source":"reader","line":195,"column_min":17,"column_max":101,"site":"reader_pending_final_json"},{"source":"reader","line":206,"column_min":13,"column_max":58,"site":"reader_thread_join"}]}')
+}
+function New-CapabilityFailureSiteObservation($Binding) {
+ return [ordered]@{schema='winsmux-ci-medium-failure-site/v1';source_commit=$Binding.source_commit;test_sha256=$Binding.test_sha256;cli_sha256=$Binding.cli_sha256;mapping_sha256='e027221a879d36f9e2b66706de84b5673102a291859109afc301398d166566bc';class='ci_restricted_medium';test='real_host_without_provider_path_keeps_launch_unadvertised';observation='unobserved';reason='capture_unavailable';stdout_sites=@();stderr_sites=@()}
+}
+function ConvertTo-CapabilityFailureSiteObservation($Binding,[byte[]]$Stdout,[byte[]]$Stderr,$Projection,[string]$SourceRoot) {
+ $result=New-CapabilityFailureSiteObservation $Binding
+ try {
+  if($Projection.test -cne $result.test -or $Projection.outcome -cne 'failed' -or $Projection.process_exit -cne 'test_failure'){$result.reason='test_not_failed';return $result}
+  if(-not $Projection.terminal -or -not $Projection.job_zero -or $Projection.forced -or -not $Projection.capture_complete){$result.reason='capture_incomplete';return $result}
+  $encoding=[Text.UTF8Encoding]::new($false,$true)
+  try{$texts=@($encoding.GetString($Stdout),$encoding.GetString($Stderr))}catch{$result.reason='invalid_utf8';return $result}
+  if(-not [IO.Path]::IsPathFullyQualified($SourceRoot) -or [IO.Path]::GetFullPath($SourceRoot) -cne $SourceRoot){$result.reason='source_root';return $result}
+  $root=$SourceRoot.Replace('\','/').TrimEnd('/')
+  $map=Get-CapabilityFailureSiteMap
+  $sets=[object[]]::new(2);$sets[0]=[Collections.Generic.List[string]]::new();$sets[1]=[Collections.Generic.List[string]]::new()
+  $bad=$null;$total=0
+  for($stream=0;$stream -lt 2;$stream++){
+   $lines=$texts[$stream].Split([char]10)
+   for($lineIndex=0;$lineIndex -lt $lines.Length;$lineIndex++){
+    $lineText=$lines[$lineIndex]
+    if(-not $lineText.Contains('panicked at')){continue}
+    $total++
+    # The panic body may contain raw ConPTY VT. Never strip or interpret it as a header.
+    # Only a complete LF/CRLF-terminated, control-free header can identify a site.
+    if($lineIndex -eq $lines.Length-1){$bad='panic_envelope';$sets[$stream].Add('unknown');continue}
+    if($lineText.EndsWith("`r",[StringComparison]::Ordinal)){$lineText=$lineText.Substring(0,$lineText.Length-1)}
+    if([regex]::IsMatch($lineText,'[\x00-\x1f\x7f]')){$bad='panic_control';$sets[$stream].Add('unknown');continue}
+    $m=[regex]::Match($lineText,"^thread '(?<thread>[^'`r`n]+)'(?: \([1-9][0-9]*\))? panicked at (?<path>[^`r`n]+):(?<line>[1-9][0-9]*):(?<column>[1-9][0-9]*):$")
+    $site='unknown'
+    if(-not $m.Success){$bad='panic_envelope'}
+    elseif($m.Groups['thread'].Value -cne $map.test){$bad='panic_thread'}
+    else{
+     $p=$m.Groups['path'].Value
+     # Only one separator spelling is permitted per coordinate; aliases, traversal and arbitrary suffixes do not match.
+     if($p.Contains('/') -and $p.Contains('\')){$bad='panic_path'}
+     else{
+      $p=$p.Replace('\','/');$source=$null
+      foreach($s in $map.sources){if($p -cin $s.relative_spellings -or $p -ceq ($root+'/'+$s.path)){$source=$s;break}}
+      [uint32]$lineNumber=0;[uint32]$column=0
+      if($null -eq $source){$bad='panic_path'}
+      elseif(-not [uint32]::TryParse($m.Groups['line'].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$lineNumber) -or -not [uint32]::TryParse($m.Groups['column'].Value,[Globalization.NumberStyles]::None,[Globalization.CultureInfo]::InvariantCulture,[ref]$column)){$bad='panic_coordinate'}
+      else{
+       $matches=@($map.entries|Where-Object{$_.source -ceq $source.source -and $_.line -eq $lineNumber -and $column -ge $_.column_min -and $column -le $_.column_max})
+       if($matches.Count -eq 1){$site=[string]$matches[0].site}else{$bad='panic_coordinate'}
+      }
+     }
+    }
+    $sets[$stream].Add($site)
+   }
+  }
+  $result.stdout_sites=$sets[0].ToArray();$result.stderr_sites=$sets[1].ToArray()
+  if($total -eq 0){$result.reason='panic_missing'}
+  elseif($total -ne 1){$result.reason='multiple_panics'}
+  elseif($sets[0].Count -ne 0){$result.reason='panic_stdout'}
+  elseif($null -ne $bad){$result.reason=$bad}
+  else{$result.observation='site_observed';$result.reason=$null}
+ }catch{$result.observation='unobserved';$result.reason='observer_failure';$result.stdout_sites=@();$result.stderr_sites=@()}
+ return $result
+}
+
+function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$Actor,[string]$Class,[Collections.IDictionary]$FailureSiteObservation=$null) {
  Assert-Fixed ($Class -cin @('ci_high','ci_restricted_medium','local_uac_limited')) 'compatibility_class'
  Assert-CapabilityKeys $Actor @('sid_sha256','session','token_type','elevation','elevation_type','integrity_rid','restricted','app_container')
  Assert-Fixed ($Actor.token_type -eq 1 -and $Actor.app_container -eq 0) 'compatibility_primary'
@@ -347,6 +410,12 @@ function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$A
    $out=$owned.StdoutTask.GetAwaiter().GetResult();$err=$owned.StderrTask.GetAwaiter().GetResult()
    $case=ConvertTo-HeadlessFixedProjection -Stdout $out.RetainedBytes -Stderr $err.RetainedBytes -Truncated ($out.Truncated -or $err.Truncated) -Test $test -ExitCode $owned.ExitCode -Terminal $terminal -JobZero ($owned.ActiveMembers -eq 0) -Forced $owned.Forced
    $caller=Read-CapabilityCallerFacts $out.RetainedBytes $err.RetainedBytes $Actor
+   if($null -ne $FailureSiteObservation -and $Class -ceq 'ci_restricted_medium' -and $test -ceq 'real_host_without_provider_path_keeps_launch_unadvertised'){
+    try{
+     $site=ConvertTo-CapabilityFailureSiteObservation $Binding $out.RetainedBytes $err.RetainedBytes $case ([IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $ExpectedScript) '..')))
+     foreach($key in $site.Keys){$FailureSiteObservation[$key]=$site[$key]}
+    }catch{} # Observation cannot change the existing case, cleanup, or acceptance.
+   }
    $out=$null;$err=$null
   }catch{$row.failure='case_capture'}finally{
    if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(180000,500)};if($owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted){$owned.Dispose()}}
@@ -611,8 +680,10 @@ try {
    Invoke-CapabilityTokenCapture $binding $PSCommandPath $capabilityResult
   }else{
   $phase='headless_cases'
-  $mediumRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_restricted_medium'
+  $failureSite=New-CapabilityFailureSiteObservation $binding
+  $mediumRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_restricted_medium' $failureSite
   Write-NewJson (Join-Path $evidenceRoot 'ci-medium-compatibility.json') $mediumRow
+  try{Write-NewJson (Join-Path $evidenceRoot 'ci-medium-failure-site.json') $failureSite}catch{} # Missing sidecar stays missing evidence; it cannot alter the original result.
   Assert-CapabilityCompatibilityRow $mediumRow $binding $facts 'ci_restricted_medium'
   $result.tests=@($mediumRow.tests);$result.outcome=$mediumRow.outcome
   }

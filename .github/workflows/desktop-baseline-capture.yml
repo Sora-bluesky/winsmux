@@ -206,7 +206,7 @@ jobs:
           $manifest = Join-Path $env:RUNNER_TEMP ('winsmux-headless-build-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $env:GITHUB_SHA + '.jsonl')
           & ./scripts/invoke-headless-startup-actor.ps1 -HeadlessParent -SourceCommit $env:GITHUB_SHA -BuildManifest $manifest
           if ($LASTEXITCODE -ne 0) { throw 'capability_compatibility_failed_original_results_preserved' }
-      - name: Preserve only the three bounded compatibility receipts
+      - name: Preserve the bounded compatibility receipts and fixed failure-site observation
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -215,4 +215,5 @@ jobs:
             ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/ci-high-compatibility.json
             ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/ci-medium-compatibility.json
             ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/headless-result.json
+            ${{ runner.temp }}/winsmux-headless-actor-${{ github.run_id }}.${{ github.run_attempt }}.${{ github.sha }}/evidence/ci-medium-failure-site.json
           if-no-files-found: error
