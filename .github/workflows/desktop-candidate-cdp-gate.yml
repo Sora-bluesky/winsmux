@@ -436,6 +436,23 @@ jobs:
           $module = Get-DesktopNativeTransportModule
           & node --input-type=module --eval $module create $env:GITHUB_SHA $env:FORMAT $env:GITHUB_WORKSPACE
           if ($LASTEXITCODE -ne 0) { throw 'Native transport publication refused.' }
+      - name: Preserve the verified normal C public inputs before diagnostic preparation
+        if: github.ref == 'refs/heads/codex/task880-native-lifecycle'
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-native-normal-C-${{ github.sha }}
+          path: |
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux_0.38.0_x64_en-US.msi
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux_0.38.0_x64_ja-JP.msi
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux_0.38.0_x64-setup.exe
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux-msi-plan.json
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux-nsis-plan.json
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux-app.exe
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux_app_lib.dll
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux.exe
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/winsmux-workspace-mcp.exe
+            ${{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/desktop-native-candidate.json
+          if-no-files-found: error
       - name: Build private result-only NSIS observer
         if: github.ref == 'refs/heads/codex/task880-native-lifecycle'
         run: |

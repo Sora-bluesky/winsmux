@@ -153,3 +153,15 @@ test('compiler bytes keep BOM absence or presence with LF and CRLF across forwar
   }
   assert.throws(()=>decodeCompilerText(Buffer.from([0xff])));
 });
+
+
+test('diagnostic normal C artifact saves the exact ten public assets after transport and before D preparation',()=>{
+  const actual=fs.readFileSync(new URL('../../.github/workflows/desktop-candidate-cdp-gate.yml',import.meta.url),'utf8');
+  const start=actual.indexOf('      - name: Preserve the verified normal C public inputs before diagnostic preparation');
+  const end=actual.indexOf('      - name: Build private result-only NSIS observer',start);assert.ok(start>actual.indexOf("throw 'Native transport publication refused.'"));assert.ok(end>start);
+  const step=actual.slice(start,end);assert.ok(step.includes("if: github.ref == 'refs/heads/codex/task880-native-lifecycle'"));assert.ok(step.includes('uses: actions/upload-artifact@v7'));assert.ok(!step.includes('always()'));
+  const paths=step.split(/\r?\n/u).filter(line=>line.startsWith('            ')).map(line=>line.trim());
+  const prefix='$'+'{{ env.WINSMUX_NATIVE_INPUT_ROOT }}/candidate/';
+  const expected=['winsmux_0.38.0_x64_en-US.msi','winsmux_0.38.0_x64_ja-JP.msi','winsmux_0.38.0_x64-setup.exe','winsmux-msi-plan.json','winsmux-nsis-plan.json','winsmux-app.exe','winsmux_app_lib.dll','winsmux.exe','winsmux-workspace-mcp.exe','desktop-native-candidate.json'];
+  assert.deepEqual(paths,expected.map(name=>prefix+name));assert.equal(new Set(paths).size,10);assert.ok(paths.every(value=>!/[?*]/u.test(value)&&!value.includes('diagnostic-nsis')&&!value.includes('/evidence/')));
+});

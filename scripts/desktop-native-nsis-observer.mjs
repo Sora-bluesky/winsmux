@@ -402,6 +402,107 @@ export function extractTransportModule(source) {
   return matches[0][1];
 }
 
+
+export async function assertCompilerSnapshot(snapshot) {
+  need(snapshot && Array.isArray(snapshot.files) && Array.isArray(snapshot.directories), 'nsis_observer_snapshot_refused');
+  const { pathToFileURL }=await import('node:url');
+  const { physicalPath }=await import(pathToFileURL(path.join(snapshot.repo_root,'scripts/distribution-prelaunch.mjs')));
+  const physical=file=>{need(physicalPath(file)===path.resolve(file),'nsis_observer_path_alias_refused');};
+  for(const row of snapshot.files){physical(row.path);const stat=fs.lstatSync(row.path,{bigint:true});const bytes=plain(row.path);
+    need(String(stat.dev)===row.dev&&String(stat.ino)===row.ino&&String(stat.mtimeNs)===row.mtime_ns
+      && bytes.length===row.bytes&&hash(bytes)===row.sha256,'nsis_observer_origin_changed');}
+  for(const row of snapshot.directories){physical(row.path);const stat=fs.lstatSync(row.path,{bigint:true});
+    need(stat.isDirectory()&&!stat.isSymbolicLink()&&String(stat.dev)===row.dev&&String(stat.ino)===row.ino
+      && JSON.stringify(fs.readdirSync(row.path).sort())===JSON.stringify(row.names),'nsis_observer_origin_directory_changed');}
+}
+
+/** Read-only whole preparation. The caller owns admission, transport, fresh writes and compilation. */
+export async function prepareCompilerClosure({repoRoot,releaseDirectory,sdkRoot,diagnosticDirectory}) {
+  const repo=path.resolve(repoRoot);
+  const { pathToFileURL }=await import('node:url');
+  const { physicalPath }=await import(pathToFileURL(path.join(repo,'scripts/distribution-prelaunch.mjs')));
+  const { parseStrictJson }=await import(pathToFileURL(path.join(repo,'scripts/assert-license-inputs.mjs')));
+  const { assertCanonicalBundledDistribution }=await import(pathToFileURL(path.join(repo,'scripts/stage-bundled-distribution.mjs')));
+  const physical=file=>{const full=path.resolve(file);need(physicalPath(file)===full,'nsis_observer_path_alias_refused');return full;};
+  physical(repo);const release=physical(releaseDirectory),sdk=physical(sdkRoot),diagnostic=physical(diagnosticDirectory),source=path.join(repo,'winsmux-app/src-tauri');
+  need(![repo,release,sdk].some(root=>diagnostic===root||root.startsWith(diagnostic+path.sep)||diagnostic.startsWith(root+path.sep)), 'nsis_observer_destination_overlap');
+  const originals=new Map(),directories=new Map(),copies=new Map();
+  const trackDir=dir=>{physical(dir);const stat=fs.lstatSync(dir,{bigint:true});need(stat.isDirectory()&&!stat.isSymbolicLink(),'nsis_observer_directory_refused');
+    const row={path:dir,dev:String(stat.dev),ino:String(stat.ino),names:fs.readdirSync(dir).sort()};
+    if(directories.has(dir))need(JSON.stringify(directories.get(dir))===JSON.stringify(row),'nsis_observer_origin_directory_changed');directories.set(dir,row);};
+  const track=(file,to=null)=>{const full=physical(file),bytes=plain(full),stat=fs.lstatSync(full,{bigint:true});
+    const row={path:full,bytes:bytes.length,sha256:hash(bytes),dev:String(stat.dev),ino:String(stat.ino),mtime_ns:String(stat.mtimeNs)};
+    if(originals.has(full))need(JSON.stringify(originals.get(full))===JSON.stringify(row),'nsis_observer_input_changed');originals.set(full,row);trackDir(path.dirname(full));
+    if(to){const destination=physical(to);need(destination.startsWith(diagnostic+path.sep),'nsis_observer_destination_escape');const key=destination.toLowerCase();
+      need(!copies.has(key)||copies.get(key).origin===full,'nsis_observer_destination_collision');copies.set(key,{path:destination,bytes,origin:full,origin_sha256:row.sha256,transform:'copy'});}
+    return bytes;};
+  const mapRows=[];const map=(from,to)=>{if(!mapRows.some(row=>row.from===from))mapRows.push({from,to});track(from,to);};
+  const walk=(root,to)=>{trackDir(root);const names=fs.readdirSync(root).sort();need(new Set(names.map(x=>x.toLowerCase())).size===names.length,'nsis_observer_case_collision');
+    for(const name of names){const file=path.join(root,name),stat=fs.lstatSync(file);need(!stat.isSymbolicLink(),'nsis_observer_link_refused');if(stat.isDirectory())walk(file,path.join(to,name));else track(file,path.join(to,name));}};
+  const guiPath=path.join(release,'winsmux-app.exe'),phasePath=guiPath+'.winsmux-bundle-phase.json',planPath=guiPath+'.winsmux-nsis-plan.json',includePath=guiPath+'.winsmux-nsis-plan.nsh';
+  const generationPath=path.join(source,'binaries/distribution-manifest.json'),renderedPath=path.join(release,'nsis/x64/installer.nsi');
+  const phase=parseStrictJson(track(phasePath)),generationBytes=track(generationPath),generation=parseStrictJson(generationBytes),planBytes=track(planPath),plan=parseStrictJson(planBytes),includeBytes=track(includePath);
+  need(phase.schema==='winsmux-desktop-bundle-phase/v1'&&phase.phase==='frozen'&&phase.signed===false&&Array.isArray(phase.records)
+    && phase.records.filter(row=>row.flavor==='nsis').length===1&&hash(generationBytes)===phase.generation_manifest_sha256,'nsis_observer_phase_refused');
+  const record=phase.records.find(row=>row.flavor==='nsis');
+  need(record.compiler_inputs_ready===true&&hash(planBytes)===record.plan_sha256&&hash(includeBytes)===record.include_sha256,'nsis_observer_plan_phase_refused');
+  const assets=path.join(repo,'distribution/windows-licenses'),binding=parseStrictJson(track(path.join(assets,'binding.json')));
+  const within=(root,relative)=>{need(typeof relative==='string'&&!path.isAbsolute(relative)&&!relative.split(/[/\\]/u).some(x=>!x||x==='.'||x==='..'),'nsis_observer_source_path_refused');const full=path.resolve(root,relative);need(full.startsWith(root+path.sep),'nsis_observer_source_path_escape');return full;};
+  for(const row of binding.sources)track(within(repo,row.path));
+  const input=parseStrictJson(track(path.join(assets,'input.json'))),catalog=parseStrictJson(track(path.join(assets,'manifest.json')));track(path.join(assets,'policy.json'));
+  for(const row of input.components)for(const document of row.documents)track(within(path.join(assets,'texts'),document.path));
+  for(const row of catalog.source_obligations)if(row.source_path)track(within(assets,row.source_path));
+  for(const file of ['nsis/winsmux_nsis_utils.dll','nsis/winsmux-utils.nsh'])track(path.join(source,file));
+  const scriptQueue=['scripts/stage-bundled-distribution.mjs','scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','scripts/stage-desktop-msi-plan.mjs'],seenScripts=new Set();
+  while(scriptQueue.length){const relative=scriptQueue.pop();if(seenScripts.has(relative))continue;seenScripts.add(relative);const body=decodeCompilerText(track(path.join(repo,relative)));
+    for(const match of body.matchAll(/(?:from\s+|import\s*\()(['"])(\.\/[^'"\r\n]+)\1/gu)){const child=path.posix.normalize(path.posix.join(path.posix.dirname(relative),match[2]));need(child.startsWith('scripts/'),'nsis_observer_source_script_escape');scriptQueue.push(child);}}
+  assertCanonicalBundledDistribution({repoRoot:repo,host:phase.host,version:phase.version,rustcCommit:binding.rustc_commit,projectOutput:release});
+  // Snapshot the other published C assets too; no producer or callback is invoked.
+  for(const file of [guiPath+'.winsmux-msi-plan.json',guiPath+'.winsmux-plan.wxi',path.join(release,'winsmux_app_lib.dll'),
+    path.join(release,'bundle/msi/winsmux_0.38.0_x64_en-US.msi'),path.join(release,'bundle/msi/winsmux_0.38.0_x64_ja-JP.msi')])track(file);
+  const setup=track(path.join(release,'bundle/nsis/winsmux_0.38.0_x64-setup.exe'));
+  need(Array.isArray(record.artifacts)&&record.artifacts.length===1&&record.artifacts[0].output==='setup'
+    &&record.artifacts[0].bytes===setup.length&&record.artifacts[0].sha256===hash(setup),'nsis_observer_original_setup_refused');
+  const dSource=path.join(diagnostic,'source/winsmux-app/src-tauri'),dRelease=path.join(diagnostic,'build/release'),dSdk=path.join(diagnostic,'sdk');
+  map(generationPath,path.join(dSource,'binaries/distribution-manifest.json'));
+  const config=parseStrictJson(track(path.join(source,'tauri.conf.json')));track(path.join(source,'nsis/installer.nsi'));track(path.join(repo,'scripts/stage-desktop-msi-plan.mjs'));
+  need(config.bundle?.windows?.signCommand?.cmd==='node'&&JSON.stringify(config.bundle.windows.signCommand.args)===JSON.stringify(['../../scripts/stage-desktop-msi-plan.mjs','--sign-asset','%1','--unsigned']),'nsis_observer_sign_config_refused');
+  const licensePath=config.bundle.licenseFile?physical(path.resolve(source,config.bundle.licenseFile)):null,renderedLicensePath=path.join(release,'nsis/x64/license_file');
+  if(licensePath){const bytes=track(licensePath),canonical=track(path.join(source,'binaries','licenses/texts',hash(bytes))),ui=track(renderedLicensePath);
+    bindUiLicense(bytes,generation,plan,canonical,ui);map(licensePath,path.join(diagnostic,'source/distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt'));map(renderedLicensePath,path.join(dRelease,'nsis/x64/license_file'));}
+  for(const row of generation.files){need(typeof row.path==='string'&&/^[A-Za-z0-9._/-]+$/u.test(row.path)&&!row.path.split('/').some(x=>!x||x==='.'||x==='..'),'nsis_observer_generation_path_refused');
+    const from=path.join(source,'binaries',row.path),to=path.join(dSource,'binaries',row.path),bytes=track(from,to);need(bytes.length===row.bytes&&hash(bytes)===row.sha256,'nsis_observer_generation_changed');map(from,to);}
+  const expected=[...selectTransportLicenseRows(generation),{role:'gui',path:'winsmux-app.exe',bytes:track(guiPath).length,sha256:record.gui_sha256},
+    ...[['cli','winsmux.exe','winsmux-'+phase.host+'.exe'],['mcp','winsmux-workspace-mcp.exe','winsmux-workspace-mcp-'+phase.host+'.exe']].map(([role,name,relative])=>{const bytes=track(path.join(source,'binaries',relative));return {role,path:name,bytes:bytes.length,sha256:hash(bytes)};})].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+  need(plan.schema==='winsmux-desktop-install-plan/v1'&&plan.flavor==='nsis'&&plan.version===phase.version&&plan.host===phase.host
+    &&JSON.stringify(plan.files)===JSON.stringify(expected),'nsis_observer_plan_inventory_refused');
+  const hooks=path.join(source,'nsis-installer-hooks.nsh');map(hooks,path.join(dSource,'nsis-installer-hooks.nsh'));
+  // assertCanonicalBundledDistribution/assertNsisGeneration owns hook content and its generation anchor.
+  map(guiPath,path.join(dRelease,'winsmux-app.exe'));map(planPath,path.join(dRelease,'winsmux-app.exe.winsmux-nsis-plan.json'));map(includePath,path.join(dRelease,'winsmux-app.exe.winsmux-nsis-plan.nsh'));
+  const languageDir=path.join(release,'nsis/x64');for(const language of ['English','Japanese'])map(path.join(languageDir,language+'.nsh'),path.join(dRelease,'nsis/x64',language+'.nsh'));
+  const additional=path.join(languageDir,'Plugins/x86-unicode/additional');walk(additional,path.join(dRelease,'nsis/x64/Plugins/x86-unicode/additional'));mapRows.push({from:additional,to:path.join(dRelease,'nsis/x64/Plugins/x86-unicode/additional')});
+  walk(sdk,dSdk);track(path.join(sdk,'makensis.exe'));track(path.join(sdk,'Bin/makensis.exe'));
+  const rendered=decodeCompilerText(track(renderedPath)),include=decodeCompilerText(includeBytes),rebound=rebindCompilerText(rendered,mapRows,{unsigned:true}),reboundInclude=rebindCompilerText(include,mapRows);
+  const allowedAbsolute=new Set(mapRows.map(row=>row.to)),sdkIncludes=new Set([...copies.values()].filter(item=>item.origin.startsWith(path.join(sdk,'Include')+path.sep)).map(item=>path.relative(path.join(sdk,'Include'),item.origin).replaceAll('\\','/').toLowerCase()));
+  auditCompilerReferences(rebound.source,allowedAbsolute,sdkIncludes);
+  const transforms=new Map([[includePath,{bytes:Buffer.from(reboundInclude.source),kind:'rebind',changes:reboundInclude.changes}]]);
+  for(const item of copies.values())if(!item.origin.startsWith(sdk+path.sep)&&item.origin.endsWith('.nsh')&&item.origin!==includePath){const result=rebindCompilerText(decodeCompilerText(item.bytes),mapRows);auditCompilerReferences(result.source,allowedAbsolute,sdkIncludes);transforms.set(item.origin,{bytes:Buffer.from(result.source),kind:'rebind',changes:result.changes});}
+  for(const name of ['INSTALLERICON','SIDEBARIMAGE','HEADERIMAGE','UNINSTALLERICON','UNINSTALLERHEADERIMAGE','WEBVIEW2BOOTSTRAPPERPATH','WEBVIEW2INSTALLERPATH'])need(rendered.split('!define '+name+' ""').length===2,'nsis_observer_resource_profile_refused');
+  need(rebound.used.includes(hooks)&&rebound.used.includes(guiPath)&&rebound.used.includes(includePath)&&reboundInclude.used.includes(planPath),'nsis_observer_required_reference_missing');
+  need(rendered.split('!define LICENSE "'+(licensePath?literal(renderedLicensePath):'')+'"').length===2,'nsis_observer_rendered_license_refused');
+  const gui=projectNssGui(track(guiPath),phase.input_gui_sha256,record.gui_sha256,plan.files.find(row=>row.role==='gui'));
+  const output=path.join(diagnostic,'output/nsis-output.exe'),captureRoot=path.join(diagnostic,'capture'),instrumented=instrumentNsis(rebound.source,{outputFile:output,captureRoot});
+  const files=[...copies.values()].map(item=>({...item,bytes:item.origin===guiPath?gui:transforms.get(item.origin)?.bytes??item.bytes,transform:item.origin===guiPath?'NSS':transforms.get(item.origin)?.kind??'copy'}));
+  const dRendered=path.join(dRelease,'nsis/x64/installer.nsi');files.push({path:dRendered,bytes:Buffer.from(instrumented.source),origin:renderedPath,origin_sha256:hash(Buffer.from(rendered)),transform:'rebind+observer'});
+  need(new Set(files.map(row=>row.path.toLowerCase())).size===files.length,'nsis_observer_destination_collision');
+  const snapshot={repo_root:repo,files:[...originals.values()],directories:[...directories.values()]};await assertCompilerSnapshot(snapshot);
+  const inventory=files.map(row=>({origin:row.origin,destination:row.path,origin_sha256:row.origin_sha256,bytes:row.bytes.length,sha256:hash(row.bytes),transform:row.transform}));
+  return {files,snapshot,inventory,release_admissible:false,original_setup:{bytes:setup.length,sha256:hash(setup)},
+    changes:{rendered:rebound.changes,include:reboundInclude.changes,headers:[...transforms].map(([origin,value])=>({origin,changes:value.changes})),instrumentation:instrumented.changes},
+    compiler:{image:path.join(dSdk,'makensis.exe'),cwd:path.join(diagnostic,'output'),nsisdir:dSdk,temp:path.join(diagnostic,'temp'),output,
+      args:['/NOCONFIG','/NOCD','/V4','/INPUTCHARSET','UTF8','/OUTPUTCHARSET','UTF8',dRendered]},diagnostic};
+}
+
 async function runFixed(mode, sourceCommit, repoArgument) {
   need(['compile','collect'].includes(mode), 'nsis_observer_mode_refused');
   admitDiagnostic(process.env, sourceCommit, 'NSIS');
@@ -453,94 +554,32 @@ async function runFixed(mode, sourceCommit, repoArgument) {
     transport(); return;
   }
   need(!fs.existsSync(diagnostic), 'nsis_observer_diagnostic_reuse_refused');
-  const release = path.join(native,'build/release'), source = path.join(repo,'winsmux-app/src-tauri');
-  const guiPath = path.join(release,'winsmux-app.exe'), phasePath=guiPath+'.winsmux-bundle-phase.json';
-  const phase = json(phasePath), generationPath=path.join(source,'binaries/distribution-manifest.json'), generation=json(generationPath);
-  const record = phase.records.find(row => row.flavor === 'nsis'), planPath=guiPath+'.winsmux-nsis-plan.json', plan=json(planPath);
-  const renderedPath = path.join(release,'nsis/x64/installer.nsi'), includePath=guiPath+'.winsmux-nsis-plan.nsh';
-  const sdk = physical(path.join(process.env.LOCALAPPDATA,'tauri/NSIS'));
-  const originals = new Map(), directoryIds = new Map(), copies = new Map(), diagnosticInputs = new Map();
-  const trackDir = dir => {
-    physical(dir); const stat=fs.lstatSync(dir,{bigint:true}); need(stat.isDirectory()&&!stat.isSymbolicLink(),'nsis_observer_directory_refused');
-    directoryIds.set(dir, { identity:stat.dev+':'+stat.ino, names:fs.readdirSync(dir).sort() });
-  };
-  const track = (file, to = null) => {
-    const full=physical(file), bytes=read(full); if (originals.has(full)) need(originals.get(full).equals(bytes),'nsis_observer_input_changed');
-    originals.set(full,bytes); trackDir(path.dirname(full));
-    if(to){const destination=physical(to);need(destination.startsWith(diagnostic+path.sep),'nsis_observer_destination_escape');
-      const key=destination.toLowerCase();need(!copies.has(key)||copies.get(key).from===full,'nsis_observer_destination_collision');copies.set(key,{from:full,to:destination,bytes});}
-    return bytes;
-  };
-  const walk = (root, to) => {
-    trackDir(root); const names=fs.readdirSync(root).sort(); need(new Set(names.map(x=>x.toLowerCase())).size===names.length,'nsis_observer_case_collision');
-    for(const name of names){const p=path.join(root,name), dest=path.join(to,name), stat=fs.lstatSync(p);need(!stat.isSymbolicLink(),'nsis_observer_link_refused');if(stat.isDirectory())walk(p,dest);else track(p,dest);}
-  };
-  const unchanged = () => {
-    for(const [file,bytes] of originals)need(read(file).equals(bytes),'nsis_observer_origin_changed');
-    for(const [dir,value] of directoryIds){physical(dir);const stat=fs.lstatSync(dir,{bigint:true});need(stat.dev+':'+stat.ino===value.identity&&JSON.stringify(fs.readdirSync(dir).sort())===JSON.stringify(value.names),'nsis_observer_origin_directory_changed');}
-    for(const [file,bytes] of diagnosticInputs)need(read(file).equals(bytes),'nsis_observer_diagnostic_input_changed');
-  };
-  const dSource=path.join(diagnostic,'source/winsmux-app/src-tauri'),dRelease=path.join(diagnostic,'build/release'),dSdk=path.join(diagnostic,'sdk');
-  const mappings=[];
-  const map=(from,to)=>{if(!mappings.some(row=>row.from===from))mappings.push({from,to});track(from,to);};
-  track(phasePath);track(generationPath,path.join(dSource,'binaries/distribution-manifest.json'));track(path.join(native,'candidate/desktop-native-candidate.json'));
-  const configPath=path.join(source,'tauri.conf.json'),config=parseStrictJson(track(configPath));
-  track(path.join(source,'nsis/installer.nsi')); track(path.join(repo,'scripts/stage-desktop-msi-plan.mjs'));
-  need(config.bundle?.windows?.signCommand?.cmd==='node' && JSON.stringify(config.bundle.windows.signCommand.args)===JSON.stringify(['../../scripts/stage-desktop-msi-plan.mjs','--sign-asset','%1','--unsigned']), 'nsis_observer_sign_config_refused');
-  const licensePath=config.bundle.licenseFile ? physical(path.resolve(source,config.bundle.licenseFile)):null;
-  const renderedLicensePath=path.join(release,'nsis/x64/license_file');
-  if(licensePath){const b=track(licensePath),canonicalText=track(path.join(source,'binaries','licenses/texts',hash(b))),renderedUi=track(renderedLicensePath);bindUiLicense(b,generation,plan,canonicalText,renderedUi);map(licensePath,path.join(diagnostic,'source/distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt'));map(renderedLicensePath,path.join(dRelease,'nsis/x64/license_file'));}
-  for(const row of generation.files){need(typeof row.path==='string'&&/^[A-Za-z0-9._/-]+$/u.test(row.path)&&!row.path.split('/').some(x=>x==='..'||!x),'nsis_observer_generation_path_refused');const from=path.join(source,'binaries',row.path),to=path.join(dSource,'binaries',row.path);const bytes=track(from,to);need(bytes.length===row.bytes&&hash(bytes)===row.sha256,'nsis_observer_generation_changed');map(from,to);}
-  const hooks=path.join(source,'nsis-installer-hooks.nsh');map(hooks,path.join(dSource,'nsis-installer-hooks.nsh'));
-  const hookBytes=read(hooks);need(hookBytes.toString('utf8').trim()==='!define WINSMUX_NSIS_INPUTS "${__FILEDIR__}\\binaries\\nsis"','nsis_observer_hooks_refused');
-  map(guiPath,path.join(dRelease,'winsmux-app.exe'));map(planPath,path.join(dRelease,'winsmux-app.exe.winsmux-nsis-plan.json'));map(includePath,path.join(dRelease,'winsmux-app.exe.winsmux-nsis-plan.nsh'));
-  const languageDir=path.join(release,'nsis/x64');
-  for(const language of ['English','Japanese'])map(path.join(languageDir,language+'.nsh'),path.join(dRelease,'nsis/x64',language+'.nsh'));
-  const additional=path.join(languageDir,'Plugins/x86-unicode/additional');walk(additional,path.join(dRelease,'nsis/x64/Plugins/x86-unicode/additional'));
-  mappings.push({from:additional,to:path.join(dRelease,'nsis/x64/Plugins/x86-unicode/additional')});
-  walk(sdk,dSdk);
-  const decode = decodeCompilerText;
-  const rendered=decode(track(renderedPath)),include=decode(read(includePath));
-  const rebound=rebindCompilerText(rendered,mappings,{unsigned:true}), reboundInclude=rebindCompilerText(include,mappings);
-  const allowedAbsolute=new Set(mappings.map(row=>row.to)),sdkIncludes=new Set([...copies.values()]
-    .filter(item=>item.from.startsWith(path.join(sdk,'Include')+path.sep)).map(item=>path.relative(path.join(sdk,'Include'),item.from).replaceAll('\\','/').toLowerCase()));
-  auditCompilerReferences(rebound.source,allowedAbsolute,sdkIncludes);
-  const sourceTransforms=new Map([[includePath,Buffer.from(reboundInclude.source)]]);
-  for(const item of copies.values()){if(!item.from.startsWith(sdk+path.sep)&&item.from.endsWith('.nsh')&&item.from!==includePath){const transformed=rebindCompilerText(decodeCompilerText(item.bytes),mappings);auditCompilerReferences(transformed.source,allowedAbsolute,sdkIncludes);sourceTransforms.set(item.from,Buffer.from(transformed.source));}}
-  for(const name of ['INSTALLERICON','SIDEBARIMAGE','HEADERIMAGE','UNINSTALLERICON','UNINSTALLERHEADERIMAGE','WEBVIEW2BOOTSTRAPPERPATH','WEBVIEW2INSTALLERPATH'])need(rendered.split('!define '+name+' ""').length===2,'nsis_observer_resource_profile_refused');
-  need(rebound.used.includes(hooks)&&rebound.used.includes(guiPath)&&rebound.used.includes(includePath)
-    && reboundInclude.used.includes(planPath),'nsis_observer_required_reference_missing');
-  const expectedLicense='!define LICENSE "'+(licensePath?literal(renderedLicensePath):'')+'"';
-  need(rendered.split(expectedLicense).length===2,'nsis_observer_rendered_license_refused');
-  const gui=projectNssGui(read(guiPath),phase.input_gui_sha256,record.gui_sha256,plan.files.find(row=>row.role==='gui'));
-  const captureRoot=path.join(diagnostic,'capture'),out=path.join(diagnostic,'output/nsis-output.exe');
-  const instrumented=instrumentNsis(rebound.source,{outputFile:out,captureRoot});
-  unchanged();
+  const closure=await prepareCompilerClosure({repoRoot:repo,releaseDirectory:path.join(native,'build/release'),sdkRoot:path.join(process.env.LOCALAPPDATA,'tauri/NSIS'),diagnosticDirectory:diagnostic});
+  const diagnosticInputs=new Map();
+  const unchanged=async()=>{await assertCompilerSnapshot(closure.snapshot);for(const [file,bytes]of diagnosticInputs)need(read(file).equals(bytes),'nsis_observer_diagnostic_input_changed');};
   fs.mkdirSync(diagnostic); for(const sub of ['capture','output','temp'])fs.mkdirSync(path.join(diagnostic,sub));
   let compilerResult=null;
   try {
-    for(const item of copies.values()){const bytes=item.from===guiPath?gui:sourceTransforms.get(item.from)??item.bytes;write(item.to,bytes);diagnosticInputs.set(item.to,bytes);}
-    const dRendered=path.join(dRelease,'nsis/x64/installer.nsi');write(dRendered,Buffer.from(instrumented.source));diagnosticInputs.set(dRendered,Buffer.from(instrumented.source));
-    const inventory=[...copies.values()].map(item=>({origin:item.from,destination:item.to,bytes:item.bytes.length,sha256:hash(item.bytes)}));
-    writeJson(path.join(diagnostic,'input-inventory.json'),{schema:'winsmux-nsis-observer-private-closure/v1',source_commit:sourceCommit,inventory,
-      rendered_changes:rebound.changes,include_changes:reboundInclude.changes,instrumentation:instrumented.changes});
-    unchanged(); transport();
-    const compiler=path.join(dSdk,'makensis.exe'),env={...process.env,NSISDIR:dSdk,TEMP:path.join(diagnostic,'temp'),TMP:path.join(diagnostic,'temp')};
-    const version=spawnSync(compiler,['/VERSION'],{cwd:path.join(diagnostic,'output'),env,windowsHide:true,encoding:'buffer',maxBuffer:4194304});
+    for(const item of closure.files){write(item.path,item.bytes);diagnosticInputs.set(item.path,item.bytes);}
+    const inventory=closure.inventory;
+    writeJson(path.join(diagnostic,'input-inventory.json'),{schema:'winsmux-nsis-observer-private-closure/v1',source_commit:sourceCommit,inventory,changes:closure.changes});
+    await unchanged();transport();
+    const compiler=closure.compiler.image,env={...process.env,NSISDIR:closure.compiler.nsisdir,TEMP:closure.compiler.temp,TMP:closure.compiler.temp};
+    const version=spawnSync(compiler,['/VERSION'],{cwd:closure.compiler.cwd,env,windowsHide:true,encoding:'buffer',maxBuffer:4194304});
     write(path.join(diagnostic,'compiler-version.stdout.bin'),version.stdout??Buffer.alloc(0));write(path.join(diagnostic,'compiler-version.stderr.bin'),version.stderr??Buffer.alloc(0));
     need(version.status===0&&!version.error&&version.stdout?.toString('utf8').trim()==='v3.11','nsis_observer_compiler_version_refused');
-    compilerResult=spawnSync(compiler,['/NOCONFIG','/NOCD','/V4','/INPUTCHARSET','UTF8','/OUTPUTCHARSET','UTF8',dRendered],{cwd:path.join(diagnostic,'output'),env,windowsHide:true,encoding:'buffer',maxBuffer:4194304});
+    compilerResult=spawnSync(compiler,closure.compiler.args,{cwd:closure.compiler.cwd,env,windowsHide:true,encoding:'buffer',maxBuffer:4194304});
     write(path.join(diagnostic,'compiler.stdout.bin'),compilerResult.stdout??Buffer.alloc(0));write(path.join(diagnostic,'compiler.stderr.bin'),compilerResult.stderr??Buffer.alloc(0));
     need(compilerResult.status===0&&!compilerResult.error,'nsis_observer_compile_failed');
-    const output=read(out);need(output.length>0&&output[0]===0x4d&&output[1]===0x5a,'nsis_observer_output_refused');
-    unchanged();transport();
+    const output=read(closure.compiler.output);need(output.length>0&&output[0]===0x4d&&output[1]===0x5a,'nsis_observer_output_refused');
+    await unchanged();transport();
     const original=read(path.join(native,'candidate/winsmux_0.38.0_x64-setup.exe')),compilerBytes=read(compiler);
     const safe=assertBuild({schema:'winsmux-nsis-observer-build/v1',diagnostic:true,release_admissible:false,source_commit:sourceCommit,
       original:{bytes:original.length,sha256:hash(original)},diagnostic_setup:{bytes:output.length,sha256:hash(output)},
       compiler:{bytes:compilerBytes.length,sha256:hash(compilerBytes)},closure_files:inventory.length,closure_sha256:hash(Buffer.from(JSON.stringify(inventory))),original_unchanged:true},sourceCommit);
     writeJson(path.join(diagnostic,'build.json'),safe);writeJson(path.join(evidence,'nsis-observer-build.json'),safe);
   } finally {
-    unchanged();transport();
+    await unchanged();transport();
   }
 }
 
