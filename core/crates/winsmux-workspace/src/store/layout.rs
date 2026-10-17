@@ -78,7 +78,7 @@ pub(crate) mod stop_observation {
     #[serde(deny_unknown_fields)]
     struct Request { schema: u32, test: String, nonce: String, root: [u64; 3] }
     struct Carrier { root: PathBuf, nonce: String, root_id: [u64; 3], _locks: Vec<OwnedHandle>, _request: File }
-    struct State { carrier: Option<Carrier>, v1: PathBuf, operation: String, instance: String, frame: Frame, failure: Option<Failure>, save_result: &'static str }
+    struct State { carrier: Option<Carrier>, v1: PathBuf, operation: String, instance: String, frame: Frame, failure: Option<Failure>, save_result: &'static str, volume_probe: Option<volume_link::Probe>, probe_calls: u8 }
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; static OBSERVER_FAILED: Cell<bool> = const { Cell::new(false) }; }
     pub(crate) struct Attempt { armed: bool }
     fn with_state(f: impl FnOnce(&mut State)) { let _ = STATE.try_with(|cell| { if let Ok(mut state) = cell.try_borrow_mut() { if let Some(state) = state.as_mut() { f(state); } } else { let _ = OBSERVER_FAILED.try_with(|flag| flag.set(true)); } }); }
@@ -154,9 +154,17 @@ pub(crate) mod stop_observation {
             identity(file.as_raw_handle().cast(), false)?; file.write_all(&bytes).ok()?; file.flush().ok()?; Some(())
         }
     }
+    impl Carrier {
+        fn write_probe(&self, value: &serde_json::Value) -> Option<()> {
+            if identity(self._locks.last()?.raw(), true)? != self.root_id { return None; }
+            let bytes=serde_json::to_vec(value).ok()?;if bytes.len()>1024{return None;}
+            let mut file=OpenOptions::new().write(true).create_new(true).share_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(self.root.join("volume-link.json")).ok()?;
+            identity(file.as_raw_handle().cast(),false)?;file.write_all(&bytes).ok()?;file.flush().ok()?;Some(())
+        }
+    }
     impl Attempt {
         pub(crate) fn begin(store: &LayoutStore, operation: &str, instance: &str) -> Self {
-            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { STATE.try_with(|cell| { let slot = cell.try_borrow().ok()?; if slot.is_some() { None } else { Some(()) } }).ok()??; let carrier = Carrier::read()?; let state = State { carrier: Some(carrier), v1: store.v1.clone(), operation: operation.to_owned(), instance: instance.to_owned(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown" }; STATE.try_with(|cell| { let mut slot = cell.try_borrow_mut().ok()?; if slot.is_some() { return None; } *slot = Some(state); let _ = OBSERVER_FAILED.try_with(|flag| flag.set(false)); Some(()) }).ok()? }));
+            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { STATE.try_with(|cell| { let slot = cell.try_borrow().ok()?; if slot.is_some() { None } else { Some(()) } }).ok()??; let carrier = Carrier::read()?; let state = State { carrier: Some(carrier), v1: store.v1.clone(), operation: operation.to_owned(), instance: instance.to_owned(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown", volume_probe: None, probe_calls: 0 }; STATE.try_with(|cell| { let mut slot = cell.try_borrow_mut().ok()?; if slot.is_some() { return None; } *slot = Some(state); let _ = OBSERVER_FAILED.try_with(|flag| flag.set(false)); Some(()) }).ok()? }));
             Self { armed: matches!(prepared, Ok(Some(()))) }
         }
     }
@@ -170,15 +178,149 @@ pub(crate) mod stop_observation {
                     let (phase, target, refusal, api, error_class) = match &s.failure { Some(f) if s.save_result == "refused" && !OBSERVER_FAILED.try_with(Cell::get).unwrap_or(true) => (f.phase, f.target, f.refusal, f.api, f.error_class), _ => ("unknown", "unknown", "unknown", "unknown", "unknown") };
                     let record = serde_json::json!({"schema":1,"nonce":&carrier.nonce,"operation_id":&s.operation,"instance_id":&s.instance,"save_result":s.save_result,"phase":phase,"target":target,"refusal":refusal,"api":api,"error_class":error_class,"store_binding":"actual_layout_v1"});
                     let _ = carrier.write(&record);
+                    let probe = s.volume_probe.unwrap_or_else(volume_link::Probe::unknown);
+                    let record = serde_json::json!({"schema":1,"nonce":&carrier.nonce,"operation_id":&s.operation,"instance_id":&s.instance,"probe":probe});
+                    let _ = carrier.write_probe(&record);
                 }
             }));
         }
     }
+
+    mod volume_link {
+        use super::*;
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+        const CAP: usize = 1024;
+        #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
+        #[repr(C)] struct ObjectAttributes { length: u32, root_directory: HANDLE, object_name: *mut UnicodeString, attributes: u32, security_descriptor: *mut c_void, security_qos: *mut c_void }
+        type OpenLink = unsafe extern "system" fn(*mut HANDLE, u32, *mut ObjectAttributes) -> i32;
+        type QueryLink = unsafe extern "system" fn(HANDLE, *mut UnicodeString, *mut u32) -> i32;
+        #[derive(Clone, serde::Serialize)]
+        pub(super) struct Probe {
+            schema: &'static str, observation: &'static str, legacy_result: &'static str,
+            exact_open: &'static str, exact_query: &'static str, target: &'static str,
+            same_target: &'static str, legacy_policy: &'static str, exact_policy: &'static str,
+        }
+        impl Probe {
+            pub(super) fn unknown() -> Self { Self { schema: "winsmux-volume-link-probe/v1", observation: "unknown", legacy_result: "unknown", exact_open: "unknown", exact_query: "unknown", target: "unknown", same_target: "unknown", legacy_policy: "unknown", exact_policy: "unknown" } }
+        }
+        fn policy(target: &[u16]) -> &'static str { if target.starts_with(&[92,63,63,92]) { "subst" } else { "non_subst" } }
+        fn legacy_target(units: &[u16], written: u32) -> Option<Vec<u16>> {
+            let n = written as usize;
+            if n == 0 || n > units.len() || n > CAP { return None; }
+            let end = units[..n].iter().position(|u| *u == 0)?;
+            if end == 0 || String::from_utf16(&units[..end]).is_err() { return None; }
+            Some(units[..end].to_vec())
+        }
+        fn exact_target(units: &[u16], length: u16, maximum: u16, required: u32) -> Option<Vec<u16>> {
+            let n = length as usize;
+            if n == 0 || n % 2 != 0 || maximum as usize != units.len() * 2 || n > maximum as usize || units.len() > CAP || required as usize > units.len()*2 || required % 2 != 0 { return None; }
+            let target = &units[..n/2];
+            if target.contains(&0) || String::from_utf16(target).is_err() { return None; }
+            Some(target.to_vec())
+        }
+        enum Exact { Unavailable, Open(&'static str), Query(&'static str), Invalid, Target(Vec<u16>) }
+        fn project(legacy: &'static str, old: Option<&[u16]>, exact: Exact) -> Probe {
+            let mut p = Probe::unknown(); p.legacy_result = legacy;
+            if legacy == "success" { if let Some(old) = old { p.legacy_policy = policy(old); } }
+            let old_invalid = legacy == "success" && old.is_none();
+            p.observation = if old_invalid { "invalid" } else { "observed" };
+            match exact {
+                Exact::Unavailable => { p.observation = if old_invalid { "invalid" } else { "unknown" }; p.exact_open = "unavailable"; p.exact_query = "unavailable"; }
+                Exact::Open(v) => { p.exact_open = v; }
+                Exact::Query(v) => { p.exact_open = "success"; p.exact_query = v; }
+                Exact::Invalid => { p.exact_open = "success"; p.exact_query = "success"; p.target = "invalid"; p.observation = "invalid"; }
+                Exact::Target(new) => { p.exact_open = "success"; p.exact_query = "success"; p.target = "valid"; p.exact_policy = policy(&new); if let Some(old) = old { p.same_target = if old == new { "yes" } else { "no" }; } }
+            }
+            p
+        }
+        fn open_class(status: i32) -> &'static str { if status as u32 == 0xc0000022 { "access_denied" } else { "other_failure" } }
+        fn query_class(status: i32) -> &'static str { match status as u32 { 0xc0000022 => "access_denied", 0xc0000023 | 0x80000005 => "buffer_limit", _ => "other_failure" } }
+        fn exact(drive: u8) -> Exact {
+            // Read only the last link object in the current effective DOS namespace.
+            // No Global fallback, directory enumeration, token change, or link resolution.
+            let dll: Vec<u16> = "ntdll.dll".encode_utf16().chain(Some(0)).collect();
+            let module = unsafe { GetModuleHandleW(dll.as_ptr()) };
+            if module.is_null() { return Exact::Unavailable; }
+            let (open, query): (OpenLink, QueryLink) = unsafe {
+                let Some(open) = GetProcAddress(module, b"NtOpenSymbolicLinkObject\0".as_ptr()) else { return Exact::Unavailable; };
+                let Some(query) = GetProcAddress(module, b"NtQuerySymbolicLinkObject\0".as_ptr()) else { return Exact::Unavailable; };
+                (std::mem::transmute(open), std::mem::transmute(query))
+            };
+            let mut name: Vec<u16> = format!("\\??\\{}:", drive as char).encode_utf16().collect();
+            let mut unicode = UnicodeString { length: (name.len()*2) as u16, maximum_length: (name.len()*2) as u16, buffer: name.as_mut_ptr() };
+            let mut attributes = ObjectAttributes { length: size_of::<ObjectAttributes>() as u32, root_directory: null_mut(), object_name: &mut unicode, attributes: 0x40, security_descriptor: null_mut(), security_qos: null_mut() };
+            let mut raw = null_mut();
+            let status = unsafe { open(&mut raw, 1, &mut attributes) };
+            let handle = if invalid_handle(raw) { None } else { unsafe { OwnedHandle::from_raw(raw).ok() } };
+            if status != 0 { return Exact::Open(open_class(status)); }
+            let Some(handle) = handle else { return Exact::Open("other_failure"); };
+            let mut units = [0u16; CAP];
+            let mut target = UnicodeString { length: 0, maximum_length: (CAP*2) as u16, buffer: units.as_mut_ptr() };
+            let mut required = 0u32;
+            let status = unsafe { query(handle.raw(), &mut target, &mut required) };
+            if status != 0 { return Exact::Query(query_class(status)); }
+            if target.buffer != units.as_mut_ptr() { return Exact::Invalid; }
+            match exact_target(&units, target.length, target.maximum_length, required) { Some(target) => Exact::Target(target), None => Exact::Invalid }
+            // The same OwnedHandle closes once on every return/unwind after open.
+        }
+        pub(super) fn run(drive: u8, written: u32, units: &[u16], legacy: &'static str) -> Probe {
+            let old = if written != 0 { legacy_target(units, written) } else { None };
+            project(legacy, old.as_deref(), exact(drive))
+        }
+        #[cfg(test)]
+        mod tests {
+            use super::*;
+            fn units(s: &str) -> Vec<u16> { s.encode_utf16().collect() }
+            #[test] fn volume_link_legacy_first_target_bounds_are_finite() {
+                let mut v=units(r"\Device\HarddiskVolume1");v.push(0);v.extend(units("old mapping"));v.push(0);
+                assert_eq!(legacy_target(&v,v.len() as u32).unwrap(),units(r"\Device\HarddiskVolume1"));
+                for (v,n) in [(vec![],0),(vec![0],1),(vec![65],1),(vec![0xd800,0],2),(vec![65,0],3),(vec![65;CAP+1],(CAP+1)as u32)] { assert!(legacy_target(&v,n).is_none()); }
+            }
+            #[test] fn volume_link_query_buffer_lengths_nul_and_utf16_are_checked() {
+                let mut v=vec![65u16;CAP];assert_eq!(exact_target(&v,2,(CAP*2)as u16,2).unwrap(),vec![65]);
+                assert!(exact_target(&v,0,(CAP*2)as u16,0).is_none());assert!(exact_target(&v,1,(CAP*2)as u16,2).is_none());
+                assert!(exact_target(&v,2,2,2).is_none());assert!(exact_target(&v,2,(CAP*2)as u16,(CAP*2+2)as u32).is_none());assert!(exact_target(&v,2,(CAP*2)as u16,1).is_none());
+                v[0]=0;assert!(exact_target(&v,2,(CAP*2)as u16,2).is_none());v[0]=0xd800;assert!(exact_target(&v,2,(CAP*2)as u16,2).is_none());
+                let v=vec![65u16;CAP];assert_eq!(exact_target(&v,(CAP*2)as u16,(CAP*2)as u16,(CAP*2)as u32).unwrap().len(),CAP);
+            }
+            #[test] fn volume_link_raw_equality_and_root_alias_policy_are_not_normalized() {
+                let v=units(r"\Device\HarddiskVolume1");let p=project("success",Some(&v),Exact::Target(v.clone()));assert_eq!((p.same_target,p.legacy_policy,p.exact_policy),("yes","non_subst","non_subst"));
+                let p=project("success",Some(&v),Exact::Target(units(r"\device\HarddiskVolume1")));assert_eq!(p.same_target,"no");
+                let v=units(r"\??\C:\");let p=project("success",Some(&v),Exact::Target(v.clone()));assert_eq!((p.same_target,p.exact_policy),("yes","subst"));
+                let p=project("access_denied",None,Exact::Target(units(r"\Device\HarddiskVolume1")));assert_eq!((p.observation,p.same_target,p.legacy_policy,p.exact_policy),("observed","unknown","unknown","non_subst"));
+            }
+            #[test] fn volume_link_api_failures_and_invalid_targets_never_become_admission() {
+                for (x,o,q) in [(Exact::Open("access_denied"),"access_denied","unknown"),(Exact::Query("buffer_limit"),"success","buffer_limit"),(Exact::Unavailable,"unavailable","unavailable")] {let p=project("access_denied",None,x);assert_eq!((p.exact_open,p.exact_query,p.same_target,p.exact_policy),(o,q,"unknown","unknown"));}
+                let p=project("success",None,Exact::Target(units(r"\Device\HarddiskVolume1")));assert_eq!((p.observation,p.same_target),("invalid","unknown"));
+                let p=project("access_denied",None,Exact::Invalid);assert_eq!((p.observation,p.target,p.exact_policy),("invalid","invalid","unknown"));
+                assert_eq!(open_class(0xc0000022u32 as i32),"access_denied");assert_eq!(query_class(0x40000000),"other_failure");
+            }
+        }
+    }
+    fn accept_volume_probe(state: &mut State, probe: volume_link::Probe) {
+        state.probe_calls = state.probe_calls.saturating_add(1);
+        state.volume_probe = Some(if state.probe_calls == 1 { probe } else { volume_link::Probe::unknown() });
+    }
+    pub(crate) fn volume_link_probe(drive: u8, written: u32, units: &[u16]) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let legacy = STATE.try_with(|slot| {
+                let mut s=slot.try_borrow_mut().ok()?;let s=s.as_mut()?;
+                if s.carrier.is_none() || s.frame.phase != "volume_policy" {return None;}
+                accept_volume_probe(s,volume_link::Probe::unknown());
+                if s.probe_calls != 1 {return None;}
+                if written != 0 {Some("success")}else {s.failure.as_ref().filter(|f|f.api=="query_dos_device" && f.refusal=="native_api").map(|f|if f.error_class=="access_denied"{"access_denied"}else{"other_failure"})}
+            }).ok().flatten();
+            let Some(legacy) = legacy else { return; };
+            let probe=volume_link::run(drive,written,units,legacy);
+            let _=STATE.try_with(|slot|{if let Ok(mut s)=slot.try_borrow_mut(){if let Some(s)=s.as_mut(){if s.probe_calls==1{s.volume_probe=Some(probe);}}}});
+        }));
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
         fn reset() {
-            STATE.with(|c| *c.borrow_mut() = Some(State { carrier: None, v1: PathBuf::from(r"C:\fixture\AppData\Local\winsmux\workspace\v1"), operation: "fixture".into(), instance: "fixture".into(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown" }));
+            STATE.with(|c| *c.borrow_mut() = Some(State { carrier: None, v1: PathBuf::from(r"C:\fixture\AppData\Local\winsmux\workspace\v1"), operation: "fixture".into(), instance: "fixture".into(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown", volume_probe: None, probe_calls: 0 }));
             OBSERVER_FAILED.with(|f| f.set(false));
         }
         fn failure() -> Option<Failure> { STATE.with(|c| c.borrow().as_ref().and_then(|s| s.failure.clone())) }
@@ -210,6 +352,11 @@ pub(crate) mod stop_observation {
         #[test] fn dependency_and_borrow_failure_remain_unobserved_as_native_causes() {
             reset(); let result: Result<(), ErrorCode> = scope("store_root_observe", "store", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); assert_eq!(failure().unwrap().refusal, "dependency_unobserved");
             STATE.with(|c| { let _held = c.borrow_mut(); let result: Result<(), ErrorCode> = scope("private_acl", "store", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); }); assert!(OBSERVER_FAILED.with(Cell::get));
+        }
+        #[test] fn volume_link_repeated_observation_does_not_replace_first_refusal_or_result() {
+            reset();let original:Result<(),ErrorCode>=Err(ErrorCode::PersistenceFailed);native("query_dos_device",5);
+            STATE.with(|c|{let mut s=c.borrow_mut();let s=s.as_mut().unwrap();accept_volume_probe(s,volume_link::Probe::unknown());accept_volume_probe(s,volume_link::Probe::unknown());assert_eq!(serde_json::to_value(s.volume_probe.as_ref().unwrap()).unwrap()["observation"],serde_json::json!("unknown"));});
+            assert_eq!(original,Err(ErrorCode::PersistenceFailed));let f=failure().unwrap();assert_eq!((f.api,f.error_class),("query_dos_device","access_denied"));
         }
         #[test] fn observer_scope_preserves_action_unwind_and_actual_role_inventory() {
             reset();
@@ -1044,6 +1191,8 @@ fn confirm_fixed_local_non_subst_volume(drive: u8) -> Result<(), ErrorCode> {
     let mut target = vec![0u16; 1024];
     let written =
         unsafe { observe_store_bool!("query_dos_device", QueryDosDeviceW(device.as_mut_ptr(), target.as_mut_ptr(), target.len() as u32)) };
+    #[cfg(debug_assertions)]
+    stop_observation::volume_link_probe(drive, written, &target);
     if written == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
