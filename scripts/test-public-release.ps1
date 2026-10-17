@@ -1454,11 +1454,12 @@ function Assert-DesktopMaterializedOwnership {
     $productVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($appPath).ProductVersion
     Assert-DesktopProductVersion -ActualVersion $productVersion -ExpectedVersion ([string]$Context.expected_version)
 
-    Assert-Condition (Test-Path -LiteralPath $script:DesktopProductPath) 'Desktop installer did not materialize the product-state registration.'
+    $materializedProtectedState = Get-DesktopProtectedState -InstallRoot $installRoot
+    Assert-DesktopRegistryNamespaceState -State $materializedProtectedState -Name product_state -RequireOccupied -Message 'Desktop installer did not materialize the product-state registration.'
     $materializedInstallRoot = Get-RegistryDefaultValue -Path $script:DesktopProductPath
     Assert-DesktopProductStateOwnership -MaterializedInstallRoot $materializedInstallRoot -ExpectedInstallRoot $installRoot
 
-    Assert-Condition (Test-Path -LiteralPath $script:DesktopUninstallPath) 'Desktop installer did not materialize the uninstall registration.'
+    Assert-DesktopRegistryNamespaceState -State $materializedProtectedState -Name uninstall_registration -RequireOccupied -Message 'Desktop installer did not materialize the uninstall registration.'
     $uninstallRegistration = Get-ItemProperty -LiteralPath $script:DesktopUninstallPath
     Assert-DesktopUninstallRegistrationOwnership -Registration $uninstallRegistration -ExpectedVersion ([string]$Context.expected_version) -ExpectedInstallRoot $installRoot -ExpectedUninstaller $uninstallPath
 
@@ -1495,14 +1496,154 @@ function Get-DesktopShortcutTarget {
     return [string]$shell.CreateShortcut($Path).TargetPath
 }
 
+function Initialize-DesktopRegistryNamespaceTypes {
+    if ($null -ne ([Management.Automation.PSTypeName]'WinsmuxDesktopRegistryNamespace').Type) { return }
+    $namespaceSource = @'
+using System;
+using System.Text;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class WinsmuxDesktopRegistryNamespace {
+    const uint Read64 = 0x109, OpenLink = 8;
+    static readonly IntPtr CurrentUser = new IntPtr(unchecked((int)0x80000001));
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegOpenKeyExW(IntPtr key,string part,uint options,uint access,out IntPtr result);
+    [DllImport("advapi32.dll")] static extern int RegCloseKey(IntPtr key);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegQueryValueExW(IntPtr key,string name,IntPtr reserved,out uint kind,IntPtr data,ref uint size);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegQueryInfoKeyW(IntPtr key,IntPtr cls,IntPtr clsLength,IntPtr reserved,out uint children,out uint maxChild,IntPtr maxClass,out uint values,out uint maxName,IntPtr maxData,IntPtr security,IntPtr lastWrite);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegEnumValueW(IntPtr key,uint index,StringBuilder name,ref uint length,IntPtr reserved,out uint kind,IntPtr data,ref uint size);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegEnumKeyExW(IntPtr key,uint index,StringBuilder name,ref uint length,IntPtr reserved,IntPtr cls,IntPtr clsLength,IntPtr lastWrite);
+    static void Check(int status) { if(status!=0) throw new InvalidOperationException("desktop_registry_namespace_api_"+status); }
+    static void CheckName(string name) { new UnicodeEncoding(false,false,true).GetByteCount(name); }
+    static void CheckLink(IntPtr key) {
+        uint kind,size=0;int status=RegQueryValueExW(key,"SymbolicLinkValue",IntPtr.Zero,out kind,IntPtr.Zero,ref size);
+        if(status==2) return; Check(status);
+        if(kind==6) throw new InvalidOperationException("desktop_registry_namespace_link_unconfirmed");
+    }
+    static Dictionary<string,object> Empty() {
+        return new Dictionary<string,object>{{"key_exists",null},{"value_count",0L},{"child_count",0L},
+            {"unknown_child_count",0L},{"command_key_exists",false},{"command_value_count",0L},
+            {"command_child_count",0L},{"confirmed",false},{"registry_view",64}};
+    }
+    static void Enumerate(IntPtr key,out uint values,out uint children,out List<string> childNames) {
+        uint maxChild,maxName;Check(RegQueryInfoKeyW(key,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,
+            out children,out maxChild,IntPtr.Zero,out values,out maxName,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero));
+        uint observedValues=0;
+        for(uint index=0;;index++) {
+            var name=new StringBuilder(checked((int)maxName+1));uint length=(uint)name.Capacity,kind,size=0;
+            int status=RegEnumValueW(key,index,name,ref length,IntPtr.Zero,out kind,IntPtr.Zero,ref size);
+            if(status==259) break; Check(status); CheckName(name.ToString());
+            if(length>=name.Capacity || name.Length!=length || kind==6) throw new InvalidOperationException("desktop_registry_namespace_value_unconfirmed");
+            observedValues++;
+        }
+        childNames=new List<string>();
+        for(uint index=0;;index++) {
+            var name=new StringBuilder(checked((int)maxChild+1));uint length=(uint)name.Capacity;
+            int status=RegEnumKeyExW(key,index,name,ref length,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero);
+            if(status==259) break; Check(status); CheckName(name.ToString());
+            if(length>=name.Capacity || name.Length!=length) throw new InvalidOperationException("desktop_registry_namespace_child_unconfirmed");
+            childNames.Add(name.ToString());
+        }
+        if(observedValues!=values || (uint)childNames.Count!=children) throw new InvalidOperationException("desktop_registry_namespace_changed");
+    }
+    static Dictionary<string,object> ReadRoot(string path,bool optionalCommand) {
+        var result=Empty();var held=new List<IntPtr>();
+        try {
+            IntPtr parent=CurrentUser;
+            foreach(string part in path.Split('\\')) {
+                IntPtr next;int status=RegOpenKeyExW(parent,part,OpenLink,Read64,out next);
+                if(status==2 || status==3) {result["key_exists"]=false;result["confirmed"]=true;return result;}
+                Check(status);held.Add(next);CheckLink(next);parent=next;
+            }
+            result["key_exists"]=true;
+            uint values,children;List<string> names;Enumerate(parent,out values,out children,out names);
+            result["value_count"]=(long)values;result["child_count"]=(long)children;
+            long unknown=0;
+            foreach(string name in names) {
+                if(!optionalCommand || !String.Equals(name,"command",StringComparison.OrdinalIgnoreCase)) {unknown++;continue;}
+                IntPtr command;Check(RegOpenKeyExW(parent,name,OpenLink,Read64,out command));held.Add(command);
+                result["command_key_exists"]=true;CheckLink(command);
+                uint commandValues,commandChildren;List<string> ignored;
+                Enumerate(command,out commandValues,out commandChildren,out ignored);
+                result["command_value_count"]=(long)commandValues;result["command_child_count"]=(long)commandChildren;
+            }
+            result["unknown_child_count"]=unknown;result["confirmed"]=true;
+        } catch {result["confirmed"]=false;}
+        finally {for(int i=held.Count-1;i>=0;i--) {if(RegCloseKey(held[i])!=0)result["confirmed"]=false;}}
+        return result;
+    }
+    public static Dictionary<string,object> ReadAll() {
+        return new Dictionary<string,object>{
+            {"folder_context",ReadRoot(@"Software\Classes\Directory\shell\winsmux",true)},
+            {"background_context",ReadRoot(@"Software\Classes\Directory\Background\shell\winsmux",true)},
+            {"product_state",ReadRoot(@"Software\github\winsmux",false)},
+            {"uninstall_registration",ReadRoot(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux",false)}};
+    }
+}
+'@
+    Add-Type -TypeDefinition $namespaceSource -Language CSharp -ErrorAction Stop
+}
+
+function Get-DesktopRegistryNamespaceClass {
+    param([Parameter(Mandatory)]$Observation, [Parameter(Mandatory)][bool]$OptionalCommand)
+    try {
+    # Missing/contradictory observations are never interpreted as absent.
+    if ($Observation -isnot [Collections.IDictionary]) { return 'unconfirmed' }
+    foreach ($field in @('key_exists', 'value_count', 'child_count', 'unknown_child_count', 'command_key_exists', 'command_value_count', 'command_child_count', 'confirmed', 'registry_view')) {
+        if ($Observation.Keys -cnotcontains $field) { return 'unconfirmed' }
+    }
+    if ($Observation.confirmed -isnot [bool] -or -not $Observation.confirmed -or $Observation.registry_view -ne 64 -or $Observation.key_exists -isnot [bool] -or $Observation.command_key_exists -isnot [bool]) { return 'unconfirmed' }
+    foreach ($field in @('value_count', 'child_count', 'unknown_child_count', 'command_value_count', 'command_child_count')) {
+        if ($Observation[$field] -isnot [ValueType] -or $Observation[$field] -is [bool] -or $Observation[$field] -lt 0 -or [decimal]$Observation[$field] -ne [long]$Observation[$field]) { return 'unconfirmed' }
+    }
+    $commandCount = if ($Observation.command_key_exists) { 1 } else { 0 }
+    if ($Observation.child_count -ne ($Observation.unknown_child_count + $commandCount)) { return 'unconfirmed' }
+    if (-not $Observation.command_key_exists -and ($Observation.command_value_count -ne 0 -or $Observation.command_child_count -ne 0)) { return 'unconfirmed' }
+    if (-not $Observation.key_exists) {
+        if ($Observation.value_count -ne 0 -or $Observation.child_count -ne 0) { return 'unconfirmed' }
+        return 'absent'
+    }
+    if ($Observation.value_count -gt 0 -or $Observation.unknown_child_count -gt 0 -or $Observation.command_value_count -gt 0 -or $Observation.command_child_count -gt 0 -or (-not $OptionalCommand -and $Observation.command_key_exists)) { return 'occupied' }
+    return 'empty_canonical'
+    } catch { return 'unconfirmed' }
+}
+
+function New-DesktopRegistryNamespaceObservation {
+    param([bool]$Exists = $false, [long]$ValueCount = 0, [long]$ChildCount = 0, [long]$UnknownChildCount = 0,
+        [bool]$CommandExists = $false, [long]$CommandValueCount = 0, [long]$CommandChildCount = 0, [bool]$Confirmed = $true)
+    return [ordered]@{ key_exists = $Exists; value_count = $ValueCount; child_count = $ChildCount;
+        unknown_child_count = $UnknownChildCount; command_key_exists = $CommandExists;
+        command_value_count = $CommandValueCount; command_child_count = $CommandChildCount; confirmed = $Confirmed; registry_view = 64 }
+}
+
+function Assert-DesktopRegistryNamespaceState {
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Message, [switch]$RequireOccupied)
+    $property = $State.PSObject.Properties[$Name + '_namespace']
+    Assert-Condition ($null -ne $property -and $property.Value -is [Collections.IDictionary]) $Message
+    $class = Get-DesktopRegistryNamespaceClass -Observation $property.Value -OptionalCommand ($Name -in @('folder_context', 'background_context'))
+    Assert-Condition ($State.($Name + '_exists') -is [bool] -and $State.($Name + '_exists') -eq $property.Value.key_exists) $Message
+    if ($RequireOccupied) { Assert-Condition ($class -ceq 'occupied') $Message }
+    else { Assert-Condition ($class -in @('absent', 'empty_canonical')) $Message }
+}
+
+
 function Get-DesktopProtectedState {
     param([string]$InstallRoot)
 
+    Initialize-DesktopRegistryNamespaceTypes
+    $registry = [WinsmuxDesktopRegistryNamespace]::ReadAll()
+    foreach ($name in @('folder_context', 'background_context', 'product_state', 'uninstall_registration')) {
+        $registry[$name]['classification'] = Get-DesktopRegistryNamespaceClass -Observation $registry[$name] -OptionalCommand ($name -in @('folder_context', 'background_context'))
+    }
     return [pscustomobject]@{
-        folder_context_exists = Test-Path -LiteralPath $script:DesktopFolderContextPath
-        background_context_exists = Test-Path -LiteralPath $script:DesktopBackgroundContextPath
-        product_state_exists = Test-Path -LiteralPath $script:DesktopProductPath
-        uninstall_registration_exists = Test-Path -LiteralPath $script:DesktopUninstallPath
+        folder_context_exists = $registry['folder_context']['key_exists']
+        background_context_exists = $registry['background_context']['key_exists']
+        product_state_exists = $registry['product_state']['key_exists']
+        uninstall_registration_exists = $registry['uninstall_registration']['key_exists']
+        folder_context_namespace = $registry['folder_context']
+        background_context_namespace = $registry['background_context']
+        product_state_namespace = $registry['product_state']
+        uninstall_registration_namespace = $registry['uninstall_registration']
         desktop_shortcut_exists = Test-Path -LiteralPath (Get-DesktopShortcutPath)
         start_menu_shortcut_exists = Test-Path -LiteralPath (Get-DesktopStartMenuShortcutPath)
         process_count = @(Get-Process -Name 'winsmux-app' -ErrorAction SilentlyContinue).Count
@@ -1517,10 +1658,10 @@ function Assert-NoDesktopProtectedState {
         [string]$Phase = 'desktop smoke'
     )
 
-    Assert-Condition (-not $State.folder_context_exists) "$Phase observed an existing winsmux folder-context registration."
-    Assert-Condition (-not $State.background_context_exists) "$Phase observed an existing winsmux background-context registration."
-    Assert-Condition (-not $State.product_state_exists) "$Phase observed existing winsmux product state."
-    Assert-Condition (-not $State.uninstall_registration_exists) "$Phase observed an existing winsmux uninstall registration."
+    Assert-DesktopRegistryNamespaceState -State $State -Name folder_context -Message "$Phase observed an existing winsmux folder-context registration."
+    Assert-DesktopRegistryNamespaceState -State $State -Name background_context -Message "$Phase observed an existing winsmux background-context registration."
+    Assert-DesktopRegistryNamespaceState -State $State -Name product_state -Message "$Phase observed existing winsmux product state."
+    Assert-DesktopRegistryNamespaceState -State $State -Name uninstall_registration -Message "$Phase observed an existing winsmux uninstall registration."
     Assert-Condition (-not $State.desktop_shortcut_exists) "$Phase observed an existing winsmux Desktop shortcut."
     Assert-Condition (-not $State.start_menu_shortcut_exists) "$Phase observed an existing winsmux Start Menu shortcut."
     Assert-Condition ($State.process_count -eq 0) "$Phase observed $($State.process_count) winsmux-app process(es)."
@@ -1531,18 +1672,18 @@ function Assert-NoDesktopProtectedState {
 function Assert-DesktopPreUninstallOwnedState {
     param([Parameter(Mandatory)]$State)
 
-    Assert-Condition ([bool]$State.product_state_exists) 'Desktop product-state registration was absent immediately before the registered uninstaller.'
-    Assert-Condition ([bool]$State.uninstall_registration_exists) 'Desktop uninstall registration was absent immediately before the registered uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name product_state -RequireOccupied -Message 'Desktop product-state registration was absent immediately before the registered uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name uninstall_registration -RequireOccupied -Message 'Desktop uninstall registration was absent immediately before the registered uninstaller.'
     Assert-Condition ([bool]$State.app_payload_exists) 'winsmux-app.exe was absent immediately before the registered uninstaller.'
 }
 
 function Assert-DesktopPostUninstallOwnedState {
     param([Parameter(Mandatory)]$State)
 
-    Assert-Condition (-not $State.folder_context_exists) 'Desktop folder-context registration remained immediately after the normal uninstaller.'
-    Assert-Condition (-not $State.background_context_exists) 'Desktop background-context registration remained immediately after the normal uninstaller.'
-    Assert-Condition (-not $State.product_state_exists) 'Desktop product state remained immediately after the normal uninstaller.'
-    Assert-Condition (-not $State.uninstall_registration_exists) 'Desktop uninstall registration remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name folder_context -Message 'Desktop folder-context registration remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name background_context -Message 'Desktop background-context registration remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name product_state -Message 'Desktop product state remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name uninstall_registration -Message 'Desktop uninstall registration remained immediately after the normal uninstaller.'
     Assert-Condition (-not $State.desktop_shortcut_exists) 'Desktop shortcut remained immediately after the normal uninstaller.'
     Assert-Condition (-not $State.start_menu_shortcut_exists) 'Start Menu shortcut remained immediately after the normal uninstaller.'
     Assert-Condition (-not $State.app_payload_exists) 'winsmux-app.exe remained immediately after the normal uninstaller.'
@@ -1550,6 +1691,10 @@ function Assert-DesktopPostUninstallOwnedState {
 
 function New-EmptyDesktopProtectedState {
     return [pscustomobject]@{
+        folder_context_namespace = New-DesktopRegistryNamespaceObservation
+        background_context_namespace = New-DesktopRegistryNamespaceObservation
+        product_state_namespace = New-DesktopRegistryNamespaceObservation
+        uninstall_registration_namespace = New-DesktopRegistryNamespaceObservation
         folder_context_exists = $false
         background_context_exists = $false
         product_state_exists = $false
@@ -5805,10 +5950,69 @@ function Invoke-DesktopNativeMsiCapacity {
     return [ordered]@{ outcome = 'passed'; fresh = $fresh; shortage = $shortage; failed_update = $failed; uninstall = $removed }
 }
 
+function Test-DesktopRegistryNamespaceContract {
+    $cases = [Collections.Generic.List[string]]::new()
+    foreach ($optionalCommand in @($false, $true)) {
+        $definitions = @(
+            @{ name = 'absent'; observation = (New-DesktopRegistryNamespaceObservation); expected = 'absent' },
+            @{ name = 'empty_existing_key'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true); expected = 'empty_canonical' },
+            @{ name = 'default_empty_string_value'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1); expected = 'occupied' },
+            @{ name = 'zero_byte_value'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1); expected = 'occupied' },
+            @{ name = 'unknown_empty_child'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -UnknownChildCount 1); expected = 'occupied' },
+            @{ name = 'empty_command_child'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -CommandExists $true); expected = $(if ($optionalCommand) { 'empty_canonical' } else { 'occupied' }) },
+            @{ name = 'command_value'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -CommandExists $true -CommandValueCount 1); expected = 'occupied' },
+            @{ name = 'unknown_command_child'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -CommandExists $true -CommandChildCount 1); expected = 'occupied' },
+            @{ name = 'api_or_link_unconfirmed'; observation = (New-DesktopRegistryNamespaceObservation -Confirmed $false); expected = 'unconfirmed' },
+            @{ name = 'contradictory_absence'; observation = (New-DesktopRegistryNamespaceObservation -ValueCount 1); expected = 'unconfirmed' },
+            @{ name = 'changed_child_enumeration'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1); expected = 'unconfirmed' },
+            @{ name = 'negative_count'; observation = (New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount -1); expected = 'unconfirmed' }
+        )
+        foreach ($definition in $definitions) {
+            $actual = Get-DesktopRegistryNamespaceClass -Observation $definition.observation -OptionalCommand $optionalCommand
+            Assert-Condition ($actual -ceq $definition.expected) ('desktop_namespace_class_' + $definition.name)
+            $cases.Add('desktop_namespace_' + $optionalCommand.ToString().ToLowerInvariant() + '_' + $definition.name)
+        }
+    }
+    foreach ($name in @('folder_context', 'background_context', 'product_state', 'uninstall_registration')) {
+        foreach ($canonicalEmpty in @($false, $true)) {
+            $state = New-EmptyDesktopProtectedState
+            $state.($name + '_exists') = $canonicalEmpty
+            $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $canonicalEmpty
+            Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace clean preflight'
+            Assert-DesktopPostUninstallOwnedState -State $state
+            $cases.Add('desktop_namespace_' + $name + '_' + $(if ($canonicalEmpty) { 'empty_accepted' } else { 'absent_accepted' }))
+        }
+        foreach ($unconfirmed in @($false, $true)) {
+            $state = New-EmptyDesktopProtectedState
+            $state.($name + '_exists') = $true
+            $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1 -Confirmed (-not $unconfirmed)
+            Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace rejected preflight' }) 'An occupied or unconfirmed namespace reached desktop preflight.'
+            Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state }) 'An occupied or unconfirmed namespace reached desktop post-uninstall.'
+            $cases.Add('desktop_namespace_' + $name + '_' + $(if ($unconfirmed) { 'unconfirmed_rejected' } else { 'occupied_rejected' }))
+        }
+        $mismatch = New-EmptyDesktopProtectedState
+        $mismatch.($name + '_exists') = $true
+        Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $mismatch -Phase 'self-test namespace fact mismatch' }) 'A namespace classification hid a contradictory key-existence fact.'
+        $cases.Add('desktop_namespace_' + $name + '_existence_mismatch_rejected')
+    }
+    $wrongView = New-DesktopRegistryNamespaceObservation
+    $wrongView.registry_view = 32
+    Assert-Condition ((Get-DesktopRegistryNamespaceClass -Observation $wrongView -OptionalCommand $false) -ceq 'unconfirmed') 'A Registry32 observation was accepted.'
+    $cases.Add('desktop_namespace_registry32_rejected')
+    $missing = New-DesktopRegistryNamespaceObservation
+    $missing.Remove('confirmed')
+    Assert-Condition ((Get-DesktopRegistryNamespaceClass -Observation $missing -OptionalCommand $false) -ceq 'unconfirmed') 'An incomplete namespace observation was accepted.'
+    $cases.Add('desktop_namespace_missing_confirmation_rejected')
+    return $cases.ToArray()
+}
+
+
 function Invoke-DesktopNativeLifecycleSelfTest {
     $source = 'f792c631829d850c8b025e9308487432becc9be7'
     $valid = @{ DesktopNativeLifecycle = $true; DesktopNativeFormat = 'MSI'; DesktopNativeSourceCommit = $source; DesktopNativeCandidateDirectory = 'C:\run-owned\candidate'; DesktopNativeBaselineDirectory = 'C:\run-owned\baseline' }
     $cases = [Collections.Generic.List[object]]::new()
+    $namespaceCases = @(Test-DesktopRegistryNamespaceContract)
+    $cases.Add([ordered]@{ name = 'registry_namespace_contract'; cases = $namespaceCases; passed = $true })
     $run = {
         param([string]$Name, [hashtable]$Arguments, [string]$RequestedSurface = 'Desktop', [string]$CandidateVersion = '0.38.0', [string]$CandidateReleaseTag = 'v0.38.0', [string]$ActualHead = $source, [string]$CallerHead = $source, [bool]$Reject = $true)
         $refused = Test-Throws { Assert-DesktopNativeRequest -RequestedSurface $RequestedSurface -CandidateVersion $CandidateVersion -CandidateReleaseTag $CandidateReleaseTag -Arguments $Arguments -ActualHead $ActualHead -CallerHead $CallerHead }
@@ -5864,14 +6068,25 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     )) {
         Assert-Condition ([regex]::Matches($body, '(?m)^' + [regex]::Escape($line) + '$').Count -eq 1) 'Desktop NSIS native uninstall helper, plan or dispatch differs.'
     }
+    # Bind the already-adopted finite nonzero observer, including its unknown-input fallback.
+    # This is the current template's adapter contract, not an alternate fixed-exit path.
+    $observers = [regex]::Matches($template, '(?ms)^!macro WINSMUX_OBSERVE_FAILURE STAGE\n(?<body>.*?)^!macroend$')
+    Assert-Condition ($observers.Count -eq 1) 'Desktop NSIS failure observer must be unique.'
+    $observerBytes = [Text.Encoding]::UTF8.GetBytes($observers[0].Groups['body'].Value)
+    $observerSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observerBytes)).ToLowerInvariant()
+    Assert-Condition ($observerSha256 -ceq 'd15f7be37248c3e5c6ea299175fc41b1d896d1dfee13e60f1eae470a2905e5de') 'Desktop NSIS finite nonzero failure observer differs.'
     $failure = @'
+  nsExec::ExecToStack $WinsmuxCommand
+  Pop $0
+  Pop $1
   ${If} $0 != 0
-    SetErrorLevel 2
+    !insertmacro WINSMUX_OBSERVE_FAILURE helper
+    SetErrorLevel $2
     Abort "$(WINSMUX_TRANSACTION_FAILED)"
   ${EndIf}
 '@
     $failure = $failure.Replace(([string][char]13 + [char]10), [string][char]10)
-    Assert-Condition ($body.Contains($failure)) 'Desktop NSIS native uninstall must stop on helper failure.'
+    Assert-Condition ([regex]::Matches($body, [regex]::Escape($failure)).Count -eq 1) 'Desktop NSIS native uninstall must stop on helper failure.'
     Assert-Condition (-not [regex]::IsMatch($body, '(?im)^\s*(?:DeleteRegKey|DeleteRegValue|WriteReg[A-Za-z]*|Delete|RMDir)\b')) 'Desktop NSIS uninstall must delegate owned mutations to the native helper.'
     $workspaces = [regex]::Matches($template, '(?ms)^!macro WINSMUX_WORKSPACE_FUNCTION NAME ACTION COMMAND_OVERHEAD\n(?<body>.*?)^!macroend$')
     Assert-Condition ($workspaces.Count -eq 1) 'Desktop NSIS workspace initialization must be shared and unique.'
@@ -6082,10 +6297,25 @@ function Invoke-SelfTest {
             Assert-Condition ($uninstallSection.Count -eq 1) 'Desktop NSIS uninstall mutation section differs.'
             $uninstallSource = $uninstallSection[0].Value
             Assert-Condition ([regex]::Matches($uninstallSource, [regex]::Escape($nativeUninstallDispatch)).Count -eq 1) 'Desktop NSIS uninstall mutation dispatch differs.'
+            # Normalized line endings retain the same exact finite macro binding.
+            Assert-DesktopNativeNsisUninstallAdapterSource -HookSource ($nsisHookSource.Replace("`r`n", "`n").Replace("`n", "`r`n")) -TemplateSource ($nsisTemplateSource.Replace("`r`n", "`n").Replace("`n", "`r`n"))
+            $caseIds.Add('desktop_native_uninstall_adapter_crlf')
+            $nativeFailureObservers = [regex]::Matches($nsisTemplateSource, '(?ms)^!macro WINSMUX_OBSERVE_FAILURE STAGE\n.*?^!macroend$')
+            Assert-Condition ($nativeFailureObservers.Count -eq 1) 'Desktop NSIS finite failure observer source differs.'
             $adapterMutations = [ordered]@{
                 missing_dispatch = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing'))
                 wrong_action = $nsisTemplateSource.Replace('!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117', '!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace install 115')
                 missing_failure_guard = $nsisTemplateSource.Replace('${If} $0 != 0', '${If} $0 = 0')
+                missing_failure_observer = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    !insertmacro WINSMUX_OBSERVE_FAILURE helper', '    ; failure observer missing'))
+                wrong_failure_observer_stage = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    !insertmacro WINSMUX_OBSERVE_FAILURE helper', '    !insertmacro WINSMUX_OBSERVE_FAILURE context-write'))
+                failure_exit_zero = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    SetErrorLevel $2', '    SetErrorLevel 0'))
+                legacy_fixed_failure_exit = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    SetErrorLevel $2', '    SetErrorLevel 2'))
+                missing_failure_abort = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    Abort "$(WINSMUX_TRANSACTION_FAILED)"', '    ; failure abort missing'))
+                missing_failure_observer_definition = $nsisTemplateSource.Replace($nativeFailureObservers[0].Value, '')
+                duplicate_failure_observer_definition = $nsisTemplateSource + [char]10 + $nativeFailureObservers[0].Value
+                failure_observer_default_zero = $nsisTemplateSource.Replace('  StrCpy $2 59', '  StrCpy $2 0')
+                failure_observer_known_code_zero = $nsisTemplateSource.Replace('      StrCpy $2 380', '      StrCpy $2 0')
+                failure_observer_path_passthrough_broadened = $nsisTemplateSource.Replace('        ${If} $0 S== "100"', '        ${If} $0 >= 0')
                 direct_registry_delete = $nsisTemplateSource.Replace('Section Uninstall', ('Section Uninstall' + [char]10 + '  DeleteRegKey HKCU "Software\github\winsmux"'))
             }
             foreach ($mutation in $adapterMutations.GetEnumerator()) {
@@ -6105,18 +6335,23 @@ function Invoke-SelfTest {
             Assert-Condition (Test-Throws { Assert-DesktopProductVersion -ActualVersion $paddedVersion -ExpectedVersion $Version }) 'A numerically padded Desktop ProductVersion was accepted.'
             $caseIds.Add('product_version_padding_rejected')
 
+            foreach ($namespaceCase in @(Test-DesktopRegistryNamespaceContract)) { $caseIds.Add($namespaceCase) }
+
             $state = New-EmptyDesktopProtectedState
             $state.folder_context_exists = $true
+            $state.folder_context_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
             Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test' }) 'Pre-existing folder-context state was accepted.'
             $caseIds.Add('preexisting_folder_context')
 
             $state = New-EmptyDesktopProtectedState
             $state.background_context_exists = $true
+            $state.background_context_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
             Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test' }) 'Pre-existing background-context state was accepted.'
             $caseIds.Add('preexisting_background_context')
 
             $state = New-EmptyDesktopProtectedState
             $state.product_state_exists = $true
+            $state.product_state_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
             Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test' }) 'Pre-existing product state was accepted.'
             $caseIds.Add('preexisting_product_state')
 
@@ -6126,6 +6361,7 @@ function Invoke-SelfTest {
 
             $state = New-EmptyDesktopProtectedState
             $state.uninstall_registration_exists = $true
+            $state.uninstall_registration_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
             Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test' }) 'Pre-existing uninstall registration was accepted.'
             $caseIds.Add('preexisting_uninstall_registration')
 
@@ -6214,6 +6450,10 @@ function Invoke-SelfTest {
             Set-Content -LiteralPath $appPath -Value 'self-test app' -Encoding ascii -NoNewline
             $emptyState = New-EmptyDesktopProtectedState
             $presentPreUninstallState = [pscustomobject]@{
+                folder_context_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
+                background_context_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
+                product_state_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
+                uninstall_registration_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
                 folder_context_exists = $true
                 background_context_exists = $true
                 product_state_exists = $true
@@ -6225,6 +6465,10 @@ function Invoke-SelfTest {
                 install_root_exists = $true
             }
             $cleanPostUninstallState = [pscustomobject]@{
+                folder_context_namespace = New-DesktopRegistryNamespaceObservation
+                background_context_namespace = New-DesktopRegistryNamespaceObservation
+                product_state_namespace = New-DesktopRegistryNamespaceObservation
+                uninstall_registration_namespace = New-DesktopRegistryNamespaceObservation
                 folder_context_exists = $false
                 background_context_exists = $false
                 product_state_exists = $false
@@ -6294,6 +6538,9 @@ function Invoke-SelfTest {
             foreach ($preUninstallCase in $preUninstallCases) {
                 $preState = $presentPreUninstallState.PSObject.Copy()
                 $preState.($preUninstallCase.property) = $false
+                if ($preUninstallCase.property -in @('product_state_exists', 'uninstall_registration_exists')) {
+                    $preState.($preUninstallCase.property.Replace('_exists', '_namespace')) = New-DesktopRegistryNamespaceObservation
+                }
                 $preStateProbe = & $newProtectedStateProbe -PreState $preState -PostState $cleanPostUninstallState
                 $preStateContext = & $newMaterializedContext
                 $callCountBefore = $uninstallCapture.call_count
@@ -6322,6 +6569,9 @@ function Invoke-SelfTest {
             foreach ($postUninstallCase in $postUninstallCases) {
                 $postState = $cleanPostUninstallState.PSObject.Copy()
                 $postState.($postUninstallCase.property) = $true
+                if ($postUninstallCase.property -in @('folder_context_exists', 'background_context_exists', 'product_state_exists', 'uninstall_registration_exists')) {
+                    $postState.($postUninstallCase.property.Replace('_exists', '_namespace')) = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
+                }
                 $postStateProbe = & $newProtectedStateProbe -PreState $presentPreUninstallState -PostState $postState
                 $postStateContext = & $newMaterializedContext
                 $callCountBefore = $uninstallCapture.call_count
@@ -6437,6 +6687,7 @@ function Invoke-SelfTest {
             $registrationContext = & $newMaterializedContext
             $registrationPostState = $cleanPostUninstallState.PSObject.Copy()
             $registrationPostState.uninstall_registration_exists = $true
+            $registrationPostState.uninstall_registration_namespace = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1
             $registrationStateProbe = & $newProtectedStateProbe -PreState $presentPreUninstallState -PostState $registrationPostState
             $registrationStopInvoker = { $registrationCalls.stop += 1 }.GetNewClosure()
             $registrationUninstallInvoker = {
