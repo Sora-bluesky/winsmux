@@ -1256,6 +1256,14 @@ mod native {
     fn observe(p: &Path, relative: &str, mutable: bool) -> Result<Observed> {
         observe_role(p, relative, mutable, PathRole::DerivedPath)
     }
+    fn observed_open_error(error: std::io::Error) -> Error {
+        // An absent required file is not running work; unknown IO remains unconfirmed.
+        match error.raw_os_error() {
+            Some(2 | 3) => Error::Member,
+            Some(32 | 33) => Error::Busy,
+            _ => Error::Io,
+        }
+    }
     fn observe_role(p: &Path, relative: &str, mutable: bool, role: PathRole) -> Result<Observed> {
         let dirs = Dirs::open_role(p.parent().ok_or(Error::Path(117))?, role)?;
         let access = if mutable {
@@ -1269,7 +1277,7 @@ mod native {
             .share_mode(FILE_SHARE_READ)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
             .open(p)
-            .map_err(|_| Error::Busy)?;
+            .map_err(observed_open_error)?;
         let member = file_member(&mut file, p, relative)?;
         dirs.reobserve()?;
         Ok(Observed {
@@ -4629,12 +4637,15 @@ mod native {
         }
 
         fn fixture() -> Fixture {
-            hooks::MOCK.with(|m| *m.borrow_mut() = None);
             let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
                 .join("synthetic-native")
                 .join(uuid::Uuid::new_v4().to_string());
+            fixture_at(base)
+        }
+        fn fixture_at(base: PathBuf) -> Fixture {
+            hooks::MOCK.with(|m| *m.borrow_mut() = None);
             fs::create_dir_all(base.join("source")).unwrap();
             fs::create_dir(base.join("installed")).unwrap();
             let root = Dirs::open(&base.join("installed")).unwrap();
@@ -5349,6 +5360,142 @@ mod native {
                 assert!(path_wide(Path::new(bad)).is_err());
             }
             Dirs::open(Path::new(&path_text(&f.root.path).unwrap()[..3])).unwrap();
+        }
+        // Real owned filesystem IO; registry and startup remain the existing thread-local doubles.
+        fn observed_open_fixture() -> Fixture {
+            let base = std::env::temp_dir().join(format!("winsmux-observed-open-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&base).expect("exclusive observed-open fixture");
+            let f = fixture_at(base);
+            execute(&f).expect("managed owned fixture setup");
+            fs::create_dir(f.root.path.join("project")).expect("owned project sentinel directory");
+            fs::write(f.root.path.join("project/settings.json"), b"owned project sentinel").unwrap();
+            fs::write(f.base.join("user-sentinel.json"), b"outside user sentinel").unwrap();
+            let shortcuts = f.base.join("owned-shortcuts");
+            for kind in ["desktop", "start_menu"] {
+                let path = shortcuts.join(kind).join("winsmux.lnk");
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                identity_test_link(&path, &f.root.path.join("winsmux-app.exe"));
+            }
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().shortcut_root = Some(shortcuts));
+            f
+        }
+        #[derive(PartialEq, Eq)]
+        struct ObservedOpenSnapshot {
+            directories: Vec<(String, Identity)>,
+            files: Vec<(String, Member, Vec<u8>)>,
+            registration_double: Vec<Option<RawValue>>,
+            external: Vec<(Member, Vec<u8>)>,
+        }
+        fn observed_open_bytes(path: &Path, relative: &str) -> (Member, Vec<u8>) {
+            let mut held = observe(path, relative, false).expect("protected owned file snapshot");
+            let mut bytes = Vec::new();
+            held.file.seek(SeekFrom::Start(0)).unwrap();
+            held.file.read_to_end(&mut bytes).unwrap();
+            (held.member.clone(), bytes)
+        }
+        fn observed_open_snapshot(f: &Fixture) -> ObservedOpenSnapshot {
+            fn visit(dir: &Path, relative: &str, snapshot: &mut ObservedOpenSnapshot) {
+                let held = Dirs::open(dir).expect("protected owned directory snapshot");
+                snapshot.directories.push((relative.into(), held.id.clone()));
+                let mut entries = fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>();
+                entries.sort();
+                for path in entries {
+                    let leaf = path.file_name().unwrap().to_str().unwrap();
+                    let name = if relative.is_empty() { leaf.to_owned() } else { format!("{relative}/{leaf}") };
+                    if fs::symlink_metadata(&path).unwrap().is_dir() { visit(&path, &name, snapshot); }
+                    else { let (member, bytes) = observed_open_bytes(&path, &name); snapshot.files.push((name, member, bytes)); }
+                }
+            }
+            let mut snapshot = ObservedOpenSnapshot { directories: Vec::new(), files: Vec::new(), registration_double: (0..23).map(|id| read_slot(id).unwrap()).collect(), external: Vec::new() };
+            visit(&f.root.path, "", &mut snapshot);
+            snapshot.external.push(observed_open_bytes(&f.base.join("user-sentinel.json"), "user-sentinel.json"));
+            for kind in ["desktop", "start_menu"] {
+                snapshot.external.push(observed_open_bytes(&known_shortcut(kind).unwrap(), "winsmux.lnk"));
+            }
+            snapshot
+        }
+        #[test]
+        fn observed_open_native_missing_source_gui_preserves_owned_state() {
+            let f = observed_open_fixture();
+            fs::remove_file(f.ctx.source.join("winsmux-app.exe")).unwrap();
+            let plan = checked_plan(&f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).unwrap();
+            let before = observed_open_snapshot(&f);
+            reset_steps(None, false);
+            let result = source_rows(&f.ctx, &plan).map(|_| ());
+            assert!(observed_open_snapshot(&f) == before, "protected owned state changed");
+            assert_eq!(hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().steps), 0, "source refusal reached a transaction mutation");
+            assert_eq!(result, Err(Error::Member), "missing source GUI classification");
+        }
+
+        #[test]
+        fn observed_open_pure_error_classes_are_truthful() {
+            for raw in [2, 3] { assert_eq!(observed_open_error(std::io::Error::from_raw_os_error(raw)), Error::Member); }
+            for raw in [32, 33] { assert_eq!(observed_open_error(std::io::Error::from_raw_os_error(raw)), Error::Busy); }
+            for raw in [5, 1314, 123, 161, 206, 87, 8, 14, 1450, 0, -1, i32::MIN, i32::MAX, 6, 80, 183, 9999] {
+                assert_eq!(observed_open_error(std::io::Error::from_raw_os_error(raw)), Error::Io);
+            }
+            for kind in [std::io::ErrorKind::NotFound, std::io::ErrorKind::PermissionDenied, std::io::ErrorKind::Other] {
+                assert_eq!(observed_open_error(std::io::Error::new(kind, "synthetic error without raw code")), Error::Io);
+            }
+            assert_eq!(Error::Member.classification(), "member_unconfirmed");
+            assert_eq!(Error::Busy.classification(), "work_running_or_locked");
+            assert_eq!(Error::Io.classification(), "io_unconfirmed");
+        }
+        #[test]
+        fn observed_open_native_readonly_and_mutable_success_missing_and_sharing() {
+            for mutable in [false, true] {
+                let f = observed_open_fixture();
+                let probe = f.base.join("open-probe.bin");
+                fs::write(&probe, b"owned observed-open probe").unwrap();
+                let before = observed_open_snapshot(&f);
+                let expected = observed_open_bytes(&probe, "open-probe.bin");
+                let successful = observe(&probe, "open-probe.bin", mutable).expect("successful observed open");
+                assert!(successful.member == expected.0, "successful open changed identity or digest");
+                drop(successful);
+                let missing = observe(&f.base.join("absent.bin"), "absent.bin", mutable).map(|_| ());
+                assert_eq!(missing, Err(Error::Member), "missing observed leaf classification");
+                let missing_parent = observe(&f.base.join("absent-parent/member.bin"), "member.bin", mutable).map(|_| ());
+                assert!(matches!(missing_parent, Err(Error::Path(_))), "missing ancestor left its Path responsibility");
+                let blocker = OpenOptions::new().read(true).share_mode(0).open(&probe).unwrap();
+                let locked = observe(&probe, "open-probe.bin", mutable).map(|_| ());
+                assert_eq!(locked, Err(Error::Busy), "real sharing conflict classification");
+                drop(blocker);
+                assert!(observed_open_bytes(&probe, "open-probe.bin") == expected, "probe bytes or identity changed");
+                assert!(observed_open_snapshot(&f) == before, "protected state changed during observed opens");
+                let released = f.base.join("released-probe.bin");
+                fs::rename(&probe, &released).expect("successful and refused observed-open handles released");
+                assert!(observed_open_bytes(&released, "open-probe.bin") == expected, "rename changed probe bytes or identity");
+            }
+        }
+        #[test]
+        fn observed_open_native_hash_source_refusal_preserves_owned_state() {
+            let f = observed_open_fixture();
+            fs::write(f.ctx.source.join("winsmux-app.exe"), b"tampered source GUI").unwrap();
+            let plan = checked_plan(&f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).unwrap();
+            let before = observed_open_snapshot(&f);
+            reset_steps(None, false);
+            let result = source_rows(&f.ctx, &plan).map(|_| ());
+            assert_eq!(result, Err(Error::Member), "hash source GUI classification");
+            assert!(observed_open_snapshot(&f) == before, "protected state changed after hash refusal");
+            assert_eq!(hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().steps), 0);
+        }
+        #[test]
+        fn observed_open_native_installed_and_control_absence_preserves_owned_state() {
+            for relative in ["winsmux-app.exe", ".winsmux-desktop/installed.json"] {
+                let f = observed_open_fixture();
+                let target = f.root.path.join(relative);
+                let member = observed_open_bytes(&target, relative).0;
+                fs::remove_file(&target).unwrap();
+                let before = observed_open_snapshot(&f);
+                reset_steps(None, false);
+                for mutable in [false, true] {
+                    assert_eq!(exact(&target, &member, mutable).map(|_| ()), Err(Error::Member), "missing expected installed/control leaf classification");
+                }
+                assert_eq!(read_plain(&target).map(|_| ()), Err(Error::Member), "missing control/read-only leaf classification");
+                assert!(admit_previous(&f.root, "S-1-5-21-100", &f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).is_err(), "missing installed/control member became ownership");
+                assert!(observed_open_snapshot(&f) == before, "protected state changed after installed/control absence");
+                assert_eq!(hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().steps), 0);
+            }
         }
         #[test]
         fn stage_tamper_in_every_source_role_refuses_before_old_mutation() {
