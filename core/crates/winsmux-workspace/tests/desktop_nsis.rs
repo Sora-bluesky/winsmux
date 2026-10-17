@@ -158,3 +158,68 @@ fn incoming_nsis_plan_uses_the_production_complete_current_authority() {
     let mut arm=plan.clone();arm["host"]="aarch64-pc-windows-msvc".into();assert!(!admits(&arm));
     for index in [0,rows.len()-4] {let mut subset=plan.clone();subset["files"].as_array_mut().unwrap().remove(index);assert!(!admits(&subset));}
 }
+
+#[test]
+fn emitted_context_binary_flags_are_exact_for_both_actions() {
+    for command in ["install", "uninstall"] {
+        let action = if command == "install" { Action::Install } else { Action::Uninstall };
+        let original = String::from_utf16(&context(command).chunks_exact(2).map(|p| u16::from_le_bytes([p[0],p[1]])).collect::<Vec<_>>()).unwrap();
+        for bits in 0..8 {
+            let text = original.replace("start_menu=0", &format!("start_menu={}",bits&1))
+                .replace("desktop=1", &format!("desktop={}",(bits>>1)&1))
+                .replace("update=0", &format!("update={}",(bits>>2)&1));
+            let bytes:Vec<_> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+            let parsed = parse_context(&bytes,action).unwrap();
+            assert_eq!(parsed.start_menu,bits&1!=0);assert_eq!(parsed.desktop,bits&2!=0);assert_eq!(parsed.update,bits&4!=0);
+        }
+        for (key,good) in [("start_menu","0"),("desktop","1"),("update","0")] {
+            for bad in ["","2","true","01","-1"," 0","0 ","１"] {
+                let text=original.replace(&format!("{key}={good}"),&format!("{key}={bad}"));
+                let bytes:Vec<_>=text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                assert!(parse_context(&bytes,action).is_err(),"{command} {key}={bad}");
+            }
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActualFlagEmissions {
+    schema:String,template_sha256:String,filefunc_sha256:String,
+    baseline_roots:usize,sibling_roots:usize,initial_states:usize,cases:Vec<ActualFlagEmission>,
+}
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActualFlagEmission {
+    id:String,action:String,path:String,bytes:u64,sha256:String,
+    start_menu:bool,desktop:bool,update:bool,
+}
+#[test]
+#[ignore = "requires parent-owned pinned SDK emission manifest"]
+fn actual_sdk_flag_emissions_use_the_production_context_parser() {
+    use sha2::{Digest,Sha256};
+    use winsmux_workspace::desktop_install::valid_member_path;
+    let manifest_path=std::path::PathBuf::from(std::env::var_os("WINSMUX_NSIS_FLAG_EMISSIONS").expect("actual SDK emissions required"));
+    let manifest:ActualFlagEmissions=serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest.schema,"winsmux-nsis-flag-emissions/v1");
+    assert_eq!(manifest.template_sha256,"e3588e1ee8246fe4eb3cb2e3f477584c83be0c7c2a37ee83ed31469cc870af03");
+    assert_eq!(manifest.filefunc_sha256,"476f33722ff773cfec60876c5f270f2aadb9529e9b73730fa8c41e9490f4b0d6");
+    assert_eq!((manifest.baseline_roots,manifest.sibling_roots,manifest.initial_states),(24,6,6));
+    assert_eq!(manifest.cases.len(),180);
+    let mut ids=std::collections::HashSet::new();let mut paths=std::collections::HashSet::new();
+    for row in &manifest.cases {
+        assert!(ids.insert(row.id.clone()));assert!(paths.insert(row.path.to_lowercase()));
+        assert!(row.path.starts_with("out/")&&valid_member_path(&row.path));
+        let bytes=std::fs::read(manifest_path.parent().unwrap().join(&row.path)).unwrap();
+        assert_eq!(bytes.len() as u64,row.bytes);assert_eq!(format!("{:x}",Sha256::digest(&bytes)),row.sha256);
+        let action=match row.action.as_str(){"install"=>Action::Install,"uninstall"=>Action::Uninstall,_=>panic!("unknown emission action")};
+        let parsed=parse_context(&bytes,action).unwrap();
+        assert_eq!((parsed.start_menu,parsed.desktop,parsed.update),(row.start_menu,row.desktop,row.update),"{}",row.id);
+    }
+    for (action,width) in [("install",3),("uninstall",2)] {
+        for silent in [false,true] {for bits in 0..(1<<width) {for state in 0..6 {
+            let mode=if silent {"silent"}else{"interactive-init"};
+            assert!(ids.contains(&format!("{action}-{mode}-{bits:0width$b}-state{state}")));
+        }}}
+    }
+}

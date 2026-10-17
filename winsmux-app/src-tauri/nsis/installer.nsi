@@ -21,6 +21,16 @@ ManifestDPIAwareness PerMonitorV2
 !include x64.nsh
 !include WordFunc.nsh
 
+!macro WINSMUX_OPTION_FLAG OPTION FLAG
+  ${GetOptions} $CMDLINE "${OPTION}" ${FLAG}
+  ${If} ${Errors}
+    StrCpy ${FLAG} 0
+  ${Else}
+    StrCpy ${FLAG} 1
+  ${EndIf}
+  ClearErrors
+!macroend
+
 ; Diagnostic-only finite observation. Remove with the exact four-file overlay.
 ; $0/$1 remain the existing plugin return/combined output; only $2 is diagnostic.
 !macro WINSMUX_OBSERVE_FAILURE STAGE
@@ -759,20 +769,11 @@ Function .onInit
   StrCpy $WinsmuxCommitted 0
   StrCpy $WinsmuxDesktop 1
   StrCpy $WinsmuxStartMenu 1
-  ${GetOptions} $CMDLINE "/P" $PassiveMode
-  ${IfNot} ${Errors}
-    StrCpy $PassiveMode 1
-  ${EndIf}
+  !insertmacro WINSMUX_OPTION_FLAG "/P" $PassiveMode
 
-  ${GetOptions} $CMDLINE "/NS" $NoShortcutMode
-  ${IfNot} ${Errors}
-    StrCpy $NoShortcutMode 1
-  ${EndIf}
+  !insertmacro WINSMUX_OPTION_FLAG "/NS" $NoShortcutMode
 
-  ${GetOptions} $CMDLINE "/UPDATE" $UpdateMode
-  ${IfNot} ${Errors}
-    StrCpy $UpdateMode 1
-  ${EndIf}
+  !insertmacro WINSMUX_OPTION_FLAG "/UPDATE" $UpdateMode
 
   ${If} $NoShortcutMode = 1
   ${OrIf} $UpdateMode = 1
@@ -981,15 +982,9 @@ Function un.onInit
   StrCpy $WinsmuxDesktop 0
   StrCpy $WinsmuxStartMenu 0
 
-  ${GetOptions} $CMDLINE "/P" $PassiveMode
-  ${IfNot} ${Errors}
-    StrCpy $PassiveMode 1
-  ${EndIf}
+  !insertmacro WINSMUX_OPTION_FLAG "/P" $PassiveMode
 
-  ${GetOptions} $CMDLINE "/UPDATE" $UpdateMode
-  ${IfNot} ${Errors}
-    StrCpy $UpdateMode 1
-  ${EndIf}
+  !insertmacro WINSMUX_OPTION_FLAG "/UPDATE" $UpdateMode
 FunctionEnd
 
 Section Uninstall
