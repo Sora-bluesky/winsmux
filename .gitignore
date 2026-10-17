@@ -66,6 +66,7 @@ tests/workspace-package/*
 !tests/workspace-package/windows-runtime.test.mjs
 !tests/workspace-package/bundled-distribution.test.mjs
 !tests/workspace-package/nsis-generation.test.mjs
+!tests/workspace-package/nsis-observer.test.mjs
 !tests/workspace-package/fixture-pe.mjs
 !tests/workspace-package/desktop-msi-plan.test.mjs
 !tests/workspace-package/desktop-build-entry.test.mjs

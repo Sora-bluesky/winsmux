@@ -3765,8 +3765,9 @@ const mapping=[
 const sources=new Map(mapping.map(([role,name,p])=>[role,plain(p)]));
 const identities=mapping.map(([role,name])=>({role,path:name,bytes:sources.get(role).length,sha256:digest(sources.get(role))}));
 const plans={msi:parseStrictJson(sources.get('plan_msi')),nsis:parseStrictJson(sources.get('plan_nsis'))};
-const licenseRows=manifest.files.filter(r=>r.path.startsWith('licenses/')).map(r=>({role:'license',path:r.path,bytes:r.bytes,sha256:r.sha256}));
-need(licenseRows.length===319,'native_transport_license_inventory_refused');
+// Complete required license inventory/bytes are owned by assertCanonicalBundledDistribution above.
+const { selectTransportLicenseRows }=await import(pathToFileURL(path.join(repo,'scripts/desktop-native-nsis-observer.mjs')));
+const licenseRows=selectTransportLicenseRows(manifest);
 for(const flavor of ['msi','nsis']) {
  const record=phase.records.find(r=>r.flavor===flavor),plan=plans[flavor];
  need(sameKeys(record,['flavor','gui_sha256','plan_sha256','include_sha256','compiler_inputs_ready','artifacts'])&&record.compiler_inputs_ready===true&&Array.isArray(record.artifacts),'native_transport_record_refused');
@@ -4812,6 +4813,64 @@ function Assert-DesktopNativeNsisObservation {
     return $p
 }
 
+
+function Get-DesktopNativeNsisObserver {
+    param([Parameter(Mandatory)][string]$InputRoot)
+    if ($DesktopNativeFormat -cne 'NSIS') { return $null }
+    $path = Join-Path (Join-Path $InputRoot 'evidence') 'nsis-observer-build.json'
+    if (-not (Test-Path -LiteralPath $path)) { return $null }
+    $before = [WinsmuxDesktopNativeActor]::NativeFile($path)
+    $value = Read-DesktopStrictJson $path
+    Assert-DesktopInventoryShape $value @('schema','diagnostic','release_admissible','source_commit','original','diagnostic_setup','compiler','closure_files','closure_sha256','original_unchanged')
+    Assert-Condition ($value.schema -ceq 'winsmux-nsis-observer-build/v1' -and $value.diagnostic -eq $true -and $value.release_admissible -eq $false -and $value.source_commit -ceq $DesktopNativeSourceCommit -and $value.original_unchanged -eq $true) 'desktop_native_observer_build_refused'
+    Assert-DesktopInventoryShape $value.diagnostic_setup @('bytes','sha256')
+    $setup = Join-Path (Join-Path (Join-Path $InputRoot 'diagnostic-nsis') 'output') 'nsis-output.exe'
+    $actual = [WinsmuxDesktopNativeActor]::NativeFile($setup)
+    Assert-Condition ($actual['bytes'] -eq $value.diagnostic_setup.bytes -and $actual['sha256'] -ceq $value.diagnostic_setup.sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($path)['sha256'] -ceq $before['sha256'] -and [WinsmuxDesktopNativeActor]::NativeFile($path)['identity'] -ceq $before['identity']) 'desktop_native_observer_setup_changed'
+    return [ordered]@{ setup=$setup; sha256=$actual['sha256']; root=(Join-Path $InputRoot 'diagnostic-nsis') }
+}
+
+function Write-DesktopNativeNsisObserverPrivate {
+    param([Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)]$Value)
+    Assert-Condition ($Name -cin @('before.json','after.json','update-process.json','uninstall-process.json','result.json','failure.json')) 'desktop_native_observer_private_name_refused'
+    $text = ($Value | ConvertTo-Json -Depth 64 -Compress) + [char]10
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($text)
+    $path = Join-Path $script:DesktopNativeNsisObserver.root $Name
+    $stream = [IO.FileStream]::new($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+}
+
+function Invoke-DesktopNativeNsisObserverJourney {
+    param([Parameter(Mandatory)]$Legacy, [Parameter(Mandatory)][string]$Sentinel)
+    $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'
+    $script:DesktopNativePlan = Read-DesktopStrictJson $planPath
+    $planSha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']
+    $gui = @($script:DesktopNativePlan.files | Where-Object role -CEQ 'gui')[0]
+    $legacyRoot = Invoke-DesktopNativeBaselineRecapture $Legacy
+    $legacyBefore = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    $first = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-update' -Image $script:DesktopNativeNsisObserver.setup -ImageSha256 $script:DesktopNativeNsisObserver.sha256 -Root $legacyRoot -NsisJourney -StartupGuiSha256 $gui.sha256
+    Write-DesktopNativeNsisObserverPrivate 'update-process.json' $first
+    Assert-Condition ($first.exit_code -eq 0) 'LegacyProfileMismatch-or-native-update-failed'
+    $state = Assert-DesktopNativeInstalledPayload -Root $legacyRoot -Plan $script:DesktopNativePlan -PlanSha256 $planSha -Managed
+    Assert-Condition ($null -ne $state.legacy_capture -and $state.legacy_capture.capture_receipt_sha256 -ceq $Legacy.capture_receipt_sha256 -and $state.legacy_capture.original_installer_sha256 -ceq $Legacy.original_installer.sha256) 'desktop_native_legacy_authority_not_committed'
+    Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($Sentinel)['sha256'] -ceq $legacyBefore.user_sentinel['sha256']) 'desktop_native_user_sentinel_changed'
+    $source = New-DesktopNativeFaultSource -Root $legacyRoot -Plan $script:DesktopNativePlan -Kind complete
+    $updated = Invoke-DesktopNativeNsisAction -Command install -Root $legacyRoot -Source $source -Case 'nsis-same-version-ja' -PlanSha256 $planSha
+    $receipt = Assert-DesktopNativeNsisResult -Result $updated -Command install -PlanSha256 $planSha -GuiSha256 $gui.sha256
+    $same = Assert-DesktopNativeInstalledPayload -Root $legacyRoot -Plan $script:DesktopNativePlan -PlanSha256 $planSha -Managed
+    [void](Assert-DesktopNativeNsisObservation -Kind updated -Binding (Get-DesktopNativeNsisObservationBinding -Root $legacyRoot) -PlanSha256 $planSha -State $same -PriorState $state -Receipt $receipt)
+    $uninstallPrior = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    Write-DesktopNativeNsisObserverPrivate 'before.json' $uninstallPrior
+    $uninstaller = Join-Path $legacyRoot 'uninstall.exe'; $unSha = [WinsmuxDesktopNativeActor]::NativeFile($uninstaller)['sha256']
+    $removed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-uninstall' -Image $uninstaller -ImageSha256 $unSha -Root $legacyRoot -NsisJourney
+    Write-DesktopNativeNsisObserverPrivate 'uninstall-process.json' $removed
+    $afterWitness = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
+    Write-DesktopNativeNsisObserverPrivate 'after.json' $afterWitness
+    Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_managed_uninstall_failed'
+    [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding (Get-DesktopNativeNsisObservationBinding -Root $legacyRoot -Journal) -PlanSha256 $planSha -PriorState $same -PriorWitness $uninstallPrior -Witness $afterWitness)
+    return [ordered]@{ diagnostic=$true; release_admissible=$false; observed_journey='completed'; original_journey_passed=$false }
+}
+
 function Invoke-DesktopNativeNsisJourney {
     param([Parameter(Mandatory)]$Legacy, [Parameter(Mandatory)][string]$Sentinel)
     $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'
@@ -5156,7 +5215,8 @@ function Invoke-DesktopNativeLifecycle {
     $bootstrap = $DesktopNativeFormat -ceq 'NSIS' -and $high
     if (-not $bootstrap -and $DesktopNativeFormat -ceq 'NSIS') { Assert-Condition $medium 'desktop_native_medium_required' }
     if ($high) {
-        [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $true)
+        $observerBuild = Join-Path $script:DesktopNativeEvidenceRoot 'nsis-observer-build.json'
+        if ($DesktopNativeFormat -ceq 'NSIS' -and (Test-Path -LiteralPath $observerBuild)) { [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $false) } else { [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $true) }
         $binding = Get-DesktopNativeBootstrapBinding -InputRoot $inputRoot -Create
     } else {
         [void][WinsmuxDesktopNativeActor]::NativeDirectory($script:DesktopNativeEvidenceRoot, $false)
@@ -5167,6 +5227,8 @@ function Invoke-DesktopNativeLifecycle {
     if ($normalNsisJourney) { Start-DesktopNativeNsisJourneyDeadline }
     $transport = Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path -NsisJourney:$normalNsisJourney
     $legacy = Assert-DesktopNativeBaselineArtifact
+    $script:DesktopNativeNsisObserver = Get-DesktopNativeNsisObserver -InputRoot $inputRoot
+    if ($null -ne $script:DesktopNativeNsisObserver) { Assert-Condition (-not $capacityStage) 'desktop_native_observer_capacity_refused' }
     if ($capacityStage) { return Invoke-DesktopNativeCapacityStage -InputRoot $inputRoot }
     Write-DesktopNativeEvidence $(if ($bootstrap) { 'high-parent-admission.json' } else { 'native-admission.json' }) ([ordered]@{ transport = $transport; actor = $actor; baseline_artifact = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $DesktopNativeBaselineDirectory 'capture.json')); script_sha256 = $binding.script_sha256 })
     if ($bootstrap) {
@@ -5179,7 +5241,14 @@ function Invoke-DesktopNativeLifecycle {
             if (-not $terminal) { $owned.StopOwnedFailure(); $terminal = $true; throw 'desktop_native_medium_bootstrap_timeout' }
             Write-DesktopNativeEvidence 'medium-bootstrap-process.json' ([ordered]@{ exit_code = $owned.ExitCode; process = $owned.Facts() })
             $resultPath = Join-Path $script:DesktopNativeEvidenceRoot 'native-journey-result.json'
-            [void][WinsmuxDesktopNativeActor]::NativeFile($resultPath)
+            if ($null -eq $script:DesktopNativeNsisObserver) { [void][WinsmuxDesktopNativeActor]::NativeFile($resultPath) }
+            if ($null -ne $script:DesktopNativeNsisObserver) {
+                $diagnosticPath = Join-Path $script:DesktopNativeNsisObserver.root 'result.json'
+                $diagnostic = Read-DesktopStrictJson $diagnosticPath
+                Assert-DesktopInventoryShape $diagnostic @('schema','source_commit','diagnostic','release_admissible','original_journey_passed','outcome')
+                Assert-Condition ($diagnostic.schema -ceq 'winsmux-nsis-observer-journey/v1' -and $diagnostic.source_commit -ceq $DesktopNativeSourceCommit -and $diagnostic.diagnostic -eq $true -and $diagnostic.release_admissible -eq $false -and $diagnostic.original_journey_passed -eq $false -and $diagnostic.outcome -cin @('observed','failed')) 'desktop_native_observer_journey_refused'
+                return $diagnostic
+            }
             $result = Read-DesktopStrictJson $resultPath
             Assert-Condition ($owned.ExitCode -eq 0 -and $result.outcome -ceq 'journey_passed' -and $result.schema -ceq 'winsmux-desktop-native-journey-ci/v1' -and $result.source_commit -ceq $DesktopNativeSourceCommit -and $result.format -ceq 'NSIS') 'desktop_native_medium_journey_failed'
             $final = [ordered]@{ schema = 'winsmux-desktop-native-lifecycle-ci/v1'; source_commit = $DesktopNativeSourceCommit; format = 'NSIS'; outcome = 'failed'; transport = $transport; actor = $result.actor; cases = [ordered]@{ legacy = $result.cases.legacy; fresh = $result.cases.fresh }; failure = $null; preserved_user = $result.preserved_user }
@@ -5202,6 +5271,20 @@ function Invoke-DesktopNativeLifecycle {
     $file = [IO.FileStream]::new($sentinel, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $file.Write($bytes, 0, $bytes.Length); $file.Flush($true) } finally { $file.Dispose() }
     $user = [WinsmuxDesktopNativeActor]::NativeFile($sentinel)
+    if ($null -ne $script:DesktopNativeNsisObserver) {
+        $diagnostic = [ordered]@{ schema='winsmux-nsis-observer-journey/v1'; source_commit=$DesktopNativeSourceCommit; diagnostic=$true; release_admissible=$false; original_journey_passed=$false; outcome='failed' }
+        try {
+            [void](Invoke-DesktopNativeNsisObserverJourney -Legacy $legacy -Sentinel $sentinel)
+            $afterUser = [WinsmuxDesktopNativeActor]::NativeFile($sentinel)
+            Assert-Condition ($afterUser['identity'] -ceq $user['identity'] -and $afterUser['sha256'] -ceq $user['sha256']) 'desktop_native_final_user_preservation_failed'
+            [void](Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path -NsisJourney)
+            $diagnostic.outcome = 'observed'
+        } catch {
+            try { Write-DesktopNativeNsisObserverPrivate 'failure.json' ([ordered]@{ type=$_.Exception.GetType().FullName; message=$_.Exception.Message; stack=$_.ScriptStackTrace }) } catch { }
+        }
+        Write-DesktopNativeNsisObserverPrivate 'result.json' $diagnostic
+        return $diagnostic
+    }
     $result = [ordered]@{ schema = 'winsmux-desktop-native-lifecycle-ci/v1'; source_commit = $DesktopNativeSourceCommit; format = $DesktopNativeFormat; outcome = 'failed'; transport = $transport; actor = $actor; cases = [ordered]@{}; failure = $null; preserved_user = $null }
     try {
         if ($DesktopNativeFormat -ceq 'NSIS') {
