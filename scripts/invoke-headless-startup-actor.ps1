@@ -19,7 +19,7 @@ $tests=@('real_host_without_provider_path_keeps_launch_unadvertised','host_start
 function Assert-Fixed([bool]$Condition,[string]$Code) { if(-not $Condition){throw $Code} }
 function Assert-CanonicalSourceInputs([string]$Root) {
  # One raw-byte choke point; no newline conversion or alternate hashes are accepted.
- $pins=ConvertFrom-Json -AsHashtable '[{"path":"scripts/test-public-release.ps1","bytes":579080,"sha256":"4c215216c9d8d90a3cafb6797e249b2bbc26bf8efb2683bc2a3e72a9eb5768b7"},{"path":"scripts/DesktopProcessOwner.cs","bytes":24379,"sha256":"cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c"},{"path":"core/tests-rs/workspace_host_e2e.rs","bytes":176368,"sha256":"4c3cfa6b7e1ab781e153298fb0c8189b0efc93a167861a964b6bb96f8bcaedb7"},{"path":"core/tests-rs/support/conpty_json.rs","bytes":12923,"sha256":"8da14f11218bd84c6d2de17d1904705c56b64c44346c3d73138936a2d05859e9"},{"path":"core/crates/winsmux-workspace/src/host/windows.rs","bytes":109489,"sha256":"b2b46b173d2cd8a6285c9d0df641e39d612d2425a04cce5e5033e4bc8774517f"},{"path":"core/crates/winsmux-workspace/src/host/process.rs","bytes":10135,"sha256":"a667b3ee876166f5a88366dd2979ccc9f8d70e84d25de594bae7a6403abacc74"},{"path":"core/crates/winsmux-workspace/src/host/security.rs","bytes":57172,"sha256":"b6f67ddc859bc7e7b1e1ca2aa37cb8d828e839a4aa64dd985f2fc7118ed49052"},{"path":"core/crates/winsmux-workspace/src/host/mod.rs","bytes":4569,"sha256":"2854949034e622b7bf1fc31118080ec2ee0df04aba4ff895ded241a6a4675dd6"},{"path":"core/crates/winsmux-workspace/src/client/mod.rs","bytes":73120,"sha256":"4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1"},{"path":"Cargo.toml","bytes":556,"sha256":"3c50db3d0d7650d46dd3342eef78c678c1261a2b3f75dce6d79b1d648a30b5a3"},{"path":"Cargo.lock","bytes":165475,"sha256":"26d1bef4c5a4fc47330468a719d8ff59e0fb85e483aa84d0e0752bba99d85c30"},{"path":"core/Cargo.toml","bytes":4498,"sha256":"a52039539867a3fcdaa3e0fdf8a5a0eea670d0ba5ff0445c046e63d60bd8085d"},{"path":".github/actions/setup-windows-distribution-toolchain/action.yml","bytes":677,"sha256":"7811950cfe808ec3ab951033da4a4760bd37c4348a668739dd074c86fe56b6f2"},{"path":"core/crates/winsmux-workspace/src/host/testing.rs","bytes":89695,"sha256":"58b303cdbca1728a804b09bd6dcb32a95fd203b5a4dc6d15ee50fdbe7634f2b5"}]'
+ $pins=ConvertFrom-Json -AsHashtable '[{"path":"scripts/test-public-release.ps1","bytes":579080,"sha256":"4c215216c9d8d90a3cafb6797e249b2bbc26bf8efb2683bc2a3e72a9eb5768b7"},{"path":"scripts/DesktopProcessOwner.cs","bytes":24379,"sha256":"cc9d426f86455395b87d1f2d6524deea0ab5ddb4014ad05c58e1e0b576c09a8c"},{"path":"core/tests-rs/workspace_host_e2e.rs","bytes":177724,"sha256":"658436e22e71073faf3cf69f30918e6c8544300a05dd43e5a9b0b8674c85e717"},{"path":"core/tests-rs/support/conpty_json.rs","bytes":12923,"sha256":"8da14f11218bd84c6d2de17d1904705c56b64c44346c3d73138936a2d05859e9"},{"path":"core/crates/winsmux-workspace/src/host/windows.rs","bytes":110838,"sha256":"c27bb75a743a2107257d94e22313ce1ffc7313ed2f8c7ccaa8a6872288f32eb8"},{"path":"core/crates/winsmux-workspace/src/host/process.rs","bytes":10135,"sha256":"a667b3ee876166f5a88366dd2979ccc9f8d70e84d25de594bae7a6403abacc74"},{"path":"core/crates/winsmux-workspace/src/host/security.rs","bytes":83223,"sha256":"175561611117f09a7dc8dd552bc452452ce23c958228c94b61289c500ad53fed"},{"path":"core/crates/winsmux-workspace/src/host/mod.rs","bytes":4569,"sha256":"2854949034e622b7bf1fc31118080ec2ee0df04aba4ff895ded241a6a4675dd6"},{"path":"core/crates/winsmux-workspace/src/client/mod.rs","bytes":73120,"sha256":"4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1"},{"path":"Cargo.toml","bytes":556,"sha256":"3c50db3d0d7650d46dd3342eef78c678c1261a2b3f75dce6d79b1d648a30b5a3"},{"path":"Cargo.lock","bytes":165475,"sha256":"26d1bef4c5a4fc47330468a719d8ff59e0fb85e483aa84d0e0752bba99d85c30"},{"path":"core/Cargo.toml","bytes":4498,"sha256":"a52039539867a3fcdaa3e0fdf8a5a0eea670d0ba5ff0445c046e63d60bd8085d"},{"path":".github/actions/setup-windows-distribution-toolchain/action.yml","bytes":677,"sha256":"7811950cfe808ec3ab951033da4a4760bd37c4348a668739dd074c86fe56b6f2"},{"path":"core/crates/winsmux-workspace/src/host/testing.rs","bytes":89937,"sha256":"62249a865c234d0e90e40914a2fa7d3e86d70ee1425e7f19921044a1888ac921"}]'
  $attribute=ConvertFrom-Json -AsHashtable '{"path":".gitattributes","bytes":1481,"sha256":"1288f24e7629cbec0701a6d17ce78ecbce87b9cc13fec4d7efb2a841ab7d354d"}'
  $attributePaths=ConvertFrom-Json '[".gitattributes",".github/.gitattributes",".github/actions/.gitattributes",".github/actions/setup-windows-distribution-toolchain/.gitattributes",".github/workflows/.gitattributes","core/.gitattributes","core/crates/.gitattributes","core/crates/winsmux-workspace/.gitattributes","core/crates/winsmux-workspace/src/.gitattributes","core/crates/winsmux-workspace/src/client/.gitattributes","core/crates/winsmux-workspace/src/host/.gitattributes","core/tests-rs/.gitattributes","core/tests-rs/support/.gitattributes","scripts/.gitattributes"]'
  foreach($name in $attributePaths){Assert-Fixed ((Test-Path -LiteralPath (Join-Path $Root $name)) -eq ($name -ceq '.gitattributes')) 'input_attribute_inventory_changed'}
@@ -164,7 +164,7 @@ function Assert-CapabilityObserved($Field,[string]$Kind,[string[]]$Enums=@()) {
  if($Kind -ceq 'bool'){Assert-Fixed ($Field.value -is [bool]) 'snapshot_bool'}else{Assert-Fixed ($Field.value -is [string] -and $Field.value -cin $Enums) 'snapshot_enum'}
 }
 function Assert-CapabilityTokenSnapshot($Value) {
- Assert-CapabilityKeys $Value @('schema','thread_absent_before','thread_absent_after','primary','generation','effective','generation_to_primary','effective_to_generation','generation_constraints','operations','operation_failure','revert_failure')
+ Assert-CapabilityKeys $Value @('schema','thread_absent_before','thread_absent_after','primary','generation','effective','generation_to_primary','effective_to_generation','generation_constraints','operations','operation_failure','revert_failure','guard_failure')
  Assert-Fixed ($Value.schema -is [string] -and $Value.schema -ceq 'winsmux-server-capability-token-observation/v1') 'snapshot_schema'
  foreach($name in @('thread_absent_before','thread_absent_after')){Assert-CapabilityObserved $Value[$name] 'bool'}
  foreach($name in @('primary','generation','effective')){
@@ -192,10 +192,24 @@ function Assert-CapabilityTokenSnapshot($Value) {
   Assert-Fixed ($failure.value.api -is [string] -and $failure.value.api -cin @('impersonate','sid_to_string','sddl_to_descriptor','create_pipe','descriptor_validation')) 'snapshot_api'
   Assert-Fixed ($failure.value.class -is [string] -and $failure.value.class -cin @('access_denied','privilege_not_held','bad_impersonation_level','invalid_owner','invalid_security_descriptor','unobserved')) 'snapshot_class'
  }else{Assert-Fixed ($null -eq $failure.value) 'snapshot_failure_missing'}
+ Assert-CapabilityObserved $Value.guard_failure 'enum' @('preexisting_impersonation','thread_context_unobserved','effective_token_unobserved','effective_level_insufficient','effective_identity_mismatch')
  Assert-CapabilityObserved $Value.revert_failure 'enum' @('access_denied','privilege_not_held','bad_impersonation_level','invalid_owner','invalid_security_descriptor','unobserved')
  $op=$Value.operations
+ $guard=$Value.guard_failure
+ $preGuard=$guard.observed -and $guard.value -cin @('preexisting_impersonation','thread_context_unobserved')
  if(-not $Value.thread_absent_before.observed -or -not $Value.thread_absent_before.value){
-  foreach($key in @('identity','capability','impersonate','pipe','revert','result')){Assert-Fixed ($op[$key] -ceq 'not_attempted') 'snapshot_precondition'}
+  if($preGuard){
+   foreach($key in @('impersonate','pipe','revert')){Assert-Fixed ($op[$key] -ceq 'not_attempted') 'snapshot_precondition'}
+  }else{foreach($key in @('identity','capability','impersonate','pipe','revert','result')){Assert-Fixed ($op[$key] -ceq 'not_attempted') 'snapshot_precondition'}}
+ }
+ if($guard.observed){
+  Assert-Fixed (-not $failure.observed -and $op.pipe -ceq 'not_attempted' -and $op.result -ceq 'failed') 'snapshot_guard_result'
+  if($preGuard){
+   Assert-Fixed ($op.impersonate -ceq 'not_attempted' -and $op.revert -ceq 'not_attempted' -and -not $Value.revert_failure.observed) 'snapshot_guard_preassignment'
+   Assert-Fixed (($op.identity -ceq 'not_attempted' -and $op.capability -ceq 'not_attempted') -or ($op.identity -ceq 'succeeded' -and $op.capability -ceq 'succeeded')) 'snapshot_guard_preparation'
+   if($guard.value -ceq 'preexisting_impersonation'){Assert-Fixed ($Value.thread_absent_before.observed -and -not $Value.thread_absent_before.value) 'snapshot_guard_present'}
+   else{Assert-Fixed (-not $Value.thread_absent_before.observed) 'snapshot_guard_unknown'}
+  }else{Assert-Fixed ($Value.thread_absent_before.observed -and $Value.thread_absent_before.value -and $op.impersonate -ceq 'succeeded' -and $op.revert -cne 'not_attempted') 'snapshot_guard_postassignment'}
  }
  if($op.capability -cne 'not_attempted'){Assert-Fixed ($op.identity -ceq 'succeeded') 'snapshot_identity_order'}
  if($op.impersonate -cne 'not_attempted'){Assert-Fixed ($op.capability -ceq 'succeeded') 'snapshot_generation_order'}
@@ -203,7 +217,7 @@ function Assert-CapabilityTokenSnapshot($Value) {
  Assert-Fixed (($op.impersonate -ceq 'succeeded') -eq ($op.revert -cne 'not_attempted')) 'snapshot_revert_order'
  Assert-Fixed (($op.revert -ceq 'failed') -eq $Value.revert_failure.observed) 'snapshot_revert_failure'
  if($op.result -ceq 'succeeded'){Assert-Fixed ($op.pipe -ceq 'succeeded' -and $op.revert -ceq 'succeeded' -and -not $failure.observed) 'snapshot_result_success'}
- if($op.result -ceq 'failed'){Assert-Fixed ($failure.observed -or $Value.revert_failure.observed) 'snapshot_result_failure'}
+ if($op.result -ceq 'failed'){Assert-Fixed ($failure.observed -or $Value.revert_failure.observed -or $guard.observed) 'snapshot_result_failure'}
  if($failure.observed){
   $api=$failure.value.api
   if($api -ceq 'impersonate'){Assert-Fixed ($op.impersonate -ceq 'failed' -and $op.pipe -ceq 'not_attempted') 'snapshot_impersonate_failure'}
@@ -222,7 +236,7 @@ function Assert-CapabilityTokenSnapshot($Value) {
  if($op.revert -ceq 'not_attempted'){Assert-Fixed (-not $Value.thread_absent_after.observed) 'snapshot_after_not_reached'}
  if($Value.thread_absent_before.observed -and $Value.thread_absent_before.value){Assert-Fixed ($op.identity -cne 'not_attempted') 'snapshot_identity_reached'}
  if($op.identity -ceq 'succeeded'){Assert-Fixed ($op.capability -cne 'not_attempted') 'snapshot_capability_reached'}
- if($op.capability -ceq 'succeeded'){Assert-Fixed ($op.impersonate -cne 'not_attempted') 'snapshot_impersonate_reached'}
+ if($op.capability -ceq 'succeeded' -and -not $preGuard){Assert-Fixed ($op.impersonate -cne 'not_attempted') 'snapshot_impersonate_reached'}
  if($op.impersonate -cne 'not_attempted'){Assert-Fixed ($op.result -cne 'not_attempted') 'snapshot_result_reached'}
  if($op.result -ceq 'not_attempted'){Assert-Fixed (-not $failure.observed -and $op.impersonate -ceq 'not_attempted') 'snapshot_result_not_reached'}
  if($op.pipe -ceq 'failed'){Assert-Fixed ($failure.observed -and $failure.value.api -ceq 'create_pipe') 'snapshot_pipe_failure'}
@@ -285,6 +299,79 @@ function Assert-CapabilityTokenCapture($Value,[string]$Source) {
   Assert-Fixed ($null -ne $Value.raw -and $Value.query_complete -eq (Test-CapabilityTokenSnapshotComplete $Value.observation)) 'capture_observation'
  }else{Assert-Fixed ($null -eq $Value.observation -and -not $Value.query_complete) 'capture_missing'}
 }
+function Read-CapabilityCallerFacts([byte[]]$Stdout,[byte[]]$Stderr,$Expected) {
+ $encoding=[Text.UTF8Encoding]::new($false,$true)
+ $stdoutText=$encoding.GetString($Stdout);$stderrText=$encoding.GetString($Stderr)
+ $marker='WINSMUX_CAPABILITY_CALLER'
+ Assert-Fixed (-not $stdoutText.Contains($marker)) 'caller_stdout_marker'
+ Assert-Fixed ([regex]::Matches($stderrText,[regex]::Escape($marker)).Count -eq 1) 'caller_marker_count'
+ $matches=[regex]::Matches($stderrText,'(?m)^WINSMUX_CAPABILITY_CALLER ([^\r\n]+)\r?$')
+ Assert-Fixed ($matches.Count -eq 1) 'caller_frame'
+ $payload=$matches[0].Groups[1].Value;$doc=[Text.Json.JsonDocument]::Parse($payload)
+ try{
+  Assert-Fixed ($doc.RootElement.ValueKind -eq [Text.Json.JsonValueKind]::Object) 'caller_object'
+  $seen=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+  foreach($property in $doc.RootElement.EnumerateObject()){Assert-Fixed ($seen.Add($property.Name)) 'caller_duplicate'}
+ }finally{$doc.Dispose()}
+ $value=$payload|ConvertFrom-Json -AsHashtable
+ Assert-CapabilityCallerFacts $value $Expected
+ return $value
+}
+function Assert-CapabilityCallerFacts($value,$Expected) {
+ Assert-CapabilityKeys $value @('sid_sha256','session','token_type','elevation','elevation_type','integrity_rid','restricted','app_container')
+ Assert-Fixed ($value.sid_sha256 -is [string] -and $value.sid_sha256 -cmatch '^[a-f0-9]{64}$') 'caller_sid_hash'
+ foreach($key in @('session','token_type','elevation','elevation_type','integrity_rid','restricted','app_container')){
+  Assert-Fixed (($value[$key] -is [uint32] -or $value[$key] -is [long] -or $value[$key] -is [int]) -and $value[$key] -ge 0 -and $value[$key] -le [uint32]::MaxValue) 'caller_integer'
+ }
+ Assert-Fixed ($value.token_type -eq 1 -and $value.elevation -in @(0,1) -and $value.elevation_type -in @(1,2,3) -and $value.restricted -in @(0,1) -and $value.app_container -eq 0) 'caller_public_domains'
+ foreach($key in $value.Keys){Assert-Fixed ($value[$key] -ceq $Expected[$key]) 'caller_worker_mismatch'}
+}
+
+function Invoke-CapabilityCompatibilityCases($Binding,[string]$ExpectedScript,$Actor,[string]$Class) {
+ Assert-Fixed ($Class -cin @('ci_high','ci_restricted_medium','local_uac_limited')) 'compatibility_class'
+ Assert-CapabilityKeys $Actor @('sid_sha256','session','token_type','elevation','elevation_type','integrity_rid','restricted','app_container')
+ Assert-Fixed ($Actor.token_type -eq 1 -and $Actor.app_container -eq 0) 'compatibility_primary'
+ if($Class -ceq 'ci_high'){Assert-Fixed ($Actor.elevation -eq 1 -and $Actor.integrity_rid -ge 12288) 'compatibility_high'}
+ else{Assert-Fixed ($Actor.elevation -eq 0 -and $Actor.integrity_rid -ge 8192 -and $Actor.integrity_rid -lt 12288) 'compatibility_medium'}
+ if($Class -ceq 'ci_restricted_medium'){Assert-Fixed ($Actor.restricted -eq 1) 'compatibility_restricted'}
+ if($Class -ceq 'local_uac_limited'){Assert-Fixed ($Actor.elevation_type -eq 3) 'compatibility_uac_limited'}
+ $row=[ordered]@{schema='winsmux-capability-compatibility-row/v1';class=$Class;source_commit=$Binding.source_commit;test_sha256=$Binding.test_sha256;cli_sha256=$Binding.cli_sha256;actor=$Actor;test_actors=@();tests=@();outcome='unobserved';failure=$null;nsis_success_proven=$false}
+ $observed=[Collections.Generic.List[object]]::new();$callers=[Collections.Generic.List[object]]::new()
+ foreach($test in @('real_host_without_provider_path_keeps_launch_unadvertised','host_startup_fails_closed_before_discovery_when_security_primitives_fail')){
+  Assert-HeadlessBoundInputs $Binding $ExpectedScript
+  $owned=$null;$terminal=$false;$case=$null;$caller=$null
+  try{
+   $owned=[Winsmux.DesktopNative.DesktopProcessOwner]::Start([string]$Binding.test_executable,[string[]]@('--exact',$test,'--test-threads=1','--nocapture'),@{},$false,16384,180000)
+   $terminal=$owned.WaitTerminal(180000,500)
+   if(-not $terminal){$owned.ForceFailureCleanup(180000,500);$terminal=$owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted}
+   $out=$owned.StdoutTask.GetAwaiter().GetResult();$err=$owned.StderrTask.GetAwaiter().GetResult()
+   $case=ConvertTo-HeadlessFixedProjection -Stdout $out.RetainedBytes -Stderr $err.RetainedBytes -Truncated ($out.Truncated -or $err.Truncated) -Test $test -ExitCode $owned.ExitCode -Terminal $terminal -JobZero ($owned.ActiveMembers -eq 0) -Forced $owned.Forced
+   $caller=Read-CapabilityCallerFacts $out.RetainedBytes $err.RetainedBytes $Actor
+   $out=$null;$err=$null
+  }catch{$row.failure='case_capture'}finally{
+   if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(180000,500)};if($owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted){$owned.Dispose()}}
+  }
+  $observed.Add($case);$callers.Add($caller);$row.tests=$observed.ToArray();$row.test_actors=$callers.ToArray()
+  Assert-HeadlessBoundInputs $Binding $ExpectedScript
+ }
+ $row.outcome=if($null -eq $row.failure -and @($row.tests|Where-Object{$null -eq $_ -or $_.outcome -cne 'passed'}).Count -eq 0){'passed'}else{'observed_failure'}
+ return $row
+}
+
+function Assert-CapabilityCompatibilityRow($Row,$Binding,$Actor,[string]$Class) {
+ Assert-CapabilityKeys $Row @('schema','class','source_commit','test_sha256','cli_sha256','actor','test_actors','tests','outcome','failure','nsis_success_proven')
+ Assert-Fixed ($Row.schema -is [string] -and $Row.class -is [string] -and $Row.source_commit -is [string] -and $Row.test_sha256 -is [string] -and $Row.cli_sha256 -is [string] -and $Row.nsis_success_proven -is [bool] -and $Row.schema -ceq 'winsmux-capability-compatibility-row/v1' -and $Row.class -ceq $Class -and $Row.source_commit -ceq $Binding.source_commit -and $Row.test_sha256 -ceq $Binding.test_sha256 -and $Row.cli_sha256 -ceq $Binding.cli_sha256 -and $Row.nsis_success_proven -eq $false) 'compatibility_binding'
+ Assert-CapabilityCallerFacts $Row.actor $Actor
+ Assert-Fixed (@($Row.tests).Count -eq 2 -and @($Row.test_actors).Count -eq 2 -and $Row.outcome -is [string] -and $Row.outcome -cin @('passed','observed_failure','unobserved') -and ($null -eq $Row.failure -or $Row.failure -ceq 'case_capture')) 'compatibility_shape'
+ $fixedTests=@('real_host_without_provider_path_keeps_launch_unadvertised','host_startup_fails_closed_before_discovery_when_security_primitives_fail')
+ for($i=0;$i -lt 2;$i++){
+  if($null -ne $Row.tests[$i]){Assert-HeadlessProjectionShape $Row.tests[$i] $fixedTests[$i]}
+  if($null -ne $Row.test_actors[$i]){Assert-CapabilityCallerFacts $Row.test_actors[$i] $Actor}
+ }
+ if($Row.outcome -ceq 'passed'){
+  Assert-Fixed ($null -eq $Row.failure -and @($Row.tests|Where-Object{$null -eq $_ -or $_.outcome -cne 'passed'}).Count -eq 0 -and @($Row.test_actors|Where-Object{$null -eq $_}).Count -eq 0) 'compatibility_pass'
+ }
+}
 function Invoke-CapabilityTokenCapture($Binding,[string]$ExpectedScript,$Envelope) {
  Assert-HeadlessBoundInputs $Binding $ExpectedScript
  $testImage=[string]$Binding.test_executable;$cliImage=[string]$Binding.cli_executable
@@ -328,9 +415,10 @@ function ConvertTo-HeadlessFixedProjection {
  param([byte[]]$Stdout,[byte[]]$Stderr,[bool]$Truncated,[string]$Test,[int]$ExitCode,[bool]$Terminal,[bool]$JobZero,[bool]$Forced)
  $result=[ordered]@{test=$Test;outcome='unobserved';process_exit=$(if($ExitCode -eq 0){'zero'}elseif($ExitCode -eq 101){'test_failure'}elseif($ExitCode -eq 124){'owned_stop'}else{'other'});terminal=$Terminal;job_zero=$JobZero;forced=$Forced;capture_complete=(-not $Truncated);child_stages=@();launcher_stages=@();host_classes=@();unknown_marker=$false;conpty_or_debug_only=$false}
  if($Truncated -or -not $Terminal -or -not $JobZero){return $result}
- try{$text=[Text.UTF8Encoding]::new($false,$true).GetString($Stdout)+[char]10+[Text.UTF8Encoding]::new($false,$true).GetString($Stderr)}catch{return $result}
+ try{$stdoutReport=[Text.UTF8Encoding]::new($false,$true).GetString($Stdout);$text=$stdoutReport+[char]10+[Text.UTF8Encoding]::new($false,$true).GetString($Stderr)}catch{return $result}
  $text=[regex]::Replace($text,[string][char]27+'\[[0-?]*[ -/]*[@-~]','')
- $child=@('handle','identity','mutex','inheritance_probe','capability','server_key','authorization','cancel_event','supervisor','discovery','public_pipe','public_pipe_impersonate_access_denied','public_pipe_impersonate_privilege_not_held','public_pipe_impersonate_bad_impersonation_level','public_pipe_impersonate_invalid_owner','public_pipe_impersonate_invalid_security_descriptor','public_pipe_impersonate_unobserved','public_pipe_sid_to_string_access_denied','public_pipe_sid_to_string_privilege_not_held','public_pipe_sid_to_string_bad_impersonation_level','public_pipe_sid_to_string_invalid_owner','public_pipe_sid_to_string_invalid_security_descriptor','public_pipe_sid_to_string_unobserved','public_pipe_sddl_to_descriptor_access_denied','public_pipe_sddl_to_descriptor_privilege_not_held','public_pipe_sddl_to_descriptor_bad_impersonation_level','public_pipe_sddl_to_descriptor_invalid_owner','public_pipe_sddl_to_descriptor_invalid_security_descriptor','public_pipe_sddl_to_descriptor_unobserved','public_pipe_create_pipe_access_denied','public_pipe_create_pipe_privilege_not_held','public_pipe_create_pipe_bad_impersonation_level','public_pipe_create_pipe_invalid_owner','public_pipe_create_pipe_invalid_security_descriptor','public_pipe_create_pipe_unobserved','public_pipe_revert_access_denied','public_pipe_revert_privilege_not_held','public_pipe_revert_bad_impersonation_level','public_pipe_revert_invalid_owner','public_pipe_revert_invalid_security_descriptor','public_pipe_revert_unobserved','public_pipe_descriptor_validation_unobserved','accept_thread','discovery_serialization')
+ $stdoutReport=[regex]::Replace($stdoutReport,[string][char]27+'\[[0-?]*[ -/]*[@-~]','')
+ $child=@('handle','identity','mutex','inheritance_probe','capability','server_key','authorization','cancel_event','supervisor','discovery','public_pipe','public_pipe_impersonate_access_denied','public_pipe_impersonate_privilege_not_held','public_pipe_impersonate_bad_impersonation_level','public_pipe_impersonate_invalid_owner','public_pipe_impersonate_invalid_security_descriptor','public_pipe_impersonate_unobserved','public_pipe_sid_to_string_access_denied','public_pipe_sid_to_string_privilege_not_held','public_pipe_sid_to_string_bad_impersonation_level','public_pipe_sid_to_string_invalid_owner','public_pipe_sid_to_string_invalid_security_descriptor','public_pipe_sid_to_string_unobserved','public_pipe_sddl_to_descriptor_access_denied','public_pipe_sddl_to_descriptor_privilege_not_held','public_pipe_sddl_to_descriptor_bad_impersonation_level','public_pipe_sddl_to_descriptor_invalid_owner','public_pipe_sddl_to_descriptor_invalid_security_descriptor','public_pipe_sddl_to_descriptor_unobserved','public_pipe_create_pipe_access_denied','public_pipe_create_pipe_privilege_not_held','public_pipe_create_pipe_bad_impersonation_level','public_pipe_create_pipe_invalid_owner','public_pipe_create_pipe_invalid_security_descriptor','public_pipe_create_pipe_unobserved','public_pipe_revert_access_denied','public_pipe_revert_privilege_not_held','public_pipe_revert_bad_impersonation_level','public_pipe_revert_invalid_owner','public_pipe_revert_invalid_security_descriptor','public_pipe_revert_unobserved','public_pipe_descriptor_validation_unobserved','public_pipe_guard_preexisting_impersonation','public_pipe_guard_thread_context_unobserved','public_pipe_guard_effective_token_unobserved','public_pipe_guard_effective_level_insufficient','public_pipe_guard_effective_identity_mismatch','accept_thread','discovery_serialization')
  $launcher=@('terminal','identity','inheritance_probe','console','channel','child_spawn','startup_frame','probe_ready','discovery_frame','discovery_parse','discovery_validation','discovery_serialization','output_started')
  foreach($pair in @([pscustomobject]@{kind='CHILD';allowed=$child;field='child_stages'},[pscustomobject]@{kind='OWNER';allowed=$launcher;field='launcher_stages'})){
   $seen=[Collections.Generic.List[string]]::new()
@@ -350,8 +438,8 @@ function ConvertTo-HeadlessFixedProjection {
  $result.host_classes=$classes.ToArray()
  $result.conpty_or_debug_only=(@($result.launcher_stages|Where-Object{$_ -cin @('terminal','console','inheritance_probe','probe_ready','output_started')}).Count -gt 0 -or 'inheritance_probe' -cin $result.child_stages)
  $name=[regex]::Escape($Test)
- $passed=[regex]::IsMatch($text,'(?m)^test '+$name+' \.\.\. ok\r?$') -and [regex]::IsMatch($text,'(?m)^test result: ok\. 1 passed; 0 failed;')
- $failed=[regex]::IsMatch($text,'(?m)^test '+$name+' \.\.\. FAILED\r?$') -and [regex]::IsMatch($text,'(?m)^test result: FAILED\. 0 passed; 1 failed;')
+ $passed=[regex]::IsMatch($stdoutReport,'(?m)^test '+$name+' \.\.\. ok\r?$') -and [regex]::IsMatch($stdoutReport,'(?m)^test result: ok\. 1 passed; 0 failed;')
+ $failed=[regex]::IsMatch($stdoutReport,'(?m)^test '+$name+' \.\.\. FAILED\r?$') -and [regex]::IsMatch($stdoutReport,'(?m)^test result: FAILED\. 0 passed; 1 failed;')
  if(-not $result.unknown_marker -and -not $Forced){if($ExitCode -eq 0 -and $passed){$result.outcome='passed'}elseif($ExitCode -ne 0 -and $failed){$result.outcome='failed'}}
  return $result
 }
@@ -360,7 +448,7 @@ function Assert-HeadlessProjectionShape($Row,[string]$ExpectedTest) {
  Assert-Fixed ($Row -is [Collections.IDictionary] -and (@($Row.Keys|Sort-Object -CaseSensitive)-join [char]10) -ceq (@($keys|Sort-Object -CaseSensitive)-join [char]10)) 'projection_shape'
  Assert-Fixed ($Row.test -is [string] -and $Row.outcome -is [string] -and $Row.process_exit -is [string] -and $Row.test -ceq $ExpectedTest -and $Row.outcome -cin @('passed','failed','unobserved') -and $Row.process_exit -cin @('zero','test_failure','owned_stop','other')) 'projection_values'
  foreach($key in @('terminal','job_zero','forced','capture_complete','unknown_marker','conpty_or_debug_only')){Assert-Fixed ($Row[$key] -is [bool]) 'projection_boolean'}
- $sets=@{child_stages=@('handle','identity','mutex','inheritance_probe','capability','server_key','authorization','cancel_event','supervisor','discovery','public_pipe','public_pipe_impersonate_access_denied','public_pipe_impersonate_privilege_not_held','public_pipe_impersonate_bad_impersonation_level','public_pipe_impersonate_invalid_owner','public_pipe_impersonate_invalid_security_descriptor','public_pipe_impersonate_unobserved','public_pipe_sid_to_string_access_denied','public_pipe_sid_to_string_privilege_not_held','public_pipe_sid_to_string_bad_impersonation_level','public_pipe_sid_to_string_invalid_owner','public_pipe_sid_to_string_invalid_security_descriptor','public_pipe_sid_to_string_unobserved','public_pipe_sddl_to_descriptor_access_denied','public_pipe_sddl_to_descriptor_privilege_not_held','public_pipe_sddl_to_descriptor_bad_impersonation_level','public_pipe_sddl_to_descriptor_invalid_owner','public_pipe_sddl_to_descriptor_invalid_security_descriptor','public_pipe_sddl_to_descriptor_unobserved','public_pipe_create_pipe_access_denied','public_pipe_create_pipe_privilege_not_held','public_pipe_create_pipe_bad_impersonation_level','public_pipe_create_pipe_invalid_owner','public_pipe_create_pipe_invalid_security_descriptor','public_pipe_create_pipe_unobserved','public_pipe_revert_access_denied','public_pipe_revert_privilege_not_held','public_pipe_revert_bad_impersonation_level','public_pipe_revert_invalid_owner','public_pipe_revert_invalid_security_descriptor','public_pipe_revert_unobserved','public_pipe_descriptor_validation_unobserved','accept_thread','discovery_serialization');launcher_stages=@('terminal','identity','inheritance_probe','console','channel','child_spawn','startup_frame','probe_ready','discovery_frame','discovery_parse','discovery_validation','discovery_serialization','output_started');host_classes=@('usage','interactive_required','startup_failed','transport_failed','protocol_failed','cancelled')}
+ $sets=@{child_stages=@('handle','identity','mutex','inheritance_probe','capability','server_key','authorization','cancel_event','supervisor','discovery','public_pipe','public_pipe_impersonate_access_denied','public_pipe_impersonate_privilege_not_held','public_pipe_impersonate_bad_impersonation_level','public_pipe_impersonate_invalid_owner','public_pipe_impersonate_invalid_security_descriptor','public_pipe_impersonate_unobserved','public_pipe_sid_to_string_access_denied','public_pipe_sid_to_string_privilege_not_held','public_pipe_sid_to_string_bad_impersonation_level','public_pipe_sid_to_string_invalid_owner','public_pipe_sid_to_string_invalid_security_descriptor','public_pipe_sid_to_string_unobserved','public_pipe_sddl_to_descriptor_access_denied','public_pipe_sddl_to_descriptor_privilege_not_held','public_pipe_sddl_to_descriptor_bad_impersonation_level','public_pipe_sddl_to_descriptor_invalid_owner','public_pipe_sddl_to_descriptor_invalid_security_descriptor','public_pipe_sddl_to_descriptor_unobserved','public_pipe_create_pipe_access_denied','public_pipe_create_pipe_privilege_not_held','public_pipe_create_pipe_bad_impersonation_level','public_pipe_create_pipe_invalid_owner','public_pipe_create_pipe_invalid_security_descriptor','public_pipe_create_pipe_unobserved','public_pipe_revert_access_denied','public_pipe_revert_privilege_not_held','public_pipe_revert_bad_impersonation_level','public_pipe_revert_invalid_owner','public_pipe_revert_invalid_security_descriptor','public_pipe_revert_unobserved','public_pipe_descriptor_validation_unobserved','public_pipe_guard_preexisting_impersonation','public_pipe_guard_thread_context_unobserved','public_pipe_guard_effective_token_unobserved','public_pipe_guard_effective_level_insufficient','public_pipe_guard_effective_identity_mismatch','accept_thread','discovery_serialization');launcher_stages=@('terminal','identity','inheritance_probe','console','channel','child_spawn','startup_frame','probe_ready','discovery_frame','discovery_parse','discovery_validation','discovery_serialization','output_started');host_classes=@('usage','interactive_required','startup_failed','transport_failed','protocol_failed','cancelled')}
  foreach($key in $sets.Keys){Assert-Fixed ($Row[$key] -is [Collections.IList]) 'projection_array';foreach($value in $Row[$key]){Assert-Fixed ($value -is [string] -and $value -cin $sets[$key]) 'projection_enum'}}
  if($Row.outcome -cne 'unobserved'){Assert-Fixed ($Row.terminal -and $Row.job_zero -and -not $Row.forced -and $Row.capture_complete -and -not $Row.unknown_marker) 'projection_acceptance'}
  if($Row.outcome -ceq 'passed'){Assert-Fixed ($Row.process_exit -ceq 'zero') 'projection_pass_exit'}
@@ -467,6 +555,13 @@ try {
   Write-NewJson (Join-Path $inputRoot 'binding.json') $binding
   $bindingObservationPoint='guardAfter'
   Assert-HeadlessBoundInputs $binding $PSCommandPath
+  $highRow=$null
+  if(-not $capabilityMode){
+   Add-Type -Path (Join-Path $repoRoot 'scripts/DesktopProcessOwner.cs') -ErrorAction Stop 2>$null
+   $highRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_high'
+   Write-NewJson (Join-Path $evidenceRoot 'ci-high-compatibility.json') $highRow
+   Assert-CapabilityCompatibilityRow $highRow $binding $facts 'ci_high'
+  }
   $phase='medium_bootstrap'
   $pwsh=[Diagnostics.Process]::GetCurrentProcess().MainModule.FileName;$pwshSha=[WinsmuxDesktopNativeActor]::NativeFile($pwsh)['sha256']
   $outer=[WinsmuxDesktopNativeActor]::StartNative('medium-bootstrap',$pwsh,$pwshSha,$root,$source,$inputRoot,$evidenceRoot,$PSCommandPath)
@@ -493,8 +588,10 @@ try {
   Assert-Fixed ((@($child.Keys|Sort-Object -CaseSensitive)-join [char]10) -ceq (@($childKeys|Sort-Object -CaseSensitive)-join [char]10)) 'child_result_shape'
   Assert-Fixed ($child.nsis_success_proven -eq $false -and $child.normal_gui_success_proven -eq $false -and $child.same_sid -eq $true -and $child.same_session -eq $true -and $child.restricted_medium -eq $true) 'child_result_scope'
   for($i=0;$i -lt 2;$i++){Assert-HeadlessProjectionShape $child.tests[$i] $tests[$i]}
+  $mediumRow=Read-OwnedJson (Join-Path $evidenceRoot 'ci-medium-compatibility.json')
+  Assert-CapabilityCompatibilityRow $mediumRow $binding $medium 'ci_restricted_medium'
   $result.tests=@($child.tests)
-  $result.outcome=if($result.actor_admitted -and $result.root_terminal -and $result.root_job_zero -and -not $result.forced -and @($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0 -and $outer.ExitCode -eq 0){'passed'}else{'observed_failure'}
+  $result.outcome=if($null -ne $highRow -and $highRow.outcome -ceq 'passed' -and $mediumRow.outcome -ceq 'passed' -and $result.actor_admitted -and $result.root_terminal -and $result.root_job_zero -and -not $result.forced -and @($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0 -and $outer.ExitCode -eq 0){'passed'}else{'observed_failure'}
   }
  }else{
   Assert-Fixed ($DesktopNativeLifecycle -and $DesktopNativeFormat -ceq 'NSIS' -and $Surface -ceq 'Desktop' -and $Version -ceq '0.38.0' -and $ReleaseTag -ceq 'v0.38.0' -and $Repository -ceq 'Sora-bluesky/winsmux' -and $Json) 'fixed_child_arguments'
@@ -513,27 +610,11 @@ try {
    $phase='token_observation'
    Invoke-CapabilityTokenCapture $binding $PSCommandPath $capabilityResult
   }else{
-  $phase='headless_cases';$observed=[Collections.Generic.List[object]]::new()
-  foreach($test in $tests){
-   Assert-HeadlessBoundInputs $binding $PSCommandPath
-   Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $binding.cli_sha256) 'test_input_changed'
-   $owned=$null;$terminal=$false
-   try{
-    $owned=[Winsmux.DesktopNative.DesktopProcessOwner]::Start($testImage,[string[]]@('--exact',$test,'--test-threads=1','--nocapture'),@{},$false,16384,180000)
-    $terminal=$owned.WaitTerminal(180000,500)
-    if(-not $terminal){$owned.ForceFailureCleanup(180000,500);$terminal=$owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted}
-    $out=$owned.StdoutTask.GetAwaiter().GetResult();$err=$owned.StderrTask.GetAwaiter().GetResult()
-    $projection=ConvertTo-HeadlessFixedProjection -Stdout $out.RetainedBytes -Stderr $err.RetainedBytes -Truncated ($out.Truncated -or $err.Truncated) -Test $test -ExitCode $owned.ExitCode -Terminal $terminal -JobZero ($owned.ActiveMembers -eq 0) -Forced $owned.Forced
-    $observed.Add($projection);$result.tests=$observed.ToArray()
-    # Raw retained bytes stay in memory and are never written, emitted or uploaded.
-    $out=$null;$err=$null
-   }finally{
-    if($null -ne $owned){if(-not $terminal){$owned.ForceFailureCleanup(180000,500)};if($owned.HasExited -and $owned.ActiveMembers -eq 0 -and $owned.CaptureCompleted){$owned.Dispose()}}
-   }
-   Assert-HeadlessBoundInputs $binding $PSCommandPath
-   Assert-Fixed ([WinsmuxDesktopNativeActor]::NativeFile($testImage)['sha256'] -ceq $binding.test_sha256 -and [WinsmuxDesktopNativeActor]::NativeFile($cliImage)['sha256'] -ceq $binding.cli_sha256) 'test_output_changed_inputs'
-  }
-  $result.tests=$observed.ToArray();$result.outcome=if(@($result.tests|Where-Object{$_.outcome -cne 'passed'}).Count -eq 0){'passed'}else{'observed_failure'}
+  $phase='headless_cases'
+  $mediumRow=Invoke-CapabilityCompatibilityCases $binding $PSCommandPath $facts 'ci_restricted_medium'
+  Write-NewJson (Join-Path $evidenceRoot 'ci-medium-compatibility.json') $mediumRow
+  Assert-CapabilityCompatibilityRow $mediumRow $binding $facts 'ci_restricted_medium'
+  $result.tests=@($mediumRow.tests);$result.outcome=$mediumRow.outcome
   }
  }
 }catch{

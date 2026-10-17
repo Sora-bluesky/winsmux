@@ -42,6 +42,208 @@ const SE_GROUP_ENABLED: u32 = 0x0000_0004;
 const SE_GROUP_USE_FOR_DENY_ONLY: u32 = 0x0000_0010;
 
 
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub(super) enum GuardFailure {
+    PreexistingImpersonation=1, ThreadContextUnobserved, EffectiveTokenUnobserved,
+    EffectiveLevelInsufficient, EffectiveIdentityMismatch,
+}
+impl GuardFailure {
+    #[cfg(debug_assertions)]
+    pub(super) fn label(self)->&'static str {match self {
+        Self::PreexistingImpersonation=>"preexisting_impersonation",Self::ThreadContextUnobserved=>"thread_context_unobserved",
+        Self::EffectiveTokenUnobserved=>"effective_token_unobserved",Self::EffectiveLevelInsufficient=>"effective_level_insufficient",
+        Self::EffectiveIdentityMismatch=>"effective_identity_mismatch",
+    }}
+    #[cfg(debug_assertions)]
+    pub(super) fn from_index(index:u32)->Option<Self>{Some(match index {
+        1=>Self::PreexistingImpersonation,2=>Self::ThreadContextUnobserved,3=>Self::EffectiveTokenUnobserved,
+        4=>Self::EffectiveLevelInsufficient,5=>Self::EffectiveIdentityMismatch,_=>return None,
+    })}
+}
+#[derive(Clone,Copy,PartialEq,Eq)]
+enum ThreadContext {Absent,Present,Unknown}
+fn thread_context()->ThreadContext {
+    let mut raw=null_mut();
+    if unsafe {OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,1,&mut raw)}==0 {
+        return if unsafe {windows_sys::Win32::Foundation::GetLastError()}==windows_sys::Win32::Foundation::ERROR_NO_TOKEN {
+            ThreadContext::Absent
+        }else{ThreadContext::Unknown};
+    }
+    match unsafe {OwnedHandle::from_raw(raw)} {Ok(_)=>ThreadContext::Present,Err(_)=>ThreadContext::Unknown}
+}
+trait ImpersonationBackend {
+    fn before(&self)->ThreadContext;
+    fn assign(&self)->bool;
+    fn restore(&self)->bool;
+    fn fatal(&self)->!;
+}
+fn restoration_fail_stop()->! {
+    unsafe {windows_sys::Win32::System::Threading::TerminateProcess(GetCurrentProcess(),0x574d4752);}
+    std::process::abort()
+}
+struct WindowsImpersonation<F:Fn()->bool> {assign:F}
+impl<F:Fn()->bool> ImpersonationBackend for WindowsImpersonation<F> {
+    fn before(&self)->ThreadContext {thread_context()}
+    fn assign(&self)->bool {(self.assign)()}
+    fn restore(&self)->bool {unsafe {RevertToSelf()!=0}}
+    fn fatal(&self)->! {restoration_fail_stop()}
+}
+// The sole owner after any successful assignment. Drop never calls tracing code.
+struct Restoration<'a,B:ImpersonationBackend> {backend:&'a B,armed:bool}
+impl<'a,B:ImpersonationBackend> Restoration<'a,B> {
+    fn new(backend:&'a B)->Self {Self{backend,armed:true}}
+    fn finish(&mut self) {
+        if self.armed {
+            self.armed=false;
+            if !self.backend.restore() {self.backend.fatal();}
+        }
+    }
+}
+impl<B:ImpersonationBackend> Drop for Restoration<'_,B> {fn drop(&mut self){self.finish();}}
+fn run_impersonation<B:ImpersonationBackend,T,E>(backend:&B,
+    before_failed:impl FnOnce(GuardFailure)->E,assignment_failed:impl FnOnce()->E,
+    after_assignment:impl FnOnce()->Result<(),E>,operation:impl FnOnce()->Result<T,E>,
+    restored:impl FnOnce())->Result<T,E> {
+    let reason=match backend.before(){ThreadContext::Absent=>None,ThreadContext::Present=>Some(GuardFailure::PreexistingImpersonation),ThreadContext::Unknown=>Some(GuardFailure::ThreadContextUnobserved)};
+    if let Some(reason)=reason {return Err(before_failed(reason));}
+    if !backend.assign() {return Err(assignment_failed());}
+    let mut owner=Restoration::new(backend);
+    let result=after_assignment().and_then(|()|operation());
+    owner.finish();
+    restored();
+    result
+}
+pub(super) fn with_impersonation_lifetime<T,E>(assignment:impl Fn()->bool,
+    before_failed:impl FnOnce(GuardFailure)->E,assignment_failed:impl FnOnce()->E,
+    after_assignment:impl FnOnce()->Result<(),E>,operation:impl FnOnce()->Result<T,E>,restored:impl FnOnce())->Result<T,E> {
+    run_impersonation(&WindowsImpersonation{assign:assignment},before_failed,assignment_failed,after_assignment,operation,restored)
+}
+fn effective_level(kind:i32,level:i32)->Result<(),GuardFailure> {
+    if kind!=2 || !matches!(level,0..=3) {return Err(GuardFailure::EffectiveTokenUnobserved);}
+    if level<2 {return Err(GuardFailure::EffectiveLevelInsufficient);}
+    Ok(())
+}
+fn capability_identity_matches(a:&Identity,b:&Identity,a_auth:(u32,i32),b_auth:(u32,i32))->bool {
+    a.user.bytes()==b.user.bytes() && a.logon.bytes()==b.logon.bytes() && a_auth==b_auth
+}
+fn effective_capability(token:HANDLE)->Result<(),GuardFailure> {
+    use windows_sys::Win32::Security::{TokenStatistics,TOKEN_STATISTICS};
+    let mut raw=null_mut();
+    if unsafe {OpenThreadToken(GetCurrentThread(),TOKEN_QUERY,1,&mut raw)}==0 {return Err(GuardFailure::EffectiveTokenUnobserved);}
+    let effective=unsafe {OwnedHandle::from_raw(raw)}.map_err(|_|GuardFailure::EffectiveTokenUnobserved)?;
+    let stats=capability_constraints::fixed::<TOKEN_STATISTICS>(effective.raw(),TokenStatistics).ok_or(GuardFailure::EffectiveTokenUnobserved)?;
+    effective_level(stats.TokenType,stats.ImpersonationLevel)?;
+    let intended=capability_constraints::fixed::<TOKEN_STATISTICS>(token,TokenStatistics).ok_or(GuardFailure::EffectiveTokenUnobserved)?;
+    let a=Identity::from_token(effective.raw()).map_err(|_|GuardFailure::EffectiveTokenUnobserved)?;
+    let b=Identity::from_token(token).map_err(|_|GuardFailure::EffectiveTokenUnobserved)?;
+    if !capability_identity_matches(&a,&b,(stats.AuthenticationId.LowPart,stats.AuthenticationId.HighPart),
+        (intended.AuthenticationId.LowPart,intended.AuthenticationId.HighPart)) {
+        return Err(GuardFailure::EffectiveIdentityMismatch);
+    }
+    Ok(())
+}
+
+#[cfg(all(test,debug_assertions))]
+mod impersonation_lifetime_tests {
+    use super::*;
+    use std::cell::Cell;
+    struct Mock {context:ThreadContext,assigned:bool,restore_ok:bool,assigns:Cell<u32>,restores:Cell<u32>,fatals:Cell<u32>}
+    impl Mock {fn new(context:ThreadContext,assigned:bool,restore_ok:bool)->Self {Self{context,assigned,restore_ok,assigns:Cell::new(0),restores:Cell::new(0),fatals:Cell::new(0)}}}
+    impl ImpersonationBackend for Mock {
+        fn before(&self)->ThreadContext{self.context}
+        fn assign(&self)->bool{self.assigns.set(self.assigns.get()+1);self.assigned}
+        fn restore(&self)->bool{self.restores.set(self.restores.get()+1);self.restore_ok}
+        fn fatal(&self)->!{self.fatals.set(self.fatals.get()+1);panic!("mock fatal; real seam is owned subprocess proof")}
+    }
+    #[test]
+    fn server_shape_gate_distinguishes_unknown_low_level_and_identity() {
+        for (kind,level,expected) in [(1,2,Err(GuardFailure::EffectiveTokenUnobserved)),(2,-1,Err(GuardFailure::EffectiveTokenUnobserved)),
+            (2,4,Err(GuardFailure::EffectiveTokenUnobserved)),(2,0,Err(GuardFailure::EffectiveLevelInsufficient)),
+            (2,1,Err(GuardFailure::EffectiveLevelInsufficient)),(2,2,Ok(())),(2,3,Ok(()))] {assert_eq!(effective_level(kind,level),expected);}
+        fn sid(rid:u32)->Sid {let mut bytes=[0;SID_MAX_BYTES];bytes[..8].copy_from_slice(&[1,1,0,0,0,0,0,5]);bytes[8..12].copy_from_slice(&rid.to_le_bytes());Sid{bytes,byte_len:12}}
+        let a=Identity{user:sid(1),logon:sid(2)};
+        assert!(capability_identity_matches(&a,&a,(3,4),(3,4)));
+        assert!(!capability_identity_matches(&a,&a,(3,4),(3,5)));
+        assert!(!capability_identity_matches(&a,&Identity{user:sid(9),logon:sid(2)},(3,4),(3,4)));
+        assert!(!capability_identity_matches(&a,&Identity{user:sid(1),logon:sid(9)},(3,4),(3,4)));
+    }
+    #[test]
+    fn prequery_and_false_assignment_never_own_caller_context() {
+        for (context,reason) in [(ThreadContext::Present,GuardFailure::PreexistingImpersonation),(ThreadContext::Unknown,GuardFailure::ThreadContextUnobserved)] {
+            let m=Mock::new(context,true,true);let actions=Cell::new(0);
+            let result=run_impersonation(&m,|r|r,||panic!("no assignment"),||Ok(()),||{actions.set(1);Ok(())},||panic!("no restoration"));
+            assert_eq!(result,Err(reason));assert_eq!((m.assigns.get(),m.restores.get(),actions.get(),m.fatals.get()),(0,0,0,0));
+        }
+        let m=Mock::new(ThreadContext::Absent,false,true);
+        let result=run_impersonation(&m,|_|"prequery",||"assignment",||Ok(()),||Ok(()),||panic!("not armed"));
+        assert_eq!(result,Err("assignment"));assert_eq!((m.assigns.get(),m.restores.get(),m.fatals.get()),(1,0,0));
+    }
+    #[test]
+    fn every_post_assignment_refusal_restores_once_before_return() {
+        for reason in [GuardFailure::EffectiveTokenUnobserved,GuardFailure::EffectiveLevelInsufficient,GuardFailure::EffectiveIdentityMismatch] {
+            let m=Mock::new(ThreadContext::Absent,true,true);let actions=Cell::new(0);let callback=Cell::new(0);
+            let result=run_impersonation(&m,|r|r,||panic!("assignment succeeded"),||Err(reason),||{actions.set(1);Ok(())},||{assert_eq!(m.restores.get(),1);callback.set(1);});
+            assert_eq!(result,Err(reason));assert_eq!((m.assigns.get(),m.restores.get(),actions.get(),callback.get()),(1,1,0,1));
+        }
+    }
+    #[test]
+    fn all_purposes_keep_action_error_and_unwind_cleanup_exactly_once() {
+        // The three production purposes and raw-test scope use this same owner;
+        // the purpose-specific closure retains its predicates and accounting.
+        for _purpose in ["server","plain_peer","charged_peer","raw_test_probe"] {
+            for success in [false,true] {
+                let m=Mock::new(ThreadContext::Absent,true,true);let actions=Cell::new(0);
+                let result=run_impersonation(&m,|_|"prequery",||"assignment",||Ok(()),||{actions.set(actions.get()+1);if success{Ok(7)}else{Err("operation")}},||{});
+                assert_eq!(result,if success{Ok(7)}else{Err("operation")});assert_eq!((actions.get(),m.restores.get()),(1,1));
+            }
+            for before_action in [true,false] {
+                let m=Mock::new(ThreadContext::Absent,true,true);let actions=Cell::new(0);
+                let panic=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _:Result<(),&str>=run_impersonation(&m,|_|"prequery",||"assignment",||{if before_action{panic!("validation/trace unwind")};Ok(())},||{actions.set(1);panic!("action unwind")},||panic!("no unwind callback"));
+                }));
+                assert!(panic.is_err());assert_eq!(m.restores.get(),1);assert_eq!(actions.get(),if before_action{0}else{1});
+            }
+        }
+    }
+    #[test]
+    fn cleanup_failure_has_priority_and_disarms_before_any_callback() {
+        let m=Mock::new(ThreadContext::Absent,true,false);let callbacks=Cell::new(0);
+        let fatal=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _:Result<(),&str>=run_impersonation(&m,|_|"prequery",||"assignment",||Ok(()),||Err("operation"),||callbacks.set(1));
+        }));
+        assert!(fatal.is_err());assert_eq!((m.restores.get(),m.fatals.get(),callbacks.get()),(1,1,0));
+        let m=Mock::new(ThreadContext::Absent,true,true);
+        let unwind=std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _:Result<(),&str>=run_impersonation(&m,|_|"prequery",||"assignment",||Ok(()),||Ok(()),||panic!("success callback unwind"));
+        }));
+        assert!(unwind.is_err());assert_eq!(m.restores.get(),1);
+    }
+}
+#[cfg(debug_assertions)]
+pub(super) fn restoration_failure_probe()->! {
+    struct Injected {token:HANDLE}
+    impl ImpersonationBackend for Injected {
+        fn before(&self)->ThreadContext {thread_context()}
+        fn assign(&self)->bool {unsafe {ImpersonateLoggedOnUser(self.token)!=0}}
+        fn restore(&self)->bool {
+            if unsafe {RevertToSelf()}==0 {restoration_fail_stop();}
+            // Only this explicit test entry injects the cleanup result; no environment
+            // variable is read by production assignment or restoration paths.
+            let marker=b"WINSMUX_GUARD_RESTORE_INJECTED\n";let mut written=0;
+            unsafe {windows_sys::Win32::Storage::FileSystem::WriteFile(
+                windows_sys::Win32::System::Console::GetStdHandle(windows_sys::Win32::System::Console::STD_ERROR_HANDLE),
+                marker.as_ptr(),marker.len() as u32,&mut written,null_mut());}
+            false
+        }
+        fn fatal(&self)->! {restoration_fail_stop()}
+    }
+    let identity=Identity::current().expect("guard proof primary");
+    let capability=ServerCapabilityToken::create(&identity).expect("guard proof capability");
+    let _:Result<(),IoError>=run_impersonation(&Injected{token:capability.token.raw()},|_|IoError::Failed,||IoError::Failed,
+        ||effective_capability(capability.token.raw()).map_err(|_|IoError::Failed),||Ok(()),||{});
+    panic!("WINSMUX_GUARD_CONTINUATION")
+}
+
 // This observation belongs only to one traced initial public-pipe call. It never
 // contains native error values, identities, names or descriptor strings.
 #[cfg(debug_assertions)]
@@ -125,6 +327,7 @@ impl PublicPipeFailureApi {
 pub(super) struct PublicPipeFailures {
     pub(super) operation: Option<(PublicPipeFailureApi, PublicPipeErrorClass)>,
     pub(super) revert: Option<PublicPipeErrorClass>,
+    pub(super) guard: Option<GuardFailure>,
 }
 
 #[cfg(debug_assertions)]
@@ -153,11 +356,20 @@ impl PublicPipeObservation {
         self.failures.set(failures);
     }
 
+    pub(super) fn guard_failed(&self,reason:GuardFailure) {
+        let mut failures=self.failures.get();failures.guard=Some(reason);self.failures.set(failures);
+        if let Some(snapshot)=&self.token_query {snapshot.borrow_mut().guard_failed(reason);}
+    }
+
     pub(super) fn failures(&self) -> PublicPipeFailures { self.failures.get() }
 
     pub(super) fn with_token_query() -> Self {
         Self { failures: std::cell::Cell::new(PublicPipeFailures::default()),
             token_query: Some(std::cell::RefCell::new(capability_token_query::Snapshot::begin())) }
+    }
+    pub(super) fn refuse_token_context(&self) {
+        let reason=self.token_query.as_ref().map(|s|s.borrow().context_failure()).unwrap_or(GuardFailure::ThreadContextUnobserved);
+        self.guard_failed(reason);
     }
     pub(super) fn token_context_canonical(&self) -> bool {
         self.token_query.as_ref().is_some_and(|s| s.borrow().canonical())
@@ -209,7 +421,7 @@ mod capability_token_query {
         }
     }
 
-    fn has_restrictions(token: HANDLE) -> Option<bool> {
+    pub(super) fn has_restrictions(token: HANDLE) -> Option<bool> {
         let mut required = 0;
         unsafe { GetTokenInformation(token, TokenHasRestrictions, null_mut(), 0, &mut required); }
         if !matches!(required, 1 | 4) { return None; }
@@ -250,34 +462,7 @@ mod capability_token_query {
         }
     }
 
-    fn fixed<T>(token: HANDLE, class: i32) -> Option<T> {
-        let mut value = std::mem::MaybeUninit::<T>::zeroed();
-        let mut bytes = 0;
-        let ok = unsafe { GetTokenInformation(token, class, value.as_mut_ptr().cast(),
-            size_of::<T>() as u32, &mut bytes) };
-        if ok == 0 || bytes as usize != size_of::<T>() { return None; }
-        Some(unsafe { value.assume_init() })
-    }
-
-    fn variable(token: HANDLE, class: i32) -> Option<(Vec<u64>, usize)> {
-        let mut bytes = 0;
-        unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut bytes); }
-        if bytes == 0 || bytes as usize > TOKEN_GROUPS_BYTES { return None; }
-        let mut storage = vec![0u64; (bytes as usize + 7) / 8];
-        let capacity = (storage.len() * 8) as u32;
-        if unsafe { GetTokenInformation(token, class, storage.as_mut_ptr().cast(),
-            capacity, &mut bytes) } == 0 || bytes == 0 || bytes > capacity { return None; }
-        Some((storage, bytes as usize))
-    }
-
-    fn restricting_empty(token: HANDLE) -> Option<bool> {
-        let (storage, bytes) = variable(token, TokenRestrictedSids)?;
-        if bytes < size_of::<u32>() { return None; }
-        let count = unsafe { storage.as_ptr().cast::<u32>().read() } as usize;
-        let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
-        if count != 0 && (bytes < offset || count > (bytes - offset) / size_of::<SID_AND_ATTRIBUTES>()) { return None; }
-        Some(count == 0)
-    }
+    use super::capability_constraints::{fixed, variable, restricting_empty, Constraints, constraint_relations};
 
     fn impersonate_privilege(token: HANDLE) -> Option<(bool, bool)> {
         let name = wide("SeImpersonatePrivilege");
@@ -298,6 +483,155 @@ mod capability_token_query {
             }
         }
         Some((found.is_some(), found.unwrap_or(false)))
+    }
+
+    #[derive(Default)]
+    struct Facts {
+        kind: Option<&'static str>, level: Option<&'static str>,
+        restricted: Option<bool>, restricting_empty: Option<bool>,
+        privilege: Option<(bool, bool)>, identity: Option<Identity>,
+        authentication: Option<(u32, i32)>,
+    }
+    impl Facts {
+        fn read(token: HANDLE) -> Self {
+            let statistics = fixed::<TOKEN_STATISTICS>(token, TokenStatistics);
+            let kind = statistics.as_ref().and_then(|s| match s.TokenType {
+                1 => Some("primary"), 2 => Some("impersonation"), _ => None });
+            let level = statistics.as_ref().and_then(|s| match s.TokenType {
+                1 => Some("not_applicable"),
+                2 => match s.ImpersonationLevel { 0 => Some("anonymous"), 1 => Some("identification"),
+                    2 => Some("impersonation"), 3 => Some("delegation"), _ => None }, _ => None });
+            Self { kind, level,
+                restricted: has_restrictions(token),
+                restricting_empty: restricting_empty(token), privilege: impersonate_privilege(token),
+                identity: Identity::from_token(token).ok(),
+                authentication: statistics.map(|s| (s.AuthenticationId.LowPart, s.AuthenticationId.HighPart)) }
+        }
+        fn json(&self) -> Value {
+            json!({"token_type": observed(self.kind), "impersonation_level": observed(self.level),
+                "has_restrictions": observed(self.restricted), "restricting_sids_empty": observed(self.restricting_empty),
+                "se_impersonate_present": observed(self.privilege.map(|p| p.0)),
+                "se_impersonate_enabled": observed(self.privilege.map(|p| p.1))})
+        }
+    }
+    fn observed<T: serde::Serialize>(value: Option<T>) -> Value {
+        json!({"observed": value.is_some(), "value": value})
+    }
+    fn thread() -> (Option<bool>, Facts) {
+        let mut token = null_mut();
+        if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
+            let absent = if unsafe { GetLastError() } == ERROR_NO_TOKEN { Some(true) } else { None };
+            return (absent, Facts::default());
+        }
+        match unsafe { OwnedHandle::from_raw(token) } {
+            Ok(token) => (Some(false), Facts::read(token.raw())),
+            Err(_) => (None, Facts::default()),
+        }
+    }
+    fn relations(a: &Facts, b: &Facts) -> Value {
+        json!({"same_user": observed(a.identity.as_ref().zip(b.identity.as_ref()).map(|(a,b)| a.user.equals(&b.user))),
+            "same_logon": observed(a.identity.as_ref().zip(b.identity.as_ref()).map(|(a,b)| a.logon.equals(&b.logon))),
+            "same_authentication_id": observed(a.authentication.zip(b.authentication).map(|(a,b)| a == b))})
+    }
+    pub(super) struct Snapshot {
+        primary: Facts, generation: Facts, effective: Facts,
+        primary_constraints: Constraints, generation_constraints: Constraints,
+        before_absent: Option<bool>, after_absent: Option<bool>,
+        identity: &'static str, capability: &'static str, impersonate: &'static str,
+        pipe: &'static str, revert: &'static str, result: &'static str,
+    }
+    impl Snapshot {
+        pub(super) fn begin() -> Self {
+            let mut token = null_mut();
+            let mut primary_constraints = Constraints::default();
+            let primary = if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0 {
+                unsafe { OwnedHandle::from_raw(token) }.ok().map(|t| {
+                    primary_constraints = Constraints::read(t.raw());
+                    Facts::read(t.raw())
+                }).unwrap_or_default()
+            } else { Facts::default() };
+            let (before_absent, _) = thread();
+            Self { primary, generation: Facts::default(), effective: Facts::default(), before_absent,
+                primary_constraints, generation_constraints: Constraints::default(),
+                after_absent: None, identity: "not_attempted", capability: "not_attempted",
+                impersonate: "not_attempted", pipe: "not_attempted", revert: "not_attempted", result: "not_attempted" }
+        }
+        pub(super) fn guard_failed(&mut self,reason:GuardFailure) {
+            match reason {GuardFailure::PreexistingImpersonation=>self.before_absent=Some(false),
+                GuardFailure::ThreadContextUnobserved=>self.before_absent=None,_=>{}}
+        }
+        pub(super) fn context_failure(&self)->GuardFailure {
+            if self.before_absent==Some(false){GuardFailure::PreexistingImpersonation}else{GuardFailure::ThreadContextUnobserved}
+        }
+        pub(super) fn canonical(&self) -> bool { self.before_absent == Some(true) }
+        pub(super) fn identity(&mut self, success: bool) { self.identity = if success { "succeeded" } else { "failed" }; }
+        pub(super) fn capability(&mut self, token: Option<HANDLE>) {
+            self.capability = if token.is_some() { "succeeded" } else { "failed" };
+            if let Some(token) = token {
+                self.generation_constraints = Constraints::read(token);
+                self.generation = Facts::read(token);
+            }
+        }
+        pub(super) fn impersonated(&mut self, success: bool) {
+            self.impersonate = if success { "succeeded" } else { "failed" };
+            if success { self.effective = thread().1; }
+        }
+        pub(super) fn pipe(&mut self, success: bool) { self.pipe = if success { "succeeded" } else { "failed" }; }
+        pub(super) fn reverted(&mut self, success: bool) {
+            self.revert = if success { "succeeded" } else { "failed" };
+            self.after_absent = thread().0;
+        }
+        pub(super) fn finish(&mut self, result: bool) { self.result = if result { "succeeded" } else { "failed" }; }
+        pub(super) fn json(&self, failures: PublicPipeFailures) -> Value {
+            let operation = failures.operation.map(|(api,class)| json!({"api":api.label(),"class":class.label()}));
+            json!({"schema":"winsmux-server-capability-token-observation/v1",
+                "thread_absent_before": observed(self.before_absent), "thread_absent_after": observed(self.after_absent),
+                "primary": self.primary.json(), "generation": self.generation.json(), "effective": self.effective.json(),
+                "generation_to_primary": relations(&self.generation,&self.primary),
+                "generation_constraints": constraint_relations(&self.primary_constraints,&self.generation_constraints),
+                "effective_to_generation": relations(&self.effective,&self.generation),
+                "operations":{"identity":self.identity,"capability":self.capability,"impersonate":self.impersonate,
+                    "pipe":self.pipe,"revert":self.revert,"result":self.result},
+                "operation_failure": observed(operation), "revert_failure": observed(failures.revert.map(|class|class.label())),
+                "guard_failure": observed(failures.guard.map(|reason|reason.label()))})
+        }
+    }
+}
+
+// Shared production queries and comparisons; serialization remains debug-only.
+mod capability_constraints {
+    use super::*;
+    use windows_sys::Win32::Security::{TokenPrivileges, TokenRestrictedSids, TokenStatistics,
+        TOKEN_PRIVILEGES, TOKEN_STATISTICS, SID_AND_ATTRIBUTES, LUID_AND_ATTRIBUTES};
+    #[cfg(debug_assertions)]
+    use serde_json::{json,Value};
+    pub(super) fn fixed<T>(token: HANDLE, class: i32) -> Option<T> {
+        let mut value = std::mem::MaybeUninit::<T>::zeroed();
+        let mut bytes = 0;
+        let ok = unsafe { GetTokenInformation(token, class, value.as_mut_ptr().cast(),
+            size_of::<T>() as u32, &mut bytes) };
+        if ok == 0 || bytes as usize != size_of::<T>() { return None; }
+        Some(unsafe { value.assume_init() })
+    }
+
+    pub(super) fn variable(token: HANDLE, class: i32) -> Option<(Vec<u64>, usize)> {
+        let mut bytes = 0;
+        unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut bytes); }
+        if bytes == 0 || bytes as usize > TOKEN_GROUPS_BYTES { return None; }
+        let mut storage = vec![0u64; (bytes as usize + 7) / 8];
+        let capacity = (storage.len() * 8) as u32;
+        if unsafe { GetTokenInformation(token, class, storage.as_mut_ptr().cast(),
+            capacity, &mut bytes) } == 0 || bytes == 0 || bytes > capacity { return None; }
+        Some((storage, bytes as usize))
+    }
+
+    pub(super) fn restricting_empty(token: HANDLE) -> Option<bool> {
+        let (storage, bytes) = variable(token, TokenRestrictedSids)?;
+        if bytes < size_of::<u32>() { return None; }
+        let count = unsafe { storage.as_ptr().cast::<u32>().read() } as usize;
+        let offset = std::mem::offset_of!(TOKEN_GROUPS, Groups);
+        if count != 0 && (bytes < offset || count > (bytes - offset) / size_of::<SID_AND_ATTRIBUTES>()) { return None; }
+        Some(count == 0)
     }
 
     // Query-only public attributes. Native SIDs/LUIDs never enter the JSON.
@@ -373,20 +707,23 @@ mod capability_token_query {
     }
     fn mandatory_policy(value: u32) -> Option<u32> { (value & !3 == 0).then_some(value) }
     fn elevation_type(value: i32) -> Option<i32> { matches!(value, 1..=3).then_some(value) }
-    #[derive(Default)]
-    struct Constraints {
+    #[derive(Clone, Default)]
+    pub(super) struct Constraints {
         groups: Option<Vec<(Sid, u32)>>, logon: Option<Sid>, privileges: Option<Vec<Privilege>>,
         integrity: Option<u32>, policy: Option<u32>, elevation: Option<bool>, elevation_type: Option<i32>,
+        restricting_empty: Option<bool>, app_container: Option<bool>,
     }
     impl Constraints {
-        fn read(token: HANDLE) -> Self {
+        pub(super) fn read(token: HANDLE) -> Self {
             use windows_sys::Win32::Security::{TokenMandatoryPolicy, TokenElevation, TokenElevationType,
                 TOKEN_MANDATORY_POLICY, TOKEN_ELEVATION};
             Self { groups: groups(token), logon: token_sid(token, TokenLogonSid).ok(),
                 privileges: privileges(token), integrity: integrity(token),
                 policy: fixed::<TOKEN_MANDATORY_POLICY>(token, TokenMandatoryPolicy).and_then(|p| mandatory_policy(p.Policy)),
                 elevation: fixed::<TOKEN_ELEVATION>(token, TokenElevation).map(|e| e.TokenIsElevated != 0),
-                elevation_type: fixed::<i32>(token, TokenElevationType).and_then(elevation_type) }
+                elevation_type: fixed::<i32>(token, TokenElevationType).and_then(elevation_type),
+                restricting_empty: restricting_empty(token),
+                app_container: fixed::<u32>(token, windows_sys::Win32::Security::TokenIsAppContainer).map(|v|v!=0) }
         }
     }
     fn comparable_group(sid: &Sid, attributes: u32, logon: &Sid, expected_integrity: Option<u32>) -> Option<bool> {
@@ -423,20 +760,181 @@ mod capability_token_query {
                 a.iter().any(|(other,attributes)| id == other && attributes & 2 != 0)
             })))
     }
-    fn constraint_relations(a: &Constraints, b: &Constraints) -> Value {
+    fn relations(a: &Constraints, b: &Constraints) -> [Option<bool>; 8] {
         let groups = group_relations(a,b);
         let privileges = privilege_relations(a,b);
-        json!({"deny_only_groups_preserved": observed(groups.map(|v|v.0)),
-            "no_new_allow_groups": observed(groups.map(|v|v.1)),
-            "no_added_privileges": observed(privileges.map(|v|v.0)),
-            "no_newly_enabled_privileges": observed(privileges.map(|v|v.1)),
-            "integrity_not_raised": observed(a.integrity.zip(b.integrity).map(|(a,b)|b<=a)),
-            "mandatory_policy_same": observed(a.policy.zip(b.policy).map(|(a,b)|a==b)),
-            "elevation_same": observed(a.elevation.zip(b.elevation).map(|(a,b)|a==b)),
-            "elevation_type_same": observed(a.elevation_type.zip(b.elevation_type).map(|(a,b)|a==b))})
+        [groups.map(|v|v.0),groups.map(|v|v.1),privileges.map(|v|v.0),privileges.map(|v|v.1),
+            a.integrity.zip(b.integrity).map(|(a,b)|b<=a),a.policy.zip(b.policy).map(|(a,b)|a==b),
+            a.elevation.zip(b.elevation).map(|(a,b)|a==b),a.elevation_type.zip(b.elevation_type).map(|(a,b)|a==b)]
+    }
+    #[cfg(debug_assertions)]
+    fn observed<T: serde::Serialize>(value: Option<T>) -> Value {
+        json!({"observed": value.is_some(), "value": value})
+    }
+    #[cfg(debug_assertions)]
+    pub(super) fn constraint_relations(a: &Constraints, b: &Constraints) -> Value {
+        let r=relations(a,b);
+        json!({"deny_only_groups_preserved":observed(r[0]),"no_new_allow_groups":observed(r[1]),
+            "no_added_privileges":observed(r[2]),"no_newly_enabled_privileges":observed(r[3]),
+            "integrity_not_raised":observed(r[4]),"mandatory_policy_same":observed(r[5]),
+            "elevation_same":observed(r[6]),"elevation_type_same":observed(r[7])})
     }
 
-    #[cfg(test)]
+    #[cfg(debug_assertions)]
+    pub(super) fn caller_class() -> Option<Value> {
+        let mut raw=null_mut();
+        if unsafe {OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&mut raw)}==0 {return None;}
+        let token=unsafe {OwnedHandle::from_raw(raw)}.ok()?;
+        let value=Constraints::read(token.raw());
+        let statistics=fixed::<TOKEN_STATISTICS>(token.raw(),TokenStatistics)?;
+        if statistics.TokenType!=1 {return None;}
+        let identity=Identity::from_token(token.raw()).ok()?;
+        let session=fixed::<u32>(token.raw(),windows_sys::Win32::Security::TokenSessionId)?;
+        let restricted=super::capability_token_query::has_restrictions(token.raw())?;
+        let sid_sha256=Sha256::digest(identity.user.bytes()).iter().map(|byte|format!("{byte:02x}")).collect::<String>();
+        Some(json!({"sid_sha256":sid_sha256,"session":session,"token_type":1,
+            "elevation":if value.elevation? {1}else{0},"elevation_type":value.elevation_type?,
+            "integrity_rid":value.integrity?,"restricted":if restricted {1}else{0},
+            "app_container":if value.app_container? {1}else{0}}))
+    }
+
+    struct Reduction {
+        deny: Vec<Sid>, delete: Vec<(u32,i32)>, lower_integrity: Option<u32>, lua: bool,
+    }
+    enum Plan { Compatible, Reduce(Reduction) }
+    fn complete(value: &Constraints) -> bool {
+        value.restricting_empty == Some(true) && value.app_container == Some(false)
+            && relations(value,value).iter().all(|v|*v==Some(true))
+    }
+    fn repair_plan(primary: &Constraints, generation: &Constraints) -> Option<Plan> {
+        if !complete(primary) || !complete(generation) { return None; }
+        if relations(primary,generation).iter().all(|v|*v==Some(true)) { return Some(Plan::Compatible); }
+        if primary.policy != generation.policy || primary.elevation_type != generation.elevation_type
+            || (primary.elevation == Some(true) && generation.elevation != Some(true)) { return None; }
+        let a=primary.groups.as_ref()?;let b=generation.groups.as_ref()?;
+        let old_logon=primary.logon.as_ref()?;let new_logon=generation.logon.as_ref()?;
+        let mut deny: Vec<Sid>=Vec::new();
+        for (sid,attrs) in a {
+            if comparable_group(sid,*attrs,old_logon,primary.integrity)? && attrs & SE_GROUP_USE_FOR_DENY_ONLY != 0 {
+                let (_,generated)=b.iter().find(|(other,_)|other.bytes()==sid.bytes())?;
+                if generated & SE_GROUP_USE_FOR_DENY_ONLY == 0 { deny.push(sid.clone()); }
+            }
+        }
+        for (sid,attrs) in b {
+            if comparable_group(sid,*attrs,new_logon,generation.integrity)?
+                && attrs & SE_GROUP_ENABLED != 0 && attrs & SE_GROUP_USE_FOR_DENY_ONLY == 0
+                && !a.iter().any(|(other,previous)|other.bytes()==sid.bytes()
+                    && previous & SE_GROUP_ENABLED != 0 && previous & SE_GROUP_USE_FOR_DENY_ONLY == 0)
+                && !deny.iter().any(|other|other.bytes()==sid.bytes()) { deny.push(sid.clone()); }
+        }
+        let delete=generation.privileges.as_ref()?.iter().filter(|(id,attrs)| {
+            !primary.privileges.as_ref().unwrap().iter().any(|(previous,enabled)| {
+                previous==id && (attrs & 2 == 0 || enabled & 2 != 0)
+            })
+        }).map(|(id,_)|*id).collect();
+        Some(Plan::Reduce(Reduction {deny,delete,
+            lower_integrity:(generation.integrity? > primary.integrity?).then_some(primary.integrity?),
+            lua:primary.elevation==Some(false) && generation.elevation==Some(true)}))
+    }
+    fn logon_enabled(value: &Constraints, logon: &Sid) -> bool {
+        value.groups.as_ref().is_some_and(|groups|groups.iter().any(|(sid,attrs)| {
+            sid.bytes()==logon.bytes() && attrs & SE_GROUP_ENABLED != 0 && attrs & SE_GROUP_USE_FOR_DENY_ONLY == 0
+        }))
+    }
+    fn unchanged(a: &Constraints,b: &Constraints) -> bool {
+        let same_groups=a.groups.as_ref().zip(b.groups.as_ref()).is_some_and(|(a,b)| {
+            a.len()==b.len() && a.iter().all(|(sid,attrs)|b.iter().any(|(other,previous)|sid.bytes()==other.bytes()&&attrs==previous))
+        });
+        let same_privileges=a.privileges.as_ref().zip(b.privileges.as_ref()).is_some_and(|(a,b)| {
+            a.len()==b.len() && a.iter().all(|entry|b.contains(entry))
+        });
+        complete(a) && complete(b) && same_groups && same_privileges && a.integrity==b.integrity
+            && a.policy==b.policy && a.elevation==b.elevation && a.elevation_type==b.elevation_type
+            && a.logon.as_ref().zip(b.logon.as_ref()).is_some_and(|(a,b)|a.bytes()==b.bytes())
+    }
+    fn authentication(token: HANDLE) -> Option<(u32,i32)> {
+        fixed::<TOKEN_STATISTICS>(token,TokenStatistics).filter(|s|s.TokenType==1)
+            .map(|s|(s.AuthenticationId.LowPart,s.AuthenticationId.HighPart))
+    }
+    fn noninherit(token: HANDLE) -> bool {
+        let mut flags=HANDLE_FLAG_INHERIT;
+        (unsafe { windows_sys::Win32::Foundation::GetHandleInformation(token,&mut flags) }) != 0
+            && flags & HANDLE_FLAG_INHERIT == 0
+    }
+    fn lower_integrity(token: HANDLE,rid: u32) -> Result<(),IoError> {
+        use windows_sys::Win32::Security::{SetTokenInformation,TokenIntegrityLevel,TOKEN_MANDATORY_LABEL};
+        let offset=size_of::<TOKEN_MANDATORY_LABEL>();let length=offset+12;
+        let mut storage=vec![0u64;(length+7)/8];
+        let sid=unsafe {storage.as_mut_ptr().cast::<u8>().add(offset)};
+        unsafe {
+            std::ptr::copy_nonoverlapping([1u8,1,0,0,0,0,0,16].as_ptr(),sid,8);
+            std::ptr::copy_nonoverlapping(rid.to_le_bytes().as_ptr(),sid.add(8),4);
+            storage.as_mut_ptr().cast::<TOKEN_MANDATORY_LABEL>().write(TOKEN_MANDATORY_LABEL {
+                Label:SID_AND_ATTRIBUTES {Sid:sid.cast(),Attributes:0x20}
+            });
+        }
+        if unsafe {SetTokenInformation(token,TokenIntegrityLevel,storage.as_ptr().cast(),length as u32)} == 0 {
+            return Err(IoError::Failed);
+        }
+        Ok(())
+    }
+    pub(super) fn establish(original: &Identity) -> Result<(OwnedHandle,Sid),IoError> {
+        use windows_sys::Win32::Security::{CreateRestrictedToken,LUA_TOKEN};
+        let mut primary=null_mut();
+        if unsafe {OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&mut primary)}==0 {return Err(IoError::Failed);}
+        let primary=unsafe {OwnedHandle::from_raw(primary)?};
+        let caller=Identity::from_token(primary.raw())?;
+        let primary_constraints=Constraints::read(primary.raw());
+        let primary_auth=authentication(primary.raw()).ok_or(IoError::Failed)?;
+        if !complete(&primary_constraints) || caller.user.bytes()!=original.user.bytes()
+            || caller.logon.bytes()!=original.logon.bytes() || !logon_enabled(&primary_constraints,&caller.logon) {
+            return Err(IoError::Failed);
+        }
+        let username=wide(&format!("winsmux-{}",uuid::Uuid::new_v4().simple()));let domain=wide(".");
+        let credential=wide(&uuid::Uuid::new_v4().simple().to_string());let mut raw=null_mut();
+        if unsafe {LogonUserW(username.as_ptr(),domain.as_ptr(),credential.as_ptr(),
+            LOGON32_LOGON_NEW_CREDENTIALS,LOGON32_PROVIDER_WINNT50,&mut raw)}==0 {return Err(IoError::Failed);}
+        let raw=unsafe {OwnedHandle::from_raw(raw)?};
+        if unsafe {SetHandleInformation(raw.raw(),HANDLE_FLAG_INHERIT,0)}==0 {return Err(IoError::Failed);}
+        let raw_identity=Identity::from_token(raw.raw())?;
+        let raw_auth=authentication(raw.raw()).ok_or(IoError::Failed)?;
+        let raw_constraints=Constraints::read(raw.raw());
+        if raw_identity.user.bytes()!=caller.user.bytes() || raw_identity.logon.bytes()==caller.logon.bytes()
+            || !logon_enabled(&raw_constraints,&raw_identity.logon) || !noninherit(raw.raw()) {
+            return Err(IoError::Failed);
+        }
+        let plan=repair_plan(&primary_constraints,&raw_constraints).ok_or(IoError::Failed)?;
+        let token=match plan {
+            Plan::Compatible=>raw,
+            Plan::Reduce(plan)=>{
+                let deny:Vec<_>=plan.deny.iter().map(|sid|SID_AND_ATTRIBUTES{Sid:sid.as_ptr(),Attributes:0}).collect();
+                let delete:Vec<_>=plan.delete.iter().map(|(low,high)|LUID_AND_ATTRIBUTES {
+                    Luid:windows_sys::Win32::Foundation::LUID{LowPart:*low,HighPart:*high},Attributes:0
+                }).collect();
+                let mut reduced=null_mut();
+                if unsafe {CreateRestrictedToken(raw.raw(),if plan.lua {LUA_TOKEN}else{0},
+                    deny.len() as u32,if deny.is_empty(){std::ptr::null()}else{deny.as_ptr()},
+                    delete.len() as u32,if delete.is_empty(){std::ptr::null()}else{delete.as_ptr()},
+                    0,std::ptr::null(),&mut reduced)}==0 {return Err(IoError::Failed);}
+                let reduced=unsafe {OwnedHandle::from_raw(reduced)?};
+                if unsafe {SetHandleInformation(reduced.raw(),HANDLE_FLAG_INHERIT,0)}==0 {return Err(IoError::Failed);}
+                if let Some(rid)=plan.lower_integrity {lower_integrity(reduced.raw(),rid)?;}
+                reduced
+            }
+        };
+        let final_constraints=Constraints::read(token.raw());
+        let final_identity=Identity::from_token(token.raw())?;
+        if !complete(&final_constraints) || !relations(&primary_constraints,&final_constraints).iter().all(|v|*v==Some(true))
+            || final_identity.user.bytes()!=raw_identity.user.bytes() || final_identity.logon.bytes()!=raw_identity.logon.bytes()
+            || authentication(token.raw())!=Some(raw_auth) || !logon_enabled(&final_constraints,&raw_identity.logon)
+            || !noninherit(token.raw()) || !unchanged(&primary_constraints,&Constraints::read(primary.raw()))
+            || authentication(primary.raw())!=Some(primary_auth) {
+            return Err(IoError::Failed);
+        }
+        Ok((token,final_identity.logon))
+    }
+
+    #[cfg(all(test,debug_assertions))]
     mod primary_constraint_relation_tests {
         use super::*;
         fn sid(rid: u32) -> Sid {
@@ -449,6 +947,41 @@ mod capability_token_query {
             Constraints { groups: Some(groups.iter().map(|(rid,attrs)|(sid(*rid),*attrs)).collect()),
                 logon: Some(sid(999)), privileges: Some(privileges.to_vec()), ..Constraints::default() }
         }
+        fn modeled(groups: &[(u32,u32)], privileges: &[Privilege]) -> Constraints {
+            Constraints {integrity:Some(0x2000),policy:Some(1),elevation:Some(false),elevation_type:Some(3),
+                restricting_empty:Some(true),app_container:Some(false),..sample(groups,privileges)}
+        }
+        #[test]
+        fn restriction_plan_repairs_all_modeled_expansions_together() {
+            let a=modeled(&[(1,16),(2,0)],&[((1,0),0)]);
+            let mut b=modeled(&[(1,4),(2,4),(3,4)],&[((1,0),2),((2,0),0)]);
+            b.integrity=Some(0x3000);b.elevation=Some(true);
+            let Some(Plan::Reduce(p))=repair_plan(&a,&b)else{panic!("expansion must have one reduction plan")};
+            assert_eq!(p.deny.iter().map(|s|s.bytes().to_vec()).collect::<Vec<_>>(),vec![sid(1).bytes().to_vec(),sid(2).bytes().to_vec(),sid(3).bytes().to_vec()]);
+            assert_eq!(p.delete,vec![(1,0),(2,0)]);assert_eq!(p.lower_integrity,Some(0x2000));assert!(p.lua);
+        }
+        #[test]
+        fn restriction_plan_refuses_missing_deny_and_unrepresentable_state() {
+            let a=modeled(&[(1,16)],&[]);let b=modeled(&[],&[]);
+            assert!(repair_plan(&a,&b).is_none());
+            let mut restricted=modeled(&[],&[]);restricted.restricting_empty=Some(false);
+            assert!(repair_plan(&restricted,&modeled(&[],&[])).is_none());
+            restricted.restricting_empty=None;
+            assert!(repair_plan(&restricted,&modeled(&[],&[])).is_none());
+            let mut a=modeled(&[],&[]);a.app_container=Some(true);assert!(repair_plan(&a,&modeled(&[],&[])).is_none());
+            let mut a=modeled(&[],&[]);a.policy=None;assert!(repair_plan(&a,&modeled(&[],&[])).is_none());
+        }
+        #[test]
+        fn restriction_plan_never_raises_or_changes_unmodeled_policy() {
+            let a=modeled(&[],&[]);let mut b=modeled(&[],&[]);
+            assert!(matches!(repair_plan(&a,&b),Some(Plan::Compatible)));
+            b.integrity=Some(0x1000);assert!(matches!(repair_plan(&a,&b),Some(Plan::Compatible)));
+            b.policy=Some(2);assert!(repair_plan(&a,&b).is_none());
+            b.policy=Some(1);b.elevation_type=Some(1);assert!(repair_plan(&a,&b).is_none());
+            b.elevation_type=Some(3);let mut elevated=a.clone();elevated.elevation=Some(true);
+            assert!(repair_plan(&elevated,&b).is_none());
+        }
+
         #[test]
         fn deny_only_removal_and_reenable_are_expansions() {
             let a = sample(&[(1,16)],&[]);
@@ -537,109 +1070,6 @@ mod capability_token_query {
         }
     }
 
-    #[derive(Default)]
-    struct Facts {
-        kind: Option<&'static str>, level: Option<&'static str>,
-        restricted: Option<bool>, restricting_empty: Option<bool>,
-        privilege: Option<(bool, bool)>, identity: Option<Identity>,
-        authentication: Option<(u32, i32)>,
-    }
-    impl Facts {
-        fn read(token: HANDLE) -> Self {
-            let statistics = fixed::<TOKEN_STATISTICS>(token, TokenStatistics);
-            let kind = statistics.as_ref().and_then(|s| match s.TokenType {
-                1 => Some("primary"), 2 => Some("impersonation"), _ => None });
-            let level = statistics.as_ref().and_then(|s| match s.TokenType {
-                1 => Some("not_applicable"),
-                2 => match s.ImpersonationLevel { 0 => Some("anonymous"), 1 => Some("identification"),
-                    2 => Some("impersonation"), 3 => Some("delegation"), _ => None }, _ => None });
-            Self { kind, level,
-                restricted: has_restrictions(token),
-                restricting_empty: restricting_empty(token), privilege: impersonate_privilege(token),
-                identity: Identity::from_token(token).ok(),
-                authentication: statistics.map(|s| (s.AuthenticationId.LowPart, s.AuthenticationId.HighPart)) }
-        }
-        fn json(&self) -> Value {
-            json!({"token_type": observed(self.kind), "impersonation_level": observed(self.level),
-                "has_restrictions": observed(self.restricted), "restricting_sids_empty": observed(self.restricting_empty),
-                "se_impersonate_present": observed(self.privilege.map(|p| p.0)),
-                "se_impersonate_enabled": observed(self.privilege.map(|p| p.1))})
-        }
-    }
-    fn observed<T: serde::Serialize>(value: Option<T>) -> Value {
-        json!({"observed": value.is_some(), "value": value})
-    }
-    fn thread() -> (Option<bool>, Facts) {
-        let mut token = null_mut();
-        if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
-            let absent = if unsafe { GetLastError() } == ERROR_NO_TOKEN { Some(true) } else { None };
-            return (absent, Facts::default());
-        }
-        match unsafe { OwnedHandle::from_raw(token) } {
-            Ok(token) => (Some(false), Facts::read(token.raw())),
-            Err(_) => (None, Facts::default()),
-        }
-    }
-    fn relations(a: &Facts, b: &Facts) -> Value {
-        json!({"same_user": observed(a.identity.as_ref().zip(b.identity.as_ref()).map(|(a,b)| a.user.equals(&b.user))),
-            "same_logon": observed(a.identity.as_ref().zip(b.identity.as_ref()).map(|(a,b)| a.logon.equals(&b.logon))),
-            "same_authentication_id": observed(a.authentication.zip(b.authentication).map(|(a,b)| a == b))})
-    }
-    pub(super) struct Snapshot {
-        primary: Facts, generation: Facts, effective: Facts,
-        primary_constraints: Constraints, generation_constraints: Constraints,
-        before_absent: Option<bool>, after_absent: Option<bool>,
-        identity: &'static str, capability: &'static str, impersonate: &'static str,
-        pipe: &'static str, revert: &'static str, result: &'static str,
-    }
-    impl Snapshot {
-        pub(super) fn begin() -> Self {
-            let mut token = null_mut();
-            let mut primary_constraints = Constraints::default();
-            let primary = if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } != 0 {
-                unsafe { OwnedHandle::from_raw(token) }.ok().map(|t| {
-                    primary_constraints = Constraints::read(t.raw());
-                    Facts::read(t.raw())
-                }).unwrap_or_default()
-            } else { Facts::default() };
-            let (before_absent, _) = thread();
-            Self { primary, generation: Facts::default(), effective: Facts::default(), before_absent,
-                primary_constraints, generation_constraints: Constraints::default(),
-                after_absent: None, identity: "not_attempted", capability: "not_attempted",
-                impersonate: "not_attempted", pipe: "not_attempted", revert: "not_attempted", result: "not_attempted" }
-        }
-        pub(super) fn canonical(&self) -> bool { self.before_absent == Some(true) }
-        pub(super) fn identity(&mut self, success: bool) { self.identity = if success { "succeeded" } else { "failed" }; }
-        pub(super) fn capability(&mut self, token: Option<HANDLE>) {
-            self.capability = if token.is_some() { "succeeded" } else { "failed" };
-            if let Some(token) = token {
-                self.generation_constraints = Constraints::read(token);
-                self.generation = Facts::read(token);
-            }
-        }
-        pub(super) fn impersonated(&mut self, success: bool) {
-            self.impersonate = if success { "succeeded" } else { "failed" };
-            if success { self.effective = thread().1; }
-        }
-        pub(super) fn pipe(&mut self, success: bool) { self.pipe = if success { "succeeded" } else { "failed" }; }
-        pub(super) fn reverted(&mut self, success: bool) {
-            self.revert = if success { "succeeded" } else { "failed" };
-            self.after_absent = thread().0;
-        }
-        pub(super) fn finish(&mut self, result: bool) { self.result = if result { "succeeded" } else { "failed" }; }
-        pub(super) fn json(&self, failures: PublicPipeFailures) -> Value {
-            let operation = failures.operation.map(|(api,class)| json!({"api":api.label(),"class":class.label()}));
-            json!({"schema":"winsmux-server-capability-token-observation/v1",
-                "thread_absent_before": observed(self.before_absent), "thread_absent_after": observed(self.after_absent),
-                "primary": self.primary.json(), "generation": self.generation.json(), "effective": self.effective.json(),
-                "generation_to_primary": relations(&self.generation,&self.primary),
-                "generation_constraints": constraint_relations(&self.primary_constraints,&self.generation_constraints),
-                "effective_to_generation": relations(&self.effective,&self.generation),
-                "operations":{"identity":self.identity,"capability":self.capability,"impersonate":self.impersonate,
-                    "pipe":self.pipe,"revert":self.revert,"result":self.result},
-                "operation_failure": observed(operation), "revert_failure": observed(failures.revert.map(|class|class.label()))})
-        }
-    }
 }
 
 impl Sid {
@@ -892,44 +1322,9 @@ pub(crate) struct ServerCapabilityToken {
 impl ServerCapabilityToken {
     pub(crate) fn create(original: &Identity) -> Result<Self, IoError> {
         #[cfg(debug_assertions)]
-        if std::env::var_os("WINSMUX_TASK862_FAIL_SERVER_TOKEN").is_some() {
-            return Err(IoError::Failed);
-        }
-        let username = wide(&format!("winsmux-{}", uuid::Uuid::new_v4().simple()));
-        let domain = wide(".");
-        let credential = wide(&uuid::Uuid::new_v4().simple().to_string());
-        let mut raw = null_mut();
-        if unsafe {
-            LogonUserW(
-                username.as_ptr(),
-                domain.as_ptr(),
-                credential.as_ptr(),
-                LOGON32_LOGON_NEW_CREDENTIALS,
-                LOGON32_PROVIDER_WINNT50,
-                &mut raw,
-            )
-        } == 0
-        {
-            return Err(IoError::Failed);
-        }
-        let token = unsafe { OwnedHandle::from_raw(raw)? };
-        if unsafe { SetHandleInformation(token.raw(), HANDLE_FLAG_INHERIT, 0) } == 0 {
-            return Err(IoError::Failed);
-        }
-        let generated = Identity::from_token(token.raw())?;
-        let attributes =
-            token_group_attributes(token.raw(), &generated.logon)?.ok_or(IoError::Failed)?;
-        if !generated.user.equals(&original.user)
-            || generated.logon.equals(&original.logon)
-            || attributes & SE_GROUP_ENABLED == 0
-            || attributes & SE_GROUP_USE_FOR_DENY_ONLY != 0
-        {
-            return Err(IoError::Failed);
-        }
-        Ok(Self {
-            token,
-            logon: generated.logon,
-        })
+        if std::env::var_os("WINSMUX_TASK862_FAIL_SERVER_TOKEN").is_some() {return Err(IoError::Failed);}
+        let (token,logon)=capability_constraints::establish(original)?;
+        Ok(Self {token,logon})
     }
 
     pub(crate) fn logon(&self) -> &Sid {
@@ -958,32 +1353,34 @@ impl ServerCapabilityToken {
     }
 
     fn while_impersonating_inner<T>(
-        &self,
-        operation: impl FnOnce() -> Result<T, IoError>,
-        #[cfg(debug_assertions)] observation: Option<&PublicPipeObservation>,
-    ) -> Result<T, IoError> {
-        if unsafe { ImpersonateLoggedOnUser(self.token.raw()) } == 0 {
-            #[cfg(debug_assertions)]
-            if let Some(observation) = observation {
-                observation.operation_failed(PublicPipeFailureApi::Impersonate, PublicPipeErrorClass::last_error());
-                observation.token_impersonated(false);
-            }
-            return Err(IoError::Failed);
-        }
-        #[cfg(debug_assertions)]
-        if let Some(observation) = observation { observation.token_impersonated(true); }
-        let result = operation();
-        if unsafe { RevertToSelf() } == 0 {
-            #[cfg(debug_assertions)]
-            if let Some(observation) = observation {
-                observation.revert_failed(PublicPipeErrorClass::last_error());
-                observation.token_reverted(false);
-            }
-            return Err(IoError::Failed);
-        }
-        #[cfg(debug_assertions)]
-        if let Some(observation) = observation { observation.token_reverted(true); }
-        result
+        &self,operation:impl FnOnce()->Result<T,IoError>,
+        #[cfg(debug_assertions)] observation:Option<&PublicPipeObservation>,
+    )->Result<T,IoError> {
+        with_impersonation_lifetime(||unsafe {ImpersonateLoggedOnUser(self.token.raw())!=0},
+            |reason|{
+                #[cfg(debug_assertions)]
+                if let Some(observation)=observation {observation.guard_failed(reason);}
+                let _=reason;IoError::Failed
+            },
+            ||{
+                #[cfg(debug_assertions)]
+                {let class=PublicPipeErrorClass::last_error();if let Some(observation)=observation {
+                    observation.operation_failed(PublicPipeFailureApi::Impersonate,class);observation.token_impersonated(false);
+                }}
+                IoError::Failed
+            },
+            ||{
+                #[cfg(debug_assertions)]
+                if let Some(observation)=observation {observation.token_impersonated(true);}
+                effective_capability(self.token.raw()).map_err(|reason|{
+                    #[cfg(debug_assertions)]
+                    if let Some(observation)=observation {observation.guard_failed(reason);}
+                    let _=reason;IoError::Failed
+                })
+            },operation,||{
+                #[cfg(debug_assertions)]
+                if let Some(observation)=observation {observation.token_reverted(true);}
+            })
     }
 }
 
@@ -1024,14 +1421,10 @@ pub(crate) fn verify_pipe_peer(
     expected: &Identity,
     trace: Option<&PeerTrace>,
 ) -> Result<NonEmpty, PeerFailure> {
-    if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
-        return Err(PeerFailure::Impersonation);
-    }
-    if let Some(trace) = trace {
-        trace.impersonated.store(true, Ordering::SeqCst);
-    }
-
-    let identity_result = (|| {
+    with_impersonation_lifetime(||unsafe {ImpersonateNamedPipeClient(pipe)!=0},
+        |_|PeerFailure::Impersonation,||PeerFailure::Impersonation,
+        ||{if let Some(trace)=trace {trace.impersonated.store(true,Ordering::SeqCst);}Ok(())},
+        ||{
         let mut token = null_mut();
         if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
             return Err(PeerFailure::Impersonation);
@@ -1053,15 +1446,7 @@ pub(crate) fn verify_pipe_peer(
             return Err(PeerFailure::LogonMismatch);
         }
         Ok(())
-    })();
-
-    if unsafe { RevertToSelf() } == 0 {
-        return Err(PeerFailure::Revert);
-    }
-    if let Some(trace) = trace {
-        trace.reverted.store(true, Ordering::SeqCst);
-    }
-    identity_result?;
+        },||{if let Some(trace)=trace {trace.reverted.store(true,Ordering::SeqCst);}})?;
     verified_client_executable(pipe).map_err(|_| PeerFailure::Executable)
 }
 
@@ -1072,14 +1457,10 @@ pub(crate) fn verify_pipe_peer_charged(
     authority: &AllocationAuthority,
     pool: AllocationPool,
 ) -> Result<ChargedValue<NonEmpty>, PeerFailure> {
-    if unsafe { ImpersonateNamedPipeClient(pipe) } == 0 {
-        return Err(PeerFailure::Impersonation);
-    }
-    if let Some(trace) = trace {
-        trace.impersonated.store(true, Ordering::SeqCst);
-    }
-
-    let identity_result = (|| {
+    with_impersonation_lifetime(||unsafe {ImpersonateNamedPipeClient(pipe)!=0},
+        |_|PeerFailure::Impersonation,||PeerFailure::Impersonation,
+        ||{if let Some(trace)=trace {trace.impersonated.store(true,Ordering::SeqCst);}Ok(())},
+        ||{
         let mut token = null_mut();
         if unsafe { OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, 1, &mut token) } == 0 {
             return Err(PeerFailure::Impersonation);
@@ -1115,17 +1496,8 @@ pub(crate) fn verify_pipe_peer_charged(
             return Err(PeerFailure::LogonMismatch);
         }
         Ok(())
-    })();
-
-    if unsafe { RevertToSelf() } == 0 {
-        return Err(PeerFailure::Revert);
-    }
-    if let Some(trace) = trace {
-        trace.reverted.store(true, Ordering::SeqCst);
-    }
-    identity_result?;
-    verified_client_executable_charged(pipe, authority, pool)
-        .map_err(|_| PeerFailure::Executable)
+        },||{if let Some(trace)=trace {trace.reverted.store(true,Ordering::SeqCst);}})?;
+    verified_client_executable_charged(pipe, authority, pool).map_err(|_| PeerFailure::Executable)
 }
 
 fn token_sid_matches_charged(
@@ -1299,6 +1671,11 @@ fn verified_client_executable_charged(
     }
     let executable = NonEmpty::new(decoded_path).map_err(|_| AllocationError::Allocator)?;
     Ok(ChargedValue::from_parts(executable, charge))
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn server_capability_caller_class() -> Option<serde_json::Value> {
+    capability_constraints::caller_class()
 }
 
 #[cfg(debug_assertions)]

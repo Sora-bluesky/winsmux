@@ -3021,9 +3021,20 @@ fn workspace_connect_validates_discovery_and_cancels_while_waiting_for_it() {
     assert!(String::from_utf8_lossy(&ctrl_exit.output).contains("cancelled"));
 }
 
+fn emit_capability_caller_facts() {
+    let caller = winsmux_workspace::host::testing::server_capability_caller_class()
+        .expect("actual capability test caller facts");
+    eprintln!("WINSMUX_CAPABILITY_CALLER {}", caller);
+}
+
 #[test]
 fn host_startup_fails_closed_before_discovery_when_security_primitives_fail() {
+    if std::env::var("WINSMUX_GUARD_RESTORE_PROOF").as_deref()==Ok("1") {
+        winsmux_workspace::host::testing::server_guard_restoration_failure_probe();
+    }
     let _host_test = HOST_TEST_LOCK.lock().expect("host test lock");
+    emit_capability_caller_facts();
+
     let binary = binary();
     let home = tempfile::tempdir().expect("temporary isolated home");
     for (injection, stage) in [(FAIL_SERVER_TOKEN, "capability"), (FAIL_CNG, "server_key")] {
@@ -3074,6 +3085,20 @@ fn host_startup_fails_closed_before_discovery_when_security_primitives_fail() {
     let recovered = healthy.console_eof();
     assert_eq!(recovered.code, 0, "{}", String::from_utf8_lossy(&recovered.output));
     assert!(!String::from_utf8_lossy(&recovered.output).contains("TASK876_CHILD_STARTUP"));
+
+    let evidence = winsmux_workspace::host::testing::run_server_capability_probes().expect("real server capability probes");
+    assert!(evidence.same_user, "{evidence:?}");
+    assert!(evidence.distinct_logon, "{evidence:?}");
+    assert!(evidence.logon_group_enabled, "{evidence:?}");
+    assert!(evidence.logon_group_not_deny_only, "{evidence:?}");
+    assert!(evidence.token_not_inherited, "{evidence:?}");
+    assert!(evidence.first_instance_created, "{evidence:?}");
+    assert!(evidence.second_instance_created, "{evidence:?}");
+    assert!(evidence.original_server_create_denied, "{evidence:?}");
+    assert!(evidence.separate_server_token_create_denied, "{evidence:?}");
+    assert!(evidence.original_data_connect_succeeded, "{evidence:?}");
+    assert!(evidence.original_write_dac_denied, "{evidence:?}");
+    assert!(evidence.original_write_owner_denied, "{evidence:?}");
 }
 
 #[test]
@@ -4256,6 +4281,8 @@ fn real_conpty_provider_launch_status_interrupt_and_replay() {
 #[test]
 fn real_host_without_provider_path_keeps_launch_unadvertised() {
     let _host_test = HOST_TEST_LOCK.lock().expect("host test lock");
+    emit_capability_caller_facts();
+
     let binary = binary();
     let home = tempfile::tempdir().expect("isolated host home");
     let system_root = std::env::var("SystemRoot").expect("Windows root");

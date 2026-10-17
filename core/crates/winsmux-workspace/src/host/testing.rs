@@ -672,15 +672,10 @@ enum ProbeToken {
 }
 
 impl ProbeToken {
-    fn impersonate(&self) -> Result<(), ProbeError> {
-        let impersonated = match self {
-            Self::Anonymous => unsafe { ImpersonateAnonymousToken(GetCurrentThread()) },
-            Self::LoggedOn(token) => unsafe { ImpersonateLoggedOnUser(token.raw()) },
-        };
-        if impersonated == 0 {
-            Err(ProbeError::Impersonate)
-        } else {
-            Ok(())
+    fn impersonate(&self)->bool {
+        match self {
+            Self::Anonymous=>unsafe {ImpersonateAnonymousToken(GetCurrentThread())!=0},
+            Self::LoggedOn(token)=>unsafe {ImpersonateLoggedOnUser(token.raw())!=0},
         }
     }
 
@@ -689,16 +684,9 @@ impl ProbeToken {
     }
 }
 
-fn with_impersonation<T>(
-    token: &ProbeToken,
-    action: impl FnOnce() -> Result<T, ProbeError>,
-) -> Result<T, ProbeError> {
-    token.impersonate()?;
-    let result = action();
-    if unsafe { RevertToSelf() } == 0 {
-        return Err(ProbeError::Revert);
-    }
-    result
+fn with_impersonation<T>(token:&ProbeToken,action:impl FnOnce()->Result<T,ProbeError>)->Result<T,ProbeError> {
+    super::security::with_impersonation_lifetime(||token.impersonate(),|_|ProbeError::Impersonate,
+        ||ProbeError::Impersonate,||Ok(()),action,||{})
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -2010,6 +1998,14 @@ pub fn run_os_authentication_probes() -> Result<OsAuthenticationEvidence, ProbeE
 }
 
 
+/// Explicit owned-test entry only; ordinary server and peer paths cannot inject it.
+pub fn server_guard_restoration_failure_probe()->! {super::security::restoration_failure_probe()}
+
+/// Fixed test-process facts; native identities remain hashed inside security.
+pub fn server_capability_caller_class() -> Option<serde_json::Value> {
+    super::security::server_capability_caller_class()
+}
+
 /// One ignored-test observation, with no host, provider, additional instance or client.
 pub fn server_capability_token_creation_snapshot() -> serde_json::Value {
     super::windows::observe_server_capability_token_creation()
@@ -2040,13 +2036,10 @@ pub fn run_server_capability_probes() -> Result<ServerCapabilityEvidence, ProbeE
 
     let original_server_create_denied =
         matches!(create_additional_instance(&name), Err(ERROR_ACCESS_DENIED));
-    let separate_token = ProbeToken::LoggedOn(create_new_credentials()?);
-    let separate_server_token_create_denied = with_impersonation(&separate_token, || {
-        Ok(matches!(
-            create_additional_instance(&name),
-            Err(ERROR_ACCESS_DENIED)
-        ))
-    })?;
+    let separate_token=ServerCapabilityToken::create(&expected).map_err(|_|ProbeError::TokenCreate)?;
+    let separate_server_token_create_denied=separate_token.while_impersonating(|| {
+        Ok(matches!(create_additional_instance(&name),Err(ERROR_ACCESS_DENIED)))
+    }).map_err(|_|ProbeError::Impersonate)?;
 
     let data_client = open_pipe(&name, SECURITY_IDENTIFICATION, PIPE_DATA_ACCESS);
     let original_data_connect_succeeded = data_client.is_ok();

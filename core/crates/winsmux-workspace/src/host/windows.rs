@@ -13,7 +13,7 @@ use super::security::{
     verify_pipe_peer_charged, Identity, SecurityDescriptor, SecurityMode, ServerCapabilityToken,
 };
 #[cfg(debug_assertions)]
-use super::security::{PublicPipeErrorClass, PublicPipeFailureApi, PublicPipeFailures, PublicPipeObservation};
+use super::security::{GuardFailure, PublicPipeErrorClass, PublicPipeFailureApi, PublicPipeFailures, PublicPipeObservation};
 use super::server_identity::{
     encode_request, parse_request as parse_auth_request, random_challenge, verify_response,
     ServerKey, AUTH_REQUEST_BYTES,
@@ -504,6 +504,9 @@ const PUBLIC_PIPE_FAILURE_BASE: u32 = 0x5750_0000;
 #[cfg(debug_assertions)]
 impl PublicPipeFailures {
     fn startup_code(self) -> Option<u32> {
+        if let Some(reason)=self.guard {
+            return (self.operation.is_none()&&self.revert.is_none()).then_some(PUBLIC_PIPE_FAILURE_BASE+182+reason as u32-1);
+        }
         let operation = match self.operation {
             None => 0,
             Some((PublicPipeFailureApi::DescriptorValidation, PublicPipeErrorClass::Unobserved)) => 25,
@@ -520,6 +523,9 @@ impl PublicPipeFailures {
 
     fn from_startup_code(code: u32) -> Option<Self> {
         let value = code.checked_sub(PUBLIC_PIPE_FAILURE_BASE)?;
+        if (182..=186).contains(&value) {
+            return Some(Self{operation:None,revert:None,guard:GuardFailure::from_index(value-181)});
+        }
         if value > 181 { return None; }
         let operation = match value / 7 {
             0 => None,
@@ -540,7 +546,7 @@ impl PublicPipeFailures {
             0 => None,
             index => Some(PublicPipeErrorClass::from_index(index)?),
         };
-        let failures = Self { operation, revert };
+        let failures = Self { operation, revert, guard:None };
         (failures.startup_code() == Some(code)).then_some(failures)
     }
 
@@ -679,7 +685,7 @@ mod child_startup_trace_tests {
         reverts.extend(classes.into_iter().map(Some));
         let mut codes = std::collections::BTreeSet::new();
         for operation in operations { for revert in &reverts {
-            let record = PublicPipeFailures { operation, revert: *revert };
+            let record = PublicPipeFailures { operation, revert: *revert, guard:None };
             let legal = !(operation.is_none() && revert.is_none())
                 && !matches!(operation, Some((PublicPipeFailureApi::Impersonate, _)) if revert.is_some())
                 && !matches!(operation, Some((PublicPipeFailureApi::DescriptorValidation, class)) if class != PublicPipeErrorClass::Unobserved);
@@ -694,13 +700,26 @@ mod child_startup_trace_tests {
             }
         } }
         assert_eq!(codes.len(), 145);
-        for offset in 0..=182 {
+        for offset in 0..=181 {
             let code = PUBLIC_PIPE_FAILURE_BASE + offset;
             assert_eq!(PublicPipeFailures::from_startup_code(code).is_some(), codes.contains(&code));
         }
         for code in [0, 1, 79, 80, 90, 92, 93, 101, 124, PUBLIC_PIPE_FAILURE_BASE - 1,
-            PUBLIC_PIPE_FAILURE_BASE + 182, 0xc0000005, u32::MAX] {
+            PUBLIC_PIPE_FAILURE_BASE + 187, 0xc0000005, u32::MAX] {
             assert!(PublicPipeFailures::from_startup_code(code).is_none());
+        }
+    }
+
+    #[test]
+    fn semantic_guard_codes_are_independent_of_native_api_errors() {
+        for index in 1..=5 {
+            let reason=GuardFailure::from_index(index).unwrap();
+            let record=PublicPipeFailures{operation:None,revert:None,guard:Some(reason)};
+            let code=record.startup_code().unwrap();
+            assert_eq!(PublicPipeFailures::from_startup_code(code),Some(record));
+            assert!(ChildStartupStage::from_code(code).is_none());
+            assert!(PublicPipeFailures{operation:Some((PublicPipeFailureApi::Impersonate,PublicPipeErrorClass::AccessDenied)),..record}.startup_code().is_none());
+            assert!(PublicPipeFailures{revert:Some(PublicPipeErrorClass::AccessDenied),..record}.startup_code().is_none());
         }
     }
 
@@ -893,6 +912,7 @@ fn combine_launcher_results(
         if let Ok(code) = child_result {
             if let Some(failures) = PublicPipeFailures::from_startup_code(code) {
                 eprintln!("TASK876_CHILD_STARTUP stage=public_pipe");
+                if let Some(reason)=failures.guard {eprintln!("TASK876_CHILD_STARTUP stage=public_pipe_guard_{}",reason.label());}
                 for (api, class) in failures.labels().into_iter().flatten() {
                     eprintln!("TASK876_CHILD_STARTUP stage=public_pipe_{}_{}", api, class.label());
                 }
@@ -2200,7 +2220,9 @@ fn create_initial_public_pipe(
 #[cfg(debug_assertions)]
 pub(super) fn observe_server_capability_token_creation() -> serde_json::Value {
     let observation = PublicPipeObservation::with_token_query();
-    if !observation.token_context_canonical() { return observation.token_json(); }
+    if !observation.token_context_canonical() {
+        observation.refuse_token_context();observation.token_finish(false);return observation.token_json();
+    }
     let identity = Identity::current();
     observation.token_identity(identity.is_ok());
     let Ok(identity) = identity else { return observation.token_json(); };
