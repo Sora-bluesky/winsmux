@@ -4208,7 +4208,7 @@ function Initialize-DesktopNativeLifecycleActor {
  [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern uint GetFinalPathNameByHandleW(IntPtr handle,StringBuilder path,uint size,uint flags);
  static void NativePhysical(string path) {
   path=Path.GetFullPath(path);if(path.StartsWith("\\\\",StringComparison.Ordinal)||path.Length<3||path[1]!=':')throw new InvalidOperationException("Native physical DOS path required");
-  string current=path;for(;;){var h=CreateFileW(current,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Native physical parent lease");try{FileFacts(h);var final=new StringBuilder(32768);uint n=GetFinalPathNameByHandleW(h,final,(uint)final.Capacity,0);if(n==0||n>=final.Capacity)throw new Win32Exception(Marshal.GetLastWin32Error(),"Native physical final path");string resolved=final.ToString();if(resolved.StartsWith("\\\\?\\",StringComparison.Ordinal))resolved=resolved.Substring(4);if(!String.Equals(Path.GetFullPath(resolved).TrimEnd('\\'),current.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Native physical alias refused");}finally{CloseHandle(h);}var parent=Path.GetDirectoryName(current.TrimEnd('\\'));if(String.IsNullOrEmpty(parent))break;current=parent;}
+  string current=path;for(;;){var h=CreateFileW(current,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);if(h==new IntPtr(-1)){int error=Marshal.GetLastWin32Error();throw new Win32Exception(error,"Native physical parent lease win32="+error.ToString(System.Globalization.CultureInfo.InvariantCulture)+" requested_sha256="+Hash(Encoding.UTF8.GetBytes(path.ToUpperInvariant()))+" component_sha256="+Hash(Encoding.UTF8.GetBytes(current.ToUpperInvariant())));}try{FileFacts(h);var final=new StringBuilder(32768);uint n=GetFinalPathNameByHandleW(h,final,(uint)final.Capacity,0);if(n==0||n>=final.Capacity)throw new Win32Exception(Marshal.GetLastWin32Error(),"Native physical final path");string resolved=final.ToString();if(resolved.StartsWith("\\\\?\\",StringComparison.Ordinal))resolved=resolved.Substring(4);if(!String.Equals(Path.GetFullPath(resolved).TrimEnd('\\'),current.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Native physical alias refused");}finally{CloseHandle(h);}var parent=Path.GetDirectoryName(current.TrimEnd('\\'));if(String.IsNullOrEmpty(parent))break;current=parent;}
  }
 
 '@
@@ -5214,7 +5214,20 @@ function Invoke-DesktopNativeLifecycle {
         [void](Invoke-DesktopNativeTransportCheck -NodeImage $binding.node_path -NsisJourney:$normalNsisJourney)
         $result.outcome = if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { 'journey_passed' } else { 'passed' }
         if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { $result.schema = 'winsmux-desktop-native-journey-ci/v1' }
-    } catch { $result.failure = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message }
+    } catch {
+        $result.failure = $_.Exception.GetType().FullName + ': ' + $_.Exception.Message
+        try {
+            $nativeStack = [Collections.Generic.List[string]]::new()
+            foreach ($frame in ([string]$_.ScriptStackTrace -split '\r?\n')) {
+                $match = [regex]::Match($frame, '^\s*at (?<name>Get-DesktopNativeWitness|Get-DesktopNativeNsisObservationBinding|Invoke-DesktopNativeNsisJourney|Invoke-DesktopNativeFreshNsis|Invoke-DesktopNativeMsiJourney|Invoke-DesktopNativeLifecycle), [^\r\n]*: line (?<line>[1-9][0-9]*)\s*$', [Text.RegularExpressions.RegexOptions]::CultureInvariant)
+                $nativeLine = 0
+                if ($match.Success -and [int]::TryParse($match.Groups['line'].Value, [ref]$nativeLine) -and $nativeLine -gt 0) {
+                    $nativeStack.Add($match.Groups['name'].Value + ':' + $nativeLine.ToString([Globalization.CultureInfo]::InvariantCulture))
+                }
+            }
+            if ($nativeStack.Count -gt 0) { $result.failure += ' [desktop_native_stack=' + [string]::Join(',', $nativeStack) + ']' }
+        } catch { }
+    }
     Write-DesktopNativeEvidence $(if ($medium -and $DesktopNativeFormat -ceq 'NSIS') { 'native-journey-result.json' } else { 'native-result.json' }) $result
     return $result
 }
