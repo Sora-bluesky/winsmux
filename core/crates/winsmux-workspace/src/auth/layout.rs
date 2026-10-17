@@ -1,3 +1,10 @@
+macro_rules! observe_save_preparation {
+    ($phase:literal, $body:expr) => {{
+        #[cfg(debug_assertions)] { crate::store::layout::stop_observation::scope($phase, "preparation", || $body) }
+        #[cfg(not(debug_assertions))] { $body }
+    }};
+}
+
 use super::{
     admit_owner_effect, bump_topology, close_open_connections, publish_connection_state,
     publish_topology_change, reserve_forget_drains, seal_terminal, take_unsignaled_cancellations,
@@ -72,9 +79,9 @@ fn save_current_layout(
     auth: &Authorization,
     state: &mut State,
 ) -> Result<(U, U), ErrorCode> {
-    let (generation, topology) = layout_identity(state)?;
-    let snapshot = state.workspace.snapshot(generation.clone(), topology.clone())?;
-    let observed = observe_snapshot_roots(&snapshot, &auth.shared.allocations)?;
+    let (generation, topology) = observe_save_preparation!("layout_identity", layout_identity(state))?;
+    let snapshot = observe_save_preparation!("snapshot_build", state.workspace.snapshot(generation.clone(), topology.clone()))?;
+    let observed = observe_save_preparation!("snapshot_roots", observe_snapshot_roots(&snapshot, &auth.shared.allocations))?;
     let transaction = state
         .layout
         .begin(&auth.shared.allocations, AllocationPool::ActiveOwner)?;
@@ -409,6 +416,8 @@ pub(crate) fn dispatch_owner_host_stop(
     canonical: &[u8],
     out: &mut ChargedVec<u8>,
 ) -> Option<OwnerDispatch> {
+    #[cfg(debug_assertions)]
+    let _stop_observation = crate::store::layout::stop_observation::Attempt::begin(&state.layout, request.operation_id.as_str(), auth.shared.instance_id.as_str());
     if host_stop_blocked(&state) {
         return deny(auth, &state, request, out, ErrorCode::RuntimeFailed);
     }
@@ -417,9 +426,12 @@ pub(crate) fn dispatch_owner_host_stop(
     if out.capacity_elements() < MAX_MESSAGE_BYTES {
         return deny(auth, &state, request, out, ErrorCode::ResourceExhausted);
     }
-    let (generation, topology) = match layout_identity(&state) {
+    let (generation, topology) = match observe_save_preparation!("layout_identity", layout_identity(&state)) {
         Ok(value) => value,
-        Err(code) => return deny(auth, &state, request, out, code),
+        Err(code) => {
+            #[cfg(debug_assertions)] crate::store::layout::stop_observation::save_result(&Err::<(), _>(code));
+            return deny(auth, &state, request, out, code);
+        },
     };
     write_success_data(
         out,
@@ -443,7 +455,9 @@ pub(crate) fn dispatch_owner_host_stop(
     {
         return deny(auth, &state, request, out, ErrorCode::ResourceExhausted);
     }
-    if let Err(code) = save_current_layout(auth, &mut state) {
+    let saved = save_current_layout(auth, &mut state);
+    #[cfg(debug_assertions)] crate::store::layout::stop_observation::save_result(&saved);
+    if let Err(code) = saved {
         return fail_retained(auth, &mut state, request, out, code);
     }
     let key = validated_key(request.operation_id.as_str());

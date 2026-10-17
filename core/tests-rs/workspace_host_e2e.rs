@@ -1841,6 +1841,8 @@ fn stop_after_provider_cleanup(host: &mut InteractiveHost, instance: &str) -> Re
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         let response = host.transact(&request("host.stop", Some(instance), json!({})));
+        #[cfg(debug_assertions)]
+        if value(&response)["accepted"] == json!(true) || value(&response)["error"]["code"] != json!("operation_conflict") { consumer_stop_observation::emit(&response); }
         if value(&response)["accepted"] == json!(true) {
             return response;
         }
@@ -4287,12 +4289,23 @@ fn real_host_without_provider_path_keeps_launch_unadvertised() {
     let home = tempfile::tempdir().expect("isolated host home");
     let system_root = std::env::var("SystemRoot").expect("Windows root");
     let system_path = format!(r"{system_root}\System32");
+    #[cfg(debug_assertions)]
+    let stop_observation = consumer_stop_observation::Carrier::prepare(home.path());
+    let mut environment = vec![("PATH", system_path.as_str())];
+    #[cfg(debug_assertions)]
+    if let Some(observation) = stop_observation.as_ref() {
+        environment.push((consumer_stop_observation::ROOT_ENV, observation.root.as_str()));
+        environment.push((consumer_stop_observation::NONCE_ENV, observation.nonce.as_str()));
+    }
     let mut host = InteractiveHost::start_with_environment(
         &binary,
         home.path(),
         &["workspace", "host"],
-        &[("PATH", &system_path)],
+        &environment,
     );
+    drop(environment);
+    #[cfg(debug_assertions)]
+    let _stop_observation = consumer_stop_observation::install(stop_observation);
     let discovery = host.discovery();
     let instance = discovery["instance_id"].as_str().expect("instance ID");
     let capabilities = assert_success(
@@ -4316,4 +4329,150 @@ fn real_host_without_provider_path_keeps_launch_unadvertised() {
 fn server_capability_token_creation_snapshot() {
     let snapshot = winsmux_workspace::host::testing::server_capability_token_creation_snapshot();
     println!("WINSMUX_CAPABILITY_TOKEN_SNAPSHOT {}", serde_json::to_string(&snapshot).expect("fixed token snapshot"));
+}
+
+#[cfg(debug_assertions)]
+mod consumer_stop_observation {
+    use super::*;
+    use std::cell::RefCell;
+    use std::fs::{File, OpenOptions};
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT};
+    pub const ROOT_ENV: &str = "WINSMUX_TASK876_STOP_OBSERVATION";
+    pub const NONCE_ENV: &str = "WINSMUX_TASK876_STOP_NONCE";
+    const PHASES: &[&str] = &["layout_identity", "snapshot_build", "snapshot_roots", "descriptor", "directory_chain", "existing_snapshot_open", "temp_acquire", "lease_acquire", "lease_validate", "snapshot_validate", "snapshot_owner", "temp_write", "temp_flush", "snapshot_read", "readback", "rename", "final_owner", "store_begin", "snapshot_save", "confirmed_read", "confirmed_preflight", "backup_preflight", "stage_replace", "path_encoding", "ancestor_shape", "store_root_observe", "ancestor_open", "volume_admission", "volume_policy", "directory_create", "file_open", "directory_inspect", "file_inspect", "private_acl", "unknown", "snapshot_serialize", "confirmed_backup_policy"];
+    const APIS: &[&str] = &["none", "create_file", "create_directory", "convert_security_descriptor", "convert_sid_string", "create_well_known_sid", "get_security_info", "set_security_info", "get_sd_control", "get_acl_information", "get_ace", "get_file_information", "set_file_pointer", "set_end_of_file", "get_file_size", "read_file", "write_file", "flush_file", "query_dos_device", "nt_set_information_file", "unknown"];
+    const TARGETS: &[&str] = &["preparation", "volume", "ancestor", "known_folder", "winsmux", "workspace", "store", "lease", "confirmed", "backup", "temp", "unknown"];
+    pub struct Carrier { pub root: String, pub nonce: String, id: [u64; 3], _locks: Vec<OwnedTestHandle>, _request: File }
+    struct Active { carrier: Option<Carrier>, emitted: bool }
+    thread_local! { static ACTIVE: RefCell<Option<Active>> = const { RefCell::new(None) }; }
+    pub struct Scope;
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Record { schema: u32, nonce: String, operation_id: String, instance_id: String, save_result: String, phase: String, target: String, refusal: String, api: String, error_class: String, store_binding: String }
+    #[derive(serde::Serialize)]
+    struct Frame { schema: &'static str, observation: &'static str, save_result: String, phase: String, target: String, refusal: String, api: String, error_class: String, store_binding: String }
+    impl Frame {
+        fn unknown() -> Self { Self { schema: "winsmux-consumer-stop-attempt/v1", observation: "unknown", save_result: "unknown".into(), phase: "unknown".into(), target: "unknown".into(), refusal: "unknown".into(), api: "unknown".into(), error_class: "unknown".into(), store_binding: "unknown".into() } }
+    }
+    fn identity(handle: HANDLE, directory: bool) -> Option<[u64; 3]> {
+        let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory || (!directory && info.nNumberOfLinks != 1) { return None; }
+        Some([info.dwVolumeSerialNumber as u64, ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64, ((info.ftCreationTime.dwHighDateTime as u64) << 32) | info.ftCreationTime.dwLowDateTime as u64])
+    }
+    impl Carrier {
+        pub fn prepare(home: &Path) -> Option<Self> {
+            let root = home.join(".winsmux-stop-attempt"); std::fs::create_dir(&root).ok()?;
+            let mut paths: Vec<PathBuf> = root.ancestors().map(Path::to_path_buf).collect(); paths.reverse();
+            let mut locks = Vec::new();
+            for p in paths {
+                let wide: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+                let raw = unsafe { CreateFileW(wide.as_ptr(), 0x80, FILE_SHARE_READ | FILE_SHARE_WRITE, std::ptr::null(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, std::ptr::null_mut()) };
+                if raw.is_null() || raw == INVALID_HANDLE_VALUE { return None; }
+                let h = OwnedTestHandle(raw); identity(h.raw(), true)?; locks.push(h);
+            }
+            let id = identity(locks.last()?.raw(), true)?;
+            let nonce = format!("{:016x}{:016x}", std::process::id(), NEXT_HELPER_RUN.fetch_add(1, Ordering::SeqCst));
+            let bytes = serde_json::to_vec(&json!({"schema":1,"test":"real_host_without_provider_path_keeps_launch_unadvertised","nonce":&nonce,"root":id})).ok()?;
+            let path = root.join("request.json");
+            { let mut request = OpenOptions::new().write(true).create_new(true).share_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&path).ok()?; identity(request.as_raw_handle().cast(), false)?; request.write_all(&bytes).ok()?; request.flush().ok()?; }
+            let request = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&path).ok()?;
+            identity(request.as_raw_handle().cast(), false)?;
+            Some(Self { root: root.to_str()?.to_owned(), nonce, id, _locks: locks, _request: request })
+        }
+        fn read(&self, response: &Response) -> Option<Frame> { self.read_value(&value(response)) }
+        fn read_value(&self, response: &Value) -> Option<Frame> {
+            if identity(self._locks.last()?.raw(), true)? != self.id { return None; }
+            let mut file = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(Path::new(&self.root).join("result.json")).ok()?;
+            let before = identity(file.as_raw_handle().cast(), false)?;
+            if file.metadata().ok()?.len() > 1024 { return None; }
+            let mut bytes = Vec::new(); file.read_to_end(&mut bytes).ok()?;
+            if identity(file.as_raw_handle().cast(), false)? != before || identity(self._locks.last()?.raw(), true)? != self.id { return None; }
+            decode(&bytes, &self.nonce, response)
+        }
+    }
+    fn native_pair(r: &Record) -> bool { (match r.api.as_str() {
+            "create_file" => ["file_open", "ancestor_open"].contains(&r.phase.as_str()),
+            "create_directory" => ["directory_create"].contains(&r.phase.as_str()),
+            "convert_security_descriptor" => ["descriptor"].contains(&r.phase.as_str()),
+            "convert_sid_string" => ["descriptor"].contains(&r.phase.as_str()),
+            "create_well_known_sid" => ["descriptor"].contains(&r.phase.as_str()),
+            "get_security_info" => ["private_acl", "snapshot_owner"].contains(&r.phase.as_str()),
+            "set_security_info" => ["snapshot_owner"].contains(&r.phase.as_str()),
+            "get_sd_control" => ["snapshot_owner"].contains(&r.phase.as_str()),
+            "get_acl_information" => ["private_acl"].contains(&r.phase.as_str()),
+            "get_ace" => ["private_acl"].contains(&r.phase.as_str()),
+            "get_file_information" => ["directory_inspect", "file_inspect"].contains(&r.phase.as_str()),
+            "set_file_pointer" => ["temp_write", "snapshot_read", "readback"].contains(&r.phase.as_str()),
+            "set_end_of_file" => ["temp_write"].contains(&r.phase.as_str()),
+            "get_file_size" => ["snapshot_read"].contains(&r.phase.as_str()),
+            "read_file" => ["snapshot_read"].contains(&r.phase.as_str()),
+            "write_file" => ["temp_write"].contains(&r.phase.as_str()),
+            "flush_file" => ["temp_flush"].contains(&r.phase.as_str()),
+            "query_dos_device" => ["volume_policy"].contains(&r.phase.as_str()),
+            "nt_set_information_file" => ["rename"].contains(&r.phase.as_str()),
+            _ => false,
+        }) && ((r.api == "nt_set_information_file") == (r.error_class == "nt_status_failure")) }
+    fn decode(bytes: &[u8], nonce: &str, response: &Value) -> Option<Frame> {
+        let r: Record = serde_json::from_slice(bytes).ok()?;
+        if r.schema != 1 || r.nonce != nonce || response["operation_id"].as_str()? != r.operation_id || response["instance_id"].as_str()? != r.instance_id || r.store_binding != "actual_layout_v1" || !PHASES.contains(&r.phase.as_str()) || !TARGETS.contains(&r.target.as_str()) || !APIS.contains(&r.api.as_str()) { return None; }
+        let observed = if r.save_result == "completed" && [&r.phase, &r.target, &r.refusal, &r.api, &r.error_class].into_iter().all(|x| x == "unknown") { "save_completed" }
+        else if r.save_result == "refused" && r.phase != "unknown" && r.target != "unknown" && match r.refusal.as_str() {
+            "native_api" => native_pair(&r) && r.api != "none" && r.api != "unknown" && ["access_denied","sharing_violation","not_found","already_exists","other_native","nt_status_failure"].contains(&r.error_class.as_str()),
+            "condition" => r.api == "none" && r.error_class == "not_native",
+            "dependency_unobserved" => r.api == "none" && r.error_class == "unknown",
+            _ => false,
+        } { "refusal_observed" } else { return None; };
+        Some(Frame { schema: "winsmux-consumer-stop-attempt/v1", observation: observed, save_result: r.save_result, phase: r.phase, target: r.target, refusal: r.refusal, api: r.api, error_class: r.error_class, store_binding: r.store_binding })
+    }
+    pub fn install(carrier: Option<Carrier>) -> Scope { let _ = ACTIVE.try_with(|slot| { if let Ok(mut v) = slot.try_borrow_mut() { *v = Some(Active { carrier, emitted: false }); } }); Scope }
+    pub fn emit(response: &Response) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let frame = ACTIVE.try_with(|slot| { let mut v = slot.try_borrow_mut().ok()?; let active = v.as_mut()?; if active.emitted { return None; } active.emitted = true; Some(active.carrier.as_ref().and_then(|c| c.read(response)).unwrap_or_else(Frame::unknown)) }).ok().flatten();
+            if let Some(frame) = frame { if let Ok(bytes) = serde_json::to_vec(&frame) { let mut line = b"WINSMUX_CONSUMER_STOP_ATTEMPT ".to_vec(); line.extend_from_slice(&bytes); line.push(b'\n'); let _ = std::io::stderr().lock().write_all(&line); } }
+        }));
+    }
+    impl Drop for Scope { fn drop(&mut self) { let _ = ACTIVE.try_with(|slot| if let Ok(mut v) = slot.try_borrow_mut() { *v = None; }); } }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        fn response() -> Value { json!({"operation_id":"operation","instance_id":"instance"}) }
+        fn record() -> Value { json!({"schema":1,"nonce":"nonce","operation_id":"operation","instance_id":"instance","save_result":"refused","phase":"ancestor_open","target":"ancestor","refusal":"native_api","api":"create_file","error_class":"access_denied","store_binding":"actual_layout_v1"}) }
+        #[test] fn consumer_record_is_response_bound_and_strips_internal_identity() { let f = decode(&serde_json::to_vec(&record()).unwrap(), "nonce", &response()).unwrap(); let text = serde_json::to_string(&f).unwrap(); assert_eq!(f.observation, "refusal_observed"); assert!(!text.contains("nonce") && !text.contains("operation_id") && !text.contains("instance_id")); }
+        #[test] fn wrong_attempt_unknown_enum_extra_duplicate_and_invalid_utf8_are_unknown() {
+            for field in ["nonce","operation_id","instance_id","phase","target","api","refusal","error_class","store_binding"] { let mut r = record(); r[field] = json!("secret_unknown"); assert!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).is_none()); }
+            let mut r = record(); r["secret"] = json!("not emitted"); assert!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).is_none());
+            assert!(decode(b"{\"schema\":1,\"schema\":1}", "nonce", &response()).is_none()); assert!(decode(&[0xc0,0xaf], "nonce", &response()).is_none());
+        }
+        #[test] fn dependency_is_not_invented_as_native_and_completed_save_is_not_stop_success() { let mut r = record(); r["phase"] = json!("store_root_observe"); r["refusal"] = json!("dependency_unobserved"); r["api"] = json!("none"); r["error_class"] = json!("unknown"); assert_eq!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).unwrap().observation,"refusal_observed"); r["save_result"] = json!("completed"); for k in ["phase","target","refusal","api","error_class"] { r[k] = json!("unknown"); } assert_eq!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).unwrap().observation,"save_completed"); }
+        fn write_record(carrier: &Carrier, bytes: &[u8]) {
+            use std::os::windows::fs::OpenOptionsExt;
+            let path = Path::new(&carrier.root).join("result.json");
+            let mut f = OpenOptions::new().write(true).create_new(true).share_mode(0).open(path).ok().expect("fresh synthetic result");
+            f.write_all(bytes).ok().expect("write synthetic result");
+        }
+        fn released(carrier: Carrier) {
+            let root = PathBuf::from(&carrier.root); let moved = root.with_file_name("closed-stop-attempt");
+            drop(carrier); std::fs::rename(root, moved).ok().expect("all carrier handles released");
+        }
+        #[test] fn carrier_fixture_valid_result_is_read_once_without_overwrite_or_handle_leak() {
+            let home = tempfile::tempdir().expect("owned carrier fixture"); let c = Carrier::prepare(home.path()).expect("prepare owned carrier");
+            assert!(c.read_value(&response()).is_none());
+            let mut r = record(); r["nonce"] = json!(&c.nonce); let bytes = serde_json::to_vec(&r).unwrap(); write_record(&c, &bytes);
+            assert_eq!(c.read_value(&response()).unwrap().observation, "refusal_observed");
+            assert!(OpenOptions::new().write(true).create_new(true).open(Path::new(&c.root).join("result.json")).is_err());
+            assert_eq!(std::fs::read(Path::new(&c.root).join("result.json")).ok().unwrap(), bytes);
+            released(c);
+        }
+        #[test] fn carrier_fixture_wrong_root_attempt_invalid_bytes_and_bounds_stay_unknown_unchanged() {
+            for kind in 0..5 {
+                let home = tempfile::tempdir().expect("owned negative carrier"); let mut c = Carrier::prepare(home.path()).expect("prepare owned negative carrier");
+                let mut r = record(); r["nonce"] = json!(&c.nonce);
+                let bytes = match kind { 0 => { c.id[1] ^= 1; serde_json::to_vec(&r).unwrap() }, 1 => { r["nonce"] = json!("wrong-attempt"); serde_json::to_vec(&r).unwrap() }, 2 => vec![0xc0,0xaf], 3 => b"{\"schema\":1,\"schema\":1}".to_vec(), _ => vec![b' ';1025] };
+                write_record(&c, &bytes); assert!(c.read_value(&response()).is_none());
+                assert_eq!(std::fs::read(Path::new(&c.root).join("result.json")).ok().unwrap(), bytes); released(c);
+            }
+        }
+
+    }
 }

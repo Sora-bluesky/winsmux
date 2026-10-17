@@ -38,6 +38,189 @@ use windows_sys::Win32::Storage::FileSystem::{
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath};
 
+
+// Private CI observation only. Every release expansion remains the original expression/body.
+macro_rules! observe_store_scope {
+    ($phase:literal, $target:expr, $body:block) => {{
+        #[cfg(debug_assertions)] { stop_observation::scope($phase, $target, || $body) }
+        #[cfg(not(debug_assertions))] $body
+    }};
+}
+macro_rules! observe_store_bool {
+    ($api:literal, $value:expr) => {{
+        #[cfg(debug_assertions)] { let value = $value; if value == 0 { stop_observation::native($api, unsafe { GetLastError() }); } value }
+        #[cfg(not(debug_assertions))] { $value }
+    }};
+}
+macro_rules! observe_store_status {
+    ($api:literal, $value:expr) => {{
+        #[cfg(debug_assertions)] { let value = $value; if value != 0 { stop_observation::native($api, value); } value }
+        #[cfg(not(debug_assertions))] { $value }
+    }};
+}
+#[cfg(debug_assertions)]
+pub(crate) mod stop_observation {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::fs::{File, OpenOptions};
+    use std::io::{Read, Write};
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_WRITE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT};
+    const ROOT_ENV: &str = "WINSMUX_TASK876_STOP_OBSERVATION";
+    const NONCE_ENV: &str = "WINSMUX_TASK876_STOP_NONCE";
+    const TEST: &str = "real_host_without_provider_path_keeps_launch_unadvertised";
+    #[derive(Clone, Copy)]
+    struct Frame { phase: &'static str, target: &'static str }
+    #[derive(Clone, serde::Serialize)]
+    struct Failure { phase: &'static str, target: &'static str, refusal: &'static str, api: &'static str, error_class: &'static str }
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Request { schema: u32, test: String, nonce: String, root: [u64; 3] }
+    struct Carrier { root: PathBuf, nonce: String, root_id: [u64; 3], _locks: Vec<OwnedHandle>, _request: File }
+    struct State { carrier: Option<Carrier>, v1: PathBuf, operation: String, instance: String, frame: Frame, failure: Option<Failure>, save_result: &'static str }
+    thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; static OBSERVER_FAILED: Cell<bool> = const { Cell::new(false) }; }
+    pub(crate) struct Attempt { armed: bool }
+    fn with_state(f: impl FnOnce(&mut State)) { let _ = STATE.try_with(|cell| { if let Ok(mut state) = cell.try_borrow_mut() { if let Some(state) = state.as_mut() { f(state); } } else { let _ = OBSERVER_FAILED.try_with(|flag| flag.set(true)); } }); }
+    pub(crate) fn role(path: &Path) -> &'static str {
+        let mut role = "unknown";
+        with_state(|s| {
+            if path == s.v1 { role = "store"; }
+            else if path == s.v1.join(LEASE_NAME) { role = "lease"; }
+            else if path == s.v1.join(CONFIRMED_NAME) { role = "confirmed"; }
+            else if path == s.v1.join(BACKUP_NAME) { role = "backup"; }
+            else if path == s.v1.join(TEMP_NAME) { role = "temp"; }
+            else if path.parent().is_none() { role = "volume"; }
+            else { let mut p = s.v1.parent(); for name in ["workspace", "winsmux", "known_folder"] { if p == Some(path) { role = name; break; } p = p.and_then(Path::parent); } if role == "unknown" { role = "ancestor"; } }
+        }); role
+    }
+    pub(crate) fn name(name: &str) -> &'static str { match name { LEASE_NAME => "lease", CONFIRMED_NAME => "confirmed", BACKUP_NAME => "backup", TEMP_NAME => "temp", _ => "unknown" } }
+    pub(crate) fn inherited() -> &'static str { let mut target = "unknown"; with_state(|s| target = s.frame.target); target }
+    fn mark(phase: &'static str, target: &'static str, refusal: &'static str, api: &'static str, error_class: &'static str) {
+        with_state(|s| if s.failure.is_none() { s.failure = Some(Failure { phase, target, refusal, api, error_class }); });
+    }
+    pub(crate) fn native(api: &'static str, error: u32) {
+        let class = match error { 5 => "access_denied", 32 | 33 => "sharing_violation", 2 | 3 => "not_found", 80 | 183 => "already_exists", _ => "other_native" };
+        let mut frame = Frame { phase: "unknown", target: "unknown" }; with_state(|s| frame = s.frame);
+        mark(frame.phase, frame.target, "native_api", api, class);
+    }
+    pub(crate) fn nt_failure() { let mut frame = Frame { phase: "unknown", target: "unknown" }; with_state(|s| frame = s.frame); mark(frame.phase, frame.target, "native_api", "nt_set_information_file", "nt_status_failure"); }
+    pub(crate) fn condition(phase: &'static str, target: &'static str) { mark(phase, target, "condition", "none", "not_native"); }
+    pub(crate) fn handled() { with_state(|s| s.failure = None); }
+    pub(crate) fn scope<T>(phase: &'static str, target: &'static str, body: impl FnOnce() -> Result<T, ErrorCode>) -> Result<T, ErrorCode> {
+        let mut previous = None;
+        with_state(|s| { previous = Some((s.frame, s.failure.clone())); s.frame = Frame { phase, target }; });
+        let result = body();
+        with_state(|s| {
+            if result.is_ok() { if let Some((_, pending)) = &previous { s.failure = pending.clone(); } }
+            else if s.failure.is_none() { s.failure = Some(Failure { phase, target, refusal: if phase == "store_root_observe" || phase == "snapshot_build" || phase == "snapshot_roots" { "dependency_unobserved" } else { "condition" }, api: "none", error_class: if phase == "store_root_observe" || phase == "snapshot_build" || phase == "snapshot_roots" { "unknown" } else { "not_native" } }); }
+            if let Some((frame, _)) = previous { s.frame = frame; }
+        }); result
+    }
+    pub(crate) fn save_result<T>(result: &Result<T, ErrorCode>) { with_state(|s| s.save_result = if result.is_ok() { "completed" } else { "refused" }); }
+    fn identity(handle: HANDLE, directory: bool) -> Option<[u64; 3]> {
+        let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
+        if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory || (!directory && info.nNumberOfLinks != 1) { return None; }
+        Some([info.dwVolumeSerialNumber as u64, ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64, ((info.ftCreationTime.dwHighDateTime as u64) << 32) | info.ftCreationTime.dwLowDateTime as u64])
+    }
+    impl Carrier {
+        fn read() -> Option<Self> {
+            if std::env::var("WINSMUX_TASK876_STARTUP_TRACE").as_deref() != Ok("1") { return None; }
+            let root = PathBuf::from(std::env::var_os(ROOT_ENV)?);
+            let expected = PathBuf::from(std::env::var_os("USERPROFILE")?).join(".winsmux-stop-attempt");
+            if root != expected || !is_drive_absolute(&root) || root.components().any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir)) { return None; }
+            let nonce = std::env::var(NONCE_ENV).ok()?;
+            if nonce.len() != 32 || !nonce.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) { return None; }
+            let mut locks = Vec::new();
+            for path in ancestor_paths(&root).ok()? {
+                let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+                let raw = unsafe { CreateFileW(wide.as_ptr(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, null(), OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, null_mut()) };
+                if invalid_handle(raw) { return None; }
+                let h = unsafe { OwnedHandle::from_raw(raw).ok()? }; identity(h.raw(), true)?; locks.push(h);
+            }
+            let root_id = identity(locks.last()?.raw(), true)?;
+            let mut request = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(root.join("request.json")).ok()?;
+            identity(request.as_raw_handle().cast(), false)?;
+            if request.metadata().ok()?.len() > 1024 { return None; }
+            let mut bytes = Vec::new(); request.read_to_end(&mut bytes).ok()?;
+            let value: Request = serde_json::from_slice(&bytes).ok()?;
+            if value.schema != 1 || value.test != TEST || value.nonce != nonce || value.root != root_id { return None; }
+            Some(Self { root, nonce, root_id, _locks: locks, _request: request })
+        }
+        fn write(&self, value: &serde_json::Value) -> Option<()> {
+            if identity(self._locks.last()?.raw(), true)? != self.root_id { return None; }
+            let bytes = serde_json::to_vec(value).ok()?; if bytes.len() > 1024 { return None; }
+            let mut file = OpenOptions::new().write(true).create_new(true).share_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(self.root.join("result.json")).ok()?;
+            identity(file.as_raw_handle().cast(), false)?; file.write_all(&bytes).ok()?; file.flush().ok()?; Some(())
+        }
+    }
+    impl Attempt {
+        pub(crate) fn begin(store: &LayoutStore, operation: &str, instance: &str) -> Self {
+            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { STATE.try_with(|cell| { let slot = cell.try_borrow().ok()?; if slot.is_some() { None } else { Some(()) } }).ok()??; let carrier = Carrier::read()?; let state = State { carrier: Some(carrier), v1: store.v1.clone(), operation: operation.to_owned(), instance: instance.to_owned(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown" }; STATE.try_with(|cell| { let mut slot = cell.try_borrow_mut().ok()?; if slot.is_some() { return None; } *slot = Some(state); let _ = OBSERVER_FAILED.try_with(|flag| flag.set(false)); Some(()) }).ok()? }));
+            Self { armed: matches!(prepared, Ok(Some(()))) }
+        }
+    }
+    impl Drop for Attempt {
+        fn drop(&mut self) {
+            if !self.armed { return; }
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let state = STATE.try_with(|cell| cell.try_borrow_mut().ok()?.take()).ok().flatten();
+                if let Some(s) = state {
+                    let Some(carrier) = s.carrier.as_ref() else { return; };
+                    let (phase, target, refusal, api, error_class) = match &s.failure { Some(f) if s.save_result == "refused" && !OBSERVER_FAILED.try_with(Cell::get).unwrap_or(true) => (f.phase, f.target, f.refusal, f.api, f.error_class), _ => ("unknown", "unknown", "unknown", "unknown", "unknown") };
+                    let record = serde_json::json!({"schema":1,"nonce":&carrier.nonce,"operation_id":&s.operation,"instance_id":&s.instance,"save_result":s.save_result,"phase":phase,"target":target,"refusal":refusal,"api":api,"error_class":error_class,"store_binding":"actual_layout_v1"});
+                    let _ = carrier.write(&record);
+                }
+            }));
+        }
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        fn reset() {
+            STATE.with(|c| *c.borrow_mut() = Some(State { carrier: None, v1: PathBuf::from(r"C:\fixture\AppData\Local\winsmux\workspace\v1"), operation: "fixture".into(), instance: "fixture".into(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown" }));
+            OBSERVER_FAILED.with(|f| f.set(false));
+        }
+        fn failure() -> Option<Failure> { STATE.with(|c| c.borrow().as_ref().and_then(|s| s.failure.clone())) }
+        #[test] fn normal_absence_then_create_has_no_refusal() {
+            reset();
+            let result = scope("lease_acquire", "lease", || { let absent: Result<Option<()>, ErrorCode> = scope("file_open", "lease", || Ok(None)); assert!(absent?.is_none()); scope("file_open", "lease", || Ok(())) });
+            assert!(result.is_ok()); assert!(failure().is_none());
+        }
+        #[test] fn recovered_create_conflict_is_discarded_before_later_failure() {
+            reset();
+            let result: Result<(), ErrorCode> = scope("temp_acquire", "temp", || {
+                let conflict: Result<(), ErrorCode> = scope("file_open", "temp", || { native("create_file", 183); Err(ErrorCode::PersistenceFailed) });
+                assert!(conflict.is_err()); handled();
+                scope("snapshot_owner", "temp", || { condition("snapshot_owner", "temp"); Err(ErrorCode::PersistenceFailed) })
+            });
+            assert_eq!(result, Err(ErrorCode::PersistenceFailed)); let f = failure().unwrap(); assert_eq!(f.phase, "snapshot_owner"); assert_eq!(f.refusal, "condition");
+        }
+        #[test] fn successful_recovery_and_sibling_scope_do_not_leak_tentative_errors() {
+            reset();
+            let result: Result<(), ErrorCode> = scope("lease_acquire", "lease", || { let failed: Result<(), ErrorCode> = scope("file_open", "lease", || { native("create_file", 183); Err(ErrorCode::PersistenceFailed) }); assert!(failed.is_err()); handled(); scope("file_open", "lease", || Ok(())) });
+            assert!(result.is_ok()); assert!(failure().is_none());
+            STATE.with(|c| *c.borrow_mut() = None); let result: Result<(), ErrorCode> = scope("snapshot_read", "confirmed", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); assert!(failure().is_none());
+        }
+        #[test] fn propagated_native_refusal_survives_parent_and_result_is_unchanged() {
+            reset();
+            let result: Result<(), ErrorCode> = scope("store_begin", "store", || scope("directory_chain", "store", || scope("ancestor_open", "ancestor", || { native("create_file", 5); Err(ErrorCode::PersistenceFailed) })));
+            assert_eq!(result, Err(ErrorCode::PersistenceFailed)); let f = failure().unwrap(); assert_eq!((f.phase, f.target, f.api, f.error_class), ("ancestor_open", "ancestor", "create_file", "access_denied"));
+        }
+        #[test] fn dependency_and_borrow_failure_remain_unobserved_as_native_causes() {
+            reset(); let result: Result<(), ErrorCode> = scope("store_root_observe", "store", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); assert_eq!(failure().unwrap().refusal, "dependency_unobserved");
+            STATE.with(|c| { let _held = c.borrow_mut(); let result: Result<(), ErrorCode> = scope("private_acl", "store", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); }); assert!(OBSERVER_FAILED.with(Cell::get));
+        }
+        #[test] fn observer_scope_preserves_action_unwind_and_actual_role_inventory() {
+            reset();
+            let panic = std::panic::catch_unwind(|| scope::<()>("snapshot_read", "confirmed", || panic!("synthetic unwind"))); assert!(panic.is_err());
+            assert_eq!(role(Path::new(r"C:\fixture\AppData\Local\winsmux\workspace\v1\confirmed.json")), "confirmed");
+            assert_eq!(role(Path::new(r"C:\fixture\AppData\Local")), "known_folder");
+        }
+    }
+
+}
+
 const CONFIRMED_NAME: &str = "confirmed.json";
 const BACKUP_NAME: &str = "backup.json";
 const TEMP_NAME: &str = "temp.json";
@@ -120,6 +303,7 @@ pub(crate) struct LayoutTransaction {
 
 impl PrivateDescriptor {
     fn for_user(user: &Sid) -> Result<Self, ErrorCode> {
+    observe_store_scope!("descriptor", stop_observation::inherited(), {
         let sddl = format!(
             "D:P(A;OICI;FA;;;{})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
             sid_sddl(user)?
@@ -127,21 +311,24 @@ impl PrivateDescriptor {
         let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
         let mut descriptor = null_mut();
         if unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            observe_store_bool!("convert_security_descriptor", ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 wide.as_ptr(),
                 SDDL_REVISION_1,
                 &mut descriptor,
                 null_mut(),
-            )
+            ))
         } == 0
             || descriptor.is_null()
         {
             return Err(ErrorCode::PersistenceFailed);
         }
         Ok(Self { descriptor })
-    }
+
+    })
+}
 
     fn for_user_owned_snapshot(user: &Sid) -> Result<Self, ErrorCode> {
+    observe_store_scope!("descriptor", stop_observation::inherited(), {
         let sid = sid_sddl(user)?;
         let sddl = format!(
             "O:{sid}D:P(A;OICI;FA;;;{sid})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
@@ -149,14 +336,16 @@ impl PrivateDescriptor {
         let wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
         let mut descriptor = null_mut();
         if unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            observe_store_bool!("convert_security_descriptor", ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 wide.as_ptr(), SDDL_REVISION_1, &mut descriptor, null_mut(),
-            )
+            ))
         } == 0 || descriptor.is_null() {
             return Err(ErrorCode::PersistenceFailed);
         }
         Ok(Self { descriptor })
-    }
+
+    })
+}
 
     fn attributes(&self) -> SECURITY_ATTRIBUTES {
         SECURITY_ATTRIBUTES {
@@ -180,6 +369,7 @@ impl Drop for PrivateDescriptor {
 
 impl DirectoryChain {
     fn acquire(v1: &Path, user: &Sid, create_parents: bool) -> Result<Self, ErrorCode> {
+    observe_store_scope!("directory_chain", stop_observation::role(v1), {
         admit_existing_supported_volume(v1)?;
         let paths = ancestor_paths(v1)?;
         let last = paths.len().checked_sub(1).ok_or(ErrorCode::PersistenceFailed)?;
@@ -211,7 +401,9 @@ impl DirectoryChain {
             handles,
             v1: v1.to_path_buf(),
         })
-    }
+
+    })
+}
 
     fn open_existing(
         &self,
@@ -220,14 +412,18 @@ impl DirectoryChain {
         share: u32,
         user: &Sid,
     ) -> Result<Option<ManagedFile>, ErrorCode> {
+    observe_store_scope!("existing_snapshot_open", stop_observation::name(name), {
         let path = self.v1.join(name);
         match open_file(&path, access, share, OPEN_EXISTING, null())? {
             None => Ok(None),
             Some(handle) => Ok(Some(ManagedFile::proved_snapshot_read(handle, user)?)),
         }
-    }
+
+    })
+}
 
     fn acquire_writable(&self, name: &str, user: &Sid) -> Result<ManagedFile, ErrorCode> {
+    observe_store_scope!("temp_acquire", stop_observation::name(name), {
         let path = self.v1.join(name);
         if let Some(handle) = open_file(&path, MANAGED_WRITE_ACCESS, 0, OPEN_EXISTING, null())? {
             return ManagedFile::proved_writable_snapshot(handle, user);
@@ -237,14 +433,18 @@ impl DirectoryChain {
         match open_file(&path, MANAGED_WRITE_ACCESS, 0, CREATE_NEW, &sa) {
             Ok(Some(handle)) => ManagedFile::proved_writable_snapshot(handle, user),
             Ok(None) | Err(_) => {
+                #[cfg(debug_assertions)] stop_observation::handled();
                 let handle = open_file(&path, MANAGED_WRITE_ACCESS, 0, OPEN_EXISTING, null())?
                     .ok_or(ErrorCode::PersistenceFailed)?;
                 ManagedFile::proved_writable_snapshot(handle, user)
             }
         }
-    }
+
+    })
+}
 
     fn open_lease(&self, user: &Sid) -> Result<ManagedFile, ErrorCode> {
+    observe_store_scope!("lease_acquire", "lease", {
         let path = self.v1.join(LEASE_NAME);
         if let Some(handle) = open_file(&path, GENERIC_READ | GENERIC_WRITE, 0, OPEN_EXISTING, null())?
         {
@@ -255,6 +455,7 @@ impl DirectoryChain {
         match open_file(&path, GENERIC_READ | GENERIC_WRITE, 0, CREATE_NEW, &sa) {
             Ok(Some(handle)) => ManagedFile::proved(handle, user),
             Ok(None) | Err(_) => {
+                #[cfg(debug_assertions)] stop_observation::handled();
                 let handle = open_file(
                     &path,
                     GENERIC_READ | GENERIC_WRITE,
@@ -266,32 +467,41 @@ impl DirectoryChain {
                 ManagedFile::proved(handle, user)
             }
         }
-    }
+
+    })
+}
 }
 
 impl ManagedFile {
     fn proved(handle: OwnedHandle, user: &Sid) -> Result<Self, ErrorCode> {
+    observe_store_scope!("lease_validate", stop_observation::inherited(), {
         let file = Self { handle };
         inspect_ordinary_single_link(file.handle.raw())?;
         check_private_acl_handle(file.handle.raw(), user)?;
         Ok(file)
-    }
+
+    })
+}
 
     fn proved_snapshot_read(handle: OwnedHandle, user: &Sid) -> Result<Self, ErrorCode> {
+    observe_store_scope!("snapshot_validate", stop_observation::inherited(), {
         let file = Self { handle };
         inspect_ordinary_single_link(file.raw())?;
         snapshot_owner(file.raw(), user)?;
         Ok(file)
-    }
+
+    })
+}
 
     fn proved_writable_snapshot(handle: OwnedHandle, user: &Sid) -> Result<Self, ErrorCode> {
+    observe_store_scope!("snapshot_owner", stop_observation::inherited(), {
         let file = Self::proved_snapshot_read(handle, user)?;
         if snapshot_owner(file.raw(), user)? == SnapshotOwner::Administrators {
             if unsafe {
-                SetSecurityInfo(
+                observe_store_status!("set_security_info", SetSecurityInfo(
                     file.raw(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION,
                     user.as_ptr(), null_mut(), null(), null(),
-                )
+                ))
             } != 0 {
                 return Err(ErrorCode::PersistenceFailed);
             }
@@ -300,36 +510,47 @@ impl ManagedFile {
             }
         }
         Ok(file)
-    }
+
+    })
+}
 
     fn raw(&self) -> HANDLE {
         self.handle.raw()
     }
 
     fn replace_contents(&self, bytes: &[u8]) -> Result<(), ErrorCode> {
-        if unsafe { SetFilePointerEx(self.handle.raw(), 0, null_mut(), 0) } == 0 {
+    observe_store_scope!("temp_write", stop_observation::inherited(), {
+        if unsafe { observe_store_bool!("set_file_pointer", SetFilePointerEx(self.handle.raw(), 0, null_mut(), 0)) } == 0 {
             return Err(ErrorCode::PersistenceFailed);
         }
-        if unsafe { SetEndOfFile(self.handle.raw()) } == 0 {
+        if unsafe { observe_store_bool!("set_end_of_file", SetEndOfFile(self.handle.raw())) } == 0 {
             return Err(ErrorCode::PersistenceFailed);
         }
         write_all(self.handle.raw(), bytes)
-    }
+
+    })
+}
 
     fn flush(&self) -> Result<(), ErrorCode> {
-        if unsafe { FlushFileBuffers(self.handle.raw()) } == 0 {
+    observe_store_scope!("temp_flush", stop_observation::inherited(), {
+        if unsafe { observe_store_bool!("flush_file", FlushFileBuffers(self.handle.raw())) } == 0 {
             return Err(ErrorCode::PersistenceFailed);
         }
         Ok(())
-    }
+
+    })
+}
 
     fn read_bytes(
         &self,
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<Vec<u8>, ErrorCode> {
+    observe_store_scope!("snapshot_read", stop_observation::inherited(), {
         read_file_bytes(self.handle.raw(), authority, pool)
-    }
+
+    })
+}
 
     fn readback_equals(
         &self,
@@ -337,20 +558,29 @@ impl ManagedFile {
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<(), ErrorCode> {
+    observe_store_scope!("readback", stop_observation::inherited(), {
         readback_equals(self.handle.raw(), expected, authority, pool)
-    }
+
+    })
+}
 
     fn rename_replace(&self, leaf: &str) -> Result<(), ErrorCode> {
+    observe_store_scope!("rename", stop_observation::inherited(), {
         rename_held(self.handle.raw(), leaf, true)
-    }
+
+    })
+}
 
     fn prove_after_rename(&self, user: &Sid) -> Result<(), ErrorCode> {
+    observe_store_scope!("final_owner", stop_observation::inherited(), {
         inspect_ordinary_single_link(self.handle.raw())?;
         if snapshot_owner(self.handle.raw(), user)? != SnapshotOwner::User {
             return Err(ErrorCode::PersistenceFailed);
         }
         Ok(())
-    }
+
+    })
+}
 }
 
 impl LayoutStore {
@@ -403,6 +633,7 @@ impl LayoutStore {
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<LayoutTransaction, ErrorCode> {
+    observe_store_scope!("store_begin", "store", {
         let chain = DirectoryChain::acquire(&self.v1, &self.identity.user, self.create_parents)?;
         let observed = observe_store(path_str(&self.v1)?, authority, pool)?;
         check_private_acl_handle(
@@ -418,7 +649,9 @@ impl LayoutStore {
             _lease: lease,
             fault: self.fault,
         })
-    }
+
+    })
+}
 }
 
 impl LayoutTransaction {
@@ -428,7 +661,8 @@ impl LayoutTransaction {
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<(), ErrorCode> {
-        let intended = serialize_snapshot(snapshot).map_err(|_| ErrorCode::PersistenceFailed)?;
+    observe_store_scope!("snapshot_save", "store", {
+        let intended = observe_store_scope!("snapshot_serialize", "preparation", { serialize_snapshot(snapshot).map_err(|_| ErrorCode::PersistenceFailed) })?;
         let confirmed = self.classify_confirmed(authority, pool)?;
         let backup = self.classify_backup(authority, pool)?;
         match (confirmed, backup) {
@@ -465,20 +699,25 @@ impl LayoutTransaction {
                     pool,
                 )
             }
-            (None, Some(_)) => Err(ErrorCode::PersistenceFailed),
+            (None, Some(_)) => { #[cfg(debug_assertions)] stop_observation::condition("confirmed_backup_policy", "backup"); Err(ErrorCode::PersistenceFailed) },
         }
-    }
+
+    })
+}
 
     pub(crate) fn read_confirmed(
         &self,
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<Snapshot, ErrorCode> {
+    observe_store_scope!("confirmed_read", "confirmed", {
         match self.classify_confirmed(authority, pool)? {
             Some((_, snapshot)) => Ok(snapshot),
             None => Err(ErrorCode::PersistenceFailed),
         }
-    }
+
+    })
+}
 
     #[cfg(test)]
     fn lease_key(&self) -> Result<(u32, u64), ErrorCode> {
@@ -490,6 +729,7 @@ impl LayoutTransaction {
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<Option<(Vec<u8>, Snapshot)>, ErrorCode> {
+    observe_store_scope!("confirmed_preflight", "confirmed", {
         match self._chain.open_existing(
             CONFIRMED_NAME,
             GENERIC_READ,
@@ -503,13 +743,16 @@ impl LayoutTransaction {
                 Ok(Some((bytes, snapshot)))
             }
         }
-    }
+
+    })
+}
 
     fn classify_backup(
         &self,
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<Option<(Vec<u8>, SnapshotOwner)>, ErrorCode> {
+    observe_store_scope!("backup_preflight", "backup", {
         match self._chain.open_existing(
             BACKUP_NAME,
             GENERIC_READ,
@@ -522,7 +765,9 @@ impl LayoutTransaction {
                 snapshot_owner(file.raw(), &self.identity.user)?,
             ))),
         }
-    }
+
+    })
+}
 
     fn stage_replace(
         &self,
@@ -533,6 +778,7 @@ impl LayoutTransaction {
         authority: &AllocationAuthority,
         pool: AllocationPool,
     ) -> Result<(), ErrorCode> {
+    observe_store_scope!("stage_replace", stop_observation::name(destination_name), {
         if self.write_fault(target) {
             return Err(ErrorCode::PersistenceFailed);
         }
@@ -575,7 +821,9 @@ impl LayoutTransaction {
             return Err(ErrorCode::PersistenceFailed);
         }
         prove_bytes(&got, snapshot)
-    }
+
+    })
+}
 
     fn injected(&self, fault: LayoutStoreFault) -> bool {
         self.fault == fault
@@ -656,18 +904,24 @@ fn is_drive_absolute(path: &Path) -> bool {
 }
 
 fn path_str(path: &Path) -> Result<&str, ErrorCode> {
+    observe_store_scope!("path_encoding", stop_observation::role(path), {
     path.to_str()
         .filter(|s| !s.is_empty() && !s.contains('\0'))
         .ok_or(ErrorCode::PersistenceFailed)
+
+    })
 }
 
 fn wide_path(path: &Path) -> Result<Vec<u16>, ErrorCode> {
+    observe_store_scope!("path_encoding", stop_observation::role(path), {
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
     if wide.is_empty() || wide.contains(&0) {
         return Err(ErrorCode::PersistenceFailed);
     }
     wide.push(0);
     Ok(wide)
+
+    })
 }
 
 fn normalize_ancestor(path: &Path) -> Option<PathBuf> {
@@ -684,6 +938,7 @@ fn normalize_ancestor(path: &Path) -> Option<PathBuf> {
 }
 
 fn ancestor_paths(path: &Path) -> Result<Vec<PathBuf>, ErrorCode> {
+    observe_store_scope!("ancestor_shape", stop_observation::role(path), {
     let mut items = Vec::new();
     let mut current = normalize_ancestor(path).ok_or(ErrorCode::PersistenceFailed)?;
     loop {
@@ -704,6 +959,8 @@ fn ancestor_paths(path: &Path) -> Result<Vec<PathBuf>, ErrorCode> {
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(items)
+
+    })
 }
 
 fn observe_store(
@@ -711,11 +968,14 @@ fn observe_store(
     authority: &AllocationAuthority,
     pool: AllocationPool,
 ) -> Result<ObservedRoot, ErrorCode> {
+    observe_store_scope!("store_root_observe", "store", {
     match observe_root(path, authority, pool) {
         Ok(root) => Ok(root),
         Err(ObserveError::Exhausted) => Err(ErrorCode::ResourceExhausted),
         Err(_) => Err(ErrorCode::PersistenceFailed),
     }
+
+    })
 }
 
 fn invalid_handle(handle: HANDLE) -> bool {
@@ -723,6 +983,7 @@ fn invalid_handle(handle: HANDLE) -> bool {
 }
 
 fn open_directory(path: &Path) -> Result<Option<OwnedHandle>, ErrorCode> {
+    observe_store_scope!("ancestor_open", stop_observation::role(path), {
     let wide = wide_path(path)?;
     let handle = unsafe {
         CreateFileW(
@@ -736,24 +997,30 @@ fn open_directory(path: &Path) -> Result<Option<OwnedHandle>, ErrorCode> {
         )
     };
     if invalid_handle(handle) {
-        return match unsafe { GetLastError() } {
+        let error = unsafe { GetLastError() };
+        return match error {
             ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(None),
-            _ => Err(ErrorCode::PersistenceFailed),
+            _ => { #[cfg(debug_assertions)] stop_observation::native("create_file", error); Err(ErrorCode::PersistenceFailed) },
         };
     }
     let owned =
         unsafe { OwnedHandle::from_raw(handle) }.map_err(|_| ErrorCode::PersistenceFailed)?;
     inspect_held_directory(owned.raw())?;
     Ok(Some(owned))
+
+    })
 }
 
 fn admit_existing_supported_volume(path: &Path) -> Result<(), ErrorCode> {
+    observe_store_scope!("volume_admission", "volume", {
     let text = path_str(path)?;
     classify_path_syntax(text).map_err(|_| ErrorCode::PersistenceFailed)?;
     if !is_drive_absolute(path) {
         return Err(ErrorCode::PersistenceFailed);
     }
     confirm_fixed_local_non_subst_volume(text.as_bytes()[0].to_ascii_uppercase())
+
+    })
 }
 
 fn dos_device_target_is_subst(mapped: &str) -> bool {
@@ -761,6 +1028,7 @@ fn dos_device_target_is_subst(mapped: &str) -> bool {
 }
 
 fn confirm_fixed_local_non_subst_volume(drive: u8) -> Result<(), ErrorCode> {
+    observe_store_scope!("volume_policy", "volume", {
     let mut root_path: Vec<u16> = format!("{}:\\", drive as char)
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -775,7 +1043,7 @@ fn confirm_fixed_local_non_subst_volume(drive: u8) -> Result<(), ErrorCode> {
         .collect();
     let mut target = vec![0u16; 1024];
     let written =
-        unsafe { QueryDosDeviceW(device.as_mut_ptr(), target.as_mut_ptr(), target.len() as u32) };
+        unsafe { observe_store_bool!("query_dos_device", QueryDosDeviceW(device.as_mut_ptr(), target.as_mut_ptr(), target.len() as u32)) };
     if written == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
@@ -788,9 +1056,12 @@ fn confirm_fixed_local_non_subst_volume(drive: u8) -> Result<(), ErrorCode> {
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(())
+
+    })
 }
 
 fn create_directory(path: &Path, user: Option<&Sid>) -> Result<(), ErrorCode> {
+    observe_store_scope!("directory_create", stop_observation::role(path), {
     let wide = wide_path(path)?;
     let created = if let Some(user) = user {
         let descriptor = PrivateDescriptor::for_user(user)?;
@@ -802,10 +1073,13 @@ fn create_directory(path: &Path, user: Option<&Sid>) -> Result<(), ErrorCode> {
     if created == 0 {
         let err = unsafe { GetLastError() };
         if err != ERROR_ALREADY_EXISTS {
+            #[cfg(debug_assertions)] stop_observation::native("create_directory", err);
             return Err(ErrorCode::PersistenceFailed);
         }
     }
     Ok(())
+
+    })
 }
 
 fn open_file(
@@ -815,6 +1089,7 @@ fn open_file(
     disposition: u32,
     security: *const SECURITY_ATTRIBUTES,
 ) -> Result<Option<OwnedHandle>, ErrorCode> {
+    observe_store_scope!("file_open", stop_observation::role(path), {
     let wide = wide_path(path)?;
     let handle = unsafe {
         CreateFileW(
@@ -828,19 +1103,23 @@ fn open_file(
         )
     };
     if invalid_handle(handle) {
-        return match unsafe { GetLastError() } {
+        let error = unsafe { GetLastError() };
+        return match error {
             ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND if disposition == OPEN_EXISTING => Ok(None),
-            _ => Err(ErrorCode::PersistenceFailed),
+            _ => { #[cfg(debug_assertions)] stop_observation::native("create_file", error); Err(ErrorCode::PersistenceFailed) },
         };
     }
     let owned =
         unsafe { OwnedHandle::from_raw(handle) }.map_err(|_| ErrorCode::PersistenceFailed)?;
     Ok(Some(owned))
+
+    })
 }
 
 fn inspect_held_directory(handle: HANDLE) -> Result<(), ErrorCode> {
+    observe_store_scope!("directory_inspect", stop_observation::inherited(), {
     let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
-    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+    if unsafe { observe_store_bool!("get_file_information", GetFileInformationByHandle(handle, &mut info)) } == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
@@ -849,11 +1128,14 @@ fn inspect_held_directory(handle: HANDLE) -> Result<(), ErrorCode> {
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(())
+
+    })
 }
 
 fn inspect_ordinary_single_link(handle: HANDLE) -> Result<(), ErrorCode> {
+    observe_store_scope!("file_inspect", stop_observation::inherited(), {
     let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
-    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+    if unsafe { observe_store_bool!("get_file_information", GetFileInformationByHandle(handle, &mut info)) } == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
@@ -863,11 +1145,13 @@ fn inspect_ordinary_single_link(handle: HANDLE) -> Result<(), ErrorCode> {
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(())
+
+    })
 }
 
 fn file_index_key(handle: HANDLE) -> Result<(u32, u64), ErrorCode> {
     let mut info = unsafe { std::mem::zeroed::<BY_HANDLE_FILE_INFORMATION>() };
-    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+    if unsafe { observe_store_bool!("get_file_information", GetFileInformationByHandle(handle, &mut info)) } == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
     let index = ((info.nFileIndexHigh as u64) << 32) | info.nFileIndexLow as u64;
@@ -907,6 +1191,7 @@ mod nt_rename {
 }
 
 fn rename_held(handle: HANDLE, leaf: &str, replace: bool) -> Result<(), ErrorCode> {
+    observe_store_scope!("rename", stop_observation::name(leaf), {
     if leaf != CONFIRMED_NAME && leaf != BACKUP_NAME {
         return Err(ErrorCode::PersistenceFailed);
     }
@@ -949,10 +1234,13 @@ fn rename_held(handle: HANDLE, leaf: &str, replace: bool) -> Result<(), ErrorCod
             nt_rename::FILE_RENAME_INFORMATION,
         );
         if status != 0 {
+            #[cfg(debug_assertions)] stop_observation::nt_failure();
             return Err(ErrorCode::PersistenceFailed);
         }
     }
     Ok(())
+
+    })
 }
 
 fn allocation(_: AllocationError) -> ErrorCode {
@@ -964,11 +1252,12 @@ fn read_file_bytes(
     authority: &AllocationAuthority,
     pool: AllocationPool,
 ) -> Result<Vec<u8>, ErrorCode> {
+    observe_store_scope!("snapshot_read", stop_observation::inherited(), {
     let mut size = 0i64;
-    if unsafe { SetFilePointerEx(handle, 0, null_mut(), 0) } == 0 {
+    if unsafe { observe_store_bool!("set_file_pointer", SetFilePointerEx(handle, 0, null_mut(), 0)) } == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
-    if unsafe { GetFileSizeEx(handle, &mut size) } == 0 {
+    if unsafe { observe_store_bool!("get_file_size", GetFileSizeEx(handle, &mut size)) } == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
     if size < 0 || size as u64 > MAX_MESSAGE_BYTES as u64 {
@@ -982,20 +1271,23 @@ fn read_file_bytes(
     buf.try_resize(size, 0).map_err(allocation)?;
     read_all(handle, &mut buf)?;
     Ok(buf.to_vec())
+
+    })
 }
 
 fn read_all(handle: HANDLE, buf: &mut [u8]) -> Result<(), ErrorCode> {
+    observe_store_scope!("snapshot_read", stop_observation::inherited(), {
     let mut offset = 0;
     while offset < buf.len() {
         let mut transferred = 0u32;
         let ok = unsafe {
-            ReadFile(
+            observe_store_bool!("read_file", ReadFile(
                 handle,
                 buf[offset..].as_mut_ptr().cast(),
                 (buf.len() - offset) as u32,
                 &mut transferred,
                 null_mut(),
-            )
+            ))
         };
         if ok == 0 || transferred == 0 {
             return Err(ErrorCode::PersistenceFailed);
@@ -1003,19 +1295,22 @@ fn read_all(handle: HANDLE, buf: &mut [u8]) -> Result<(), ErrorCode> {
         offset += transferred as usize;
     }
     Ok(())
+
+    })
 }
 
 fn write_all(handle: HANDLE, mut data: &[u8]) -> Result<(), ErrorCode> {
+    observe_store_scope!("temp_write", stop_observation::inherited(), {
     while !data.is_empty() {
         let mut transferred = 0u32;
         let ok = unsafe {
-            WriteFile(
+            observe_store_bool!("write_file", WriteFile(
                 handle,
                 data.as_ptr().cast(),
                 data.len() as u32,
                 &mut transferred,
                 null_mut(),
-            )
+            ))
         };
         if ok == 0 || transferred == 0 {
             return Err(ErrorCode::PersistenceFailed);
@@ -1023,6 +1318,8 @@ fn write_all(handle: HANDLE, mut data: &[u8]) -> Result<(), ErrorCode> {
         data = &data[transferred as usize..];
     }
     Ok(())
+
+    })
 }
 
 fn readback_equals(
@@ -1031,7 +1328,8 @@ fn readback_equals(
     authority: &AllocationAuthority,
     pool: AllocationPool,
 ) -> Result<(), ErrorCode> {
-    if unsafe { SetFilePointerEx(handle, 0, null_mut(), 0) } == 0 {
+    observe_store_scope!("readback", stop_observation::inherited(), {
+    if unsafe { observe_store_bool!("set_file_pointer", SetFilePointerEx(handle, 0, null_mut(), 0)) } == 0 {
         return Err(ErrorCode::PersistenceFailed);
     }
     let got = read_file_bytes(handle, authority, pool)?;
@@ -1039,9 +1337,12 @@ fn readback_equals(
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(())
+
+    })
 }
 
 fn prove_bytes(bytes: &[u8], snapshot: Option<&Snapshot>) -> Result<(), ErrorCode> {
+    observe_store_scope!("snapshot_validate", stop_observation::inherited(), {
     parse_snapshot(bytes).map_err(|_| ErrorCode::PersistenceFailed)?;
     if let Some(snapshot) = snapshot {
         let canonical = serialize_snapshot(snapshot).map_err(|_| ErrorCode::PersistenceFailed)?;
@@ -1050,11 +1351,14 @@ fn prove_bytes(bytes: &[u8], snapshot: Option<&Snapshot>) -> Result<(), ErrorCod
         }
     }
     Ok(())
+
+    })
 }
 
 fn sid_sddl(sid: &Sid) -> Result<String, ErrorCode> {
+    observe_store_scope!("descriptor", stop_observation::inherited(), {
     let mut value = null_mut();
-    if unsafe { ConvertSidToStringSidW(sid.as_ptr(), &mut value) } == 0 || value.is_null() {
+    if unsafe { observe_store_bool!("convert_sid_string", ConvertSidToStringSidW(sid.as_ptr(), &mut value)) } == 0 || value.is_null() {
         return Err(ErrorCode::PersistenceFailed);
     }
     let mut length = 0usize;
@@ -1069,12 +1373,15 @@ fn sid_sddl(sid: &Sid) -> Result<String, ErrorCode> {
         LocalFree(value.cast::<c_void>());
     }
     result
+
+    })
 }
 
 fn well_known_sid(kind: i32) -> Result<[u8; SID_MAX_BYTES], ErrorCode> {
+    observe_store_scope!("descriptor", stop_observation::inherited(), {
     let mut sid = [0u8; SID_MAX_BYTES];
     let mut len = sid.len() as u32;
-    let ok = unsafe { CreateWellKnownSid(kind, null_mut(), sid.as_mut_ptr().cast(), &mut len) };
+    let ok = unsafe { observe_store_bool!("create_well_known_sid", CreateWellKnownSid(kind, null_mut(), sid.as_mut_ptr().cast(), &mut len)) };
     if ok == 0 || len == 0 || len as usize > sid.len() {
         return Err(ErrorCode::PersistenceFailed);
     }
@@ -1082,13 +1389,16 @@ fn well_known_sid(kind: i32) -> Result<[u8; SID_MAX_BYTES], ErrorCode> {
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(sid)
+
+    })
 }
 
 fn check_private_acl_handle(handle: HANDLE, user: &Sid) -> Result<(), ErrorCode> {
+    observe_store_scope!("private_acl", stop_observation::inherited(), {
     let mut dacl = null_mut();
     let mut sd: PSECURITY_DESCRIPTOR = null_mut();
     let err = unsafe {
-        GetSecurityInfo(
+        observe_store_status!("get_security_info", GetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
             DACL_SECURITY_INFORMATION,
@@ -1097,7 +1407,7 @@ fn check_private_acl_handle(handle: HANDLE, user: &Sid) -> Result<(), ErrorCode>
             &mut dacl,
             null_mut(),
             &mut sd,
-        )
+        ))
     };
     if err != 0 || sd.is_null() || dacl.is_null() {
         if !sd.is_null() {
@@ -1112,14 +1422,17 @@ fn check_private_acl_handle(handle: HANDLE, user: &Sid) -> Result<(), ErrorCode>
         LocalFree(sd);
     }
     result
+
+    })
 }
 
 fn snapshot_owner(handle: HANDLE, user: &Sid) -> Result<SnapshotOwner, ErrorCode> {
+    observe_store_scope!("snapshot_owner", stop_observation::inherited(), {
     let mut owner: PSID = null_mut();
     let mut dacl = null_mut();
     let mut sd: PSECURITY_DESCRIPTOR = null_mut();
     let err = unsafe {
-        GetSecurityInfo(
+        observe_store_status!("get_security_info", GetSecurityInfo(
             handle,
             SE_FILE_OBJECT,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
@@ -1128,7 +1441,7 @@ fn snapshot_owner(handle: HANDLE, user: &Sid) -> Result<SnapshotOwner, ErrorCode
             &mut dacl,
             null_mut(),
             &mut sd,
-        )
+        ))
     };
     if err != 0 || sd.is_null() || owner.is_null() || dacl.is_null() {
         if !sd.is_null() {
@@ -1139,7 +1452,7 @@ fn snapshot_owner(handle: HANDLE, user: &Sid) -> Result<SnapshotOwner, ErrorCode
     let result = (|| {
         let mut control = 0u16;
         let mut revision = 0u32;
-        if unsafe { GetSecurityDescriptorControl(sd, &mut control, &mut revision) } == 0
+        if unsafe { observe_store_bool!("get_sd_control", GetSecurityDescriptorControl(sd, &mut control, &mut revision)) } == 0
             || control & SE_DACL_PROTECTED == 0
         {
             return Err(ErrorCode::PersistenceFailed);
@@ -1156,6 +1469,8 @@ fn snapshot_owner(handle: HANDLE, user: &Sid) -> Result<SnapshotOwner, ErrorCode
     })();
     unsafe { LocalFree(sd); }
     result
+
+    })
 }
 
 fn dacl_is_private(
@@ -1163,18 +1478,19 @@ fn dacl_is_private(
     user: &Sid,
     require_full_user_access: bool,
 ) -> Result<(), ErrorCode> {
+    observe_store_scope!("private_acl", stop_observation::inherited(), {
     let mut info = ACL_SIZE_INFORMATION {
         AclBytesInUse: 0,
         AclBytesFree: 0,
         AceCount: 0,
     };
     if unsafe {
-        GetAclInformation(
+        observe_store_bool!("get_acl_information", GetAclInformation(
             dacl,
             (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
             size_of::<ACL_SIZE_INFORMATION>() as u32,
             AclSizeInformation,
-        )
+        ))
     } == 0
     {
         return Err(ErrorCode::PersistenceFailed);
@@ -1188,7 +1504,7 @@ fn dacl_is_private(
     let mut saw_user_full_access = false;
     for index in 0..info.AceCount {
         let mut ace: *mut c_void = null_mut();
-        if unsafe { GetAce(dacl, index, &mut ace) } == 0 || ace.is_null() {
+        if unsafe { observe_store_bool!("get_ace", GetAce(dacl, index, &mut ace)) } == 0 || ace.is_null() {
             return Err(ErrorCode::PersistenceFailed);
         }
         let header = unsafe { &*(ace as *const ACE_HEADER) };
@@ -1216,6 +1532,8 @@ fn dacl_is_private(
         return Err(ErrorCode::PersistenceFailed);
     }
     Ok(())
+
+    })
 }
 
 #[cfg(test)]
