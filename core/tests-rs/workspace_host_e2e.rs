@@ -4341,7 +4341,7 @@ mod consumer_stop_observation {
     pub const ROOT_ENV: &str = "WINSMUX_TASK876_STOP_OBSERVATION";
     pub const NONCE_ENV: &str = "WINSMUX_TASK876_STOP_NONCE";
     const PHASES: &[&str] = &["layout_identity", "snapshot_build", "snapshot_roots", "descriptor", "directory_chain", "existing_snapshot_open", "temp_acquire", "lease_acquire", "lease_validate", "snapshot_validate", "snapshot_owner", "temp_write", "temp_flush", "snapshot_read", "readback", "rename", "final_owner", "store_begin", "snapshot_save", "confirmed_read", "confirmed_preflight", "backup_preflight", "stage_replace", "path_encoding", "ancestor_shape", "store_root_observe", "ancestor_open", "volume_admission", "volume_policy", "directory_create", "file_open", "directory_inspect", "file_inspect", "private_acl", "unknown", "snapshot_serialize", "confirmed_backup_policy"];
-    const APIS: &[&str] = &["none", "create_file", "create_directory", "convert_security_descriptor", "convert_sid_string", "create_well_known_sid", "get_security_info", "set_security_info", "get_sd_control", "get_acl_information", "get_ace", "get_file_information", "set_file_pointer", "set_end_of_file", "get_file_size", "read_file", "write_file", "flush_file", "query_dos_device", "nt_set_information_file", "unknown"];
+    const APIS: &[&str] = &["none", "create_file", "create_directory", "convert_security_descriptor", "convert_sid_string", "create_well_known_sid", "get_security_info", "set_security_info", "get_sd_control", "get_acl_information", "get_ace", "get_file_information", "set_file_pointer", "set_end_of_file", "get_file_size", "read_file", "write_file", "flush_file", "query_dos_device", "nt_open_symbolic_link", "nt_query_symbolic_link", "nt_set_information_file", "unknown"];
     const TARGETS: &[&str] = &["preparation", "volume", "ancestor", "known_folder", "winsmux", "workspace", "store", "lease", "confirmed", "backup", "temp", "unknown"];
     pub struct Carrier { pub root: String, pub nonce: String, id: [u64; 3], _locks: Vec<OwnedTestHandle>, _request: File }
     struct Active { carrier: Option<Carrier>, emitted: bool }
@@ -4350,55 +4350,6 @@ mod consumer_stop_observation {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Record { schema: u32, nonce: String, operation_id: String, instance_id: String, save_result: String, phase: String, target: String, refusal: String, api: String, error_class: String, store_binding: String }
-
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct ProbeRecord { schema: u32, nonce: String, operation_id: String, instance_id: String, probe: VolumeProbe }
-    #[derive(serde::Deserialize, serde::Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct VolumeProbe { schema: String, observation: String, legacy_result: String, exact_open: String, exact_query: String, target: String, same_target: String, legacy_policy: String, exact_policy: String }
-    impl VolumeProbe {
-        fn unknown() -> Self { Self { schema:"winsmux-volume-link-probe/v1".into(), observation:"unknown".into(), legacy_result:"unknown".into(), exact_open:"unknown".into(), exact_query:"unknown".into(), target:"unknown".into(), same_target:"unknown".into(), legacy_policy:"unknown".into(), exact_policy:"unknown".into() } }
-        fn valid(&self) -> bool {
-            let p=self;
-            if p.schema!="winsmux-volume-link-probe/v1" {return false;}
-            if [&p.observation,&p.legacy_result,&p.exact_open,&p.exact_query,&p.target,&p.same_target,&p.legacy_policy,&p.exact_policy].into_iter().all(|v|v=="unknown") {return true;}
-            if !["success","access_denied","other_failure"].contains(&p.legacy_result.as_str()) {return false;}
-            let policy=|s:&str|["subst","non_subst"].contains(&s);
-            let old_invalid=if p.legacy_result=="success" {if !policy(&p.legacy_policy)&&p.legacy_policy!="unknown" {return false;}p.legacy_policy=="unknown"}else {if p.legacy_policy!="unknown"||p.same_target!="unknown" {return false;}false};
-            let expected=if old_invalid {"invalid"}else {"observed"};
-            match p.exact_open.as_str() {
-                "unavailable" => p.exact_query=="unavailable"&&p.target=="unknown"&&p.same_target=="unknown"&&p.exact_policy=="unknown"&&p.observation==if old_invalid {"invalid"}else {"unknown"},
-                "access_denied"|"other_failure" => p.exact_query=="unknown"&&p.target=="unknown"&&p.same_target=="unknown"&&p.exact_policy=="unknown"&&p.observation==expected,
-                "success" => match p.exact_query.as_str() {
-                    "access_denied"|"buffer_limit"|"other_failure" => p.target=="unknown"&&p.same_target=="unknown"&&p.exact_policy=="unknown"&&p.observation==expected,
-                    "success" => match p.target.as_str() {
-                        "invalid" => p.same_target=="unknown"&&p.exact_policy=="unknown"&&p.observation=="invalid",
-                        "valid" => policy(&p.exact_policy)&&p.observation==expected&&if p.legacy_result=="success"&&!old_invalid {["yes","no"].contains(&p.same_target.as_str())&&(p.same_target!="yes"||p.legacy_policy==p.exact_policy)}else {p.same_target=="unknown"},
-                        _=>false,
-                    },
-                    _=>false,
-                },
-                _=>false,
-            }
-        }
-    }
-    fn decode_probe(bytes:&[u8],nonce:&str,response:&Value)->Option<VolumeProbe>{
-        let r:ProbeRecord=serde_json::from_slice(bytes).ok()?;
-        if r.schema!=1||r.nonce!=nonce||response["operation_id"].as_str()?!=r.operation_id||response["instance_id"].as_str()?!=r.instance_id||!r.probe.valid(){return None;}
-        Some(r.probe)
-    }
-    impl Carrier {
-        fn read_probe(&self,response:&Response)->Option<VolumeProbe>{
-            if identity(self._locks.last()?.raw(),true)?!=self.id{return None;}
-            let mut file=OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(Path::new(&self.root).join("volume-link.json")).ok()?;
-            let before=identity(file.as_raw_handle().cast(),false)?;if file.metadata().ok()?.len()>1024{return None;}
-            let mut bytes=Vec::new();file.read_to_end(&mut bytes).ok()?;
-            if identity(file.as_raw_handle().cast(),false)?!=before||identity(self._locks.last()?.raw(),true)?!=self.id{return None;}
-            decode_probe(&bytes,&self.nonce,&value(response))
-        }
-    }
-
     #[derive(serde::Serialize)]
     struct Frame { schema: &'static str, observation: &'static str, save_result: String, phase: String, target: String, refusal: String, api: String, error_class: String, store_binding: String }
     impl Frame {
@@ -4459,9 +4410,10 @@ mod consumer_stop_observation {
             "write_file" => ["temp_write"].contains(&r.phase.as_str()),
             "flush_file" => ["temp_flush"].contains(&r.phase.as_str()),
             "query_dos_device" => ["volume_policy"].contains(&r.phase.as_str()),
+            "nt_open_symbolic_link" | "nt_query_symbolic_link" => ["volume_policy"].contains(&r.phase.as_str()),
             "nt_set_information_file" => ["rename"].contains(&r.phase.as_str()),
             _ => false,
-        }) && ((r.api == "nt_set_information_file") == (r.error_class == "nt_status_failure")) }
+        }) && (["nt_set_information_file", "nt_open_symbolic_link", "nt_query_symbolic_link"].contains(&r.api.as_str()) == (r.error_class == "nt_status_failure")) }
     fn decode(bytes: &[u8], nonce: &str, response: &Value) -> Option<Frame> {
         let r: Record = serde_json::from_slice(bytes).ok()?;
         if r.schema != 1 || r.nonce != nonce || response["operation_id"].as_str()? != r.operation_id || response["instance_id"].as_str()? != r.instance_id || r.store_binding != "actual_layout_v1" || !PHASES.contains(&r.phase.as_str()) || !TARGETS.contains(&r.target.as_str()) || !APIS.contains(&r.api.as_str()) { return None; }
@@ -4469,7 +4421,7 @@ mod consumer_stop_observation {
         else if r.save_result == "refused" && r.phase != "unknown" && r.target != "unknown" && match r.refusal.as_str() {
             "native_api" => native_pair(&r) && r.api != "none" && r.api != "unknown" && ["access_denied","sharing_violation","not_found","already_exists","other_native","nt_status_failure"].contains(&r.error_class.as_str()),
             "condition" => r.api == "none" && r.error_class == "not_native",
-            "dependency_unobserved" => r.api == "none" && r.error_class == "unknown",
+            "dependency_unobserved" => r.api == "none" && r.error_class == "unknown" && ["store_root_observe", "snapshot_build", "snapshot_roots", "volume_policy"].contains(&r.phase.as_str()),
             _ => false,
         } { "refusal_observed" } else { return None; };
         Some(Frame { schema: "winsmux-consumer-stop-attempt/v1", observation: observed, save_result: r.save_result, phase: r.phase, target: r.target, refusal: r.refusal, api: r.api, error_class: r.error_class, store_binding: r.store_binding })
@@ -4477,11 +4429,8 @@ mod consumer_stop_observation {
     pub fn install(carrier: Option<Carrier>) -> Scope { let _ = ACTIVE.try_with(|slot| { if let Ok(mut v) = slot.try_borrow_mut() { *v = Some(Active { carrier, emitted: false }); } }); Scope }
     pub fn emit(response: &Response) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let frame = ACTIVE.try_with(|slot| { let mut v = slot.try_borrow_mut().ok()?; let active = v.as_mut()?; if active.emitted { return None; } active.emitted = true; Some((active.carrier.as_ref().and_then(|c| c.read(response)).unwrap_or_else(Frame::unknown), active.carrier.as_ref().and_then(|c| c.read_probe(response)).unwrap_or_else(VolumeProbe::unknown))) }).ok().flatten();
-            if let Some((frame, probe)) = frame {
-                if let Ok(bytes) = serde_json::to_vec(&frame) { let mut line = b"WINSMUX_CONSUMER_STOP_ATTEMPT ".to_vec(); line.extend_from_slice(&bytes); line.push(b'\n'); let _ = std::io::stderr().lock().write_all(&line); }
-                if let Ok(bytes) = serde_json::to_vec(&probe) { let mut line = b"WINSMUX_VOLUME_LINK_PROBE ".to_vec(); line.extend_from_slice(&bytes); line.push(b'\n'); let _ = std::io::stderr().lock().write_all(&line); }
-            }
+            let frame = ACTIVE.try_with(|slot| { let mut v = slot.try_borrow_mut().ok()?; let active = v.as_mut()?; if active.emitted { return None; } active.emitted = true; Some(active.carrier.as_ref().and_then(|c| c.read(response)).unwrap_or_else(Frame::unknown)) }).ok().flatten();
+            if let Some(frame) = frame { if let Ok(bytes) = serde_json::to_vec(&frame) { let mut line = b"WINSMUX_CONSUMER_STOP_ATTEMPT ".to_vec(); line.extend_from_slice(&bytes); line.push(b'\n'); let _ = std::io::stderr().lock().write_all(&line); } }
         }));
     }
     impl Drop for Scope { fn drop(&mut self) { let _ = ACTIVE.try_with(|slot| if let Ok(mut v) = slot.try_borrow_mut() { *v = None; }); } }
@@ -4497,18 +4446,26 @@ mod consumer_stop_observation {
             assert!(decode(b"{\"schema\":1,\"schema\":1}", "nonce", &response()).is_none()); assert!(decode(&[0xc0,0xaf], "nonce", &response()).is_none());
         }
         #[test] fn dependency_is_not_invented_as_native_and_completed_save_is_not_stop_success() { let mut r = record(); r["phase"] = json!("store_root_observe"); r["refusal"] = json!("dependency_unobserved"); r["api"] = json!("none"); r["error_class"] = json!("unknown"); assert_eq!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).unwrap().observation,"refusal_observed"); r["save_result"] = json!("completed"); for k in ["phase","target","refusal","api","error_class"] { r[k] = json!("unknown"); } assert_eq!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).unwrap().observation,"save_completed"); }
-        fn probe_value()->Value {json!({"schema":"winsmux-volume-link-probe/v1","observation":"observed","legacy_result":"success","exact_open":"success","exact_query":"success","target":"valid","same_target":"yes","legacy_policy":"non_subst","exact_policy":"non_subst"})}
-        fn probe_record()->Value {json!({"schema":1,"nonce":"nonce","operation_id":"operation","instance_id":"instance","probe":probe_value()})}
-        #[test] fn volume_link_frame_binding_and_equality_policy_are_closed(){
-            let r=probe_record();let p=decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).unwrap();assert_eq!(p.same_target,"yes");let text=serde_json::to_string(&p).unwrap();assert!(!text.contains("nonce")&&!text.contains("operation_id")&&!text.contains("instance_id"));
-            for k in ["nonce","operation_id","instance_id"] {let mut r=probe_record();r[k]=json!("wrong");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_none());}
-            let mut r=probe_record();r["probe"]["legacy_policy"]=json!("subst");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_none());
-            let mut r=probe_record();r["probe"]["legacy_result"]=json!("access_denied");r["probe"]["legacy_policy"]=json!("unknown");r["probe"]["same_target"]=json!("unknown");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_some());r["probe"]["same_target"]=json!("no");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_none());
+        #[test] fn volume_admission_frame_native_pairs_are_nt_failures_only() {
+            for api in ["nt_open_symbolic_link", "nt_query_symbolic_link"] {
+                let mut r = record(); r["phase"] = json!("volume_policy"); r["target"] = json!("volume"); r["api"] = json!(api); r["error_class"] = json!("nt_status_failure");
+                let frame = decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).unwrap();
+                assert_eq!(frame.observation, "refusal_observed"); assert_eq!(frame.api, api);
+                for (field, bad) in [("phase", "rename"), ("error_class", "access_denied"), ("refusal", "condition"), ("api", "secret_unknown")] {
+                    let mut bad_record = r.clone(); bad_record[field] = json!(bad);
+                    assert!(decode(&serde_json::to_vec(&bad_record).unwrap(), "nonce", &response()).is_none());
+                }
+            }
+            let mut r = record(); r["error_class"] = json!("nt_status_failure");
+            assert!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).is_none());
         }
-        #[test] fn volume_link_frame_unknown_extra_duplicate_and_stage_contradictions_refuse(){
-            for k in ["schema","observation","legacy_result","exact_open","exact_query","target","same_target","legacy_policy","exact_policy"] {let mut r=probe_record();r["probe"][k]=json!("SECRET_UNKNOWN");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_none());}
-            let mut r=probe_record();r["probe"]["exact_open"]=json!("access_denied");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_none());let mut r=probe_record();r["extra"]=json!("SECRET_UNKNOWN");assert!(decode_probe(&serde_json::to_vec(&r).unwrap(),"nonce",&response()).is_none());
-            assert!(decode_probe(b"{\"schema\":1,\"schema\":1}","nonce",&response()).is_none());assert!(decode_probe(&[0xc0,0xaf],"nonce",&response()).is_none());assert!(VolumeProbe::unknown().valid());
+        #[test] fn volume_admission_frame_unavailable_is_not_a_native_or_condition_claim() {
+            let mut r = record(); r["phase"] = json!("volume_policy"); r["target"] = json!("volume"); r["refusal"] = json!("dependency_unobserved"); r["api"] = json!("none"); r["error_class"] = json!("unknown");
+            assert_eq!(decode(&serde_json::to_vec(&r).unwrap(), "nonce", &response()).unwrap().refusal, "dependency_unobserved");
+            for (field, bad) in [("phase", "ancestor_open"), ("api", "nt_query_symbolic_link"), ("error_class", "not_native"), ("refusal", "native_api")] {
+                let mut bad_record = r.clone(); bad_record[field] = json!(bad);
+                assert!(decode(&serde_json::to_vec(&bad_record).unwrap(), "nonce", &response()).is_none());
+            }
         }
         fn write_record(carrier: &Carrier, bytes: &[u8]) {
             use std::os::windows::fs::OpenOptionsExt;

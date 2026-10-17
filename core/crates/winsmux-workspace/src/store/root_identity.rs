@@ -22,13 +22,16 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateDirectoryW, CreateFileW, GetDriveTypeW, GetFileInformationByHandle,
-    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetShortPathNameW, QueryDosDeviceW,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetShortPathNameW,
     RemoveDirectoryW, BY_HANDLE_FILE_INFORMATION,
     FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
     FILE_ID_INFO, FILE_SHARE_READ, FileIdInfo, OPEN_EXISTING, ReadFile, SetFilePointerEx,
     FILE_BEGIN,
 };
+
+#[cfg(debug_assertions)]
+use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
 
 const FILE_READ_ATTRIBUTES: u32 = 0x0080;
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
@@ -679,7 +682,7 @@ pub fn observe_root(
     let mut handles = Vec::new();
     let root = open_drive_root(parsed.drive)?;
     inspect_directory(root.raw())?;
-    confirm_fixed_local_volume(parsed.drive, root.raw())?;
+    confirm_fixed_local_volume(parsed.drive).map_err(VolumeAdmissionFailure::observe_error)?;
     handles.push(root);
     for component in &parsed.components {
         let child = open_relative_component(handles.last().expect("parent handle").raw(), component)?;
@@ -843,31 +846,201 @@ fn open_drive_root(drive: u8) -> Result<OwnedHandle, ObserveError> {
     owned_handle(handle)
 }
 
-fn confirm_fixed_local_volume(drive: u8, root: HANDLE) -> Result<(), ObserveError> {
-    let mut root_path: Vec<u16> = format!("{}:\\", drive as char)
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let drive_type = unsafe { GetDriveTypeW(root_path.as_mut_ptr()) };
-    if drive_type != DRIVE_FIXED {
-        return Err(ObserveError::UnsupportedFile);
+/// One point-in-time admission policy for project roots and the layout store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VolumeAdmissionFailure {
+    DriveTypeNotFixed, ApiUnavailable, OpenRefused, QueryRefused,
+    UnsupportedStatus, InvalidTarget, SubstTarget,
+}
+impl VolumeAdmissionFailure {
+    pub(crate) fn observe_error(self) -> ObserveError { ObserveError::UnsupportedFile }
+}
+const VOLUME_TARGET_UNITS: usize = 1024;
+#[derive(Clone)]
+struct VolumeLinkReply {
+    units: [u16; VOLUME_TARGET_UNITS], length: u16, maximum: u16,
+    required: u32, same_buffer: bool,
+}
+fn validate_volume_target(reply: &VolumeLinkReply) -> Result<(), VolumeAdmissionFailure> {
+    use VolumeAdmissionFailure::{InvalidTarget, SubstTarget};
+    let n = reply.length as usize;
+    if !reply.same_buffer || n == 0 || n % 2 != 0
+        || reply.maximum as usize != VOLUME_TARGET_UNITS * 2 || n > reply.maximum as usize
+        || reply.required as usize > VOLUME_TARGET_UNITS * 2 || reply.required % 2 != 0 {
+        return Err(InvalidTarget);
     }
-    let mut device: Vec<u16> = format!("{}:", drive as char)
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let mut target = vec![0u16; 1024];
-    let written = unsafe { QueryDosDeviceW(device.as_mut_ptr(), target.as_mut_ptr(), target.len() as u32) };
-    if written == 0 {
-        return Err(ObserveError::UnsupportedFile);
+    let target = &reply.units[..n / 2];
+    if target.contains(&0) || char::decode_utf16(target.iter().copied()).any(|c| c.is_err()) {
+        return Err(InvalidTarget);
     }
-    let end = target.iter().position(|unit| *unit == 0).unwrap_or(target.len());
-    let text = String::from_utf16(&target[..end]).map_err(|_| ObserveError::UnsupportedFile)?;
-    if text.starts_with(r"\??\") {
-        return Err(ObserveError::UnsupportedFile);
-    }
-    let _ = root;
+    if target.starts_with(&[92, 63, 63, 92]) { return Err(SubstTarget); }
     Ok(())
+}
+fn volume_status(status: i32, failure: VolumeAdmissionFailure) -> Result<(), VolumeAdmissionFailure> {
+    if status == 0 { Ok(()) }
+    else if status < 0 { Err(failure) }
+    else { Err(VolumeAdmissionFailure::UnsupportedStatus) }
+}
+fn held_volume_link<H>(
+    open: impl FnOnce() -> Result<H, VolumeAdmissionFailure>,
+    query: impl FnOnce(&H) -> Result<VolumeLinkReply, VolumeAdmissionFailure>,
+) -> Result<(), VolumeAdmissionFailure> {
+    let handle = open()?;
+    let reply = query(&handle)?;
+    validate_volume_target(&reply)
+}
+fn admit_volume_with(
+    drive: u8, drive_type: u32,
+    query: impl FnOnce(u8) -> Result<(), VolumeAdmissionFailure>,
+) -> Result<(), VolumeAdmissionFailure> {
+    if !drive.is_ascii_alphabetic() { return Err(VolumeAdmissionFailure::InvalidTarget); }
+    if drive_type != DRIVE_FIXED { return Err(VolumeAdmissionFailure::DriveTypeNotFixed); }
+    query(drive.to_ascii_uppercase())
+}
+fn query_current_volume_link(drive: u8) -> Result<(), VolumeAdmissionFailure> {
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    type OpenLink = unsafe extern "system" fn(*mut HANDLE, u32, *const ObjectAttributes) -> i32;
+    type QueryLink = unsafe extern "system" fn(HANDLE, *mut UnicodeString, *mut u32) -> i32;
+    let dll: Vec<u16> = "ntdll.dll".encode_utf16().chain(Some(0)).collect();
+    let module = unsafe { GetModuleHandleW(dll.as_ptr()) };
+    if module.is_null() { return Err(VolumeAdmissionFailure::ApiUnavailable); }
+    let (open, query): (OpenLink, QueryLink) = unsafe {
+        let Some(open) = GetProcAddress(module, b"NtOpenSymbolicLinkObject\0".as_ptr()) else { return Err(VolumeAdmissionFailure::ApiUnavailable); };
+        let Some(query) = GetProcAddress(module, b"NtQuerySymbolicLinkObject\0".as_ptr()) else { return Err(VolumeAdmissionFailure::ApiUnavailable); };
+        (std::mem::transmute(open), std::mem::transmute(query))
+    };
+    // Query this exact unresolved link in the current effective DOS namespace.
+    // No Global fallback, enumeration, token change, or final-path substitute.
+    let name: Vec<u16> = format!("\\??\\{}:", drive as char).encode_utf16().collect();
+    let unicode = UnicodeString { length: (name.len() * 2) as u16, maximum_length: (name.len() * 2) as u16, buffer: name.as_ptr() };
+    let attributes = ObjectAttributes { length: std::mem::size_of::<ObjectAttributes>() as u32,
+        root_directory: null_mut(), object_name: &unicode, attributes: OBJ_CASE_INSENSITIVE,
+        security_descriptor: null(), security_quality_of_service: null() };
+    held_volume_link(
+        || {
+            let mut raw = null_mut();
+            let status = unsafe { open(&mut raw, 1, &attributes) };
+            let held = if raw.is_null() || raw == INVALID_HANDLE_VALUE { None }
+                else { Some(unsafe { OwnedHandle::from_raw(raw) }.map_err(|_| VolumeAdmissionFailure::OpenRefused)?) };
+            volume_status(status, VolumeAdmissionFailure::OpenRefused)?;
+            held.ok_or(VolumeAdmissionFailure::InvalidTarget)
+        },
+        |handle| {
+            let mut units = [0u16; VOLUME_TARGET_UNITS];
+            let mut target = UnicodeString { length: 0, maximum_length: (VOLUME_TARGET_UNITS * 2) as u16, buffer: units.as_mut_ptr() };
+            let mut required = 0u32;
+            volume_status(unsafe { query(handle.raw(), &mut target, &mut required) }, VolumeAdmissionFailure::QueryRefused)?;
+            Ok(VolumeLinkReply { same_buffer: target.buffer == units.as_ptr(), units,
+                length: target.length, maximum: target.maximum_length, required })
+        },
+    )
+}
+pub(crate) fn confirm_fixed_local_volume(drive: u8) -> Result<(), VolumeAdmissionFailure> {
+    #[cfg(test)]
+    if let Some(result) = testing_volume_admission::next(drive) { return result; }
+    if !drive.is_ascii_alphabetic() { return Err(VolumeAdmissionFailure::InvalidTarget); }
+    let drive = drive.to_ascii_uppercase();
+    let root: Vec<u16> = format!("{}:\\", drive as char).encode_utf16().chain(Some(0)).collect();
+    let drive_type = unsafe { GetDriveTypeW(root.as_ptr()) };
+    admit_volume_with(drive, drive_type, query_current_volume_link)
+}
+#[cfg(test)]
+pub(crate) mod testing_volume_admission {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    #[derive(Clone)]
+    pub(crate) struct Reply { drive_type: u32, open: Result<(), VolumeAdmissionFailure>, query: Result<VolumeLinkReply, VolumeAdmissionFailure> }
+    pub(crate) const FAILURES: [VolumeAdmissionFailure; 7] = [VolumeAdmissionFailure::DriveTypeNotFixed, VolumeAdmissionFailure::ApiUnavailable, VolumeAdmissionFailure::OpenRefused, VolumeAdmissionFailure::QueryRefused, VolumeAdmissionFailure::UnsupportedStatus, VolumeAdmissionFailure::InvalidTarget, VolumeAdmissionFailure::SubstTarget];
+    fn target(text: &str) -> VolumeLinkReply {
+        let v: Vec<u16> = text.encode_utf16().collect();
+        let mut units = [0u16; VOLUME_TARGET_UNITS]; units[..v.len()].copy_from_slice(&v);
+        VolumeLinkReply { units, length: (v.len() * 2) as u16, maximum: (VOLUME_TARGET_UNITS * 2) as u16, required: (v.len() * 2) as u32, same_buffer: true }
+    }
+    impl Reply {
+        pub(crate) fn admitted() -> Self { Self { drive_type: DRIVE_FIXED, open: Ok(()), query: Ok(target(r"\Device\HarddiskVolumeFixture")) } }
+        pub(crate) fn refused(failure: VolumeAdmissionFailure) -> Self {
+            let mut value = Self::admitted();
+            match failure {
+                VolumeAdmissionFailure::DriveTypeNotFixed => value.drive_type = 0,
+                VolumeAdmissionFailure::ApiUnavailable | VolumeAdmissionFailure::OpenRefused | VolumeAdmissionFailure::UnsupportedStatus => value.open = Err(failure),
+                VolumeAdmissionFailure::QueryRefused => value.query = Err(failure),
+                VolumeAdmissionFailure::InvalidTarget => { let mut v = target("X"); v.length = 1; value.query = Ok(v); }
+                VolumeAdmissionFailure::SubstTarget => value.query = Ok(target(r"\??\C:\")),
+            }
+            value
+        }
+    }
+    struct State { replies: VecDeque<Reply>, calls: Vec<u8> }
+    thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
+    pub(crate) struct Scope { previous: Option<State>, _thread: std::marker::PhantomData<std::rc::Rc<()>> }
+    impl Scope {
+        pub(crate) fn install(replies: Vec<Reply>) -> Self { Self { previous: STATE.with(|s| s.replace(Some(State { replies: replies.into(), calls: Vec::new() }))), _thread: std::marker::PhantomData } }
+        pub(crate) fn calls(&self) -> Vec<u8> { STATE.with(|s| s.borrow().as_ref().expect("volume fixture scope").calls.clone()) }
+    }
+    impl Drop for Scope { fn drop(&mut self) { STATE.with(|s| { *s.borrow_mut() = self.previous.take(); }); } }
+    pub(super) fn next(drive: u8) -> Option<Result<(), VolumeAdmissionFailure>> {
+        STATE.with(|s| {
+            let mut slot = s.borrow_mut(); let s = slot.as_mut()?; s.calls.push(drive);
+            let reply = s.replies.pop_front();
+            Some(match reply {
+                Some(r) => admit_volume_with(drive, r.drive_type, |_| held_volume_link(|| r.open, |_| r.query)),
+                None => Err(VolumeAdmissionFailure::ApiUnavailable),
+            })
+        })
+    }
+    #[test] fn volume_admission_native_current_test_volume() {
+        let test_root = std::env::temp_dir();
+        let text = test_root.to_str().expect("test volume path encoding");
+        let parsed = parse_drive_absolute(text).expect("test volume drive syntax");
+        // No injected scope: observe the real shared production predicate once.
+        let observed = confirm_fixed_local_volume(parsed.drive);
+        assert_eq!(observed, Ok(()), "current test volume admission: {:?}", observed);
+    }
+    #[test] fn volume_admission_pure_fixed_type_precedes_query_and_drive_is_exact() {
+        for kind in [0, 1, 2, 4, 5, 6, u32::MAX] {
+            assert_eq!(admit_volume_with(b'c', kind, |_| panic!("query before fixed admission")), Err(VolumeAdmissionFailure::DriveTypeNotFixed));
+        }
+        assert!(admit_volume_with(b'c', 3, |drive| { assert_eq!(drive, b'C'); Ok(()) }).is_ok());
+        assert_eq!(admit_volume_with(b':', 3, |_| panic!("invalid drive queried")), Err(VolumeAdmissionFailure::InvalidTarget));
+    }
+    #[test] fn volume_admission_pure_raw_targets_preserve_all_dos_alias_refusals() {
+        for s in [r"\??\C:\", r"\??\C:\folder", r"\??\Z:"] { assert_eq!(validate_volume_target(&target(s)), Err(VolumeAdmissionFailure::SubstTarget)); }
+        for s in [r"\Device\HarddiskVolume1", r"\device\HarddiskVolume1"] { assert!(validate_volume_target(&target(s)).is_ok()); }
+    }
+    #[test] fn volume_admission_pure_buffer_shape_and_utf16_fail_closed() {
+        let good = target("valid");
+        for n in 0..9 {
+            let mut r = good.clone(); match n { 0 => r.length = 0, 1 => r.length = 1, 2 => r.length = (VOLUME_TARGET_UNITS*2+2) as u16, 3 => r.maximum = 2, 4 => r.required = (VOLUME_TARGET_UNITS*2+2) as u32, 5 => r.required = 1, 6 => r.same_buffer = false, 7 => r.units[0] = 0, _ => r.units[0] = 0xd800 }
+            assert_eq!(validate_volume_target(&r), Err(VolumeAdmissionFailure::InvalidTarget));
+        }
+        let edge = VolumeLinkReply { units: [65; VOLUME_TARGET_UNITS], length: (VOLUME_TARGET_UNITS*2) as u16, maximum: (VOLUME_TARGET_UNITS*2) as u16, required: (VOLUME_TARGET_UNITS*2) as u32, same_buffer: true };
+        assert!(validate_volume_target(&edge).is_ok());
+    }
+    #[test] fn volume_admission_pure_status_and_root_error_adapter_remain_distinct() {
+        assert!(volume_status(0, VolumeAdmissionFailure::OpenRefused).is_ok());
+        for (s, f) in [(0xc0000022u32 as i32, VolumeAdmissionFailure::OpenRefused), (0xc0000023u32 as i32, VolumeAdmissionFailure::QueryRefused), (0x80000005u32 as i32, VolumeAdmissionFailure::QueryRefused)] { assert_eq!(volume_status(s, f), Err(f)); }
+        assert_eq!(volume_status(1, VolumeAdmissionFailure::OpenRefused), Err(VolumeAdmissionFailure::UnsupportedStatus));
+        for failure in FAILURES { assert!(matches!(failure.observe_error(), ObserveError::UnsupportedFile)); }
+    }
+    #[test] fn volume_admission_pure_owned_handle_closes_once_on_each_exit() {
+        use std::cell::Cell;
+        struct Held<'a>(&'a Cell<u32>); impl Drop for Held<'_> { fn drop(&mut self) { self.0.set(self.0.get()+1); } }
+        let count = Cell::new(0);
+        let r = held_volume_link::<Held<'_>>(|| Err(VolumeAdmissionFailure::ApiUnavailable), |_| panic!("query without handle")); assert!(r.is_err()); assert_eq!(count.get(), 0);
+        for kind in 0..4 {
+            let before = count.get();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| held_volume_link(|| Ok(Held(&count)), |_| match kind { 0 => Err(VolumeAdmissionFailure::QueryRefused), 1 => { let mut r=target("bad");r.length=0;Ok(r) }, 2 => Ok(target("valid")), _ => panic!("synthetic query unwind") })));
+            assert_eq!(count.get(), before+1); if kind==2 {assert!(r.unwrap().is_ok());}
+        }
+        let before = count.get();let r=held_volume_link::<Held<'_>>(|| {let _held=Held(&count);Err(VolumeAdmissionFailure::OpenRefused)}, |_| panic!("query after refused open"));assert!(r.is_err());assert_eq!(count.get(),before+1);
+    }
+    #[test] fn volume_admission_pure_scoped_backend_restores_thread_state_on_unwind() {
+        let outer = Scope::install(vec![Reply::admitted(), Reply::refused(VolumeAdmissionFailure::QueryRefused)]);
+        assert!(confirm_fixed_local_volume(b'C').is_ok());
+        let r=std::panic::catch_unwind(|| { let _inner=Scope::install(vec![Reply::refused(VolumeAdmissionFailure::OpenRefused)]);assert_eq!(confirm_fixed_local_volume(b'D'),Err(VolumeAdmissionFailure::OpenRefused));panic!("synthetic scoped unwind"); });assert!(r.is_err());
+        assert_eq!(confirm_fixed_local_volume(b'C'),Err(VolumeAdmissionFailure::QueryRefused));assert_eq!(outer.calls(),vec![b'C',b'C']);
+    }
 }
 
 fn open_relative_component(parent: HANDLE, component: &str) -> Result<OwnedHandle, ObserveError> {

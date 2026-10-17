@@ -7,7 +7,7 @@ use crate::contract::{
 use crate::host::admission::{AllocationAuthority, AllocationError, AllocationPool, ChargedVec};
 use crate::host::io::OwnedHandle;
 use crate::host::security::{Identity, Sid};
-use crate::store::root_identity::{classify_path_syntax, observe_root, ObserveError, ObservedRoot};
+use crate::store::root_identity::{classify_path_syntax, confirm_fixed_local_volume, observe_root, ObserveError, ObservedRoot, VolumeAdmissionFailure};
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
@@ -28,8 +28,8 @@ use windows_sys::Win32::Security::{
     SECURITY_ATTRIBUTES, SE_DACL_PROTECTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateDirectoryW, CreateFileW, FlushFileBuffers, GetDriveTypeW, GetFileInformationByHandle,
-    GetFileSizeEx, QueryDosDeviceW, ReadFile, SetEndOfFile,
+    CreateDirectoryW, CreateFileW, FlushFileBuffers, GetFileInformationByHandle,
+    GetFileSizeEx, ReadFile, SetEndOfFile,
     SetFilePointerEx, WriteFile, BY_HANDLE_FILE_INFORMATION, CREATE_NEW, DELETE,
     FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
@@ -78,7 +78,7 @@ pub(crate) mod stop_observation {
     #[serde(deny_unknown_fields)]
     struct Request { schema: u32, test: String, nonce: String, root: [u64; 3] }
     struct Carrier { root: PathBuf, nonce: String, root_id: [u64; 3], _locks: Vec<OwnedHandle>, _request: File }
-    struct State { carrier: Option<Carrier>, v1: PathBuf, operation: String, instance: String, frame: Frame, failure: Option<Failure>, save_result: &'static str, volume_probe: Option<volume_link::Probe>, probe_calls: u8 }
+    struct State { carrier: Option<Carrier>, v1: PathBuf, operation: String, instance: String, frame: Frame, failure: Option<Failure>, save_result: &'static str }
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; static OBSERVER_FAILED: Cell<bool> = const { Cell::new(false) }; }
     pub(crate) struct Attempt { armed: bool }
     fn with_state(f: impl FnOnce(&mut State)) { let _ = STATE.try_with(|cell| { if let Ok(mut state) = cell.try_borrow_mut() { if let Some(state) = state.as_mut() { f(state); } } else { let _ = OBSERVER_FAILED.try_with(|flag| flag.set(true)); } }); }
@@ -103,6 +103,15 @@ pub(crate) mod stop_observation {
         let class = match error { 5 => "access_denied", 32 | 33 => "sharing_violation", 2 | 3 => "not_found", 80 | 183 => "already_exists", _ => "other_native" };
         let mut frame = Frame { phase: "unknown", target: "unknown" }; with_state(|s| frame = s.frame);
         mark(frame.phase, frame.target, "native_api", api, class);
+    }
+    pub(crate) fn volume_refusal(failure: VolumeAdmissionFailure) {
+        let (refusal, api, error_class) = match failure {
+            VolumeAdmissionFailure::OpenRefused => ("native_api", "nt_open_symbolic_link", "nt_status_failure"),
+            VolumeAdmissionFailure::QueryRefused => ("native_api", "nt_query_symbolic_link", "nt_status_failure"),
+            VolumeAdmissionFailure::ApiUnavailable | VolumeAdmissionFailure::UnsupportedStatus => ("dependency_unobserved", "none", "unknown"),
+            _ => ("condition", "none", "not_native"),
+        };
+        mark("volume_policy", "volume", refusal, api, error_class);
     }
     pub(crate) fn nt_failure() { let mut frame = Frame { phase: "unknown", target: "unknown" }; with_state(|s| frame = s.frame); mark(frame.phase, frame.target, "native_api", "nt_set_information_file", "nt_status_failure"); }
     pub(crate) fn condition(phase: &'static str, target: &'static str) { mark(phase, target, "condition", "none", "not_native"); }
@@ -154,17 +163,9 @@ pub(crate) mod stop_observation {
             identity(file.as_raw_handle().cast(), false)?; file.write_all(&bytes).ok()?; file.flush().ok()?; Some(())
         }
     }
-    impl Carrier {
-        fn write_probe(&self, value: &serde_json::Value) -> Option<()> {
-            if identity(self._locks.last()?.raw(), true)? != self.root_id { return None; }
-            let bytes=serde_json::to_vec(value).ok()?;if bytes.len()>1024{return None;}
-            let mut file=OpenOptions::new().write(true).create_new(true).share_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(self.root.join("volume-link.json")).ok()?;
-            identity(file.as_raw_handle().cast(),false)?;file.write_all(&bytes).ok()?;file.flush().ok()?;Some(())
-        }
-    }
     impl Attempt {
         pub(crate) fn begin(store: &LayoutStore, operation: &str, instance: &str) -> Self {
-            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { STATE.try_with(|cell| { let slot = cell.try_borrow().ok()?; if slot.is_some() { None } else { Some(()) } }).ok()??; let carrier = Carrier::read()?; let state = State { carrier: Some(carrier), v1: store.v1.clone(), operation: operation.to_owned(), instance: instance.to_owned(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown", volume_probe: None, probe_calls: 0 }; STATE.try_with(|cell| { let mut slot = cell.try_borrow_mut().ok()?; if slot.is_some() { return None; } *slot = Some(state); let _ = OBSERVER_FAILED.try_with(|flag| flag.set(false)); Some(()) }).ok()? }));
+            let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| { STATE.try_with(|cell| { let slot = cell.try_borrow().ok()?; if slot.is_some() { None } else { Some(()) } }).ok()??; let carrier = Carrier::read()?; let state = State { carrier: Some(carrier), v1: store.v1.clone(), operation: operation.to_owned(), instance: instance.to_owned(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown" }; STATE.try_with(|cell| { let mut slot = cell.try_borrow_mut().ok()?; if slot.is_some() { return None; } *slot = Some(state); let _ = OBSERVER_FAILED.try_with(|flag| flag.set(false)); Some(()) }).ok()? }));
             Self { armed: matches!(prepared, Ok(Some(()))) }
         }
     }
@@ -178,149 +179,15 @@ pub(crate) mod stop_observation {
                     let (phase, target, refusal, api, error_class) = match &s.failure { Some(f) if s.save_result == "refused" && !OBSERVER_FAILED.try_with(Cell::get).unwrap_or(true) => (f.phase, f.target, f.refusal, f.api, f.error_class), _ => ("unknown", "unknown", "unknown", "unknown", "unknown") };
                     let record = serde_json::json!({"schema":1,"nonce":&carrier.nonce,"operation_id":&s.operation,"instance_id":&s.instance,"save_result":s.save_result,"phase":phase,"target":target,"refusal":refusal,"api":api,"error_class":error_class,"store_binding":"actual_layout_v1"});
                     let _ = carrier.write(&record);
-                    let probe = s.volume_probe.unwrap_or_else(volume_link::Probe::unknown);
-                    let record = serde_json::json!({"schema":1,"nonce":&carrier.nonce,"operation_id":&s.operation,"instance_id":&s.instance,"probe":probe});
-                    let _ = carrier.write_probe(&record);
                 }
             }));
         }
     }
-
-    mod volume_link {
-        use super::*;
-        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
-        const CAP: usize = 1024;
-        #[repr(C)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *mut u16 }
-        #[repr(C)] struct ObjectAttributes { length: u32, root_directory: HANDLE, object_name: *mut UnicodeString, attributes: u32, security_descriptor: *mut c_void, security_qos: *mut c_void }
-        type OpenLink = unsafe extern "system" fn(*mut HANDLE, u32, *mut ObjectAttributes) -> i32;
-        type QueryLink = unsafe extern "system" fn(HANDLE, *mut UnicodeString, *mut u32) -> i32;
-        #[derive(Clone, serde::Serialize)]
-        pub(super) struct Probe {
-            schema: &'static str, observation: &'static str, legacy_result: &'static str,
-            exact_open: &'static str, exact_query: &'static str, target: &'static str,
-            same_target: &'static str, legacy_policy: &'static str, exact_policy: &'static str,
-        }
-        impl Probe {
-            pub(super) fn unknown() -> Self { Self { schema: "winsmux-volume-link-probe/v1", observation: "unknown", legacy_result: "unknown", exact_open: "unknown", exact_query: "unknown", target: "unknown", same_target: "unknown", legacy_policy: "unknown", exact_policy: "unknown" } }
-        }
-        fn policy(target: &[u16]) -> &'static str { if target.starts_with(&[92,63,63,92]) { "subst" } else { "non_subst" } }
-        fn legacy_target(units: &[u16], written: u32) -> Option<Vec<u16>> {
-            let n = written as usize;
-            if n == 0 || n > units.len() || n > CAP { return None; }
-            let end = units[..n].iter().position(|u| *u == 0)?;
-            if end == 0 || String::from_utf16(&units[..end]).is_err() { return None; }
-            Some(units[..end].to_vec())
-        }
-        fn exact_target(units: &[u16], length: u16, maximum: u16, required: u32) -> Option<Vec<u16>> {
-            let n = length as usize;
-            if n == 0 || n % 2 != 0 || maximum as usize != units.len() * 2 || n > maximum as usize || units.len() > CAP || required as usize > units.len()*2 || required % 2 != 0 { return None; }
-            let target = &units[..n/2];
-            if target.contains(&0) || String::from_utf16(target).is_err() { return None; }
-            Some(target.to_vec())
-        }
-        enum Exact { Unavailable, Open(&'static str), Query(&'static str), Invalid, Target(Vec<u16>) }
-        fn project(legacy: &'static str, old: Option<&[u16]>, exact: Exact) -> Probe {
-            let mut p = Probe::unknown(); p.legacy_result = legacy;
-            if legacy == "success" { if let Some(old) = old { p.legacy_policy = policy(old); } }
-            let old_invalid = legacy == "success" && old.is_none();
-            p.observation = if old_invalid { "invalid" } else { "observed" };
-            match exact {
-                Exact::Unavailable => { p.observation = if old_invalid { "invalid" } else { "unknown" }; p.exact_open = "unavailable"; p.exact_query = "unavailable"; }
-                Exact::Open(v) => { p.exact_open = v; }
-                Exact::Query(v) => { p.exact_open = "success"; p.exact_query = v; }
-                Exact::Invalid => { p.exact_open = "success"; p.exact_query = "success"; p.target = "invalid"; p.observation = "invalid"; }
-                Exact::Target(new) => { p.exact_open = "success"; p.exact_query = "success"; p.target = "valid"; p.exact_policy = policy(&new); if let Some(old) = old { p.same_target = if old == new { "yes" } else { "no" }; } }
-            }
-            p
-        }
-        fn open_class(status: i32) -> &'static str { if status as u32 == 0xc0000022 { "access_denied" } else { "other_failure" } }
-        fn query_class(status: i32) -> &'static str { match status as u32 { 0xc0000022 => "access_denied", 0xc0000023 | 0x80000005 => "buffer_limit", _ => "other_failure" } }
-        fn exact(drive: u8) -> Exact {
-            // Read only the last link object in the current effective DOS namespace.
-            // No Global fallback, directory enumeration, token change, or link resolution.
-            let dll: Vec<u16> = "ntdll.dll".encode_utf16().chain(Some(0)).collect();
-            let module = unsafe { GetModuleHandleW(dll.as_ptr()) };
-            if module.is_null() { return Exact::Unavailable; }
-            let (open, query): (OpenLink, QueryLink) = unsafe {
-                let Some(open) = GetProcAddress(module, b"NtOpenSymbolicLinkObject\0".as_ptr()) else { return Exact::Unavailable; };
-                let Some(query) = GetProcAddress(module, b"NtQuerySymbolicLinkObject\0".as_ptr()) else { return Exact::Unavailable; };
-                (std::mem::transmute(open), std::mem::transmute(query))
-            };
-            let mut name: Vec<u16> = format!("\\??\\{}:", drive as char).encode_utf16().collect();
-            let mut unicode = UnicodeString { length: (name.len()*2) as u16, maximum_length: (name.len()*2) as u16, buffer: name.as_mut_ptr() };
-            let mut attributes = ObjectAttributes { length: size_of::<ObjectAttributes>() as u32, root_directory: null_mut(), object_name: &mut unicode, attributes: 0x40, security_descriptor: null_mut(), security_qos: null_mut() };
-            let mut raw = null_mut();
-            let status = unsafe { open(&mut raw, 1, &mut attributes) };
-            let handle = if invalid_handle(raw) { None } else { unsafe { OwnedHandle::from_raw(raw).ok() } };
-            if status != 0 { return Exact::Open(open_class(status)); }
-            let Some(handle) = handle else { return Exact::Open("other_failure"); };
-            let mut units = [0u16; CAP];
-            let mut target = UnicodeString { length: 0, maximum_length: (CAP*2) as u16, buffer: units.as_mut_ptr() };
-            let mut required = 0u32;
-            let status = unsafe { query(handle.raw(), &mut target, &mut required) };
-            if status != 0 { return Exact::Query(query_class(status)); }
-            if target.buffer != units.as_mut_ptr() { return Exact::Invalid; }
-            match exact_target(&units, target.length, target.maximum_length, required) { Some(target) => Exact::Target(target), None => Exact::Invalid }
-            // The same OwnedHandle closes once on every return/unwind after open.
-        }
-        pub(super) fn run(drive: u8, written: u32, units: &[u16], legacy: &'static str) -> Probe {
-            let old = if written != 0 { legacy_target(units, written) } else { None };
-            project(legacy, old.as_deref(), exact(drive))
-        }
-        #[cfg(test)]
-        mod tests {
-            use super::*;
-            fn units(s: &str) -> Vec<u16> { s.encode_utf16().collect() }
-            #[test] fn volume_link_legacy_first_target_bounds_are_finite() {
-                let mut v=units(r"\Device\HarddiskVolume1");v.push(0);v.extend(units("old mapping"));v.push(0);
-                assert_eq!(legacy_target(&v,v.len() as u32).unwrap(),units(r"\Device\HarddiskVolume1"));
-                for (v,n) in [(vec![],0),(vec![0],1),(vec![65],1),(vec![0xd800,0],2),(vec![65,0],3),(vec![65;CAP+1],(CAP+1)as u32)] { assert!(legacy_target(&v,n).is_none()); }
-            }
-            #[test] fn volume_link_query_buffer_lengths_nul_and_utf16_are_checked() {
-                let mut v=vec![65u16;CAP];assert_eq!(exact_target(&v,2,(CAP*2)as u16,2).unwrap(),vec![65]);
-                assert!(exact_target(&v,0,(CAP*2)as u16,0).is_none());assert!(exact_target(&v,1,(CAP*2)as u16,2).is_none());
-                assert!(exact_target(&v,2,2,2).is_none());assert!(exact_target(&v,2,(CAP*2)as u16,(CAP*2+2)as u32).is_none());assert!(exact_target(&v,2,(CAP*2)as u16,1).is_none());
-                v[0]=0;assert!(exact_target(&v,2,(CAP*2)as u16,2).is_none());v[0]=0xd800;assert!(exact_target(&v,2,(CAP*2)as u16,2).is_none());
-                let v=vec![65u16;CAP];assert_eq!(exact_target(&v,(CAP*2)as u16,(CAP*2)as u16,(CAP*2)as u32).unwrap().len(),CAP);
-            }
-            #[test] fn volume_link_raw_equality_and_root_alias_policy_are_not_normalized() {
-                let v=units(r"\Device\HarddiskVolume1");let p=project("success",Some(&v),Exact::Target(v.clone()));assert_eq!((p.same_target,p.legacy_policy,p.exact_policy),("yes","non_subst","non_subst"));
-                let p=project("success",Some(&v),Exact::Target(units(r"\device\HarddiskVolume1")));assert_eq!(p.same_target,"no");
-                let v=units(r"\??\C:\");let p=project("success",Some(&v),Exact::Target(v.clone()));assert_eq!((p.same_target,p.exact_policy),("yes","subst"));
-                let p=project("access_denied",None,Exact::Target(units(r"\Device\HarddiskVolume1")));assert_eq!((p.observation,p.same_target,p.legacy_policy,p.exact_policy),("observed","unknown","unknown","non_subst"));
-            }
-            #[test] fn volume_link_api_failures_and_invalid_targets_never_become_admission() {
-                for (x,o,q) in [(Exact::Open("access_denied"),"access_denied","unknown"),(Exact::Query("buffer_limit"),"success","buffer_limit"),(Exact::Unavailable,"unavailable","unavailable")] {let p=project("access_denied",None,x);assert_eq!((p.exact_open,p.exact_query,p.same_target,p.exact_policy),(o,q,"unknown","unknown"));}
-                let p=project("success",None,Exact::Target(units(r"\Device\HarddiskVolume1")));assert_eq!((p.observation,p.same_target),("invalid","unknown"));
-                let p=project("access_denied",None,Exact::Invalid);assert_eq!((p.observation,p.target,p.exact_policy),("invalid","invalid","unknown"));
-                assert_eq!(open_class(0xc0000022u32 as i32),"access_denied");assert_eq!(query_class(0x40000000),"other_failure");
-            }
-        }
-    }
-    fn accept_volume_probe(state: &mut State, probe: volume_link::Probe) {
-        state.probe_calls = state.probe_calls.saturating_add(1);
-        state.volume_probe = Some(if state.probe_calls == 1 { probe } else { volume_link::Probe::unknown() });
-    }
-    pub(crate) fn volume_link_probe(drive: u8, written: u32, units: &[u16]) {
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let legacy = STATE.try_with(|slot| {
-                let mut s=slot.try_borrow_mut().ok()?;let s=s.as_mut()?;
-                if s.carrier.is_none() || s.frame.phase != "volume_policy" {return None;}
-                accept_volume_probe(s,volume_link::Probe::unknown());
-                if s.probe_calls != 1 {return None;}
-                if written != 0 {Some("success")}else {s.failure.as_ref().filter(|f|f.api=="query_dos_device" && f.refusal=="native_api").map(|f|if f.error_class=="access_denied"{"access_denied"}else{"other_failure"})}
-            }).ok().flatten();
-            let Some(legacy) = legacy else { return; };
-            let probe=volume_link::run(drive,written,units,legacy);
-            let _=STATE.try_with(|slot|{if let Ok(mut s)=slot.try_borrow_mut(){if let Some(s)=s.as_mut(){if s.probe_calls==1{s.volume_probe=Some(probe);}}}});
-        }));
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
         fn reset() {
-            STATE.with(|c| *c.borrow_mut() = Some(State { carrier: None, v1: PathBuf::from(r"C:\fixture\AppData\Local\winsmux\workspace\v1"), operation: "fixture".into(), instance: "fixture".into(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown", volume_probe: None, probe_calls: 0 }));
+            STATE.with(|c| *c.borrow_mut() = Some(State { carrier: None, v1: PathBuf::from(r"C:\fixture\AppData\Local\winsmux\workspace\v1"), operation: "fixture".into(), instance: "fixture".into(), frame: Frame { phase: "unknown", target: "preparation" }, failure: None, save_result: "unknown" }));
             OBSERVER_FAILED.with(|f| f.set(false));
         }
         fn failure() -> Option<Failure> { STATE.with(|c| c.borrow().as_ref().and_then(|s| s.failure.clone())) }
@@ -353,10 +220,18 @@ pub(crate) mod stop_observation {
             reset(); let result: Result<(), ErrorCode> = scope("store_root_observe", "store", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); assert_eq!(failure().unwrap().refusal, "dependency_unobserved");
             STATE.with(|c| { let _held = c.borrow_mut(); let result: Result<(), ErrorCode> = scope("private_acl", "store", || Err(ErrorCode::PersistenceFailed)); assert!(result.is_err()); }); assert!(OBSERVER_FAILED.with(Cell::get));
         }
-        #[test] fn volume_link_repeated_observation_does_not_replace_first_refusal_or_result() {
-            reset();let original:Result<(),ErrorCode>=Err(ErrorCode::PersistenceFailed);native("query_dos_device",5);
-            STATE.with(|c|{let mut s=c.borrow_mut();let s=s.as_mut().unwrap();accept_volume_probe(s,volume_link::Probe::unknown());accept_volume_probe(s,volume_link::Probe::unknown());assert_eq!(serde_json::to_value(s.volume_probe.as_ref().unwrap()).unwrap()["observation"],serde_json::json!("unknown"));});
-            assert_eq!(original,Err(ErrorCode::PersistenceFailed));let f=failure().unwrap();assert_eq!((f.api,f.error_class),("query_dos_device","access_denied"));
+        #[test] fn volume_admission_pure_layout_adapter_preserves_error_and_truthful_refusal() {
+            use crate::store::root_identity::testing_volume_admission::FAILURES;
+            for failure_kind in FAILURES {
+                reset();assert_eq!(super::super::volume_failure_code(failure_kind),ErrorCode::PersistenceFailed);
+                let f=failure().unwrap();assert_eq!((f.phase,f.target),("volume_policy","volume"));
+                match failure_kind {
+                    VolumeAdmissionFailure::OpenRefused => assert_eq!((f.refusal,f.api,f.error_class),("native_api","nt_open_symbolic_link","nt_status_failure")),
+                    VolumeAdmissionFailure::QueryRefused => assert_eq!((f.refusal,f.api,f.error_class),("native_api","nt_query_symbolic_link","nt_status_failure")),
+                    VolumeAdmissionFailure::ApiUnavailable | VolumeAdmissionFailure::UnsupportedStatus => assert_eq!((f.refusal,f.api,f.error_class),("dependency_unobserved","none","unknown")),
+                    _ => assert_eq!((f.refusal,f.api,f.error_class),("condition","none","not_native")),
+                }
+            }
         }
         #[test] fn observer_scope_preserves_action_unwind_and_actual_role_inventory() {
             reset();
@@ -379,7 +254,11 @@ const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
 const FILE_READ_ATTRIBUTES: u32 = 0x0080;
 const FILE_LIST_DIRECTORY: u32 = 0x0001;
 const SYNCHRONIZE: u32 = 0x00100000;
+#[cfg(test)]
 const DRIVE_FIXED: u32 = 3;
+#[cfg(test)]
+use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
 const DIRECTORY_HOLD_ACCESS: u32 =
     FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY | SYNCHRONIZE | READ_CONTROL;
 const MANAGED_WRITE_ACCESS: u32 = GENERIC_READ | GENERIC_WRITE | DELETE | WRITE_OWNER;
@@ -1165,48 +1044,17 @@ fn admit_existing_supported_volume(path: &Path) -> Result<(), ErrorCode> {
     if !is_drive_absolute(path) {
         return Err(ErrorCode::PersistenceFailed);
     }
-    confirm_fixed_local_non_subst_volume(text.as_bytes()[0].to_ascii_uppercase())
+    confirm_fixed_local_volume(text.as_bytes()[0].to_ascii_uppercase()).map_err(volume_failure_code)
 
     })
 }
 
-fn dos_device_target_is_subst(mapped: &str) -> bool {
-    mapped.starts_with(r"\??\")
-}
-
-fn confirm_fixed_local_non_subst_volume(drive: u8) -> Result<(), ErrorCode> {
-    observe_store_scope!("volume_policy", "volume", {
-    let mut root_path: Vec<u16> = format!("{}:\\", drive as char)
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let drive_type = unsafe { GetDriveTypeW(root_path.as_mut_ptr()) };
-    if drive_type != DRIVE_FIXED {
-        return Err(ErrorCode::PersistenceFailed);
-    }
-    let mut device: Vec<u16> = format!("{}:", drive as char)
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
-    let mut target = vec![0u16; 1024];
-    let written =
-        unsafe { observe_store_bool!("query_dos_device", QueryDosDeviceW(device.as_mut_ptr(), target.as_mut_ptr(), target.len() as u32)) };
+fn volume_failure_code(failure: VolumeAdmissionFailure) -> ErrorCode {
     #[cfg(debug_assertions)]
-    stop_observation::volume_link_probe(drive, written, &target);
-    if written == 0 {
-        return Err(ErrorCode::PersistenceFailed);
-    }
-    let end = target
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(target.len());
-    let mapped = String::from_utf16(&target[..end]).map_err(|_| ErrorCode::PersistenceFailed)?;
-    if dos_device_target_is_subst(&mapped) {
-        return Err(ErrorCode::PersistenceFailed);
-    }
-    Ok(())
-
-    })
+    stop_observation::volume_refusal(failure);
+    #[cfg(not(debug_assertions))]
+    let _ = failure;
+    ErrorCode::PersistenceFailed
 }
 
 fn create_directory(path: &Path, user: Option<&Sid>) -> Result<(), ErrorCode> {
@@ -2044,6 +1892,73 @@ mod tests {
         assert!(status.success());
     }
 
+
+    fn volume_identity_handle(handle: HANDLE) -> (u64, [u8; 16]) {
+        use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandleEx, FILE_ID_INFO, FileIdInfo};
+        let mut info = unsafe { std::mem::zeroed::<FILE_ID_INFO>() };
+        assert_ne!(unsafe { GetFileInformationByHandleEx(handle, FileIdInfo, (&mut info as *mut FILE_ID_INFO).cast(), size_of::<FILE_ID_INFO>() as u32) }, 0);
+        (info.VolumeSerialNumber, info.FileId.Identifier)
+    }
+    fn volume_identity(path: &Path) -> (u64, [u8; 16]) { volume_identity_handle(open_query_handle(path).raw()) }
+    fn volume_fresh_store() -> (OwnedFixture, LayoutStore, AllocationAuthority, PathBuf) {
+        let (guard, parent) = unique_root();
+        let marker = parent.join("project-marker.txt"); fs::write(&marker, b"unchanged-project-bytes").expect("owned project marker");
+        let store = LayoutStore { v1: parent.join("winsmux").join("workspace").join("v1"), identity: Identity::current().expect("owned fixture identity"), create_parents: true, fault: LayoutStoreFault::None, _chain: None };
+        (guard, store, AllocationAuthority::host(), marker)
+    }
+    fn volume_snapshots_absent(store: &LayoutStore) { for name in [CONFIRMED_NAME, BACKUP_NAME, TEMP_NAME] { assert!(!store.v1.join(name).exists()); } }
+    fn volume_project_unchanged(marker: &Path, before: &(u64, [u8; 16])) {
+        assert!(volume_identity(marker) == *before, "project full identity changed");
+        assert_eq!(fs::read(marker).expect("project bytes"), b"unchanged-project-bytes");
+    }
+    fn volume_failed_holds_released(store: &LayoutStore) {
+        let moved=store.v1.with_file_name("v1-released");
+        fs::rename(&store.v1, &moved).expect("failed begin released ancestor and root handles");
+        fs::rename(&moved, &store.v1).expect("restore owned fixture spelling");
+    }
+    #[test]
+    fn volume_admission_owned_initial_refusals_precede_creation() {
+        use crate::store::root_identity::testing_volume_admission::{Reply, Scope, FAILURES};
+        for failure in FAILURES {
+            let (_guard, store, authority, marker)=volume_fresh_store();let before=volume_identity(&marker);
+            let scope=Scope::install(vec![Reply::refused(failure)]);
+            assert!(matches!(store.begin(&authority,pool()),Err(ErrorCode::PersistenceFailed)));
+            assert!(scope.calls().len()==1);assert!(!store.v1.exists());assert!(!store.v1.parent().unwrap().exists());assert!(!store.v1.parent().unwrap().parent().unwrap().exists());
+            assert!(!store.v1.join(LEASE_NAME).exists());volume_snapshots_absent(&store);volume_project_unchanged(&marker,&before);
+        }
+    }
+    #[test]
+    fn volume_admission_owned_late_refusals_leave_dirs_without_file_changes() {
+        use crate::store::root_identity::testing_volume_admission::{Reply, Scope, FAILURES};
+        for failure in FAILURES { for existing in [false,true] {
+            let (_guard, store, authority, marker)=volume_fresh_store();let before=volume_identity(&marker);
+            let mut preserved=Vec::new();
+            if existing {
+                let setup=Scope::install(vec![Reply::admitted(),Reply::admitted()]);
+                drop(store.begin(&authority,pool()).expect("owned setup admission"));assert!(setup.calls().len()==2);drop(setup);
+                for name in [LEASE_NAME,CONFIRMED_NAME,BACKUP_NAME,TEMP_NAME] { plant(&store,name,b"preserved-layout-family-bytes");let path=store.v1.join(name);preserved.push((path.clone(),volume_identity(&path),fs::read(&path).unwrap())); }
+            }
+            let scope=Scope::install(vec![Reply::admitted(),Reply::refused(failure)]);
+            assert!(matches!(store.begin(&authority,pool()),Err(ErrorCode::PersistenceFailed)));
+            let calls=scope.calls();assert!(calls.len()==2&&calls[0]==calls[1]);assert!(store.v1.is_dir());
+            if existing {for (path,id,bytes) in &preserved {assert!(volume_identity(path)==*id,"snapshot or lease full identity changed");assert!(fs::read(path).unwrap()==*bytes,"snapshot or lease bytes changed");}}
+            else {assert!(!store.v1.join(LEASE_NAME).exists());volume_snapshots_absent(&store);}
+            volume_project_unchanged(&marker,&before);volume_failed_holds_released(&store);
+        }}
+    }
+    #[test]
+    fn volume_admission_owned_two_successes_acquire_lease_without_saving() {
+        use crate::store::root_identity::testing_volume_admission::{Reply, Scope};
+        let (_guard, store, authority, marker)=volume_fresh_store();let before=volume_identity(&marker);
+        let scope=Scope::install(vec![Reply::admitted(),Reply::admitted()]);
+        let transaction=store.begin(&authority,pool()).expect("both existing stages admitted");
+        let calls=scope.calls();assert!(calls.len()==2&&calls[0]==calls[1]);assert!(store.v1.is_dir());assert!(store.v1.join(LEASE_NAME).is_file());volume_snapshots_absent(&store);
+        let lease=volume_identity_handle(transaction._lease.raw());
+        let moved=store.v1.with_file_name("held-v1");assert!(fs::rename(&store.v1,&moved).is_err());
+        volume_project_unchanged(&marker,&before);drop(transaction);
+        assert!(volume_identity(&store.v1.join(LEASE_NAME))==lease,"lease identity changed after release");volume_failed_holds_released(&store);
+    }
+
     #[test]
     fn production_root_is_user_unit_v1() {
         let store = LayoutStore::open_user_unit().expect("known folder");
@@ -2856,25 +2771,7 @@ mod tests {
                 .chain(std::iter::once(0))
                 .collect();
             let drive_type = unsafe { GetDriveTypeW(root_path.as_mut_ptr()) };
-            let mut device: Vec<u16> = format!("{}:", letter as char)
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            let mut target = vec![0u16; 1024];
-            let written = unsafe {
-                QueryDosDeviceW(device.as_mut_ptr(), target.as_mut_ptr(), target.len() as u32)
-            };
-            let subst = if written == 0 {
-                false
-            } else {
-                let end = target
-                    .iter()
-                    .position(|unit| *unit == 0)
-                    .unwrap_or(target.len());
-                String::from_utf16(&target[..end])
-                    .ok()
-                    .is_some_and(|text| dos_device_target_is_subst(&text))
-            };
+            let subst = matches!(confirm_fixed_local_volume(letter), Err(VolumeAdmissionFailure::SubstTarget));
             if drive_type != DRIVE_FIXED || subst {
                 candidate = Some(letter);
                 break;
@@ -2908,51 +2805,6 @@ mod tests {
             assert!(!v1.exists());
         }
         assert_eq!(fs::read(&marker).expect("marker after"), b"keep-bytes");
-    }
-
-    #[test]
-    fn dos_device_target_prefix_discriminates_nt_and_volume_device_strings() {
-        let subst_target = String::from_utf16(&[
-            b'\\' as u16,
-            b'?' as u16,
-            b'?' as u16,
-            b'\\' as u16,
-            b'C' as u16,
-            b':' as u16,
-            b'\\' as u16,
-            b'm' as u16,
-        ])
-        .expect("nt dos device");
-        let volume_device = String::from_utf16(&[
-            b'\\' as u16,
-            b'D' as u16,
-            b'e' as u16,
-            b'v' as u16,
-            b'i' as u16,
-            b'c' as u16,
-            b'e' as u16,
-            b'\\' as u16,
-            b'H' as u16,
-            b'a' as u16,
-            b'r' as u16,
-            b'd' as u16,
-            b'd' as u16,
-            b'i' as u16,
-            b's' as u16,
-            b'k' as u16,
-            b'V' as u16,
-            b'o' as u16,
-            b'l' as u16,
-            b'u' as u16,
-            b'm' as u16,
-            b'e' as u16,
-            b'1' as u16,
-        ])
-        .expect("volume device");
-        assert!(dos_device_target_is_subst(&subst_target));
-        assert!(!dos_device_target_is_subst(&volume_device));
-        assert!(dos_device_target_is_subst("\\??\\C:\\mapped-target"));
-        assert!(!dos_device_target_is_subst("\\Device\\HarddiskVolume1"));
     }
 
     #[test]
