@@ -1455,6 +1455,7 @@ function Assert-DesktopMaterializedOwnership {
     Assert-DesktopProductVersion -ActualVersion $productVersion -ExpectedVersion ([string]$Context.expected_version)
 
     $materializedProtectedState = Get-DesktopProtectedState -InstallRoot $installRoot
+    Save-DesktopRegistryNamespaceObservation -State $materializedProtectedState -Phase materialized
     Assert-DesktopRegistryNamespaceState -State $materializedProtectedState -Name product_state -RequireOccupied -Message 'Desktop installer did not materialize the product-state registration.'
     $materializedInstallRoot = Get-RegistryDefaultValue -Path $script:DesktopProductPath
     Assert-DesktopProductStateOwnership -MaterializedInstallRoot $materializedInstallRoot -ExpectedInstallRoot $installRoot
@@ -1506,14 +1507,146 @@ using System.Runtime.InteropServices;
 public static class WinsmuxDesktopRegistryNamespace {
     const uint Read64 = 0x109, OpenLink = 8;
     static readonly IntPtr CurrentUser = new IntPtr(unchecked((int)0x80000001));
+    static readonly StringComparison NativeComparison = StringComparison.OrdinalIgnoreCase;
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegOpenKeyExW(IntPtr key,string part,uint options,uint access,out IntPtr result);
     [DllImport("advapi32.dll")] static extern int RegCloseKey(IntPtr key);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegQueryValueExW(IntPtr key,string name,IntPtr reserved,out uint kind,IntPtr data,ref uint size);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, EntryPoint="RegQueryValueExW")] static extern int QueryLinkValue(IntPtr key,string name,IntPtr reserved,out uint kind,byte[] data,ref uint size);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegQueryInfoKeyW(IntPtr key,IntPtr cls,IntPtr clsLength,IntPtr reserved,out uint children,out uint maxChild,IntPtr maxClass,out uint values,out uint maxName,IntPtr maxData,IntPtr security,IntPtr lastWrite);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegEnumValueW(IntPtr key,uint index,StringBuilder name,ref uint length,IntPtr reserved,out uint kind,IntPtr data,ref uint size);
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode)] static extern int RegEnumKeyExW(IntPtr key,uint index,StringBuilder name,ref uint length,IntPtr reserved,IntPtr cls,IntPtr clsLength,IntPtr lastWrite);
+    [DllImport("ntdll.dll")] static extern int NtQueryKey(IntPtr key,int information,byte[] buffer,uint length,out uint needed);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentThread();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr handle);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenThreadToken(IntPtr thread,uint access,bool asSelf,out IntPtr token);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr buffer,uint length,out uint needed);
+    [DllImport("advapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool ConvertSidToStringSidW(IntPtr sid,out IntPtr text);
     static void Check(int status) { if(status!=0) throw new InvalidOperationException("desktop_registry_namespace_api_"+status); }
     static void CheckName(string name) { new UnicodeEncoding(false,false,true).GetByteCount(name); }
+    static void Refuse(string reason) { throw new InvalidOperationException("desktop_registry_binding_"+reason); }
+    static string Reason(Exception error) {
+        string value=error.Message;
+        if(System.Text.RegularExpressions.Regex.IsMatch(value,@"\Adesktop_registry_(?:namespace_api_[0-9]+|namespace_(?:link_unconfirmed|value_unconfirmed|child_unconfirmed|changed)|binding_[a-z0-9_]+)\z"))return value;
+        if(error is DecoderFallbackException || error is EncoderFallbackException)return "desktop_registry_binding_utf16";
+        if(error is OverflowException)return "desktop_registry_binding_length";
+        return "desktop_registry_binding_unconfirmed";
+    }
+    static bool Same(string left,string right) { return String.Equals(left,right,NativeComparison); }
+    static string Decode(byte[] bytes,int offset,int length) {
+        if(length<=0 || length%2!=0 || offset<0 || length>bytes.Length-offset)Refuse("length");
+        string value=new UnicodeEncoding(false,false,true).GetString(bytes,offset,length);
+        if(value.IndexOf('\0')>=0)Refuse("nul");
+        return value;
+    }
+    static string NativeName(IntPtr key) {
+        uint needed;int status=NtQueryKey(key,3,null,0,out needed);
+        if(status!=unchecked((int)0xc0000023) && status!=unchecked((int)0x80000005))Refuse("native_size");
+        if(needed<=4)Refuse("native_length");
+        byte[] bytes=new byte[checked((int)needed)];uint actual;
+        if(NtQueryKey(key,3,bytes,needed,out actual)!=0 || actual!=needed)Refuse("native_query");
+        uint nameLength=BitConverter.ToUInt32(bytes,0);
+        if(nameLength!=actual-4)Refuse("native_length");
+        return Decode(bytes,4,checked((int)nameLength));
+    }
+    static string ProcessSid() {
+        if(!Environment.Is64BitProcess)Refuse("view32");
+        IntPtr thread;
+        if(OpenThreadToken(GetCurrentThread(),8,true,out thread)) {
+            bool closed=CloseHandle(thread);Refuse(closed?"thread_token":"thread_token_close");
+        }
+        if(Marshal.GetLastWin32Error()!=1008)Refuse("thread_query");
+        IntPtr token;if(!OpenProcessToken(GetCurrentProcess(),8,out token))Refuse("process_token");
+        try {
+            uint needed;bool sized=GetTokenInformation(token,1,IntPtr.Zero,0,out needed);
+            if(sized || Marshal.GetLastWin32Error()!=122 || needed<(uint)(IntPtr.Size+4))Refuse("token_size");
+            IntPtr buffer=Marshal.AllocHGlobal(checked((int)needed));
+            try {
+                uint actual;if(!GetTokenInformation(token,1,buffer,needed,out actual) || actual!=needed)Refuse("token_query");
+                IntPtr text;if(!ConvertSidToStringSidW(Marshal.ReadIntPtr(buffer),out text))Refuse("sid_query");
+                try {
+                    string value=Marshal.PtrToStringUni(text);
+                    if(value==null || !System.Text.RegularExpressions.Regex.IsMatch(value,@"\AS-1-[0-9]+(?:-[0-9]+)+\z"))Refuse("sid_shape");
+                    return value;
+                } finally {if(LocalFree(text)!=IntPtr.Zero)Refuse("sid_free");}
+            } finally {Marshal.FreeHGlobal(buffer);}
+        } finally {if(!CloseHandle(token))Refuse("process_token_close");}
+    }
+    static byte[] LinkBytes(IntPtr key,out bool link) {
+        uint kind,size=0;int status=QueryLinkValue(key,"SymbolicLinkValue",IntPtr.Zero,out kind,null,ref size);
+        if(status==2){link=false;return null;}Check(status);
+        if(kind!=6){link=false;return null;}link=true;
+        if(size==0 || size%2!=0)Refuse("link_length");
+        byte[] bytes=new byte[checked((int)size)];uint actual=size;
+        Check(QueryLinkValue(key,"SymbolicLinkValue",IntPtr.Zero,out kind,bytes,ref actual));
+        if(kind!=6 || actual!=size)Refuse("link_changed");
+        Decode(bytes,0,bytes.Length);return bytes;
+    }
+    static bool SameBytes(byte[] a,byte[] b) {
+        if(a==null || b==null)return a==null && b==null;
+        if(a.Length!=b.Length)return false;
+        for(int i=0;i<a.Length;i++)if(a[i]!=b[i])return false;
+        return true;
+    }
+    sealed class Anchor : IDisposable {
+        readonly List<IntPtr> held=new List<IntPtr>();
+        readonly string sid,softwareName,classesName;
+        readonly byte[] originalLink;
+        readonly bool classesPresent,osLink;
+        public readonly IntPtr Software,Classes;
+        public bool Rechecked;
+        IntPtr Open(IntPtr parent,string name,uint flags) {
+            IntPtr handle;Check(RegOpenKeyExW(parent,name,flags,Read64,out handle));held.Add(handle);return handle;
+        }
+        public Anchor() {
+            try {
+                sid=ProcessSid();softwareName=@"\REGISTRY\USER\"+sid+@"\Software";
+                Software=Open(CurrentUser,"Software",OpenLink);CheckLink(Software);
+                if(!Same(NativeName(Software),softwareName))Refuse("software_actor");
+                IntPtr source;int status=RegOpenKeyExW(Software,"Classes",OpenLink,Read64,out source);
+                if(status==2 || status==3){classesPresent=false;return;}Check(status);held.Add(source);classesPresent=true;
+                if(!Same(NativeName(source),softwareName+@"\Classes"))Refuse("classes_source");
+                originalLink=LinkBytes(source,out osLink);
+                if(osLink) {
+                    classesName=@"\REGISTRY\USER\"+sid+"_Classes";
+                    if(!Same(Decode(originalLink,0,originalLink.Length),classesName))Refuse("classes_target");
+                    Classes=Open(Software,"Classes",0);
+                    if(!Same(NativeName(Classes),classesName))Refuse("classes_resolved");
+                    CheckLink(Classes);
+                } else {
+                    classesName=softwareName+@"\Classes";Classes=source;
+                    if(!Same(NativeName(Classes),classesName))Refuse("plain_classes");
+                }
+            } catch {Dispose();throw;}
+        }
+        public bool OsLink {get{return osLink;}}
+        public void Recheck() {
+            if(!Same(ProcessSid(),sid) || !Same(NativeName(Software),softwareName))Refuse("actor_recheck");
+            IntPtr software=Open(CurrentUser,"Software",OpenLink);CheckLink(software);
+            if(!Same(NativeName(software),softwareName))Refuse("software_recheck");
+            IntPtr source;int status=RegOpenKeyExW(software,"Classes",OpenLink,Read64,out source);
+            if(!classesPresent) {if(status!=2 && status!=3){if(status==0)held.Add(source);Refuse("classes_appeared");}Rechecked=true;return;}
+            Check(status);held.Add(source);bool link;byte[] bytes=LinkBytes(source,out link);
+            if(!Same(NativeName(source),softwareName+@"\Classes"))Refuse("classes_source_mapping");
+            if(link!=osLink || !SameBytes(bytes,originalLink))Refuse("classes_link_recheck");
+            if(!Same(NativeName(Classes),classesName))Refuse("classes_held_recheck");
+            if(osLink) {
+                IntPtr resolved=Open(software,"Classes",0);CheckLink(resolved);
+                if(!Same(NativeName(resolved),classesName))Refuse("classes_mapping_recheck");
+            } else if(!Same(NativeName(source),classesName))Refuse("plain_mapping_recheck");
+            // The retained original source handle must still describe the admitted link/plain mapping.
+            bool originalKind;byte[] retained=LinkBytes(held[1],out originalKind);
+            if(!Same(NativeName(held[1]),softwareName+@"\Classes"))Refuse("classes_source_name_recheck");
+            if(originalKind!=osLink || !SameBytes(retained,originalLink))Refuse("classes_source_recheck");
+            Rechecked=true;
+        }
+        public void Dispose() {
+            bool failed=false;for(int i=held.Count-1;i>=0;i--)if(RegCloseKey(held[i])!=0)failed=true;
+            held.Clear();if(failed)Refuse("anchor_close");
+        }
+    }
     static void CheckLink(IntPtr key) {
         uint kind,size=0;int status=RegQueryValueExW(key,"SymbolicLinkValue",IntPtr.Zero,out kind,IntPtr.Zero,ref size);
         if(status==2) return; Check(status);
@@ -1522,7 +1655,8 @@ public static class WinsmuxDesktopRegistryNamespace {
     static Dictionary<string,object> Empty() {
         return new Dictionary<string,object>{{"key_exists",null},{"value_count",0L},{"child_count",0L},
             {"unknown_child_count",0L},{"command_key_exists",false},{"command_value_count",0L},
-            {"command_child_count",0L},{"confirmed",false},{"registry_view",64}};
+            {"command_child_count",0L},{"confirmed",false},{"registry_view",64},
+            {"binding_confirmed",false},{"os_classes_link_confirmed",false},{"plain_classes_confirmed",false},{"reason","desktop_registry_binding_unconfirmed"}};
     }
     static void Enumerate(IntPtr key,out uint values,out uint children,out List<string> childNames) {
         uint maxChild,maxName;Check(RegQueryInfoKeyW(key,IntPtr.Zero,IntPtr.Zero,IntPtr.Zero,
@@ -1545,13 +1679,14 @@ public static class WinsmuxDesktopRegistryNamespace {
         }
         if(observedValues!=values || (uint)childNames.Count!=children) throw new InvalidOperationException("desktop_registry_namespace_changed");
     }
-    static Dictionary<string,object> ReadRoot(string path,bool optionalCommand) {
+    static Dictionary<string,object> ReadRoot(IntPtr anchor,string path,bool optionalCommand) {
         var result=Empty();var held=new List<IntPtr>();
         try {
-            IntPtr parent=CurrentUser;
+            if(anchor==IntPtr.Zero){result["key_exists"]=false;result["confirmed"]=true;result["reason"]="observed";return result;}
+            IntPtr parent=anchor;
             foreach(string part in path.Split('\\')) {
                 IntPtr next;int status=RegOpenKeyExW(parent,part,OpenLink,Read64,out next);
-                if(status==2 || status==3) {result["key_exists"]=false;result["confirmed"]=true;return result;}
+                if(status==2 || status==3) {result["key_exists"]=false;result["confirmed"]=true;result["reason"]="observed";return result;}
                 Check(status);held.Add(next);CheckLink(next);parent=next;
             }
             result["key_exists"]=true;
@@ -1566,17 +1701,25 @@ public static class WinsmuxDesktopRegistryNamespace {
                 Enumerate(command,out commandValues,out commandChildren,out ignored);
                 result["command_value_count"]=(long)commandValues;result["command_child_count"]=(long)commandChildren;
             }
-            result["unknown_child_count"]=unknown;result["confirmed"]=true;
-        } catch {result["confirmed"]=false;}
-        finally {for(int i=held.Count-1;i>=0;i--) {if(RegCloseKey(held[i])!=0)result["confirmed"]=false;}}
+            result["unknown_child_count"]=unknown;result["confirmed"]=true;result["reason"]="observed";
+        } catch(Exception error) {result["confirmed"]=false;result["reason"]=Reason(error);}
+        finally {for(int i=held.Count-1;i>=0;i--) {if(RegCloseKey(held[i])!=0){result["confirmed"]=false;result["reason"]="desktop_registry_binding_root_close";}}}
         return result;
     }
     public static Dictionary<string,object> ReadAll() {
-        return new Dictionary<string,object>{
-            {"folder_context",ReadRoot(@"Software\Classes\Directory\shell\winsmux",true)},
-            {"background_context",ReadRoot(@"Software\Classes\Directory\Background\shell\winsmux",true)},
-            {"product_state",ReadRoot(@"Software\github\winsmux",false)},
-            {"uninstall_registration",ReadRoot(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux",false)}};
+        var rows=new Dictionary<string,object>{{"folder_context",Empty()},{"background_context",Empty()},{"product_state",Empty()},{"uninstall_registration",Empty()}};
+        Anchor anchor=null;
+        try {
+            anchor=new Anchor();
+            rows["folder_context"]=ReadRoot(anchor.Classes,@"Directory\shell\winsmux",true);
+            rows["background_context"]=ReadRoot(anchor.Classes,@"Directory\Background\shell\winsmux",true);
+            rows["product_state"]=ReadRoot(anchor.Software,@"github\winsmux",false);
+            rows["uninstall_registration"]=ReadRoot(anchor.Software,@"Microsoft\Windows\CurrentVersion\Uninstall\winsmux",false);
+            anchor.Recheck();
+            foreach(object value in rows.Values){var row=(Dictionary<string,object>)value;row["binding_confirmed"]=anchor.Rechecked;row["os_classes_link_confirmed"]=anchor.OsLink;row["plain_classes_confirmed"]=!anchor.OsLink && anchor.Classes!=IntPtr.Zero;}
+        } catch(Exception error) {foreach(object value in rows.Values){var row=(Dictionary<string,object>)value;row["confirmed"]=false;row["binding_confirmed"]=false;row["reason"]=Reason(error);}}
+        finally {if(anchor!=null)try{anchor.Dispose();}catch(Exception error){foreach(object value in rows.Values){var row=(Dictionary<string,object>)value;row["confirmed"]=false;row["binding_confirmed"]=false;row["reason"]=Reason(error);}}}
+        return rows;
     }
 }
 '@
@@ -1588,9 +1731,10 @@ function Get-DesktopRegistryNamespaceClass {
     try {
     # Missing/contradictory observations are never interpreted as absent.
     if ($Observation -isnot [Collections.IDictionary]) { return 'unconfirmed' }
-    foreach ($field in @('key_exists', 'value_count', 'child_count', 'unknown_child_count', 'command_key_exists', 'command_value_count', 'command_child_count', 'confirmed', 'registry_view')) {
+    foreach ($field in @('key_exists', 'value_count', 'child_count', 'unknown_child_count', 'command_key_exists', 'command_value_count', 'command_child_count', 'confirmed', 'registry_view', 'binding_confirmed', 'os_classes_link_confirmed', 'plain_classes_confirmed', 'reason')) {
         if ($Observation.Keys -cnotcontains $field) { return 'unconfirmed' }
     }
+    if ($Observation.binding_confirmed -isnot [bool] -or -not $Observation.binding_confirmed -or $Observation.os_classes_link_confirmed -isnot [bool] -or $Observation.plain_classes_confirmed -isnot [bool] -or ($Observation.os_classes_link_confirmed -and $Observation.plain_classes_confirmed)) { return 'unconfirmed' }
     if ($Observation.confirmed -isnot [bool] -or -not $Observation.confirmed -or $Observation.registry_view -ne 64 -or $Observation.key_exists -isnot [bool] -or $Observation.command_key_exists -isnot [bool]) { return 'unconfirmed' }
     foreach ($field in @('value_count', 'child_count', 'unknown_child_count', 'command_value_count', 'command_child_count')) {
         if ($Observation[$field] -isnot [ValueType] -or $Observation[$field] -is [bool] -or $Observation[$field] -lt 0 -or [decimal]$Observation[$field] -ne [long]$Observation[$field]) { return 'unconfirmed' }
@@ -1612,20 +1756,63 @@ function New-DesktopRegistryNamespaceObservation {
         [bool]$CommandExists = $false, [long]$CommandValueCount = 0, [long]$CommandChildCount = 0, [bool]$Confirmed = $true)
     return [ordered]@{ key_exists = $Exists; value_count = $ValueCount; child_count = $ChildCount;
         unknown_child_count = $UnknownChildCount; command_key_exists = $CommandExists;
-        command_value_count = $CommandValueCount; command_child_count = $CommandChildCount; confirmed = $Confirmed; registry_view = 64 }
+        command_value_count = $CommandValueCount; command_child_count = $CommandChildCount; confirmed = $Confirmed; registry_view = 64; binding_confirmed = $true; os_classes_link_confirmed = $false; plain_classes_confirmed = $true; reason = $(if ($Confirmed) { 'observed' } else { 'desktop_registry_binding_unconfirmed' }) }
 }
+
+function Get-DesktopRegistryNamespaceReason {
+    param($Observation)
+    if ($Observation -isnot [Collections.IDictionary]) { return 'observation_missing' }
+    if ($Observation.Keys -cnotcontains 'reason' -or $Observation.reason -isnot [string]) { return 'observation_reason_missing' }
+    if ($Observation.reason -ceq 'observed' -or $Observation.reason -cmatch '^desktop_registry_(?:namespace_api_[0-9]+|namespace_(?:link_unconfirmed|value_unconfirmed|child_unconfirmed|changed)|binding_[a-z0-9_]+)$') { return [string]$Observation.reason }
+    return 'observation_reason_unconfirmed'
+}
+
+function Save-DesktopRegistryNamespaceObservation {
+    param([Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][ValidateSet('materialized', 'preflight', 'pre-uninstall', 'post-uninstall', 'pre-residue', 'final-cleanup', 'native-msi-preflight', 'native-msi-post-uninstall', 'native-nsis-legacy-post-uninstall', 'native-nsis-fresh-preflight', 'native-nsis-fresh-post-uninstall')][string]$Phase,
+        [switch]$RequireSink)
+    $sink = Get-Variable -Name DesktopNativeEvidenceRoot -Scope Script -ErrorAction SilentlyContinue
+    if ($null -eq $sink -or [string]::IsNullOrWhiteSpace([string]$sink.Value)) {
+        Assert-Condition (-not $RequireSink) 'desktop_registry_namespace_evidence_sink_missing'
+        return
+    }
+    $roots = [ordered]@{}
+    foreach ($name in @('folder_context', 'background_context', 'product_state', 'uninstall_registration')) {
+        $property = $State.PSObject.Properties[$name + '_namespace']
+        $row = if ($null -ne $property) { $property.Value } else { $null }
+        $class = if ($row -is [Collections.IDictionary]) { Get-DesktopRegistryNamespaceClass -Observation $row -OptionalCommand ($name -in @('folder_context', 'background_context')) } else { 'unconfirmed' }
+        $safeReason = Get-DesktopRegistryNamespaceReason -Observation $row
+        if ($class -ceq 'unconfirmed' -and $safeReason -ceq 'observed') { $safeReason = 'observation_fields_unconfirmed' }
+        $safe = [ordered]@{ classification = $class; reason = $safeReason }
+        foreach ($field in @('confirmed', 'key_exists', 'value_count', 'child_count', 'unknown_child_count', 'command_key_exists', 'command_value_count', 'command_child_count', 'registry_view', 'binding_confirmed', 'os_classes_link_confirmed', 'plain_classes_confirmed')) {
+            $value = if ($row -is [Collections.IDictionary] -and $row.Keys -ccontains $field) { $row[$field] } else { $null }
+            if ($field -in @('confirmed', 'key_exists', 'command_key_exists', 'binding_confirmed', 'os_classes_link_confirmed', 'plain_classes_confirmed')) {
+                $safe[$field] = if ($value -is [bool]) { $value } else { $null }
+            } else {
+                $safe[$field] = if ($value -is [long] -or $value -is [int] -or $value -is [uint32]) { $value } else { $null }
+            }
+        }
+        $roots[$name] = $safe
+    }
+    # Existing sink uses CreateNew + durable flush. Failure propagates before the guard.
+    Write-DesktopNativeEvidence -Name ('namespace-' + $Phase + '.json') -Value ([ordered]@{ schema = 'winsmux-desktop-registry-namespace-observation/v1'; phase = $Phase; roots = $roots })
+}
+
 
 function Assert-DesktopRegistryNamespaceState {
     param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Message, [switch]$RequireOccupied)
     $property = $State.PSObject.Properties[$Name + '_namespace']
-    Assert-Condition ($null -ne $property -and $property.Value -is [Collections.IDictionary]) $Message
-    $class = Get-DesktopRegistryNamespaceClass -Observation $property.Value -OptionalCommand ($Name -in @('folder_context', 'background_context'))
-    Assert-Condition ($State.($Name + '_exists') -is [bool] -and $State.($Name + '_exists') -eq $property.Value.key_exists) $Message
-    if ($RequireOccupied) { Assert-Condition ($class -ceq 'occupied') $Message }
-    else { Assert-Condition ($class -in @('absent', 'empty_canonical')) $Message }
+    $row = if ($null -ne $property) { $property.Value } else { $null }
+    $class = if ($row -is [Collections.IDictionary]) { Get-DesktopRegistryNamespaceClass -Observation $row -OptionalCommand ($Name -in @('folder_context', 'background_context')) } else { 'unconfirmed' }
+    $reason = Get-DesktopRegistryNamespaceReason -Observation $row
+    if ($class -ceq 'unconfirmed' -and $reason -ceq 'observed') { $reason = 'observation_fields_unconfirmed' }
+    $detail = "$Message [namespace=$Name classification=$class reason=$reason]"
+    Assert-Condition ($null -ne $property -and $row -is [Collections.IDictionary]) $detail
+    Assert-Condition ($State.($Name + '_exists') -is [bool] -and $State.($Name + '_exists') -eq $row.key_exists) $detail
+    if ($RequireOccupied) { Assert-Condition ($class -ceq 'occupied') $detail }
+    else { Assert-Condition ($class -in @('absent', 'empty_canonical')) $detail }
 }
-
 
 function Get-DesktopProtectedState {
     param([string]$InstallRoot)
@@ -1783,6 +1970,7 @@ function Start-DesktopLifecycle {
         [Parameter(Mandatory)]$PreflightState
     )
 
+    Save-DesktopRegistryNamespaceObservation -State $PreflightState -Phase preflight
     Assert-NoDesktopProtectedState -State $PreflightState -Phase 'desktop preflight'
     Set-DesktopLifecyclePhase -Context $Context -NextPhase 'preflight_clean'
 }
@@ -1813,6 +2001,7 @@ function Invoke-VerifiedDesktopUninstaller {
     } else {
         & $ProtectedStateProbe $InstallRoot 'pre_uninstall'
     }
+    Save-DesktopRegistryNamespaceObservation -State $preUninstallState -Phase pre-uninstall
     Assert-DesktopPreUninstallOwnedState -State $preUninstallState
 
     $uninstall = Invoke-DesktopNsisProcess -Operation 'desktop_uninstaller' -FilePath $expectedUninstaller -Context $Context -Environment $Environment -ProcessInvoker $ProcessInvoker
@@ -1827,6 +2016,7 @@ function Invoke-VerifiedDesktopUninstaller {
     } else {
         & $ProtectedStateProbe $InstallRoot 'post_uninstall'
     }
+    Save-DesktopRegistryNamespaceObservation -State $postUninstallState -Phase post-uninstall
     Assert-DesktopPostUninstallOwnedState -State $postUninstallState
     return $uninstall
 }
@@ -1846,6 +2036,7 @@ function Remove-DesktopOwnedResidue {
     } else {
         & $ProtectedStateProbe $InstallRoot 'pre_residue_cleanup'
     }
+    Save-DesktopRegistryNamespaceObservation -State $postUninstallState -Phase pre-residue
     Assert-DesktopPostUninstallOwnedState -State $postUninstallState
 
     $installRootExists = Test-Path -LiteralPath $InstallRoot
@@ -1870,6 +2061,7 @@ function Remove-DesktopOwnedResidue {
     }
 
     $finalState = Get-DesktopProtectedState -InstallRoot $InstallRoot
+    Save-DesktopRegistryNamespaceObservation -State $finalState -Phase final-cleanup
     Assert-NoDesktopProtectedState -State $finalState -Phase 'desktop final cleanup'
 }
 
@@ -5056,6 +5248,11 @@ function Invoke-DesktopNativeNsisJourney {
     Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_managed_uninstall_failed'
     $after = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
     [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding (Get-DesktopNativeNsisObservationBinding -Root $legacyRoot -Journal) -PlanSha256 $planSha -PriorState $same -PriorWitness $uninstallPrior -Witness $after)
+    $legacyPostState = Get-DesktopProtectedState -InstallRoot $legacyRoot
+    Save-DesktopRegistryNamespaceObservation -State $legacyPostState -Phase native-nsis-legacy-post-uninstall -RequireSink
+    foreach ($name in @('folder_context', 'background_context', 'product_state', 'uninstall_registration')) {
+        Assert-DesktopRegistryNamespaceState -State $legacyPostState -Name $name -Message 'Native NSIS legacy post-uninstall namespace remained occupied or unconfirmed.'
+    }
     Write-DesktopNativeEvidence 'legacy-managed-uninstall-after.json' $after
     return [ordered]@{ legacy_update = 'passed'; hash_failure = 'passed'; missing_failure = 'passed'; same_version_ja = 'passed'; managed_uninstall = 'passed' }
 }
@@ -5070,7 +5267,9 @@ function Invoke-DesktopNativeMsiJourney {
     $enProperties = Get-DesktopNativeMsiProperties $en; $jaProperties = Get-DesktopNativeMsiProperties $ja
     Assert-Condition ($enProperties.properties.ProductCode -cne $jaProperties.properties.ProductCode -and $enProperties.properties.ProductLanguage -ceq '1033' -and $jaProperties.properties.ProductLanguage -ceq '1041' -and $enProperties.properties.UpgradeCode -ceq $jaProperties.properties.UpgradeCode) 'desktop_native_msi_locale_upgrade_identity_refused'
     Write-DesktopNativeEvidence 'msi-container-property-admission.json' ([ordered]@{ english = $enProperties; japanese = $jaProperties })
-    Assert-NoDesktopProtectedState -State (Get-DesktopProtectedState -InstallRoot $Root) -Phase 'native MSI preflight'
+    $preflightState = Get-DesktopProtectedState -InstallRoot $Root
+    Save-DesktopRegistryNamespaceObservation -State $preflightState -Phase native-msi-preflight -RequireSink
+    Assert-NoDesktopProtectedState -State $preflightState -Phase 'native MSI preflight'
     $before = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
     $installed = Invoke-DesktopNativeOwnedEntry -Purpose 'msi-install-en' -Image $msiexec -ImageSha256 $msiSha -Root $Root -Package $en
     Write-DesktopNativeEvidence 'msi-en-process.json' $installed
@@ -5090,7 +5289,9 @@ function Invoke-DesktopNativeMsiJourney {
     Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_msi_uninstall_failed'
     $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
     Assert-Condition (@($after.files).Count -eq 0 -and @($after.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0 -and $after.user_sentinel['sha256'] -ceq $before.user_sentinel['sha256']) 'desktop_native_msi_uninstall_preservation_failed'
-    Assert-DesktopPostUninstallOwnedState -State (Get-DesktopProtectedState -InstallRoot $Root)
+    $postUninstallState = Get-DesktopProtectedState -InstallRoot $Root
+    Save-DesktopRegistryNamespaceObservation -State $postUninstallState -Phase native-msi-post-uninstall -RequireSink
+    Assert-DesktopPostUninstallOwnedState -State $postUninstallState
     Write-DesktopNativeEvidence 'msi-uninstall-after.json' $after
     return [ordered]@{ english_install = 'passed'; japanese_same_version_update = 'passed'; nsis_conflict = $conflict; startup_failure = $startup; uninstall = 'passed' }
 }
@@ -5302,7 +5503,9 @@ function Invoke-DesktopNativeFreshNsis {
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Sentinel)
     $setup = Join-Path $DesktopNativeCandidateDirectory 'winsmux_0.38.0_x64-setup.exe'; $setupSha = [WinsmuxDesktopNativeActor]::NativeFile($setup)['sha256']
     $planPath = Join-Path $DesktopNativeCandidateDirectory 'winsmux-nsis-plan.json'; $plan = Read-DesktopStrictJson $planPath; $sha = [WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256']; $gui = @($plan.files | Where-Object role -CEQ 'gui')[0]
-    Assert-NoDesktopProtectedState -State (Get-DesktopProtectedState -InstallRoot $Root) -Phase 'native NSIS fresh preflight'
+    $preflightState = Get-DesktopProtectedState -InstallRoot $Root
+    Save-DesktopRegistryNamespaceObservation -State $preflightState -Phase native-nsis-fresh-preflight -RequireSink
+    Assert-NoDesktopProtectedState -State $preflightState -Phase 'native NSIS fresh preflight'
     $installed = Invoke-DesktopNativeOwnedEntry -Purpose 'nsis-fresh' -Image $setup -ImageSha256 $setupSha -Root $Root -NsisJourney
     Write-DesktopNativeEvidence 'nsis-fresh-process.json' $installed
     Assert-Condition ($installed.exit_code -eq 0) 'desktop_native_nsis_fresh_failed'
@@ -5320,6 +5523,9 @@ function Invoke-DesktopNativeFreshNsis {
     Assert-Condition ($removed.exit_code -eq 0) 'desktop_native_nsis_fresh_uninstall_failed'
     $after = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
     [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding (Get-DesktopNativeNsisObservationBinding -Root $Root -Journal) -PlanSha256 $sha -PriorState $uninstallState -PriorWitness $uninstallPrior -Witness $after)
+    $postUninstallState = Get-DesktopProtectedState -InstallRoot $Root
+    Save-DesktopRegistryNamespaceObservation -State $postUninstallState -Phase native-nsis-fresh-post-uninstall -RequireSink
+    Assert-DesktopPostUninstallOwnedState -State $postUninstallState
     Write-DesktopNativeEvidence 'nsis-fresh-uninstall-after.json' $after
     return [ordered]@{ fresh = 'passed'; startup_failure = $startup; publishing_crash = $crash; uninstall = 'passed' }
 }
