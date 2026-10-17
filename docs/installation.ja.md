@@ -18,6 +18,14 @@ Rust、デスクトップ用のNode.js依存、対象CPUのMSVCリンカーとWi
 
 リポジトリのWindows配布ビルドと同梱CLI準備のスクリプトを使います。x64のビルド成功はARM64のビルドや実機動作の確認にはなりません。デバッグ版の同梱物、別版、別CPUの実行ファイルを混ぜないでください。
 
+## Windows配布バイナリに含まれるMicrosoft部品の条件
+
+Windows版のGUI・CLI・MCPを取得・インストール・使用する前に、[Microsoft部品の補足条件](../distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt)をお読みください。これは組み込まれたMicrosoft Visual C++ランタイムのobject codeに対してwinsmuxの配布者が提示する条件で、Microsoft自身が発行した契約ではありません。winsmuxのソースコードに適用されるApache-2.0や、他の部品のライセンスは変更しません。元のMicrosoft開発者向け条件は、同梱ライセンス一覧に別途保持しています。
+
+内容を確認できる機会の後にMicrosoft部品をインストールまたは使用すると、補足条件に同意したものとします。同意しない場合は、その部品をインストール・使用しないでください。再配布者は同じ条件を引き継ぎ、配布先と外部利用者にも保護条件への同意を求めてください。
+
+MSI・NSISのsilent/passive導入、PowerShell/npm経由の導入、バイナリの直接使用でも、先に同じ条件を確認してください。silent/passive導入では対話式のライセンス画面を表示しません。
+
 ## クイックインストール
 
 1. [リリース一覧](https://github.com/Sora-bluesky/winsmux/releases)で使用する版を選びます。

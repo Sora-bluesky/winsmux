@@ -18,6 +18,14 @@ Source builds need Rust, the desktop frontend's Node.js dependencies, and the MS
 
 Use the repository's Windows distribution build and companion preparation scripts. A successful x64 build does not establish an ARM64 build or runtime test. Do not mix debug companions, other versions or other targets into a package.
 
+## Windows binary component terms
+
+Before downloading, installing or using the Windows GUI, CLI or MCP binaries, read the [Microsoft component supplement](../distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt). It is provided by the winsmux distributor for the embedded Microsoft Visual C++ runtime object code; it is not a Microsoft-issued agreement and does not change the Apache-2.0 license of winsmux source or other components’ licenses. The original Microsoft developer terms are retained separately in the bundled license catalog.
+
+Installing or using the Microsoft component after the opportunity to review these conditions signifies agreement. If you do not agree, do not install or use that component. Distributors must pass on the conditions and require protective terms for their distributors and external end users.
+
+Read the same terms before silent/passive MSI or NSIS installation, PowerShell/npm installation, or direct binary use. Silent/passive installation does not display an interactive license page.
+
 ## Quick install
 
 1. Choose the intended version from [Releases](https://github.com/Sora-bluesky/winsmux/releases).

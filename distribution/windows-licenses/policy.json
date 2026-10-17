@@ -4033,6 +4033,34 @@
           "license": ""
         }
       ]
+    },
+    {
+      "sha256": "a38d10afc3ef8fb2e64af972a9c64d998ef964de8101b9f7a59703f72fa3a5ab",
+      "bytes": 19043,
+      "grants": [
+        {
+          "role": "full_terms",
+          "license": "LicenseRef-Microsoft-Visual-Studio-2022"
+        },
+        {
+          "role": "attribution",
+          "license": ""
+        }
+      ]
+    },
+    {
+      "sha256": "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2",
+      "bytes": 3210,
+      "grants": [
+        {
+          "role": "full_terms",
+          "license": "LicenseRef-winsmux-Microsoft-component-supplement"
+        },
+        {
+          "role": "notice",
+          "license": ""
+        }
+      ]
     }
   ],
   "components": [
@@ -16496,6 +16524,42 @@
           "license": "Apache-2.0",
           "any_of": [
             "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "runtime/microsoft-visual-cpp-static-runtime",
+      "version": "Visual Studio 2022",
+      "declared_license": "LicenseRef-Microsoft-Visual-Studio-2022",
+      "choice": "Non-debug Microsoft Visual C++ runtime object code embedded in winsmux Windows binaries only. Retain the original Microsoft developer distribution terms separately from the winsmux distributor recipient supplement; preserve Apache-2.0 and other component rights. No static-library archives, development tools or debug runtimes are distributed.",
+      "requirements": [
+        {
+          "role": "full_terms",
+          "license": "LicenseRef-Microsoft-Visual-Studio-2022",
+          "any_of": [
+            "a38d10afc3ef8fb2e64af972a9c64d998ef964de8101b9f7a59703f72fa3a5ab"
+          ]
+        },
+        {
+          "role": "attribution",
+          "license": "",
+          "any_of": [
+            "a38d10afc3ef8fb2e64af972a9c64d998ef964de8101b9f7a59703f72fa3a5ab"
+          ]
+        },
+        {
+          "role": "full_terms",
+          "license": "LicenseRef-winsmux-Microsoft-component-supplement",
+          "any_of": [
+            "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2"
+          ]
+        },
+        {
+          "role": "notice",
+          "license": "",
+          "any_of": [
+            "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2"
           ]
         }
       ]

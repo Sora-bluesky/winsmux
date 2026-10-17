@@ -18,6 +18,14 @@ This README describes v0.38.0. Use the documentation shipped with the version yo
 
 GUI, CLI and MCP operate on the same workspace contract. External connections require explicit project and scope permission; metadata, output reading and control are separate scopes.
 
+## Windows binary component terms
+
+Before downloading, installing or using the Windows GUI, CLI or MCP binaries, read the [Microsoft component supplement](distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt). It is provided by the winsmux distributor for the embedded Microsoft Visual C++ runtime object code; it is not a Microsoft-issued agreement and does not change the Apache-2.0 license of winsmux source or other components’ licenses. The original Microsoft developer terms are retained separately in the bundled license catalog.
+
+Installing or using the Microsoft component after the opportunity to review these conditions signifies agreement. If you do not agree, do not install or use that component. Distributors must pass on the conditions and require protective terms for their distributors and external end users.
+
+Read the same terms before silent/passive MSI or NSIS installation, PowerShell/npm installation, or direct binary use. Silent/passive installation does not display an interactive license page.
+
 ## Start with the desktop app
 
 1. Choose the release for the version you intend to use from [Releases](https://github.com/Sora-bluesky/winsmux/releases).

@@ -59,11 +59,15 @@
     {
       "path": "winsmux-app/src-tauri/Cargo.toml",
       "sha256": "0030979e72f6c92691ea72472f122f5e5f89720ab28268ba45e9076fea3c5660"
+    },
+    {
+      "path": "distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt",
+      "sha256": "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2"
     }
   ],
-  "policy_sha256": "d9972240138ab56696de6bd593527759561d3456e7c82452380f114fd7ad4696",
-  "input_sha256": "10fc69a449c098c9a54d58165ccb2ccb20ae428d3e1b4cfb8c86d7423f478be0",
-  "catalog_sha256": "0f8389572d939bf0d8a46ca8bafa7207ecd9cab22ce781fd2a350a159a7fa4d8",
+  "policy_sha256": "de38d6689d89a3b285ce1eb4f1dfd4c3cbbbe9a848c674d23600ab8c45fee4f3",
+  "input_sha256": "f02548cd0a814bafab541e60ba46301fcd6736dbab5c3f67d2dd9306d6d15531",
+  "catalog_sha256": "54528dec9f8066ee11824eadb799ca4dca9104df77544d32eb3875216e431f7f",
   "plugin": {
     "source_commit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
     "rustc_commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",

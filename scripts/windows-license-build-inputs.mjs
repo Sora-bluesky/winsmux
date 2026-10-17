@@ -5,7 +5,7 @@ import { physicalPath } from './distribution-prelaunch.mjs';
 import { parseStrictJson } from './assert-license-inputs.mjs';
 import { assertWindowsBuildEnvironment } from './windows-distribution-build.mjs';
 
-export const windowsLicenseBindingIdentity = '273906bf9d65edb0d55c0761df6b839e27ae6194cc7a98993d58d19e291b37d2';
+export const windowsLicenseBindingIdentity = '09ab1b3e70f351394e20eed58139906630d682ae03b456b2dc5bfd2c0f903d05';
 const bindingIdentity = windowsLicenseBindingIdentity;
 const hash = data => createHash('sha256').update(data).digest('hex');
 function requireValue(condition, reason) { if (!condition) throw new Error(reason); }

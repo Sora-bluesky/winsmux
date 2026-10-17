@@ -4,6 +4,14 @@ This directory is the public npm install surface for `winsmux`. It covers the
 CLI package path. The recommended graphical desktop app path is the GitHub
 Release installer, not this npm package.
 
+## Windows binary component terms
+
+Before downloading, installing or using the Windows GUI, CLI or MCP binaries, read the [Microsoft component supplement](https://github.com/Sora-bluesky/winsmux/blob/v0.38.0/distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt). It is provided by the winsmux distributor for the embedded Microsoft Visual C++ runtime object code; it is not a Microsoft-issued agreement and does not change the Apache-2.0 license of winsmux source or other components’ licenses. The original Microsoft developer terms are retained separately in the bundled license catalog.
+
+Installing or using the Microsoft component after the opportunity to review these conditions signifies agreement. If you do not agree, do not install or use that component. Distributors must pass on the conditions and require protective terms for their distributors and external end users.
+
+Read the same terms before silent/passive MSI or NSIS installation, PowerShell/npm installation, or direct binary use. Silent/passive installation does not display an interactive license page.
+
 For the recommended desktop app, open the latest GitHub Release and download
 the `winsmux_..._x64-setup.exe` installer:
 

@@ -1,6 +1,6 @@
 {
   "schema": "distribution-license-inputs/v1",
-  "policy_sha256": "d9972240138ab56696de6bd593527759561d3456e7c82452380f114fd7ad4696",
+  "policy_sha256": "de38d6689d89a3b285ce1eb4f1dfd4c3cbbbe9a848c674d23600ab8c45fee4f3",
   "components": [
     {
       "id": "rust/adler2",
@@ -6431,6 +6431,21 @@
         {
           "path": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
           "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        }
+      ]
+    },
+    {
+      "id": "runtime/microsoft-visual-cpp-static-runtime",
+      "version": "Visual Studio 2022",
+      "declared_license": "LicenseRef-Microsoft-Visual-Studio-2022",
+      "documents": [
+        {
+          "path": "a38d10afc3ef8fb2e64af972a9c64d998ef964de8101b9f7a59703f72fa3a5ab",
+          "sha256": "a38d10afc3ef8fb2e64af972a9c64d998ef964de8101b9f7a59703f72fa3a5ab"
+        },
+        {
+          "path": "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2",
+          "sha256": "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2"
         }
       ]
     }
