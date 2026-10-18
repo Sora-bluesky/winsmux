@@ -4532,6 +4532,24 @@ function Initialize-DesktopNativeLifecycleActor {
  }
  public static Dictionary<string,object> NativeFile(string path) {NativePhysical(path);using(var f=OpenPlain(Path.GetFullPath(path))){var info=FileFacts(f.SafeFileHandle.DangerousGetHandle());var b=new byte[f.Length];int at=0;while(at<b.Length){int n=f.Read(b,at,b.Length-at);if(n==0)throw new EndOfStreamException();at+=n;}if(FileId(FileFacts(f.SafeFileHandle.DangerousGetHandle()))!=FileId(info)||Hash(File.ReadAllBytes(path))!=Hash(b))throw new InvalidOperationException("Native witness changed");return new Dictionary<string,object>{{"bytes",b.Length},{"sha256",Hash(b)},{"identity",FileId(info)}};}}
 
+ public sealed class NativePublicationFileLease : IDisposable {
+  readonly string root,path,rootIdentity; readonly List<string> directories=new List<string>(); readonly List<IntPtr> parents=new List<IntPtr>(); readonly List<string> identities=new List<string>(); IntPtr candidate=IntPtr.Zero;string candidateIdentity;uint volume;bool disposed;
+  public bool Closed {get;private set;}
+  static string Final(IntPtr h){var text=new StringBuilder(32768);uint n=GetFinalPathNameByHandleW(h,text,(uint)text.Capacity,0);Check(n>0&&n<text.Capacity,"Publication metadata final path");string value=text.ToString();if(value.StartsWith("\\\\?\\",StringComparison.Ordinal))value=value.Substring(4);return Path.GetFullPath(value).TrimEnd('\\');}
+  static IntPtr DirectoryHandle(string value){var h=CreateFileW(value,128,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero);if(h==new IntPtr(-1))throw new Win32Exception(Marshal.GetLastWin32Error(),"Publication parent metadata lease");try{var f=FileFacts(h);if((f.attributes&0x10)==0||!String.Equals(Final(h),value.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Publication parent alias refused");return h;}catch{CloseHandle(h);throw;}}
+  internal NativePublicationFileLease(string ownedRoot,string relative,string expectedRootIdentity){
+   root=Path.GetFullPath(ownedRoot).TrimEnd('\\');rootIdentity=expectedRootIdentity;
+   if(String.IsNullOrEmpty(relative)||relative.Contains("\\")||Path.IsPathRooted(relative)||Array.Exists(relative.Split('/'),part=>part.Length==0||part=="."||part==".."||part.IndexOfAny(Path.GetInvalidFileNameChars())>=0))throw new InvalidOperationException("Publication plan path refused");
+   path=Path.GetFullPath(Path.Combine(root,relative.Replace('/','\\')));if(!path.StartsWith(root+"\\",StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Publication root escape refused");NativePhysical(root);
+   try{string current=Path.GetDirectoryName(path);for(;;){var h=DirectoryHandle(current);parents.Add(h);directories.Add(current);var f=FileFacts(h);identities.Add(FileId(f));if(String.Equals(current,root,StringComparison.OrdinalIgnoreCase)){if(FileId(f)!=rootIdentity)throw new InvalidOperationException("Publication owned root changed");volume=f.volume;}var parent=Path.GetDirectoryName(current.TrimEnd('\\'));if(String.IsNullOrEmpty(parent))break;current=parent;}if(!directories.Exists(value=>String.Equals(value,root,StringComparison.OrdinalIgnoreCase)))throw new InvalidOperationException("Publication root not leased");}catch{Dispose();throw;}
+  }
+  void ParentsSame(){if(disposed)throw new ObjectDisposedException("NativePublicationFileLease");for(int i=0;i<parents.Count;i++){if(FileId(FileFacts(parents[i]))!=identities[i])throw new InvalidOperationException("Publication held parent changed");var named=DirectoryHandle(directories[i]);try{if(FileId(FileFacts(named))!=identities[i])throw new InvalidOperationException("Publication named parent changed");}finally{Check(CloseHandle(named),"Close publication named parent");}}}
+  public string Sample(string priorIdentity){ParentsSame();if(candidate!=IntPtr.Zero)throw new InvalidOperationException("Publication candidate already held");var h=CreateFileW(path,128,7,IntPtr.Zero,3,0x00200000,IntPtr.Zero);if(h==new IntPtr(-1)){int error=Marshal.GetLastWin32Error();if(error==2||error==3)return null;throw new Win32Exception(error,"Publication file metadata lease");}try{var f=FileFacts(h);if(f.links!=1||(f.attributes&0x10)!=0||f.volume!=volume||!String.Equals(Final(h),path,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Publication plain fixed file refused");string identity=FileId(f);if(identity==priorIdentity)return null;ParentsSame();candidate=h;candidateIdentity=identity;h=IntPtr.Zero;return identity;}finally{if(h!=IntPtr.Zero)Check(CloseHandle(h),"Close publication sample");}}
+  public string HeldIdentity(){ParentsSame();if(candidate==IntPtr.Zero)throw new InvalidOperationException("Publication candidate missing");var f=FileFacts(candidate);if(f.links!=1||(f.attributes&0x10)!=0||f.volume!=volume||FileId(f)!=candidateIdentity)throw new InvalidOperationException("Publication held candidate changed");return candidateIdentity;}
+  public void Dispose(){if(disposed)return;disposed=true;Exception failure=null;if(candidate!=IntPtr.Zero){if(!CloseHandle(candidate))failure=new Win32Exception(Marshal.GetLastWin32Error(),"Close publication candidate");candidate=IntPtr.Zero;}for(int i=parents.Count-1;i>=0;i--)if(!CloseHandle(parents[i])&&failure==null)failure=new Win32Exception(Marshal.GetLastWin32Error(),"Close publication parent");parents.Clear();Closed=failure==null;if(failure!=null)throw failure;}
+ }
+ public static NativePublicationFileLease OpenNativePublicationFileLease(string root,string relative,string expectedRootIdentity){return new NativePublicationFileLease(root,relative,expectedRootIdentity);}
+
  [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern int RegOpenKeyExW(IntPtr key,string subkey,uint options,uint access,out IntPtr result);
  [DllImport("advapi32.dll",CharSet=CharSet.Unicode)] static extern int RegQueryValueExW(IntPtr key,string name,IntPtr reserved,out uint type,byte[] data,ref uint bytes);
  [DllImport("advapi32.dll")] static extern int RegCloseKey(IntPtr key);
@@ -5434,42 +5452,131 @@ function Invoke-DesktopNativeStartupFault {
     }
 }
 
+function Get-DesktopNativeNsisCrashCapture {
+    param($Owned)
+    $observation = Get-DesktopOwnedProcessObservation $Owned
+    $capture = [ordered]@{ exit_code = $observation.root_exit_code; native_observation = $observation; capture_complete = $false; stdout = $null; stderr = $null; stdout_base64 = $null; stderr_base64 = $null; stdout_metadata = $null; stderr_metadata = $null; errors = @() }
+    if ($null -eq $Owned) { return $capture }
+    foreach ($name in @('stdout', 'stderr')) {
+        try {
+            $task = $Owned.owner.($name.Substring(0,1).ToUpperInvariant() + $name.Substring(1) + 'Task')
+            if ($null -eq $task -or -not $task.IsCompleted) { throw "desktop_native_crash_$($name)_capture_incomplete" }
+            $value = $task.GetAwaiter().GetResult()
+            $raw = [byte[]]$value.RetainedBytes
+            $capture[$name] = [Text.UTF8Encoding]::new($false, $false).GetString($raw)
+            $capture[$name + '_base64'] = [Convert]::ToBase64String($raw)
+            $capture[$name + '_metadata'] = [ordered]@{ present = [long]$value.TotalBytes -gt 0; bytes = [long]$value.TotalBytes; retained_bytes = $raw.LongLength; truncated = [bool]$value.Truncated }
+        } catch { $capture.errors += [ordered]@{ field = $name; reason = $_.Exception.Message } }
+    }
+    try { $capture.capture_complete = [bool]$Owned.owner.CaptureCompleted -and $capture.errors.Count -eq 0 -and $observation.stdout_state -ceq 'eof' -and $observation.stderr_state -ceq 'eof' }
+    catch { $capture.errors += [ordered]@{ field = 'capture_complete'; reason = $_.Exception.Message } }
+    return $capture
+}
+
+function Complete-DesktopNativeNsisCrashProcess {
+    param($Owned, [Parameter(Mandatory)]$StopIntent, [string]$FirstReason, $FirstFailure)
+    $receipt = [ordered]@{ schema = 'winsmux-desktop-native-nsis-crash-process/v1'; first_reason = $FirstReason; first_error = $(if ($null -ne $FirstFailure) { [ordered]@{ type = $FirstFailure.GetType().FullName; message = $FirstFailure.Message } } else { $null }); stop_intent = $StopIntent; before_cleanup = (Get-DesktopOwnedProcessObservation $Owned); cleanup = [ordered]@{ requested = $false; api_returned = $false; error = $null }; terminal = $false; terminal_error = $null; process = $null }
+    if ($null -ne $Owned) {
+        try { $receipt.terminal = $Owned.owner.WaitTerminal(0, 50) } catch { $receipt.terminal_error = $_.Exception.Message; if ([string]::IsNullOrEmpty($receipt.first_reason)) { $receipt.first_reason = $receipt.terminal_error } }
+        if (-not $receipt.terminal) {
+            if ([string]::IsNullOrEmpty($receipt.first_reason)) { $receipt.first_reason = 'desktop_native_crash_terminal_unconfirmed' }
+            $receipt.cleanup.requested = $true
+            try { $Owned.owner.ForceFailureCleanup(180000, 50); $receipt.cleanup.api_returned = $true } catch { $receipt.cleanup.error = $_.Exception.Message }
+            try { $receipt.terminal = $Owned.owner.WaitTerminal(0, 50) } catch { $receipt.terminal_error = $_.Exception.Message }
+        }
+    }
+    $receipt.process = Get-DesktopNativeNsisCrashCapture $Owned
+    if ([string]::IsNullOrEmpty($receipt.first_reason) -and (-not $receipt.terminal -or -not $receipt.process.capture_complete)) { $receipt.first_reason = 'desktop_native_crash_terminal_or_capture_unconfirmed' }
+    Write-DesktopNativeEvidence 'nsis-crash-process.json' $receipt
+    return $receipt
+}
+
+function Assert-DesktopNativeNsisCrashTermination {
+    param([Parameter(Mandatory)]$Receipt)
+    $process = $Receipt.process
+    Assert-Condition ([string]::IsNullOrEmpty($Receipt.first_reason) -and [string]::IsNullOrEmpty($Receipt.terminal_error) -and [string]::IsNullOrEmpty($Receipt.cleanup.error) -and $Receipt.stop_intent.root_nonterminal -eq $true -and $Receipt.stop_intent.api_returned -eq $true -and -not [string]::IsNullOrEmpty($Receipt.stop_intent.trigger_identity) -and $Receipt.terminal -eq $true -and $process.capture_complete -eq $true -and $process.exit_code -eq 1 -and $process.native_observation.root_exited -eq $true -and $process.native_observation.root_exit_code -eq 1 -and $process.native_observation.active_members -eq 0 -and $process.native_observation.forced -eq $true -and $process.native_observation.stdout_state -ceq 'eof' -and $process.native_observation.stderr_state -ceq 'eof') 'desktop_native_crash_forced_cut_unconfirmed'
+}
+
+function Assert-DesktopNativeNsisCrashCut {
+    param([Parameter(Mandatory)]$Receipt, [Parameter(Mandatory)]$Before, [Parameter(Mandatory)][string]$HeldIdentity, [Parameter(Mandatory)]$Named, [Parameter(Mandatory)]$PlanRow, [Parameter(Mandatory)]$Binding, [Parameter(Mandatory)][string]$PlanSha256, [Parameter(Mandatory)]$PriorState, [Parameter(Mandatory)]$PriorWitness)
+    Assert-DesktopNativeNsisCrashTermination $Receipt
+    $trigger = $Receipt.stop_intent.trigger_identity
+    Assert-Condition ($trigger -cne $Before['identity'] -and $trigger -ceq $HeldIdentity -and $trigger -ceq $Named['identity'] -and $Named['bytes'] -eq $PlanRow.bytes -and $Named['sha256'] -ceq $PlanRow.sha256) 'desktop_native_crash_publication_object_unconfirmed'
+    $published = [ordered]@{ path = $PlanRow.path; bytes = $Named['bytes']; sha256 = $Named['sha256']; identity = (Convert-DesktopNativeObservedIdentity $Named['identity'] $Binding.root_identity.volume) }
+    return Assert-DesktopNativeNsisObservation -Kind publishing -Binding $Binding -PlanSha256 $PlanSha256 -PriorState $PriorState -PriorWitness $PriorWitness -Published $published
+}
+
 function Invoke-DesktopNativeNsisCrashFault {
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Source, [Parameter(Mandatory)][string]$PlanSha256, [Parameter(Mandatory)][string]$Sentinel)
-    $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
-    $priorState = Read-DesktopStrictJson (Join-Path $Root '.winsmux-desktop/installed.json')
-    $first = $script:DesktopNativePlan.files[0]
-    $before = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
-    $text = New-DesktopNativeNsisContextText -Command install -Root $Root -Source $Source -PlanSha256 $PlanSha256 -Language 1041 -StartMenu $true -Desktop $true -Update $true
-    $context = Join-Path $script:DesktopNativeEvidenceRoot 'nsis-crash.context'
-    $bytes = [Text.UnicodeEncoding]::new($false, $false, $true).GetBytes($text)
-    $stream = [IO.FileStream]::new($context, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-    $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'
-    [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds)
-    $owned = Start-OwnedProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', 'nsis-install', '--context', $context) -Environment @{}
-    $observed = $null; $terminal = $false
+    $lease = $null; $owned = $null; $receipt = $null; $caseFailure = $null; $firstReason = $null; $captureAttempted = $false
+    $stopIntent = [ordered]@{ trigger_identity = $null; root_nonterminal = $false; api_returned = $false; error = $null }
     try {
-        while (-not $owned.process.HasExited -and (Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired) -gt 0) {
-            try {
-                $published = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
-                if ($published['identity'] -cne $before['identity'] -and $published['sha256'] -ceq $first.sha256 -and $published['bytes'] -eq $first.bytes) { $observed = $published; break }
-            } catch [ComponentModel.Win32Exception] { } catch [IO.IOException] { }
-            Start-Sleep -Milliseconds 1
+        $prior = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
+        $priorState = Read-DesktopStrictJson (Join-Path $Root '.winsmux-desktop/installed.json')
+        $first = $script:DesktopNativePlan.files[0]
+        $before = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
+        $text = New-DesktopNativeNsisContextText -Command install -Root $Root -Source $Source -PlanSha256 $PlanSha256 -Language 1041 -StartMenu $true -Desktop $true -Update $true
+        $context = Join-Path $script:DesktopNativeEvidenceRoot 'nsis-crash.context'
+        $bytes = [Text.UnicodeEncoding]::new($false, $false, $true).GetBytes($text)
+        $stream = [IO.FileStream]::new($context, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        $lease = [WinsmuxDesktopNativeActor]::OpenNativePublicationFileLease($Root, $first.path, $prior.root_identity)
+        $cli = Join-Path $DesktopNativeCandidateDirectory 'winsmux.exe'
+        [void](Get-DesktopNativeNsisJourneyRemainingMilliseconds)
+        $owned = Start-OwnedProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', 'nsis-install', '--context', $context) -Environment @{}
+        try {
+            while ((Get-DesktopNativeNsisJourneyRemainingMilliseconds -AllowExpired) -gt 0) {
+                $rootExited = $owned.process.HasExited
+                if ($rootExited -isnot [bool]) { throw 'desktop_native_crash_root_observation_unconfirmed' }
+                if ($rootExited) { break }
+                $identity = $lease.Sample($before['identity'])
+                if ($null -ne $identity) { $stopIntent.trigger_identity = $identity; break }
+                Start-Sleep -Milliseconds 1
+            }
+            if ($null -eq $stopIntent.trigger_identity) { $firstReason = 'desktop_native_publication_cut_unmet' }
+            else {
+                $rootExited = $owned.process.HasExited
+                if ($rootExited -isnot [bool]) { throw 'desktop_native_crash_root_observation_unconfirmed' }
+                if ($rootExited) { $firstReason = 'desktop_native_publication_child_natural_terminal' }
+                else {
+                    $stopIntent.root_nonterminal = $true
+                    try { $owned.owner.ForceFailureCleanup(180000, 50); $stopIntent.api_returned = $true }
+                    catch { $stopIntent.error = $_.Exception.Message; throw }
+                }
+            }
+        } catch { $caseFailure = $_.Exception; if ([string]::IsNullOrEmpty($firstReason)) { $firstReason = $caseFailure.Message } }
+        finally {
+            $captureAttempted = $true
+            try { $receipt = Complete-DesktopNativeNsisCrashProcess -Owned $owned -StopIntent $stopIntent -FirstReason $firstReason -FirstFailure $caseFailure }
+            catch { if ($null -eq $caseFailure) { $caseFailure = $_.Exception } else { $caseFailure.Data['capture_failure'] = $_.Exception } }
         }
-        Assert-Condition ($null -ne $observed) 'desktop_native_publication_cut_unmet'
-        $owned.owner.ForceFailureCleanup(180000, 50)
-        Assert-Condition ($owned.owner.WaitTerminal(180000, 50)) 'desktop_native_crash_job_terminal_unconfirmed'
-        $terminal = $true
-        $process = Get-OwnedProcessCapture $owned
-        # Active share-mode-zero journal is never read. Read only after this exact owned Job and pipe capture terminate.
+        if ($null -ne $caseFailure) { throw $caseFailure }
+        if (-not [string]::IsNullOrEmpty($receipt.first_reason)) { throw $receipt.first_reason }
+        Assert-DesktopNativeNsisCrashTermination $receipt
+        $heldIdentity = $lease.HeldIdentity()
+        $named = [WinsmuxDesktopNativeActor]::NativeFile((Join-Path $Root $first.path))
+        # The original Job, root and both pipe captures are terminal before any journal read.
         $journal = Get-DesktopNativeNsisObservationBinding -Root $Root -Journal
-        $published = [ordered]@{path=$first.path;bytes=$observed['bytes'];sha256=$observed['sha256'];identity=(Convert-DesktopNativeObservedIdentity $observed['identity'] $journal.root_identity.volume)}
-        $pending = Assert-DesktopNativeNsisObservation -Kind publishing -Binding $journal -PlanSha256 $PlanSha256 -PriorState $priorState -PriorWitness $prior -Published $published
-        Write-DesktopNativeEvidence 'nsis-crash-publishing-cut.json' ([ordered]@{ observed = $observed; process = $process; pending = $pending })
+        $pending = Assert-DesktopNativeNsisCrashCut -Receipt $receipt -Before $before -HeldIdentity $heldIdentity -Named $named -PlanRow $first -Binding $journal -PlanSha256 $PlanSha256 -PriorState $priorState -PriorWitness $prior
+        Write-DesktopNativeEvidence 'nsis-crash-publishing-cut.json' ([ordered]@{ trigger_identity = $stopIntent.trigger_identity; held_identity = $heldIdentity; observed = $named; process = $receipt.process; pending = $pending })
+    } catch {
+        $caseFailure = $_.Exception
+        if (-not $captureAttempted) {
+            $captureAttempted = $true
+            try { $receipt = Complete-DesktopNativeNsisCrashProcess -Owned $owned -StopIntent $stopIntent -FirstReason $caseFailure.Message -FirstFailure $caseFailure }
+            catch { $caseFailure.Data['capture_failure'] = $_.Exception }
+        }
+        throw $caseFailure
     } finally {
-        if (-not $terminal -and -not $owned.owner.WaitTerminal(0, 50)) { $owned.owner.ForceFailureCleanup(180000, 50) }
-        if ($owned.owner.WaitTerminal(180000, 50)) { $owned.owner.Dispose() }
+        $close = [ordered]@{ first_reason = $(if ($null -ne $caseFailure) { $caseFailure.Message } elseif ($null -ne $receipt) { $receipt.first_reason } else { $firstReason }); process_capture_attempted = $captureAttempted; lease_closed = $null; owner_disposed = $false; errors = @() }
+        $saveFailure = $null
+        try { Write-DesktopNativeEvidence 'nsis-crash-observation-result.json' ([ordered]@{ first_reason = $close.first_reason; process = $receipt }) } catch { $saveFailure = $_.Exception }
+        if ($null -ne $lease) { try { $lease.Dispose(); $close.lease_closed = $lease.Closed } catch { $close.lease_closed = $false; $close.errors += $_.Exception.Message } }
+        if ($null -ne $owned) { try { if ($owned.process.HasExited -and $owned.owner.ActiveMembers -eq 0 -and $owned.owner.CaptureCompleted) { $owned.owner.Dispose(); $close.owner_disposed = $true } else { $close.errors += 'desktop_native_crash_owner_release_unconfirmed' } } catch { $close.errors += $_.Exception.Message } }
+        try { Write-DesktopNativeEvidence 'nsis-crash-observation-close.json' $close } catch { if ($null -eq $saveFailure) { $saveFailure = $_.Exception } }
+        if ($null -ne $caseFailure) { $caseFailure.Data['publication_close'] = $close; if ($null -ne $saveFailure) { $caseFailure.Data['evidence_failure'] = $saveFailure } }
+        elseif ($null -ne $saveFailure) { throw $saveFailure }
+        elseif ($close.errors.Count -gt 0) { throw ('desktop_native_crash_close_failed: ' + ($close.errors -join '; ')) }
     }
     $reentry = Invoke-DesktopNativeNsisAction -Command install -Root $Root -Source $Source -Case 'nsis-crash-reentry' -PlanSha256 $PlanSha256
     $current = Get-DesktopNativeWitness -Root $Root -Sentinel $Sentinel
