@@ -10,7 +10,7 @@ const fixture = publicationFixture(process.argv[2]), root = fixture.root;
 const names = ['scripts/stage-integrated-ci-artifact.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',
   'scripts/distribution-prelaunch.mjs', 'scripts/integrated-publication-contract.mjs', 'scripts/integrated-publication-assets.mjs',
   'scripts/assert-license-inputs.mjs', 'tests/workspace-package/publication-fixture.mjs',
-  '.github/workflows/release-core.yml', '.github/workflows/release-desktop.yml'];
+  '.github/workflows/release-core.yml', '.github/workflows/release-desktop.yml', 'scripts/desktop-install-inventory.ps1'];
 const before = Object.fromEntries(names.map(name => [name, sha(fs.readFileSync(name))]));
 const namespace = path.join(root, 'staged'); fs.mkdirSync(namespace);
 let checks = 0;
@@ -57,6 +57,9 @@ for (const surface of ['core', 'desktop', 'npm']) {
     const checksum = path.join(sourceDirectory, surface === 'core' ? 'SHA256SUMS' : 'SHA256SUMS-desktop');
     const bytes = fs.readFileSync(checksum); fs.writeFileSync(checksum, 'wrong checksum\n');
     check(() => assert.throws(() => stageIntegratedCiArtifact(input), /checksums differ/u)); fs.writeFileSync(checksum, bytes);
+    for (const malformed of [Buffer.from(bytes.toString('utf8').replaceAll('\n', '\r\n')), Buffer.concat([Buffer.from([239,187,191]), bytes]), bytes.subarray(0, bytes.length - 1)]) {
+      fs.writeFileSync(checksum, malformed); check(() => assert.throws(() => stageIntegratedCiArtifact(input), /checksums differ/u)); fs.writeFileSync(checksum, bytes);
+    }
   }
   if (surface === 'desktop') {
     const inventory = path.join(sourceDirectory, 'winsmux_0.38.0_x64-setup.inventory.json');
@@ -71,6 +74,8 @@ for (const surface of ['core', 'desktop', 'npm']) {
     fs.writeFileSync(sibling, bytes);
     check(() => assert.throws(() => stageIntegratedCiArtifact(input), /Closed final producer directory/u));
     fs.unlinkSync(sibling);
+    const japanese = path.join(sourceDirectory, 'winsmux_0.38.0_x64_ja-JP.msi'); fs.writeFileSync(japanese, 'synthetic JA compiler witness, not public six');
+    check(() => assert.throws(() => stageIntegratedCiArtifact(input), /Closed final producer directory/u)); fs.unlinkSync(japanese);
   }
   const output = path.join(root, surface + '-github-output.txt'); fs.writeFileSync(output, '');
   const env = { ...process.env, GITHUB_OUTPUT: output };
@@ -94,6 +99,25 @@ for (const surface of ['core', 'desktop', 'npm']) {
   }
   for (const [name, digest] of Object.entries(original)) check(() => assert.equal(sha(fs.readFileSync(path.join(sourceDirectory, name))), digest));
 }
+// Execute the inventory's actual validator body against one owned canonical
+// observer fixture. No compiler, signer or native inventory action is invoked.
+const inventorySource = fs.readFileSync('scripts/desktop-install-inventory.ps1', 'utf8');
+const validatorMatch = inventorySource.match(/\$validator = @'\r?\n([\s\S]*?)\r?\n'@/u);
+check(() => assert.ok(validatorMatch));
+const validationRepo = path.join(root, 'inventory-target'); fs.mkdirSync(path.join(validationRepo, 'scripts'), { recursive: true });
+const targetStub = "export function assertCanonicalBundledDistribution(input){if(input.projectOutput!==process.env.EXPECTED_PROJECT_OUTPUT)throw Error('Unexpected build target.');if(process.env.CHANGE_TARGET==='1')process.env.CARGO_TARGET_DIR='changed';return {manifest_sha256:'fixture-manifest'};}\n";
+fs.writeFileSync(path.join(validationRepo, 'scripts/stage-bundled-distribution.mjs'), targetStub);
+for (const target of [undefined, '', '  ', 'target', 'relative build', path.join(root, 'external-build')]) {
+ const env = {...process.env, EXPECTED_PROJECT_OUTPUT:path.join(path.resolve(validationRepo, typeof target==='string'&&target.trim().length>0?target:'target'),'release')};
+ delete env.CARGO_TARGET_DIR; if(target!==undefined)env.CARGO_TARGET_DIR=target;
+ const run=spawnSync(process.execPath,['--input-type=module','-e',validatorMatch[1],validationRepo,'0.38.0','a'.repeat(40),'fixture-manifest'],{env,windowsHide:true});
+ check(()=>{assert.equal(run.status,0);assert.equal(run.stderr.length,0);});
+ const changed=spawnSync(process.execPath,['--input-type=module','-e',validatorMatch[1],validationRepo,'0.38.0','a'.repeat(40),'fixture-manifest'],{env:{...env,CHANGE_TARGET:'1'},windowsHide:true});
+ check(()=>{assert.equal(changed.status,1);assert.match(changed.stderr.toString('utf8'),/Build target changed/u);});
+ const wrong=spawnSync(process.execPath,['--input-type=module','-e',validatorMatch[1],validationRepo,'0.38.0','a'.repeat(40),'wrong-manifest'],{env,windowsHide:true});
+ check(()=>{assert.equal(wrong.status,1);assert.match(wrong.stderr.toString('utf8'),/Generation changed/u);});
+}
+
 // Actual YAML parsing also checks ordering: final bytes and release body are
 // staged/uploaded before the old guarded public entrance. No hosted CI claim.
 const workflowCheck = `import sys,yaml,json
@@ -108,7 +132,32 @@ for steps,surface in [(core,'Core'),(desktop,'Desktop')]:
  assert steps[upload]['with']['if-no-files-found']=='error'
  if surface=='Core': assert upload<next(i for i,s in enumerate(steps) if s.get('name')=='Require integrated publication gate')
  else: assert upload<next(i for i,s in enumerate(steps) if s.get('name')=='Upload desktop bundles to release')
-print(json.dumps({'parsed':True,'surfaces':2,'publication_admitted':False}))
+jobs=yaml.safe_load(open('.github/workflows/release-desktop.yml',encoding='utf-8'))['jobs']
+assert jobs['build']['needs']==['signed_baseline']
+assert "inputs.release_tag == 'v0.38.0'" in jobs['signed_baseline']['if']
+assert jobs['build']['runs-on']=="\u0024{{ github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0' && 'windows-2025' || 'windows-latest' }}" or 'windows-2025' in jobs['build']['runs-on']
+steps=desktop
+collect=next(s['run'] for s in steps if s.get('name')=='Collect desktop release assets')
+assert 'winsmux_' in collect and '_x64_en-US.msi' in collect and 'Get-ChildItem' in collect
+assert 'UTF8Encoding' in collect and 'WriteAllText' in collect and "-join" in collect
+assert '[Array]::Sort($checksumNames, [StringComparer]::Ordinal)' in collect
+names=[s.get('name') for s in steps]
+for name in ['Bind public six and same-job signed native C10 before Windows verification','Execute same-signed-byte finite NSIS and MSI journeys','Revalidate public six C10 and completed signed phase after Windows verification']: assert name in names
+assert names.index('Bind public six and same-job signed native C10 before Windows verification')<names.index('Execute same-signed-byte finite NSIS and MSI journeys')<names.index('Revalidate public six C10 and completed signed phase after Windows verification')<names.index('Stage final integrated Desktop artifact')
+witness=next(s for s in steps if s.get('name')=='Preserve same-job signed native C10')
+assert witness['uses']=='actions/upload-artifact@v7'
+assert len(witness['with']['path'].splitlines())==10 and '*' not in witness['with']['path']
+assert all('NSIS/candidate/' in p for p in witness['with']['path'].splitlines())
+journey=next(s for s in steps if s.get('name')=='Execute same-signed-byte finite NSIS and MSI journeys')
+assert 'NSIS' in journey['run'] and 'MSI' in journey['run'] and '-DesktopNativeLifecycle' in journey['run']
+assert 'env' not in journey or not any('SECRET' in k or 'PASSWORD' in k or 'PFX' in k for k in journey['env'])
+public=next(s for s in steps if s.get('name')=='Upload desktop bundles to release')
+assert "inputs.release_tag != 'v0.38.0'" in public['if']
+# Guard truth table preserves other versions and closes every v0.38 entry.
+for ref in ['v0.38.0','v0.38.1','v0.36.38']:
+ for tag in ['v0.38.0','v0.38.1','']:
+  assert (ref!='v0.38.0' and tag!='v0.38.0')==(not (ref=='v0.38.0' or tag=='v0.38.0'))
+print(json.dumps({'parsed':True,'surfaces':2,'signed_witness_members':10,'publication_admitted':False}))
 `;
 const yaml = spawnSync(path.resolve(process.argv[3]), ['-I', '-B', '-c', workflowCheck], { windowsHide: true });
 fs.writeFileSync(path.join(root, 'workflow-stdout.json'), yaml.stdout); fs.writeFileSync(path.join(root, 'workflow-stderr.txt'), yaml.stderr);

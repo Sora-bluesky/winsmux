@@ -43,7 +43,7 @@ export function validatePublicReleaseInventory(bundle, release, resolvedCommit, 
   assertIssuedPublicationBundle(bundle);
   demand(Array.isArray(assets), 'Complete actual release inventory required.');
   if (release === null) {
-    demand(assets.length === 0 && resolvedCommit === null, 'Absent release has inconsistent observations.');
+    demand(assets.length === 0 && (resolvedCommit === null || resolvedCommit === bundle.identity.source_commit), 'Absent release has a conflicting or unknown tag target.');
     return freeze({ release_present: false, assets: [], publication_admitted: false });
   }
   demand(positive(release.id) && release.url === `${api}/releases/${release.id}`
@@ -184,8 +184,9 @@ export async function observePublicationDestinations(contract, bundle, { namespa
     demand(actual.status === 200, 'Public original unavailable: HTTP ' + actual.status);
     return parseStrictJson(actual.bytes);
   };
-  const resolveTag = async label => {
-    const ref = await json(`${api}/git/ref/tags/${tag}`, label + '-tag-ref.json');
+  const resolveTag = async (label, allowAbsent = false) => {
+    const ref = await json(`${api}/git/ref/tags/${tag}`, label + '-tag-ref.json', allowAbsent);
+    if (ref === null) return null;
     demand(ref.ref === `refs/tags/${tag}` && ref.url === `${api}/git/refs/tags/${tag}`, 'Exact public tag reference required.');
     let object = ref.object; const visited = new Set(); let index = 0;
     while (object?.type === 'tag') {
@@ -216,7 +217,7 @@ export async function observePublicationDestinations(contract, bundle, { namespa
     demand(repo.full_name?.toLowerCase() === repository.toLowerCase() && repo.private === false && positive(repo.id),
       'Actual public repository required before accepting not-found.');
     const release = await json(`${api}/releases/tags/${tag}`, 'release-before.json', true);
-    const resolved = release === null ? null : await resolveTag('before');
+    const resolved = await resolveTag('before', release === null);
     const assets = await listAssets(release, 'before');
     const inventory = validatePublicReleaseInventory(bundle, release, resolved, assets);
     const present = new Map(assets.map(asset => [asset.name, asset]));
@@ -239,12 +240,12 @@ export async function observePublicationDestinations(contract, bundle, { namespa
       rows.push(validateNpmBytes(bundle, npm, actual.bytes));
     }
     const releaseAfter = await json(`${api}/releases/tags/${tag}`, 'release-after.json', true);
-    const resolvedAfter = releaseAfter === null ? null : await resolveTag('after');
+    const resolvedAfter = await resolveTag('after', releaseAfter === null);
     const assetsAfter = await listAssets(releaseAfter, 'after');
     const inventoryAfter = validatePublicReleaseInventory(bundle, releaseAfter, resolvedAfter, assetsAfter);
     const npmAfter = await json(npmVersion, 'npm-after.json', true);
     if (npmAfter !== null) validatePublicNpmMetadata(bundle, npmAfter);
-    demand(same(releaseCoordinates(release), releaseCoordinates(releaseAfter)) && same(inventory, inventoryAfter)
+    demand(resolved === resolvedAfter && same(releaseCoordinates(release), releaseCoordinates(releaseAfter)) && same(inventory, inventoryAfter)
       && same(npmCoordinates(npm), npmCoordinates(npmAfter)), 'Public destination changed during complete observation.');
     demand(rows.length === bundle.assets.length && new Set(rows.map(row => row.path)).size === bundle.assets.length,
       'All fixed public byte rows required.');

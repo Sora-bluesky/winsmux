@@ -634,6 +634,8 @@ $whitelistPatterns = @(
     'scripts/integrated-publication-assets.mjs',
     'scripts/integrated-publication-attempt.mjs',
     'scripts/integrated-publication-contract.mjs',
+    'scripts/integrated-publication-origins.mjs',
+    'tests/workspace-package/publication-native-v2.test.ps1',
     'scripts/integrated-publication-evidence.mjs',
     'scripts/observe-github-candidate-artifacts.mjs',
     'scripts/observe-github-required-checks.mjs',

@@ -93,7 +93,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: needs.verify.outputs.publish_ready == 'true'
+    # Preserve preparation; the v0.38.0 archive has one integrated publication owner.
+    if: needs.verify.outputs.publish_ready == 'true' && needs.verify.outputs.version != '0.38.0' && needs.verify.outputs.release_tag != 'v0.38.0'
     steps:
       - uses: actions/checkout@v6
 

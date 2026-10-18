@@ -12,7 +12,7 @@ const originalRoot = path.resolve(process.argv[2]);
 const fixtureRoot = path.resolve('.evidence/workspace-package', `publication-contract-${randomUUID()}`);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const originalBytes = Object.fromEntries(Object.entries(integratedContractSources).map(([name, source]) =>
-  [name, fs.readFileSync(path.join(originalRoot, source.path))]));
+  [name, fs.readFileSync(fs.existsSync(path.join(originalRoot, source.path)) ? path.join(originalRoot, source.path) : path.join(originalRoot, path.basename(source.path)))]));
 for (const [name, source] of Object.entries(integratedContractSources)) {
   assert.equal(hash(originalBytes[name]), source.sha256);
   const target = path.join(fixtureRoot, source.path);
@@ -34,17 +34,34 @@ check(() => {
   assert.strictEqual(assertIssuedIntegratedContract(contract), contract);
 });
 for (const task of plan.new_tasks.filter(task => task.target_version === 'v0.38.0')) check(() => {
-  const rows = contract.obligations.filter(row => row.task === task.id);
+  const rows = contract.original_obligations.filter(row => row.task === task.id);
   assert.equal(rows.filter(row => row.kind === 'acceptance').length, task.acceptance.length);
   assert.equal(rows.filter(row => row.kind === 'automated').length, 1);
   assert.equal(rows.filter(row => row.kind === 'automated_predicate').length, 1);
   assert.equal(rows.filter(row => row.kind === 'programmatic_e2e').length,
     task.verification.e2e.required ? task.verification.e2e.steps.length : 0);
   assert.equal(rows.filter(row => row.kind === 'manual_windows').length,
-    [872, 876, 881, 883, 885].includes(Number(task.id.slice(5))) ? task.verification.windows_action.procedure.length : 0);
+    task.verification.windows_action.required ? task.verification.windows_action.procedure.length : 0);
   assert.deepEqual(contract.task_contracts[task.id].completion_contract, task.completion_contract);
   assert.deepEqual(contract.task_contracts[task.id].environment_required, task.verification.environment_required);
   assert.deepEqual(contract.task_contracts[task.id].forbidden_substitutes, task.verification.forbidden_substitutes);
+});
+check(() => {
+  assert.equal(contract.effective_policy.task_responsibilities.length,25);
+  assert.equal(contract.effective_policy.mappings.length,contract.original_obligations.length);
+  assert.equal(contract.effective_policy_sha256,hash(Buffer.from(JSON.stringify(contract.effective_policy))));
+  for(const row of contract.original_obligations){
+    const mapping=contract.effective_policy.mappings.find(item=>item.original_id===row.id);
+    assert.equal(mapping.original_text,row.text);assert.equal(mapping.original_content_sha256,row.content_sha256);
+    assert.equal(mapping.evidence_result,'unobserved');assert.ok(mapping.source_sections.length>0);
+    assert.equal(contract.obligations.some(item=>item.id===row.id),mapping.applicable&&mapping.handling!=='duplicate_combine');
+  }
+  for(const task of plan.new_tasks.filter(task=>task.target_version==='v0.38.0')){
+    assert.equal(contract.task_contracts[task.id].original_status,task.status);
+    assert.deepEqual(contract.task_contracts[task.id].original_verification,task.verification);
+  }
+  assert.ok(contract.effective_policy.mappings.some(row=>row.handling==='explicit_inapplicable'));
+  assert.ok(contract.effective_policy.mappings.filter(row=>row.removed_clauses.length).every(row=>row.original_text && row.source_sections.some(section=>section.heading.includes('Narrator'))));
 });
 const workflow = plan.new_tasks.find(task => task.id === 'TASK-885').release_workflow;
 check(() => {
@@ -110,7 +127,7 @@ fs.linkSync(originalFile, linkedFile);
 rejects(() => readIntegratedPublicationContract(fixtureRoot), /single-link/);
 // Preserve fixtures for attributable evidence; do not modify/delete originals.
 for (const [name, descriptor] of Object.entries(integratedContractSources))
-  check(() => assert.equal(hash(fs.readFileSync(path.join(originalRoot, descriptor.path))), hash(originalBytes[name])));
+  check(() => assert.equal(hash(fs.readFileSync(fs.existsSync(path.join(originalRoot, descriptor.path)) ? path.join(originalRoot, descriptor.path) : path.join(originalRoot, path.basename(descriptor.path)))), hash(originalBytes[name])));
 console.log(JSON.stringify({ passed: true, checks, obligations: contract.obligations.length,
   tasks: contract.tasks.length, stages: contract.stages.length,
   inventory_sha256: contract.inventory_sha256, controls_sha256: contract.controls_sha256,

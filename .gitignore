@@ -91,6 +91,7 @@ tests/workspace-update/*
 !tests/workspace-package/publication-output.test.ps1
 !tests/workspace-package/publication-npm-guard.test.mjs
 !tests/workspace-package/publication-npm-native.test.ps1
+!tests/workspace-package/publication-native-v2.test.ps1
 !tests/workspace-package/integrated-publication-assets.test.mjs
 !tests/workspace-package/integrated-publication-evidence.test.mjs
 !tests/workspace-package/publication-fixture.mjs

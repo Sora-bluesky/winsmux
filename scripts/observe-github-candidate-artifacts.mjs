@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { physicalPath } from './distribution-prelaunch.mjs';
 import { parseStrictJson } from './assert-license-inputs.mjs';
 import { assertIssuedIntegratedContract } from './integrated-publication-contract.mjs';
-import { assertIssuedPublicationBundle, revalidatePublicationBundle } from './integrated-publication-assets.mjs';
+import { assertIssuedPublicationBundle, revalidatePublicationBundle, integratedAssetPaths } from './integrated-publication-assets.mjs';
 
 // Protected outcome: all thirteen final bytes originate in the exact frozen
 // Core/Desktop/npm producer runs. A status flag, local hash manifest, another
@@ -123,6 +123,61 @@ function getOriginal(endpoint) {
   });
 }
 
+async function inspectHostedProducers({ selectedSurfaces, coordinates_, sourceCommit, sourceTree, workflowSources, archiveSources, inputs, directory, environment, fetch, expectedMembers, results, native, desktopPreparation = false }) {
+    const commit = await fetch('/git/commits/' + sourceCommit, 'commit.json');
+    for (const surface of selectedSurfaces) {
+      const { id, attempt } = coordinates_[surface];
+      const workflow = await fetch('/contents/.github/workflows/release-' + surface + '.yml?ref=' + sourceCommit, surface + '-workflow.json');
+      validateProducerSource({ surface, sourceCommit: sourceCommit, sourceTree: sourceTree,
+        workflowSha256: workflowSources[surface].sha256, commit, workflow });
+      const run = await fetch('/actions/runs/' + id, surface + '-run-before.json');
+      if (desktopPreparation) demand(run.event === 'workflow_dispatch', 'Desktop preparation dispatch required.');
+      const artifacts = [], ids = new Set(); let total = null;
+      for (let page = 1; total === null || artifacts.length < total; page++) {
+        const data = await fetch(`/actions/runs/${id}/artifacts?per_page=100&page=${page}`, surface + '-artifacts-' + page + '.json');
+        demand(Number.isSafeInteger(data.total_count) && data.total_count >= 0 && Array.isArray(data.artifacts)
+          && (total === null || total === data.total_count), 'Producer artifact pagination changed or incomplete.');
+        total = data.total_count;
+        demand(data.artifacts.length > 0 || artifacts.length === total, 'Producer artifact inventory incomplete.');
+        for (const artifact of data.artifacts) { demand(number(artifact.id) && !ids.has(artifact.id), 'Duplicate original artifact identity.'); ids.add(artifact.id); artifacts.push(artifact); }
+        demand(artifacts.length <= total, 'Artifact inventory exceeds declared total.');
+      }
+      const matches = artifacts.filter(row => row.name === artifactName(surface, sourceCommit, id, attempt));
+      demand(matches.length === 1, 'Exact producer attempt artifact missing or ambiguous.');
+      const artifact = matches[0];
+      const verified = validateGithubCandidateArtifactPayload({ surface, sourceCommit: sourceCommit,
+        sourceTree: sourceTree, runId: id, runAttempt: attempt, workflowSha256: workflowSources[surface].sha256,
+        archiveSha256: archiveSources[surface].sha256, commit, workflow, run, artifact });
+      const members = expectedMembers(surface), memberFile = path.join(directory, surface + '-members.json');
+      retain(memberFile, Buffer.from(JSON.stringify(members)));
+      const parsed = spawnSync(inputs[0].target, ['-I', '-B', inputs[1].target, archiveSources[surface].target,
+        verified.archive_sha256, memberFile], { env: environment, windowsHide: true });
+      retain(path.join(directory, surface + '-parser-stdout.json'), parsed.stdout ?? Buffer.alloc(0));
+      retain(path.join(directory, surface + '-parser-stderr.txt'), parsed.stderr ?? Buffer.alloc(0));
+      native.push({ surface, pid: parsed.pid ?? null, exit_code: parsed.status, signal: parsed.signal });
+      demand(!parsed.error && parsed.status === 0 && parsed.signal === null && (parsed.stderr?.length ?? 0) === 0,
+        'Native closed artifact member verification failed.');
+      const actual = parseStrictJson(parsed.stdout);
+      demand(actual.schema === 'winsmux-ci-artifact-members/v1' && actual.archive_sha256 === verified.archive_sha256
+        && actual.publication_admitted === false && Array.isArray(actual.members) && actual.members.length === members.length
+        && same(actual.members.map(row => row.name).sort(), members.map(row => row.name).sort()), 'Native artifact member inventory differs.');
+      for (const member of members) if (member.sha256 !== null) {
+        const seen = actual.members.find(row => row.name === member.name);
+        demand(seen.bytes === member.bytes && seen.sha256 === member.sha256 && seen.bundle_member === true,
+          'Native artifact member differs from held bundle.');
+      }
+      const artifactAfter = await fetch('/actions/artifacts/' + artifact.id, surface + '-artifact-after.json');
+      const runAfter = await fetch('/actions/runs/' + id, surface + '-run-after.json');
+      if (desktopPreparation) demand(runAfter.event === 'workflow_dispatch', 'Desktop preparation dispatch changed.');
+      validateGithubCandidateArtifactPayload({ surface, sourceCommit: sourceCommit,
+        sourceTree: sourceTree, runId: id, runAttempt: attempt, workflowSha256: workflowSources[surface].sha256,
+        archiveSha256: archiveSources[surface].sha256, commit, workflow, run: runAfter, artifact: artifactAfter });
+      demand(same(artifactCoordinates(artifact), artifactCoordinates(artifactAfter)) && same(coordinates(run), coordinates(runAfter)),
+        'Producer artifact/run changed during observation.');
+      results.push({ ...verified, members: actual.members });
+    }
+}
+
 /** Parent host observes real public originals. Locally supplied archives and
  * hashes are candidate inputs, checked against independent GitHub originals.
  * No fetch callback or serialized observer is accepted as an origin. */
@@ -154,56 +209,8 @@ export async function observeGithubCandidateArtifacts(contract, bundle, { namesp
   };
   let failure = null;
   try {
-    const commit = await fetch('/git/commits/' + bundle.identity.source_commit, 'commit.json');
-    for (const surface of surfaces) {
-      const { id, attempt } = coordinates_[surface];
-      const workflow = await fetch('/contents/.github/workflows/release-' + surface + '.yml?ref=' + bundle.identity.source_commit, surface + '-workflow.json');
-      validateProducerSource({ surface, sourceCommit: bundle.identity.source_commit, sourceTree: bundle.identity.source_tree,
-        workflowSha256: workflowSources[surface].sha256, commit, workflow });
-      const run = await fetch('/actions/runs/' + id, surface + '-run-before.json');
-      const artifacts = [], ids = new Set(); let total = null;
-      for (let page = 1; total === null || artifacts.length < total; page++) {
-        const data = await fetch(`/actions/runs/${id}/artifacts?per_page=100&page=${page}`, surface + '-artifacts-' + page + '.json');
-        demand(Number.isSafeInteger(data.total_count) && data.total_count >= 0 && Array.isArray(data.artifacts)
-          && (total === null || total === data.total_count), 'Producer artifact pagination changed or incomplete.');
-        total = data.total_count;
-        demand(data.artifacts.length > 0 || artifacts.length === total, 'Producer artifact inventory incomplete.');
-        for (const artifact of data.artifacts) { demand(number(artifact.id) && !ids.has(artifact.id), 'Duplicate original artifact identity.'); ids.add(artifact.id); artifacts.push(artifact); }
-        demand(artifacts.length <= total, 'Artifact inventory exceeds declared total.');
-      }
-      const matches = artifacts.filter(row => row.name === artifactName(surface, bundle.identity.source_commit, id, attempt));
-      demand(matches.length === 1, 'Exact producer attempt artifact missing or ambiguous.');
-      const artifact = matches[0];
-      const verified = validateGithubCandidateArtifactPayload({ surface, sourceCommit: bundle.identity.source_commit,
-        sourceTree: bundle.identity.source_tree, runId: id, runAttempt: attempt, workflowSha256: workflowSources[surface].sha256,
-        archiveSha256: archiveSources[surface].sha256, commit, workflow, run, artifact });
-      const members = candidateArtifactMembers(bundle, surface), memberFile = path.join(directory, surface + '-members.json');
-      retain(memberFile, Buffer.from(JSON.stringify(members)));
-      const parsed = spawnSync(inputs[0].target, ['-I', '-B', inputs[1].target, archiveSources[surface].target,
-        verified.archive_sha256, memberFile], { env: environment, windowsHide: true });
-      retain(path.join(directory, surface + '-parser-stdout.json'), parsed.stdout ?? Buffer.alloc(0));
-      retain(path.join(directory, surface + '-parser-stderr.txt'), parsed.stderr ?? Buffer.alloc(0));
-      native.push({ surface, pid: parsed.pid ?? null, exit_code: parsed.status, signal: parsed.signal });
-      demand(!parsed.error && parsed.status === 0 && parsed.signal === null && (parsed.stderr?.length ?? 0) === 0,
-        'Native closed artifact member verification failed.');
-      const actual = parseStrictJson(parsed.stdout);
-      demand(actual.schema === 'winsmux-ci-artifact-members/v1' && actual.archive_sha256 === verified.archive_sha256
-        && actual.publication_admitted === false && Array.isArray(actual.members) && actual.members.length === members.length
-        && same(actual.members.map(row => row.name).sort(), members.map(row => row.name).sort()), 'Native artifact member inventory differs.');
-      for (const member of members) if (member.sha256 !== null) {
-        const seen = actual.members.find(row => row.name === member.name);
-        demand(seen.bytes === member.bytes && seen.sha256 === member.sha256 && seen.bundle_member === true,
-          'Native artifact member differs from held bundle.');
-      }
-      const artifactAfter = await fetch('/actions/artifacts/' + artifact.id, surface + '-artifact-after.json');
-      const runAfter = await fetch('/actions/runs/' + id, surface + '-run-after.json');
-      validateGithubCandidateArtifactPayload({ surface, sourceCommit: bundle.identity.source_commit,
-        sourceTree: bundle.identity.source_tree, runId: id, runAttempt: attempt, workflowSha256: workflowSources[surface].sha256,
-        archiveSha256: archiveSources[surface].sha256, commit, workflow, run: runAfter, artifact: artifactAfter });
-      demand(same(artifactCoordinates(artifact), artifactCoordinates(artifactAfter)) && same(coordinates(run), coordinates(runAfter)),
-        'Producer artifact/run changed during observation.');
-      results.push({ ...verified, members: actual.members });
-    }
+    await inspectHostedProducers({ selectedSurfaces: surfaces, coordinates_, sourceCommit: bundle.identity.source_commit, sourceTree: bundle.identity.source_tree,
+      workflowSources, archiveSources, inputs, directory, environment, fetch, expectedMembers: surface => candidateArtifactMembers(bundle, surface), results, native });
   } catch (error) { failure = error.message; }
   for (const before of inputs) demand(snapshot(before.target, before.sha256).identity === before.identity, 'Producer archive/source/runtime changed.');
   revalidatePublicationBundle(bundle);
@@ -231,4 +238,75 @@ export function registerObservedGithubCandidateArtifacts(registry, receipt) {
       obligation_ids: [], evidence_names: ['candidate-artifact-hashes.json'], expected_actual_verified: true,
       environment_sha256: sha(Buffer.from(JSON.stringify({ endpoint: base, inputs: origin.inputs, api_version: '2026-03-10' }))) };
   } });
+}
+
+const issuedDesktopPreparations = new WeakMap();
+/** Desktop-only prebundle observation. The final source S is supplied as exact
+ * coordinates; no bundle or caller pass flag can stand in for this observation. */
+export async function observeGithubDesktopPreparation(contract, options) {
+  assertIssuedIntegratedContract(contract);
+  demand(exact(options, ['namespaceRoot', 'parentSession', 'pythonImage', 'observedPythonSha256', 'parserFile', 'observedParserSha256',
+    'sourceCommit', 'sourceTree', 'runId', 'runAttempt', 'workflow', 'archive', 'files']), 'Exact Desktop preparation inputs required.');
+  const { namespaceRoot, parentSession, pythonImage, observedPythonSha256, parserFile, observedParserSha256,
+    sourceCommit, sourceTree, runId, runAttempt, workflow, archive, files } = options;
+  demand(typeof parentSession === 'string' && parentSession.trim() === parentSession && parentSession.length > 0, 'Actual host session required.');
+  demand(typeof sourceCommit === 'string' && /^[a-f0-9]{40}$/u.test(sourceCommit)
+    && typeof sourceTree === 'string' && /^[a-f0-9]{40}$/u.test(sourceTree) && number(runId) && number(runAttempt),
+    'Exact Desktop preparation coordinates required.');
+  demand(exact(workflow, ['file', 'observed_sha256']) && exact(archive, ['file', 'observed_sha256']), 'Exact independently observed producer inputs required.');
+  const names = integratedAssetPaths(contract).filter(name => name.startsWith('desktop/'));
+  demand(Array.isArray(files) && files.length === 6 && names.length === 6
+    && files.every(row => exact(row, ['path', 'source_file', 'bytes', 'sha256']) && typeof row.source_file === 'string' && number(row.bytes) && hash(row.sha256))
+    && same(files.map(row => row.path).sort(), names), 'Closed six-file Desktop preparation required.');
+  const inputs = [snapshot(pythonImage, observedPythonSha256), snapshot(parserFile, observedParserSha256)];
+  const workflowSources = { desktop: snapshot(workflow.file, workflow.observed_sha256) };
+  const archiveSources = { desktop: snapshot(archive.file, archive.observed_sha256) };
+  inputs.push(workflowSources.desktop, archiveSources.desktop);
+  const assets = files.map(row => {
+    const held = snapshot(row.source_file, row.sha256); inputs.push(held);
+    demand(fs.statSync(held.target).size === row.bytes, 'Desktop physical member size differs.');
+    return { ...row, source_file: held.target };
+  }).sort((a,b) => a.path.localeCompare(b.path, 'en'));
+  demand(new Set(assets.map(row => row.source_file)).size === 6, 'Distinct physical Desktop members required.');
+  const members = freeze(assets.map(row => ({ name: path.posix.basename(row.path), bytes: row.bytes, sha256: row.sha256 })));
+  const root = physicalPath(namespaceRoot); demand(fs.statSync(root).isDirectory(), 'Existing owned artifact observation namespace required.');
+  const directory = path.join(root, 'desktop-preparation-' + randomUUID()); fs.mkdirSync(directory);
+  const started = new Date().toISOString(), originals = [], results = [], native = [];
+  const environment = { PATH: process.env.PATH ?? path.dirname(inputs[0].target) };
+  for (const key of ['SystemRoot', 'WINDIR', 'COMSPEC']) if (process.env[key]) environment[key] = process.env[key];
+  const fetch = async (endpoint, name) => {
+    const original = await getOriginal(endpoint), file = path.join(directory, name); retain(file, original.bytes);
+    originals.push({ file, url: original.url, status: original.status, sha256: sha(original.bytes), server_date: original.server_date });
+    demand(original.status === 200, 'Actual producer original unavailable: HTTP ' + original.status);
+    return parseStrictJson(original.bytes);
+  };
+  let failure = null;
+  try {
+    await inspectHostedProducers({ selectedSurfaces: ['desktop'], coordinates_: { desktop: { id: runId, attempt: runAttempt } },
+      sourceCommit, sourceTree, workflowSources, archiveSources, inputs, directory, environment, fetch,
+      expectedMembers: () => members, results, native, desktopPreparation: true });
+  } catch (error) { failure = error.message; }
+  for (const before of inputs) demand(snapshot(before.target, before.sha256).identity === before.identity, 'Producer archive/source/runtime changed.');
+  const originalPins = originals.map(row => ({ path: row.file, bytes: fs.statSync(row.file).size, sha256: row.sha256 }));
+  const receipt = freeze({ schema: 'winsmux-observed-github-desktop-preparation/v1', started_at: started, finished_at: new Date().toISOString(),
+    parent_session: parentSession, source_commit: sourceCommit, source_tree: sourceTree, run: runId + '.' + runAttempt,
+    contract_inventory_sha256: contract.inventory_sha256, contract_controls_sha256: contract.controls_sha256,
+    passed: failure === null && results.length === 1, failure, assets, results, native,
+    originals: originalPins.concat(inputs.map(row => ({ path: row.target, bytes: fs.statSync(row.target).size, sha256: row.sha256 }))),
+    publication_admitted: false,
+    scope: 'Actual Desktop preparation API provenance and closed six-file archive/physical correspondence. No signing validity, Windows evidence, release readiness or publication claim.' });
+  const file = path.join(directory, 'desktop-preparation.json'), bytes = Buffer.from(JSON.stringify(receipt)); retain(file, bytes);
+  const record = snapshot(file, sha(bytes));
+  issuedDesktopPreparations.set(receipt, { contract, inputs, originals: originalPins.map(row => snapshot(row.path, row.sha256)), record, bytes: bytes.length });
+  return receipt;
+}
+export function revalidateObservedGithubDesktopPreparation(contract, receipt) {
+  assertIssuedIntegratedContract(contract);
+  const origin = issuedDesktopPreparations.get(receipt);
+  demand(origin && origin.contract === contract && receipt.passed === true && receipt.native.length === 1
+    && receipt.native[0].surface === 'desktop' && receipt.native[0].exit_code === 0 && receipt.native[0].signal === null,
+    'Issued successful Desktop preparation capability required.');
+  for (const input of [...origin.inputs, ...origin.originals, origin.record])
+    demand(snapshot(input.target, input.sha256).identity === input.identity, 'Observed Desktop preparation input changed.');
+  return freeze({ path: origin.record.target, bytes: origin.bytes, sha256: origin.record.sha256 });
 }

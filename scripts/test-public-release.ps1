@@ -4065,26 +4065,39 @@ const [mode,sourceCommit,format,repoArgument]=process.argv.slice(1);
 const need=(v,r)=>{if(!v)throw new Error(r);};
 const digest=b=>createHash('sha256').update(b).digest('hex');
 const sameKeys=(v,k)=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).sort().join('\0')===k.slice().sort().join('\0');
-need(['create','verify'].includes(mode)&&/^[a-f0-9]{40}$/.test(sourceCommit)&&['MSI','NSIS'].includes(format),'native_transport_request_refused');
+const signedProfile=['create-signed','verify-signed'].includes(mode);
+need(['create','verify','create-signed','verify-signed'].includes(mode)&&/^[a-f0-9]{40}$/.test(sourceCommit)&&['MSI','NSIS'].includes(format),'native_transport_request_refused');
 need(sourceCommit===process.env.GITHUB_SHA&&process.env.GITHUB_ACTIONS==='true'&&process.env.RUNNER_OS==='Windows'&&/^[1-9][0-9]*$/.test(process.env.GITHUB_RUN_ID??'')&&/^[1-9][0-9]*$/.test(process.env.GITHUB_RUN_ATTEMPT??''),'native_transport_caller_refused');
 const repo=path.resolve(repoArgument);
 const { physicalPath }=await import(pathToFileURL(path.join(repo,'scripts/distribution-prelaunch.mjs')));
 const { parseStrictJson }=await import(pathToFileURL(path.join(repo,'scripts/assert-license-inputs.mjs')));
 const { assertCanonicalBundledDistribution }=await import(pathToFileURL(path.join(repo,'scripts/stage-bundled-distribution.mjs')));
-const { assertDesktopBundleNamespace }=await import(pathToFileURL(path.join(repo,'scripts/stage-desktop-msi-plan.mjs')));
+const { assertDesktopBundleNamespace, readCompletedSignedBuild }=await import(pathToFileURL(path.join(repo,'scripts/stage-desktop-msi-plan.mjs')));
 const { assertWindowsRuntime }=await import(pathToFileURL(path.join(repo,'scripts/assert-windows-runtime.mjs')));
 const head=spawnSync('git',['-C',repo,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true});
 need(!head.error&&head.status===0&&head.stdout.trim()===sourceCommit,'native_transport_source_refused');
 const diff=spawnSync('git',['-C',repo,'diff','--exit-code','--no-ext-diff','HEAD','--'],{windowsHide:true});
 need(!diff.error&&diff.status===0,'native_transport_tracked_source_changed');
-const root=path.join(path.resolve(process.env.RUNNER_TEMP),'winsmux-native-input-'+process.env.GITHUB_RUN_ID+'.'+process.env.GITHUB_RUN_ATTEMPT+'.'+sourceCommit+'.'+format);
+const runKey=process.env.GITHUB_RUN_ID+'.'+process.env.GITHUB_RUN_ATTEMPT;
+const root=path.join(path.resolve(process.env.RUNNER_TEMP),signedProfile?'wsn-'+runKey+'.'+format:'winsmux-native-input-'+runKey+'.'+sourceCommit+'.'+format);
+const buildRoot=signedProfile?path.join(path.resolve(process.env.RUNNER_TEMP),'wsb-'+runKey):root;
+const sdkTemp=path.join(buildRoot,'sdk-temp');
 const directory=p=>{const s=fs.lstatSync(p,{bigint:true});need(s.isDirectory()&&!s.isSymbolicLink()&&s.dev>=0n&&s.ino>0n&&physicalPath(p)===p,'native_transport_plain_directory_required');return s.dev+':'+s.ino;};
 const plain=p=>{need(physicalPath(p)===p,'native_transport_physical_file_required');const s=fs.lstatSync(p,{bigint:true});need(s.isFile()&&!s.isSymbolicLink()&&s.nlink===1n&&s.dev>=0n&&s.ino>0n,'native_transport_single_link_required');const b=fs.readFileSync(p);const t=fs.lstatSync(p,{bigint:true});need(s.dev===t.dev&&s.ino===t.ino&&s.size===t.size&&b.length===Number(s.size),'native_transport_readback_changed');return b;};
-const originDirectoryIds=new Map();for(const p of [repo,root,path.join(root,'build'),path.join(root,'build/release'),path.join(root,'sdk-temp'),path.join(root,'candidate')])originDirectoryIds.set(p,directory(p));
-const release=path.join(root,'build/release'),candidate=path.join(root,'candidate'),src=path.join(repo,'winsmux-app/src-tauri'),canonical=path.join(src,'binaries'),gui=path.join(release,'winsmux-app.exe');
+const originDirectoryIds=new Map();for(const p of [...new Set([repo,root,buildRoot,path.join(buildRoot,'build'),path.join(buildRoot,'build/release'),sdkTemp,path.join(root,'candidate')])])originDirectoryIds.set(p,directory(p));
+const release=path.join(buildRoot,'build/release'),candidate=path.join(root,'candidate'),src=path.join(repo,'winsmux-app/src-tauri'),canonical=path.join(src,'binaries'),gui=path.join(release,'winsmux-app.exe');
 const phasePath=gui+'.winsmux-bundle-phase.json';const phaseBytes=plain(phasePath),phase=parseStrictJson(phaseBytes);
 assertDesktopBundleNamespace(gui);
-need(sameKeys(phase,['schema','invocation_id','gui_path','host','version','signed','generation_manifest_sha256','input_gui_sha256','input_app_lib_sha256','sdk_temp_root','expected_pre_sign','phase','records','prior_pairs'])&&phase.schema==='winsmux-desktop-bundle-phase/v1'&&phase.gui_path===gui&&phase.host==='x86_64-pc-windows-msvc'&&phase.version==='0.38.0'&&phase.signed===false&&phase.phase==='frozen'&&phase.sdk_temp_root===path.join(root,'sdk-temp')&&sameKeys(phase.expected_pre_sign,['msi','nsis'])&&phase.expected_pre_sign.msi===null&&phase.expected_pre_sign.nsis===null&&Array.isArray(phase.prior_pairs)&&phase.prior_pairs.length===0&&Array.isArray(phase.records)&&phase.records.length===2&&phase.records[0].flavor==='msi'&&phase.records[1].flavor==='nsis','native_transport_phase_refused');
+need(sameKeys(phase,['schema','invocation_id','gui_path','host','version','signed','generation_manifest_sha256','input_gui_sha256','input_app_lib_sha256','sdk_temp_root','expected_pre_sign','phase','records','prior_pairs'])&&phase.schema==='winsmux-desktop-bundle-phase/v1'&&phase.gui_path===gui&&phase.host==='x86_64-pc-windows-msvc'&&phase.version==='0.38.0'&&phase.signed===signedProfile&&phase.phase==='frozen'&&phase.sdk_temp_root===sdkTemp&&sameKeys(phase.expected_pre_sign,['msi','nsis'])&&phase.expected_pre_sign.msi===null&&phase.expected_pre_sign.nsis===null&&Array.isArray(phase.prior_pairs)&&phase.prior_pairs.length===0&&Array.isArray(phase.records)&&phase.records.length===2&&phase.records[0].flavor==='msi'&&phase.records[1].flavor==='nsis','native_transport_phase_refused');
+const completion=signedProfile?readCompletedSignedBuild({repoRoot:repo,projectOutput:release,sdkTempRoot:sdkTemp}):null;
+let signer=null;
+if(signedProfile){
+ const authority=parseStrictJson(plain(path.join(root,'signed-authority.json')));
+ need(sameKeys(authority,['schema','source_commit','run_id','run_attempt','signer_thumbprint'])&&authority.schema==='winsmux-signed-native-authority/v1'&&authority.source_commit===sourceCommit&&authority.run_id===process.env.GITHUB_RUN_ID&&authority.run_attempt===process.env.GITHUB_RUN_ATTEMPT&&/^[A-F0-9]{40}$/.test(authority.signer_thumbprint),'native_transport_signed_authority_refused');
+ if(mode==='create-signed')need(process.env.GITHUB_EVENT_NAME==='workflow_dispatch'&&process.env.WINSMUX_SIGNED_RELEASE_TAG==='v0.38.0'&&process.env.WINSMUX_RELEASE_SIGNER_THUMBPRINT===authority.signer_thumbprint,'native_transport_signed_caller_refused');
+ signer=authority.signer_thumbprint;
+ need(completion.signed===true&&completion.phase.sha256===digest(phaseBytes),'native_transport_signed_completion_refused');
+}
 const manifestPath=path.join(canonical,'distribution-manifest.json'),manifestBytes=plain(manifestPath),manifest=parseStrictJson(manifestBytes);
 const binding=parseStrictJson(plain(path.join(repo,'distribution/windows-licenses/binding.json')));
 assertCanonicalBundledDistribution({repoRoot:repo,host:phase.host,version:phase.version,rustcCommit:binding.rustc_commit,projectOutput:release});
@@ -4121,23 +4134,25 @@ for(const flavor of ['msi','nsis']) {
 }
 const original=sources.get('pe_gui_original'),marker=Buffer.from('__TAURI_BUNDLE_TYPE_VAR_'),at=original.indexOf(marker);
 need(at>=0&&original.indexOf(marker,at+1)<0&&at+marker.length+3<=original.length&&original.subarray(at+marker.length,at+marker.length+3).toString('ascii')==='UNK'&&digest(original)===phase.input_gui_sha256,'native_transport_original_gui_changed');
-for(const [flavor,tag] of [['msi','MSI'],['nsis','NSS']]){const projected=Buffer.from(original);projected.write(tag,at+marker.length,3,'ascii');need(digest(projected)===phase.records.find(r=>r.flavor===flavor).gui_sha256,'native_transport_gui_projection_changed');}
-need(digest(sources.get('pe_app_lib'))===phase.input_app_lib_sha256,'native_transport_app_library_changed');
+if(!signedProfile)for(const [flavor,tag] of [['msi','MSI'],['nsis','NSS']]){const projected=Buffer.from(original);projected.write(tag,at+marker.length,3,'ascii');need(digest(projected)===phase.records.find(r=>r.flavor===flavor).gui_sha256,'native_transport_gui_projection_changed');}
+else for(const flavor of ['msi','nsis'])need(completion.pairs.find(r=>r.flavor===flavor).gui.sha256===plans[flavor].files.find(r=>r.role==='gui').sha256,'native_transport_signed_gui_row_changed');
+need(digest(sources.get('pe_app_lib'))===(signedProfile?plans.msi.files.find(r=>r.role==='app_lib').sha256:phase.input_app_lib_sha256),'native_transport_app_library_changed');
 for(const role of ['pe_gui_original','pe_app_lib','pe_cli','pe_mcp'])assertWindowsRuntime(sources.get(role),phase.host);
-const receipt={schema:'winsmux-desktop-native-ci-candidate/v1',source_commit:sourceCommit,version:'0.38.0',release_tag:'v0.38.0',host:phase.host,run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,format,build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),files:identities};
+const baseReceipt={schema:'winsmux-desktop-native-ci-candidate/v1',source_commit:sourceCommit,version:'0.38.0',release_tag:'v0.38.0',host:phase.host,run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,format,build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),files:identities};
+const receipt=signedProfile?{...baseReceipt,schema:'winsmux-desktop-native-ci-candidate/v2',profile:'signed-release-preparation',signer_thumbprint:signer,build_completion:{schema:completion.schema,signed:true,invocation_id:completion.invocation_id,phase_sha256:completion.phase.sha256,generation_sha256:completion.generation.sha256,source_pins_sha256:digest(Buffer.from(JSON.stringify([...completion.configs,...completion.canonical_sources]))),pairs:completion.pairs.map(r=>({flavor:r.flavor,gui:r.gui,plan_sha256:r.plan.sha256,include_sha256:r.include.sha256,artifacts:r.artifacts.map(a=>({output:a.output,bytes:a.bytes,sha256:a.sha256}))}))}}:baseReceipt;
 const receiptName='desktop-native-candidate.json',allowed=new Set([...mapping.map(r=>r[1]),receiptName]);
 const checkNamespace=()=>{const names=fs.readdirSync(candidate);need(names.length===allowed.size&&new Set(names.map(x=>x.toLowerCase())).size===names.length&&names.every(x=>allowed.has(x)),'native_transport_candidate_namespace_refused');};
-if(mode==='create') {
+if(mode==='create'||mode==='create-signed') {
  need(fs.readdirSync(candidate).length===0,'native_transport_candidate_not_empty');
  for(const [role,name] of mapping){const b=sources.get(role);fs.writeFileSync(path.join(candidate,name),b,{flag:'wx'});need(plain(path.join(candidate,name)).equals(b),'native_transport_copy_readback_changed');}
  const b=Buffer.from(JSON.stringify(receipt,null,2)+'\n');fs.writeFileSync(path.join(candidate,receiptName),b,{flag:'wx'});need(plain(path.join(candidate,receiptName)).equals(b),'native_transport_receipt_readback_changed');
 }
 checkNamespace();const receiptBytes=plain(path.join(candidate,receiptName));const received=parseStrictJson(receiptBytes);
-need(sameKeys(received,['schema','source_commit','version','release_tag','host','run_id','run_attempt','format','build_phase_sha256','generation_manifest_sha256','files'])&&Array.isArray(received.files)&&received.files.length===9&&received.files.every(r=>sameKeys(r,['role','path','bytes','sha256'])&&Number.isSafeInteger(r.bytes)&&r.bytes>0&&/^[a-f0-9]{64}$/.test(r.sha256))&&Buffer.from(JSON.stringify(receipt,null,2)+'\n').equals(receiptBytes),'native_transport_receipt_refused');
+need(sameKeys(received,Object.keys(receipt))&&Array.isArray(received.files)&&received.files.length===9&&received.files.every(r=>sameKeys(r,['role','path','bytes','sha256'])&&Number.isSafeInteger(r.bytes)&&r.bytes>0&&/^[a-f0-9]{64}$/.test(r.sha256))&&Buffer.from(JSON.stringify(receipt,null,2)+'\n').equals(receiptBytes),'native_transport_receipt_refused');
 for(const [role,name,p] of mapping)need(plain(p).equals(sources.get(role))&&plain(path.join(candidate,name)).equals(sources.get(role)),'native_transport_source_or_copy_changed');
 need(plain(phasePath).equals(phaseBytes)&&plain(manifestPath).equals(manifestBytes),'native_transport_origin_changed');
 for(const [p,id] of originDirectoryIds)need(directory(p)===id,'native_transport_directory_replaced');
-console.log(JSON.stringify({schema:'winsmux-desktop-native-transport-check/v1',mode,source_commit:sourceCommit,format,files:9,receipt_sha256:digest(receiptBytes),build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),runtime_pe_count:4}));
+console.log(JSON.stringify({schema:'winsmux-desktop-native-transport-check/v1',mode,source_commit:sourceCommit,format,files:9,receipt_sha256:digest(receiptBytes),build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),runtime_pe_count:4,...(signedProfile?{profile:'signed-release-preparation',signer_thumbprint:signer}:{})}));
 '@
 }
 
@@ -4721,6 +4736,11 @@ function Assert-DesktopNativeInstalledPayload {
         Assert-Condition (Test-PathInsideRoot -Path $path -Root $Root) 'desktop_native_installed_path_refused'
         $actual = [WinsmuxDesktopNativeActor]::NativeFile($path)
         Assert-Condition ($actual['bytes'] -eq $row.bytes -and $actual['sha256'] -ceq $row.sha256) 'desktop_native_installed_payload_mismatch'
+        if ((Get-DesktopNativeCandidateProfile) -ceq 'signed-release-preparation' -and $row.role -cne 'license') {
+            $signature = Get-AuthenticodeSignature -LiteralPath $path
+            Assert-Condition ($signature.Status -eq 'Valid' -and $null -ne $signature.SignerCertificate -and $signature.SignerCertificate.Thumbprint -ceq $script:DesktopNativeExpectedSigner) 'desktop_native_installed_signer_mismatch'
+            Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($path)['sha256'] -ceq $row.sha256) 'desktop_native_signed_payload_changed'
+        }
     }
     $planPath = Join-Path $Root 'winsmux.install-plan.json'
     Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($planPath)['sha256'] -ceq $PlanSha256) 'desktop_native_installed_plan_mismatch'
@@ -4953,18 +4973,30 @@ function Invoke-DesktopNativeOwnedEntry {
     }
 }
 
+function Get-DesktopNativeCandidateProfile {
+    $receipt = Read-DesktopStrictJson (Join-Path $DesktopNativeCandidateDirectory 'desktop-native-candidate.json')
+    if ($receipt.schema -ceq 'winsmux-desktop-native-ci-candidate/v1') { return 'unsigned-native' }
+    Assert-DesktopInventoryShape $receipt @('schema','source_commit','version','release_tag','host','run_id','run_attempt','format','build_phase_sha256','generation_manifest_sha256','files','profile','signer_thumbprint','build_completion')
+    Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-native-ci-candidate/v2' -and $receipt.profile -ceq 'signed-release-preparation' -and $receipt.source_commit -ceq $DesktopNativeSourceCommit -and $receipt.format -ceq $DesktopNativeFormat -and $receipt.signer_thumbprint -cmatch '^[A-F0-9]{40}$') 'desktop_native_profile_refused'
+    $script:DesktopNativeExpectedSigner = [string]$receipt.signer_thumbprint
+    return 'signed-release-preparation'
+}
+
 function Invoke-DesktopNativeTransportCheck {
     param([Parameter(Mandatory)][string]$NodeImage, [switch]$NsisJourney)
-    $result = Invoke-DesktopOwnedNativeProcess -FilePath $NodeImage -ArgumentList @('--input-type=module', '--eval', (Get-DesktopNativeTransportModule), 'verify', $DesktopNativeSourceCommit, $DesktopNativeFormat, $script:RepositoryRoot) -Environment @{} -TimeoutSeconds 180 -NsisJourney:$NsisJourney
+    $mode = if ((Get-DesktopNativeCandidateProfile) -ceq 'signed-release-preparation') { 'verify-signed' } else { 'verify' }
+    $result = Invoke-DesktopOwnedNativeProcess -FilePath $NodeImage -ArgumentList @('--input-type=module', '--eval', (Get-DesktopNativeTransportModule), $mode, $DesktopNativeSourceCommit, $DesktopNativeFormat, $script:RepositoryRoot) -Environment @{} -TimeoutSeconds 180 -NsisJourney:$NsisJourney
     Assert-Condition ($result.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace($result.stderr) -and -not $result.stdout_metadata.truncated) 'desktop_native_transport_refused'
     $receipt = ConvertFrom-DesktopStrictJsonText $result.Stdout
-    Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-native-transport-check/v1' -and $receipt.mode -ceq 'verify' -and $receipt.source_commit -ceq $DesktopNativeSourceCommit -and $receipt.format -ceq $DesktopNativeFormat -and $receipt.files -eq 9 -and $receipt.runtime_pe_count -eq 4) 'desktop_native_transport_result_refused'
+    Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-native-transport-check/v1' -and $receipt.mode -ceq $mode -and $receipt.source_commit -ceq $DesktopNativeSourceCommit -and $receipt.format -ceq $DesktopNativeFormat -and $receipt.files -eq 9 -and $receipt.runtime_pe_count -eq 4) 'desktop_native_transport_result_refused'
     return $receipt
 }
 
 
 function Get-DesktopNativeInputRoot {
-    $expected = Join-Path ([IO.Path]::GetFullPath($env:RUNNER_TEMP)) ('winsmux-native-input-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit + '.' + $DesktopNativeFormat)
+    $profile = Get-DesktopNativeCandidateProfile
+    $name = if ($profile -ceq 'signed-release-preparation') { 'wsn-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeFormat } else { 'winsmux-native-input-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $DesktopNativeSourceCommit + '.' + $DesktopNativeFormat }
+    $expected = Join-Path ([IO.Path]::GetFullPath($env:RUNNER_TEMP)) $name
     Assert-Condition ([string]$env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and $env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'desktop_native_runner_refused'
     Assert-Condition ([IO.Path]::GetFullPath($DesktopNativeCandidateDirectory) -ceq (Join-Path $expected 'candidate') -and [IO.Path]::GetFullPath($DesktopNativeBaselineDirectory) -ceq (Join-Path $expected 'baseline')) 'desktop_native_artifact_namespace_refused'
     [void][WinsmuxDesktopNativeActor]::NativeDirectory($expected, $false)

@@ -13,7 +13,7 @@ export const integratedContractSources = Object.freeze({
   }),
   execution_acceptance: Object.freeze({
     path: '.references/operator-plans/release-v0380-20260907/EXECUTION-ACCEPTANCE.md',
-    sha256: '8d960f04bf37ac62a63c7e14f2b06ab1b5c57783d94507b136c709eadaba7dab',
+    sha256: 'd7cd1a9aa77fc89b1fa7152be7c3027758a4d6fd629273c6d25d828ff7054a89',
   }),
   goal: Object.freeze({
     path: '.references/operator-plans/release-v0380-20260907/GOAL.md',
@@ -34,7 +34,9 @@ const requiredGoalSections = Object.freeze([
 ]);
 
 function readSource(root, source) {
-  const file = physicalPath(path.join(root, source.path));
+  const canonical = path.join(root, source.path);
+  // The parent may use its immutable same-byte policy snapshot. Progress logs are not policy inputs.
+  const file = physicalPath(fs.existsSync(canonical) ? canonical : path.join(root, path.basename(source.path)));
   const before = fs.lstatSync(file, { bigint: true });
   requireValue(before.isFile() && before.nlink === 1n, 'Contract source must be a plain single-link file.');
   const bytes = fs.readFileSync(file);
@@ -51,6 +53,78 @@ function freeze(value) {
     Object.freeze(value);
   }
   return value;
+}
+
+
+const normativeSections = Object.freeze([
+  {
+    "heading": "2026-10-07 検証義務の見直しとTASK-876の実行範囲",
+    "sha256": "56988c3208a21f33501de00427774ba5d547148813f32157962b3f6516175161"
+  },
+  {
+    "heading": "2026-09-25 実操作E2Eの実施時期",
+    "sha256": "200b7fa8251a3456fbd62702fef3547f2beef7dff90891169e43c1ee4c4a1673"
+  },
+  {
+    "heading": "2026-10-14 利用者指定: Narrator音声読み上げ機能の除去",
+    "sha256": "4454bea771cd4e14cf517de9d2576b82c0e7246c6afc93a82a124b71c69cb233"
+  },
+  {
+    "heading": "2026-10-14 リリース優先と有効な証拠の再利用",
+    "sha256": "f57764cbdc5a0b0e0dfe4a256e5892e57394638d7b638099d3cdc9a2f0bd0a8b"
+  },
+  {
+    "heading": "2026-10-15 Linux補助プログラムの検証範囲",
+    "sha256": "f39e8987bfcb41466e5955faed69d15c2e6caba2d5db26fbf81d179530a2827c"
+  },
+  {
+    "heading": "2026-10-16 同一backend検査の重複統合",
+    "sha256": "5fc21c250dab494c79f541bdc496d820ce1e407c0940aecce7a7bbcb0d104a40"
+  },
+  {
+    "heading": "2026-10-14 TASK-880: PowerShell／npm更新責任の確定",
+    "sha256": "d67c7a1327f04ac20bc28d83250c5a0c8831e746234e10aeaf9082c242f66d1e"
+  },
+  {
+    "heading": "2026-10-14 TASK-883: 三入口計測の残る実行範囲",
+    "sha256": "89f48817ca73a3a0bd4c0d7a0c8ebb7ef812ffd605c2c717026b9a9847de907d"
+  }
+]);
+function effectivePolicy(obligations, taskContracts, acceptance, sources) {
+  const lines = acceptance.split(/\r?\n/u);
+  for (const section of normativeSections) {
+    const start = lines.indexOf('## ' + section.heading); requireValue(start >= 0, 'Effective policy section missing.');
+    let end = start + 1; while (end < lines.length && !/^#{1,2} /u.test(lines[end])) end++;
+    requireValue(sha(Buffer.from(lines.slice(start + 1, end).join('\n'))) === section.sha256, 'Normative policy changed; refreeze required.');
+  }
+  const mappings = obligations.map(row => {
+    const manual = row.kind === 'manual_windows' || row.kind === 'manual_windows_predicate';
+    const applicable = !manual || manualTasks.has(Number(row.task.slice(5)));
+    const removed = /Narrator|読み上げ/u.test(row.text) ? ['Narrator/音声読み上げだけを製品範囲から除外; 他の入力・focus・contrast・拡大は維持'] : [];
+    const reason = !applicable ? 'B/Cのタスク内手動操作を明示適用外; Bの現物ユーザー入口は876/885で逆照合、必要なprogrammatic E2Eは保持。'
+      : removed.length ? '最新の直接指定でNarrator専用条件だけ除外し、同じ原義務内の他の保証を維持。'
+      : '元成果を保持。変更保証に対応する実結果が必要。同じ入力・依存・契約・環境の有効な成功は再利用でき、失敗/未実行は変換しない。';
+    const handling = !applicable ? 'explicit_inapplicable' : row.kind === 'automated' || row.kind === 'automated_predicate' ? 'reuse' : 'maintain';
+    const references = [normativeSections[0], normativeSections[1], ...(removed.length ? [normativeSections[2]] : []), ...(row.task === 'TASK-882' ? [normativeSections[4]] : [])];
+    return { original_id: row.id, task: row.task, original_text: row.text, original_content_sha256: row.content_sha256,
+      original_verdict: taskContracts[row.task]?.original_status ?? 'stage_not_run', handling, applicable,
+      removed_clauses: removed, reason, source_sections: references.map(s => ({source:'execution_acceptance', ...s})),
+      target_equivalence_required: handling === 'reuse', evidence_result: 'unobserved' };
+  });
+  // Exact duplicate requirements within the same owner/kind/stage may share one proof.
+  // Cross-task guarantees are never merged merely because their predicates use the same words.
+  const first = new Map();
+  for (let i=0;i<obligations.length;i++) {
+    const row=obligations[i],map=mappings[i],key=JSON.stringify([row.task,row.kind,row.stage,row.text]);
+    if (!map.applicable) continue;
+    if(first.has(key)){map.handling='duplicate_combine';map.duplicate_of=first.get(key);map.reason='同一TASK/責任/段階/全文の重複だけを統合し、原IDと原結果を保持。';}
+    else first.set(key,row.id);
+  }
+  return { schema:'winsmux-effective-integrated-publication-policy/v1', source_hashes:sources,
+    normative_sections:normativeSections, task_responsibilities:Object.entries(taskContracts).map(([task,c])=>({task,
+      original_task_sha256:c.original_task_sha256,original_status:c.original_status,original_verification:c.original_verification,
+      original_ids:obligations.filter(r=>r.task===task).map(r=>r.id)})), mappings,
+    no_failure_or_not_run_promoted:true, progress_log_creates_obligations:false, publication_admitted:false };
 }
 
 /** Derive the full obligation inventory from pinned originals. No caller subset,
@@ -74,7 +148,7 @@ export function readIntegratedPublicationContract(operatorRoot) {
   const add = (task, source, selector, kind, stage, value) => {
     requireValue(typeof value === 'string' && value.trim().length > 0, 'Nonempty source obligation required.');
     const identity = { task, source, selector, kind, stage, content_sha256: sha(Buffer.from(value)) };
-    obligations.push({ id: sha(Buffer.from(JSON.stringify(identity))), ...identity });
+    obligations.push({ id: sha(Buffer.from(JSON.stringify(identity))), ...identity, text: value });
   };
   const tasks = new Set();
   plan.new_tasks.forEach((task, taskIndex) => {
@@ -90,6 +164,7 @@ export function readIntegratedPublicationContract(operatorRoot) {
     const verification = task.verification;
     requireValue(verification?.automated && verification.e2e && verification.windows_action, 'Original verification contract required.');
     taskContracts[task.id] = {
+      original_status: task.status, original_verification: structuredClone(verification), original_task_sha256: sha(Buffer.from(JSON.stringify(task))),
       depends_on: task.depends_on, requirements: task.requirements,
       completion_contract: task.completion_contract,
       public_release_requires: task.public_release_requires,
@@ -118,7 +193,7 @@ export function readIntegratedPublicationContract(operatorRoot) {
       verification.e2e.steps.forEach((value, index) => row(`/verification/e2e/steps/${index}`, 'programmatic_e2e', value));
       row('/verification/e2e/pass_predicate', 'programmatic_e2e_predicate', verification.e2e.pass_predicate);
     }
-    if (manualTasks.has(number)) {
+    if (verification.windows_action.required) {
       requireValue(Array.isArray(verification.windows_action.procedure) && verification.windows_action.procedure.length > 0,
         'Required real Windows procedure missing.');
       if (number === 885) requireValue(verification.windows_action.procedure.length === 2
@@ -190,13 +265,18 @@ export function readIntegratedPublicationContract(operatorRoot) {
   }
   globalContract.goal_condition_sha256 = obligations.filter(row => row.kind === 'goal_condition')
     .map(row => ({ selector: row.selector, content_sha256: row.content_sha256 }));
+  const sources = Object.fromEntries(Object.entries(integratedContractSources).map(([name, source]) => [name, source.sha256]));
+  const effective = effectivePolicy(obligations, taskContracts, acceptance, sources);
+  const requiredIds = new Set(effective.mappings.filter(row => row.applicable && row.handling !== "duplicate_combine").map(row => row.original_id));
+  const requiredObligations = obligations.filter(row => requiredIds.has(row.id));
   const contract = {
     schema: 'winsmux-integrated-publication-contract/v1',
     sources: Object.fromEntries(Object.entries(integratedContractSources).map(([name, source]) => [name, source.sha256])),
-    tasks: [...tasks].sort(), stages: [...stages], obligations,
+    tasks: [...tasks].sort(), stages: [...stages], original_obligations: obligations, obligations: requiredObligations,
+    effective_policy: effective, effective_policy_sha256: sha(Buffer.from(JSON.stringify(effective))),
     task_contracts: taskContracts, workflow_contract: workflowContract, global_contract: globalContract,
-    inventory_sha256: sha(Buffer.from(JSON.stringify(obligations))),
-    controls_sha256: sha(Buffer.from(JSON.stringify({ taskContracts, workflowContract, globalContract }))),
+    inventory_sha256: sha(Buffer.from(JSON.stringify(requiredObligations))),
+    controls_sha256: sha(Buffer.from(JSON.stringify({ taskContracts, workflowContract, globalContract, effective }))),
     publication_admitted: false,
   };
   freeze(contract);

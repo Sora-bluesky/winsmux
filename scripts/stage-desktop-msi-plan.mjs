@@ -402,6 +402,12 @@ function checkedInventory(options, readOutput = plain) {
   if (dlls.length) readOutput(path.join(options.projectOutput, dlls[0]));
 }
 function parentTemp(options) {
+  const completed = completedReadOptions.get(options);
+  if (completed !== undefined) {
+    requireValue(completed === localPath(path.join(path.dirname(path.dirname(options.projectOutput)), 'sdk-temp'))
+      && fs.lstatSync(completed).isDirectory(), 'Signed completion SDK root differs.');
+    return completed;
+  }
   const values = [os.tmpdir()];
   for (const [key, value] of Object.entries(process.env)) if (['TEMP', 'TMP'].includes(key.toUpperCase())) {
     requireValue(typeof value === 'string' && value.length > 0, 'Empty SDK temporary root.'); values.push(value);
@@ -600,6 +606,51 @@ export function beginDesktopBundle(options) {
   } catch (error) { state.phase = 'failed'; try { publishState(gui, state); } catch { /* Preserve incomplete state. */ } throw error; }
   return { status: 'desktop_bundle_admitted', input_gui_sha256: state.input_gui_sha256, compiler_launched: false };
 }
+const completedReadOptions = new WeakMap();
+/** Observe one fully sealed signed MSI+NSIS invocation. No compiler, signer,
+ * subprocess, phase publication or certificate operation is performed here. */
+export function readCompletedSignedBuild(request) {
+  requireValue(exact(request, ['repoRoot', 'projectOutput', 'sdkTempRoot']), 'Exact signed completion inputs required.');
+  const repo = localPath(request.repoRoot), output = localPath(request.projectOutput), temp = localPath(request.sdkTempRoot);
+  requireValue(path.basename(output) === 'release' && path.basename(path.dirname(output)) === 'build'
+    && temp === localPath(path.join(path.dirname(path.dirname(output)), 'sdk-temp')), 'Signed completion layout differs.');
+  const source = localPath(path.join(repo, 'winsmux-app/src-tauri')), gui = localPath(path.join(output, 'winsmux-app.exe'));
+  const binding = parseStrictJson(plain(path.join(repo, 'distribution/windows-licenses/binding.json')));
+  const options = { repoRoot: repo, srcTauri: source, guiPath: gui, host: host64, version: '0.38.0',
+    rustcCommit: binding.rustc_commit, projectOutput: output, signed: true };
+  const phaseFile = phasePath(gui), phaseBytes = plain(phaseFile), state = checkedPhase(phaseBytes, gui);
+  requireValue(state.signed === true && state.phase === 'frozen' && state.version === options.version
+    && state.host === options.host && state.sdk_temp_root === temp && state.prior_pairs.length === 0
+    && state.records.map(row => row.flavor).join(',') === 'msi,nsis'
+    && state.records.every(row => sealed(gui, state, row))
+    && state.expected_pre_sign.msi === null && state.expected_pre_sign.nsis === null, 'Signed build is incomplete.');
+  const ciPath = path.join(source, 'tauri.ci.conf.json'), ciBytes = plain(ciPath), ci = parseStrictJson(ciBytes);
+  requireValue(ci.build?.beforeBundleCommand === 'node ./src-tauri/scripts/check-bundled-distribution.mjs --signed-companions'
+    && ci.bundle?.createUpdaterArtifacts === true && ci.bundle.windows?.signCommand?.cmd === 'node'
+    && JSON.stringify(ci.bundle.windows.signCommand.args) === JSON.stringify(['../../scripts/stage-desktop-msi-plan.mjs', '--sign-asset', '%1', '--signed']), 'Signed build configuration differs.');
+  completedReadOptions.set(options, temp);
+  const pin = file => { const bytes = plain(file); return { path: file, bytes: bytes.length, sha256: digest(bytes) }; };
+  try {
+    canonicalGuard(options, state); fullGuard(options, state);
+    const pairs = state.records.map(row => {
+      const check = verifiedPair(options, row);
+      return { flavor: row.flavor, plan: pin(check.pair.planPath), include: pin(check.pair.includePath),
+        gui: { ...check.plan.files.find(item => item.role === 'gui') },
+        artifacts: row.artifacts.map(item => ({ output: item.output, ...pin(artifactPaths(gui, state.version, row.flavor).get(item.output)) })) };
+    });
+    const result = { schema: 'winsmux-desktop-completed-signed-build/v1', signed: true, host: state.host, version: state.version,
+      invocation_id: state.invocation_id, sdk_temp_root: temp, phase: pin(phaseFile), generation: pin(path.join(source, 'binaries/distribution-manifest.json')),
+      configs: ['tauri.conf.json', 'tauri.ci.conf.json', 'Cargo.toml'].map(name => pin(path.join(source, name))),
+      original_gui: pin(gui), app_lib: pin(path.join(output, 'winsmux_app_lib.dll')), pairs,
+      canonical_sources: canonicalRows(options).map(row => pin(row.source)) };
+    fullGuard(options, state);
+    for (const item of [result.phase, result.generation, result.original_gui, result.app_lib, ...result.configs, ...result.canonical_sources,
+      ...pairs.flatMap(row => [row.plan, row.include, ...row.artifacts])]) identityMatches(item.path, item);
+    requireValue(plain(phaseFile).equals(phaseBytes) && plain(ciPath).equals(ciBytes), 'Signed completion changed during observation.');
+    return Object.freeze(result);
+  } finally { completedReadOptions.delete(options); }
+}
+
 function callbackOptions(repo, env) {
   const verified = readDesktopDistributionVersion(repo, env);
   const rustc = spawnSync('rustc', ['-Vv'], { cwd: repo, env, encoding: 'utf8', windowsHide: true });

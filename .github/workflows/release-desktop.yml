@@ -17,11 +17,120 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  signed_baseline:
+    permissions:
+      contents: read
+    if: github.repository == 'Sora-bluesky/winsmux' && github.event_name == 'workflow_dispatch' && inputs.release_tag == 'v0.38.0'
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [ja-root]
+    steps:
+      - name: Bind caller and candidate revision
+        shell: pwsh
+        env:
+          CANDIDATE_REF: ${{ inputs.candidate_ref || github.sha }}
+          CALLER_REF: ${{ github.sha }}
+        run: |
+          $candidate = [string]$env:CANDIDATE_REF
+          if ($candidate -cnotmatch '^[a-f0-9]{40}$' -or $candidate -cne $env:CALLER_REF) {
+            throw 'Native lifecycle requires the same full caller and candidate commit SHA.'
+          }
+
+      - uses: actions/checkout@v6
+        with:
+          ref: 0eaed56da31826b48fc153293c9407ec49547c91
+          persist-credentials: false
+
+      - name: Download the fixed unpublished baseline
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input'
+          if (Test-Path -LiteralPath $inputRoot) { throw 'Baseline input root already exists.' }
+          New-Item -ItemType Directory -Path $inputRoot | Out-Null
+          $inputFile = Join-Path $inputRoot 'winsmux_0.38.0_x64-setup.exe'
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream' }
+          Invoke-WebRequest -Uri 'https://api.github.com/repos/Sora-bluesky/winsmux/releases/assets/639538953' -Headers $headers -OutFile $inputFile
+          $hash = (Get-FileHash -LiteralPath $inputFile -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Item -LiteralPath $inputFile).Length -ne 9920209 -or $hash -ne 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2') {
+            throw 'Downloaded baseline identity mismatch; no installer was launched.'
+          }
+
+      - name: Install and capture actual owned members
+        shell: pwsh
+        run: |
+          $inputFile = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input/winsmux_0.38.0_x64-setup.exe'
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-evidence-${{ matrix.profile }}'
+          $captureScript = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE 'scripts/capture-desktop-baseline.ps1'))
+          $ownerSource = Join-Path $env:GITHUB_WORKSPACE 'scripts/DesktopProcessOwner.cs'
+          if ((Get-FileHash -LiteralPath $captureScript -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'a4223bd1fde0c6c35f1d136ae933f09b3deffb9f6076bee43f572c483f1505b6' -or (Get-FileHash -LiteralPath $ownerSource -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'b2ec09ebdbc9557e9a09c052186478ce1d71af95d194f88f3c5152bd5324e936') { throw 'Fixed capture or owned process source mismatch.' }
+          Add-Type -Path $ownerSource
+          $pwsh = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+          $arguments = [string[]]@('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $captureScript, '-Installer', $inputFile, '-ProfileName', '${{ matrix.profile }}', '-OutputDirectory', $evidenceRoot)
+          $owner = [Winsmux.DesktopNative.DesktopProcessOwner]::Start($pwsh, $arguments, @{}, $false, 16384, 180000)
+          try {
+            if (-not $owner.WaitTerminal(180000, 500)) {
+              $owner.ForceFailureCleanup(180000, 500)
+              throw 'Owned baseline capture timed out; original receipt remains preserved.'
+            }
+            if ($owner.ExitCode -ne 0) { throw 'Owned baseline capture failed; original receipt remains preserved.' }
+          } finally {
+            if (-not $owner.HasExited -or $owner.ActiveMembers -ne 0) { $owner.ForceFailureCleanup(180000, 500) }
+            if ($owner.HasExited -and $owner.ActiveMembers -eq 0 -and $owner.CaptureCompleted) { $owner.Dispose() }
+          }
+
+      - name: Stage only the two fixed baseline artifact members
+        if: always()
+        shell: pwsh
+        run: |
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'winsmux-baseline-artifact-ja-root'
+          if (Test-Path -LiteralPath $artifactRoot) { throw 'Baseline artifact namespace already exists.' }
+          New-Item -ItemType Directory -Path $artifactRoot | Out-Null
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'winsmux-baseline-input/winsmux_0.38.0_x64-setup.exe') -Destination (Join-Path $artifactRoot 'winsmux_0.38.0_x64-setup.exe')
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'winsmux-baseline-evidence-ja-root/capture.json') -Destination (Join-Path $artifactRoot 'capture.json')
+
+      - name: Preserve the bounded capture receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-baseline-${{ matrix.profile }}-${{ github.sha }}
+          path: ${{ runner.temp }}/winsmux-baseline-artifact-ja-root/
+          if-no-files-found: error
+
+
   build:
-    runs-on: windows-latest
+    needs: [signed_baseline]
+    if: always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))
+    runs-on: ${{ (github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0') && 'windows-2025' || 'windows-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
+
+      - name: Bind the fixed signed preparation source and short build namespace
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -cne 'workflow_dispatch' -or '${{ inputs.release_tag }}' -cne 'v0.38.0' -or $env:GITHUB_REPOSITORY -cne 'Sora-bluesky/winsmux') { throw 'Signed preparation caller refused.' }
+          $source = (& git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $source -cne $env:GITHUB_SHA -or (Get-Content -LiteralPath VERSION -Raw).Trim() -cne '0.38.0') { throw 'Signed preparation source differs.' }
+          $buildRoot = Join-Path $env:RUNNER_TEMP ('wsb-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $buildRoot) { throw 'Signed build namespace already exists.' }
+          New-Item -ItemType Directory -Path $buildRoot | Out-Null
+          foreach ($name in @('sdk-temp','build')) { New-Item -ItemType Directory -Path (Join-Path $buildRoot $name) | Out-Null }
+          foreach ($format in @('NSIS','MSI')) {
+            $nativeRoot = Join-Path $env:RUNNER_TEMP ('wsn-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.' + $format)
+            if (Test-Path -LiteralPath $nativeRoot) { throw 'Signed native namespace already exists.' }
+            New-Item -ItemType Directory -Path $nativeRoot | Out-Null
+            foreach ($name in @('candidate','baseline')) { New-Item -ItemType Directory -Path (Join-Path $nativeRoot $name) | Out-Null }
+          }
+          'TEMP=' + (Join-Path $buildRoot 'sdk-temp') | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          'TMP=' + (Join-Path $buildRoot 'sdk-temp') | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
+          'CARGO_TARGET_DIR=' + (Join-Path $buildRoot 'build') | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
 
       - name: Fetch immutable v0.36.38 Desktop contract source
         shell: pwsh
@@ -89,6 +198,7 @@ jobs:
           # not only trust.
           $pfxPassword = ConvertTo-SecureString $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
           $imported = Import-PfxCertificate -FilePath $certPath -CertStoreLocation Cert:\LocalMachine\My -Password $pfxPassword
+          'WINSMUX_RELEASE_SIGNER_THUMBPRINT=' + $imported.Thumbprint.ToUpperInvariant() | Add-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
           $publicCertPath = Join-Path $env:RUNNER_TEMP "winsmux-signing.cer"
           Export-Certificate -Cert $imported -FilePath $publicCertPath | Out-Null
           Import-Certificate -FilePath $publicCertPath -CertStoreLocation Cert:\LocalMachine\Root | Out-Null
@@ -119,12 +229,14 @@ jobs:
         if: github.event_name == 'push' || inputs.release_tag != ''
         shell: pwsh
         run: |
+          $isIntegratedV038 = '${{ github.ref_name }}' -eq 'v0.38.0' -or '${{ inputs.release_tag }}' -eq 'v0.38.0'
+          $releaseRoot = if ($isIntegratedV038) { Join-Path $env:CARGO_TARGET_DIR 'release' } else { 'target/release' }
           $tagName = if ('${{ github.event_name }}' -eq 'push') { '${{ github.ref_name }}' } else { '${{ inputs.release_tag }}' }
           if ([string]::IsNullOrWhiteSpace($tagName)) {
             throw "A release tag is required to generate latest.json"
           }
           $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
-          $setup = Get-ChildItem -LiteralPath target/release/bundle/nsis -Filter "winsmux_${version}_x64-setup.exe" -File | Select-Object -First 1
+          $setup = Get-ChildItem -LiteralPath (Join-Path $releaseRoot 'bundle/nsis') -Filter "winsmux_${version}_x64-setup.exe" -File | Select-Object -First 1
           if ($null -eq $setup) {
             throw "Unable to locate signed NSIS setup executable for latest.json"
           }
@@ -148,16 +260,23 @@ jobs:
               }
             }
           }
-          $latest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath target/release/bundle/latest.json -Encoding UTF8
+          $latest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $releaseRoot 'bundle/latest.json') -Encoding UTF8
 
       - name: Collect desktop release assets
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path output/desktop-release | Out-Null
-          Copy-Item target/release/bundle/msi/*.msi output/desktop-release/
-          Copy-Item target/release/bundle/nsis/*.exe output/desktop-release/
-          Copy-Item target/release/bundle/nsis/*.sig output/desktop-release/ -ErrorAction SilentlyContinue
-          Copy-Item target/release/bundle/latest.json output/desktop-release/ -ErrorAction SilentlyContinue
+          $isIntegratedV038 = '${{ github.ref_name }}' -eq 'v0.38.0' -or '${{ inputs.release_tag }}' -eq 'v0.38.0'
+          $releaseRoot = if ($isIntegratedV038) { Join-Path $env:CARGO_TARGET_DIR 'release' } else { 'target/release' }
+          if ($isIntegratedV038) {
+            $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
+            Copy-Item -LiteralPath (Join-Path $releaseRoot "bundle/msi/winsmux_${version}_x64_en-US.msi") output/desktop-release/
+          } else {
+            Copy-Item (Join-Path $releaseRoot 'bundle/msi/*.msi') output/desktop-release/
+          }
+          Copy-Item (Join-Path $releaseRoot 'bundle/nsis/*.exe') output/desktop-release/
+          Copy-Item (Join-Path $releaseRoot 'bundle/nsis/*.sig') output/desktop-release/ -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $releaseRoot 'bundle/latest.json') output/desktop-release/ -ErrorAction SilentlyContinue
           $isReleaseUpload = '${{ github.event_name }}' -eq 'push' -or '${{ inputs.release_tag }}' -ne ''
           $version = (Get-Content -LiteralPath VERSION -Raw).Trim()
           $requiredAssets = @(
@@ -182,12 +301,22 @@ jobs:
             throw "Required signed updater metadata was not collected. Expected at least one .sig file next to the desktop release assets."
           }
           Push-Location output/desktop-release
-          Get-ChildItem -File |
-            Sort-Object Name |
-            ForEach-Object {
-              $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLowerInvariant()
-              "$hash  $($_.Name)"
-            } | Set-Content -Encoding ascii SHA256SUMS-desktop
+          if ($isIntegratedV038) {
+            [string[]]$checksumNames = @('latest.json','winsmux_0.38.0_x64-setup.exe','winsmux_0.38.0_x64-setup.exe.sig','winsmux_0.38.0_x64-setup.inventory.json','winsmux_0.38.0_x64_en-US.msi')
+            [Array]::Sort($checksumNames, [StringComparer]::Ordinal)
+            $checksumLines = @($checksumNames | ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()
+              "$hash  $_"
+            })
+            [IO.File]::WriteAllText((Join-Path (Get-Location).Path 'SHA256SUMS-desktop'), (($checksumLines -join "`n") + "`n"), [Text.UTF8Encoding]::new($false))
+          } else {
+            Get-ChildItem -File |
+              Sort-Object Name |
+              ForEach-Object {
+                $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLowerInvariant()
+                "$hash  $($_.Name)"
+              } | Set-Content -Encoding ascii SHA256SUMS-desktop
+          }
           Pop-Location
 
       - name: Verify desktop installer signatures
@@ -198,10 +327,109 @@ jobs:
             Where-Object { $_.Extension -in @('.exe', '.msi') }
           foreach ($asset in $assets) {
             $signature = Get-AuthenticodeSignature -LiteralPath $asset.FullName
-            if ($signature.Status -ne 'Valid') {
+            if ($signature.Status -ne 'Valid' -or (('${{ github.ref_name }}' -eq 'v0.38.0' -or '${{ inputs.release_tag }}' -eq 'v0.38.0') -and $signature.SignerCertificate.Thumbprint -cne $env:WINSMUX_RELEASE_SIGNER_THUMBPRINT)) {
               throw "Desktop release asset '$($asset.Name)' is not Authenticode signed with a valid signature. Status: $($signature.Status)"
             }
           }
+
+      - name: Bind public six and same-job signed native C10 before Windows verification
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        shell: pwsh
+        env:
+          WINSMUX_SIGNED_RELEASE_TAG: v0.38.0
+        run: |
+          $expected = @('SHA256SUMS-desktop','latest.json','winsmux_0.38.0_x64-setup.exe','winsmux_0.38.0_x64-setup.exe.sig','winsmux_0.38.0_x64-setup.inventory.json','winsmux_0.38.0_x64_en-US.msi')
+          $actual = @(Get-ChildItem -LiteralPath output/desktop-release -Force | Select-Object -ExpandProperty Name | Sort-Object -CaseSensitive)
+          if (($actual -join '|') -cne (($expected | Sort-Object -CaseSensitive) -join '|')) { throw 'Signed Desktop namespace is not the public closed six.' }
+          $public = @($expected | ForEach-Object { $file = Get-Item -LiteralPath (Join-Path 'output/desktop-release' $_); @{path=$_.ToString();bytes=$file.Length;sha256=(Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()} })
+          $beforeFile = Join-Path $env:RUNNER_TEMP ('winsmux-signed-public-before-' + $env:GITHUB_RUN_ID + '.' + $env:GITHUB_RUN_ATTEMPT + '.json')
+          [IO.File]::WriteAllText($beforeFile, ($public | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+          $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE 'scripts/test-public-release.ps1'),[ref]$tokens,[ref]$errors)
+          if (@($errors).Count -ne 0) { throw 'Signed native source parse refused.' }
+          $functions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-DesktopNativeTransportModule'},$false))
+          if ($functions.Count -ne 1) { throw 'Signed native transport definition refused.' }
+          . ([scriptblock]::Create($functions[0].Extent.Text));$module=Get-DesktopNativeTransportModule
+          foreach ($format in @('NSIS','MSI')) {
+            $root=Join-Path $env:RUNNER_TEMP ('wsn-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$format)
+            $authority=@{schema='winsmux-signed-native-authority/v1';source_commit=$env:GITHUB_SHA;run_id=$env:GITHUB_RUN_ID;run_attempt=$env:GITHUB_RUN_ATTEMPT;signer_thumbprint=$env:WINSMUX_RELEASE_SIGNER_THUMBPRINT}
+            $authorityFile=Join-Path $root 'signed-authority.json';if(Test-Path -LiteralPath $authorityFile){throw 'Signed authority already exists.'}
+            [IO.File]::WriteAllText($authorityFile,($authority | ConvertTo-Json -Compress),[Text.UTF8Encoding]::new($false))
+            & node --input-type=module --eval $module create-signed $env:GITHUB_SHA $format $env:GITHUB_WORKSPACE
+            if ($LASTEXITCODE -ne 0) { throw 'Signed native C10 publication refused.' }
+            foreach ($name in @('winsmux_0.38.0_x64-setup.exe','winsmux_0.38.0_x64_en-US.msi')) {
+              if ((Get-FileHash -LiteralPath (Join-Path 'output/desktop-release' $name) -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath (Join-Path (Join-Path $root 'candidate') $name) -Algorithm SHA256).Hash) { throw 'Public and signed C10 containers differ.' }
+            }
+          }
+      - name: Preserve same-job signed native C10
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-native-C10-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux_0.38.0_x64_en-US.msi
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux_0.38.0_x64_ja-JP.msi
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux_0.38.0_x64-setup.exe
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux-msi-plan.json
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux-nsis-plan.json
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux-app.exe
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux_app_lib.dll
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux.exe
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/winsmux-workspace-mcp.exe
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/candidate/desktop-native-candidate.json
+          if-no-files-found: error
+      - name: Obtain same-run immutable baseline
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        uses: actions/download-artifact@v8
+        with:
+          name: desktop-baseline-ja-root-${{ github.sha }}
+          path: ${{ runner.temp }}/signed-baseline
+      - name: Obtain only the approved baseline capture source
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        uses: actions/checkout@v6
+        with:
+          ref: 0eaed56da31826b48fc153293c9407ec49547c91
+          path: .native-baseline-source
+          persist-credentials: false
+      - name: Execute same-signed-byte finite NSIS and MSI journeys
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        shell: pwsh
+        run: |
+          foreach ($format in @('NSIS','MSI')) {
+            $root=Join-Path $env:RUNNER_TEMP ('wsn-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$format)
+            foreach ($name in @('capture.json','winsmux_0.38.0_x64-setup.exe')) { Copy-Item -LiteralPath (Join-Path (Join-Path $env:RUNNER_TEMP 'signed-baseline') $name) -Destination (Join-Path (Join-Path $root 'baseline') $name) -ErrorAction Stop }
+            & ./scripts/test-public-release.ps1 -Surface Desktop -Version 0.38.0 -ReleaseTag v0.38.0 -Repository Sora-bluesky/winsmux -DesktopNativeLifecycle -DesktopNativeFormat $format -DesktopNativeSourceCommit $env:GITHUB_SHA -DesktopNativeCandidateDirectory (Join-Path $root 'candidate') -DesktopNativeBaselineDirectory (Join-Path $root 'baseline') -Json
+            if ($LASTEXITCODE -ne 0) { throw 'Signed native lifecycle failed or has an unmet class.' }
+          }
+      - name: Revalidate public six C10 and completed signed phase after Windows verification
+        if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
+        shell: pwsh
+        run: |
+          $beforeFile=Join-Path $env:RUNNER_TEMP ('winsmux-signed-public-before-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.json')
+          $rows=Get-Content -LiteralPath $beforeFile -Raw | ConvertFrom-Json
+          if (@(Get-ChildItem -LiteralPath output/desktop-release -Force).Count -ne 6 -or @($rows).Count -ne 6) { throw 'Public Desktop namespace changed.' }
+          foreach ($row in $rows) {
+            $file=Get-Item -LiteralPath (Join-Path 'output/desktop-release' $row.path)
+            if ($file.Length -ne $row.bytes -or (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne $row.sha256) { throw 'Public signed bytes changed during native verification.' }
+          }
+          $tokens=$null;$errors=$null;$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE 'scripts/test-public-release.ps1'),[ref]$tokens,[ref]$errors)
+          if (@($errors).Count -ne 0) { throw 'Signed native source parse refused.' }
+          $functions=@($ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Get-DesktopNativeTransportModule'},$false));if($functions.Count -ne 1){throw 'Signed native transport definition refused.'}
+          . ([scriptblock]::Create($functions[0].Extent.Text));$module=Get-DesktopNativeTransportModule
+          foreach ($format in @('NSIS','MSI')) {
+            & node --input-type=module --eval $module verify-signed $env:GITHUB_SHA $format $env:GITHUB_WORKSPACE
+            if ($LASTEXITCODE -ne 0) { throw 'Signed native source/C10/phase changed.' }
+          }
+      - name: Preserve bounded signed Windows evidence
+        if: always() && (github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0')
+        uses: actions/upload-artifact@v7
+        with:
+          name: signed-desktop-native-proof-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/evidence/**/*.json
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.NSIS/evidence/vhd-owned-*/ownership.jsonl
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.MSI/evidence/**/*.json
+            ${{ runner.temp }}/wsn-${{ github.run_id }}.${{ github.run_attempt }}.MSI/evidence/vhd-owned-*/ownership.jsonl
+          if-no-files-found: error
 
       - name: Stage final integrated Desktop artifact
         if: github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0'
@@ -224,8 +452,9 @@ jobs:
           name: winsmux-desktop-bundles
           path: output/desktop-release/*
 
+      # v0.38.0 publication is owned exclusively by the integrated parent path.
       - name: Upload desktop bundles to release
-        if: github.event_name == 'push' || inputs.release_tag != ''
+        if: (github.event_name == 'push' || inputs.release_tag != '') && github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
@@ -233,7 +462,7 @@ jobs:
 
   smoke-public-desktop:
     needs: build
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref_name != 'v0.38.0'
     runs-on: windows-latest
     timeout-minutes: 15
     permissions:

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { candidateArtifactMembers, validateGithubCandidateArtifactPayload, registerObservedGithubCandidateArtifacts }
+import { candidateArtifactMembers, validateGithubCandidateArtifactPayload, registerObservedGithubCandidateArtifacts, observeGithubDesktopPreparation, revalidateObservedGithubDesktopPreparation }
   from '../../scripts/observe-github-candidate-artifacts.mjs';
 import { publicationFixture, sha } from './publication-fixture.mjs';
 
@@ -143,9 +143,80 @@ with open(sys.argv[1],'r+b') as f:
 }
 check(() => assert.throws(() => candidateArtifactMembers(JSON.parse(JSON.stringify(fixture.bundle)), 'core'), /observed by this validator/u));
 check(() => assert.throws(() => candidateArtifactMembers(fixture.bundle, 'elsewhere'), /surface/u));
+
+// Exercise the real Desktop prebundle orchestration with synthetic HTTP bodies.
+// No network is performed: the built-in transport is restored after each case.
+let desktopPreparationCases=0;
+const httpsModule=(await import('node:https')).default;
+const {EventEmitter}=await import('node:events');
+const desktopNames=fixture.bundle.assets.filter(row=>row.path.startsWith('desktop/')).map(row=>row.path);
+const desktopInput = name => {
+  const dir=path.join(root,'desktop-input-'+name);fs.mkdirSync(dir);
+  const files=desktopNames.map(relative=>{const bytes=fixture.files.get(relative),file=path.join(dir,path.posix.basename(relative));fs.writeFileSync(file,bytes,{flag:'wx'});return {path:relative,source_file:file,bytes:bytes.length,sha256:sha(bytes)};});
+  const workflowFile=path.join(dir,'release-desktop.yml');fs.writeFileSync(workflowFile,workflowBytes,{flag:'wx'});
+  const archiveFile=create('desktop-preparation-'+name,files.map(row=>({name:path.posix.basename(row.path),data:fs.readFileSync(row.source_file).toString('base64')})));
+  return {namespaceRoot:dir,parentSession:'synthetic-desktop-session',pythonImage:python,observedPythonSha256:sha(fs.readFileSync(python)),
+    parserFile:parser,observedParserSha256:sha(fs.readFileSync(parser)),sourceCommit,sourceTree,runId:11,runAttempt:2,
+    workflow:{file:workflowFile,observed_sha256:workflowSha256},archive:{file:archiveFile,observed_sha256:sha(fs.readFileSync(archiveFile))},files};
+};
+const mockedDesktop = async (options,alter=(_endpoint,value)=>value) => {
+  const previous=httpsModule.get, calls=[], data=metadata('desktop');data.run.event='workflow_dispatch';data.artifact.digest='sha256:'+options.archive.observed_sha256;
+  httpsModule.get=(url,_options,callback)=>{
+    assert.ok(url.startsWith(base+'/'));calls.push(url);
+    const endpoint=url.slice(base.length), request=new EventEmitter();
+    let value;
+    if(endpoint==='/git/commits/'+sourceCommit)value=data.commit;
+    else if(endpoint==='/contents/.github/workflows/release-desktop.yml?ref='+sourceCommit)value=data.workflow;
+    else if(endpoint==='/actions/runs/11')value=data.run;
+    else if(endpoint==='/actions/runs/11/artifacts?per_page=100&page=1')value={total_count:1,artifacts:[data.artifact]};
+    else if(endpoint==='/actions/artifacts/12')value=data.artifact;
+    else throw Error('Unexpected synthetic transport endpoint');
+    value=alter(endpoint,structuredClone(value),calls);
+    queueMicrotask(()=>{const response=new EventEmitter();response.statusCode=200;response.headers={date:'Sat, 03 Oct 2026 00:02:00 GMT'};callback(response);response.emit('data',Buffer.from(JSON.stringify(value)));response.emit('end');});
+    return request;
+  };
+  try{return await observeGithubDesktopPreparation(fixture.contract,options);}finally{httpsModule.get=previous;desktopPreparationCases++;}
+};
+const desktopOptions=desktopInput('positive');
+const desktopReceipt=await mockedDesktop(desktopOptions);
+check(()=>{assert.equal(desktopReceipt.passed,true);assert.equal(desktopReceipt.assets.length,6);assert.equal(desktopReceipt.run,'11.2');assert.equal(desktopReceipt.source_commit,sourceCommit);assert.equal(desktopReceipt.publication_admitted,false);});
+const desktopReceiptPin=revalidateObservedGithubDesktopPreparation(fixture.contract,desktopReceipt);
+check(()=>{assert.equal(sha(fs.readFileSync(desktopReceiptPin.path)),desktopReceiptPin.sha256);assert.equal(fs.statSync(desktopReceiptPin.path).size,desktopReceiptPin.bytes);});
+check(()=>assert.throws(()=>revalidateObservedGithubDesktopPreparation(fixture.contract,structuredClone(desktopReceipt)),/capability/));
+await assert.rejects(()=>observeGithubDesktopPreparation(structuredClone(fixture.contract),desktopOptions));checks++;
+const foreignContract=publicationFixture(process.argv[2]).contract;
+check(()=>assert.throws(()=>revalidateObservedGithubDesktopPreparation(foreignContract,desktopReceipt),/capability/));
+for(const [name,change] of [
+  ['missing',x=>x.files.pop()],['duplicate',x=>{x.files[0]=x.files[1];}],
+  ['extra',x=>x.files.push({...x.files[0],path:'desktop/extra'})],['case',x=>{x.files[0].path=x.files[0].path.toUpperCase();}],
+  ['foreign-selector',x=>{x.repository='fork/winsmux';}],['callback',x=>{x.fetch=()=>{};}],
+  ['wrong-source',x=>{x.sourceCommit='bad';}],['wrong-tree',x=>{x.sourceTree='bad';}],['wrong-run',x=>{x.runId=0;}],
+  ['wrong-pin',x=>{x.files[0].sha256='0'.repeat(64);}],
+  ['wrong-archive-pin',x=>{x.archive.observed_sha256='0'.repeat(64);}],
+  ['aliased-physical',x=>{Object.assign(x.files[0],{source_file:x.files[1].source_file,bytes:x.files[1].bytes,sha256:x.files[1].sha256});}]
+]) {const value=structuredClone(desktopOptions);change(value);await assert.rejects(()=>observeGithubDesktopPreparation(fixture.contract,value));checks++;}
+for(const [name,change] of [
+  ['commit',(_e,x)=>{if(x.tree)x.sha='0'.repeat(40);return x;}],
+  ['workflow',(_e,x)=>{if(x.encoding)x.content+='!';return x;}],
+  ['attempt',(_e,x)=>{if(x.run_attempt)x.run_attempt=1;return x;}],
+  ['event',(_e,x)=>{if(x.run_attempt)x.event='push';return x;}],
+  ['event-after',(e,x,calls)=>{if(e==='/actions/runs/11'&&calls.filter(url=>url.endsWith(e)).length===2)x.event='push';return x;}],
+  ['artifact-name',(_e,x)=>{if(x.artifacts)x.artifacts[0].name+='-other';return x;}],
+  ['artifact-digest',(_e,x)=>{if(x.artifacts)x.artifacts[0].digest='sha256:'+'0'.repeat(64);return x;}],
+  ['pagination',(_e,x)=>{if(x.artifacts){x.total_count=2;x.artifacts=[];}return x;}],
+  ['duplicate-artifact',(_e,x)=>{if(x.artifacts){x.total_count=2;x.artifacts.push({...x.artifacts[0]});}return x;}],
+  ['changed-after',(e,x)=>{if(e==='/actions/artifacts/12')x.updated_at='2026-10-03T00:03:00Z';return x;}]
+]) {const value=desktopInput(name),seen=await mockedDesktop(value,change);check(()=>{assert.equal(seen.passed,false);assert.throws(()=>revalidateObservedGithubDesktopPreparation(fixture.contract,seen),/capability/);});}
+const during=desktopInput('physical-during');
+await assert.rejects(()=>mockedDesktop(during,(e,x)=>{if(e==='/actions/artifacts/12')fs.appendFileSync(during.files[0].source_file,'changed');return x;}),/Artifact input|changed/);checks++;
+for(const [name,select] of [['physical-after',(_r,o)=>o.files[0].source_file],['original-after',r=>r.originals[0].path],['receipt-after',(_r,_o,p)=>p.path]]){
+ const value=desktopInput(name),seen=await mockedDesktop(value),pin=revalidateObservedGithubDesktopPreparation(fixture.contract,seen);
+ fs.appendFileSync(select(seen,value,pin),'changed');check(()=>assert.throws(()=>revalidateObservedGithubDesktopPreparation(fixture.contract,seen),/Artifact input|changed/));
+}
+
 for (const name of sourceNames) check(() => assert.equal(sha(fs.readFileSync(name)), source[name]));
-const result = { observed_at: new Date().toISOString(), passed: true, checks, native_cases: nativeCases,
+const result = { observed_at: new Date().toISOString(), passed: true, checks, native_cases: nativeCases, desktop_preparation_cases: desktopPreparationCases,
   python_sha256: sha(fs.readFileSync(python)), source_sha256: source, publication_admitted: false,
-  scope: 'Three producer original-body validation and actual isolated Python closed ZIP inspection over synthetic distribution bytes. No hosted producer artifacts, actual distribution provenance, Windows verification, native permission or parent adoption claim.' };
+  scope: 'Three producer original-body validation plus Desktop prebundle orchestration over mocked HTTP and actual isolated Python closed ZIP inspection over synthetic distribution bytes. No hosted producer artifacts, actual distribution provenance, Windows verification, native permission or parent adoption claim.' };
 const resultFile = path.join(root, 'candidate-artifacts-target-result.json'); fs.writeFileSync(resultFile, JSON.stringify(result), { flag: 'wx' });
 console.log(JSON.stringify({ ...result, original_result_path: resultFile }));

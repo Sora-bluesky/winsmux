@@ -6,6 +6,7 @@ import { assertIssuedIntegratedContract } from './integrated-publication-contrac
 import { integratedAssetPaths, readIntegratedPublicationAssets } from './integrated-publication-assets.mjs';
 import { assertPublicationPreparationAllowed } from './integrated-publication-attempt.mjs';
 import { verifyIntegratedNpmTarball } from './prepare-integrated-npm-tarball.mjs';
+import { assertOriginAssetBinding, revalidateIntegratedPublicationOrigins } from './integrated-publication-origins.mjs';
 
 // Assemble already-final producer bytes. Signing, npm packing, metadata and
 // checksum generation happen before this call. Never re-create a verified
@@ -34,22 +35,22 @@ function writeFinal(file, bytes) {
   try { fs.writeFileSync(descriptor, bytes); fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
 }
 
-export function prepareIntegratedPublicationBundle(contract, { namespaceRoot, sourceCommit, sourceTree, producers, sources, npmSources }) {
+export function prepareIntegratedPublicationBundle(contract, { namespaceRoot, sourceCommit, sourceTree, producers, sources, npmSources, origins }) {
   assertIssuedIntegratedContract(contract);
   const root = physicalPath(namespaceRoot);
   assertPublicationPreparationAllowed(root, '0.38.0');
   requireValue(fs.statSync(root).isDirectory(), 'Existing parent-owned publication namespace required.');
   requireValue(typeof sourceCommit === 'string' && typeof sourceTree === 'string'
     && /^[a-f0-9]{40}$/u.test(sourceCommit) && /^[a-f0-9]{40}$/u.test(sourceTree), 'Exact source commit and tree required.');
-  requireValue(exact(producers, ['core', 'desktop', 'npm']) && Object.values(producers).every(row =>
-    exact(row, ['source_commit', 'source_tree', 'run']) && row.source_commit === sourceCommit && row.source_tree === sourceTree
-    && typeof row.run === 'string' && /^[A-Za-z0-9._-]+$/u.test(row.run)), 'Same source identity and all producer runs required.');
+  revalidateIntegratedPublicationOrigins(contract, origins);
   const names = integratedAssetPaths(contract);
   requireValue(Array.isArray(sources) && sources.length === names.length
     && sources.every(row => exact(row, ['path', 'source_file', 'observed_sha256']) && typeof row.source_file === 'string'
       && typeof row.observed_sha256 === 'string' && /^[a-f0-9]{64}$/u.test(row.observed_sha256))
     && JSON.stringify(sources.map(row => row.path).sort()) === JSON.stringify(names), 'Complete final producer source inventory required.');
   const observations = new Map(sources.map(row => [row.path, readSource(row.source_file, row.observed_sha256)]));
+  assertOriginAssetBinding(contract, origins, sourceCommit, sourceTree, producers,
+    [...observations].map(([name, row]) => ({ path: name, bytes: row.bytes.length, sha256: row.sha256 })));
   const npmNames = ['LICENSE', 'README.md', 'index.mjs', 'install.ps1', 'package.json'];
   requireValue(Array.isArray(npmSources) && npmSources.length === npmNames.length
     && npmSources.every(row => exact(row, ['path', 'source_file', 'observed_sha256']) && typeof row.source_file === 'string'
@@ -71,8 +72,8 @@ export function prepareIntegratedPublicationBundle(contract, { namespaceRoot, so
   fs.mkdirSync(bundleRoot);
   for (const surface of ['core', 'desktop', 'npm']) fs.mkdirSync(path.join(bundleRoot, surface));
   for (const name of names) writeFinal(path.join(bundleRoot, name), observations.get(name).bytes);
-  const manifest = { schema: 'winsmux-integrated-publication-assets/v1', version: '0.38.0', source_commit: sourceCommit,
-    source_tree: sourceTree, attempt, producers: structuredClone(producers), assets: names.map(name => {
+  const manifest = { schema: 'winsmux-integrated-publication-assets/v2', version: '0.38.0', source_commit: sourceCommit,
+    source_tree: sourceTree, attempt, origins_sha256: origins.sha256, producers: structuredClone(producers), assets: names.map(name => {
       const source = observations.get(name);
       return { path: name, bytes: source.bytes.length, sha256: source.sha256,
         producer: producers[name === 'release-body.md' ? 'core' : name.split('/')[0]].run };
@@ -85,7 +86,7 @@ export function prepareIntegratedPublicationBundle(contract, { namespaceRoot, so
     requireValue(after.identity === before.identity, 'Producer identity changed during bundle assembly.');
   }
   assertPublicationPreparationAllowed(root, '0.38.0');
-  const bundle = readIntegratedPublicationAssets(contract, bundleRoot, manifestBytes);
+  const bundle = readIntegratedPublicationAssets(contract, bundleRoot, manifestBytes, origins);
   verifyIntegratedNpmTarball(fs.readFileSync(path.join(bundleRoot, 'npm/winsmux-0.38.0.tgz')), npmBytes);
   return Object.freeze({ bundle, manifest_file: manifestFile, manifest_sha256: sha(manifestBytes),
     namespace_root: root, publication_admitted: false });

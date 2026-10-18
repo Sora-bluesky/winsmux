@@ -109,9 +109,13 @@ function New-DesktopInstallInventory {
     $rustcCommit = [string](@($rustcOutput | Where-Object { $_ -cmatch '^commit-hash: [a-f0-9]{40}$' }) -replace '^commit-hash: ', '')
     $validator = @'
 import {pathToFileURL} from 'node:url';
+import path from 'node:path';
 const [repo,version,rustcCommit,expectedHash]=process.argv.slice(1);
 const {assertCanonicalBundledDistribution}=await import(pathToFileURL(repo+'/scripts/stage-bundled-distribution.mjs'));
-const proof=assertCanonicalBundledDistribution({repoRoot:repo,host:'x86_64-pc-windows-msvc',version,rustcCommit,projectOutput:repo+'/target/release'});
+const targetInput=process.env.CARGO_TARGET_DIR;
+const target=path.resolve(repo,typeof targetInput==='string'&&targetInput.trim().length>0?targetInput:'target');
+const proof=assertCanonicalBundledDistribution({repoRoot:repo,host:'x86_64-pc-windows-msvc',version,rustcCommit,projectOutput:path.join(target,'release')});
+if(process.env.CARGO_TARGET_DIR!==targetInput)throw Error('Build target changed during inventory creation.');
 if(proof.manifest_sha256!==expectedHash)throw Error('Generation changed during inventory creation.');
 '@
     & node --input-type=module -e $validator $repo $version $rustcCommit $manifestHash

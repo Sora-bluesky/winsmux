@@ -91,7 +91,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
     bool keeperResumed;
     KeeperIdentity keeper;
     readonly List<FileStream> keeperInputs = new List<FileStream>();
-    FileStream npmCliInput;
+    FileStream npmCliInput, preHeldNpmCli;
     AuthorityConnection authority;
     bool authorityDisconnected;
     Dictionary<string, PublicationOperation> fixedOperations;
@@ -118,9 +118,10 @@ public sealed class IntegratedPublicationCustody : IDisposable {
     public bool Released { get { return released; } }
     public string JobName { get { lock (gate) { return jobName; } } }
     public int NativeCreateCalls { get; private set; }
+    public int NativeResumeCalls { get; private set; }
     public int KeeperNativeCreateCalls { get; private set; }
     public KeeperIdentity Keeper { get { lock (gate) { return keeper; } } }
-    public bool NpmCliHeld { get { lock (gate) { return npmCliInput != null && !released; } } }
+    public bool NpmCliHeld { get { lock (gate) { return (npmCliInput != null || preHeldNpmCli != null) && !released; } } }
     public bool AuthorityDisconnected { get { lock (gate) { return authorityDisconnected || (authority != null && !authority.IsLive()); } } }
     public sealed class ActorIdentity {
         public uint Pid { get; internal set; }
@@ -300,10 +301,40 @@ public sealed class IntegratedPublicationCustody : IDisposable {
         public StreamOutputObservation Stderr { get; internal set; }
         public bool PublicationAdmitted { get { return false; } }
     }
+
+    sealed class SensitiveCapture : IDisposable {
+        readonly byte[][] patterns;
+        byte[] tail = Array.Empty<byte>();
+        internal bool Refused { get; private set; }
+        internal SensitiveCapture(byte[][] values) { patterns=(values??Array.Empty<byte[]>()).Select(p=>p.ToArray()).ToArray(); }
+        static bool Contains(byte[] raw,byte[] needle) {
+            for(int i=0;i<=raw.Length-needle.Length;i++) {int j=0;while(j<needle.Length && raw[i+j]==needle[j])j++;if(j==needle.Length)return true;}return false;
+        }
+        internal void Feed(byte[] buffer,int count,IncrementalHash hash) {
+            if(Refused)return;
+            if(patterns.Length==0){hash.AppendData(buffer,0,count);return;}
+            byte[] joined=new byte[tail.Length+count];Buffer.BlockCopy(tail,0,joined,0,tail.Length);Buffer.BlockCopy(buffer,0,joined,tail.Length,count);Array.Clear(tail,0,tail.Length);
+            try {
+                if(patterns.Any(p=>Contains(joined,p))){Refused=true;tail=Array.Empty<byte>();return;}
+                int keep=Math.Min(joined.Length,patterns.Max(p=>p.Length)-1),emit=joined.Length-keep;
+                if(emit>0)hash.AppendData(joined,0,emit);tail=new byte[keep];Buffer.BlockCopy(joined,emit,tail,0,keep);
+            } finally {Array.Clear(joined,0,joined.Length);}
+        }
+        internal string Finish(IncrementalHash hash) {
+            if(Refused)return null;
+            hash.AppendData(tail);return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+        }
+        public void Dispose(){Array.Clear(tail,0,tail.Length);foreach(var p in patterns)Array.Clear(p,0,p.Length);}
+    }
     internal sealed class ChildOutput : IDisposable {
         internal IntPtr Input, OutWrite, ErrorWrite;
         IntPtr outRead, errorRead;
         Task<StreamOutputObservation> stdout, stderr;
+        byte[][] sensitivePatterns;
+        internal void ProtectSensitiveValue(string value) {
+            if(stdout!=null || sensitivePatterns!=null || String.IsNullOrEmpty(value) || value.Any(c=>c<32||c>126)) throw new InvalidOperationException("One scoped printable credential required before capture");
+            sensitivePatterns=new[]{Encoding.UTF8.GetBytes(value),Encoding.Unicode.GetBytes(value),Encoding.BigEndianUnicode.GetBytes(value)};
+        }
         internal ChildOutput() {
             var security = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Inherit = true };
             IntPtr securityPointer = Marshal.AllocHGlobal(security.Length);
@@ -318,25 +349,28 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                 Input = input.DangerousGetHandle(); input.SetHandleAsInvalid(); input.Dispose();
             } catch { Dispose(); throw; } finally { Marshal.FreeHGlobal(securityPointer); }
         }
-        static Task<StreamOutputObservation> Drain(IntPtr handle) {
+        static Task<StreamOutputObservation> Drain(IntPtr handle, byte[][] patterns) {
+            var sensitive=new SensitiveCapture(patterns);
             return Task.Run(() => {
                 var result = new StreamOutputObservation(); byte[] buffer = new byte[16384];
                 using (var stream = new FileStream(new SafeFileHandle(handle, true), FileAccess.Read, buffer.Length, false))
-                using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256)) {
+                using (var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+                using (sensitive) {
                     try {
                         for (;;) { int read = stream.Read(buffer, 0, buffer.Length); if (read == 0) break;
-                            result.Bytes = checked(result.Bytes + read); hash.AppendData(buffer, 0, read); Array.Clear(buffer, 0, read);
+                            result.Bytes = checked(result.Bytes + read); sensitive.Feed(buffer,read,hash); Array.Clear(buffer, 0, read);
                         }
                         result.Complete = true;
                     } catch (Exception error) { result.FailureKind = error.GetType().Name; }
-                    finally { Array.Clear(buffer, 0, buffer.Length); result.Sha256 = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant(); }
+                    finally { Array.Clear(buffer, 0, buffer.Length); result.Sha256 = sensitive.Finish(hash); if(sensitive.Refused)result.FailureKind="SensitiveOutputRefused"; }
                 }
                 return result;
             });
         }
         internal void Created() {
             CloseWrites(); IntPtr first = outRead, second = errorRead; outRead = errorRead = IntPtr.Zero;
-            stdout = Drain(first); stderr = Drain(second); // Concurrent; neither pipe can block the other.
+            stdout = Drain(first,sensitivePatterns); stderr = Drain(second,sensitivePatterns); // Concurrent; neither pipe can block the other.
+            if(sensitivePatterns!=null){foreach(var p in sensitivePatterns)Array.Clear(p,0,p.Length);sensitivePatterns=null;}
         }
         void CloseWrites() {
             if (Input != IntPtr.Zero) { CloseHandle(Input); Input = IntPtr.Zero; }
@@ -347,6 +381,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
         internal StreamOutputObservation OutResult { get { return stdout.GetAwaiter().GetResult(); } }
         internal StreamOutputObservation ErrorResult { get { return stderr.GetAwaiter().GetResult(); } }
         public void Dispose() {
+            if(sensitivePatterns!=null){foreach(var p in sensitivePatterns)Array.Clear(p,0,p.Length);sensitivePatterns=null;}
             CloseWrites();
             if (outRead != IntPtr.Zero) { CloseHandle(outRead); outRead = IntPtr.Zero; }
             if (errorRead != IntPtr.Zero) { CloseHandle(errorRead); errorRead = IntPtr.Zero; }
@@ -354,17 +389,24 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             // No cancellation may convert an incomplete capture into success.
         }
     }
+    internal sealed class AdmissionInputs {
+        internal FileStream Image, Cli, CliSource;
+        internal string ImageIdentity, CliIdentity, CliPath, CliHash;
+        internal long CliBytes;
+    }
     public sealed class PublicationOperation {
         internal readonly IntegratedPublicationCustody Owner;
         internal readonly string Executable, ImageHash, Directory;
         internal readonly string[] Arguments;
         internal Child CreatedChild;
+        internal readonly bool RuntimeBound;
+        internal readonly AdmissionInputs Inputs;
         public string Id { get; private set; }
         public string BindingSha256 { get; private set; }
         internal PublicationOperation(IntegratedPublicationCustody owner, string id, string binding,
-            string executable, string hash, string[] arguments, string directory) {
-            Owner = owner; Id = id; BindingSha256 = binding; Executable = executable;
-            ImageHash = hash; Arguments = arguments.ToArray(); Directory = directory;
+            string executable, string hash, string[] arguments, string directory, bool runtimeBound, AdmissionInputs inputs) {
+            Owner = owner; Id = id; BindingSha256 = binding; Executable = Path.GetFullPath(executable);
+            ImageHash = hash; Arguments = arguments.ToArray(); Directory = directory; RuntimeBound = runtimeBound; Inputs = inputs;
         }
     }
     static void JsonKeys(JsonElement value, params string[] names) {
@@ -419,6 +461,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                 var entries = table.GetProperty("entries");
                 if (entries.ValueKind != JsonValueKind.Array || entries.GetArrayLength() > 3) throw new InvalidOperationException("Closed publication operation inventory required");
                 var parsed = new Dictionary<string, PublicationOperation>(StringComparer.Ordinal);
+                FileStream parsedNpmCli = null;
                 var usedAssets = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var entry in entries.EnumerateArray()) {
                     JsonKeys(entry, "operation_id", "binding_sha256", "destination", "assets", "kind", "executable",
@@ -448,6 +491,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                     var additional = entry.GetProperty("additional_read_inputs");
                     if (additional.ValueKind != JsonValueKind.Array) throw new InvalidOperationException("Fixed additional input inventory required");
                     string[] exact;
+                    var inputs = new AdmissionInputs();
                     if (id == "github-release") {
                         if (JsonText(entry, "kind") != "github_release_create" || !selected.SequenceEqual(new[] { "release-body.md" }))
                             throw new InvalidOperationException("Fixed release creation differs");
@@ -466,11 +510,17 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                         string cliPath = JsonText(cli, "path");
                         if (!Path.IsPathFullyQualified(cliPath) || cliPath.StartsWith("\\\\", StringComparison.Ordinal) || Path.GetFileName(cliPath) != "npm-cli.js")
                             throw new InvalidOperationException("Fixed npm interpreter source required");
-                        var cliInput = HoldKeeperInput(cliPath, JsonText(cli, "sha256"));
+                        string cliHash = JsonText(cli, "sha256");
+                        var cliInput = HoldKeeperInput(cliPath, cliHash);
                         if (!cli.GetProperty("bytes").TryGetInt64(out long cliBytes) || cliBytes != cliInput.Length) throw new InvalidOperationException("Fixed npm source size differs");
                         exact = new[] { cliPath, "publish", Path.Combine(root, "npm", "winsmux-0.38.0.tgz"), "--ignore-scripts", "--registry=https://registry.npmjs.org", "--tag", "latest" };
                         if (runtimeTable) {
-                            if (!sourceFiles.ContainsKey(cliPath)) throw new InvalidOperationException("npm entry outside original held source closure");
+                            if (!sourceFiles.TryGetValue(cliPath, out var sourceInput) || sourceHashes[cliPath] != cliHash ||
+                                sourceInput.Length != cliInput.Length || Identity(sourceInput.SafeFileHandle,true) != Identity(cliInput.SafeFileHandle,true))
+                                throw new InvalidOperationException("npm entry differs from original held source closure");
+                            inputs.Cli = cliInput; inputs.CliSource = sourceInput; inputs.CliPath = cliPath;
+                            inputs.CliHash = cliHash; inputs.CliBytes = cliInput.Length; inputs.CliIdentity = Identity(cliInput.SafeFileHandle,true);
+                            parsedNpmCli = cliInput;
                             exact = new[] { "--no-addons", "--import", new Uri(sourceGuard).AbsoluteUri }.Concat(exact).Concat(new[] {
                                 "--userconfig=" + publicationRuntime.UserConfig, "--globalconfig=" + publicationRuntime.GlobalConfig, "--cache=" + publicationRuntime.NpmCache,
                                 "--prefix=" + root, "--logs-max=0", "--loglevel=silent", "--update-notifier=false", "--audit=false", "--fund=false", "--provenance=false" }).ToArray();
@@ -479,11 +529,19 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                     if (id.StartsWith("github-", StringComparison.Ordinal) && (JsonText(entry, "destination") != "https://github.com/Sora-bluesky/winsmux/releases/tag/v0.38.0" ||
                         Path.GetFileName(image) != "gh.exe" || additional.GetArrayLength() != 0)) throw new InvalidOperationException("Fixed GitHub destination or image differs");
                     if (!arguments.SequenceEqual(exact)) throw new InvalidOperationException("Fixed publication argv differs");
-                    HoldKeeperInput(image, imageHash);
-                    if (!parsed.TryAdd(id, new PublicationOperation(this, id, binding, image, imageHash, arguments, root)))
+                    inputs.Image = HoldKeeperInput(image, imageHash);
+                    inputs.ImageIdentity = Identity(inputs.Image.SafeFileHandle,true);
+                    if (!parsed.TryAdd(id, new PublicationOperation(this, id, binding, image, imageHash, arguments, root, runtimeTable, inputs)))
                         throw new InvalidOperationException("Duplicate publication operation ID");
                 }
-                VerifyUnsafe(); RequireAuthorityLive(); fixedOperations = parsed;
+                // Failed validation can retain read-only FDs, but publishes no operation/CLI binding.
+                if (preHeldNpmCli != null) {
+                    if (parsedNpmCli == null || !String.Equals(preHeldNpmCli.Name, parsedNpmCli.Name, StringComparison.Ordinal) ||
+                        preHeldNpmCli.Length != parsedNpmCli.Length || Identity(preHeldNpmCli.SafeFileHandle,true) != Identity(parsedNpmCli.SafeFileHandle,true) ||
+                        Hash(preHeldNpmCli) != Hash(parsedNpmCli)) throw new InvalidOperationException("Pre-held npm source differs from table source");
+                }
+                VerifyUnsafe(); RequireAuthorityLive();
+                npmCliInput = parsedNpmCli; fixedOperations = parsed;
                 return parsed.Count;
             }
         }
@@ -797,13 +855,15 @@ public sealed class IntegratedPublicationCustody : IDisposable {
     // This adds no launch authority or npm dependency-closure claim.
     public void HoldNpmCli(string file, string hash) {
         lock (gate) {
-            if (released || sealedLaunches || keeper != null || children.Count != 0 || npmCliInput != null)
-                throw new InvalidOperationException("npm source custody already fixed or launch started");
-            if (!String.Equals(Path.GetFileName(file), "npm-cli.js", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException("Exact npm-cli.js source required");
-            VerifyUnsafe();
-            npmCliInput = HoldKeeperInput(file, hash);
-            VerifyUnsafe();
+            if (released || sealedLaunches || keeper != null || children.Count != 0 || fixedOperations != null || preHeldNpmCli != null || npmCliInput != null)
+                throw new InvalidOperationException("npm source pre-hold closed");
+            file = Path.GetFullPath(file);
+            if (Path.GetFileName(file) != "npm-cli.js" || sourceManifest == null || !sourceFiles.TryGetValue(file,out var source) ||
+                sourceHashes[file] != hash) throw new ArgumentException("Exact original runtime npm source required");
+            VerifyUnsafe(); var held = HoldKeeperInput(file, hash);
+            if (held.Length != source.Length || Identity(held.SafeFileHandle,true) != Identity(source.SafeFileHandle,true))
+                throw new InvalidOperationException("Pre-held npm source identity differs");
+            preHeldNpmCli = held;
         }
     }
     void EnsureJob() {
@@ -1066,10 +1126,8 @@ public sealed class IntegratedPublicationCustody : IDisposable {
         Action<uint, long, string> persistStopped, PublicationOperation operation) {
         lock (gate) {
             RequireAuthorityLive();
-            // Auth, transitive source custody, runtime binding and output
-            // receipt are one unfinished admission contract. An observed table
-            // must not reach a real public root before that contract is connected.
-            if (operation != null) throw new InvalidOperationException("Public runtime source, authentication and output binding incomplete");
+            // Original v2 operation, held runtime, provider capability and live parent decision join here.
+            string provider = operation == null ? null : RequireOperationAdmission(operation);
             if (fixedOperations != null && operation == null) throw new InvalidOperationException("Arbitrary native argv is closed after fixed table binding");
             if (authority != null && persistStopped == null) throw new InvalidOperationException("Native stopped-child persistence missing");
             if (released || sealedLaunches || persistInFlight == null) throw new InvalidOperationException("Child launch closed or parent persistence missing");
@@ -1077,7 +1135,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             executable = Path.GetFullPath(executable); directory = Path.GetFullPath(directory);
             if (executable.StartsWith("\\\\", StringComparison.Ordinal) || directory.StartsWith("\\\\", StringComparison.Ordinal) || arguments == null) throw new ArgumentException("Local exact image and arguments required");
             bool guardedNode = sourceManifest != null && Path.GetFileName(executable) == "node.exe";
-            if (guardedNode) {
+            if (guardedNode && operation == null) {
                 if (arguments.Length == 0 || !Path.IsPathFullyQualified(arguments[0]) || !sourceFiles.ContainsKey(Path.GetFullPath(arguments[0])))
                     throw new InvalidOperationException("Node child entry is outside held runtime source inventory");
                 arguments = arguments.ToArray(); arguments[0] = Path.GetFullPath(arguments[0]);
@@ -1091,7 +1149,8 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             bool retained = false;
             try {
                 Identity(image.SafeFileHandle, true);
-                if (Hash(image) != imageHash) throw new InvalidOperationException("Child image hash differs");
+                if (Hash(image) != imageHash || (operation!=null && Identity(image.SafeFileHandle,true)!=operation.Inputs.ImageIdentity))
+                    throw new InvalidOperationException("Child image identity or hash differs");
                 RequireKeeper(); // Native same-object HOLD, before the first publication child.
                 persistInFlight(jobName); // Before every possible native creation.
                 VerifyUnsafe();
@@ -1110,12 +1169,21 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                     Check(UpdateProcThreadAttribute(list, 0, new UIntPtr(0x00020002), handles, new UIntPtr((uint)(IntPtr.Size * 3)), IntPtr.Zero, IntPtr.Zero));
                     var startup = new StartupEx(); startup.Startup.Size = (uint)Marshal.SizeOf(typeof(StartupEx)); startup.Attributes = list;
                     startup.Startup.Flags = 0x100; startup.Startup.Input = output.Input; startup.Startup.Output = output.OutWrite; startup.Startup.Error = output.ErrorWrite;
-                    if (authority != null) authority.RequireDecision("create", operationBinding, operation == null ? null : operation.Id);
-                    RequireAuthorityLive();
-                    ProcessInformation process; string environmentHash; NativeCreateCalls++;
-                    using (var environment = IntegratedPublicationEnvironment.Create(guardedNode ? "npm" : "fixture", RuntimeTemp(), executable,
-                        guardedNode ? sourceManifest : null, guardedNode ? sourceManifestHash : null)) {
+                    ProcessInformation process; string environmentHash;
+                    string credential = null;
+                    if(operation!=null) {
+                        RequireOperationAdmission(operation);
+                        try {credential=providerCredentials[provider].ReadApprovedValue();}catch {throw new InvalidOperationException("Approved provider source unavailable");}
+                        RequireOperationAdmission(operation);
+                    }
+                    if(operation!=null) output.ProtectSensitiveValue(credential);
+                    using (var environment = operation == null
+                        ? IntegratedPublicationEnvironment.Create(guardedNode ? "npm" : "fixture", RuntimeTemp(), executable, guardedNode ? sourceManifest : null, guardedNode ? sourceManifestHash : null)
+                        : IntegratedPublicationEnvironment.CreateAuthenticated(provider, RuntimeTemp(), executable, provider=="npm" ? sourceManifest : null, provider=="npm" ? sourceManifestHash : null, credential)) {
                         environmentHash = environment.Sha256;
+                        if (authority != null) authority.RequireDecision("create", operationBinding, operation == null ? null : operation.Id);
+                        if(operation!=null) RequireOperationAdmission(operation); else RequireAuthorityLive();
+                        NativeCreateCalls++;
                         Check(CreateProcessW(executable, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, true,
                             0x08080004u | IntegratedPublicationEnvironment.UnicodeFlag, environment.Block, directory, ref startup, out process));
                     }
@@ -1123,6 +1191,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                     child.EnvironmentSha256 = environmentHash;
                     child.Output = output; output.Created();
                     child.Operation = operation;
+                    credential = null; // Never persist, hash or log the credential value.
                     if (operation != null) operation.CreatedChild = child;
                     child.OperationBinding = operationBinding;
                     bool contained; Check(IsProcessInJob(child.Process, job, out contained));
@@ -1130,6 +1199,9 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                     FileTime creation, exit, kernel, user;
                     Check(GetProcessTimes(child.Process, out creation, out exit, out kernel, out user));
                     child.CreationFileTime = unchecked((long)(((ulong)creation.High << 32) | creation.Low));
+                    var actualImage = new StringBuilder(32768); uint actualLength = (uint)actualImage.Capacity;
+                    Check(QueryFullProcessImageNameW(child.Process,0,actualImage,ref actualLength));
+                    if(!String.Equals(actualImage.ToString(),executable,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Stopped root image differs from held image");
                     if (persistStopped != null) persistStopped(child.Pid, child.CreationFileTime, jobName);
                     return child;
                 } finally {
@@ -1142,6 +1214,52 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             } finally { if (!retained) image.Dispose(); }
         }
     }
+
+    sealed class ProviderCredentialSource {
+        internal readonly string Provider, SourceId;
+        internal readonly Func<string> ReadApprovedValue;
+        internal ProviderCredentialSource(string provider, string sourceId, Func<string> read) { Provider=provider; SourceId=sourceId; ReadApprovedValue=read; }
+    }
+    readonly Dictionary<string, ProviderCredentialSource> providerCredentials = new Dictionary<string, ProviderCredentialSource>(StringComparer.Ordinal);
+    // A native parent code capability, never a JSON token, filename or inherited environment selector.
+    // The value is read only for an admitted original operation; the fresh create decision immediately precedes native creation.
+    public void BindProviderCredentialSource(string provider, string sourceId, Func<string> readApprovedValue) {
+        lock(gate) {
+            RequireAuthorityLive();
+            if(authority==null || fixedOperations==null || keeper!=null || children.Count!=0 || released || sealedLaunches || readApprovedValue==null ||
+                !Guid.TryParseExact(sourceId,"D",out _) || (provider!="github" && provider!="npm") || providerCredentials.ContainsKey(provider) ||
+                !fixedOperations.Values.Any(op => (op.Id=="npm-archive"?"npm":"github")==provider))
+                throw new InvalidOperationException("One approved source for an original required provider must be bound before launch");
+            providerCredentials.Add(provider,new ProviderCredentialSource(provider,sourceId,readApprovedValue));
+        }
+    }
+    string RequireOperationAdmission(PublicationOperation operation, Child resumedChild=null) {
+        if (released || sealedLaunches) throw new InvalidOperationException("Publication admission closed");
+        RequireAuthorityLive();
+        if (authority==null || operation==null || operation.Owner!=this || !operation.RuntimeBound || publicationRuntime==null || sourceManifest==null ||
+            fixedOperations==null || !fixedOperations.TryGetValue(operation.Id,out var original) || !Object.ReferenceEquals(operation,original) ||
+            (resumedChild==null ? operation.CreatedChild!=null : !Object.ReferenceEquals(operation.CreatedChild,resumedChild)))
+            throw new InvalidOperationException("Original v2 operation, authority and held runtime admission required");
+        string provider=operation.Id=="npm-archive"?"npm":"github";
+        var inputs=operation.Inputs;
+        if (!providerCredentials.ContainsKey(provider) || Path.GetFileName(operation.Executable)!=(provider=="npm"?"node.exe":"gh.exe") ||
+            inputs==null || inputs.Image==null || !String.Equals(inputs.Image.Name,operation.Executable,StringComparison.Ordinal) ||
+            Identity(inputs.Image.SafeFileHandle,true)!=inputs.ImageIdentity || Hash(inputs.Image)!=operation.ImageHash)
+            throw new InvalidOperationException("Original provider image or approved source missing");
+        if (provider=="npm") {
+            if (npmCliInput==null || inputs.Cli==null || inputs.CliSource==null || operation.Arguments.Length<4 ||
+                operation.Arguments[0]!="--no-addons" || operation.Arguments[1]!="--import" || operation.Arguments[2]!=new Uri(sourceGuard).AbsoluteUri ||
+                operation.Arguments[3]!=inputs.CliPath || !sourceFiles.TryGetValue(inputs.CliPath,out var source) || !Object.ReferenceEquals(source,inputs.CliSource) ||
+                !Object.ReferenceEquals(npmCliInput,inputs.Cli) || !String.Equals(npmCliInput.Name,inputs.CliPath,StringComparison.Ordinal) ||
+                npmCliInput.Length!=inputs.CliBytes || source.Length!=inputs.CliBytes || sourceHashes[inputs.CliPath]!=inputs.CliHash ||
+                Identity(npmCliInput.SafeFileHandle,true)!=inputs.CliIdentity || Identity(source.SafeFileHandle,true)!=inputs.CliIdentity ||
+                Hash(npmCliInput)!=inputs.CliHash || Hash(source)!=inputs.CliHash)
+                throw new InvalidOperationException("Original table npm CLI/source FD binding differs");
+        }
+        VerifyUnsafe(); RequireKeeper(); RequireAuthorityLive();
+        if (released || sealedLaunches) throw new InvalidOperationException("Publication admission closed");
+        return provider;
+    }
     public Child[] ObserveCreatedChildren() {
         lock (gate) {
             if (released) throw new InvalidOperationException("Released custody children");
@@ -1153,9 +1271,16 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             RequireAuthorityLive();
             RequireChild(child);
             if (sealedLaunches || child.Resumed || persistCreated == null) throw new InvalidOperationException("Resume closed or persistence missing");
-            RequireKeeper(); VerifyUnsafe(); persistCreated(child.Pid, child.CreationFileTime, jobName); VerifyUnsafe(); RequireKeeper();
+            if(child.Operation!=null) RequireOperationAdmission(child.Operation,child);
+            if(CreationTime(child.Process)!=child.CreationFileTime || WaitForSingleObject(child.Process,0)!=258) throw new InvalidOperationException("Original stopped root identity or lifetime differs");
+            var image=new StringBuilder(32768);uint length=(uint)image.Capacity;Check(QueryFullProcessImageNameW(child.Process,0,image,ref length));
+            if(!String.Equals(image.ToString(),child.Image.Name,StringComparison.OrdinalIgnoreCase))throw new InvalidOperationException("Original stopped root image differs");
+            RequireKeeper(); VerifyUnsafe(); persistCreated(child.Pid, child.CreationFileTime, jobName);
+            if(child.Operation!=null) RequireOperationAdmission(child.Operation,child);
+            else {VerifyUnsafe();RequireKeeper();RequireAuthorityLive();if(released||sealedLaunches)throw new InvalidOperationException("Resume admission closed");}
             if (authority != null) authority.RequireDecision("resume", child.OperationBinding, child.Operation == null ? null : child.Operation.Id);
-            RequireAuthorityLive();
+            if(child.Operation!=null) RequireOperationAdmission(child.Operation,child); else RequireAuthorityLive();
+            NativeResumeCalls++;
             uint previous = ResumeThread(child.Thread);
             if (previous == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
             if (previous != 1) throw new InvalidOperationException("Unexpected publication suspend count");

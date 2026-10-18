@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { parseStrictJson } from './assert-license-inputs.mjs';
 import { physicalPath } from './distribution-prelaunch.mjs';
 import { assertIssuedIntegratedContract } from './integrated-publication-contract.mjs';
+import { assertOriginAssetBinding } from './integrated-publication-origins.mjs';
 
 const issuedBundles = new WeakSet();
 const bundleObservations = new WeakMap();
@@ -71,7 +72,14 @@ function read(root, relative) {
   } finally { fs.closeSync(descriptor); }
 }
 
-function checkCoordinates(manifest) {
+function checkCoordinates(contract, manifest, origins) {
+  if (manifest.schema === 'winsmux-integrated-publication-assets/v2') {
+    requireValue(exact(manifest, ['schema', 'version', 'source_commit', 'source_tree', 'attempt', 'producers', 'assets', 'origins_sha256'])
+      && manifest.version === '0.38.0' && commit(manifest.source_commit) && commit(manifest.source_tree)
+      && token(manifest.attempt) && origins && manifest.origins_sha256 === origins.sha256, 'Exact typed origin candidate required.');
+    assertOriginAssetBinding(contract, origins, manifest.source_commit, manifest.source_tree, manifest.producers, manifest.assets);
+    return;
+  }
   requireValue(exact(manifest, ['schema', 'version', 'source_commit', 'source_tree', 'attempt', 'producers', 'assets'])
     && manifest.schema === 'winsmux-integrated-publication-assets/v1' && manifest.version === '0.38.0'
     && commit(manifest.source_commit) && commit(manifest.source_tree) && token(manifest.attempt),
@@ -95,10 +103,10 @@ function checksum(bytes, files) {
  * Native deny-write/delete handles must still be held by the publication host
  * through every real child exit; a JS observation is not that custody proof.
  */
-export function readIntegratedPublicationAssets(contract, root, manifestBytes) {
+export function readIntegratedPublicationAssets(contract, root, manifestBytes, origins) {
   assertIssuedIntegratedContract(contract);
   const manifest = parseStrictJson(manifestBytes);
-  checkCoordinates(manifest);
+  checkCoordinates(contract, manifest, origins);
   const expected = integratedAssetPaths(contract);
   requireValue(Array.isArray(manifest.assets) && manifest.assets.length === expected.length,
     'Complete integrated asset list required.');
@@ -150,11 +158,14 @@ export function readIntegratedPublicationAssets(contract, root, manifestBytes) {
       attempt: manifest.attempt, assets_sha256: sha(Buffer.from(JSON.stringify(manifest.assets))),
       manifest_sha256: sha(manifestBytes) },
     producers: manifest.producers, assets: manifest.assets,
+    origins_sha256: manifest.schema.endsWith('/v2') ? origins.sha256 : null,
+    // v1 remains a byte-integrity fixture/legacy observer, never typed origin.
+    producer_origins_observed: manifest.schema.endsWith('/v2'),
     root: directory, root_identity: `${sameDirectory.dev}:${sameDirectory.ino}`,
     publication_admitted: false,
   });
   issuedBundles.add(bundle);
-  bundleObservations.set(bundle, { contract, manifestBytes: Buffer.from(manifestBytes),
+  bundleObservations.set(bundle, { contract, origins, manifestBytes: Buffer.from(manifestBytes),
     identities: new Map([...observations].map(([name, value]) => [name, value.identity])) });
   return bundle;
 }
@@ -167,7 +178,7 @@ export function assertIssuedPublicationBundle(bundle) {
 export function revalidatePublicationBundle(bundle) {
   assertIssuedPublicationBundle(bundle);
   const original = bundleObservations.get(bundle);
-  const current = readIntegratedPublicationAssets(original.contract, bundle.root, original.manifestBytes);
+  const current = readIntegratedPublicationAssets(original.contract, bundle.root, original.manifestBytes, original.origins);
   const now = bundleObservations.get(current);
   requireValue(current.root_identity === bundle.root_identity && JSON.stringify(current.identity) === JSON.stringify(bundle.identity)
     && [...original.identities].every(([name, identity]) => now.identities.get(name) === identity),

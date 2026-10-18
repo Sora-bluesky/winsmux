@@ -6,7 +6,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { stageBundledDistribution } from '../../scripts/stage-bundled-distribution.mjs';
-import { beginDesktopBundle, readDesktopDistributionVersion, stageDesktopMsiPlan, signDesktopMsiAsset } from '../../scripts/stage-desktop-msi-plan.mjs';
+import { beginDesktopBundle, readDesktopDistributionVersion, stageDesktopMsiPlan, signDesktopMsiAsset, readCompletedSignedBuild } from '../../scripts/stage-desktop-msi-plan.mjs';
 import { fixturePe } from './fixture-pe.mjs';
 
 const repo = process.cwd(), root = path.resolve('.evidence/workspace-package', 'desktop-msi-' + randomUUID());
@@ -26,7 +26,7 @@ for (const relative of ['distribution/windows-licenses', 'winsmux-app/src-tauri/
   fs.cpSync(path.join(repo, relative), path.join(input, relative), { recursive: true });
 }
 fs.copyFileSync(path.join(repo, 'winsmux-app/src-tauri/nsis-installer-hooks.nsh'), path.join(source, 'nsis-installer-hooks.nsh'));
-for (const name of ['tauri.conf.json', 'Cargo.toml']) fs.copyFileSync(path.join(repo, 'winsmux-app/src-tauri', name), path.join(source, name));
+for (const name of ['tauri.conf.json', 'tauri.ci.conf.json', 'Cargo.toml']) fs.copyFileSync(path.join(repo, 'winsmux-app/src-tauri', name), path.join(source, name));
 const build = path.join(root, 'space 日本語 & build', 'release'); fs.mkdirSync(build, { recursive: true });
 const companions = ['winsmux', 'winsmux-workspace-mcp'].map(name => {
   const bytes = fixturePe({ normal: ['kernel32.dll'], marker: 'Synthetic MSI ' + name });
@@ -260,8 +260,9 @@ function patched(file, tag) {
   assert.ok(at >= 0 && bytes.indexOf(prefix, at + 1) < 0); bytes.write(tag, at + prefix.length, 'ascii'); fs.writeFileSync(file, bytes);
 }
 const callback = asset => signDesktopMsiAsset({ repoRoot: input, assetPath: asset ?? active.gui, signed: active.options.signed });
-function fixture(signed = true, dll = true) {
-  const id = randomUUID(), output = path.join(root, 'phase 日本語 & ' + id, 'release'), temp = path.join(root, 'temp-' + id);
+function fixture(signed = true, dll = true, completedLayout = false) {
+  const id = randomUUID(), parent = path.join(root, 'phase 日本語 & ' + id);
+  const output = path.join(parent, ...(completedLayout ? ['build', 'release'] : ['release'])), temp = completedLayout ? path.join(parent, 'sdk-temp') : path.join(root, 'temp-' + id);
   fs.mkdirSync(output, { recursive: true }); fs.mkdirSync(temp);
   process.env.TEMP = temp; process.env.TMP = temp;
   const gui = path.join(output, 'winsmux-app.exe'), library = path.join(output, 'winsmux_app_lib.dll');
@@ -402,6 +403,38 @@ try {
   await assert.rejects(() => callback()); assert.deepEqual(fs.readFileSync(all.gui + '.winsmux-msi-plan.json'), pairBeforeCycle);
   fs.writeFileSync(all.gui, all.original);
   pass('MSI-partial-refuses-NSS-complete-restore-original-NSS-three-role-preserves-earlier-payload');
+
+  // Readonly completion consumes the real signed producer state/guards; the
+  // signer remains the existing synthetic callback. No cryptographic/native claim.
+  const completed = fixture(true, true, true); beginDesktopBundle(completed.options); patched(completed.gui, 'MSI'); await callback();
+  const request = { repoRoot: input, projectOutput: completed.options.projectOutput, sdkTempRoot: completed.temp };
+  const noMoreSignCalls = () => calls.length;
+  assert.throws(() => readCompletedSignedBuild(request));
+  await finishMsi(); fs.writeFileSync(completed.gui, completed.original); patched(completed.gui, 'NSS'); await callback();
+  const completedSetup = artifact('setup'); fs.mkdirSync(path.dirname(completedSetup), { recursive: true }); fs.writeFileSync(completedSetup, 'signed-completion NSS'); await callback(completedSetup);
+  fs.writeFileSync(completed.gui, completed.original);
+  const beforeReadCalls = noMoreSignCalls(), completedPhase = fs.readFileSync(phaseFile(completed.gui));
+  const observed = readCompletedSignedBuild(request);
+  assert.equal(observed.signed, true); assert.deepEqual(observed.pairs.map(row => row.flavor), ['msi', 'nsis']);
+  assert.equal(observed.phase.sha256, digest(completedPhase)); assert.equal(noMoreSignCalls(), beforeReadCalls);
+  assert.deepEqual(fs.readFileSync(phaseFile(completed.gui)), completedPhase);
+  assert.equal(observed.pairs[1].gui.sha256, JSON.parse(fs.readFileSync(completed.gui + '.winsmux-nsis-plan.json')).files.find(row => row.role === 'gui').sha256);
+  // Same physical SDK root is bound without inheriting it as this reader's TEMP.
+  process.env.TEMP = root; process.env.TMP = root;
+  try { assert.equal(readCompletedSignedBuild(request).phase.sha256, observed.phase.sha256); }
+  finally { process.env.TEMP = completed.temp; process.env.TMP = completed.temp; }
+  for (const mutate of [v => { v.signed = false; }, v => { v.phase = 'failed'; }, v => { v.records.pop(); }, v => { v.records[1].artifacts = []; }, v => { v.generation_manifest_sha256 = '0'.repeat(64); }, v => { v.records[1].gui_sha256 = '0'.repeat(64); }, v => { v.sdk_temp_root = root; }]) {
+    const state = JSON.parse(completedPhase); mutate(state); fs.writeFileSync(phaseFile(completed.gui), JSON.stringify(state, null, 2) + '\n');
+    try { assert.throws(() => readCompletedSignedBuild(request)); assert.equal(noMoreSignCalls(), beforeReadCalls); }
+    finally { fs.writeFileSync(phaseFile(completed.gui), completedPhase); }
+  }
+  for (const file of [completedSetup, completed.gui + '.winsmux-plan.wxi', completed.gui + '.winsmux-nsis-plan.nsh', path.join(completed.temp, 'winsmux.exe'), path.join(source, 'tauri.ci.conf.json')]) {
+    const original = fs.readFileSync(file); fs.appendFileSync(file, 'changed');
+    try { assert.throws(() => readCompletedSignedBuild(request)); assert.equal(noMoreSignCalls(), beforeReadCalls); }
+    finally { fs.writeFileSync(file, original); }
+  }
+  for (const wrong of [{ ...request, signed: true }, { ...request, sdkTempRoot: root }, { ...request, projectOutput: root }]) assert.throws(() => readCompletedSignedBuild(wrong));
+  pass('completed-signed-readonly-both-formats-full-source-plan-artifact-and-SDK-binding-no-sign-phase-write-or-ambient-TEMP');
 
   for (const mode of ['foreign', 'hardlink', 'case', 'linked']) {
     const f = fixture(false), dest = path.join(f.temp, mode === 'case' ? 'WINSMUX.EXE' : 'winsmux.exe');
