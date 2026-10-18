@@ -19,7 +19,7 @@ env:
 jobs:
   signed_baseline:
     permissions:
-      contents: read
+      contents: write
     if: github.repository == 'Sora-bluesky/winsmux' && github.event_name == 'workflow_dispatch' && inputs.release_tag == 'v0.38.0'
     runs-on: windows-2025
     strategy:
