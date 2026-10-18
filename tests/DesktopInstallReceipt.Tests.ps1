@@ -1893,3 +1893,23 @@ exit 0
         }
     }
 }
+
+Describe 'Native Desktop VHD script reentry' {
+    It 'initializes each script scope without replacing existing owned states' {
+        $definition = $script:HelperAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Initialize-DesktopNativeOwnedVhdSupport' }, $true).Extent.Text
+        $previous = $null
+        foreach ($invocation in 1..2) {
+            $module = New-Module -ScriptBlock ([scriptblock]::Create($definition))
+            $states = & $module { Set-StrictMode -Version Latest; Initialize-DesktopNativeOwnedVhdSupport; return ,$script:DesktopNativeVhdStates }
+            $states.Count | Should -Be 0
+            [object]::ReferenceEquals($previous, $states) | Should -BeFalse
+            $owned = [string]::new([char[]]'owned')
+            $states.Add($owned, 'state')
+            $states.ContainsKey([string]::new([char[]]'owned')) | Should -BeFalse
+            $again = & $module { Initialize-DesktopNativeOwnedVhdSupport; return ,$script:DesktopNativeVhdStates }
+            [object]::ReferenceEquals($states, $again) | Should -BeTrue
+            $again[$owned] | Should -BeExactly 'state'
+            $previous = $states
+        }
+    }
+}

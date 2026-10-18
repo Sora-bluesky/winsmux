@@ -5822,11 +5822,13 @@ function Invoke-DesktopNativeMsiNsisConflict {
 }
 
 function Initialize-DesktopNativeOwnedVhdSupport {
+    if ($null -eq (Get-Variable -Name DesktopNativeVhdStates -Scope Script -ErrorAction SilentlyContinue)) {
+        $script:DesktopNativeVhdStates = [Collections.Generic.Dictionary[object,object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
+    }
     if ($null -ne ([Management.Automation.PSTypeName]'Winsmux.DesktopNativeVhd.Lease').Type) { return }
 # Private TASK-880 fragment. Calls require the single disposable-CI supervisor.
 # No native child, other writer, or other disk operation may run concurrently.
 # Dot-sourcing only defines helpers and compiles the private file-witness type.
-$script:DesktopNativeVhdStates = [Collections.Generic.Dictionary[object,object]]::new([Collections.Generic.ReferenceEqualityComparer]::Instance)
 Add-Type -TypeDefinition @'
 using System;
 using System.IO;
