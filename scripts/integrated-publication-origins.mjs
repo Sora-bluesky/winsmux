@@ -134,7 +134,7 @@ export function validateOriginProjection(value) {
       && publicationCutoverPaths.includes(row.path) && (row.before_sha256 === null || digest(row.before_sha256))
       && digest(row.after_sha256) && row.before_sha256 !== row.after_sha256
       && (row.path !== 'scripts/test-public-release.ps1' || row.before_sha256 === '40dc9b64426cd918f943e3b45af6779d69a037f683cba454d74942c74fefbaa5'
-        && row.after_sha256 === 'b2f1465a52adf42346c91076adedac8a85cf9298c3971d9bc73e1be9cc81427e')), 'Final source applicability differs.');
+        && row.after_sha256 === '54a3be86bf1dc6c514b2cb23f7e7f63922202eafa5eb936f3c1f86b7e308f302')), 'Final source applicability differs.');
   for (const [surface, expected] of Object.entries(producerCoordinates)) {
     const row = value[surface];
     need(exact(row, ['kind', 'source_commit', 'source_tree', 'run', 'inner_origins', 'assets', 'originals'])

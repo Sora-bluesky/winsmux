@@ -300,7 +300,7 @@ const mockNsis = [
   "const hash=b=>createHash('sha256').update(b).digest('hex');",
   "export function stageDesktopNsisPlan({guiPath,srcTauri,version,host}) {",
   "const manifest=JSON.parse(fs.readFileSync(path.join(srcTauri,'binaries/distribution-manifest.json')));",
-  "const files=manifest.files.filter(r=>r.path.startsWith('licenses/')||r.path.endsWith('-'+host+'.exe')).map(r=>({...r,role:r.path.startsWith('licenses/')?'license':r.path.startsWith('winsmux-workspace-mcp-')?'mcp':'cli',path:r.path.replace('-'+host,'')}));",
+  "const files=manifest.files.filter(r=>r.path.startsWith('licenses/')||r.path.endsWith('-'+host+'.exe')).map(r=>({role:r.path.startsWith('licenses/')?'license':r.path.startsWith('winsmux-workspace-mcp-')?'mcp':'cli',path:r.path.replace('-'+host,''),bytes:r.bytes,sha256:r.sha256}));",
   "const gui=fs.readFileSync(guiPath);files.push({role:'gui',path:'winsmux-app.exe',bytes:gui.length,sha256:hash(gui)});",
   "files.sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);",
   "const plan=Buffer.from(JSON.stringify({schema:'winsmux-desktop-install-plan/v1',flavor:'nsis',version,host,files},null,2)+'\\n');",
@@ -423,7 +423,7 @@ try {
   process.env.TEMP = root; process.env.TMP = root;
   try { assert.equal(readCompletedSignedBuild(request).phase.sha256, observed.phase.sha256); }
   finally { process.env.TEMP = completed.temp; process.env.TMP = completed.temp; }
-  for (const mutate of [v => { v.signed = false; }, v => { v.phase = 'failed'; }, v => { v.records.pop(); }, v => { v.records[1].artifacts = []; }, v => { v.generation_manifest_sha256 = '0'.repeat(64); }, v => { v.records[1].gui_sha256 = '0'.repeat(64); }, v => { v.sdk_temp_root = root; }]) {
+  for (const mutate of [v => { v.signed = false; }, v => { v.phase = 'failed'; }, v => { v.records.pop(); }, v => { v.records[1].flavor = 'msi'; }, v => { v.records[1].artifacts = []; }, v => { v.generation_manifest_sha256 = '0'.repeat(64); }, v => { v.records[1].gui_sha256 = '0'.repeat(64); }, v => { v.sdk_temp_root = root; }]) {
     const state = JSON.parse(completedPhase); mutate(state); fs.writeFileSync(phaseFile(completed.gui), JSON.stringify(state, null, 2) + '\n');
     try { assert.throws(() => readCompletedSignedBuild(request)); assert.equal(noMoreSignCalls(), beforeReadCalls); }
     finally { fs.writeFileSync(phaseFile(completed.gui), completedPhase); }
@@ -435,6 +435,67 @@ try {
   }
   for (const wrong of [{ ...request, signed: true }, { ...request, sdkTempRoot: root }, { ...request, projectOutput: root }]) assert.throws(() => readCompletedSignedBuild(wrong));
   pass('completed-signed-readonly-both-formats-full-source-plan-artifact-and-SDK-binding-no-sign-phase-write-or-ambient-TEMP');
+
+  // Exact old predicate preimage from b2f1465a; it rejects this legal completed state.
+  const oldInventory = " const roles=[['gui','winsmux-app.exe','pe_gui_original'],['cli','winsmux.exe','pe_cli'],['mcp','winsmux-workspace-mcp.exe','pe_mcp']];if(flavor==='msi')roles.push(['app_lib','winsmux_app_lib.dll','pe_app_lib']);\n const expected=[...licenseRows,...roles.map(([role,name,sourceRole])=>({role,path:name,bytes:sources.get(sourceRole).length,sha256:role==='gui'?record.gui_sha256:digest(sources.get(sourceRole))}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);\n need(JSON.stringify(plan.files)===JSON.stringify(expected),'native_transport_plan_inventory_changed');";
+  assert.equal(digest(Buffer.from(oldInventory)), '354e677058df4331689da23b6cb46ac2e0a698d4387b3331a8298abd748d9d10');
+  const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8'), transportLines=transportSource.split('\n');
+  const rowStart=transportLines.findIndex(line=>line.startsWith(" const roles=[['gui'"));
+  assert.ok(rowStart>=0);
+  const currentInventory=transportLines.slice(rowStart,rowStart+3).join('\n');
+  assert.ok(currentInventory.endsWith("need(JSON.stringify(plan.files)===JSON.stringify(expected),'native_transport_plan_inventory_changed');"));
+  const currentSigned=transportLines.find(line=>line.startsWith("else for(const flavor of ['msi','nsis'])")&&line.includes('native_transport_signed_gui_row_changed'));
+  const currentUnsigned=transportLines.find(line=>line.startsWith('if(!signedProfile)for'));
+  assert.equal(digest(Buffer.from(currentUnsigned)), '867773dc6a370a4a2a8df6f6e84d44fec3b7f6d693192a5696ab4518231a7d77');
+  const {selectTransportLicenseRows}=await import('../../scripts/desktop-native-nsis-observer.mjs');
+  const licenseRows=selectTransportLicenseRows(JSON.parse(fs.readFileSync(path.join(source,'binaries/distribution-manifest.json'))));
+  const transportInputs=f=>new Map([['pe_gui_original',fs.readFileSync(f.gui)],['pe_app_lib',fs.readFileSync(f.library)],
+    ['pe_cli',fs.readFileSync(path.join(source,'binaries/winsmux-'+binding.host+'.exe'))],
+    ['pe_mcp',fs.readFileSync(path.join(source,'binaries/winsmux-workspace-mcp-'+binding.host+'.exe'))]]);
+  const transportPlans=f=>Object.fromEntries(['msi','nsis'].map(flavor=>[flavor,JSON.parse(fs.readFileSync(f.gui+'.winsmux-'+flavor+'-plan.json'))]));
+  const demandTransport=(value,reason)=>{if(!value)throw Error(reason);};
+  const evaluateInventory=(code,f,flavor,signedProfile,completion,need=demandTransport,plans=transportPlans(f),sources=transportInputs(f))=>
+    new Function('sources','licenseRows','record','signedProfile','completion','plans','flavor','plan','digest','need',code+'\nreturn expected;')
+      (sources,licenseRows,readState(f).records.find(row=>row.flavor===flavor),signedProfile,completion,plans,flavor,plans[flavor],digest,need);
+  const evaluateSigned=(completion,plans)=>new Function('completion','plans','need','if(false){} '+currentSigned)(completion,plans,demandTransport);
+  const signedOperands=[];
+  for(const flavor of ['msi','nsis']){
+    const planned=transportPlans(completed)[flavor],originalLength=fs.readFileSync(completed.gui).length;
+    const signedGui=planned.files.find(row=>row.role==='gui');
+    assert.equal(signedGui.bytes-originalLength,27);
+    const outcomes=[];const beforeExpected=evaluateInventory(oldInventory,completed,flavor,true,observed,(value,reason)=>outcomes.push({value,reason}));
+    assert.deepEqual(beforeExpected.filter(row=>row.role!=='gui'),planned.files.filter(row=>row.role!=='gui'));
+    assert.equal(outcomes.length,1);assert.equal(outcomes[0].value,false);
+    assert.equal(beforeExpected.find(row=>row.role==='gui').sha256,signedGui.sha256);
+    assert.throws(()=>evaluateInventory(oldInventory,completed,flavor,true,observed),/native_transport_plan_inventory_changed/);
+    assert.deepEqual(evaluateInventory(currentInventory,completed,flavor,true,observed),planned.files);
+    signedOperands.push({flavor,original_bytes:originalLength,plan_gui_bytes:signedGui.bytes,completed_gui_bytes:observed.pairs.find(row=>row.flavor===flavor).gui.bytes,
+      non_gui_exact:true,old_inventory_refused:true,repaired_inventory_passed:true});
+  }
+  evaluateSigned(observed,transportPlans(completed));
+  for(const flavor of ['msi','nsis'])for(const [key,value] of [['role','other'],['path','other.exe'],['bytes',1],['sha256','0'.repeat(64)]]){
+    const altered=structuredClone(observed);altered.pairs.find(row=>row.flavor===flavor).gui[key]=value;
+    assert.throws(()=>evaluateSigned(altered,transportPlans(completed)),/native_transport_signed_gui_row_changed/);
+  }
+  const damagedSources=transportInputs(completed);damagedSources.set('pe_cli',Buffer.concat([damagedSources.get('pe_cli'),Buffer.from('changed')]));
+  assert.throws(()=>evaluateInventory(currentInventory,completed,'msi',true,observed,demandTransport,transportPlans(completed),damagedSources),/native_transport_plan_inventory_changed/);
+  const damagedPlan=transportPlans(completed);damagedPlan.nsis.files.find(row=>row.role==='license').bytes++;
+  assert.throws(()=>evaluateInventory(currentInventory,completed,'nsis',true,observed,demandTransport,damagedPlan),/native_transport_plan_inventory_changed/);
+  cases.push({name:'signed-transport-exact-old-rejects-legal-growth-repaired-both-flavors-full-row-tamper-refused',result:'passed',operands:signedOperands,
+    scope:'Original source-extracted predicate over actual producer synthetic signed state. Not the unobserved CI operand values.'});
+  const unsignedTransport=await frozenMsi(false);await finishMsi();fs.writeFileSync(unsignedTransport.gui,unsignedTransport.original);patched(unsignedTransport.gui,'NSS');await callback();
+  const unsignedSetup=artifact('setup');fs.mkdirSync(path.dirname(unsignedSetup),{recursive:true});fs.writeFileSync(unsignedSetup,'unsigned transport fixture');await callback(unsignedSetup);
+  fs.writeFileSync(unsignedTransport.gui,unsignedTransport.original);
+  for(const flavor of ['msi','nsis']){
+    assert.deepEqual(evaluateInventory(currentInventory,unsignedTransport,flavor,false,null),evaluateInventory(oldInventory,unsignedTransport,flavor,false,null));
+    assert.equal(transportPlans(unsignedTransport)[flavor].files.find(row=>row.role==='gui').bytes,unsignedTransport.original.length);
+  }
+  const original=unsignedTransport.original,marker=Buffer.from('__TAURI_BUNDLE_TYPE_VAR_'),at=original.indexOf(marker),phase=readState(unsignedTransport);
+  new Function('signedProfile','original','marker','at','phase','digest','need',currentUnsigned)(false,original,marker,at,phase,digest,demandTransport);
+  const changedUnsigned=transportPlans(unsignedTransport);changedUnsigned.msi.files.find(row=>row.role==='gui').bytes++;
+  assert.throws(()=>evaluateInventory(currentInventory,unsignedTransport,'msi',false,null,demandTransport,changedUnsigned),/native_transport_plan_inventory_changed/);
+  pass('unsigned-transport-original-size-and-exact-three-byte-marker-hash-projection-unchanged');
+
 
   for (const mode of ['foreign', 'hardlink', 'case', 'linked']) {
     const f = fixture(false), dest = path.join(f.temp, mode === 'case' ? 'WINSMUX.EXE' : 'winsmux.exe');

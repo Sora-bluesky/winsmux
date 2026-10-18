@@ -4124,7 +4124,7 @@ for(const flavor of ['msi','nsis']) {
  const planBytes=sources.get('plan_'+flavor);need(digest(planBytes)===record.plan_sha256,'native_transport_plan_changed');
  need(sameKeys(plan,['schema','flavor','version','host','files'])&&plan.schema==='winsmux-desktop-install-plan/v1'&&plan.flavor===flavor&&plan.version==='0.38.0'&&plan.host===phase.host&&Array.isArray(plan.files)&&Buffer.from(JSON.stringify(plan,null,2)+'\n').equals(planBytes),'native_transport_plan_encoding_refused');
  const roles=[['gui','winsmux-app.exe','pe_gui_original'],['cli','winsmux.exe','pe_cli'],['mcp','winsmux-workspace-mcp.exe','pe_mcp']];if(flavor==='msi')roles.push(['app_lib','winsmux_app_lib.dll','pe_app_lib']);
- const expected=[...licenseRows,...roles.map(([role,name,sourceRole])=>({role,path:name,bytes:sources.get(sourceRole).length,sha256:role==='gui'?record.gui_sha256:digest(sources.get(sourceRole))}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
+ const expected=[...licenseRows,...roles.map(([role,name,sourceRole])=>({role,path:name,bytes:signedProfile&&role==='gui'?completion.pairs.find(r=>r.flavor===flavor).gui.bytes:sources.get(sourceRole).length,sha256:role==='gui'?record.gui_sha256:digest(sources.get(sourceRole))}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);
  need(JSON.stringify(plan.files)===JSON.stringify(expected),'native_transport_plan_inventory_changed');
  need(plan.files.find(r=>r.role==='gui').sha256===record.gui_sha256,'native_transport_gui_plan_changed');
  const includePath=flavor==='msi'?gui+'.winsmux-plan.wxi':gui+'.winsmux-nsis-plan.nsh';need(digest(plain(includePath))===record.include_sha256,'native_transport_include_changed');
@@ -4135,7 +4135,7 @@ for(const flavor of ['msi','nsis']) {
 const original=sources.get('pe_gui_original'),marker=Buffer.from('__TAURI_BUNDLE_TYPE_VAR_'),at=original.indexOf(marker);
 need(at>=0&&original.indexOf(marker,at+1)<0&&at+marker.length+3<=original.length&&original.subarray(at+marker.length,at+marker.length+3).toString('ascii')==='UNK'&&digest(original)===phase.input_gui_sha256,'native_transport_original_gui_changed');
 if(!signedProfile)for(const [flavor,tag] of [['msi','MSI'],['nsis','NSS']]){const projected=Buffer.from(original);projected.write(tag,at+marker.length,3,'ascii');need(digest(projected)===phase.records.find(r=>r.flavor===flavor).gui_sha256,'native_transport_gui_projection_changed');}
-else for(const flavor of ['msi','nsis'])need(completion.pairs.find(r=>r.flavor===flavor).gui.sha256===plans[flavor].files.find(r=>r.role==='gui').sha256,'native_transport_signed_gui_row_changed');
+else for(const flavor of ['msi','nsis']){const completedGui=completion.pairs.find(r=>r.flavor===flavor).gui,plannedGui=plans[flavor].files.find(r=>r.role==='gui');need(['role','path','bytes','sha256'].every(key=>completedGui[key]===plannedGui[key]),'native_transport_signed_gui_row_changed');}
 need(digest(sources.get('pe_app_lib'))===(signedProfile?plans.msi.files.find(r=>r.role==='app_lib').sha256:phase.input_app_lib_sha256),'native_transport_app_library_changed');
 for(const role of ['pe_gui_original','pe_app_lib','pe_cli','pe_mcp'])assertWindowsRuntime(sources.get(role),phase.host);
 const baseReceipt={schema:'winsmux-desktop-native-ci-candidate/v1',source_commit:sourceCommit,version:'0.38.0',release_tag:'v0.38.0',host:phase.host,run_id:process.env.GITHUB_RUN_ID,run_attempt:process.env.GITHUB_RUN_ATTEMPT,format,build_phase_sha256:digest(phaseBytes),generation_manifest_sha256:digest(manifestBytes),files:identities};

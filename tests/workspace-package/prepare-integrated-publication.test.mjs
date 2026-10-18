@@ -35,7 +35,7 @@ const base='9245269dcd3fc9973ca69abf55e6ef865d94d2ab', tree='ed59823a10090ed0c64
 const npmHead='b048b00b9291e346c247f2799d96283e21cb471e';
 const currentPsChange = Object.freeze({ path: 'scripts/test-public-release.ps1',
   before_sha256: '40dc9b64426cd918f943e3b45af6779d69a037f683cba454d74942c74fefbaa5',
-  after_sha256: 'b2f1465a52adf42346c91076adedac8a85cf9298c3971d9bc73e1be9cc81427e' });
+  after_sha256: '54a3be86bf1dc6c514b2cb23f7e7f63922202eafa5eb936f3c1f86b7e308f302' });
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
 const rows=input.sources.map(row=>({path:row.path,source_file:row.source_file,bytes:fs.statSync(row.source_file).size,sha256:row.observed_sha256}));
 const repositoryRoot=path.resolve(path.dirname(npmTrialFile),'../../..');
