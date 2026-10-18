@@ -5895,8 +5895,7 @@ function Get-DesktopNativeVhdOwnedRoot {
  Assert-DesktopNativeVhdCondition ($env:GITHUB_ACTIONS -ceq 'true' -and $env:RUNNER_OS -ceq 'Windows' -and [IntPtr]::Size -eq 8) 'owned_vhd_ci_only'
  Assert-DesktopNativeVhdCondition ($env:GITHUB_RUN_ID -cmatch '^[1-9][0-9]*$' -and $env:GITHUB_RUN_ATTEMPT -cmatch '^[1-9][0-9]*$') 'owned_vhd_run_identity'
  Assert-DesktopNativeVhdCondition ($DesktopNativeSourceCommit -cmatch '^[0-9a-f]{40}$' -and $DesktopNativeFormat -cin @('NSIS','MSI')) 'owned_vhd_source_identity'
- $tempRoot=[IO.Path]::GetFullPath($env:RUNNER_TEMP)
- $inputRoot=Join-Path $tempRoot ('winsmux-native-input-'+$env:GITHUB_RUN_ID+'.'+$env:GITHUB_RUN_ATTEMPT+'.'+$DesktopNativeSourceCommit+'.'+$DesktopNativeFormat)
+ $inputRoot = Get-DesktopNativeInputRoot
  $evidenceRoot=Join-Path $inputRoot 'evidence'
  $full=[IO.Path]::GetFullPath($OwnedRoot)
  Assert-DesktopNativeVhdCondition ($OwnedRoot -ceq $full -and $full.StartsWith($evidenceRoot+'\',[StringComparison]::Ordinal) -and [IO.Path]::GetDirectoryName($full) -ceq $evidenceRoot -and [IO.Path]::GetFileName($full) -cmatch '^vhd-owned-[0-9a-f]{32}$') 'owned_vhd_root_scope'
