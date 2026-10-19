@@ -35,6 +35,8 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/workspace-package/github-candidate-artifacts.test.mjs',
   'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',
   'tests/DesktopInstallReceipt.Tests.ps1',
+  'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',
+  'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'

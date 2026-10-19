@@ -126,7 +126,7 @@ const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
 // Final-source applicability is one exact current PS row, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,22); assert.equal(new Set(publicationCutoverPaths).size,22); });
+check(() => { assert.equal(publicationCutoverPaths.length,27); assert.equal(new Set(publicationCutoverPaths).size,27); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [currentPsChange]));
 check(() => { const value=projection(); value.source.changes.push({path:'.gitignore',before_sha256:null,after_sha256:'d'.repeat(64)}); validateOriginProjection(value); });
