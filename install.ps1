@@ -1535,7 +1535,14 @@ function New-WinsmuxSupportStage {
     if (Test-InstallProfileContent $Profile 'orchestration_scripts') { Install-OrchestraSupportScripts }
     if (Test-InstallProfileContent $Profile 'vault') { Install-SecuritySupportScripts }
     if (Test-InstallProfileContent $Profile 'local_router_artifacts') { Install-LocalRouterArtifacts }
-    Download-File '.winsmux.conf' (Join-Path $stageRoot '.winsmux.conf')
+    $owner = Read-WinsmuxSupportOwner $Lease
+    # Settings are replaced only while they still hold the bytes this installer
+    # recorded. Edited or unreceipted settings stay the user's and leave the receipt.
+    $settings = Get-WinsmuxInstallSnapshot (Get-WinsmuxMemberPath $Lease '.winsmux.conf') File
+    $ownedSettings = $settings.Present -and $owner -and
+        @($owner.files | Where-Object { $_.name -ceq '.winsmux.conf' -and $_.sha256 -ceq $settings.Files[''] }).Count -eq 1
+    if (-not $settings.Present -or $ownedSettings) { Download-File '.winsmux.conf' (Join-Path $stageRoot '.winsmux.conf') }
+    else { Write-Status 'Existing .winsmux.conf kept; default settings were not applied.' }
     $wrapper = @'
 @echo off
 setlocal
@@ -1576,7 +1583,6 @@ exit $childExitCode
             $members.Add([PSCustomObject]@{ Name=$name; Stage=$stagedPath; Remove=$false })
         }
     }
-    $owner = Read-WinsmuxSupportOwner $Lease
     if ($owner) {
         foreach ($entry in $owner.files) {
             if ($entry.name -ceq '.winsmux/bin/install.ps1' -or $entry.name -cin @($members | ForEach-Object { $_.Name })) { continue }

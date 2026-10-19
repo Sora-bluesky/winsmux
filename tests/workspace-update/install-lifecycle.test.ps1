@@ -294,7 +294,7 @@ foreach($mode in @('success','required-missing','optional-probe-failed')) {
         try {
             Set-Item Function:Download-File {
                 param($Relative,$Destination)
-                if($mode -ceq 'required-missing' -and $Relative -ceq '.winsmux.conf'){throw 'Required support missing.'}
+                if($mode -ceq 'required-missing' -and $Relative -ceq 'scripts/winsmux-core.ps1'){throw 'Required support missing.'}
                 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Destination))
                 [IO.File]::WriteAllText($Destination,('fixture-'+$Relative),[Text.UTF8Encoding]::new($false))
             }
@@ -747,6 +747,77 @@ foreach($entryState in @('owned','modified')) {
         Assert-Condition ([IO.File]::ReadAllText($unknown) -ceq 'unknown-user-helper' -and [IO.File]::ReadAllText((Join-Path $root '.winsmux/unknown.txt')) -ceq 'unknown-user-file') 'Unknown user files were changed.'
         Assert-Condition ((Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes($project))) -ceq $projectSha -and (Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes((Join-Path $bin 'winsmux.exe')))) -ceq $exeSha) 'User project or standalone executable was changed.'
     }
+}
+
+function New-SettingsSupport($Lease,[string]$Default) {
+    $ResolvedVersion='0.38.0';$ResolvedReleaseTag='v0.38.0';$script:SettingsDefault=$Default
+    $download=(Get-Item Function:Download-File).ScriptBlock
+    $optional=(Get-Item Function:Download-OptionalFile).ScriptBlock
+    try {
+        Set-Item Function:Download-File {
+            param($Relative,$Destination)
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($Destination))
+            $content=if($Relative -ceq '.winsmux.conf'){$script:SettingsDefault}else{'fixture-'+$Relative}
+            [IO.File]::WriteAllText($Destination,$content,[Text.UTF8Encoding]::new($false))
+        }
+        Set-Item Function:Download-OptionalFile {param($Relative,$Destination) Download-File $Relative $Destination}
+        return (New-WinsmuxSupportStage $Lease 'full' $true)
+    } finally {Set-Item Function:Download-File $download;Set-Item Function:Download-OptionalFile $optional}
+}
+function Assert-SettingsState([string]$Root,$Lease,[byte[]]$Expected,[bool]$Owned,[string]$Message) {
+    $bytes=[IO.File]::ReadAllBytes((Join-Path $Root '.winsmux.conf'))
+    Assert-Condition ([Convert]::ToBase64String($bytes) -ceq [Convert]::ToBase64String($Expected)) ($Message+' settings bytes differ.')
+    $rows=@((Read-WinsmuxSupportOwner $Lease).files|Where-Object name -ceq '.winsmux.conf')
+    $receiptOk=if($Owned){$rows.Count -eq 1 -and $rows[0].sha256 -ceq (Get-WinsmuxBytesSha256 $bytes)}else{$rows.Count -eq 0}
+    Assert-Condition $receiptOk ($Message+' settings ownership receipt differs.')
+}
+function Invoke-SettingsUpdate($Lease,[string]$Default,[bool]$Staged) {
+    $support=New-SettingsSupport $Lease $Default
+    Assert-Condition ((@($support.Members|Where-Object Name -ceq '.winsmux.conf').Count -eq 1) -eq $Staged) ('Settings staging for '+$Default+' differs.')
+    Invoke-Generation $Lease $support
+}
+Run-Case 'settings-absent-default-installed' {
+    param($root)
+    $bin=New-Fixture $root;[IO.File]::Delete((Join-Path $root '.winsmux.conf'));$lease=Open-WinsmuxInstallLease $bin
+    try {
+        Invoke-SettingsUpdate $lease 'default-a' $true
+        Assert-SettingsState $root $lease ($utf8.GetBytes('default-a')) $true 'Absent:'
+    } finally {$lease.Stream.Dispose()}
+}
+Run-Case 'settings-owned-updated' {
+    param($root)
+    $bin=New-Fixture $root;[IO.File]::Delete((Join-Path $root '.winsmux.conf'));$lease=Open-WinsmuxInstallLease $bin
+    try {
+        Invoke-SettingsUpdate $lease 'default-a' $true
+        Invoke-SettingsUpdate $lease 'default-b' $true
+        Assert-SettingsState $root $lease ($utf8.GetBytes('default-b')) $true 'Owned:'
+    } finally {$lease.Stream.Dispose()}
+}
+Run-Case 'settings-modified-kept' {
+    param($root)
+    $bin=New-Fixture $root;$settings=Join-Path $root '.winsmux.conf';[IO.File]::Delete($settings);$lease=Open-WinsmuxInstallLease $bin
+    $edited=[byte[]]($utf8.GetBytes('default-a')+$utf8.GetBytes("`n# user edit`n"))
+    try {
+        Invoke-SettingsUpdate $lease 'default-a' $true
+        [IO.File]::WriteAllBytes($settings,$edited)
+        Invoke-SettingsUpdate $lease 'default-b' $false
+        Assert-SettingsState $root $lease $edited $false 'Modified:'
+        Invoke-SettingsUpdate $lease 'default-c' $false
+        Assert-SettingsState $root $lease $edited $false 'Modified second update:'
+    } finally {$lease.Stream.Dispose()}
+    Invoke-Uninstall
+    Assert-Condition ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settings)) -ceq [Convert]::ToBase64String($edited)) 'Uninstall changed kept settings.'
+}
+Run-Case 'settings-legacy-kept' {
+    param($root)
+    $bin=New-Fixture $root;$lease=Open-WinsmuxInstallLease $bin;$legacy=$utf8.GetBytes('user-old-settings')
+    try {
+        Assert-Condition ($null -eq (Read-WinsmuxSupportOwner $lease)) 'Legacy fixture has a receipt.'
+        Invoke-SettingsUpdate $lease 'default-a' $false
+        Assert-SettingsState $root $lease $legacy $false 'Legacy:'
+        Invoke-SettingsUpdate $lease 'default-b' $false
+        Assert-SettingsState $root $lease $legacy $false 'Legacy second update:'
+    } finally {$lease.Stream.Dispose()}
 }
 
 $receipt=@{schema='winsmux-install-lifecycle-proof/v1';scope='isolated Windows native filesystem; synthetic binary/sidecar/support; mocked profile/user PATH registration; class-wide update/rollback/recovery and uninstall preservation; no network or real user installation';passed=@($results|Where-Object passed).Count;failed=@($results|Where-Object {-not $_.passed}).Count;cases=$results.ToArray()}
