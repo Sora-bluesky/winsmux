@@ -839,6 +839,25 @@ Run-Case 'settings-modified-kept' {
     Invoke-Uninstall
     Assert-Condition ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settings)) -ceq [Convert]::ToBase64String($edited)) 'Uninstall changed kept settings.'
 }
+Run-Case 'settings-reverted-during-stage-kept' {
+    param($root)
+    $bin=New-Fixture $root;$settings=Join-Path $root '.winsmux.conf';[IO.File]::Delete($settings);$lease=Open-WinsmuxInstallLease $bin
+    $status=(Get-Item Function:Write-Status).ScriptBlock
+    try {
+        Invoke-SettingsUpdate $lease 'default-a' $true
+        [IO.File]::WriteAllBytes($settings,[byte[]]($utf8.GetBytes('default-a')+$utf8.GetBytes("`n# user edit`n")))
+        $script:RevertedSettings=$utf8.GetBytes('default-a');$script:SettingsPath=$settings;$script:SettingsReverted=$false
+        # The kept-settings notice runs after the stage judged the file the user's and before
+        # the receipt walk re-reads it, so the user's save lands between the two reads.
+        Set-Item Function:Write-Status {param($msg) if($msg -like 'Existing .winsmux.conf kept*'){[IO.File]::WriteAllBytes($script:SettingsPath,$script:RevertedSettings);$script:SettingsReverted=$true}}
+        try {$support=New-SettingsSupport $lease 'default-b'} finally {Set-Item Function:Write-Status $status}
+        Assert-Condition $script:SettingsReverted 'Settings were not reverted between the stage reads.'
+        Invoke-Generation $lease $support
+        Assert-Condition ([IO.File]::Exists($settings) -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($settings)) -ceq [Convert]::ToBase64String($script:RevertedSettings)) 'Update removed settings reverted during staging.'
+        Assert-Condition (@($support.Members|Where-Object Name -ceq '.winsmux.conf').Count -eq 0) 'Settings reverted during staging became a member.'
+        Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Update left a pending marker.'
+    } finally {$lease.Stream.Dispose()}
+}
 Run-Case 'support-held-member-restored' {
     param($root)
     $bin=New-Fixture $root;$before=Read-FailureInventory $root;$priorPath=$script:UserPath;$lease=Open-WinsmuxInstallLease $bin

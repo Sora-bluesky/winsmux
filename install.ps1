@@ -1611,7 +1611,9 @@ exit $childExitCode
     }
     if ($owner) {
         foreach ($entry in $owner.files) {
-            if ($entry.name -ceq '.winsmux/bin/install.ps1' -or $entry.name -cin @($members | ForEach-Object { $_.Name })) { continue }
+            # Every profile carries the settings, so a profile change never removes them; a
+            # settings file left out of the stage above is the user's and stays in place.
+            if ($entry.name -cin @('.winsmux/bin/install.ps1', '.winsmux.conf') -or $entry.name -cin @($members | ForEach-Object { $_.Name })) { continue }
             $oldPath = Get-WinsmuxMemberPath $Lease $entry.name
             $old = Get-WinsmuxInstallSnapshot $oldPath File
             if ($old.Present -and $old.Files[''] -ceq $entry.sha256) {
