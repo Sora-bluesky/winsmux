@@ -791,9 +791,17 @@ if ($isGitHubRunner -and $candidateFixture) {
     $nativeVersion=Invoke-CapturedProcess -FilePath $native -Arguments @('-V')
     Assert-Task880 ($nativeVersion.ExitCode -eq 0 -and $nativeVersion.StdOut -ceq ('winsmux '+$expectedNativeVersion)) 'Real PE did not run after update.'
     $config=Join-Path $fixtureHome '.winsmux.conf'
-    [IO.File]::WriteAllText($config,'task880 user settings before failed update',[Text.UTF8Encoding]::new($false))
-    $before=Get-Task880Snapshot;$priorUser=[Environment]::GetEnvironmentVariable('Path','User')
+    [IO.File]::WriteAllText($config,'task880 user settings kept across update',[Text.UTF8Encoding]::new($false))
+    $configHash=(Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash
     $lock=[IO.File]::Open($config,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {$kept=Invoke-Task880Action 'update'}finally{$lock.Dispose()}
+    Save-Task880Command 'edited-settings-update' $kept
+    Assert-Task880 ($kept.ExitCode -eq 0) 'Update failed while the user-edited settings were open.'
+    Assert-Task880 ((Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash -ceq $configHash) 'Update changed user-edited settings.'
+    $supportOwner=[IO.File]::ReadAllText((Join-Path $fixtureHome '.winsmux/install-owner.json'))|ConvertFrom-Json -AsHashtable
+    Assert-Task880 (@($supportOwner.files|Where-Object {$_.name -ceq '.winsmux.conf'}).Count -eq 0) 'Support receipt claimed user-edited settings.'
+    $before=Get-Task880Snapshot;$priorUser=[Environment]::GetEnvironmentVariable('Path','User')
+    $lock=[IO.File]::Open((Join-Path $fixtureHome '.winsmux/bin/winsmux-core.ps1'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
     try {$locked=Invoke-Task880Action 'update'}finally{$lock.Dispose()}
     Save-Task880Command 'external-rename-lock' $locked
     Save-Task880Equality 'external-rename-lock' $before (Get-Task880Snapshot) $priorUser ([Environment]::GetEnvironmentVariable('Path','User'))

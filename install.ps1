@@ -1243,6 +1243,10 @@ function Install-VerifiedWinsmuxGeneration {
             $id = 'support-' + $index.ToString('000'); $index++
             $extraPaths[$id] = Get-WinsmuxMemberPath $Lease $item.Name
             $extraSnapshots[$id] = Get-WinsmuxInstallSnapshot $extraPaths[$id] File
+            if ($item.PSObject.Properties['PriorSha256']) {
+                $current = if ($extraSnapshots[$id].Present) { $extraSnapshots[$id].Files[''] } else { '' }
+                if ($current -cne $item.PriorSha256) { throw "$($item.Name) changed during the update; nothing was replaced and the edited file was kept." }
+            }
             $stage[$id] = Join-Path $operationRoot ('new-' + $id)
             $backup[$id] = Join-Path $operationRoot ('old-' + $id)
             $rejected[$id] = Join-Path $operationRoot ('rejected-' + $id)
@@ -1599,7 +1603,10 @@ exit $childExitCode
         if ($name -in @('.winsmux/bin/install.ps1', '.winsmux/install-owner.json')) { continue }
         $stagedPath = if ($name -ceq 'terminal-fragment') { Join-Path $stageRoot 'fragment/winsmux.json' } else { Join-Path $stageRoot $name }
         if (Assert-WinsmuxInstallPath $stagedPath File -AllowMissing) {
-            $members.Add([PSCustomObject]@{ Name=$name; Stage=$stagedPath; Remove=$false })
+            $member = [PSCustomObject]@{ Name=$name; Stage=$stagedPath; Remove=$false }
+            # Publication must replace exactly the settings bytes judged installer-owned here.
+            if ($name -ceq '.winsmux.conf') { $member | Add-Member PriorSha256 $(if ($settings.Present) { $settings.Files[''] } else { '' }) }
+            $members.Add($member)
         }
     }
     if ($owner) {

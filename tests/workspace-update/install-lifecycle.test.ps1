@@ -830,13 +830,47 @@ Run-Case 'settings-modified-kept' {
     try {
         Invoke-SettingsUpdate $lease 'default-a' $true
         [IO.File]::WriteAllBytes($settings,$edited)
-        Invoke-SettingsUpdate $lease 'default-b' $false
+        $lock=[IO.File]::Open($settings,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {Invoke-SettingsUpdate $lease 'default-b' $false} finally {$lock.Dispose()}
         Assert-SettingsState $root $lease $edited $false 'Modified:'
         Invoke-SettingsUpdate $lease 'default-c' $false
         Assert-SettingsState $root $lease $edited $false 'Modified second update:'
     } finally {$lease.Stream.Dispose()}
     Invoke-Uninstall
     Assert-Condition ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settings)) -ceq [Convert]::ToBase64String($edited)) 'Uninstall changed kept settings.'
+}
+Run-Case 'support-held-member-restored' {
+    param($root)
+    $bin=New-Fixture $root;$before=Read-FailureInventory $root;$priorPath=$script:UserPath;$lease=Open-WinsmuxInstallLease $bin
+    $held=[IO.File]::Open((Join-Path $root '.winsmux/bin/winsmux-core.ps1'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try {
+        $failed=$false;try{Invoke-Generation $lease (New-Support $lease)}catch{$failed=$true}
+        Assert-Condition $failed 'Held support member was replaced.'
+    } finally {$held.Dispose()}
+    try {
+        Assert-Condition (Test-FailurePreserved $root $before) 'Held support member failure changed protected bytes.'
+        Assert-Condition ($script:UserPath -ceq $priorPath) 'Held support member failure changed registration.'
+        Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Held support member failure retained marker.'
+    } finally {$lease.Stream.Dispose()}
+}
+Run-Case 'settings-edited-during-update' {
+    param($root)
+    $bin=New-Fixture $root;$settings=Join-Path $root '.winsmux.conf';[IO.File]::Delete($settings);$lease=Open-WinsmuxInstallLease $bin
+    try {
+        Invoke-SettingsUpdate $lease 'default-a' $true
+        $support=New-SettingsSupport $lease 'default-b'
+        Assert-Condition (@($support.Members|Where-Object Name -ceq '.winsmux.conf').Count -eq 1) 'Owned settings were not staged.'
+        $before=Read-FailureInventory $root
+        $script:EditedSettings=[byte[]]($utf8.GetBytes('default-a')+$utf8.GetBytes("`n# saved during update`n"));$script:SettingsPath=$settings
+        Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq 'stage-readback'){[IO.File]::WriteAllBytes($script:SettingsPath,$script:EditedSettings)}}
+        $failed=$false;try{Invoke-Generation $lease $support}catch{$failed=$true}
+        Assert-Condition $failed 'Update replaced settings edited after staging.'
+        Assert-Condition ($script:GenerationFailure -like '*.winsmux.conf changed during the update*') 'Settings race failed with the wrong error.'
+        Assert-Condition ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settings)) -ceq [Convert]::ToBase64String($script:EditedSettings)) 'Settings edited during the update were lost.'
+        [IO.File]::WriteAllBytes($settings,$utf8.GetBytes('default-a'))
+        Assert-Condition ((Read-FailureInventory $root) -ceq $before) 'Rejected update changed installed members.'
+        Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Rejected update left a pending marker.'
+    } finally {$lease.Stream.Dispose()}
 }
 Run-Case 'settings-legacy-kept' {
     param($root)
