@@ -87,6 +87,8 @@ $whitelistPatterns = @(
     '.github/workflows/test.yml',
     '.github/workflows/remote-helper-ubuntu-2204.yml',
     '.github/workflows/desktop-baseline-capture.yml',
+    '.github/workflows/task879-install-e2e.yml',
+    '.github/task879/build-tree.json',
     '.github/ISSUE_TEMPLATE/**',
     '.github/PULL_REQUEST_TEMPLATE.md',
     '.gitignore',
