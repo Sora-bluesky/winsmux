@@ -383,6 +383,10 @@ Describe 'CLI bakeoff evidence harness' {
         ($output -join "`n") | Should -Not -Match 'C:\\Users\\'
     }
 
+    It 'keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22' {
+        $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\cli-comparison-bakeoff.md') -Raw -Encoding UTF8
+        $contractDoc | Should -Not -Match 'publishing v0\.36\.22|Before publishing v0\.36\.22|official benchmark evidence.*v0\.36\.22'
+    }
 
     It 'treats low Codex usage remaining notices as non-blocking readiness warnings' {
         $mainTs = $script:LegacyDesktopMain

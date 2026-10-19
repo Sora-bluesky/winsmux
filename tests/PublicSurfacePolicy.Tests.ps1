@@ -580,3 +580,22 @@ Describe 'Public surface policy' {
         $workflow | Should -Not -Match ('\$version\s+-cne\s+[''"]' + [Regex]::Escape($version) + '[''"]')
     }
 }
+
+# Kept outside the block above so it runs without that block's core.hooksPath setup.
+Describe 'Retired internal design records' {
+    It 'keeps the v0.36.24 design-freeze gate record out of the tracked public surface' {
+        $repoRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel 2>$null | Out-String).Trim()
+        $LASTEXITCODE | Should -Be 0
+        $record = 'docs/project/design-freeze-gate.md'
+        $tracked = @(
+            & git -C $repoRoot ls-files -- $record 2>$null |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        $LASTEXITCODE | Should -Be 0
+
+        @($tracked).Count | Should -Be 0
+        Get-Content (Join-Path $repoRoot '.gitignore') -Raw | Should -Not -Match ([Regex]::Escape("!$record"))
+        Get-Content (Join-Path $repoRoot '.githooks/pre-commit-whitelist.ps1') -Raw | Should -Not -Match ([Regex]::Escape("'$record'"))
+    }
+}
