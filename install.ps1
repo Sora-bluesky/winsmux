@@ -1016,6 +1016,25 @@ function Write-WinsmuxInstallFile {
     try { $stream.Write($Bytes, 0, $Bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
 }
 
+function Invoke-WinsmuxFileReplace {
+    param([string]$Source, [string]$Destination, [string]$Backup = '')
+    foreach ($delay in @(10, 20, 30, 0)) {
+        try {
+            if ($Backup) { [IO.File]::Replace($Source, $Destination, $Backup, $false) }
+            else { [IO.File]::Replace($Source, $Destination, [Management.Automation.Language.NullString]::Value, $false) }
+            return
+        } catch {
+            # A process that briefly opens the target without FileShare.Delete makes
+            # ReplaceFile fail with 32, or with 1175 when no backup is taken; both
+            # were measured to leave every name in place.
+            $hresult = if ($_.Exception.InnerException) { $_.Exception.InnerException.HResult } else { $_.Exception.HResult }
+            $retryable = if ($Backup) { @(0x80070020) } else { @(0x80070497, 0x80070020) }
+            if (-not $delay -or $hresult -notin $retryable) { throw }
+            Start-Sleep -Milliseconds $delay
+        }
+    }
+}
+
 function Get-WinsmuxInstallVolume {
     param([string]$Path, [string]$Kind = 'Either')
     $physical = Assert-WinsmuxInstallPath $Path $Kind -AllowMissing
@@ -1148,7 +1167,7 @@ function Publish-WinsmuxLifecycle {
         Invoke-WinsmuxInstallCheckpoint 'before-park-lifecycle'
         $oldPath = Join-Path $archive 'prior-install.ps1'
         Invoke-WinsmuxInstallCheckpoint 'before-publish-lifecycle'
-        [IO.File]::Replace($stage, $Lifecycle.Path, $oldPath, $false)
+        Invoke-WinsmuxFileReplace $stage $Lifecycle.Path $oldPath
         Invoke-WinsmuxInstallCheckpoint 'parked-lifecycle'
         Assert-WinsmuxInstallSnapshot $oldPath $Lifecycle.Prior
     } else {
@@ -1653,7 +1672,7 @@ function Write-WinsmuxRecoveryJournal {
     Write-WinsmuxInstallFile $temporary ([Text.UTF8Encoding]::new($false).GetBytes((ConvertTo-Json $Journal -Depth 20 -Compress)))
     [void](Assert-WinsmuxInstallPath $path File)
     if ((Get-WinsmuxInstallVolume $temporary File) -cne (Get-WinsmuxInstallVolume $path File)) { throw 'Recovery journal volume changed.' }
-    [IO.File]::Replace($temporary, $path, [Management.Automation.Language.NullString]::Value, $false)
+    Invoke-WinsmuxFileReplace $temporary $path
     $checked = Read-WinsmuxRecoveryJournal $Lease $OperationRoot
     foreach ($name in @('user','process')) {
         if ($checked.registration[$name].phase -cne $Journal.registration[$name].phase -or

@@ -239,6 +239,36 @@ Run-Case 'lifecycle-entry-prior-archived-on-failure' {
         Assert-Condition ($script:UserPath -ceq $priorPath -and $env:Path -ceq $processPath -and -not [IO.File]::Exists($lease.Marker)) 'Failure changed registration or retained marker.'
     } finally {$lease.Stream.Dispose()}
 }
+# An external reader that opens the canonical entrance without FileShare.Delete
+# blocks ReplaceFile (win32 32). The installer outlasts a short hold and keeps
+# the original error and bytes when the hold outlasts its retries.
+foreach($hold in @('transient','persistent')) {
+    Run-Case ('lifecycle-replace-'+$hold+'-holder') {
+        param($root)
+        $bin=New-Fixture $root;$entry=Join-Path $root $lifecycleEntryName;$old=$utf8.GetBytes('# older lifecycle entry'+[char]10)
+        [IO.File]::WriteAllBytes($entry,$old);$oldSha=Get-WinsmuxBytesSha256 $old
+        $before=Read-ProtectedInventory $root -ExceptLifecycleEntry;$lease=Open-WinsmuxInstallLease $bin
+        $script:EntryHolder=$null;$release=[Threading.CancellationTokenSource]::new()
+        try {
+            Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq 'before-publish-lifecycle'){
+                $script:EntryHolder=[IO.File]::Open($entry,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+                if($hold -ceq 'transient'){[void]$release.Token.Register([Action]$script:EntryHolder.Dispose);$release.CancelAfter(15)}}}
+            $failure=$null;try{Invoke-Generation $lease (New-Support $lease)}catch{$failure=$_}
+            Assert-Condition ($null -ne $script:EntryHolder) 'Entrance holder was not opened.'
+            if($hold -ceq 'transient') {
+                Assert-Condition ($null -eq $failure) ('Transient holder failed the update: '+$script:GenerationFailure)
+                Assert-Condition ((Read-LifecycleEntrySha $root) -ceq $candidateLifecycleSha) 'Lifecycle entry was not published.'
+                $archived=@(Get-ChildItem -LiteralPath $bin -Directory -Force -Filter '.winsmux-lifecycle-*' | ForEach-Object { Join-Path $_.FullName 'prior-install.ps1' } | Where-Object { [IO.File]::Exists($_) })
+                Assert-Condition ($archived.Count -eq 1 -and (Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes($archived[0]))) -ceq $oldSha) 'Old lifecycle entry was not archived intact.'
+                Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Success retained marker.'
+            } else {
+                Assert-Condition ($null -ne $failure -and $failure.Exception.InnerException.HResult -eq 0x80070020) 'Persistent holder did not surface the original sharing violation.'
+                Assert-Condition ((Read-LifecycleEntrySha $root) -ceq $oldSha) 'Failed publication changed the lifecycle entry.'
+                Assert-Condition ((Read-ProtectedInventory $root -ExceptLifecycleEntry) -ceq $before) 'Failed publication changed protected user data.'
+            }
+        } finally {$release.Dispose();if($script:EntryHolder){$script:EntryHolder.Dispose()};$lease.Stream.Dispose()}
+    }
+}
 foreach($mode in @('tampered','missing','no-space','startup-failed')) {
     Run-Case ('stage-'+$mode) {
         param($root)

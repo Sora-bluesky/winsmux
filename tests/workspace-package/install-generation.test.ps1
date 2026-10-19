@@ -10,7 +10,7 @@ if ($parseErrors.Count) { throw 'Product installer syntax is invalid.' }
 $names = @('Assert-WinsmuxReleaseTag', 'Get-WinsmuxBytesSha256', 'ConvertFrom-StrictWinsmuxJsonBytes',
     'Assert-WinsmuxLicenseObjectKeys', 'Assert-WinsmuxLicenseMemberPath', 'Initialize-WinsmuxInstallPathInfo',
     'Get-WinsmuxExecutingInstallerSource', 'ConvertTo-WinsmuxLifecycleBytes', 'New-WinsmuxLifecycleState', 'Assert-WinsmuxLifecycleFile', 'Publish-WinsmuxLifecycle', 'Assert-WinsmuxInstallPath', 'Open-WinsmuxInstallLease', 'Get-WinsmuxInstallSnapshot', 'Assert-WinsmuxInstallSnapshot',
-    'Read-WinsmuxInstallOwner', 'Get-WinsmuxInstallState', 'Invoke-WinsmuxInstallCheckpoint', 'Write-WinsmuxInstallFile',
+    'Read-WinsmuxInstallOwner', 'Get-WinsmuxInstallState', 'Invoke-WinsmuxInstallCheckpoint', 'Write-WinsmuxInstallFile', 'Invoke-WinsmuxFileReplace',
     'Get-WinsmuxInstallVolume', 'Assert-WinsmuxGenerationVolumes', 'Test-WinsmuxNullablePath',
     'Get-WinsmuxRegistrationPath', 'Set-WinsmuxRegistrationPath', 'Write-WinsmuxRecoveryJournal',
     'Publish-WinsmuxRegistrationSlot', 'Restore-WinsmuxRegistrationSlot', 'Move-WinsmuxInstallMember', 'Assert-WinsmuxInstalledGeneration', 'Install-VerifiedWinsmuxGeneration',
