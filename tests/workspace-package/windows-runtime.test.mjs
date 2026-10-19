@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { readRustcIdentity, verifyWindowsDistributionCompiler } from '../../scripts/assert-windows-distribution-toolchain.mjs';
 import { assertWindowsRuntime } from '../../scripts/assert-windows-runtime.mjs';
 import { windowsDistributionBuildPlan } from '../../scripts/windows-distribution-build.mjs';
+import { desktopCurrentLicenseSourcePath } from '../../scripts/windows-license-build-inputs.mjs';
 import { fixturePe } from './fixture-pe.mjs';
 
 const target = 'x86_64-pc-windows-msvc';
@@ -61,8 +62,12 @@ test('compiler verifier uses product VERSION and preserves the canonical measure
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-compiler-binding-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const binding = JSON.parse(fs.readFileSync(path.join(repoRoot, 'distribution/windows-licenses/binding.json')));
-  for (const relative of ['VERSION', 'distribution/windows-licenses/binding.json',
-    'distribution/windows-licenses/input.json', ...binding.sources.map(row => row.path)]) {
+  const inputs = ['VERSION', ...['binding.json', 'input.json', 'policy.json', 'manifest.json']
+    .map(name => 'distribution/windows-licenses/' + name), desktopCurrentLicenseSourcePath,
+  ...binding.sources.map(row => row.path)];
+  fs.cpSync(path.join(repoRoot, 'distribution/windows-licenses'), path.join(root, 'distribution/windows-licenses'),
+    { recursive: true });
+  for (const relative of inputs) {
     const destination = path.join(root, relative);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     fs.copyFileSync(path.join(repoRoot, relative), destination);
@@ -72,8 +77,7 @@ test('compiler verifier uses product VERSION and preserves the canonical measure
     accepted: true, version: '0.38.0', host: target, rustc_commit: measuredCommit });
   for (const text of [`host: aarch64-pc-windows-msvc\ncommit-hash: ${measuredCommit}\n`,
     `host: ${target}\ncommit-hash: ${'0'.repeat(40)}\n`]) assert.throws(() => verify(compilerResult(text)));
-  for (const relative of ['VERSION', 'distribution/windows-licenses/binding.json',
-    'distribution/windows-licenses/input.json', ...binding.sources.map(row => row.path)]) {
+  for (const relative of inputs) {
     const file = path.join(root, relative), original = fs.readFileSync(file);
     fs.writeFileSync(file, relative === 'VERSION' ? '0.38.1\n' : Buffer.concat([original, Buffer.from('x')]));
     assert.throws(() => verify(compilerResult()), undefined, relative);
