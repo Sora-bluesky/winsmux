@@ -28,6 +28,7 @@ $whitelistPatterns = @(
     'tests/workspace-package/desktop-build-entry.test.mjs',
     'tests/workspace-package/desktop-nsis-plan.test.mjs',
     'tests/workspace-update/install-lifecycle.test.ps1',
+    'tests/workspace-update/run.ps1',
     'winsmux-app/src-tauri/src/install_startup_receipt.rs',
     'winsmux-app/src-tauri/wix/installer.wxs',
     'README.md',

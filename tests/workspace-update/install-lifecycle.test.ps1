@@ -84,9 +84,30 @@ function New-Support($Lease) {
     $newUserPath=if(@($script:UserPath -split ';' | Where-Object { $_ -ieq $Lease.LocalBin })){$script:UserPath}else{if($script:UserPath){$script:UserPath+';'+$Lease.LocalBin}else{$Lease.LocalBin}}
     return [PSCustomObject]@{Root=$root;Members=$members;ProfileLine=$line;PriorUserPath=$script:UserPath;UserPath=$newUserPath;PriorProcessPath=$env:Path;ProcessPath=('fixture-process-path;'+$env:Path);Owner=(Read-WinsmuxSupportOwner $Lease)}
 }
-function Read-ProtectedInventory([string]$Root) {
+function Get-WrapperEntryFixtureBytes {
+    $definition=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-WinsmuxSupportStage'},$true))
+    Assert-Condition ($definition.Count -eq 1) 'Support stage function differs.'
+    $files=@{}
+    foreach($variable in @('wrapper','entryScript')) {
+        $values=@($definition[0].FindAll({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ceq $variable -and $node.Right -is [Management.Automation.Language.CommandExpressionAst] -and $node.Right.Expression -is [Management.Automation.Language.StringConstantExpressionAst]},$true))
+        Assert-Condition ($values.Count -eq 1) 'Support entry literal differs.'
+        $text=([string]$values[0].Right.Expression.Value).Replace(([string][char]13+[char]10),[string][char]10)+[char]10
+        $files[$variable]=[Text.UTF8Encoding]::new($false).GetBytes($text)
+    }
+    Assert-Condition ($files.wrapper.Length -eq 130 -and (Get-WinsmuxBytesSha256 $files.wrapper) -ceq 'd059bd613f24aa8ecbc64b0ca56751f87287d69ba71e8f4898859c0391d7428b') 'CMD differs from fixed process proof.'
+    Assert-Condition ($files.entryScript.Length -eq 661 -and (Get-WinsmuxBytesSha256 $files.entryScript) -ceq '6775b2aea0087e596b134857c0d680027efec7d95fb2c54f8624d80f69e3877f') 'Entry differs from fixed process proof.'
+    return [PSCustomObject]@{Cmd=$files.wrapper;Entry=$files.entryScript}
+}
+# The lifecycle entrance is published before the marker checkpoint and is a
+# permanent migration (install.ps1 Publish-WinsmuxLifecycle): after a failure past
+# that point it is exactly the candidate. Every other member stays exact.
+$lifecycleEntryName='.winsmux/bin/install.ps1'
+$candidateLifecycleSha=Get-WinsmuxBytesSha256 (ConvertTo-WinsmuxLifecycleBytes $ast.Extent.Text '0.38.0')
+$protectedNames=@('.local/bin/winsmux.exe','.local/bin/winsmux-licenses.owner.json','.local/bin/winsmux-licenses','.winsmux/bin/winsmux-core.ps1','.winsmux/bin/winsmux.cmd','.winsmux/bin/winsmux-entry.ps1','.winsmux.conf','.winsmux/version','.winsmux/install-owner.json','LocalAppData/Microsoft/Windows Terminal/Fragments/winsmux/winsmux.json','PowerShell/profile.ps1','.winsmux/projects/user-project/project.json','.winsmux/unknown.txt')
+function Read-ProtectedInventory([string]$Root,[switch]$ExceptLifecycleEntry) {
+    $names=if($ExceptLifecycleEntry){$protectedNames}else{$protectedNames+$lifecycleEntryName}
     $rows=[Collections.Generic.List[string]]::new()
-    foreach($name in @('.local/bin/winsmux.exe','.local/bin/winsmux-licenses.owner.json','.local/bin/winsmux-licenses','.winsmux/bin/winsmux-core.ps1','.winsmux/bin/winsmux.cmd','.winsmux/bin/winsmux-entry.ps1','.winsmux/bin/install.ps1','.winsmux.conf','.winsmux/version','.winsmux/install-owner.json','LocalAppData/Microsoft/Windows Terminal/Fragments/winsmux/winsmux.json','PowerShell/profile.ps1','.winsmux/projects/user-project/project.json','.winsmux/unknown.txt')) {
+    foreach($name in $names) {
         $path=Join-Path $Root $name
         if(-not [IO.File]::Exists($path) -and -not [IO.Directory]::Exists($path)){ $rows.Add('absent:'+$name);continue }
         if([IO.Directory]::Exists($path)) {
@@ -94,6 +115,18 @@ function Read-ProtectedInventory([string]$Root) {
         } else { $rows.Add($name+':'+(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()) }
     }
     return (($rows.ToArray()|Sort-Object -CaseSensitive)-join "`n")
+}
+function Read-LifecycleEntrySha([string]$Root) {
+    $path=Join-Path $Root $lifecycleEntryName
+    if([IO.Directory]::Exists($path)){return 'directory'}
+    if(-not [IO.File]::Exists($path)){return 'absent'}
+    return (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+function Read-FailureInventory([string]$Root) {
+    return (Read-ProtectedInventory $Root -ExceptLifecycleEntry)
+}
+function Test-FailurePreserved([string]$Root,[string]$Before) {
+    return ((Read-ProtectedInventory $Root -ExceptLifecycleEntry) -ceq $Before -and (Read-LifecycleEntrySha $Root) -ceq $candidateLifecycleSha)
 }
 function Invoke-Generation($Lease,$Support) {
     $state=Get-WinsmuxInstallState $Lease
@@ -143,14 +176,14 @@ foreach($prior in @($false,$true)) {
         if($faultPhase -match '^(before-park|parked)-support-(000|001|002|003|005)$' -and (-not $prior -or $faultPhase -match 'support-(002|003|005)$')){continue}
         Run-Case ('restore-'+$prior+'-'+$faultPhase) {
             param($root)
-            $bin=New-Fixture $root $prior;$before=Read-ProtectedInventory $root;$priorPath=$script:UserPath;$processPath=$env:Path
+            $bin=New-Fixture $root $prior;$before=Read-FailureInventory $root;$priorPath=$script:UserPath;$processPath=$env:Path
             $lease=Open-WinsmuxInstallLease $bin
             try {
                  $script:FaultReached=$false
                 Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq $faultPhase){$script:FaultReached=$true;throw 'Injected publication failure.'}}
                 $failed=$false;try{Invoke-Generation $lease (New-Support $lease)}catch{$failed=$true}
                 Assert-Condition ($failed -and $script:FaultReached) 'Declared publication fault was not reached or reported success.'
-                Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Failure changed protected generation/settings/project bytes.'
+                Assert-Condition (Test-FailurePreserved $root $before) 'Failure changed protected generation/settings/project bytes.'
                 Assert-Condition ($script:UserPath -ceq $priorPath -and $env:Path -ceq $processPath) 'Failure changed registration.'
                 Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Verified restoration retained marker.'
             }finally{$lease.Stream.Dispose()}
@@ -160,7 +193,7 @@ foreach($prior in @($false,$true)) {
 foreach($phase in @('published-exe','published-support-001','published-support-004','readback-complete','generation-committed')) {
     Run-Case ('restart-'+$phase) {
         param($root)
-        $bin=New-Fixture $root;$before=Read-ProtectedInventory $root
+        $bin=New-Fixture $root;$before=Read-FailureInventory $root
         $start=[Diagnostics.ProcessStartInfo]::new((Get-Command pwsh).Source);$start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.WorkingDirectory=$repo;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
         foreach($arg in @('-NoLogo','-NoProfile','-File',$PSCommandPath,'-ChildRoot',$root,'-ChildPhase',$phase)){$start.ArgumentList.Add($arg)}
         $process=[Diagnostics.Process]::Start($start);$outTask=$process.StandardOutput.ReadToEndAsync();$errTask=$process.StandardError.ReadToEndAsync();$process.WaitForExit()
@@ -171,13 +204,13 @@ foreach($phase in @('published-exe','published-support-001','published-support-0
         try{
             Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Recovery retained marker.'
             if($phase -ceq 'generation-committed'){Assert-Condition ([IO.File]::ReadAllText((Join-Path $root '.winsmux.conf')) -ceq 'new-.winsmux.conf') 'Committed generation rolled back.'}
-            else{Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Pending recovery did not restore original bytes.'}
+            else{Assert-Condition (Test-FailurePreserved $root $before) 'Pending recovery did not restore original bytes.'}
         }finally{$lease.Stream.Dispose()}
     }
 }
 Run-Case 'rollback-uncertain-retry' {
     param($root)
-    $bin=New-Fixture $root;$before=Read-ProtectedInventory $root;$lease=Open-WinsmuxInstallLease $bin
+    $bin=New-Fixture $root;$before=Read-FailureInventory $root;$lease=Open-WinsmuxInstallLease $bin
     try{
         Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -in @('before-readback','before-restore-support-001')){throw 'Retain uncertain rollback.'}}
         $failed=$false;try{Invoke-Generation $lease (New-Support $lease)}catch{$failed=$true;Assert-Condition ($_.Exception.Message -like '*restoration is uncertain*') 'Wrong uncertainty diagnostic.'}
@@ -186,7 +219,25 @@ Run-Case 'rollback-uncertain-retry' {
     }finally{$lease.Stream.Dispose()}
     Set-Item Function:Invoke-WinsmuxInstallCheckpoint $checkpoint
     $lease=Open-WinsmuxInstallLease $bin -RecoverPending
-    try{Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Retry changed original bytes.'}finally{$lease.Stream.Dispose()}
+    try{Assert-Condition (Test-FailurePreserved $root $before) 'Retry changed original bytes.'}finally{$lease.Stream.Dispose()}
+}
+Run-Case 'lifecycle-entry-prior-archived-on-failure' {
+    param($root)
+    $bin=New-Fixture $root;$entry=Join-Path $root $lifecycleEntryName;$old=$utf8.GetBytes('# older lifecycle entry'+[char]10)
+    [IO.File]::WriteAllBytes($entry,$old);$oldSha=Get-WinsmuxBytesSha256 $old
+    Assert-Condition ($oldSha -cne $candidateLifecycleSha) 'Older entry fixture equals the candidate.'
+    $before=Read-ProtectedInventory $root -ExceptLifecycleEntry;$priorPath=$script:UserPath;$processPath=$env:Path;$lease=Open-WinsmuxInstallLease $bin
+    try {
+        $script:FaultReached=$false
+        Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq 'marker-written'){$script:FaultReached=$true;throw 'Injected failure after lifecycle publication.'}}
+        $failed=$false;try{Invoke-Generation $lease (New-Support $lease)}catch{$failed=$true}
+        Assert-Condition ($failed -and $script:FaultReached) 'Update failure was not reached.'
+        Assert-Condition ((Read-LifecycleEntrySha $root) -ceq $candidateLifecycleSha) 'New lifecycle entry was not published.'
+        $archived=@(Get-ChildItem -LiteralPath $bin -Directory -Force -Filter '.winsmux-lifecycle-*' | ForEach-Object { Join-Path $_.FullName 'prior-install.ps1' } | Where-Object { [IO.File]::Exists($_) })
+        Assert-Condition ($archived.Count -eq 1 -and (Get-WinsmuxBytesSha256 ([IO.File]::ReadAllBytes($archived[0]))) -ceq $oldSha) 'Old lifecycle entry was not archived intact.'
+        Assert-Condition ((Read-ProtectedInventory $root -ExceptLifecycleEntry) -ceq $before) 'Failure changed protected user data.'
+        Assert-Condition ($script:UserPath -ceq $priorPath -and $env:Path -ceq $processPath -and -not [IO.File]::Exists($lease.Marker)) 'Failure changed registration or retained marker.'
+    } finally {$lease.Stream.Dispose()}
 }
 foreach($mode in @('tampered','missing','no-space','startup-failed')) {
     Run-Case ('stage-'+$mode) {
@@ -318,14 +369,14 @@ foreach($userState in @('missing','empty','populated')) {
             $userValue=switch($userState){'missing'{$null};'empty'{''};'populated'{'original-user-path'}}
             $processValue=switch($processState){'missing'{$null};'empty'{''};'populated'{'original-process-path'}}
             Set-InstallUserPath $userValue;$env:Path=$processValue
-            $lease=Open-WinsmuxInstallLease $bin;$before=Read-ProtectedInventory $root
+            $lease=Open-WinsmuxInstallLease $bin;$before=Read-FailureInventory $root
             try {
                 $script:FaultReached=$false
                 Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq 'before-readback'){$script:FaultReached=$true;throw 'Restore nullable registrations.'}}
                 $failed=$false;try{Invoke-Generation $lease (New-Support $lease)}catch{$failed=$true}
                 Assert-Condition ($failed -and $script:FaultReached) 'Nullable registration publication boundary was not reached.'
                 Assert-Condition ((Test-WinsmuxNullablePath (Get-InstallUserPath) $userValue) -and (Test-WinsmuxNullablePath $env:Path $processValue)) 'Missing/empty/populated PATH restoration changed representation.'
-                Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Nullable restoration changed protected files.'
+                Assert-Condition (Test-FailurePreserved $root $before) 'Nullable restoration changed protected files.'
                 Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Verified nullable restoration retained pending marker.'
             }finally{$lease.Stream.Dispose()}
         }
@@ -421,20 +472,20 @@ foreach($slotName in @('user','process')) {
     foreach($boundaryPhase in @('before-registration',('registration-'+$slotName+'-write-intent'),('registration-'+$slotName+'-written'),('registration-'+$slotName+'-confirmed'),'readback-complete')) {
         Run-Case ('path-external-'+$slotName+'-'+$boundaryPhase) {
             param($root)
-            $bin=New-Fixture $root;$before=Read-ProtectedInventory $root;$lease=Open-WinsmuxInstallLease $bin
+            $bin=New-Fixture $root;$before=Read-FailureInventory $root;$lease=Open-WinsmuxInstallLease $bin
             try {
                 $script:FaultReached=$false
                 Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq $boundaryPhase){$script:FaultReached=$true;Set-WinsmuxRegistrationPath $slotName 'external-X';if($Phase -cne 'before-registration' -and $Phase -cne 'readback-complete'){throw 'External PATH publication boundary.'}}}
                 $failed=$false;try{Invoke-Generation $lease (New-Support $lease)}catch{$failed=$true}
                 Assert-Condition ($failed -and $script:FaultReached) 'External PATH boundary not reached.'
                 Assert-Condition (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $slotName) 'external-X') 'Observed external PATH overwritten.'
-                Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'External PATH blocked paired byte restoration.'
+                Assert-Condition (Test-FailurePreserved $root $before) 'External PATH blocked paired byte restoration.'
                 Assert-Condition ([IO.File]::Exists($lease.Marker)) 'External PATH uncertainty discarded marker.'
                 Set-Item Function:Invoke-WinsmuxInstallCheckpoint $checkpoint
                 $failed=$false;try{Repair-WinsmuxPendingInstallation $lease}catch{$failed=$true}
                 Assert-Condition $failed 'External PATH recovery reported success.'
                 Assert-Condition (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $slotName) 'external-X') 'Recovery overwrote external PATH.'
-                Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Recovery changed restored prior files.'
+                Assert-Condition (Test-FailurePreserved $root $before) 'Recovery changed restored prior files.'
                 Assert-Condition ([IO.File]::Exists($lease.Marker)) 'Recovery discarded unknown marker.'
             }finally{$lease.Stream.Dispose()}
         }
@@ -445,7 +496,7 @@ foreach($slotName in @('user','process')) {
         $crashPhase='registration-'+$slotName+'-'+$phaseTail
         Run-Case ('restart-uncertain-'+$crashPhase) {
             param($root)
-            $bin=New-Fixture $root;$before=Read-ProtectedInventory $root
+            $bin=New-Fixture $root;$before=Read-FailureInventory $root
             $start=[Diagnostics.ProcessStartInfo]::new((Get-Command pwsh).Source);$start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.WorkingDirectory=$repo;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
             foreach($arg in @('-NoLogo','-NoProfile','-File',$PSCommandPath,'-ChildRoot',$root,'-ChildPhase',$crashPhase)){$start.ArgumentList.Add($arg)}
             $process=[Diagnostics.Process]::Start($start);$out=$process.StandardOutput.ReadToEndAsync();$err=$process.StandardError.ReadToEndAsync();$process.WaitForExit();$record=@{exit=$process.ExitCode;stdout=$out.GetAwaiter().GetResult();stderr=$err.GetAwaiter().GetResult()};$process.Dispose()
@@ -456,7 +507,7 @@ foreach($slotName in @('user','process')) {
             try { $lease=Open-WinsmuxInstallLease $bin -RecoverPending } catch { $failed=$true }
             finally { if($lease){$lease.Stream.Dispose()} }
             Assert-Condition $failed 'Unconfirmed crash converted to success.'
-            Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Crash uncertainty did not restore paired bytes.'
+            Assert-Condition (Test-FailurePreserved $root $before) 'Crash uncertainty did not restore paired bytes.'
             Assert-Condition (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $slotName) $uncertainValue) 'Crash uncertainty wrote PATH.'
             Assert-Condition ([IO.File]::Exists((Join-Path $bin 'winsmux.install.pending.json'))) 'Unconfirmed crash removed marker.'
         }
@@ -573,7 +624,7 @@ foreach($shape in @('missing','empty')) {
         param($root)
         $bin=New-Fixture $root
         if($shape -ceq 'missing'){[IO.File]::Delete($script:ProfilePath)}else{[IO.File]::WriteAllBytes($script:ProfilePath,[byte[]]::new(0))}
-        $before=Read-ProtectedInventory $root;$snapshot=Get-WinsmuxInstallSnapshot $script:ProfilePath File
+        $before=Read-FailureInventory $root;$snapshot=Get-WinsmuxInstallSnapshot $script:ProfilePath File
         $priorPath=Get-InstallUserPath;$processPath=$env:Path;$lease=Open-WinsmuxInstallLease $bin
         try {
             $support=New-ProfileSupport $lease;$script:FaultReached=$false
@@ -588,7 +639,7 @@ foreach($shape in @('missing','empty')) {
             $failed=$false;try{Invoke-Generation $lease $support}catch{$failed=$true}
             Assert-Condition ($failed -and $script:FaultReached) 'Profile rollback fault was not reached.'
             [void](Assert-WinsmuxInstallSnapshot $script:ProfilePath $snapshot)
-            Assert-Condition ((Read-ProtectedInventory $root) -ceq $before) 'Profile rollback changed protected bytes.'
+            Assert-Condition (Test-FailurePreserved $root $before) 'Profile rollback changed protected bytes.'
             Assert-Condition ((Get-InstallUserPath) -ceq $priorPath -and $env:Path -ceq $processPath -and -not [IO.File]::Exists($lease.Marker)) 'Profile rollback changed registration or retained pending marker.'
         } finally {$lease.Stream.Dispose()}
     }
@@ -597,20 +648,6 @@ foreach($shape in @('missing','empty')) {
 
 # The entry is one exact owned member. Its body/CMD reuse the fixed independent
 # self-removal process proof; these cases exercise acquisition and transactions.
-function Get-WrapperEntryFixtureBytes {
-    $definition=@($ast.FindAll({param($node)$node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'New-WinsmuxSupportStage'},$true))
-    Assert-Condition ($definition.Count -eq 1) 'Support stage function differs.'
-    $files=@{}
-    foreach($variable in @('wrapper','entryScript')) {
-        $values=@($definition[0].FindAll({param($node)$node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left -is [Management.Automation.Language.VariableExpressionAst] -and $node.Left.VariablePath.UserPath -ceq $variable -and $node.Right -is [Management.Automation.Language.CommandExpressionAst] -and $node.Right.Expression -is [Management.Automation.Language.StringConstantExpressionAst]},$true))
-        Assert-Condition ($values.Count -eq 1) 'Support entry literal differs.'
-        $text=([string]$values[0].Right.Expression.Value).Replace(([string][char]13+[char]10),[string][char]10)+[char]10
-        $files[$variable]=[Text.UTF8Encoding]::new($false).GetBytes($text)
-    }
-    Assert-Condition ($files.wrapper.Length -eq 130 -and (Get-WinsmuxBytesSha256 $files.wrapper) -ceq 'd059bd613f24aa8ecbc64b0ca56751f87287d69ba71e8f4898859c0391d7428b') 'CMD differs from fixed process proof.'
-    Assert-Condition ($files.entryScript.Length -eq 661 -and (Get-WinsmuxBytesSha256 $files.entryScript) -ceq '6775b2aea0087e596b134857c0d680027efec7d95fb2c54f8624d80f69e3877f') 'Entry differs from fixed process proof.'
-    return [PSCustomObject]@{Cmd=$files.wrapper;Entry=$files.entryScript}
-}
 function New-EntrySupport($Lease,[AllowNull()][byte[]]$PriorEntryBytes=$null) {
     $support=New-Support $Lease;$fixed=Get-WrapperEntryFixtureBytes
     $entryBytes=if($null -eq $PriorEntryBytes){$fixed.Entry}else{$PriorEntryBytes}
