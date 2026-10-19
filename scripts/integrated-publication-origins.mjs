@@ -51,27 +51,27 @@ export function readOriginFile(row) {
     return { bytes, identity: identity(after) };
   } finally { fs.closeSync(fd); }
 }
-const fixedBase = '9245269dcd3fc9973ca69abf55e6ef865d94d2ab';
-const fixedTree = 'ed59823a10090ed0c64e15b4452796690ff9162d';
+const fixedBase = 'c43aed076c076726f616e8a6bf489c8709246f17';
+const fixedTree = '9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7';
 // Core/npm keep their true original producer coordinates; signed Desktop uses final source S.
 const producerCoordinates = freeze({
   "core": {
     "kind": "private-core-assembly",
-    "source_commit": "9245269dcd3fc9973ca69abf55e6ef865d94d2ab",
-    "source_tree": "ed59823a10090ed0c64e15b4452796690ff9162d",
-    "run": "local-assembly-993d7d1a-54f9-4776-8b11-7763593f13a4",
+    "source_commit": "c43aed076c076726f616e8a6bf489c8709246f17",
+    "source_tree": "9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7",
+    "run": "local-assembly-c827d952-2d96-4128-adb3-83ce48fbc67b",
     "inner_origins": [
       {
         "kind": "windows-x64",
-        "source_commit": "b048b00b9291e346c247f2799d96283e21cb471e",
-        "run": "local-3bc723a4-90d1-4ad0-80b1-fd4ae71eb316",
-        "receipt_sha256": "cc767bd5bb8902d092b392855a41caf54e166e7c35c45867d8d99b4f8dca807d"
+        "source_commit": "c43aed076c076726f616e8a6bf489c8709246f17",
+        "run": "local-8ad220f1-bf4d-4449-b460-719ec731b5bd",
+        "receipt_sha256": "c6ba30bae4cbec455deccb6b924b20bd76cadd0ef3dc678575df8873a77380af"
       },
       {
         "kind": "windows-arm64",
-        "source_commit": "b048b00b9291e346c247f2799d96283e21cb471e",
-        "run": "local-3bc723a4-90d1-4ad0-80b1-fd4ae71eb316",
-        "receipt_sha256": "9108ae682f7d2ab3d8e223fbf652d07d8cfcd68f2f29b569acc56b7a0a16fec0"
+        "source_commit": "c43aed076c076726f616e8a6bf489c8709246f17",
+        "run": "local-8ad220f1-bf4d-4449-b460-719ec731b5bd",
+        "receipt_sha256": "77a7fc6aaae589c4678150d625582e6406e5bbd04a4a6c816f005f3d9ec9bbf2"
       },
       {
         "kind": "linux-helper",
@@ -81,8 +81,8 @@ const producerCoordinates = freeze({
       }
     ],
     "original_receipt": {
-      "bytes": 17022,
-      "sha256": "54abdad42d4b4385fe0c7e7437e5c0f02d83d91a929bf8471e3910b8f768a7be"
+      "bytes": 16931,
+      "sha256": "3214d4ae4691cf6b0df1612fbb5f23635ee94a72897854a82cf34d632e042e33"
     },
     "asset_paths": [
       "core/SHA256SUMS",
@@ -95,20 +95,20 @@ const producerCoordinates = freeze({
   },
   "npm": {
     "kind": "local-npm-producer",
-    "source_commit": "b048b00b9291e346c247f2799d96283e21cb471e",
-    "source_tree": "c36c02659c7de29251af25d1ae58fdfd45a6bd26",
-    "run": "local-npm-b048b00b",
+    "source_commit": "c43aed076c076726f616e8a6bf489c8709246f17",
+    "source_tree": "9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7",
+    "run": "local-npm-c43aed07",
     "inner_origins": [
       {
         "kind": "local-npm-pack-and-windows-help-version",
-        "source_commit": "b048b00b9291e346c247f2799d96283e21cb471e",
-        "run": "local-npm-b048b00b",
-        "receipt_sha256": "4d6aab232f301a3c93933941c992d3bc6fe0abe6b3c7819cf7cf379a761198ce"
+        "source_commit": "c43aed076c076726f616e8a6bf489c8709246f17",
+        "run": "local-npm-c43aed07",
+        "receipt_sha256": "012ac0f8ae559e5d738b1a63e680b533a6b785c3a7572e40effcdf692479bb72"
       }
     ],
     "original_receipt": {
       "bytes": 1596,
-      "sha256": "4d6aab232f301a3c93933941c992d3bc6fe0abe6b3c7819cf7cf379a761198ce"
+      "sha256": "012ac0f8ae559e5d738b1a63e680b533a6b785c3a7572e40effcdf692479bb72"
     },
     "asset_paths": [
       "npm/winsmux-0.38.0.tgz"
@@ -123,6 +123,12 @@ const desktopAssetPaths = Object.freeze([
   "desktop/winsmux_0.38.0_x64-setup.inventory.json",
   "desktop/winsmux_0.38.0_x64_en-US.msi"
 ]);
+// The final source S5 differs from fixedBase only in these two files. Their after bytes contain this module,
+// so only the c43aed07 before bytes are pinned here; the host observes the after digests.
+const expectedSourceChanges = Object.freeze({
+  'scripts/integrated-publication-origins.mjs': '0f0f7478de53735010d853741f530ee99c2b74c2284e44a03b745c34d47b6114',
+  'tests/workspace-package/prepare-integrated-publication.test.mjs': '5faad50a318413b2d2ae32ca1ecc214aba499c4c1a17612b30c82c0bced2933c',
+});
 // Pure projection is exported for finite positive/negative tests. It never
 // issues an origin capability and never makes an original producer current.
 export function validateOriginProjection(value) {
@@ -131,13 +137,10 @@ export function validateOriginProjection(value) {
   need(exact(source, ['kind', 'base_commit', 'base_tree', 'source_commit', 'source_tree', 'changes', 'originals'])
     && source.kind === 'parent-observed-final-source' && source.base_commit === fixedBase && source.base_tree === fixedTree
     && commit(source.source_commit) && commit(source.source_tree) && Array.isArray(source.changes)
-    && source.changes.filter(row => row.path === 'scripts/test-public-release.ps1').length === 1
-    && new Set(source.changes.map(row => row.path)).size === source.changes.length
+    && JSON.stringify(source.changes.map(row => row.path).sort()) === JSON.stringify(Object.keys(expectedSourceChanges).sort())
     && source.changes.every(row => exact(row, ['path', 'before_sha256', 'after_sha256'])
-      && publicationCutoverPaths.includes(row.path) && (row.before_sha256 === null || digest(row.before_sha256))
-      && digest(row.after_sha256) && row.before_sha256 !== row.after_sha256
-      && (row.path !== 'scripts/test-public-release.ps1' || row.before_sha256 === '40dc9b64426cd918f943e3b45af6779d69a037f683cba454d74942c74fefbaa5'
-        && row.after_sha256 === 'ca93ce3f783306e6e479b5222e469697ac37060e818bcc06756a21ad568707b0')), 'Final source applicability differs.');
+      && publicationCutoverPaths.includes(row.path) && row.before_sha256 === expectedSourceChanges[row.path]
+      && digest(row.after_sha256) && row.before_sha256 !== row.after_sha256), 'Final source applicability differs.');
   for (const [surface, expected] of Object.entries(producerCoordinates)) {
     const row = value[surface];
     need(exact(row, ['kind', 'source_commit', 'source_tree', 'run', 'inner_origins', 'assets', 'originals'])
