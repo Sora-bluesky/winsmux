@@ -779,7 +779,7 @@ foreach($entryState in @('owned','modified')) {
     }
 }
 
-function New-SettingsSupport($Lease,[string]$Default) {
+function New-SettingsSupport($Lease,[string]$Default,[string]$Profile='full') {
     $ResolvedVersion='0.38.0';$ResolvedReleaseTag='v0.38.0';$script:SettingsDefault=$Default
     $download=(Get-Item Function:Download-File).ScriptBlock
     $optional=(Get-Item Function:Download-OptionalFile).ScriptBlock
@@ -791,7 +791,7 @@ function New-SettingsSupport($Lease,[string]$Default) {
             [IO.File]::WriteAllText($Destination,$content,[Text.UTF8Encoding]::new($false))
         }
         Set-Item Function:Download-OptionalFile {param($Relative,$Destination) Download-File $Relative $Destination}
-        return (New-WinsmuxSupportStage $Lease 'full' $true)
+        return (New-WinsmuxSupportStage $Lease $Profile $true)
     } finally {Set-Item Function:Download-File $download;Set-Item Function:Download-OptionalFile $optional}
 }
 function Assert-SettingsState([string]$Root,$Lease,[byte[]]$Expected,[bool]$Owned,[string]$Message) {
@@ -869,6 +869,40 @@ Run-Case 'settings-edited-during-update' {
         Assert-Condition ([Convert]::ToBase64String([IO.File]::ReadAllBytes($settings)) -ceq [Convert]::ToBase64String($script:EditedSettings)) 'Settings edited during the update were lost.'
         [IO.File]::WriteAllBytes($settings,$utf8.GetBytes('default-a'))
         Assert-Condition ((Read-FailureInventory $root) -ceq $before) 'Rejected update changed installed members.'
+        Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Rejected update left a pending marker.'
+    } finally {$lease.Stream.Dispose()}
+}
+$droppedMember='.winsmux/winsmux-core/scripts/agent-launch.ps1'
+Run-Case 'support-dropped-member-removed' {
+    param($root)
+    $bin=New-Fixture $root;$lease=Open-WinsmuxInstallLease $bin;$dropped=Join-Path $root $droppedMember
+    try {
+        Invoke-Generation $lease (New-SettingsSupport $lease 'default-a')
+        Assert-Condition ([IO.File]::Exists($dropped)) 'Full profile did not install the orchestra member.'
+        $support=New-SettingsSupport $lease 'default-a' 'core'
+        Assert-Condition (@($support.Members|Where-Object {$_.Name -ceq $droppedMember -and $_.Remove}).Count -eq 1) 'Dropped member was not staged for removal.'
+        Invoke-Generation $lease $support
+        Assert-Condition (-not [IO.File]::Exists($dropped)) 'Unchanged dropped member was kept.'
+        Assert-Condition (@((Read-WinsmuxSupportOwner $lease).files|Where-Object name -ceq $droppedMember).Count -eq 0) 'Receipt still claims the dropped member.'
+        Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Removal left a pending marker.'
+    } finally {$lease.Stream.Dispose()}
+}
+Run-Case 'support-dropped-member-edited-during-update' {
+    param($root)
+    $bin=New-Fixture $root;$lease=Open-WinsmuxInstallLease $bin;$dropped=Join-Path $root $droppedMember
+    try {
+        Invoke-Generation $lease (New-SettingsSupport $lease 'default-a')
+        $support=New-SettingsSupport $lease 'default-a' 'core'
+        Assert-Condition (@($support.Members|Where-Object {$_.Name -ceq $droppedMember -and $_.Remove}).Count -eq 1) 'Dropped member was not staged for removal.'
+        $before=Read-FailureInventory $root;$receiptBefore=[IO.File]::ReadAllText((Join-Path $root '.winsmux/install-owner.json'))
+        $script:EditedMember=$utf8.GetBytes("# saved during update`n");$script:MemberPath=$dropped
+        Set-Item Function:Invoke-WinsmuxInstallCheckpoint {param($Phase) if($Phase -ceq 'stage-readback'){[IO.File]::WriteAllBytes($script:MemberPath,$script:EditedMember)}}
+        $failed=$false;try{Invoke-Generation $lease $support}catch{$failed=$true}
+        Assert-Condition $failed 'Update removed a member edited after staging.'
+        Assert-Condition ($script:GenerationFailure -like ('*'+$droppedMember+' changed during the update*')) 'Dropped member race failed with the wrong error.'
+        Assert-Condition ([IO.File]::Exists($dropped) -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($dropped)) -ceq [Convert]::ToBase64String($script:EditedMember)) 'Member edited during the update was lost.'
+        Assert-Condition ((Read-FailureInventory $root) -ceq $before) 'Rejected update changed installed members.'
+        Assert-Condition ([IO.File]::ReadAllText((Join-Path $root '.winsmux/install-owner.json')) -ceq $receiptBefore) 'Rejected update changed the support receipt.'
         Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Rejected update left a pending marker.'
     } finally {$lease.Stream.Dispose()}
 }

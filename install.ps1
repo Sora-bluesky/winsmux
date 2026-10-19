@@ -1245,7 +1245,7 @@ function Install-VerifiedWinsmuxGeneration {
             $extraSnapshots[$id] = Get-WinsmuxInstallSnapshot $extraPaths[$id] File
             if ($item.PSObject.Properties['PriorSha256']) {
                 $current = if ($extraSnapshots[$id].Present) { $extraSnapshots[$id].Files[''] } else { '' }
-                if ($current -cne $item.PriorSha256) { throw "$($item.Name) changed during the update; nothing was replaced and the edited file was kept." }
+                if ($current -cne $item.PriorSha256) { throw "$($item.Name) changed during the update; nothing was replaced or removed and the edited file was kept." }
             }
             $stage[$id] = Join-Path $operationRoot ('new-' + $id)
             $backup[$id] = Join-Path $operationRoot ('old-' + $id)
@@ -1615,7 +1615,7 @@ exit $childExitCode
             $oldPath = Get-WinsmuxMemberPath $Lease $entry.name
             $old = Get-WinsmuxInstallSnapshot $oldPath File
             if ($old.Present -and $old.Files[''] -ceq $entry.sha256) {
-                $members.Add([PSCustomObject]@{ Name=$entry.name; Stage=''; Remove=$true })
+                $members.Add([PSCustomObject]@{ Name=$entry.name; Stage=''; Remove=$true; PriorSha256=$old.Files[''] })
             }
         }
     }
