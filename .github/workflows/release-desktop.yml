@@ -107,7 +107,7 @@ jobs:
     needs: [signed_baseline]
     if: always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))
     runs-on: ${{ (github.ref_name == 'v0.38.0' || inputs.release_tag == 'v0.38.0') && 'windows-2025' || 'windows-latest' }}
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
 
