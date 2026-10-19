@@ -1,0 +1,423 @@
+name: T-09 Cross-Version Update Probe on Fixed Core Candidate
+
+on:
+  push:
+    branches: [codex/t09-crossversion-probe]
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_COMMIT: 'b048b00b9291e346c247f2799d96283e21cb471e'
+  SOURCE_TREE: 'c36c02659c7de29251af25d1ae58fdfd45a6bd26'
+  # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
+  SOURCE_INVENTORY: '80e249111f764d6fe34263a3919935fb889e0e3bb953f14ccf65e173efe23362'
+  # Unpublished draft release 416909119 (codex-task879-core-b048b00b): id, bytes, sha256, name.
+  TASK879_ASSETS: |
+    655258651 18353152 53dd2a71a2ba1c14aa8b50c011e027a77f18aa89669cb2453bf3eb94af07f512 winsmux-x64.exe
+    655258649 6724597 aab94216ef8f3218f1bf3e532d63c95c8a2b0ca5fa7fe8e647151c10ca85ec59 winsmux-x64.exe.licenses.zip
+    655258647 177 c8407967ceff0cd752a0af293dd8da5762f9db2757dad8c8d5d8b921c6d28398 SHA256SUMS
+    655258648 1785 cc767bd5bb8902d092b392855a41caf54e166e7c35c45867d8d99b4f8dca807d core-candidate.json
+    655258650 34640 17936f2b4367aba230770390726515103bca81e9865724fbb630421171e2dfa6 winsmux-0.38.0.tgz
+
+jobs:
+  fetch:
+    permissions:
+      contents: write
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the fixed unpublished Core assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $rows = @(($env:TASK879_ASSETS -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object {
+            $f = @($_ -split ' ')
+            if ($f.Count -ne 4 -or $f[0] -cnotmatch '^[0-9]+$' -or $f[1] -cnotmatch '^[0-9]+$' -or $f[2] -cnotmatch '^[0-9a-f]{64}$' -or $f[3] -cnotmatch '^[A-Za-z0-9._-]+$') { throw 'Malformed fixed Core asset manifest.' }
+            [pscustomobject]@{ Id = $f[0]; Bytes = [long]$f[1]; Sha256 = $f[2]; Name = $f[3] }
+          })
+          if ($rows.Count -ne 5) { throw 'Fixed Core asset manifest must list five assets.' }
+          $inputRoot = Join-Path $env:RUNNER_TEMP 't09-input'
+          if (Test-Path -LiteralPath $inputRoot) { throw 'Core input root already exists.' }
+          New-Item -ItemType Directory -Path $inputRoot | Out-Null
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/octet-stream' }
+          foreach ($row in $rows) {
+            $file = Join-Path $inputRoot $row.Name
+            Invoke-WebRequest -Uri "https://api.github.com/repos/Sora-bluesky/winsmux/releases/assets/$($row.Id)" -Headers $headers -OutFile $file
+            $item = Get-Item -LiteralPath $file -Force
+            $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($item.PSIsContainer -or $item.Length -ne $row.Bytes -or $hash -cne $row.Sha256) {
+              throw "Downloaded Core asset identity mismatch: $($row.Name)"
+            }
+          }
+
+      - name: Hand the verified assets to the install job
+        uses: actions/upload-artifact@v7
+        with:
+          name: t09-core-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/t09-input/
+          if-no-files-found: error
+
+  probe:
+    name: Cross-version probe (${{ matrix.route }})
+    needs: fetch
+    permissions:
+      contents: read
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe'
+    runs-on: windows-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        route: [Npm, Direct]
+    steps:
+      - name: Check out the build tree data from the calling commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: t09-caller
+          sparse-checkout: |
+            .github/task879
+            .github/t09
+          persist-credentials: false
+
+      - name: Move the build tree data and the probe out of the workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $callerRoot = Join-Path $env:GITHUB_WORKSPACE 't09-caller'
+          $source = Join-Path $callerRoot '.github/task879/build-tree.json'
+          $item = Get-Item -LiteralPath $source -Force
+          if ($item.PSIsContainer -or $item.Length -le 0) { throw 'Build tree data file is missing.' }
+          $destination = Join-Path $env:RUNNER_TEMP 't09-build-tree.json'
+          if (Test-Path -LiteralPath $destination) { throw 'Build tree data destination already exists.' }
+          Copy-Item -LiteralPath $source -Destination $destination
+          $probeSource = Join-Path $callerRoot '.github/t09/cross-version-probe.ps1'
+          $probeItem = Get-Item -LiteralPath $probeSource -Force
+          if ($probeItem.PSIsContainer -or $probeItem.Length -le 0) { throw 'Cross-version probe script is missing.' }
+          $probeDestination = Join-Path $env:RUNNER_TEMP 't09-cross-version-probe.ps1'
+          if (Test-Path -LiteralPath $probeDestination) { throw 'Probe script destination already exists.' }
+          Copy-Item -LiteralPath $probeSource -Destination $probeDestination
+          Remove-Item -LiteralPath $callerRoot -Recurse -Force
+          if (@(Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Force).Count -ne 0) {
+            throw 'Workspace must be empty before the fixed source checkout.'
+          }
+
+      - name: Check out the fixed source with CRLF working-tree line endings
+        uses: actions/checkout@v6
+        env:
+          # Command-scope Git config (highest precedence), so the checkout does not
+          # depend on the runner's system or global core.autocrlf default.
+          GIT_CONFIG_COUNT: '1'
+          GIT_CONFIG_KEY_0: core.autocrlf
+          GIT_CONFIG_VALUE_0: 'true'
+        with:
+          ref: ${{ env.SOURCE_COMMIT }}
+          persist-credentials: false
+
+      - name: Bind the fixed source commit and tree
+        id: bind
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $head = (git rev-parse HEAD | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'git rev-parse HEAD failed.' }
+          $tree = (git rev-parse 'HEAD^{tree}' | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'git rev-parse HEAD^{tree} failed.' }
+          if ($head -cne $env:SOURCE_COMMIT -or $tree -cne $env:SOURCE_TREE) {
+            throw "Checkout identity mismatch: commit $head tree $tree"
+          }
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: t09-core-candidate-${{ github.sha }}
+          path: ${{ runner.temp }}/t09-input
+
+      - name: Reverify the assets and stage the four-file Core candidate
+        id: candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $rows = @(($env:TASK879_ASSETS -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object {
+            $f = @($_ -split ' ')
+            if ($f.Count -ne 4 -or $f[0] -cnotmatch '^[0-9]+$' -or $f[1] -cnotmatch '^[0-9]+$' -or $f[2] -cnotmatch '^[0-9a-f]{64}$' -or $f[3] -cnotmatch '^[A-Za-z0-9._-]+$') { throw 'Malformed fixed Core asset manifest.' }
+            [pscustomobject]@{ Id = $f[0]; Bytes = [long]$f[1]; Sha256 = $f[2]; Name = $f[3] }
+          })
+          if ($rows.Count -ne 5) { throw 'Fixed Core asset manifest must list five assets.' }
+          $coreRows = @($rows | Where-Object { $_.Name -cne 'winsmux-0.38.0.tgz' })
+          if ($coreRows.Count -ne 4) { throw 'Fixed Core candidate must have four files.' }
+          function Assert-Directory([string]$Root, [object[]]$Expected) {
+            $actualNames = @(Get-ChildItem -LiteralPath $Root -Force | ForEach-Object { $_.Name } | Sort-Object) -join '|'
+            $expectedNames = @($Expected | ForEach-Object { $_.Name } | Sort-Object) -join '|'
+            if ($actualNames -cne $expectedNames) { throw "Asset inventory differs in ${Root}: $actualNames" }
+            foreach ($row in $Expected) {
+              $file = Join-Path $Root $row.Name
+              $item = Get-Item -LiteralPath $file -Force
+              $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
+              if ($item.PSIsContainer -or $item.Length -ne $row.Bytes -or $hash -cne $row.Sha256) {
+                throw "Transported Core asset identity mismatch: $($row.Name)"
+              }
+            }
+          }
+          $inputRoot = Join-Path $env:RUNNER_TEMP 't09-input'
+          Assert-Directory $inputRoot $rows
+          $candidateRoot = Join-Path $env:RUNNER_TEMP 't09-candidate'
+          if (Test-Path -LiteralPath $candidateRoot) { throw 'Core candidate root already exists.' }
+          New-Item -ItemType Directory -Path $candidateRoot | Out-Null
+          foreach ($row in $coreRows) {
+            Copy-Item -LiteralPath (Join-Path $inputRoot $row.Name) -Destination (Join-Path $candidateRoot $row.Name)
+          }
+          Assert-Directory $candidateRoot $coreRows
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.16.0
+
+      - name: Pin npm 11.13.0
+        id: toolchain
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $current = (npm.cmd --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'npm is unavailable.' }
+          if ($current -cne '11.13.0') {
+            npm.cmd install --global npm@11.13.0
+            if ($LASTEXITCODE -ne 0) { throw 'npm 11.13.0 installation failed.' }
+          }
+          $nodeVersion = (node --version | Out-String).Trim()
+          $npmVersion = (npm.cmd --version | Out-String).Trim()
+          if ($nodeVersion -cne 'v24.16.0' -or $npmVersion -cne '11.13.0') {
+            throw "Toolchain mismatch: node $nodeVersion npm $npmVersion"
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.route == 'Npm'
+
+      - name: Rebuild the recorded Core build tree and bind its source inventory
+        id: rebuild
+        shell: pwsh
+        env:
+          ROUTE: ${{ matrix.route }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $reportRoot = Join-Path $env:RUNNER_TEMP "t09-rebuild-$env:ROUTE"
+          if (Test-Path -LiteralPath $reportRoot) { throw 'Rebuild report root already exists.' }
+          New-Item -ItemType Directory -Path $reportRoot | Out-Null
+          $script = Join-Path $env:RUNNER_TEMP 't09-rebuild.mjs'
+          if (Test-Path -LiteralPath $script) { throw 'Rebuild script already exists.' }
+          # Modes: checkout = keep the core.autocrlf=true checkout bytes; blob = the LF
+          # git blob; mixed = the blob with CRLF on every line except lf_lines.
+          $source = @'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { createHash } from 'node:crypto';
+          import { spawnSync } from 'node:child_process';
+          import { pathToFileURL } from 'node:url';
+
+          const [dataPath, repoRoot, reportPath] = process.argv.slice(2);
+          const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+          const exactKeys = (value, keys) => value !== null && typeof value === 'object' && !Array.isArray(value)
+            && JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+          const lfNormalized = bytes => Buffer.from(bytes.toString('latin1').replaceAll('\r\n', '\n'), 'latin1');
+          const report = {
+            schema: 'task879-build-tree-reconstruction/v1',
+            source_commit: process.env.SOURCE_COMMIT,
+            source_tree: process.env.SOURCE_TREE,
+            expected_source_inventory_sha256: process.env.SOURCE_INVENTORY,
+            checkout_line_endings: 'core.autocrlf=true',
+            git_version: null,
+            data_file_sha256: null,
+            data_rows_inventory_sha256: null,
+            file_count: null,
+            mode_counts: null,
+            rewritten: [],
+            sha256_verified: 0,
+            sha256_mismatches: [],
+            content: { byte_equal_to_blob: 0, line_endings_only: 0, content_difference: [] },
+            inventory: null,
+            status: 'failed',
+            failure: null,
+          };
+          function need(value, reason) { if (!value) throw new Error(reason); }
+          function git(args, input) {
+            const result = spawnSync('git', args, { cwd: repoRoot, input, windowsHide: true, maxBuffer: 1024 * 1024 * 1024 });
+            need(!result.error && result.status === 0 && result.signal === null, 'git ' + args[0] + ' failed.');
+            return result.stdout;
+          }
+          try {
+            need([dataPath, repoRoot, reportPath].every(value => typeof value === 'string' && path.isAbsolute(value)), 'Absolute paths required.');
+            need(/^[a-f0-9]{40}$/u.test(report.source_commit ?? '') && /^[a-f0-9]{40}$/u.test(report.source_tree ?? '')
+              && /^[a-f0-9]{64}$/u.test(report.expected_source_inventory_sha256 ?? ''), 'Fixed source coordinates are malformed.');
+            report.git_version = git(['--version']).toString('utf8').trim();
+            need(git(['rev-parse', 'HEAD']).toString('utf8').trim() === report.source_commit
+              && git(['rev-parse', 'HEAD^{tree}']).toString('utf8').trim() === report.source_tree, 'Checkout identity differs.');
+            const raw = fs.readFileSync(dataPath);
+            report.data_file_sha256 = digest(raw);
+            const data = JSON.parse(raw.toString('utf8'));
+            need(exactKeys(data, ['schema', 'source_commit', 'source_tree', 'checkout_line_endings', 'source_inventory_sha256',
+              'recorded_inputs_sha256', 'core_candidate_receipt_sha256', 'file_count', 'mode_counts', 'files'])
+              && data.schema === 'task879-build-tree/v1' && data.source_commit === report.source_commit
+              && data.source_tree === report.source_tree && data.checkout_line_endings === report.checkout_line_endings
+              && data.source_inventory_sha256 === report.expected_source_inventory_sha256
+              && Array.isArray(data.files) && data.files.length === data.file_count, 'Build tree data header differs.');
+            const counts = { checkout: 0, blob: 0, mixed: 0 };
+            let previous = '';
+            for (const row of data.files) {
+              const keys = row?.mode === 'mixed' ? ['path', 'sha256', 'mode', 'lf_lines'] : ['path', 'sha256', 'mode'];
+              need(exactKeys(row, keys) && Object.hasOwn(counts, row.mode) && typeof row.path === 'string'
+                && /^[a-f0-9]{64}$/u.test(row.sha256) && !/[\\:\x00-\x1f]/u.test(row.path)
+                && row.path.split('/').every(part => part && part !== '.' && part !== '..') && row.path > previous,
+              'Build tree data row is malformed: ' + String(row?.path));
+              previous = row.path;
+              counts[row.mode] += 1;
+            }
+            need(exactKeys(data.mode_counts, Object.keys(counts))
+              && Object.keys(counts).every(mode => data.mode_counts[mode] === counts[mode]), 'Build tree mode counts differ.');
+            report.file_count = data.files.length;
+            report.mode_counts = counts;
+            const batch = git(['cat-file', '--batch'], Buffer.from(data.files.map(row => report.source_commit + ':' + row.path + '\n').join(''), 'utf8'));
+            const blobs = new Map();
+            let offset = 0;
+            for (const row of data.files) {
+              const end = batch.indexOf(0x0a, offset);
+              need(end >= 0, 'Source blob batch is truncated.');
+              const header = /^[a-f0-9]{40} blob ([0-9]+)$/u.exec(batch.subarray(offset, end).toString('utf8'));
+              need(header, 'Source blob is missing: ' + row.path);
+              const start = end + 1, size = Number(header[1]);
+              need(Number.isSafeInteger(size) && batch.length >= start + size + 1 && batch[start + size] === 0x0a, 'Source blob batch is truncated.');
+              blobs.set(row.path, batch.subarray(start, start + size));
+              offset = start + size + 1;
+            }
+            need(offset === batch.length, 'Source blob batch has trailing output.');
+            const LF = Buffer.from('\n'), CRLF = Buffer.from('\r\n');
+            for (const row of data.files) {
+              const file = path.join(repoRoot, ...row.path.split('/'));
+              const info = fs.lstatSync(file);
+              need(info.isFile() && info.nlink === 1, 'Checkout member is not a plain single-link file: ' + row.path);
+              const blob = blobs.get(row.path);
+              if (row.mode === 'blob') {
+                fs.writeFileSync(file, blob);
+                report.rewritten.push({ path: row.path, mode: row.mode });
+              } else if (row.mode === 'mixed') {
+                need(!blob.includes(0x0d) && Array.isArray(row.lf_lines) && row.lf_lines.every((line, index) =>
+                  Number.isSafeInteger(line) && line >= 1 && (index === 0 || line > row.lf_lines[index - 1])), 'Mixed line ending row is malformed: ' + row.path);
+                const lf = new Set(row.lf_lines), parts = [];
+                let line = 1, start = 0;
+                for (let index = 0; index < blob.length; index += 1) {
+                  if (blob[index] !== 0x0a) continue;
+                  parts.push(blob.subarray(start, index), lf.has(line) ? LF : CRLF);
+                  line += 1;
+                  start = index + 1;
+                }
+                parts.push(blob.subarray(start));
+                need(row.lf_lines.length === 0 || row.lf_lines[row.lf_lines.length - 1] < line, 'LF line number is out of range: ' + row.path);
+                fs.writeFileSync(file, Buffer.concat(parts));
+                report.rewritten.push({ path: row.path, mode: row.mode, lf_lines: row.lf_lines.length });
+              }
+              const bytes = fs.readFileSync(file), actual = digest(bytes);
+              if (actual === row.sha256) report.sha256_verified += 1;
+              else report.sha256_mismatches.push({ path: row.path, mode: row.mode, sha256: actual });
+              if (bytes.equals(blob)) report.content.byte_equal_to_blob += 1;
+              else if (lfNormalized(bytes).equals(blob)) report.content.line_endings_only += 1;
+              else report.content.content_difference.push(row.path);
+            }
+            need(report.sha256_mismatches.length === 0, 'Rebuilt files differ from the recorded build tree: ' + report.sha256_mismatches.length);
+            need(report.content.content_difference.length === 0, 'Rebuilt files differ in content from the source commit: ' + report.content.content_difference.length);
+            const core = await import(pathToFileURL(path.join(repoRoot, 'scripts', 'build-core-candidate.mjs')).href);
+            report.data_rows_inventory_sha256 = core.coreSourceInventoryIdentity(data.files.map(row => ({ path: row.path, sha256: row.sha256 })));
+            const rows = core.coreSourceInventory();
+            const listed = new Set(data.files.map(row => row.path)), measured = new Set(rows.map(row => row.path));
+            report.inventory = {
+              files: rows.length,
+              source_inventory_sha256: core.coreSourceInventoryIdentity(rows),
+              unlisted_paths: [...measured].filter(name => !listed.has(name)),
+              absent_paths: [...listed].filter(name => !measured.has(name)),
+            };
+            need(report.data_rows_inventory_sha256 === report.expected_source_inventory_sha256, 'Build tree data does not encode the receipt inventory.');
+            need(report.inventory.source_inventory_sha256 === report.expected_source_inventory_sha256
+              && rows.length === data.files.length, 'Rebuilt Core source inventory differs from the receipt.');
+            report.status = 'reconstructed';
+          } catch (error) {
+            report.failure = String(error?.message ?? error);
+            process.exitCode = 1;
+          } finally {
+            fs.writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n', { flag: 'wx' });
+          }
+          '@
+          [IO.File]::WriteAllText($script, $source, [Text.UTF8Encoding]::new($false))
+          $dataPath = Join-Path $env:RUNNER_TEMP 't09-build-tree.json'
+          $reportPath = Join-Path $reportRoot 'build-tree-report.json'
+          node $script $dataPath $env:GITHUB_WORKSPACE $reportPath
+          $exitCode = $LASTEXITCODE
+          if (Test-Path -LiteralPath $reportPath -PathType Leaf) { Write-Host ([IO.File]::ReadAllText($reportPath)) }
+          if ($exitCode -ne 0) { throw "Recorded build tree reconstruction failed with exit $exitCode." }
+
+      - name: Preserve the build tree reconstruction report
+        if: always() && steps.rebuild.outcome != 'skipped'
+        uses: actions/upload-artifact@v7
+        with:
+          name: t09-build-tree-${{ matrix.route }}-${{ github.sha }}
+          path: ${{ runner.temp }}/t09-rebuild-${{ matrix.route }}/
+          if-no-files-found: error
+
+      - name: Update v0.36.38 to the fixed Core candidate through the candidate entry
+        id: probe
+        shell: pwsh
+        env:
+          ROUTE: ${{ matrix.route }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $referenceRows = @(($env:TASK879_ASSETS -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9]+ [0-9]+ [0-9a-f]{64} winsmux-0\.38\.0\.tgz$' })
+          if ($referenceRows.Count -ne 1) { throw 'Reference tarball manifest row is ambiguous.' }
+          $referenceSha = [string]@($referenceRows[0] -split ' ')[2]
+          pwsh -NoProfile -File (Join-Path $env:RUNNER_TEMP 't09-cross-version-probe.ps1') -Route $env:ROUTE `
+            -RepositoryRoot $env:GITHUB_WORKSPACE -SourceCommit $env:SOURCE_COMMIT `
+            -CandidateDirectory (Join-Path $env:RUNNER_TEMP 't09-candidate') -ReferenceTarballSha256 $referenceSha `
+            -OutputRoot (Join-Path $env:RUNNER_TEMP "t09-evidence-$env:ROUTE") -OldVersion '0.36.38'
+          if ($LASTEXITCODE -ne 0) { throw "Cross-version probe could not complete its evidence (exit $LASTEXITCODE)." }
+
+      - name: Record the runner environment beside the probe evidence
+        if: always()
+        shell: pwsh
+        env:
+          ROUTE: ${{ matrix.route }}
+          CALLER_SHA: ${{ github.sha }}
+          BIND_OUTCOME: ${{ steps.bind.outcome }}
+          CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
+          TOOLCHAIN_OUTCOME: ${{ steps.toolchain.outcome }}
+          REBUILD_OUTCOME: ${{ steps.rebuild.outcome }}
+          PROBE_OUTCOME: ${{ steps.probe.outcome }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "t09-evidence-$env:ROUTE"
+          [void][IO.Directory]::CreateDirectory($evidenceRoot)
+          $nt = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+          $record = [ordered]@{
+            schema = 't09-cross-version-environment/v1'
+            route = $env:ROUTE
+            source_commit = $env:SOURCE_COMMIT
+            source_tree = $env:SOURCE_TREE
+            caller_sha = $env:CALLER_SHA
+            step_outcomes = [ordered]@{ bind = $env:BIND_OUTCOME; candidate = $env:CANDIDATE_OUTCOME; toolchain = $env:TOOLCHAIN_OUTCOME; rebuild = $env:REBUILD_OUTCOME; probe = $env:PROBE_OUTCOME }
+            result_json_present = Test-Path -LiteralPath (Join-Path $evidenceRoot 'result.json') -PathType Leaf
+            windows = [ordered]@{ current_build = [string]$nt.CurrentBuild; ubr = [int]$nt.UBR }
+            image = [ordered]@{ os = [string]$env:ImageOS; version = [string]$env:ImageVersion }
+            pwsh = $PSVersionTable.PSVersion.ToString()
+            node = (node --version | Out-String).Trim()
+          }
+          $global:LASTEXITCODE = 0
+          [IO.File]::WriteAllText((Join-Path $evidenceRoot 'env.json'), ($record | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+
+      - name: Preserve the cross-version evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: t09-crossversion-${{ matrix.route }}-${{ github.sha }}
+          path: ${{ runner.temp }}/t09-evidence-${{ matrix.route }}/
+          if-no-files-found: error
