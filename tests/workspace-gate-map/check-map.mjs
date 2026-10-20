@@ -1,6 +1,8 @@
 // Recomputes every gate, every CI entrypoint and every weakening finding between the fixed bases and a
 // tree-ish, then requires the gate-map.json stored at that same tree-ish to account for each one.
-// Everything is read from git objects at --ref; the working tree is never consulted.
+// Everything is read from git objects at --ref; the working tree is never consulted. Findings compare the
+// base trees with the target tree only, so the same tree gives the same result on a branch head, on a
+// pull-request merge ref and on the merge commit that lands it.
 // Usage: node check-map.mjs [--ref <tree-ish>] [--emit-findings] [--map <file>]
 //   --emit-findings prints findings, gates and entrypoints instead of verifying; --map substitutes
 //   a map file for the one at --ref (only honoured together with --emit-findings).
@@ -11,22 +13,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const args = process.argv.slice(2);
-const opt = name => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
-const ref = opt('--ref') ?? 'HEAD';
-const emitOnly = args.includes('--emit-findings');
-const repo = path.resolve(here, '../..');
-const MAP_PATH = 'tests/workspace-gate-map/gate-map.json';
+export const repo = path.resolve(here, '../..');
+export const MAP_DIR = 'tests/workspace-gate-map/';
+export const MAP_PATH = `${MAP_DIR}gate-map.json`;
+export const SCHEMA = 'winsmux-gate-map/v3';
 
-function git(argv, input) {
+export function git(argv, input) {
   const r = spawnSync('git', ['-C', repo, ...argv], { input, maxBuffer: 1 << 30 });
   if (r.status !== 0) throw new Error(`git ${argv.join(' ')}: ${r.stderr}`);
   return r.stdout;
 }
-const gitOk = argv => spawnSync('git', ['-C', repo, ...argv], { maxBuffer: 1 << 30 }).status === 0;
-const sha256 = buf => createHash('sha256').update(buf).digest('hex');
-const lf = text => text.replace(/\r\n/g, '\n');
+export const gitOk = argv => spawnSync('git', ['-C', repo, ...argv], { maxBuffer: 1 << 30 }).status === 0;
+export const sha256 = buf => createHash('sha256').update(buf).digest('hex');
+export const lf = text => text.replace(/\r\n/g, '\n');
 const show = spec => lf(git(['show', spec]).toString('utf8'));
+const isAncestor = (commit, ref) => gitOk(['cat-file', '-e', `${commit}^{commit}`]) && git(['rev-list', '--count', `${ref}..${commit}`]).toString('utf8').trim() === '0';
 
 const EXCLUDE = ['.evidence/', '.references/', '.worktrees/', 'tasks/'];
 const excluded = p => EXCLUDE.some(x => p.startsWith(x));
@@ -67,7 +68,7 @@ const METRICS = {
 const metrics = (kind, text) => Object.fromEntries((METRICS[kind] ?? []).map(k => [k, (text.match(PAT[k]) ?? []).length]));
 const isSkip = k => k.endsWith('skip') || k.endsWith('ignore');
 
-function lsTree(treeish) {
+export function lsTree(treeish) {
   const out = new Map();
   for (const line of git(['ls-tree', '-r', '--format=%(objectname) %(path)', treeish]).toString('utf8').split('\n')) {
     if (!line) continue;
@@ -92,16 +93,19 @@ function readBlobs(oids) {
   }
 }
 const text = oid => blobCache.get(oid);
-const fileText = (tree, p) => (tree.has(p) ? (readBlobs([tree.get(p)]), text(tree.get(p))) : null);
+export const fileText = (tree, p) => (tree.has(p) ? (readBlobs([tree.get(p)]), text(tree.get(p))) : null);
 
-// CI entrypoints: every repository script a workflow, composite action or package.json script runs,
-// plus the scripts those entry scripts run in turn (one level). Classification by name never decides
-// membership here; a discovered path becomes a gate even when no name rule matches it.
+// CI entrypoints: every repository script a workflow, composite action or package.json script runs, and
+// transitively every script those scripts name, followed to a fixed point with no depth limit.
+// Classification by name never decides membership here; a discovered path becomes a gate even when no
+// name rule matches it. The only files a hop does not enter are the product runtime and sources, which
+// are the subject the checks read and run, not checks themselves.
 const SCRIPT_EXT = /\.(ps1|psm1|mjs|cjs|js|ts|py|sh)$/;
+const PRODUCT_RUNTIME = p => /^(winsmux-core\/|packages\/|sdk\/|core\/|\.claude\/|winsmux-app\/src\/|winsmux-app\/src-tauri\/src\/)/.test(p) || p === 'install.ps1' || p.endsWith('.ts');
 const PATH_TOKEN = /(?<![\w@.-])(?:\.{1,2}\/)?(?:[\w@.-]+\/)+[\w@.-]+\.(?:ps1|psm1|mjs|cjs|js|ts|py|sh)\b|(?<![\w@./-])\.\/[\w@.-]+\.(?:ps1|psm1|mjs|cjs|js|ts|py|sh)\b/g;
-// Inside an entry script a sibling may be named without a directory, as in Join-Path $PSScriptRoot 'run.ps1'.
+// Inside a script a sibling may be named without a directory, as in Join-Path $PSScriptRoot 'run.ps1'.
 const SIBLING_TOKEN = /(?<=['"])[\w@.-]+\.(?:ps1|psm1|mjs|cjs|js|ts|py|sh)(?=['"])/g;
-const CALLEE_SCOPE = p => p.startsWith('tests/') || /\.(test|tests)\./i.test(p);
+const SCANNABLE = /\.(ps1|psm1|mjs|cjs|js|sh)$/;
 function normalize(base, token) {
   const joined = path.posix.normalize(path.posix.join(base, token));
   return joined.startsWith('../') || joined === '..' ? null : joined;
@@ -126,7 +130,7 @@ function packageScripts(tree) {
   }
   return out;
 }
-function discoverEntrypoints(tree, localRunners) {
+export function discoverEntrypoints(tree, localRunners) {
   const scripts = packageScripts(tree);
   const rows = new Map();
   const add = (source, line, invoked) => {
@@ -163,13 +167,22 @@ function discoverEntrypoints(tree, localRunners) {
     });
   }
   for (const runner of localRunners) if (tree.has(runner.path)) add(MAP_PATH, 0, runner.path);
-  for (const entry of [...new Set([...rows.values()].map(r => r.invokes))]) {
-    if (!/\.(ps1|mjs|cjs|js|sh)$/.test(entry)) continue;
+  // Transitive closure: every invoked script is scanned once, and scripts it names are queued in turn.
+  const scanned = new Set();
+  const queue = [...new Set([...rows.values()].map(r => r.invokes))];
+  while (queue.length > 0) {
+    const entry = queue.shift();
+    // The disposition data names paths as anchors, not as invocations; it is a gate but not a source.
+    if (scanned.has(entry) || !SCANNABLE.test(entry) || entry === `${MAP_DIR}dispositions.mjs`) continue;
+    scanned.add(entry);
     const dir = path.posix.dirname(entry);
     fileText(tree, entry).split('\n').forEach((line, i) => {
       for (const m of [...line.matchAll(PATH_TOKEN), ...line.matchAll(SIBLING_TOKEN)]) {
-        const hit = resolveToken(tree, [dir, '.'], m[0]);
-        if (hit && hit !== entry && SCRIPT_EXT.test(hit) && CALLEE_SCOPE(hit)) add(entry, i + 1, hit);
+        const hit = resolveToken(tree, [dir, '.', 'winsmux-app'], m[0]);
+        if (hit && hit !== entry && SCRIPT_EXT.test(hit) && !excluded(hit) && !PRODUCT_RUNTIME(hit)) {
+          add(entry, i + 1, hit);
+          if (!scanned.has(hit)) queue.push(hit);
+        }
       }
     });
   }
@@ -237,7 +250,7 @@ function structuralDiff(baseText, targetText) {
   return { removed: removed.sort(), added: added.sort() };
 }
 
-function computeFindings(map) {
+export function computeFindings(ref, map) {
   const target = lsTree(ref);
   const entrypoints = discoverEntrypoints(target, map.local_runners ?? []);
   const targetInv = inventory(target, entrypoints), targetNames = testNames(target);
@@ -257,7 +270,7 @@ function computeFindings(map) {
         if (isSkip(k) && now > old) findings.push({ type: 'skip-increase', base, path: p, metric: k, old, new: now });
       }
       if (a.kind === 'workflow') {
-        findings.push({ type: 'workflow-changed', base, path: p, base_blob: a.oid, target_blob: b.oid, structural_diff: structuralDiff(text(a.oid), text(b.oid)) });
+        findings.push({ type: 'workflow-changed', base, path: p, structural_diff: structuralDiff(text(a.oid), text(b.oid)) });
       }
       if (a.kind === 'cargo_manifest') {
         const after = new Set(cargoTargets(text(b.oid)));
@@ -274,164 +287,186 @@ function computeFindings(map) {
   return { target, findings, gates, entrypoints };
 }
 
-const keyOf = f => {
+// Findings are keyed by what the two trees show. A workflow row is keyed by path and base, never by blob
+// ids; its structural diff is compared separately, so editing a workflow asks for the row to be
+// regenerated, not re-keyed.
+export const keyOf = f => {
   switch (f.type) {
     case 'metric-decrease': case 'skip-increase': return `${f.type}|${f.path}|${f.metric}|${f.old}|${f.new}`;
-    case 'workflow-changed': return `${f.type}|${f.path}|${f.base_blob}|${f.target_blob}`;
     case 'cargo-target-removed': return `${f.type}|${f.path}|${f.name}`;
     case 'name-absent': return `${f.type}|${f.kind}|${f.path}|${f.name}`;
+    case 'workflow-changed': return `${f.type}|${f.path}|${f.base ?? (f.bases ?? [])[0]}`;
     default: return `${f.type}|${f.path}`;
   }
 };
 
-// Per-commit metric deltas along the first-parent history of a file, oldest first.
-function metricHistory(baseCommit, p, kind, metric) {
-  const commits = git(['rev-list', '--reverse', '--first-parent', `${baseCommit}..${ref}`, '--', p]).toString('utf8').trim().split('\n').filter(Boolean);
-  const at = (c, file) => (gitOk(['cat-file', '-e', `${c}:${file}`]) ? metrics(kind, show(`${c}:${file}`))[metric] ?? 0 : 0);
-  const out = [];
-  for (const c of commits) {
-    const delta = at(c, p) - at(`${c}^`, p);
-    if (delta !== 0) out.push({ commit: c, delta });
+// A body anchor names one Pester It or one Rust fn and pins the normalized text of its whole block, so
+// keeping the title and the Should count while weakening an expectation changes the digest.
+const normalizeBlock = lines => lines.map(l => l.trim()).filter(Boolean).join('\n');
+export function blockDigest(fileContent, anchor) {
+  const lines = lf(fileContent).split('\n');
+  const title = anchor.it !== undefined
+    ? l => /^\s*It\s+(['"])(.*?)\1/.exec(l)?.[2] === anchor.it
+    : l => new RegExp(`(?:^|\\s)fn\\s+${anchor.fn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(l);
+  const starts = lines.map((l, i) => (title(l) ? i : -1)).filter(i => i >= 0);
+  if (starts.length !== 1) return { error: starts.length === 0 ? 'block not found' : `block title occurs ${starts.length} times` };
+  const start = starts[0];
+  const indent = lines[start].match(/^\s*/)[0];
+  let end = -1;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith(indent) && lines[i].slice(indent.length).replace(/\s+$/, '') === '}') { end = i; break; }
   }
-  return out;
+  if (end < 0) return { error: 'block has no closing brace at its own indentation' };
+  const block = lines.slice(start, end + 1);
+  return { digest: sha256(normalizeBlock(block)), lines: block.length };
 }
+const TITLE_ONLY = /^(?:It\s+['"].*['"]|(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(?)$/;
+export const isWeakAnchor = a => a.contains !== undefined && TITLE_ONLY.test(a.contains.trim());
 
-const mapSource = emitOnly && opt('--map') ? lf(fs.readFileSync(opt('--map'), 'utf8')) : show(`${ref}:${MAP_PATH}`);
-const map = JSON.parse(mapSource);
-if (map.schema !== 'winsmux-gate-map/v2') throw new Error(`unsupported map schema ${map.schema}`);
+function main() {
+  const args = process.argv.slice(2);
+  const opt = name => (args.includes(name) ? args[args.indexOf(name) + 1] : null);
+  const ref = opt('--ref') ?? 'HEAD';
+  const emitOnly = args.includes('--emit-findings');
+  const mapSource = emitOnly && opt('--map') ? lf(fs.readFileSync(opt('--map'), 'utf8')) : show(`${ref}:${MAP_PATH}`);
+  const map = JSON.parse(mapSource);
+  if (map.schema !== SCHEMA) throw new Error(`unsupported map schema ${map.schema}`);
 
-const { target, findings, gates, entrypoints } = computeFindings(map);
-if (emitOnly) {
-  process.stdout.write(JSON.stringify({ ref, findings, gates, entrypoints }, null, 1) + '\n');
-  process.exit(0);
-}
+  const { target, findings, gates, entrypoints } = computeFindings(ref, map);
+  if (emitOnly) {
+    process.stdout.write(JSON.stringify({ ref, findings, gates, entrypoints }, null, 1) + '\n');
+    process.exit(0);
+  }
 
-const failures = [];
-const fileAt = p => fileText(target, p);
-function verifyAnchors(list, label) {
-  if (!Array.isArray(list) || list.length === 0) { failures.push(`${label}: no anchor`); return false; }
-  let ok = true;
-  for (const a of list) {
+  const failures = [];
+  const fileAt = p => fileText(target, p);
+  for (const [name, commit] of Object.entries(map.bases)) if (!isAncestor(commit, ref)) failures.push(`base ${name} (${commit}) is not an ancestor of ${ref}`);
+
+  function verifyAnchor(a, label) {
     const t = fileAt(a.path);
-    if (t === null) { failures.push(`${label}: ${a.path} is absent at ${ref}`); ok = false; }
-    else if (!lf(t).includes(a.contains)) { failures.push(`${label}: ${a.path} no longer contains ${JSON.stringify(a.contains)}`); ok = false; }
+    if (t === null) { failures.push(`${label}: ${a.path} is absent at ${ref}`); return false; }
+    if (a.contains !== undefined) {
+      if (!lf(t).includes(a.contains)) { failures.push(`${label}: ${a.path} no longer contains ${JSON.stringify(a.contains)}`); return false; }
+      return true;
+    }
+    if (a.it === undefined && a.fn === undefined) { failures.push(`${label}: anchor has neither contains nor it/fn`); return false; }
+    const got = blockDigest(t, a);
+    if (got.error) { failures.push(`${label}: ${a.path} ${a.it !== undefined ? `It '${a.it}'` : `fn ${a.fn}`}: ${got.error}`); return false; }
+    if (got.digest !== a.body_sha256) { failures.push(`${label}: ${a.path} ${a.it !== undefined ? `It '${a.it}'` : `fn ${a.fn}`} body differs from the pinned digest`); return false; }
+    return true;
   }
-  return ok;
-}
-const commitExists = c => /^[0-9a-f]{7,40}$/.test(c) && gitOk(['cat-file', '-e', `${c}^{commit}`]);
-const commitTouches = (c, p) => git(['diff-tree', '--no-commit-id', '--name-only', '-r', '-m', c]).toString('utf8').split('\n').includes(p);
-
-const mapGates = new Map(map.gates.map(g => [g.path, g]));
-for (const g of gates) {
-  const m = mapGates.get(g.path);
-  if (!m) failures.push(`gate not in map: ${g.path} (${g.kind})`);
-  else if (m.kind !== g.kind || !Array.isArray(m.q_ids) || m.q_ids.length === 0) failures.push(`gate row differs or has no Q-ID: ${g.path}`);
-  mapGates.delete(g.path);
-}
-for (const p of mapGates.keys()) failures.push(`map lists a gate that is absent at ${ref}: ${p}`);
-
-const entryKey = e => `${e.source}|${e.line}|${e.invokes}`;
-const listedEntries = new Map(map.entrypoints.map(e => [entryKey(e), e]));
-for (const e of entrypoints) {
-  const m = listedEntries.get(entryKey(e));
-  if (!m) failures.push(`CI entrypoint not in map: ${entryKey(e)}`);
-  listedEntries.delete(entryKey(e));
-}
-for (const k of listedEntries.keys()) failures.push(`map lists a CI entrypoint that is not invoked at ${ref}: ${k}`);
-for (const e of map.entrypoints) {
-  const src = fileAt(e.source);
-  if (src === null) { failures.push(`entrypoint source absent: ${e.source}`); continue; }
-  if (e.line > 0 && !(lf(src).split('\n')[e.line - 1] ?? '').includes(e.text)) failures.push(`entrypoint text differs: ${entryKey(e)}`);
-  if (e.line === 0 && e.source !== MAP_PATH && !lf(src).includes(e.text)) failures.push(`entrypoint text differs: ${entryKey(e)}`);
-  if (e.source === MAP_PATH && !(map.local_runners ?? []).some(r => r.path === e.invokes && typeof r.invoked_by === 'string' && r.invoked_by.length > 0)) failures.push(`local runner without invoker: ${e.invokes}`);
-  if (fileAt(e.invokes) === null) failures.push(`entrypoint target absent: ${e.invokes}`);
-}
-
-const pinByPath = new Map();
-for (const pin of map.pins) {
-  pinByPath.set(pin.path, pin);
-  const data = git(['cat-file', 'blob', pin.blob]);
-  if (data.length !== pin.bytes || sha256(data) !== pin.sha256) failures.push(`pin ${pin.path}: blob bytes differ`);
-  if (git(['rev-parse', `${pin.commit}:${pin.path}`]).toString('utf8').trim() !== pin.blob) failures.push(`pin ${pin.path}: not the blob at ${pin.commit}`);
-  if (fileAt(pin.path) !== null) failures.push(`pin ${pin.path}: a preserved record is back in the public tree at ${ref}`);
-}
-
-const DISPOSITIONS = new Set(['guarded', 'preserved', 'retired', 'reclassified']);
-function verifyDisposition(c, label, finding) {
-  if (!DISPOSITIONS.has(c.disposition)) { failures.push(`no disposition: ${label}`); return; }
-  if (typeof c.reason !== 'string' || c.reason.length < 20) failures.push(`no reason: ${label}`);
-  const path_ = finding.path;
-  switch (c.disposition) {
-    case 'guarded':
-      verifyAnchors(c.selectors, `${label} selectors`);
-      break;
-    case 'preserved':
-      if (!Array.isArray(c.pins) || c.pins.length === 0) failures.push(`${label}: preserved without pins`);
-      for (const p of c.pins ?? []) if (!pinByPath.has(p)) failures.push(`${label}: unknown pin ${p}`);
-      verifyAnchors(c.basis, `${label} basis`);
-      if (!Array.isArray(c.external_basis) || c.external_basis.length === 0) failures.push(`${label}: preserved without external basis`);
-      break;
-    case 'retired':
-      verifyAnchors(c.basis, `${label} basis`);
-      if (!Array.isArray(c.retired_by) || c.retired_by.length === 0) failures.push(`${label}: retired without commit`);
-      for (const commit of c.retired_by ?? []) {
-        if (!commitExists(commit)) failures.push(`${label}: retiring commit ${commit} does not exist`);
-        else if (path_ && !commitTouches(commit, path_)) failures.push(`${label}: ${commit} does not touch ${path_}`);
-      }
-      break;
-    case 'reclassified':
-      verifyAnchors(c.basis, `${label} basis`);
-      break;
+  function verifyAnchors(list, label, strong) {
+    if (!Array.isArray(list) || list.length === 0) { failures.push(`${label}: no anchor`); return false; }
+    let ok = true;
+    for (const a of list) if (!verifyAnchor(a, label)) ok = false;
+    if (strong && list.every(isWeakAnchor)) { failures.push(`${label}: every anchor is a test title; pin a body digest or an assertion line`); ok = false; }
+    return ok;
   }
-}
 
-const byKey = new Map();
-for (const entry of map.findings) {
-  const k = keyOf(entry);
-  if (byKey.has(k)) failures.push(`duplicate map finding: ${k}`);
-  byKey.set(k, { entry, bases: new Set(), finding: null });
-}
-let accounted = 0;
-for (const f of findings) {
-  const hit = byKey.get(keyOf(f));
-  if (!hit) { failures.push(`unaccounted finding (${f.base}): ${keyOf(f)}`); continue; }
-  hit.bases.add(f.base);
-  hit.finding = f;
-  accounted++;
-}
-const counts = Object.fromEntries([...DISPOSITIONS].map(d => [d, 0]));
-for (const [k, { entry, bases, finding }] of byKey) {
-  if (bases.size === 0) { failures.push(`stale map finding: ${k}`); continue; }
-  const listed = new Set(entry.bases ?? []);
-  if (listed.size !== bases.size || [...bases].some(b => !listed.has(b))) failures.push(`map finding bases differ: ${k} expected ${[...bases].join(',')}`);
-  if (entry.type === 'workflow-changed') {
-    if (JSON.stringify(entry.structural_diff) !== JSON.stringify(finding.structural_diff)) failures.push(`structural diff differs: ${k}`);
+  const mapGates = new Map(map.gates.map(g => [g.path, g]));
+  for (const g of gates) {
+    const m = mapGates.get(g.path);
+    if (!m) failures.push(`gate not in map: ${g.path} (${g.kind})`);
+    else if (m.kind !== g.kind || !Array.isArray(m.q_ids) || m.q_ids.length === 0) failures.push(`gate row differs or has no Q-ID: ${g.path}`);
+    mapGates.delete(g.path);
   }
-  const components = Array.isArray(entry.components) ? entry.components : null;
-  if (components && entry.disposition) failures.push(`both disposition and components: ${k}`);
-  if (!components) { verifyDisposition(entry, k, entry); counts[entry.disposition] = (counts[entry.disposition] ?? 0) + 1; continue; }
-  if (components.length < 2) failures.push(`components need at least two parts: ${k}`);
-  components.forEach((c, i) => { verifyDisposition(c, `${k} #${i + 1}`, entry); counts[c.disposition] = (counts[c.disposition] ?? 0) + 1; });
-  if (entry.type === 'metric-decrease') {
-    const kind = gates.find(g => g.path === entry.path)?.kind;
-    for (const base of bases) {
-      const history = metricHistory(map.bases[base], entry.path, kind, entry.metric);
-      // A commit may be split across components; the per-commit sums must match the history exactly.
-      const perCommit = new Map();
-      for (const d of components.flatMap(c => c.deltas ?? [])) perCommit.set(d.commit.slice(0, 8), (perCommit.get(d.commit.slice(0, 8)) ?? 0) + d.delta);
-      const expected = JSON.stringify(history.map(h => `${h.commit.slice(0, 8)}:${h.delta}`).sort());
-      const actual = JSON.stringify([...perCommit].filter(([, d]) => d !== 0).map(([c, d]) => `${c}:${d}`).sort());
-      const total = components.flatMap(c => c.deltas ?? []).reduce((s, d) => s + d.delta, 0);
-      if (total !== entry.new - entry.old) failures.push(`component deltas sum to ${total}, finding is ${entry.new - entry.old}: ${k}`);
-      if (expected !== actual) failures.push(`component deltas differ from history (${base}): ${k} expected ${expected} got ${actual}`);
+  for (const p of mapGates.keys()) failures.push(`map lists a gate that is absent at ${ref}: ${p}`);
+
+  const entryKey = e => `${e.source}|${e.line}|${e.invokes}`;
+  const listedEntries = new Map(map.entrypoints.map(e => [entryKey(e), e]));
+  for (const e of entrypoints) {
+    const m = listedEntries.get(entryKey(e));
+    if (!m) failures.push(`CI entrypoint not in map: ${entryKey(e)}`);
+    listedEntries.delete(entryKey(e));
+  }
+  for (const k of listedEntries.keys()) failures.push(`map lists a CI entrypoint that is not invoked at ${ref}: ${k}`);
+  for (const e of map.entrypoints) {
+    const src = fileAt(e.source);
+    if (src === null) { failures.push(`entrypoint source absent: ${e.source}`); continue; }
+    if (e.line > 0 && !(lf(src).split('\n')[e.line - 1] ?? '').includes(e.text)) failures.push(`entrypoint text differs: ${entryKey(e)}`);
+    if (e.line === 0 && e.source !== MAP_PATH && !lf(src).includes(e.text)) failures.push(`entrypoint text differs: ${entryKey(e)}`);
+    if (e.source === MAP_PATH && !(map.local_runners ?? []).some(r => r.path === e.invokes && typeof r.invoked_by === 'string' && r.invoked_by.length > 0)) failures.push(`local runner without invoker: ${e.invokes}`);
+    if (fileAt(e.invokes) === null) failures.push(`entrypoint target absent: ${e.invokes}`);
+  }
+
+  const pinByPath = new Map();
+  for (const pin of map.pins) {
+    pinByPath.set(pin.path, pin);
+    const data = git(['cat-file', 'blob', pin.blob]);
+    if (data.length !== pin.bytes || sha256(data) !== pin.sha256) failures.push(`pin ${pin.path}: blob bytes differ`);
+    if (!isAncestor(pin.commit, ref)) failures.push(`pin ${pin.path}: ${pin.commit} is not an ancestor of ${ref}`);
+    else if (git(['rev-parse', `${pin.commit}:${pin.path}`]).toString('utf8').trim() !== pin.blob) failures.push(`pin ${pin.path}: not the blob at ${pin.commit}`);
+    if (fileAt(pin.path) !== null) failures.push(`pin ${pin.path}: a preserved record is back in the public tree at ${ref}`);
+  }
+  const pb = map.preservation_basis;
+  const hasPreservationBasis = pb && typeof pb.sha256 === 'string' && /^[0-9a-f]{64}$/.test(pb.sha256) && Number.isInteger(pb.bytes) && pb.bytes > 0;
+
+  const DISPOSITIONS = new Set(['guarded', 'preserved', 'retired', 'reclassified']);
+  function verifyDisposition(c, label) {
+    if (!DISPOSITIONS.has(c.disposition)) { failures.push(`no disposition: ${label}`); return; }
+    if (typeof c.reason !== 'string' || c.reason.length < 20) failures.push(`no reason: ${label}`);
+    switch (c.disposition) {
+      case 'guarded':
+        verifyAnchors(c.selectors, `${label} selectors`, true);
+        break;
+      case 'preserved':
+        if (!Array.isArray(c.pins) || c.pins.length === 0) failures.push(`${label}: preserved without pins`);
+        for (const p of c.pins ?? []) if (!pinByPath.has(p)) failures.push(`${label}: unknown pin ${p}`);
+        verifyAnchors(c.basis, `${label} basis`, false);
+        if (!hasPreservationBasis) failures.push(`${label}: preserved without a pinned preservation basis document`);
+        break;
+      case 'retired':
+        verifyAnchors(c.basis, `${label} basis`, false);
+        if (Array.isArray(c.selectors) && c.selectors.length > 0) verifyAnchors(c.selectors, `${label} selectors`, true);
+        else if (typeof c.unguarded_reason !== 'string' || c.unguarded_reason.length < 40) failures.push(`${label}: retired without a guarding selector or an unguarded_reason`);
+        break;
+      case 'reclassified':
+        verifyAnchors(c.basis, `${label} basis`, false);
+        break;
     }
   }
+
+  const byKey = new Map();
+  for (const entry of map.findings) {
+    const k = keyOf(entry);
+    if (byKey.has(k)) failures.push(`duplicate map finding: ${k}`);
+    byKey.set(k, { entry, bases: new Set(), finding: null });
+  }
+  let accounted = 0;
+  for (const f of findings) {
+    const hit = byKey.get(keyOf(f));
+    if (!hit) { failures.push(`unaccounted finding (${f.base}): ${keyOf(f)}`); continue; }
+    hit.bases.add(f.base);
+    hit.finding = f;
+    accounted++;
+  }
+  const counts = Object.fromEntries([...DISPOSITIONS].map(d => [d, 0]));
+  for (const [k, { entry, bases, finding }] of byKey) {
+    if (bases.size === 0) { failures.push(`stale map finding: ${k}`); continue; }
+    const listed = new Set(entry.bases ?? []);
+    if (listed.size !== bases.size || [...bases].some(b => !listed.has(b))) failures.push(`map finding bases differ: ${k} expected ${[...bases].join(',')}`);
+    if (entry.type === 'workflow-changed') {
+      if (JSON.stringify(entry.structural_diff) !== JSON.stringify(finding.structural_diff)) failures.push(`structural diff differs: ${k}`);
+    }
+    const components = Array.isArray(entry.components) ? entry.components : null;
+    if (components && entry.disposition) failures.push(`both disposition and components: ${k}`);
+    if (!components) { verifyDisposition(entry, k); counts[entry.disposition] = (counts[entry.disposition] ?? 0) + 1; continue; }
+    if (components.length < 2) failures.push(`components need at least two parts: ${k}`);
+    components.forEach((c, i) => { verifyDisposition(c, `${k} #${i + 1}`); counts[c.disposition] = (counts[c.disposition] ?? 0) + 1; });
+    if (entry.type === 'metric-decrease') {
+      // The per-commit attribution inside deltas is explanatory; only the tree-to-tree total is checked.
+      const total = components.flatMap(c => c.deltas ?? []).reduce((s, d) => s + d.delta, 0);
+      if (total !== entry.new - entry.old) failures.push(`component deltas sum to ${total}, finding is ${entry.new - entry.old}: ${k}`);
+    }
+  }
+
+  const summary = {
+    ref, tree: git(['rev-parse', `${ref}^{tree}`]).toString('utf8').trim(),
+    gates: gates.length, entrypoints: entrypoints.length, findings: findings.length, map_findings: map.findings.length, accounted,
+    by_disposition: counts, pins: map.pins.length, failures,
+  };
+  process.stdout.write(JSON.stringify(summary, null, 1) + '\n');
+  process.exit(failures.length === 0 ? 0 : 1);
 }
 
-const summary = {
-  ref, tree: git(['rev-parse', `${ref}^{tree}`]).toString('utf8').trim(),
-  gates: gates.length, entrypoints: entrypoints.length, findings: findings.length, map_findings: map.findings.length, accounted,
-  by_disposition: counts, pins: map.pins.length, failures,
-};
-process.stdout.write(JSON.stringify(summary, null, 1) + '\n');
-process.exit(failures.length === 0 ? 0 : 1);
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

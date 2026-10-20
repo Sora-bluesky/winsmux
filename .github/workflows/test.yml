@@ -172,7 +172,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # check-map recomputes findings against three fixed base commits and walks per-file history.
+          # check-map compares the checked-out tree with three fixed base commits and reads the pinned
+          # record blobs from history; the result is the same on a branch head, a PR merge ref or main.
           fetch-depth: 0
 
       - uses: actions/setup-node@v6
