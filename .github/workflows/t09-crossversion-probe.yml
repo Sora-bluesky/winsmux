@@ -12,15 +12,15 @@ env:
   SOURCE_TREE: '8014b3a17e55b3c484ee8306b1db2a6cba25f139'
   # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
   SOURCE_INVENTORY: '7812546279d9f816b8ef9646f757c5166c140b311f5c16249747fe092a7cdb12'
-  # Unpublished draft release DRAFT_RELEASE_ID (codex-task879-core-a1ce1975, target a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3): id, bytes, sha256, name.
+  # Unpublished draft release 418005697 (codex-task879-core-a1ce1975, target a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3): id, bytes, sha256, name.
   # Ids stay placeholders, which the manifest check refuses, until
   # .github/task879/fill-draft-asset-ids.py fills them from a GET of that draft.
   TASK879_ASSETS: |
-    DRAFT_ASSET_ID 18357248 8c9b1a90bf2628c786bab6e619eb78707ba2e0679b195a222f0fea54b653e882 winsmux-x64.exe
-    DRAFT_ASSET_ID 6724597 c2e8e0dda2bdcb69be53c68dd7969e2c993759637db6e09de00e9bb1dd9c2a3e winsmux-x64.exe.licenses.zip
-    DRAFT_ASSET_ID 177 9b153ce59680b4e75d72ddb4cc44c8a4cd062af2cb250a0658d5a5f52cff7ed0 SHA256SUMS
-    DRAFT_ASSET_ID 1785 b798f8b278e9bc5102d0917432eac58d6193061038275c1478c2a350bc00698d core-candidate.json
-    DRAFT_ASSET_ID 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
+    658284550 18357248 8c9b1a90bf2628c786bab6e619eb78707ba2e0679b195a222f0fea54b653e882 winsmux-x64.exe
+    658284621 6724597 c2e8e0dda2bdcb69be53c68dd7969e2c993759637db6e09de00e9bb1dd9c2a3e winsmux-x64.exe.licenses.zip
+    658284489 177 9b153ce59680b4e75d72ddb4cc44c8a4cd062af2cb250a0658d5a5f52cff7ed0 SHA256SUMS
+    658284470 1785 b798f8b278e9bc5102d0917432eac58d6193061038275c1478c2a350bc00698d core-candidate.json
+    658284507 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
 
 jobs:
   fetch:
