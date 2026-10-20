@@ -44,9 +44,10 @@ const s5Changes = Object.freeze([
   { path: '.gitignore', before_sha256: 'b67997120ecc01d7cbca130dc209249f4f4323ae9f832140abb4ed8360f58c48', after_sha256: 'f'.repeat(64) },
   { path: 'docs/provider-and-model-support.ja.md', before_sha256: '38af1919139e82b1515a350f286f50a8b1d4f8546c329df1a961c8a820274235', after_sha256: 'f'.repeat(64) },
   { path: 'docs/provider-and-model-support.md', before_sha256: '967281c6fc775af3ab1e3ccd0db5321071cb5e84d1cf03740d5e67ef29f982f2', after_sha256: 'f'.repeat(64) },
+  { path: 'tests/CliBakeoff.Tests.ps1', before_sha256: '0ba34a19a155689e2f65e381334fd0c1073331f62062ac96a62601d00971c7e1', after_sha256: 'f'.repeat(64) },
+  { path: '.github/workflows/test.yml', before_sha256: '5013e078993941c67250a229ff7f9c5b7f6e14c1d1d03929b98ec09640cb1952', after_sha256: 'f'.repeat(64) },
   { path: 'tests/workspace-gate-map/check-map.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },
   { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: null, after_sha256: 'c'.repeat(64) },
-  { path: 'tests/workspace-gate-map/preserved-contracts.test.ps1', before_sha256: null, after_sha256: 'c'.repeat(64) },
   { path: 'tests/workspace-gate-map/run.ps1', before_sha256: null, after_sha256: 'c'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
