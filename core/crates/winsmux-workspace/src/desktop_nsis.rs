@@ -26,13 +26,21 @@ pub enum Error {
     Path(u16),
     Member,
     Registration,
-    LegacyIncomplete,
+    LegacyIncomplete(LegacyCheck),
     Busy,
     Pending,
     Io,
     Startup,
     // T-only finite observation; the original startup error carries no private text.
     StartupClass(crate::desktop_install::DesktopInstallError),
+}
+// Which legacy admission check refused, so the installer can say what it needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyCheck {
+    Inventory,
+    Receipt,
+    Profile,
+    Root,
 }
 impl Error {
     pub fn classification(self) -> &'static str {
@@ -44,7 +52,12 @@ impl Error {
             Self::Path(_) => "path_refused",
             Self::Member => "member_unconfirmed",
             Self::Registration => "registration_conflict",
-            Self::LegacyIncomplete => "legacy_inventory_incomplete",
+            Self::LegacyIncomplete(check) => match check {
+                LegacyCheck::Inventory => "legacy_inventory_incomplete",
+                LegacyCheck::Receipt => "legacy_receipt_missing",
+                LegacyCheck::Profile => "legacy_profile_incomplete",
+                LegacyCheck::Root => "legacy_root_mismatch",
+            },
             Self::Busy => "work_running_or_locked",
             Self::Pending => "pending_unconfirmed",
             Self::Io => "io_unconfirmed",
@@ -595,6 +608,14 @@ struct Shortcut {
     target: String,
     aumid: String,
 }
+// A same-name link another install owns, parked under the control namespace for the
+// lifetime of this install and moved back to its known folder on uninstall.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PreservedShortcut {
+    kind: String,
+    member: Member,
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Installed {
@@ -611,6 +632,8 @@ struct Installed {
     members: Vec<Member>,
     registration: Vec<Option<RawValue>>,
     shortcuts: Vec<Shortcut>,
+    #[serde(default)]
+    preserved: Vec<PreservedShortcut>,
     operation_id: String,
     action: Action,
     #[serde(skip)]
@@ -666,6 +689,7 @@ struct Pending {
     prior_state: Option<Vec<u8>>,
     old: Vec<Move>,
     new: Vec<Move>,
+    preserved: Vec<Move>,
     slots: Vec<Slot>,
     phase: Phase,
     commit_bytes: Option<Vec<u8>>,
@@ -764,18 +788,23 @@ fn legacy() -> Result<Legacy> {
 pub fn legacy_admission_complete() -> Result<()> {
     let p = legacy()?;
     if !p.installed_inventory_complete
-        || p.capture_receipt_sha256
-            .as_ref()
-            .is_none_or(|s| parse_sha256(s).is_err())
-        || p.registration_profile.as_ref().is_none_or(|profile| {
-            profile.registration.len() != 22 || !legacy_language_matches(profile)
-        })
         || !p
             .files
             .iter()
             .any(|f| f.role == "uninstaller" && f.path == "uninstall.exe")
     {
-        return Err(Error::LegacyIncomplete);
+        return Err(Error::LegacyIncomplete(LegacyCheck::Inventory));
+    }
+    if p.capture_receipt_sha256
+        .as_ref()
+        .is_none_or(|s| parse_sha256(s).is_err())
+    {
+        return Err(Error::LegacyIncomplete(LegacyCheck::Receipt));
+    }
+    if p.registration_profile.as_ref().is_none_or(|profile| {
+        profile.registration.len() != 22 || !legacy_language_matches(profile)
+    }) {
+        return Err(Error::LegacyIncomplete(LegacyCheck::Profile));
     }
     Ok(())
 }
@@ -1647,6 +1676,7 @@ mod native {
                 prior_state: None,
                 old: Vec::new(),
                 new: self.rows.clone(),
+                preserved: Vec::new(),
                 slots: Vec::new(),
                 phase: Phase::Prepared,
                 commit_bytes: None,
@@ -2112,6 +2142,9 @@ mod native {
             for row in &p.new {
                 classes.insert(format!("new:{}:{:?}", row.domain, row.phase));
             }
+            for row in &p.preserved {
+                classes.insert(format!("preserved:{}:{:?}", row.domain, row.phase));
+            }
             for row in &p.slots {
                 classes.insert(format!("slot:{:?}", row.phase));
             }
@@ -2556,6 +2589,21 @@ mod native {
             .join(&row.domain)
             .join(&row.member.path)
     }
+    fn preserved_path(root: &Path, kind: &str) -> Result<PathBuf> {
+        if !matches!(kind, "desktop" | "start_menu") {
+            return Err(Error::Plan);
+        }
+        Ok(root.join(CONTROL).join("preserved").join(format!("{kind}-winsmux.lnk")))
+    }
+    /// Forward direction of a preserved foreign link: parked on install, back to its known folder on uninstall.
+    fn preserved_endpoints(root: &Path, action: Action, row: &Move) -> Result<(PathBuf, PathBuf)> {
+        let live = live_path(root, row)?;
+        let parked = preserved_path(root, &row.domain)?;
+        Ok(if action == Action::Install { (live, parked) } else { (parked, live) })
+    }
+    fn preserved_move(row: &PreservedShortcut) -> Move {
+        Move { member: row.member.clone(), domain: row.kind.clone(), phase: MovePhase::Prepared }
+    }
     fn validate_installed(s: &Installed, root: &Dirs, sid: &str) -> Result<()> {
         if s.schema != "winsmux-desktop-nsis-installed/v1"
             || s.host != HOST
@@ -2588,7 +2636,7 @@ mod native {
             let profile = l
                 .registration_profile
                 .as_ref()
-                .ok_or(Error::LegacyIncomplete)?;
+                .ok_or(Error::LegacyIncomplete(LegacyCheck::Profile))?;
             let binding = s.legacy_capture.as_ref().ok_or(Error::Plan)?;
             if binding.original_installer_sha256 != l.original_installer.sha256
                 || Some(&binding.capture_receipt_sha256) != l.capture_receipt_sha256.as_ref()
@@ -2628,6 +2676,17 @@ mod native {
                 return Err(Error::Plan);
             }
         }
+        let mut preserved_kinds = HashSet::new();
+        for row in &s.preserved {
+            if s.generation != "managed"
+                || !preserved_kinds.insert(row.kind.clone())
+                || !kinds.contains(&row.kind)
+                || row.member.path != "winsmux.lnk"
+                || parse_sha256(&row.member.sha256).is_err()
+            {
+                return Err(Error::Plan);
+            }
+        }
         if s.generation == "legacy" {
             return Ok(());
         }
@@ -2659,9 +2718,12 @@ mod native {
         let profile = l
             .registration_profile
             .as_ref()
-            .ok_or(Error::LegacyIncomplete)?;
-        if profile.registration.len() != 22 || !same_path(Path::new(&profile.root), &root.path) {
-            return Err(Error::LegacyIncomplete);
+            .ok_or(Error::LegacyIncomplete(LegacyCheck::Profile))?;
+        if profile.registration.len() != 22 {
+            return Err(Error::LegacyIncomplete(LegacyCheck::Profile));
+        }
+        if !same_path(Path::new(&profile.root), &root.path) {
+            return Err(Error::LegacyIncomplete(LegacyCheck::Root));
         }
         let mut members = Vec::new();
         let mut paths = HashSet::new();
@@ -2711,7 +2773,7 @@ mod native {
             generation: "legacy".into(),
             legacy_capture: Some(LegacyBinding {
                 original_installer_sha256: l.original_installer.sha256,
-                capture_receipt_sha256: l.capture_receipt_sha256.ok_or(Error::LegacyIncomplete)?,
+                capture_receipt_sha256: l.capture_receipt_sha256.ok_or(Error::LegacyIncomplete(LegacyCheck::Receipt))?,
             }),
             actor_sid: sid.into(),
             root: profile.root.clone(),
@@ -2723,6 +2785,7 @@ mod native {
             members,
             registration: profile.registration.clone(),
             shortcuts,
+            preserved: Vec::new(),
             operation_id: uuid::Uuid::new_v4().to_string(),
             action: Action::Install,
             state_member: None,
@@ -2753,6 +2816,14 @@ mod native {
                 aumid: "io.github.sora-bluesky.winsmux".into(),
             });
         }
+        let mut preserved = prior
+            .as_ref()
+            .map(|state| state.preserved.clone())
+            .unwrap_or_default();
+        preserved.extend(p.preserved.iter().map(|row| PreservedShortcut {
+            kind: row.domain.clone(),
+            member: row.member.clone(),
+        }));
         let state = Installed {
             schema: "winsmux-desktop-nsis-installed/v1".into(),
             generation: "managed".into(),
@@ -2772,6 +2843,7 @@ mod native {
                 .collect(),
             registration: p.slots[..22].iter().map(|r| r.desired.clone()).collect(),
             shortcuts,
+            preserved,
             operation_id: p.operation_id.clone(),
             action: Action::Install,
             state_member: None,
@@ -2833,17 +2905,23 @@ mod native {
             root.path.join(CONTROL).join("ops"),
             operation.clone(),
         ]);
+        let mut targets = Vec::new();
         for row in p.old.iter().chain(&p.new) {
-            for target in [
+            targets.extend([
                 live_path(&root.path, row)?,
                 private_path(&root.path, &p.operation_id, "old", row),
                 private_path(&root.path, &p.operation_id, "new", row),
-            ] {
-                let mut parent = target.parent().ok_or(Error::Pending)?.to_path_buf();
-                while parent.starts_with(&root.path) && parent != root.path {
-                    allowed.insert(parent.clone());
-                    parent = parent.parent().ok_or(Error::Pending)?.into();
-                }
+            ]);
+        }
+        for row in &p.preserved {
+            let (from, to) = preserved_endpoints(&root.path, p.action, row)?;
+            targets.extend([from, to]);
+        }
+        for target in targets {
+            let mut parent = target.parent().ok_or(Error::Pending)?.to_path_buf();
+            while parent.starts_with(&root.path) && parent != root.path {
+                allowed.insert(parent.clone());
+                parent = parent.parent().ok_or(Error::Pending)?.into();
             }
         }
         let mut dir_names = HashSet::new();
@@ -2878,9 +2956,11 @@ mod native {
         }
         let plan = checked_owned_plan(&p.plan_bytes, &p.plan_sha256)?;
         let mut old_expected = Vec::new();
+        let mut prior_preserved = Vec::new();
         if let Some(bytes) = &p.prior_state {
             let s: Installed = serde_json::from_slice(bytes).map_err(|_| Error::Pending)?;
             validate_installed(&s, root, sid)?;
+            prior_preserved = s.preserved.clone();
             old_expected.extend(s.members.iter().map(|m| ("root".to_string(), m.clone())));
             if p.action == Action::Uninstall {
                 old_expected.extend(
@@ -2911,6 +2991,31 @@ mod native {
                     .any(|(d, row)| d == &m.domain && row == &m.member)
             })
         {
+            return Err(Error::Pending);
+        }
+        // Install parks a foreign link only where this operation publishes; uninstall brings
+        // back exactly the rows the owned state recorded.
+        let mut preserved_kinds = HashSet::new();
+        for row in &p.preserved {
+            preserved_endpoints(&root.path, p.action, row)?;
+            if !preserved_kinds.insert(row.domain.clone())
+                || parse_sha256(&row.member.sha256).is_err()
+                || row.member.identity.volume != root.id.volume
+            {
+                return Err(Error::Pending);
+            }
+            let admitted = if p.action == Action::Install {
+                p.new.iter().any(|n| n.domain == row.domain)
+            } else {
+                prior_preserved
+                    .iter()
+                    .any(|q| q.kind == row.domain && q.member == row.member)
+            };
+            if !admitted {
+                return Err(Error::Pending);
+            }
+        }
+        if p.action == Action::Uninstall && p.preserved.len() != prior_preserved.len() {
             return Err(Error::Pending);
         }
         let mut seen = HashSet::new();
@@ -3062,6 +3167,33 @@ mod native {
             p.new[i].phase = MovePhase::Restored;
             j.save(p)?;
         }
+        // Preserved links go back before old shortcut rows reclaim the same known-folder path.
+        for i in (0..p.preserved.len()).rev() {
+            let row = p.preserved[i].clone();
+            if matches!(row.phase, MovePhase::Prepared | MovePhase::Restored) {
+                continue;
+            }
+            let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
+            if exists(&from)? {
+                if exact(&from, &row.member, true).is_err() || exists(&to)? {
+                    uncertain = true;
+                    continue;
+                }
+            } else if exists(&to)? {
+                if exact(&to, &row.member, true).is_err() {
+                    uncertain = true;
+                    continue;
+                }
+                p.preserved[i].phase = MovePhase::RestoreIntent;
+                j.save(p)?;
+                move_exact_with_origins(&to, &from, &row.member, root, None)?;
+            } else {
+                uncertain = true;
+                continue;
+            }
+            p.preserved[i].phase = MovePhase::Restored;
+            j.save(p)?;
+        }
         for i in (0..p.old.len()).rev() {
             let row = p.old[i].clone();
             let live = live_path(&root.path, &row)?;
@@ -3093,6 +3225,12 @@ mod native {
         }
         for m in &p.old {
             if exact(&live_path(&root.path, m)?, &m.member, true).is_err() {
+                uncertain = true;
+            }
+        }
+        for m in &p.preserved {
+            let (from, _) = preserved_endpoints(&root.path, p.action, m)?;
+            if exact(&from, &m.member, true).is_err() {
                 uncertain = true;
             }
         }
@@ -3130,6 +3268,9 @@ mod native {
                 return Err(Error::Pending);
             }
         }
+        for row in &p.preserved {
+            verify_preserved_at(p, root, row, false)?;
+        }
         for row in &p.new {
             let live = live_path(&root.path, row)?;
             if exists(&live)?
@@ -3138,11 +3279,28 @@ mod native {
                         same_path(&path, &live) && exact(&live, &old.member, false).is_ok()
                     })
                 })
+                && !p.preserved.iter().any(|kept| {
+                    preserved_endpoints(&root.path, p.action, kept).is_ok_and(|(from, _)| {
+                        same_path(&from, &live) && exact(&live, &kept.member, false).is_ok()
+                    })
+                })
             {
                 return Err(Error::Pending);
             }
         }
         root.reobserve()?;
+        Ok(())
+    }
+    /// After a restore the foreign link is back at its forward source; after a commit it is at the
+    /// forward destination. Whenever it is live, nothing may remain parked under its name.
+    fn verify_preserved_at(p: &Pending, root: &Dirs, row: &Move, committed: bool) -> Result<()> {
+        let (from, to) = preserved_endpoints(&root.path, p.action, row)?;
+        let expected = if committed { &to } else { &from };
+        exact(expected, &row.member, false).map_err(|_| Error::Pending)?;
+        let parked = preserved_path(&root.path, &row.domain)?;
+        if !same_path(expected, &parked) && exists(&parked)? {
+            return Err(Error::Pending);
+        }
         Ok(())
     }
     fn verify_committed(p: &Pending, root: &Dirs) -> Result<()> {
@@ -3169,11 +3327,22 @@ mod native {
                 }
             }
         } else {
+            // A removed product link may have handed its known-folder path back to a preserved one.
             for m in &p.old {
-                if exists(&live_path(&root.path, m)?)? {
+                let live = live_path(&root.path, m)?;
+                if exists(&live)?
+                    && !p.preserved.iter().any(|kept| {
+                        preserved_endpoints(&root.path, p.action, kept).is_ok_and(|(_, to)| {
+                            same_path(&to, &live) && exact(&live, &kept.member, false).is_ok()
+                        })
+                    })
+                {
                     return Err(Error::Pending);
                 }
             }
+        }
+        for row in &p.preserved {
+            verify_preserved_at(p, root, row, true)?;
         }
         root.reobserve()?;
         Ok(())
@@ -3278,6 +3447,9 @@ mod native {
             return Ok(false);
         }
         validate_commit_state(p, root)?;
+        if p.preserved.iter().any(|r| r.phase != MovePhase::MovedConfirmed) {
+            return Err(Error::Pending);
+        }
         if p.action == Action::Uninstall {
             if p.old.iter().any(|r| r.phase != MovePhase::MovedConfirmed) {
                 return Err(Error::Pending);
@@ -3410,6 +3582,9 @@ mod native {
                 let mut held = derived_origin(exact(&path, &link.member, true), shortcut_origin(&link.kind, DerivedOrigin::ManagedDesktopParent, DerivedOrigin::ManagedProgramsParent))?;
                 verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
             }
+            for row in &state.preserved {
+                exact(&preserved_path(&root.path, &row.kind)?, &row.member, true)?;
+            }
             for (id, value) in state.registration.iter().enumerate() {
                 if read_slot(id as u32)? != *value {
                     return Err(Error::Registration);
@@ -3420,13 +3595,26 @@ mod native {
             .map_err(|_| Error::Path(152))?
             .next()
             .is_some()
+            && legacy_profile_claims(root)?
         {
             Some(admit_legacy(root, sid, plan_bytes, plan_sha256)?)
         } else {
+            // A used root the captured legacy profile does not name is a first install. Its entries
+            // stay untouched and any collision with a member path is refused later as Member.
             None
         };
-        admit_control_namespace(root, inherited.as_ref())?;
+        let preserved_kinds: Vec<String> = old
+            .as_ref()
+            .map(|(state, _)| state.preserved.iter().map(|row| row.kind.clone()).collect())
+            .unwrap_or_default();
+        admit_control_namespace(root, inherited.as_ref(), &preserved_kinds)?;
         Ok((old, inherited))
+    }
+    fn legacy_profile_claims(root: &Dirs) -> Result<bool> {
+        Ok(legacy()?
+            .registration_profile
+            .as_ref()
+            .is_some_and(|profile| same_path(Path::new(&profile.root), &root.path)))
     }
     fn source_rows(
         ctx: &Context,
@@ -3489,9 +3677,12 @@ mod native {
             .collect::<Result<Vec<_>>>()?;
         Ok(bound)
     }
-    fn admit_control_namespace(root: &Dirs, retained: Option<&Journal>) -> Result<()> {
+    fn admit_control_namespace(root: &Dirs, retained: Option<&Journal>, preserved_kinds: &[String]) -> Result<()> {
         let control = root.path.join(CONTROL);
         if !exists(&control)? {
+            if !preserved_kinds.is_empty() {
+                return Err(Error::Member);
+            }
             return Ok(());
         }
         let _held = derived_origin(Dirs::open(&control), Some(DerivedOrigin::AdmitControl))?;
@@ -3511,7 +3702,7 @@ mod native {
             }
         }
         if entries.iter().any(|s| {
-            !matches!(s.as_str(), "installed.json" | "ops")
+            !matches!(s.as_str(), "installed.json" | "ops" | "preserved")
                 && !(s == "pending.json" && retained.is_some())
         }) {
             return Err(Error::Path(155));
@@ -3526,6 +3717,25 @@ mod native {
             {
                 return Err(Error::Pending);
             }
+        }
+        // The parked area holds exactly the foreign links the owned state records, or nothing.
+        let parked = control.join("preserved");
+        let expected: HashSet<String> = preserved_kinds
+            .iter()
+            .map(|kind| format!("{kind}-winsmux.lnk"))
+            .collect();
+        if exists(&parked)? {
+            let _parked = Dirs::open(&parked)?;
+            let actual: HashSet<String> = fs::read_dir(&parked)
+                .map_err(|_| Error::Path(156))?
+                .map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned()))
+                .collect::<std::io::Result<_>>()
+                .map_err(|_| Error::Path(154))?;
+            if actual != expected {
+                return Err(Error::Path(155));
+            }
+        } else if !expected.is_empty() {
+            return Err(Error::Member);
         }
         Ok(())
     }
@@ -3680,6 +3890,34 @@ mod native {
                 .collect();
             member_inventory_valid(&members, &plan_bytes, &sha256_hex(&ctx.plan_sha256))?;
         }
+        let mut preserved_rows = Vec::new();
+        if ctx.action == Action::Install {
+            for row in &new_rows {
+                let live = live_path(&root.path, row)?;
+                if !exists(&live)?
+                    || old_rows
+                        .iter()
+                        .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
+                {
+                    continue;
+                }
+                if !matches!(row.domain.as_str(), "desktop" | "start_menu") {
+                    return Err(Error::Member);
+                }
+                // A same-name link that another install owns is parked intact and comes back on uninstall.
+                let seen = observe(&live, "winsmux.lnk", true)?;
+                if seen.member.identity.volume != root.id.volume {
+                    return Err(Error::Member);
+                }
+                preserved_rows.push(Move {
+                    member: seen.member.clone(),
+                    domain: row.domain.clone(),
+                    phase: MovePhase::Prepared,
+                });
+            }
+        } else if let Some((state, _)) = &old {
+            preserved_rows.extend(state.preserved.iter().map(preserved_move));
+        }
         let mut paths = Vec::new();
         for row in old_rows.iter().chain(&new_rows) {
             paths.extend([
@@ -3687,6 +3925,10 @@ mod native {
                 private_path(&root.path, &id, "old", row),
                 private_path(&root.path, &id, "new", row),
             ]);
+        }
+        for row in &preserved_rows {
+            let (from, to) = preserved_endpoints(&root.path, ctx.action, row)?;
+            paths.extend([from, to]);
         }
         paths.extend([control.join("installed.json"), control.join("pending.json")]);
         // Every potential forward/inverse parent exists and is owned before Prepared.
@@ -3714,9 +3956,16 @@ mod native {
                 && !old_rows
                     .iter()
                     .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
+                && !preserved_rows
+                    .iter()
+                    .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
             {
                 return Err(Error::Member);
             }
+        }
+        for row in &preserved_rows {
+            let (from, _) = preserved_endpoints(&root.path, ctx.action, row)?;
+            exact(&from, &row.member, true)?;
         }
         let mut p = Pending {
             schema: "winsmux-desktop-nsis-pending/v1".into(),
@@ -3730,6 +3979,7 @@ mod native {
             prior_state,
             old: old_rows,
             new: new_rows,
+            preserved: preserved_rows,
             slots,
             phase: Phase::Prepared,
             commit_bytes: None,
@@ -3818,6 +4068,9 @@ mod native {
                 p.old[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
             }
+            if ctx.action == Action::Install {
+                publish_preserved(&mut p, &mut journal, root)?;
+            }
             p.phase = Phase::Publishing;
             journal.save(&p)?;
             for i in 0..p.new.len() {
@@ -3870,6 +4123,9 @@ mod native {
                 )?;
                 p.new[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
+            }
+            if ctx.action == Action::Uninstall {
+                publish_preserved(&mut p, &mut journal, root)?;
             }
             for i in 0..p.slots.len() {
                 let current = read_slot(p.slots[i].id)?;
@@ -3963,6 +4219,18 @@ mod native {
             outcome: "committed",
         })
     }
+    fn publish_preserved(p: &mut Pending, journal: &mut Journal, root: &Dirs) -> Result<()> {
+        for i in 0..p.preserved.len() {
+            let row = p.preserved[i].clone();
+            let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
+            p.preserved[i].phase = MovePhase::MoveIntent;
+            journal.save(p)?;
+            move_exact_with_origins(&from, &to, &row.member, root, None)?;
+            p.preserved[i].phase = MovePhase::MovedConfirmed;
+            journal.save(p)?;
+        }
+        Ok(())
+    }
     pub(super) fn run_context(action: Action, path: &Path) -> Result<Receipt> {
         let ctx = parse_context(&read_plain_role(path, PathRole::ContextArgumentParent)?, action)?;
         let sid = actor_sid()?;
@@ -4014,20 +4282,16 @@ mod native {
         }
         for (kind, enabled) in [("desktop", ctx.desktop), ("start_menu", ctx.start_menu)] {
             if enabled {
-                let link = known_shortcut(kind)?;
-                if exists(&link)?
-                    && old
-                        .as_ref()
-                        .is_none_or(|(s, _)| !s.shortcuts.iter().any(|l| l.kind == kind))
-                {
-                    return Err(Error::Member);
-                }
-                targets.push(link);
+                targets.push(known_shortcut(kind)?);
             }
         }
         if let Some((state, _)) = &old {
             for link in &state.shortcuts {
                 targets.push(known_shortcut(&link.kind)?);
+            }
+            for row in &state.preserved {
+                targets.push(known_shortcut(&row.kind)?);
+                targets.push(preserved_path(&root.path, &row.kind)?);
             }
         }
         let _volume_holds = admit_volume(&root, &targets)?;
@@ -4352,9 +4616,10 @@ mod native {
                                     assert!(absence_terminal(&p).unwrap());
                                 } else {
                                     // A controlled pre-journal stage error can leave the
-                                    // exact old profile and no pending operation. Use the
-                                    // same legacy classifier, never infer fresh ownership.
-                                    assert_eq!(mode, "legacy");
+                                    // exact old profile and no pending operation. The same
+                                    // legacy classifier admits it again. A fresh root keeps
+                                    // only the empty control namespace and stays a first install.
+                                    assert_ne!(mode, "managed");
                                     let (previous, inherited) = admit_previous(
                                         &f.root,
                                         "S-1-5-21-100",
@@ -4363,9 +4628,13 @@ mod native {
                                     )
                                     .unwrap();
                                     assert!(inherited.is_none());
-                                    let (previous, _) = previous.unwrap();
-                                    assert_eq!(previous.generation, "legacy");
-                                    assert_previous(&f, &previous);
+                                    if mode == "legacy" {
+                                        let (previous, _) = previous.unwrap();
+                                        assert_eq!(previous.generation, "legacy");
+                                        assert_previous(&f, &previous);
+                                    } else {
+                                        assert!(previous.is_none());
+                                    }
                                 }
                             }
                             assert!(execute(&f).unwrap().durable_commit, "{mode} cut {at}");
@@ -4436,7 +4705,7 @@ mod native {
                     } else {
                         assert!(
                             exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap()
-                                || admit_control_namespace(&f.root, None) == Err(Error::Pending)
+                                || admit_control_namespace(&f.root, None, &[]) == Err(Error::Pending)
                         );
                     }
                     if recovery.is_ok() {
@@ -4736,6 +5005,7 @@ mod native {
                 prior_state: None,
                 old: Vec::new(),
                 new: Vec::new(),
+                preserved: Vec::new(),
                 slots: Vec::new(),
                 phase: Phase::Prepared,
                 commit_bytes: None,
@@ -4799,6 +5069,7 @@ mod native {
                 prior_state: None,
                 old: Vec::new(),
                 new: Vec::new(),
+                preserved: Vec::new(),
                 slots: Vec::new(),
                 phase: Phase::Prepared,
                 commit_bytes: None,
@@ -5430,7 +5701,7 @@ mod native {
                     } else {
                         assert!(
                             (exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap()
-                                || admit_control_namespace(&f.root, None) == Err(Error::Pending))
+                                || admit_control_namespace(&f.root, None, &[]) == Err(Error::Pending))
                         );
                     }
                 }
@@ -5484,7 +5755,7 @@ mod native {
                     }
                     Err(_) => {
                         if !exists(&pending_path).unwrap() {
-                            assert_eq!(admit_control_namespace(&f.root, None), Err(Error::Pending));
+                            assert_eq!(admit_control_namespace(&f.root, None, &[]), Err(Error::Pending));
                             assert!(!at_cut.is_empty());
                             assert!(at_cut.iter().all(|step| !matches!(
                                 step.as_str(),
@@ -5656,8 +5927,13 @@ mod native {
             }
             assert_eq!(Error::Member.classification(), "member_unconfirmed");
             assert_eq!(Error::Busy.classification(), "work_running_or_locked");
+            assert_eq!(Error::LegacyIncomplete(LegacyCheck::Inventory).classification(), "legacy_inventory_incomplete");
+            assert_eq!(Error::LegacyIncomplete(LegacyCheck::Receipt).classification(), "legacy_receipt_missing");
+            assert_eq!(Error::LegacyIncomplete(LegacyCheck::Profile).classification(), "legacy_profile_incomplete");
+            assert_eq!(Error::LegacyIncomplete(LegacyCheck::Root).classification(), "legacy_root_mismatch");
             assert_eq!(Error::Io.classification(), "io_unconfirmed");
         }
+
         // TASK-881 real-machine refusal (2026-10-21): %LOCALAPPDATA%\winsmux already held the private
         // GUI's runtime entries and no .winsmux-desktop/installed.json. admit_previous treats every
         // non-empty unmanaged root as a legacy install, and the compiled legacy profile root is the CI
@@ -5682,11 +5958,39 @@ mod native {
             }
         }
 
+        #[test]
+        fn legacy_profile_root_is_still_admitted_as_legacy() {
+            let f = mode_fixture("legacy");
+            let (previous, inherited) = admit_previous(
+                &f.root,
+                "S-1-5-21-100",
+                &f.plan_bytes,
+                &sha256_hex(&f.ctx.plan_sha256),
+            )
+            .unwrap();
+            assert!(inherited.is_none());
+            assert_eq!(previous.unwrap().0.generation, "legacy");
+            assert!(execute(&f).unwrap().durable_commit);
+            assert!(old(&f).unwrap().0.legacy_capture.is_some());
+        }
+
+        #[test]
+        fn first_install_refuses_a_foreign_file_at_a_member_path_and_leaves_the_root_alone() {
+            let f = fixture();
+            fs::write(f.root.path.join("winsmux.exe"), b"another product's cli").unwrap();
+            fs::write(f.root.path.join("notes.txt"), b"user notes").unwrap();
+            reset_steps(None, false);
+            assert_eq!(execute(&f).err(), Some(Error::Member));
+            assert_eq!(fs::read(f.root.path.join("winsmux.exe")).unwrap(), b"another product's cli");
+            assert_eq!(fs::read(f.root.path.join("notes.txt")).unwrap(), b"user notes");
+            assert!(!exists(&f.root.path.join("winsmux-app.exe")).unwrap());
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert!(hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().slots.iter().all(Option::is_none)));
+        }
+
         // Same machine, next refusal once the root is admitted: Desktop\winsmux.lnk and
         // Programs\winsmux.lnk already pointed at another winsmux-app.exe (TASK-876 private install).
-        // run_context and run_transaction both refuse a live link that is not an owned old row.
-        #[test]
-        fn first_install_with_foreign_same_name_shortcuts_completes_and_preserves_them() {
+        fn foreign_shortcut_fixture() -> (Fixture, PathBuf, Vec<(String, Vec<u8>)>) {
             let mut f = fixture();
             let known = f.base.join("synthetic-known-folders");
             hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().shortcut_root = Some(known.clone()));
@@ -5698,7 +6002,7 @@ mod native {
                 let link = known.join(kind).join("winsmux.lnk");
                 fs::create_dir_all(link.parent().unwrap()).unwrap();
                 identity_test_link(&link, &foreign_target);
-                foreign.push(fs::read(&link).unwrap());
+                foreign.push((kind.to_string(), fs::read(&link).unwrap()));
                 let source = f.ctx.source.join("shortcuts").join(format!("{kind}.lnk"));
                 fs::create_dir_all(source.parent().unwrap()).unwrap();
                 identity_test_link(&source, &f.root.path.join("winsmux-app.exe"));
@@ -5706,24 +6010,94 @@ mod native {
             f.ctx.desktop = true;
             f.ctx.start_menu = true;
             reset_steps(None, false);
+            (f, known, foreign)
+        }
+        fn parked_link(f: &Fixture, kind: &str) -> PathBuf {
+            preserved_path(&f.root.path, kind).unwrap()
+        }
+        fn assert_foreign_parked(f: &Fixture, known: &Path, foreign: &[(String, Vec<u8>)]) {
+            let state = old(f).unwrap().0;
+            assert_eq!(state.preserved.len(), foreign.len());
+            for (kind, bytes) in foreign {
+                verify_link(&known.join(kind).join("winsmux.lnk"), &f.root.path.join("winsmux-app.exe")).unwrap();
+                assert_eq!(fs::read(parked_link(f, kind)).unwrap(), *bytes, "{kind} parked bytes");
+                let row = state.preserved.iter().find(|r| &r.kind == kind).unwrap();
+                assert_eq!(row.member.sha256, hash(bytes));
+            }
+        }
+        fn assert_foreign_live(f: &Fixture, known: &Path, foreign: &[(String, Vec<u8>)]) {
+            for (kind, bytes) in foreign {
+                assert_eq!(fs::read(known.join(kind).join("winsmux.lnk")).unwrap(), *bytes, "{kind} live bytes");
+                assert!(!exists(&parked_link(f, kind)).unwrap(), "{kind} still parked");
+            }
+        }
+        #[test]
+        fn first_install_with_foreign_same_name_shortcuts_completes_and_preserves_them() {
+            let (f, known, foreign) = foreign_shortcut_fixture();
             let result = execute(&f);
             assert_eq!(result.as_ref().err(), None, "a same-name link owned by another install must not refuse the install");
             assert!(result.unwrap().durable_commit);
-            for kind in ["desktop", "start_menu"] {
-                verify_link(&known.join(kind).join("winsmux.lnk"), &f.root.path.join("winsmux-app.exe")).unwrap();
-            }
-            for bytes in &foreign {
-                assert!(file_with_bytes_exists(&f.base, bytes), "foreign link bytes were destroyed");
-            }
+            assert_foreign_parked(&f, &known, &foreign);
+            // An update keeps the parked links and the product links in place.
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
         }
-        fn file_with_bytes_exists(dir: &Path, bytes: &[u8]) -> bool {
-            fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).any(|p| {
-                if fs::symlink_metadata(&p).unwrap().is_dir() {
-                    file_with_bytes_exists(&p, bytes)
-                } else {
-                    fs::read(&p).is_ok_and(|b| b == bytes)
+        #[test]
+        fn uninstall_returns_preserved_foreign_shortcuts_to_their_known_folders() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert_foreign_live(&f, &known, &foreign);
+            // The same root installs again and parks the same links again.
+            f.ctx.action = Action::Install;
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+        }
+        #[test]
+        fn install_rollback_after_publishing_returns_preserved_foreign_shortcuts() {
+            let (good, _, _) = foreign_shortcut_fixture();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, foreign) = foreign_shortcut_fixture();
+            reset_steps(Some(at), false);
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            reset_steps(None, false);
+            assert_foreign_live(&f, &known, &foreign);
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+        }
+        #[test]
+        fn every_install_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
+            let (good, _, _) = foreign_shortcut_fixture();
+            operation_trace(&good);
+            for at in identity_cut_selection("foreign-shortcuts") {
+                for crash in [false, true] {
+                    let (f, known, foreign) = foreign_shortcut_fixture();
+                    reset_steps(Some(at), crash);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&f)));
+                    reset_steps(None, false);
+                    let recovery = recover_if_readable(&f);
+                    for (kind, bytes) in &foreign {
+                        let live = fs::read(known.join(kind).join("winsmux.lnk")).ok() == Some(bytes.clone());
+                        let parked = fs::read(parked_link(&f, kind)).ok() == Some(bytes.clone());
+                        assert!(live ^ parked, "cut {at} crash {crash} {kind}: live={live} parked={parked}");
+                    }
+                    if recovery.is_ok() {
+                        if old(&f).is_some() {
+                            assert_foreign_parked(&f, &known, &foreign);
+                        } else {
+                            assert_foreign_live(&f, &known, &foreign);
+                        }
+                        assert!(execute(&f).unwrap().durable_commit, "cut {at} crash {crash}");
+                        assert_foreign_parked(&f, &known, &foreign);
+                    }
                 }
-            })
+            }
         }
         #[test]
         fn observed_open_native_readonly_and_mutable_success_missing_and_sharing() {
@@ -5808,7 +6182,7 @@ mod native {
                 )
                 .is_err());
                 assert_previous(&f, &previous);
-                assert!(admit_control_namespace(&f.root, None).is_ok());
+                assert!(admit_control_namespace(&f.root, None, &[]).is_ok());
             }
         }
         #[test]
