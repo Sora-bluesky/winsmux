@@ -453,7 +453,8 @@ jobs:
       MSI_ARTIFACT: 'winsmux-desktop-bundles'
       MSI_CANDIDATE_NAME: 'winsmux_0.38.0_x64_en-US.msi'
       # 64 hex pins the file; 'unpinned' accepts the run-bound file and records its sha256.
-      MSI_CANDIDATE_SHA256: 'unpinned'
+      MSI_CANDIDATE_SHA256: '94c0dd9a47dec827de417ab1743c20b655b9ef5f7c35bdc3e434f95c59be2bab'
+      MSI_CANDIDATE_BYTES: '34811904'
     steps:
       - name: Check out the MSI probe from the calling commit
         uses: actions/checkout@v6
@@ -490,6 +491,7 @@ jobs:
           if ($found.Count -ne 1) { throw "Expected one $env:MSI_CANDIDATE_NAME in the artifact, found $($found.Count)." }
           $candidateSha = (Get-FileHash -LiteralPath $found[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($env:MSI_CANDIDATE_SHA256 -cne 'unpinned' -and $candidateSha -cne $env:MSI_CANDIDATE_SHA256) { throw 'Signed candidate MSI differs from the pinned sha256.' }
+          if ($env:MSI_CANDIDATE_BYTES -cne 'unpinned' -and [string]$found[0].Length -cne $env:MSI_CANDIDATE_BYTES) { throw 'Signed candidate MSI differs from the pinned byte size.' }
           $signature = Get-AuthenticodeSignature -LiteralPath $found[0].FullName
           $identity = [ordered]@{
             run_id = [long]$run.id; run_attempt = [int]$run.run_attempt; head_sha = $run.head_sha; workflow_path = $run.path
