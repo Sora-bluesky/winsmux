@@ -8,17 +8,19 @@ permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: 'b048b00b9291e346c247f2799d96283e21cb471e'
-  SOURCE_TREE: 'c36c02659c7de29251af25d1ae58fdfd45a6bd26'
+  SOURCE_COMMIT: 'c43aed076c076726f616e8a6bf489c8709246f17'
+  SOURCE_TREE: '9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7'
   # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
-  SOURCE_INVENTORY: '80e249111f764d6fe34263a3919935fb889e0e3bb953f14ccf65e173efe23362'
-  # Unpublished draft release 416909119 (codex-task879-core-b048b00b): id, bytes, sha256, name.
+  SOURCE_INVENTORY: 'f2c0b342b37582f291a27ecf2d1644a1c9564fc4f64dcc8cad8f05df1cbf14e8'
+  # Unpublished draft release DRAFT_RELEASE_ID (codex-task879-core-c43aed07, target c43aed076c076726f616e8a6bf489c8709246f17): id, bytes, sha256, name.
+  # Ids stay placeholders, which the manifest check refuses, until
+  # .github/task879/fill-draft-asset-ids.py fills them from a GET of that draft.
   TASK879_ASSETS: |
-    655258651 18353152 53dd2a71a2ba1c14aa8b50c011e027a77f18aa89669cb2453bf3eb94af07f512 winsmux-x64.exe
-    655258649 6724597 aab94216ef8f3218f1bf3e532d63c95c8a2b0ca5fa7fe8e647151c10ca85ec59 winsmux-x64.exe.licenses.zip
-    655258647 177 c8407967ceff0cd752a0af293dd8da5762f9db2757dad8c8d5d8b921c6d28398 SHA256SUMS
-    655258648 1785 cc767bd5bb8902d092b392855a41caf54e166e7c35c45867d8d99b4f8dca807d core-candidate.json
-    655258650 34640 17936f2b4367aba230770390726515103bca81e9865724fbb630421171e2dfa6 winsmux-0.38.0.tgz
+    DRAFT_ASSET_ID 18357248 f4a90b323c5f9aa4bd0c620ea088725abe8c04af5e4f202a5839673e57d15e3e winsmux-x64.exe
+    DRAFT_ASSET_ID 6724597 43196fc0b30130c748eff0a7d6d01b3edafd0965f14b33f01387b4849d128c80 winsmux-x64.exe.licenses.zip
+    DRAFT_ASSET_ID 177 cf2ce7ce572ac2af6d6c1b306b2393c71a60742627ceda4e19b5e278a9e49406 SHA256SUMS
+    DRAFT_ASSET_ID 1785 c6ba30bae4cbec455deccb6b924b20bd76cadd0ef3dc678575df8873a77380af core-candidate.json
+    DRAFT_ASSET_ID 35397 5acaca5cb3e2cb6ba3b25aeb9f2fb3719168d07690bff96bb48361b3ff726c64 winsmux-0.38.0.tgz
 
 jobs:
   fetch:

@@ -89,6 +89,7 @@ $whitelistPatterns = @(
     '.github/workflows/desktop-baseline-capture.yml',
     '.github/workflows/task879-install-e2e.yml',
     '.github/task879/build-tree.json',
+    '.github/task879/fill-draft-asset-ids.py',
     '.github/ISSUE_TEMPLATE/**',
     '.github/PULL_REQUEST_TEMPLATE.md',
     '.gitignore',
