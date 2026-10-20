@@ -745,8 +745,8 @@ Describe 'CLI bakeoff evidence harness' {
         $quickstartJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\quickstart.ja.md') -Raw -Encoding UTF8
         $packageReadme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'packages\winsmux\README.md') -Raw -Encoding UTF8
         $operatorModel = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\operator-model.md') -Raw -Encoding UTF8
-        $readmeBeforeCommands = ($readme -split '(?m)^## Main Commands')[0]
-        $readmeJaBeforeCommands = ($readmeJa -split '(?m)^## 主要コマンド')[0]
+        $readmeBeforeCommands = ($readme -split '(?m)^## CLI and MCP')[0]
+        $readmeJaBeforeCommands = ($readmeJa -split '(?m)^## CLI・MCPで使う')[0]
         $publicInstallDocs = @(
             $readme,
             $readmeJa,
@@ -793,10 +793,16 @@ Describe 'CLI bakeoff evidence harness' {
         $readme | Should -Match 'プロジェクトを開く'
         $readme | Should -Match 'winsmux workspace'
         $readme | Should -Match 'External connections require explicit project and scope permission'
+        $readme | Should -Match '(?m)^## CLI and MCP'
+        $readmeBeforeCommands | Should -Not -Match 'winsmux init'
+        $readmeBeforeCommands | Should -Not -Match 'winsmux launch'
         $readmeJa | Should -Match 'デスクトップアプリから始める'
         $readmeJa | Should -Match 'winsmux/releases'
         $readmeJa | Should -Match 'プロジェクトを開く'
         $readmeJa | Should -Match 'winsmux workspace'
+        $readmeJa | Should -Match '(?m)^## CLI・MCPで使う'
+        $readmeJaBeforeCommands | Should -Not -Match 'winsmux init'
+        $readmeJaBeforeCommands | Should -Not -Match 'winsmux launch'
         $quickstart | Should -Match '# Quickstart: Desktop app'
         $quickstart | Should -Match 'You do not need to run CLI initialization commands by hand for the desktop path'
         $quickstartJa | Should -Match '# クイックスタート: デスクトップアプリ'
