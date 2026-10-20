@@ -75,6 +75,12 @@ tests/workspace-package/*
 tests/workspace-update/*
 !tests/workspace-update/install-lifecycle.test.ps1
 !tests/workspace-update/run.ps1
+!tests/workspace-gate-map/
+tests/workspace-gate-map/*
+!tests/workspace-gate-map/check-map.mjs
+!tests/workspace-gate-map/gate-map.json
+!tests/workspace-gate-map/preserved-contracts.test.ps1
+!tests/workspace-gate-map/run.ps1
 !tests/workspace-package/install-lifecycle-source.test.ps1
 !tests/workspace-package/install-generation.test.ps1
 !tests/workspace-package/run.ps1

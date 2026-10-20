@@ -1,0 +1,5007 @@
+{
+ "schema": "winsmux-gate-map/v1",
+ "task": "TASK-882",
+ "rule": "Every gate at the candidate is listed with its Q-IDs, and every deletion, count decrease, skip increase, missing test name and workflow change since each base is restored, replaced by a named selector, replayed against a pinned blob, or reclassified with an in-tree basis.",
+ "bases": {
+  "rebuild_base": "9245269dcd3fc9973ca69abf55e6ef865d94d2ab",
+  "prior_task882_inventory_baseline": "9158bf274ab7f0b141e7c6337b3acec1b08196fc",
+  "pre_rebuild_plan_base": "d66fb785ff910e732a0581499c5bd2647ac82136"
+ },
+ "pins": [
+  {
+   "path": "docs/project/THREAT_MODEL.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "d06022166d64b2b857d5c60d16a59f05fc580ac7",
+   "bytes": 8554,
+   "sha256": "07ec05ce02cbcc3af1bf286d5d053c40b0a4d435b924057c853501870b1eb2e2"
+  },
+  {
+   "path": "docs/project/THREAT_MODEL_AUDIT.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "ea1187a3b5dda99e208a99f84c31a6127d1e5549",
+   "bytes": 7756,
+   "sha256": "c7f931e6213fed0941bbafd7651fc553b46dbe77cd78196dec85df9efb6ad0d1"
+  },
+  {
+   "path": "docs/project/README.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "b783aa72989d753e01a8c293f8500c8bb10c4948",
+   "bytes": 1089,
+   "sha256": "c97ba8fc774231c8a4e87f9b81a24d76efa8118e59765243e6db139f7f11f687"
+  },
+  {
+   "path": "docs/project/review-latency-hardening.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "2c145b544fab1ca74d5c68af51a9c17c191ed254",
+   "bytes": 4217,
+   "sha256": "c3640d3ed37c033648f34985c5d4701b504ed74666439c4620801640c366b8b7"
+  },
+  {
+   "path": "docs/project/DETAILED_DESIGN.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "38e81df27bcdecba459332658493020069d3a37b",
+   "bytes": 7803,
+   "sha256": "8ef2f664220803f1d2e7e64e441c0a9aaa2a88f4827e51d8ba2c130ad2b8e1ae"
+  },
+  {
+   "path": "docs/project/enterprise-strategy-roadmap-alignment.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "e31e3076dc7ad5f26d422aae5f94f6a961a77710",
+   "bytes": 3487,
+   "sha256": "ec99a0df5b26c1d241c963cdf05c25b5ca767d69ac5f71094bb97256bc27b9ce"
+  },
+  {
+   "path": "docs/project/design-freeze-gate.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "6c081442b81a0d7d7b205103a08c40defffb453c",
+   "bytes": 10683,
+   "sha256": "46a28440f66188becd88d163bcfb94a9350d5207342ae00791d5036454c3f71b"
+  },
+  {
+   "path": "docs/project/v1-release-gate.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "a79d6dfc27c77878798c0698edc6ef7f0e805d02",
+   "bytes": 6835,
+   "sha256": "c299f1593c68f86aec76abd7a35d2d3ae668bb7bfb81aa1c0decd77563809648"
+  },
+  {
+   "path": "docs/cli-comparison-bakeoff.md",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "dbac9d3a400b83351f932a43624d7bcab94fce02",
+   "bytes": 7243,
+   "sha256": "814f5a06295c546697e18151776ea1b5c05b496111a82760bf8f8e747e360a7e"
+  },
+  {
+   "path": "docs/benchmarks/v03617-harness-bench-report.ja.html",
+   "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+   "blob": "8b7a1d09e9147b681df8be67d72a156245a41cdb",
+   "bytes": 16303,
+   "sha256": "d21e5901b4432f08012c5984dcb63c5cac5cd50dbff893c3ec096658e91f1255"
+  }
+ ],
+ "replays": [
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:22",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 22,
+    "end_line": 32
+   },
+   "it_name": "records exactly 23 unique threat IDs in the threat model",
+   "text_sha256": "8d48bc869b57eba31a0b2ac9caac87d52033848a921d2c4b5dd488591721010f"
+  },
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:34",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 34,
+    "end_line": 48
+   },
+   "it_name": "audits every threat ID from the threat model",
+   "text_sha256": "391adae11719fa20252a35b3c539e9be9757735626d6c2ea9bf213ace906a5cf"
+  },
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:50",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 50,
+    "end_line": 57
+   },
+   "it_name": "keeps injection pattern categories mapped in the threat model",
+   "text_sha256": "8665c63cf67ecbd151fc078fc9267a8a69c87e8f44381b54c35e18e99eebd552"
+  },
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:102",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 102,
+    "end_line": 112
+   },
+   "it_name": "distinguishes medium single-token warnings from high co-occurrence denial in the audit",
+   "text_sha256": "1f0d72ba5813d114db85a4d36ff4a0685db90a8d541e48754ba3d124dc586149"
+  },
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:114",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 114,
+    "end_line": 122
+   },
+   "it_name": "keeps the audit narrative aligned with the 23-threat matrix and current checks",
+   "text_sha256": "ba7bd3e020662f21a2ec8d6b9ab2a512eed770fcd11c13a6fa482e02e237e21d"
+  },
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:124",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 124,
+    "end_line": 127
+   },
+   "it_name": "keeps the audit from claiming unconditional safety",
+   "text_sha256": "359ab6ae475c0259812800f331f6f146c24d9a8c2b38c6e8b6f61143b60d2d7b"
+  },
+  {
+   "id": "tests/ThreatModelContract.Tests.ps1:129",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ThreatModelContract.Tests.ps1",
+    "start_line": 129,
+    "end_line": 132
+   },
+   "it_name": "links the threat model and audit from the project documentation index",
+   "text_sha256": "ee69155624fe8a69283abdb0b4c61d7509662cde2f028512becd42f15f7176f0"
+  },
+  {
+   "id": "tests/ReviewLatencyHardening.Tests.ps1:12",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ReviewLatencyHardening.Tests.ps1",
+    "start_line": 12,
+    "end_line": 23
+   },
+   "it_name": "documents the TASK-372 trigger and stop conditions",
+   "text_sha256": "d379f9bc82ad00380f4c992cb1213032ced65563712e926dee3ecdd4ffa0383a"
+  },
+  {
+   "id": "tests/ReviewLatencyHardening.Tests.ps1:25",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ReviewLatencyHardening.Tests.ps1",
+    "start_line": 25,
+    "end_line": 33
+   },
+   "it_name": "fixes the wait, background hold, and milestone review policy",
+   "text_sha256": "939843d596864dc80ca8a7b8ff05c4f5ce7ef8dd42b0a063a91260daad4cf993"
+  },
+  {
+   "id": "tests/ReviewLatencyHardening.Tests.ps1:35",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ReviewLatencyHardening.Tests.ps1",
+    "start_line": 35,
+    "end_line": 41
+   },
+   "it_name": "makes delayed review results part of the merge gate",
+   "text_sha256": "0aed76d90f62806e72b0687696498647452901f0477c136bf7fda0c9a5c36ced"
+  },
+  {
+   "id": "tests/ReviewLatencyHardening.Tests.ps1:43",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/ReviewLatencyHardening.Tests.ps1",
+    "start_line": 43,
+    "end_line": 49
+   },
+   "it_name": "links the rule from internal project surfaces",
+   "text_sha256": "07c371bb27f68970f93a5d5f586fcd9ada8a84a22b95798e63fc107246fcb51f"
+  },
+  {
+   "id": "tests/EnterpriseStrategyAlignment.Tests.ps1:11",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/EnterpriseStrategyAlignment.Tests.ps1",
+    "start_line": 11,
+    "end_line": 23
+   },
+   "it_name": "documents the stable roadmap placement for TASK-371",
+   "text_sha256": "158d90da4fe9ad51cd763262449713feb2c18ab48b59223d9577d461dedbef84"
+  },
+  {
+   "id": "tests/EnterpriseStrategyAlignment.Tests.ps1:25",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/EnterpriseStrategyAlignment.Tests.ps1",
+    "start_line": 25,
+    "end_line": 28
+   },
+   "it_name": "keeps the alignment note linked from the internal planning surface",
+   "text_sha256": "a70b1f735dbd6a779b1799d65fc63f81e254fc8965eb6d70be60bfb70859c092"
+  },
+  {
+   "id": "tests/CliBakeoff.Tests.ps1:386",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/CliBakeoff.Tests.ps1",
+    "start_line": 386,
+    "end_line": 394
+   },
+   "it_name": "routes the formal six-pane benchmark evidence to v0.36.23",
+   "text_sha256": "37282232928073f01060bd897cc757af640757d81d5c792e9dc878c5f3b86212"
+  },
+  {
+   "id": "tests/CliBakeoff.Tests.ps1:742#release-gate",
+   "kind": "removed-assertions",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/CliBakeoff.Tests.ps1",
+    "start_line": 742,
+    "end_line": 846,
+    "lines": [
+     752,
+     813,
+     814,
+     815,
+     816,
+     817,
+     818,
+     819,
+     820,
+     821,
+     822,
+     823,
+     824,
+     825,
+     826,
+     827,
+     828,
+     829,
+     830,
+     831,
+     832,
+     833,
+     834,
+     835,
+     836,
+     837,
+     838,
+     839,
+     840,
+     841
+    ]
+   },
+   "it_name": "documents public desktop startup troubleshooting without repo-build process assumptions [v1-release-gate assertions removed by c34d6d9b]",
+   "text_sha256": "d62d32cb0d9f3754cafd6c211c9f100ae917bfdd86971412640e54d48a36a92e",
+   "should_count": 29
+  },
+  {
+   "id": "tests/CliBakeoff.Tests.ps1:911#release-gate",
+   "kind": "removed-assertions",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/CliBakeoff.Tests.ps1",
+    "start_line": 911,
+    "end_line": 969,
+    "lines": [
+     913,
+     960,
+     961,
+     962,
+     963,
+     964,
+     965,
+     966,
+     967,
+     968
+    ]
+   },
+   "it_name": "gates desktop releases on signed updater artifacts [v1-release-gate assertions removed by c34d6d9b]",
+   "text_sha256": "3efd2c65234a6f46092c6a748aff2eb300322af5bbfadfb521ccc72bfbeab1cb",
+   "should_count": 9
+  },
+  {
+   "id": "tests/PublicSurfacePolicy.Tests.ps1:445",
+   "kind": "whole-it",
+   "source": {
+    "commit": "36a319d97d54030300623af6baa2f79e3d1434e6",
+    "path": "tests/PublicSurfacePolicy.Tests.ps1",
+    "start_line": 445,
+    "end_line": 491
+   },
+   "it_name": "keeps the v0.36.24 design-freeze gate anchored to required surfaces",
+   "text_sha256": "c73c2ef2da01b01cd32502d303fcc1c347acb20f58afe4d7fb109182bbdf872a"
+  }
+ ],
+ "findings": [
+  {
+   "type": "metric-decrease",
+   "path": "tests/CliBakeoff.Tests.ps1",
+   "metric": "pester_should",
+   "old": 476,
+   "new": 427,
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replayed",
+   "reason": "Same components as the 482->427 row; d66fb785..9158bf27 contributes +6. 9158bf27..S is -55: 7c105672 -14 (assertions on install/README text that 5d14e361 rewrote, replaced by assertions on the current text), c34d6d9b -42 (the :386 It, 29 v1-release-gate assertions in the troubleshooting It and 9 in the signed updater It, all replayed against the c34d6d9b^ blobs; 3 tauri.ci.conf.json path assertions replaced by 3 exact signCommand assertions), d3c059cb +1 (the :386 negative It).",
+   "replay_ids": [
+    "tests/CliBakeoff.Tests.ps1:386",
+    "tests/CliBakeoff.Tests.ps1:742#release-gate",
+    "tests/CliBakeoff.Tests.ps1:911#release-gate"
+   ],
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22'"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "($signCommand.args | ConvertTo-Json -Compress) | Should -BeExactly"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "$installation | Should -Match 'Windows installer for your architecture'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/CliBakeoff.Tests.ps1",
+   "metric": "pester_should",
+   "old": 482,
+   "new": 427,
+   "bases": [
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "9158bf27..S is -55: 7c105672 -14 (assertions on install/README text that 5d14e361 rewrote, replaced by assertions on the current text), c34d6d9b -42 (the :386 It, 29 v1-release-gate assertions in the troubleshooting It and 9 in the signed updater It, all replayed against the c34d6d9b^ blobs; 3 tauri.ci.conf.json path assertions replaced by 3 exact signCommand assertions), d3c059cb +1 (the :386 negative It).",
+   "replay_ids": [
+    "tests/CliBakeoff.Tests.ps1:386",
+    "tests/CliBakeoff.Tests.ps1:742#release-gate",
+    "tests/CliBakeoff.Tests.ps1:911#release-gate"
+   ],
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22'"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "($signCommand.args | ConvertTo-Json -Compress) | Should -BeExactly"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "$installation | Should -Match 'Windows installer for your architecture'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/EnterpriseStrategyAlignment.Tests.ps1",
+   "metric": "pester_should",
+   "old": 12,
+   "new": 2,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "All 10 missing Should calls belong to the 2 Its deleted by c34d6d9b, which replay verbatim.",
+   "replay_ids": [
+    "tests/EnterpriseStrategyAlignment.Tests.ps1:11",
+    "tests/EnterpriseStrategyAlignment.Tests.ps1:25"
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/EnterpriseStrategyAlignment.Tests.ps1",
+   "metric": "pester_it",
+   "old": 3,
+   "new": 1,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "c34d6d9b deleted 2 Its with docs/project/enterprise-strategy-roadmap-alignment.md; they replay against its c34d6d9b^ blob.",
+   "replay_ids": [
+    "tests/EnterpriseStrategyAlignment.Tests.ps1:11",
+    "tests/EnterpriseStrategyAlignment.Tests.ps1:25"
+   ],
+   "complements": [
+    {
+     "path": "tests/EnterpriseStrategyAlignment.Tests.ps1",
+     "contains": "It 'does not leak internal strategy positioning into public product docs'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/PublicSurfacePolicy.Tests.ps1",
+   "metric": "pester_should",
+   "old": 251,
+   "new": 248,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "9158bf27..S is -3: 7c105672 -4 (README auth table moved to docs/authentication-support.md, replaced by link and wording checks), c34d6d9b -9 (the :445 design-freeze It, replayed), e13999d0 +5, d3c059cb +5.",
+   "replay_ids": [
+    "tests/PublicSurfacePolicy.Tests.ps1:445"
+   ],
+   "selectors": [
+    {
+     "path": "tests/PublicSurfacePolicy.Tests.ps1",
+     "contains": "$readme | Should -Match 'docs/authentication-support\\.md'"
+    },
+    {
+     "path": "tests/PublicSurfacePolicy.Tests.ps1",
+     "contains": "It 'keeps the v0.36.24 design-freeze gate record out of the tracked public surface'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/ReviewLatencyHardening.Tests.ps1",
+   "metric": "pester_should",
+   "old": 22,
+   "new": 2,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "All 20 missing Should calls belong to the 4 Its deleted by c34d6d9b, which replay verbatim.",
+   "replay_ids": [
+    "tests/ReviewLatencyHardening.Tests.ps1:12",
+    "tests/ReviewLatencyHardening.Tests.ps1:25",
+    "tests/ReviewLatencyHardening.Tests.ps1:35",
+    "tests/ReviewLatencyHardening.Tests.ps1:43"
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/ReviewLatencyHardening.Tests.ps1",
+   "metric": "pester_it",
+   "old": 5,
+   "new": 1,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "c34d6d9b deleted 4 Its with docs/project/review-latency-hardening.md; they replay against its c34d6d9b^ blob. The public-docs exclusion It stays in the file.",
+   "replay_ids": [
+    "tests/ReviewLatencyHardening.Tests.ps1:12",
+    "tests/ReviewLatencyHardening.Tests.ps1:25",
+    "tests/ReviewLatencyHardening.Tests.ps1:35",
+    "tests/ReviewLatencyHardening.Tests.ps1:43"
+   ],
+   "complements": [
+    {
+     "path": "tests/ReviewLatencyHardening.Tests.ps1",
+     "contains": "It 'keeps review latency details out of public product docs'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/ThreatModelContract.Tests.ps1",
+   "metric": "pester_should",
+   "old": 37,
+   "new": 27,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "The 10 missing Should calls are the bodies of the 7 Its deleted by c34d6d9b, net of the 2 Its d3c059cb added; the deleted bodies replay verbatim.",
+   "replay_ids": [
+    "tests/ThreatModelContract.Tests.ps1:22",
+    "tests/ThreatModelContract.Tests.ps1:34",
+    "tests/ThreatModelContract.Tests.ps1:50",
+    "tests/ThreatModelContract.Tests.ps1:102",
+    "tests/ThreatModelContract.Tests.ps1:114",
+    "tests/ThreatModelContract.Tests.ps1:124",
+    "tests/ThreatModelContract.Tests.ps1:129"
+   ],
+   "complements": [
+    {
+     "path": "tests/ThreatModelContract.Tests.ps1",
+     "contains": "It 'loads every committed injection category into the guard and fires each pattern on a positive sample'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/ThreatModelContract.Tests.ps1",
+   "metric": "pester_it",
+   "old": 9,
+   "new": 4,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replayed",
+   "reason": "c34d6d9b deleted 7 Its with THREAT_MODEL.md and THREAT_MODEL_AUDIT.md; all 7 replay unchanged against the c34d6d9b^ blobs. d3c059cb added 2 guard-output Its as stronger complements.",
+   "replay_ids": [
+    "tests/ThreatModelContract.Tests.ps1:22",
+    "tests/ThreatModelContract.Tests.ps1:34",
+    "tests/ThreatModelContract.Tests.ps1:50",
+    "tests/ThreatModelContract.Tests.ps1:102",
+    "tests/ThreatModelContract.Tests.ps1:114",
+    "tests/ThreatModelContract.Tests.ps1:124",
+    "tests/ThreatModelContract.Tests.ps1:129"
+   ],
+   "complements": [
+    {
+     "path": "tests/ThreatModelContract.Tests.ps1",
+     "contains": "It 'loads every committed injection category into the guard and fires each pattern on a positive sample'"
+    },
+    {
+     "path": "tests/ThreatModelContract.Tests.ps1",
+     "contains": "It 'warns on a lone medium encoding token and denies the high encoding co-occurrence'"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+   "metric": "rust_assert",
+   "old": 36,
+   "new": 32,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 retired the PowerShell bridge for companion children; the 2 tests that pinned WINSMUX_CORE_SCRIPT were replaced by a test that the variable is removed even when the script is present.",
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+     "contains": "fn companion_ledger_command_removes_bridge_even_when_script_is_present"
+    },
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+     "contains": "command.env_remove(WINSMUX_CORE_SCRIPT_ENV);"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "T857-DESKTOP-ROUTER-COMPAT-01 requires router inventory only for candidates and releases at or after 0.36.38",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "6fb71f12 renamed the case with the same T857-DESKTOP-ROUTER-COMPAT-01 id after the current release gained the explicit workspace generation.",
+   "selectors": [
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "contains": "It 'T857-DESKTOP-ROUTER-COMPAT-01 preserves the known router release and requires the explicit workspace generation for the current release'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "re-executes the resolved target installer before a pinned install or update",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 removed the target-installer re-execution from install.ps1; the current case asserts the bootstrap is absent and the current consumer is persisted instead.",
+   "selectors": [
+    {
+     "path": "tests/NpmReleasePackage.Tests.ps1",
+     "contains": "It 'persists the complete current consumer for saved and piped release actions'"
+    },
+    {
+     "path": "tests/NpmReleasePackage.Tests.ps1",
+     "contains": "Should -Not -Match 'Invoke-TargetInstallerBootstrap|Test-ShouldBootstrapTargetInstaller|WINSMUX_INTERNAL_TARGET_INSTALLER_BOOTSTRAPPED'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "reads WebView operator surface results without direct dynamic property assumptions",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "3a49ac92 moved the bakeoff desktop readiness cases from the retired operator surface to the workspace surface.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'reads WebView workspace results without direct dynamic property assumptions'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "recovers an interrupted binary rotation and rolls back a failed replacement validation",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 replaced single-binary rotation with whole-generation replacement; rollback is asserted for the complete prior generation.",
+   "selectors": [
+    {
+     "path": "tests/NpmReleasePackage.Tests.ps1",
+     "contains": "It 'preserves legacy evidence and restores the complete prior generation after replacement failure'"
+    },
+    {
+     "path": "install.ps1",
+     "contains": "function Restore-WinsmuxInstalledGeneration"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "repairs installer-managed state without release assets when the installed binary already matches",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 made paired release assets mandatory; the current case refuses a repair without them instead of repairing silently.",
+   "selectors": [
+    {
+     "path": "tests/NpmReleasePackage.Tests.ps1",
+     "contains": "It 'refuses missing paired release assets even when the installed binary already matches'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "requires a rendered operator surface before desktop launch readiness passes",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "3a49ac92 moved the bakeoff desktop readiness cases from the retired operator surface to the workspace surface.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'requires the mounted main workspace before desktop launch readiness passes'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "requires desktop operator API reachability before desktop launch readiness passes",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "3a49ac92 moved the bakeoff desktop readiness cases from the retired operator surface to the workspace surface.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'requires canonical read-only workspace API responses before launch readiness passes'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "restores DNS and proves GitHub reachability before publishing NSIS evidence",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "The desktop-nsis-lifecycle job that cut and restored networking was removed (74d66674); the native lifecycle job asserts it never touches firewall or DNS.",
+   "selectors": [
+    {
+     "path": "tests/PublicSurfacePolicy.Tests.ps1",
+     "contains": "It 'keeps native lifecycle candidate identity and evidence publication within the declared boundary'"
+    },
+    {
+     "path": "tests/PublicSurfacePolicy.Tests.ps1",
+     "contains": "$job.Value | Should -Not -Match 'New-NetFirewallRule|Set-DnsClientServerAddress|Clear-DnsClientCache'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "skips staging only if the package source is explicitly gated",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 turned the gated-source skip into a refusal that also proves the source is preserved.",
+   "selectors": [
+    {
+     "path": "tests/NpmReleasePackage.Tests.ps1",
+     "contains": "It 'refuses staging when the package source is explicitly gated and preserves it'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "stops an existing repo desktop before rebuilding the release desktop executable",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "3a49ac92 moved the bakeoff desktop readiness cases from the retired operator surface to the workspace surface.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'refuses to rebuild while a repo or external desktop is running'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "name": "stops the repo desktop when launch readiness fails before the operator UI is usable",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "3a49ac92 moved the bakeoff desktop readiness cases from the retired operator surface to the workspace surface.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "contains": "It 'requests normal closure only for the exact owned desktop when launch readiness fails'"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "companion_bridge_script_path_finds_tauri_resource_layouts",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "reclassified",
+   "reason": "5d14e361 deleted the bridge-script resolver this test exercised; no code path resolves the script any more.",
+   "basis": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+     "contains": "// Desktop no longer supplies or inherits a PowerShell bridge."
+    },
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+     "contains": "command.env_remove(WINSMUX_CORE_SCRIPT_ENV);"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "companion_ledger_command_pins_sidecar_bridge_script_when_present",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 inverted the contract: companion children no longer receive the bridge script.",
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+     "contains": "fn companion_ledger_command_removes_bridge_even_when_script_is_present"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "dos_device_target_prefix_discriminates_nt_and_volume_device_strings",
+   "bases": [
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "c7ed8c9e moved SUBST detection into root_identity.rs; the successor test keeps the \\??\\ refusal and the \\Device\\ acceptance cases.",
+   "selectors": [
+    {
+     "path": "core/crates/winsmux-workspace/src/store/root_identity.rs",
+     "contains": "fn volume_admission_pure_raw_targets_preserve_all_dos_alias_refusals"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "handle_desktop_json_rpc_contract_advertises_runtime_roles_apply",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 retired the bridge-backed JSON-RPC methods; the successor test asserts the method is refused.",
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_backend.rs",
+     "contains": "fn handle_desktop_json_rpc_contract_excludes_retired_bridge_methods"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "handle_desktop_json_rpc_routes_runtime_roles_apply",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 retired the bridge-backed JSON-RPC methods; the successor test asserts the method is refused.",
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_backend.rs",
+     "contains": "fn handle_desktop_json_rpc_refuses_retired_runtime_roles_apply"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "handle_desktop_json_rpc_routes_workers_start",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 retired the bridge-backed JSON-RPC methods; the successor test asserts the method is refused.",
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_backend.rs",
+     "contains": "fn handle_desktop_json_rpc_refuses_retired_workers_start"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "name": "handle_desktop_json_rpc_routes_workers_status",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "5d14e361 retired the bridge-backed JSON-RPC methods; the successor test asserts the method is refused.",
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/desktop_backend.rs",
+     "contains": "fn handle_desktop_json_rpc_refuses_retired_workers_status"
+    }
+   ]
+  },
+  {
+   "type": "skip-increase",
+   "path": "core/tests-rs/workspace_host_e2e.rs",
+   "metric": "rust_ignore",
+   "old": 3,
+   "new": 4,
+   "bases": [
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "reclassified",
+   "reason": "No existing test became ignored. bed23869 added a new ignored observation test; the three previously ignored tests are unchanged.",
+   "basis": [
+    {
+     "path": "core/tests-rs/workspace_host_e2e.rs",
+     "contains": "#[ignore = \"private one-call capability token observation\"]"
+    },
+    {
+     "path": "core/tests-rs/workspace_host_e2e.rs",
+     "contains": "fn server_capability_token_creation_snapshot()"
+    }
+   ]
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/build-desktop.yml",
+   "base_blob": "5388a068f15dcfa25df077b10146f27a3a9ee3da",
+   "target_blob": "ad3d149be68b43b5930bbfbf78757319f1ee9736",
+   "bases": [
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "Steps renamed or moved, none dropped: the stable Rust step became the pinned distribution toolchain action, the sidecar stage became the licensed companion generation stage, and the Tauri backend test and the older-CLI preparation moved to test.yml desktop-build-test.",
+   "selectors": [
+    {
+     "path": ".github/workflows/build-desktop.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    },
+    {
+     "path": ".github/workflows/build-desktop.yml",
+     "contains": "- name: Stage complete licensed companion generation"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Test Tauri backend"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Prepare pinned older CLI for native version-pair proof"
+    }
+   ],
+   "structural_changes": {
+    "prior_task882_inventory_baseline": [
+     {
+      "job": "build",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "Stage companion CLI sidecar"
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "Prepare pinned older CLI for native version-pair proof"
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "Test Tauri backend"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/build-desktop.yml",
+   "base_blob": "1e6a62be3ac48b67f3953547fee1405a22d9d8be",
+   "target_blob": "ad3d149be68b43b5930bbfbf78757319f1ee9736",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "Steps renamed or moved, none dropped: the stable Rust step became the pinned distribution toolchain action, the sidecar stage became the licensed companion generation stage, and the Tauri backend test and the older-CLI preparation moved to test.yml desktop-build-test.",
+   "selectors": [
+    {
+     "path": ".github/workflows/build-desktop.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    },
+    {
+     "path": ".github/workflows/build-desktop.yml",
+     "contains": "- name: Stage complete licensed companion generation"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Test Tauri backend"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Prepare pinned older CLI for native version-pair proof"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "job": "build",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "Stage companion CLI sidecar"
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "Test Tauri backend"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/desktop-candidate-cdp-gate.yml",
+   "base_blob": "6dd31b66fcc4fb1f3e716685a3527885cec88b04",
+   "target_blob": "59681008f406231e7afa5784e7aa9ac34f489284",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "The gate became reusable (workflow_call, still dispatchable) and split into the CDP job and the desktop-native-lifecycle job selected by inputs.native_lifecycle; the Rust step became the pinned toolchain action.",
+   "selectors": [
+    {
+     "path": ".github/workflows/desktop-candidate-cdp-gate.yml",
+     "contains": "  workflow_call:"
+    },
+    {
+     "path": ".github/workflows/desktop-candidate-cdp-gate.yml",
+     "contains": "  workflow_dispatch:"
+    },
+    {
+     "path": ".github/workflows/desktop-candidate-cdp-gate.yml",
+     "contains": "  desktop-native-lifecycle:"
+    },
+    {
+     "path": ".github/workflows/desktop-baseline-capture.yml",
+     "contains": "uses: ./.github/workflows/desktop-candidate-cdp-gate.yml"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "trigger_changed": {
+       "old": {
+        "workflow_dispatch": {
+         "inputs": {
+          "candidate_ref": {
+           "description": "Candidate commit SHA",
+           "required": true,
+           "type": "string"
+          },
+          "release_tag": {
+           "description": "Release tag for smoke helper",
+           "required": false,
+           "default": "v0.36.38",
+           "type": "string"
+          },
+          "version": {
+           "description": "Version for smoke helper",
+           "required": false,
+           "default": "0.36.38",
+           "type": "string"
+          }
+         }
+        }
+       },
+       "new": {
+        "workflow_call": {
+         "inputs": {
+          "candidate_ref": {
+           "required": true,
+           "type": "string"
+          },
+          "release_tag": {
+           "required": false,
+           "default": "v0.38.0",
+           "type": "string"
+          },
+          "version": {
+           "required": false,
+           "default": "0.38.0",
+           "type": "string"
+          },
+          "native_lifecycle": {
+           "required": true,
+           "type": "boolean"
+          },
+          "baseline_artifact": {
+           "required": true,
+           "type": "string"
+          }
+         }
+        },
+        "workflow_dispatch": {
+         "inputs": {
+          "candidate_ref": {
+           "description": "Candidate commit SHA",
+           "required": true,
+           "type": "string"
+          },
+          "release_tag": {
+           "description": "Release tag for smoke helper",
+           "required": false,
+           "default": "v0.38.0",
+           "type": "string"
+          },
+          "version": {
+           "description": "Version for smoke helper",
+           "required": false,
+           "default": "0.38.0",
+           "type": "string"
+          },
+          "native_lifecycle": {
+           "description": "Finite native install/update/rollback/uninstall proof",
+           "required": false,
+           "default": false,
+           "type": "boolean"
+          },
+          "baseline_artifact": {
+           "description": "Same-run fixed ja baseline artifact (native mode only)",
+           "required": false,
+           "default": "",
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     {
+      "job": "desktop-candidate-cdp-gate",
+      "field": "if",
+      "old": null,
+      "new": "${{ !inputs.native_lifecycle }}"
+     },
+     {
+      "job": "desktop-candidate-cdp-gate",
+      "step_removed_or_renamed": "Install stable Rust toolchain"
+     }
+    ],
+    "prior_task882_inventory_baseline": [
+     {
+      "trigger_changed": {
+       "old": {
+        "workflow_dispatch": {
+         "inputs": {
+          "candidate_ref": {
+           "description": "Candidate commit SHA",
+           "required": true,
+           "type": "string"
+          },
+          "release_tag": {
+           "description": "Release tag for smoke helper",
+           "required": false,
+           "default": "v0.36.38",
+           "type": "string"
+          },
+          "version": {
+           "description": "Version for smoke helper",
+           "required": false,
+           "default": "0.36.38",
+           "type": "string"
+          }
+         }
+        }
+       },
+       "new": {
+        "workflow_call": {
+         "inputs": {
+          "candidate_ref": {
+           "required": true,
+           "type": "string"
+          },
+          "release_tag": {
+           "required": false,
+           "default": "v0.38.0",
+           "type": "string"
+          },
+          "version": {
+           "required": false,
+           "default": "0.38.0",
+           "type": "string"
+          },
+          "native_lifecycle": {
+           "required": true,
+           "type": "boolean"
+          },
+          "baseline_artifact": {
+           "required": true,
+           "type": "string"
+          }
+         }
+        },
+        "workflow_dispatch": {
+         "inputs": {
+          "candidate_ref": {
+           "description": "Candidate commit SHA",
+           "required": true,
+           "type": "string"
+          },
+          "release_tag": {
+           "description": "Release tag for smoke helper",
+           "required": false,
+           "default": "v0.38.0",
+           "type": "string"
+          },
+          "version": {
+           "description": "Version for smoke helper",
+           "required": false,
+           "default": "0.38.0",
+           "type": "string"
+          },
+          "native_lifecycle": {
+           "description": "Finite native install/update/rollback/uninstall proof",
+           "required": false,
+           "default": false,
+           "type": "boolean"
+          },
+          "baseline_artifact": {
+           "description": "Same-run fixed ja baseline artifact (native mode only)",
+           "required": false,
+           "default": "",
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     {
+      "job": "desktop-candidate-cdp-gate",
+      "field": "if",
+      "old": null,
+      "new": "${{ !inputs.native_lifecycle }}"
+     },
+     {
+      "job": "desktop-candidate-cdp-gate",
+      "step_removed_or_renamed": "Install stable Rust toolchain"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/public-smoke-recovery.yml",
+   "base_blob": "c93f17607addfef6810b2f4e3280642e54f39d0d",
+   "target_blob": "88374ebce48645ed5bd7d25c84f7e6b5f85d99bb",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "reclassified",
+   "reason": "Only the dispatch input defaults moved from v0.36.38 to v0.38.0; the inputs stay required and the job is unchanged in shape.",
+   "basis": [
+    {
+     "path": ".github/workflows/public-smoke-recovery.yml",
+     "contains": "default: v0.38.0"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "trigger_changed": {
+       "old": {
+        "workflow_dispatch": {
+         "inputs": {
+          "release_tag": {
+           "description": "Immutable annotated release tag to verify.",
+           "required": true,
+           "default": "v0.36.38",
+           "type": "string"
+          },
+          "release_commit": {
+           "description": "Peeled commit of the immutable annotated release tag.",
+           "required": true,
+           "type": "string"
+          },
+          "native_version": {
+           "description": "Exact Core and Desktop product version.",
+           "required": true,
+           "default": "0.36.38",
+           "type": "string"
+          },
+          "npm_version": {
+           "description": "Exact public npm package version.",
+           "required": true,
+           "default": "0.36.38",
+           "type": "string"
+          }
+         }
+        }
+       },
+       "new": {
+        "workflow_dispatch": {
+         "inputs": {
+          "release_tag": {
+           "description": "Immutable annotated release tag to verify.",
+           "required": true,
+           "default": "v0.38.0",
+           "type": "string"
+          },
+          "release_commit": {
+           "description": "Peeled commit of the immutable annotated release tag.",
+           "required": true,
+           "type": "string"
+          },
+          "native_version": {
+           "description": "Exact Core and Desktop product version.",
+           "required": true,
+           "default": "0.38.0",
+           "type": "string"
+          },
+          "npm_version": {
+           "description": "Exact public npm package version.",
+           "required": true,
+           "default": "0.38.0",
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    ],
+    "prior_task882_inventory_baseline": [
+     {
+      "trigger_changed": {
+       "old": {
+        "workflow_dispatch": {
+         "inputs": {
+          "release_tag": {
+           "description": "Immutable annotated release tag to verify.",
+           "required": true,
+           "default": "v0.36.38",
+           "type": "string"
+          },
+          "release_commit": {
+           "description": "Peeled commit of the immutable annotated release tag.",
+           "required": true,
+           "type": "string"
+          },
+          "native_version": {
+           "description": "Exact Core and Desktop product version.",
+           "required": true,
+           "default": "0.36.38",
+           "type": "string"
+          },
+          "npm_version": {
+           "description": "Exact public npm package version.",
+           "required": true,
+           "default": "0.36.38",
+           "type": "string"
+          }
+         }
+        }
+       },
+       "new": {
+        "workflow_dispatch": {
+         "inputs": {
+          "release_tag": {
+           "description": "Immutable annotated release tag to verify.",
+           "required": true,
+           "default": "v0.38.0",
+           "type": "string"
+          },
+          "release_commit": {
+           "description": "Peeled commit of the immutable annotated release tag.",
+           "required": true,
+           "type": "string"
+          },
+          "native_version": {
+           "description": "Exact Core and Desktop product version.",
+           "required": true,
+           "default": "0.38.0",
+           "type": "string"
+          },
+          "npm_version": {
+           "description": "Exact public npm package version.",
+           "required": true,
+           "default": "0.38.0",
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/release-core.yml",
+   "base_blob": "8d1b56447d54c6b47b19b8b8b1eaaf90b7180852",
+   "target_blob": "357245306ae3961d6a272c341c0af57da1365efa",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "The two helper steps merged into one package-and-test step, the stable Rust steps became the pinned toolchain action or rust 1.96.0, and the release job now requires the integrated publication gate.",
+   "selectors": [
+    {
+     "path": ".github/workflows/release-core.yml",
+     "contains": "- name: Package and test supported remote helper"
+    },
+    {
+     "path": ".github/workflows/release-core.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    },
+    {
+     "path": ".github/workflows/release-core.yml",
+     "contains": "- name: Require integrated publication gate"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "job": "build",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build-helper",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build-helper",
+      "step_removed_or_renamed": "Package supported remote helper"
+     },
+     {
+      "job": "build-helper",
+      "step_removed_or_renamed": "Test packaged remote helper"
+     }
+    ],
+    "prior_task882_inventory_baseline": [
+     {
+      "job": "build",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build-helper",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build-helper",
+      "step_removed_or_renamed": "Package supported remote helper"
+     },
+     {
+      "job": "build-helper",
+      "step_removed_or_renamed": "Test packaged remote helper"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/release-desktop.yml",
+   "base_blob": "cff9e048a3cbdefeca29deb99109166aca7b993a",
+   "target_blob": "1c9cb74e7c7d856b5b95bac525d0a3c5dbd7b40d",
+   "bases": [
+    "rebuild_base"
+   ],
+   "disposition": "reclassified",
+   "reason": "For v0.38.0 only, the build waits for the signed baseline and the direct release upload and public smoke are held back so publication goes through the integrated publication gate; other tags keep the old path. The stable Rust step became the pinned toolchain action.",
+   "basis": [
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "if: always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "- name: Execute same-signed-byte finite NSIS and MSI journeys"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    },
+    {
+     "path": ".github/workflows/release-core.yml",
+     "contains": "- name: Require integrated publication gate"
+    }
+   ],
+   "structural_changes": {
+    "rebuild_base": [
+     {
+      "job": "build",
+      "field": "if",
+      "old": null,
+      "new": "always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))"
+     },
+     {
+      "job": "build",
+      "field": "needs",
+      "old": null,
+      "new": [
+       "signed_baseline"
+      ]
+     },
+     {
+      "job": "build",
+      "step": "Upload desktop bundles to release",
+      "field": "if",
+      "old": "github.event_name == 'push' || inputs.release_tag != ''",
+      "new": "(github.event_name == 'push' || inputs.release_tag != '') && github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'"
+     },
+     {
+      "job": "smoke-public-desktop",
+      "field": "if",
+      "old": "github.event_name == 'push'",
+      "new": "github.event_name == 'push' && github.ref_name != 'v0.38.0'"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/release-desktop.yml",
+   "base_blob": "6df4cc23d14bf6eb9020ea0aea042a63b9e2681f",
+   "target_blob": "1c9cb74e7c7d856b5b95bac525d0a3c5dbd7b40d",
+   "bases": [
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "reclassified",
+   "reason": "For v0.38.0 only, the build waits for the signed baseline and the direct release upload and public smoke are held back so publication goes through the integrated publication gate; other tags keep the old path. The stable Rust step became the pinned toolchain action.",
+   "basis": [
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "if: always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "- name: Execute same-signed-byte finite NSIS and MSI journeys"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    },
+    {
+     "path": ".github/workflows/release-core.yml",
+     "contains": "- name: Require integrated publication gate"
+    }
+   ],
+   "structural_changes": {
+    "prior_task882_inventory_baseline": [
+     {
+      "job": "build",
+      "field": "if",
+      "old": null,
+      "new": "always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))"
+     },
+     {
+      "job": "build",
+      "field": "needs",
+      "old": null,
+      "new": [
+       "signed_baseline"
+      ]
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build",
+      "step": "Upload desktop bundles to release",
+      "field": "if",
+      "old": "github.event_name == 'push' || inputs.release_tag != ''",
+      "new": "(github.event_name == 'push' || inputs.release_tag != '') && github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'"
+     },
+     {
+      "job": "smoke-public-desktop",
+      "field": "if",
+      "old": "github.event_name == 'push'",
+      "new": "github.event_name == 'push' && github.ref_name != 'v0.38.0'"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/release-desktop.yml",
+   "base_blob": "c991b36c11b7e45e401fac4773e29bfe73ccc0d2",
+   "target_blob": "1c9cb74e7c7d856b5b95bac525d0a3c5dbd7b40d",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "reclassified",
+   "reason": "For v0.38.0 only, the build waits for the signed baseline and the direct release upload and public smoke are held back so publication goes through the integrated publication gate; other tags keep the old path. The stable Rust step became the pinned toolchain action.",
+   "basis": [
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "if: always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "- name: Execute same-signed-byte finite NSIS and MSI journeys"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    },
+    {
+     "path": ".github/workflows/release-core.yml",
+     "contains": "- name: Require integrated publication gate"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "job": "build",
+      "field": "if",
+      "old": null,
+      "new": "always() && (needs.signed_baseline.result == 'success' || (github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'))"
+     },
+     {
+      "job": "build",
+      "field": "needs",
+      "old": null,
+      "new": [
+       "signed_baseline"
+      ]
+     },
+     {
+      "job": "build",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "build",
+      "step": "Upload desktop bundles to release",
+      "field": "if",
+      "old": "github.event_name == 'push' || inputs.release_tag != ''",
+      "new": "(github.event_name == 'push' || inputs.release_tag != '') && github.ref_name != 'v0.38.0' && inputs.release_tag != 'v0.38.0'"
+     },
+     {
+      "job": "smoke-public-desktop",
+      "field": "if",
+      "old": "github.event_name == 'push'",
+      "new": "github.event_name == 'push' && github.ref_name != 'v0.38.0'"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/release-npm.yml",
+   "base_blob": "a4427691618f45d3e3e1fb898a4319afc059e141",
+   "target_blob": "3778fce7fd056cb100708d2a99eb8600cbd4fbf5",
+   "bases": [
+    "rebuild_base"
+   ],
+   "disposition": "reclassified",
+   "reason": "For 0.38.0 only, npm publish is held back; the verify job prepares and verifies the integrated tarball for the integrated publication path. Other versions keep the old publish condition.",
+   "basis": [
+    {
+     "path": ".github/workflows/release-npm.yml",
+     "contains": "needs.verify.outputs.publish_ready == 'true' && needs.verify.outputs.version != '0.38.0' && needs.verify.outputs.release_tag != 'v0.38.0'"
+    },
+    {
+     "path": ".github/workflows/release-npm.yml",
+     "contains": "- name: Prepare and verify integrated npm tarball"
+    }
+   ],
+   "structural_changes": {
+    "rebuild_base": [
+     {
+      "job": "publish",
+      "field": "if",
+      "old": "needs.verify.outputs.publish_ready == 'true'",
+      "new": "needs.verify.outputs.publish_ready == 'true' && needs.verify.outputs.version != '0.38.0' && needs.verify.outputs.release_tag != 'v0.38.0'"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/release-npm.yml",
+   "base_blob": "443185f9500ca37a50adbf6185893efc8384d5c2",
+   "target_blob": "3778fce7fd056cb100708d2a99eb8600cbd4fbf5",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "reclassified",
+   "reason": "For 0.38.0 only, npm publish is held back; the verify job prepares and verifies the integrated tarball for the integrated publication path. Other versions keep the old publish condition.",
+   "basis": [
+    {
+     "path": ".github/workflows/release-npm.yml",
+     "contains": "needs.verify.outputs.publish_ready == 'true' && needs.verify.outputs.version != '0.38.0' && needs.verify.outputs.release_tag != 'v0.38.0'"
+    },
+    {
+     "path": ".github/workflows/release-npm.yml",
+     "contains": "- name: Prepare and verify integrated npm tarball"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "job": "publish",
+      "field": "if",
+      "old": "needs.verify.outputs.publish_ready == 'true'",
+      "new": "needs.verify.outputs.publish_ready == 'true' && needs.verify.outputs.version != '0.38.0' && needs.verify.outputs.release_tag != 'v0.38.0'"
+     }
+    ],
+    "prior_task882_inventory_baseline": [
+     {
+      "job": "publish",
+      "field": "if",
+      "old": "needs.verify.outputs.publish_ready == 'true'",
+      "new": "needs.verify.outputs.publish_ready == 'true' && needs.verify.outputs.version != '0.38.0' && needs.verify.outputs.release_tag != 'v0.38.0'"
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/test.yml",
+   "base_blob": "c8b23da1091aea075855f253b2e5b1abacd0e06b",
+   "target_blob": "9464a51fc29754111ea7d1536786ce48843400cd",
+   "bases": [
+    "prior_task882_inventory_baseline"
+   ],
+   "disposition": "replaced",
+   "reason": "Renamed or moved, none dropped: the fresh install route now runs against the private candidate, the no-bundle build and V03630 process gate moved to desktop-release-process (required by Merge Gate), and desktop-nsis-lifecycle was replaced by the signed NSIS/MSI journeys and the native lifecycle job (74d66674).",
+   "selectors": [
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Run fresh install route against the private candidate"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "  desktop-release-process:"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Run V03630 desktop debug process gate"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "      - desktop-release-process"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "- name: Execute same-signed-byte finite NSIS and MSI journeys"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    }
+   ],
+   "structural_changes": {
+    "prior_task882_inventory_baseline": [
+     {
+      "job": "install-e2e",
+      "field": "needs",
+      "old": "public-surface",
+      "new": [
+       "public-surface",
+       "fresh-install-candidate"
+      ]
+     },
+     {
+      "job": "install-e2e",
+      "step_removed_or_renamed": "Run fresh install route"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Stage companion CLI sidecar"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Build desktop binary without bundling"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Run V03630 desktop debug process gate"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Upload V03630 desktop debug process results"
+     },
+     {
+      "job_removed": "desktop-nsis-lifecycle"
+     },
+     {
+      "job": "ci-health-report",
+      "field": "needs",
+      "old": [
+       "install-e2e",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-nsis-lifecycle"
+      ],
+      "new": [
+       "install-e2e",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-release-process"
+      ]
+     },
+     {
+      "job": "merge-gate",
+      "field": "needs",
+      "old": [
+       "secret-scan",
+       "public-surface",
+       "install-e2e",
+       "native-lifecycle-source",
+       "common-contract-drift",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-nsis-lifecycle",
+       "task811-receipt-bind",
+       "helper-linux-negatives",
+       "workspace-journey-native"
+      ],
+      "new": [
+       "secret-scan",
+       "public-surface",
+       "install-e2e",
+       "native-lifecycle-source",
+       "common-contract-drift",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-release-process",
+       "task811-receipt-bind",
+       "helper-linux-negatives",
+       "workspace-journey-native"
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "type": "workflow-changed",
+   "path": ".github/workflows/test.yml",
+   "base_blob": "1add58161f538abbe41615ddbbbaab75ca20ad17",
+   "target_blob": "9464a51fc29754111ea7d1536786ce48843400cd",
+   "bases": [
+    "pre_rebuild_plan_base"
+   ],
+   "disposition": "replaced",
+   "reason": "Renamed or moved, none dropped: the fresh install route now runs against the private candidate, the no-bundle build and V03630 process gate moved to desktop-release-process (required by Merge Gate), and desktop-nsis-lifecycle was replaced by the signed NSIS/MSI journeys and the native lifecycle job (74d66674).",
+   "selectors": [
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Run fresh install route against the private candidate"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "  desktop-release-process:"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "- name: Run V03630 desktop debug process gate"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "      - desktop-release-process"
+    },
+    {
+     "path": ".github/workflows/release-desktop.yml",
+     "contains": "- name: Execute same-signed-byte finite NSIS and MSI journeys"
+    },
+    {
+     "path": ".github/workflows/test.yml",
+     "contains": "uses: ./.github/actions/setup-windows-distribution-toolchain"
+    }
+   ],
+   "structural_changes": {
+    "pre_rebuild_plan_base": [
+     {
+      "job": "install-e2e",
+      "field": "needs",
+      "old": "public-surface",
+      "new": [
+       "public-surface",
+       "fresh-install-candidate"
+      ]
+     },
+     {
+      "job": "install-e2e",
+      "step_removed_or_renamed": "Run fresh install route"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "dtolnay/rust-toolchain@stable"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Stage companion CLI sidecar"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Build desktop binary without bundling"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Run V03630 desktop debug process gate"
+     },
+     {
+      "job": "desktop-build-test",
+      "step_removed_or_renamed": "Upload V03630 desktop debug process results"
+     },
+     {
+      "job_removed": "desktop-nsis-lifecycle"
+     },
+     {
+      "job": "ci-health-report",
+      "field": "needs",
+      "old": [
+       "install-e2e",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-nsis-lifecycle"
+      ],
+      "new": [
+       "install-e2e",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-release-process"
+      ]
+     },
+     {
+      "job": "merge-gate",
+      "field": "needs",
+      "old": [
+       "secret-scan",
+       "public-surface",
+       "install-e2e",
+       "native-lifecycle-source",
+       "common-contract-drift",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-nsis-lifecycle",
+       "task811-receipt-bind",
+       "helper-linux-negatives"
+      ],
+      "new": [
+       "secret-scan",
+       "public-surface",
+       "install-e2e",
+       "native-lifecycle-source",
+       "common-contract-drift",
+       "pester",
+       "core-build-test",
+       "desktop-build-test",
+       "desktop-release-process",
+       "task811-receipt-bind",
+       "helper-linux-negatives",
+       "workspace-journey-native"
+      ]
+     }
+    ]
+   }
+  }
+ ],
+ "gates": [
+  {
+   "path": ".githooks/pre-commit",
+   "kind": "githook",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": ".githooks/pre-commit-whitelist.ps1",
+   "kind": "githook",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": ".githooks/pre-push",
+   "kind": "githook",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": ".github/workflows/build-core.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/build-desktop.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/desktop-baseline-capture.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/desktop-candidate-cdp-gate.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/public-smoke-recovery.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/release-core.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/release-desktop.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/release-npm.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/remote-helper-ubuntu-2204.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": ".github/workflows/test.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-MIGRATE",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-885"
+   ]
+  },
+  {
+   "path": "Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-OUTPUT",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861",
+    "TASK-875"
+   ]
+  },
+  {
+   "path": "core/.github/workflows/ci.yml",
+   "kind": "workflow",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-BASE",
+    "Q-BETA",
+    "Q-GATES",
+    "Q-HISTORY",
+    "Q-INSTALL",
+    "Q-LONGRUN",
+    "Q-MIGRATE",
+    "Q-PARALLEL",
+    "Q-POLICY",
+    "Q-PROFILES",
+    "Q-RECOVERY",
+    "Q-SUPPORT",
+    "Q-UPDATE",
+    "Q-WORKFLOW"
+   ],
+   "plan_tasks": [
+    "TASK-885",
+    "TASK-892",
+    "TASK-899",
+    "TASK-906",
+    "TASK-913",
+    "TASK-920",
+    "TASK-927",
+    "TASK-934",
+    "TASK-939"
+   ]
+  },
+  {
+   "path": "core/crates/portable-pty-winsmux/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/vt100-winsmux/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-remote-helper/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-remote-helper/src/lib.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-remote-helper/tests/protocol.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-remote-helper/tests/session_lifecycle.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace-mcp/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES",
+    "Q-OUTPUT",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-875"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace-mcp/src/lib.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-OUTPUT",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-875"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace-mcp/src/runtime.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-OUTPUT",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-875"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace-mcp/tests/session.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES",
+    "Q-OUTPUT",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-875"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace-mcp/tests/stdio_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES",
+    "Q-OUTPUT",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-875"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/auth/layout.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/auth/mod.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/client/mod.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/contract/capabilities.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/contract/ingress.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/contract/operations.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/contract/projection.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/contract/types.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/desktop_install.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/desktop_nsis.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/admission.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/io.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/mod.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/process.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/security.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/server_identity.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/testing.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/host/windows.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/provider/lifecycle.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/provider/mod.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/runtime/mod.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-OWNERSHIP",
+    "Q-PANE"
+   ],
+   "plan_tasks": [
+    "TASK-864"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/runtime/session.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-OWNERSHIP",
+    "Q-PANE"
+   ],
+   "plan_tasks": [
+    "TASK-864"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/runtime/spawn.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-OWNERSHIP",
+    "Q-PANE"
+   ],
+   "plan_tasks": [
+    "TASK-864"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/runtime/topology.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-OWNERSHIP",
+    "Q-PANE"
+   ],
+   "plan_tasks": [
+    "TASK-864"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/git_reader.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/git_reader/image_imports.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/git_reader/native.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/git_snapshot.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/output.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-IME",
+    "Q-OUTPUT",
+    "Q-STATE"
+   ],
+   "plan_tasks": [
+    "TASK-865"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/run.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-IME",
+    "Q-OUTPUT",
+    "Q-STATE"
+   ],
+   "plan_tasks": [
+    "TASK-865"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/service/workspace.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-OWNERSHIP",
+    "Q-PANE",
+    "Q-PROJECT",
+    "Q-RESTORE"
+   ],
+   "plan_tasks": [
+    "TASK-863",
+    "TASK-864",
+    "TASK-866"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/store/layout.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-RESTORE"
+   ],
+   "plan_tasks": [
+    "TASK-866"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/src/store/root_identity.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-PROJECT"
+   ],
+   "plan_tasks": [
+    "TASK-863"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/artifact_access.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-ARTIFACT",
+    "Q-GATES",
+    "Q-SECURITY"
+   ],
+   "plan_tasks": [
+    "TASK-867"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/artifact_choice.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/artifact_sidecar.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/contract_schema.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-BASE",
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-861"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/desktop_install.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/desktop_nsis.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/diagnostics_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/host_admission.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/input_output_state.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-IME",
+    "Q-OUTPUT",
+    "Q-STATE"
+   ],
+   "plan_tasks": [
+    "TASK-865"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/layout_restore.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-RESTORE"
+   ],
+   "plan_tasks": [
+    "TASK-866"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/provider_claude.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-CLAUDE",
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-STATE"
+   ],
+   "plan_tasks": [
+    "TASK-869"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/provider_codex.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-CODEX",
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-STATE"
+   ],
+   "plan_tasks": [
+    "TASK-868"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/runtime_ownership.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES",
+    "Q-INTERRUPT",
+    "Q-OWNERSHIP",
+    "Q-PANE"
+   ],
+   "plan_tasks": [
+    "TASK-864"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/support/run_completion.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/workspace_aggregate.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-CONCURRENCY",
+    "Q-GATES",
+    "Q-PROJECT"
+   ],
+   "plan_tasks": [
+    "TASK-863"
+   ]
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/workspace_replay.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/crates/winsmux-workspace/tests/workspace_resources.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/cli.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/context_pack.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/control.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/control_pipe_client.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/dogfood.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/extension_manifest.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/host_profile.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/instruction_pack.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/ledger.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/main.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-PRIVACY",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-862"
+   ]
+  },
+  {
+   "path": "core/src/manifest_contract.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/operator_cli.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/pane.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/prompt_bundle.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/server/connection.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/session.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/shell_lifecycle.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/ssh_input.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/style.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/team_profile.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/team_profile_settings.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/terminal_engine.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/util.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/windows_openssh_transport.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/worker_artifact.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/workflow_gate.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/src/workspace_runtime_overlays.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/automation_connect_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/automation_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/automation_discover.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/automation_pair.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/common_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/condensed_events.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/context_pack_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/event_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/fixture_comparison.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/host_profile.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/instruction_pack_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/ledger_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/machine_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/manifest_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/operator_cli.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/operator_cli_unit.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/prompt_bundle_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/search_ledger_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/session_contract_test.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/support/conpty_json.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/team_profile_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/team_profile_settings_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_app_bracket_paste.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_client.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_cmdbuilder.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_commands.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_commands_audit.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_commands_new.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_config_plugin_paths.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_format.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_input.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue137_env_leak.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue151_strict_mode.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue155_output_rendering.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue155_rendering.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue155_sgr_attrs.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue157_bind_key_case.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue165_prediction_view_style.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue169_manual_rename.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_issue171_layout_bugs.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_layout.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_pane_title.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_parity.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_server.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_task205_focus.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_vt100_mouse.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/test_vt100_screen.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/worker_artifact_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workflow_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workflow_gate_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_admission_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_host_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_migrate_gallery.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_project_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_project_paths.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_recipe_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "core/tests-rs/workspace_runtime_e2e.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "git-graph/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "git-graph/src/color.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "git-graph/src/commit.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "git-graph/src/lane.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "git-graph/src/layout.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "git-graph/src/render.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/audit-public-surface.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/check-parent-publication-prerequisites.mjs",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/gitleaks-history-baseline.txt",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/gitleaks-history.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/observe-github-required-checks.mjs",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-cli-bakeoff-preflight.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-install-e2e.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-install-redirected.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-native-bridge-resolution.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-public-release.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-public-remote-helper.sh",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03617-reliability-gate.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03618-release-hardening.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03619-repo-audit.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03620-coordinator-foundation.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03621-local-router-shadow.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03623-session-readiness.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03626-desktop-split-gate.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03627-compat-performance-gate.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03628-packaged-restore-gate.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03628-race-abnormal-soak.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03628-runtime-reliability-gate.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03638-router-distribution.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "scripts/test-v03638-router-reliability.ps1",
+   "kind": "release_public_secret_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/AgentReadiness.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/BuilderWorktree.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/CliBakeoff.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/DeclarativeWorkflow.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/DesktopInstallReceipt.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/EnterpriseStrategyAlignment.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/GitGuard.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/GitHubWritePreflight.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/HarnessContract.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Integration.GateEnforcement.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Integration.MultiAgent.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Integration.PaneMonitorHook.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Integration.PluginHookLoader.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Integration.WorktreeHook.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/McpServerContract.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/NpmReleasePackage.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/OrchestraPreflight.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/PaneBorder.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/PesterGitIsolation.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/PublicSurfacePolicy.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/ReviewLatencyHardening.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Runtime.VaultInject.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Task781RuntimeCompatibility.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Task800OperatorShellBoundary.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Task810PesterRunner.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Task811OperatorInfraGate.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/Task839WorktreeReviewState.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/ThreatModelContract.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/UpstreamReevaluation.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03618ReleaseHardening.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03619RepoAudit.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03620CoordinatorFoundation.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03621LocalRouterShadow.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03626DesktopSplitGate.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03627CompatPerformanceGate.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03628PackagedRestoreGate.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03628RaceAbnormalSoak.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03628RuntimeReliabilityGate.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03630DesktopDebugGate.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03630DesktopDebugGateProcess.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/V03638RouterReliability.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/VersionSurface.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/AgentOrchestra.Bootstrap.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/AgentOrchestra.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/ArtifactsRuntime.Operator.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/ArtifactsRuntime.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/CommandQueueReporting.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/CommandReviewDispatch.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/CommandStatus.RuntimeIdentity.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/CommandStatus.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/Foundation.Settings.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/Foundation.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/ProviderCommands.Dispatch.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/ProviderCommands.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/WorkerApiAgyExec.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/WorkerBrokerToken.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/WorkerHeartbeatStart.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/WorkerPolicy.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/WorkerSecretsStatus.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/bridge/WorkerWorkspaceSandbox.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/codex-subagent-worktree-guard.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/planning-model.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/test_support/rust_parity.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-gate-map/preserved-contracts.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": [
+    "TASK-882"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/bundled-distribution.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/desktop-build-entry.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/desktop-msi-plan.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/desktop-nsis-plan.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/github-candidate-artifacts.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/github-required-checks.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/install-generation.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/install-lifecycle-source.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/install-transport.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/integrated-npm-tarball.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/integrated-publication-assets.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/integrated-publication-attempt.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/integrated-publication-contract.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/integrated-publication-evidence.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/npm-version.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/nsis-generation.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/nsis-observer.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-authority.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-destinations.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-environment.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-native-v2.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-npm-guard.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-npm-native.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-output.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-plan.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-source-guard.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-source-tree.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/publication-tools.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/stage-ci-artifact.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/verified-npm-candidate.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-package/windows-runtime.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-BASE",
+    "Q-GATES",
+    "Q-INSTALL",
+    "Q-SUPPORT",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-879"
+   ]
+  },
+  {
+   "path": "tests/workspace-update/install-lifecycle.test.ps1",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-GATES",
+    "Q-UPDATE"
+   ],
+   "plan_tasks": [
+    "TASK-880"
+   ]
+  },
+  {
+   "path": "winsmux-app/src-tauri/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/control_pipe.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_backend.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_companion_cli.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_control_plane_params.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_events.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_provider_capabilities.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_session_restore.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/desktop_team_profile.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/install_startup_receipt.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/lib.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-870"
+   ]
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/pty_backend.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/remote_debug_gate.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/remote_session.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/ssh_connect_review.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/startup_secondary_native.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/webview_accelerators.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/workspace_input_guard.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/src/workspace_transport.rs",
+   "kind": "rust_src",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/tests/workspace_native_webview.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src-tauri/tests/workspace_transport.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES",
+    "Q-SECURITY",
+    "Q-SURFACE"
+   ],
+   "plan_tasks": [
+    "TASK-870"
+   ]
+  },
+  {
+   "path": "winsmux-app/src/fleetProjection.test.ts",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/src/sshConnectReview.test.ts",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  }
+ ]
+}
