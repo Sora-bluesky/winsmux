@@ -1277,10 +1277,14 @@ function Install-VerifiedWinsmuxGeneration {
         @{ name=$_; id=$_; kind=$State.Snapshots[$_].Kind; prior=$State.Snapshots[$_]; remove=$false; cleanup_owned=$false }
     }
     $allEntries = @($pairedEntries) + @($entries.ToArray())
-    $registration = if ($Support) { @{
-        user=@{ prior=$Support.PriorUserPath; desired=$Support.UserPath; phase='staged' };
-        process=@{ prior=$Support.PriorProcessPath; desired=$Support.ProcessPath; phase='staged' }
-    } } else { @{} }
+    $registration = if ($Support) {
+        $installer = [Diagnostics.Process]::GetCurrentProcess()
+        @{
+            user=@{ prior=$Support.PriorUserPath; desired=$Support.UserPath; phase='staged' };
+            process=@{ prior=$Support.PriorProcessPath; desired=$Support.ProcessPath; phase='staged';
+                owner_pid=$installer.Id; owner_start=(Get-WinsmuxProcessStartStamp $installer) }
+        }
+    } else { @{} }
     foreach ($entry in $allEntries) {
         $snapshot = $entry.prior
         $entry.prior = @{ present=[bool]$snapshot.Present; identity=$snapshot.Identity; kind=$snapshot.Kind;
@@ -1669,6 +1673,34 @@ function Get-WinsmuxRegistrationPath {
     return $env:Path
 }
 
+function Get-WinsmuxProcessStartStamp {
+    param([Diagnostics.Process]$Process)
+    # FILETIME ticks, not an ISO string: ConvertFrom-Json turns a date-shaped
+    # string into a DateTime and the journal readback would reject it.
+    return [long]$Process.StartTime.ToFileTimeUtc()
+}
+
+function Test-WinsmuxRegistrationOwnerLive {
+    param($Slot)
+    # The process slot is $env:Path of the installer that staged it. Only that process
+    # can observe or restore it, so the slot is skipped once no process with the
+    # recorded id and start time exists. A journal written before the owner was
+    # recorded cannot be matched to any process; it is treated as gone so the next
+    # entry completes, and the warning names the shell that still carries the change.
+    if (-not $Slot.Contains('owner_pid')) {
+        Write-Warning 'Pending PATH owner is unrecorded; restart the shell that ran the interrupted installer to drop its PATH change.'
+        return $false
+    }
+    $ownerId = [int]$Slot.owner_pid
+    $current = [Diagnostics.Process]::GetCurrentProcess()
+    $ownerStart = [long]$Slot.owner_start
+    if ($current.Id -eq $ownerId -and (Get-WinsmuxProcessStartStamp $current) -eq $ownerStart) { return $true }
+    try { $owner = [Diagnostics.Process]::GetProcessById($ownerId) } catch { return $false }
+    try { return ((Get-WinsmuxProcessStartStamp $owner) -eq $ownerStart) }
+    catch { return $false }
+    finally { $owner.Dispose() }
+}
+
 function Set-WinsmuxRegistrationPath {
     param([ValidateSet('user','process')][string]$Name, [AllowNull()][AllowEmptyString()][object]$Value)
     if ($Name -ceq 'user') { Set-InstallUserPath $Value } else { $env:Path = $Value }
@@ -1730,7 +1762,7 @@ function Restore-WinsmuxRegistrationSlot {
 }
 
 function Restore-WinsmuxInstalledGeneration {
-    param($Lease, $Journal, [string]$OperationRoot, [switch]$Restart)
+    param($Lease, $Journal, [string]$OperationRoot)
     foreach ($entry in @($Journal.members)[($Journal.members.Count - 1)..0]) {
         $target = Get-WinsmuxMemberPath $Lease $entry.name
         $backupPath = Join-Path $OperationRoot ('old-' + $entry.id)
@@ -1759,9 +1791,7 @@ function Restore-WinsmuxInstalledGeneration {
     $registrationUncertain = $false
     if ($Journal.registration.Count -gt 0) {
         foreach ($name in @('user','process')) {
-            # The process slot is the installer's own $env:Path. After a restart that
-            # process is gone, so nothing remains to restore or to be uncertain about.
-            if ($Restart -and $name -ceq 'process') { continue }
+            if ($name -ceq 'process' -and -not (Test-WinsmuxRegistrationOwnerLive $Journal.registration.process)) { continue }
             try { Restore-WinsmuxRegistrationSlot $Lease $Journal $OperationRoot $name }
             catch { $registrationUncertain = $true }
         }
@@ -1821,8 +1851,14 @@ function Read-WinsmuxRecoveryJournal {
         Assert-WinsmuxLicenseObjectKeys $journal.registration @{ user='object'; process='object' }
         foreach ($name in @('user','process')) {
             $slot = $journal.registration[$name]
-            Assert-WinsmuxLicenseObjectKeys $slot @{ prior='nullable-text'; desired='nullable-text'; phase='string' }
+            $fields = @{ prior='nullable-text'; desired='nullable-text'; phase='string' }
+            # The owner fields were added after the first journals of this schema were
+            # written; a process slot without them is still a valid v2 journal.
+            $owned = $name -ceq 'process' -and $slot -is [Collections.IDictionary] -and $slot.Contains('owner_pid')
+            if ($owned) { $fields.owner_pid = 'integer'; $fields.owner_start = 'integer' }
+            Assert-WinsmuxLicenseObjectKeys $slot $fields
             if ($slot.phase -cnotin @('staged','write-intent','confirmed','restore-intent','restored')) { throw 'Invalid pending PATH phase.' }
+            if ($owned -and ($slot.owner_pid -lt 1 -or $slot.owner_pid -gt [int]::MaxValue -or $slot.owner_start -lt 1)) { throw 'Invalid pending PATH owner.' }
         }
         $expected = $journal.registration.user.prior
         if (-not @($expected -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Lease.LocalBin.TrimEnd('\') })) {
@@ -1894,7 +1930,7 @@ function Repair-WinsmuxPendingInstallation {
         if ($journal.registration.Count -and ($journal.registration.user.phase -cne 'confirmed' -or
             -not (Test-WinsmuxNullablePath (Get-InstallUserPath) $journal.registration.user.desired))) { throw 'Committed PATH changed; pending evidence retained.' }
         Clear-WinsmuxCommittedSupportBackups $Lease $journal $operationRoot
-    } else { Restore-WinsmuxInstalledGeneration $Lease $journal $operationRoot -Restart }
+    } else { Restore-WinsmuxInstalledGeneration $Lease $journal $operationRoot }
     Invoke-WinsmuxInstallCheckpoint 'before-marker-removal'
     [IO.File]::Delete($Lease.Marker)
 }
