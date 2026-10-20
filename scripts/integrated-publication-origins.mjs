@@ -40,6 +40,7 @@ export const publicationCutoverPaths = Object.freeze([
   'docs/provider-and-model-support.md', 'docs/provider-and-model-support.ja.md',
   'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',
   'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',
+  'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -141,6 +142,7 @@ const expectedSourceChanges = Object.freeze({
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([
   'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json', 'tests/workspace-gate-map/run.ps1',
+  'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',
 ]);
 const expectedSourcePaths = Object.freeze([...Object.keys(expectedSourceChanges), ...expectedSourceAdditions].sort());
 // Pure projection is exported for finite positive/negative tests. It never
