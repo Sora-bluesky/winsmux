@@ -161,29 +161,51 @@ $env:npm_config_cache = $npmCache
 $env:npm_config_userconfig = Join-Path $scratch 'npmrc'
 $repositoryPreparationOpen = $true
 
-function Stop-DescendantPowerShell([int]$RootProcessId) {
-    $rows = @{}
-    foreach ($row in Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name) { $rows[[int]$row.ProcessId] = $row }
+function Select-DescendantProcessRows([int]$RootProcessId, [object[]]$Rows) {
+    # A process id outlives its process. A row is a child only while it was created
+    # no earlier than the parent row it hangs from, so a reused parent id cannot
+    # pull in a process that predates the real parent.
+    $root = @($Rows | Where-Object { [int]$_.ProcessId -eq $RootProcessId })
+    if ($root.Count -ne 1 -or $null -eq $root[0].CreationDate) { throw "Root process $RootProcessId has no dated row in the process table." }
     $descendants = [Collections.Generic.List[object]]::new()
     $visited = [Collections.Generic.HashSet[int]]::new(); [void]$visited.Add($RootProcessId)
-    $queue = [Collections.Generic.Queue[int]]::new(); $queue.Enqueue($RootProcessId)
+    $queue = [Collections.Generic.Queue[object]]::new(); $queue.Enqueue($root[0])
     while ($queue.Count) {
         $parent = $queue.Dequeue()
-        foreach ($row in $rows.Values) {
-            if ([int]$row.ParentProcessId -ne $parent -or -not $visited.Add([int]$row.ProcessId)) { continue }
-            $descendants.Add($row); $queue.Enqueue([int]$row.ProcessId)
+        foreach ($row in $Rows) {
+            if ([int]$row.ParentProcessId -ne [int]$parent.ProcessId -or $null -eq $row.CreationDate -or $row.CreationDate -lt $parent.CreationDate) { continue }
+            if (-not $visited.Add([int]$row.ProcessId)) { continue }
+            $descendants.Add($row); $queue.Enqueue($row)
         }
     }
-    $killed = [Collections.Generic.List[object]]::new()
-    for ($index = $descendants.Count - 1; $index -ge 0; $index--) {
-        $row = $descendants[$index]
-        if ($row.Name -ine 'pwsh.exe') { continue }
-        try {
-            $victim = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId)
-            try { $victim.Kill(); $victim.WaitForExit(); $killed.Add(@{ pid = [int]$row.ProcessId; name = $row.Name; depth = $index + 1 }) } finally { $victim.Dispose() }
-        } catch {}
-    }
-    return $killed.ToArray()
+    return $descendants.ToArray()
+}
+
+function Stop-DescendantPowerShell([int]$RootProcessId) {
+    $rows = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, CreationDate, CommandLine)
+    $descendants = @(Select-DescendantProcessRows $RootProcessId $rows)
+    $targets = [Collections.Generic.List[object]]::new()
+    try {
+        # Every handle is opened before the first kill. A held handle keeps the id from
+        # being reused, and the start time binds that handle to the enumerated row, so
+        # the kill below lands on the process the table described and nothing else.
+        for ($index = $descendants.Count - 1; $index -ge 0; $index--) {
+            $row = $descendants[$index]
+            if ($row.Name -ine 'pwsh.exe') { continue }
+            try { $victim = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId); [void]$victim.SafeHandle }
+            catch { continue }
+            if ([Math]::Abs(($victim.StartTime - $row.CreationDate).TotalSeconds) -ge 1) { $victim.Dispose(); continue }
+            $targets.Add(@{ row = $row; process = $victim })
+        }
+        $killed = [Collections.Generic.List[object]]::new()
+        foreach ($target in $targets) {
+            $victim = $target.process
+            try { $victim.Kill(); if (-not $victim.WaitForExit(30000)) { throw 'still running after 30s' } }
+            catch { throw ('Descendant pwsh ' + $target.row.ProcessId + ' could not be stopped: ' + $_.Exception.Message) }
+            $killed.Add(@{ pid = [int]$target.row.ProcessId; name = $target.row.Name; command_line = [string]$target.row.CommandLine; exit_code = $victim.ExitCode })
+        }
+        return $killed.ToArray()
+    } finally { foreach ($target in $targets) { $target.process.Dispose() } }
 }
 
 function Invoke-CapturedProcess {
@@ -866,10 +888,14 @@ if ($isGitHubRunner -and $candidateFixture) {
     Assert-Task880 ($crash.ExitCode -ne 0 -and $null -ne $crash.Interruption -and $crash.Interruption.operation_matches -and -not $crash.Interruption.committed_after) 'Uncommitted own-operation interruption evidence missing; lifecycle not proven.'
     Assert-Task880 ([IO.File]::Exists($marker)) 'Interrupted actual update lost pending.'
     Assert-Task880 ($crash.Interruption.user_phase_after_kill -ceq 'confirmed') 'Interruption left the confirmed User PATH window before the kill landed; lifecycle not proven.'
-    # Any phase of the killed installer's own process slot recovers on the next
-    # entry (install.ps1 Restore-WinsmuxInstalledGeneration -Restart), so the
-    # recovery expectation below is the same for staged, write-intent and confirmed.
+    # The killed installer no longer exists, so its own process PATH slot is skipped
+    # on the next entry whatever phase it reached (install.ps1
+    # Test-WinsmuxRegistrationOwnerLive). The recovery expectation below is the same
+    # for staged, write-intent and confirmed.
     Assert-Task880 ($crash.Interruption.process_phase_after_kill -cin @('staged','write-intent','confirmed')) 'Process PATH slot phase after the kill was not recorded.'
+    # Under the npm shim the installer runs in a pwsh below cmd and node. The kill
+    # must have reached that pwsh, or the installer outlived its wrapper.
+    if ($Route -ceq 'Npm') { Assert-Task880 (@($crash.Interruption.killed_descendants).Count -ge 1) 'Npm route interruption stopped no descendant pwsh; the installer pwsh was not killed first.' }
     # The next public update recovers first, then intentionally fails acquisition.
     # It cannot publish a fresh generation over the old bytes we must observe.
     $recovery=Invoke-Task880Action 'update' $faults.missing.installer;Save-Task880Command 'pending-recovery-missing-response' $recovery
