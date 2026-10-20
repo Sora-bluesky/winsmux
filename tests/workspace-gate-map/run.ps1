@@ -37,12 +37,16 @@ function Read-GitBytes([string[]]$GitArguments) {
 function Get-Sha256Hex([byte[]]$Bytes) {
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
+# A checkout with core.autocrlf rewrites line endings; the identity check compares the scripts' text, not their newlines.
+function Get-TextSha256Hex([byte[]]$Bytes) {
+    return Get-Sha256Hex ([Text.Encoding]::UTF8.GetBytes([Text.Encoding]::UTF8.GetString($Bytes).Replace("`r`n", "`n")))
+}
 
 $scripts = @('tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs')
 $scriptDigests = [ordered]@{}
 foreach ($script in $scripts) {
-    $atRef = Get-Sha256Hex (Read-GitBytes @('show', "${Ref}:$script"))
-    $inTree = Get-Sha256Hex ([IO.File]::ReadAllBytes((Join-Path $repo $script)))
+    $atRef = Get-TextSha256Hex (Read-GitBytes @('show', "${Ref}:$script"))
+    $inTree = Get-TextSha256Hex ([IO.File]::ReadAllBytes((Join-Path $repo $script)))
     $scriptDigests[$script] = $inTree
     if ($atRef -cne $inTree) { $failures.Add("$script in the working tree differs from ${Ref}:$script") }
 }
