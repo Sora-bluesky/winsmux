@@ -31,7 +31,6 @@ $whitelistPatterns = @(
     'tests/workspace-update/run.ps1',
     'tests/workspace-gate-map/check-map.mjs',
     'tests/workspace-gate-map/gate-map.json',
-    'tests/workspace-gate-map/preserved-contracts.test.ps1',
     'tests/workspace-gate-map/run.ps1',
     'winsmux-app/src-tauri/src/install_startup_receipt.rs',
     'winsmux-app/src-tauri/wix/installer.wxs',

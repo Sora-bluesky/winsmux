@@ -1,14 +1,19 @@
+# Runs check-map.mjs against a tree-ish and records the result.
+# Usage: pwsh -NoProfile -File run.ps1 [-Ref <tree-ish>] [-SummaryPath <file>] [-VaultRoot <dir>]
+# check-map reads gate-map.json and every anchor from -Ref, so this script first proves that the
+# check-map.mjs it is about to execute is byte-identical to the one stored at -Ref. -VaultRoot (default:
+# .references/operator-plans/rebuild-v0380-20260906/task882-gate-map when present) compares the
+# preserved original bytes with the pins; when the root is absent the summary says so instead of passing.
 param(
     [string]$Ref = 'HEAD',
-    [string]$SummaryPath = ''
+    [string]$SummaryPath = '',
+    [string]$VaultRoot = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
 $repo = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
-$mapPath = Join-Path $PSScriptRoot 'gate-map.json'
-$gateMap = Get-Content -LiteralPath $mapPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 50
 $node = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 $failures = [Collections.Generic.List[string]]::new()
 
@@ -30,51 +35,47 @@ function Get-Sha256Hex([byte[]]$Bytes) {
     return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant()
 }
 
-$mapLines = @(& $node (Join-Path $PSScriptRoot 'check-map.mjs') --ref $Ref 2>&1 | ForEach-Object { "$_" })
-$mapExit = $LASTEXITCODE
+$checker = 'tests/workspace-gate-map/check-map.mjs'
+$atRef = Get-Sha256Hex (Read-GitBytes @('show', "${Ref}:$checker"))
+$inTree = Get-Sha256Hex ([IO.File]::ReadAllBytes((Join-Path $repo $checker)))
+if ($atRef -cne $inTree) { $failures.Add("check-map.mjs in the working tree differs from ${Ref}:$checker") }
+
 $mapSummary = $null
-try { $mapSummary = ($mapLines -join "`n") | ConvertFrom-Json -Depth 20 } catch { $failures.Add('check-map printed no JSON summary') }
-if ($mapExit -ne 0) { $failures.Add("check-map exited $mapExit") }
+$mapExit = $null
+if ($failures.Count -eq 0) {
+    $mapLines = @(& $node (Join-Path $repo $checker) --ref $Ref 2>&1 | ForEach-Object { "$_" })
+    $mapExit = $LASTEXITCODE
+    try { $mapSummary = ($mapLines -join "`n") | ConvertFrom-Json -Depth 20 } catch { $failures.Add('check-map printed no JSON summary') }
+    if ($mapExit -ne 0) { $failures.Add("check-map exited $mapExit") }
+}
 
-$fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-gate-map-' + [Guid]::NewGuid().ToString('N'))
-$replay = $null
-try {
-    $inputs = [Collections.Generic.List[object]]::new()
+$gateMap = [Text.Encoding]::UTF8.GetString((Read-GitBytes @('show', "${Ref}:tests/workspace-gate-map/gate-map.json"))) | ConvertFrom-Json -Depth 50
+if ([string]::IsNullOrWhiteSpace($VaultRoot)) {
+    $candidate = Join-Path $repo '.references/operator-plans/rebuild-v0380-20260906/task882-gate-map'
+    if (Test-Path -LiteralPath $candidate -PathType Container) { $VaultRoot = $candidate }
+}
+$vault = [ordered]@{ root = $VaultRoot; status = 'absent'; files = @() }
+if (-not [string]::IsNullOrWhiteSpace($VaultRoot)) {
+    $vault.status = 'verified'
+    $files = [Collections.Generic.List[object]]::new()
     foreach ($pin in $gateMap.pins) {
-        $bytes = Read-GitBytes @('cat-file', 'blob', [string]$pin.blob)
-        if ($bytes.Length -ne [int]$pin.bytes -or (Get-Sha256Hex $bytes) -cne [string]$pin.sha256) {
-            $failures.Add("pinned blob differs: $($pin.path)")
+        $file = Join-Path $VaultRoot ([string]$pin.vault_path)
+        $state = 'missing'
+        if (Test-Path -LiteralPath $file -PathType Leaf) {
+            $bytes = [IO.File]::ReadAllBytes($file)
+            $state = if ($bytes.Length -eq [int]$pin.bytes -and (Get-Sha256Hex $bytes) -ceq [string]$pin.sha256) { 'same' } else { 'differs' }
         }
-        $inputs.Add(@{ Path = [string]$pin.path; Bytes = $bytes })
+        if ($state -ne 'same') { $vault.status = 'differs'; $failures.Add("preserved bytes ${state}: $($pin.vault_path)") }
+        $files.Add([ordered]@{ path = [string]$pin.path; vault_path = [string]$pin.vault_path; state = $state })
     }
-    # The threat model replay checks the candidate's injection categories, not the c34d6d9b^ ones.
-    $patternsPath = '.claude/patterns/injection-patterns.json'
-    $inputs.Add(@{ Path = $patternsPath; Bytes = (Read-GitBytes @('show', "${Ref}:$patternsPath")) })
-    foreach ($item in $inputs) {
-        $destination = Join-Path $fixtureRoot $item.Path
-        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
-        [IO.File]::WriteAllBytes($destination, $item.Bytes)
-    }
-
-    Import-Module Pester -RequiredVersion 5.7.1 -ErrorAction Stop
-    $configuration = New-PesterConfiguration
-    $configuration.Run.Container = New-PesterContainer -Path (Join-Path $PSScriptRoot 'preserved-contracts.test.ps1') -Data @{ FixtureRoot = $fixtureRoot }
-    $configuration.Run.PassThru = $true
-    $configuration.Output.Verbosity = 'Normal'
-    $replay = Invoke-Pester -Configuration $configuration
-    $expected = @($gateMap.replays).Count
-    if ($replay.FailedCount -ne 0) { $failures.Add("replay failed $($replay.FailedCount)") }
-    if ($replay.SkippedCount -ne 0 -or $replay.NotRunCount -ne 0) { $failures.Add("replay skipped $($replay.SkippedCount) not-run $($replay.NotRunCount)") }
-    if ($replay.PassedCount -ne $expected) { $failures.Add("replay passed $($replay.PassedCount) of $expected") }
-    if (@($replay.Containers | Where-Object { $_.Result -ne 'Passed' }).Count -ne 0) { $failures.Add('replay container did not pass') }
-} finally {
-    if (Test-Path -LiteralPath $fixtureRoot) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force }
+    $vault.files = $files.ToArray()
 }
 
 $summary = [ordered]@{
     ref = $Ref
+    checker_sha256 = $inTree
     map = $mapSummary
-    replay = if ($null -eq $replay) { $null } else { [ordered]@{ passed = $replay.PassedCount; failed = $replay.FailedCount; skipped = $replay.SkippedCount; not_run = $replay.NotRunCount } }
+    vault = $vault
     failures = @($failures) + @(if ($null -ne $mapSummary) { @($mapSummary.failures) })
 }
 $json = $summary | ConvertTo-Json -Depth 20

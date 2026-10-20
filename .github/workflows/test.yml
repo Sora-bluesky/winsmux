@@ -165,6 +165,24 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/test-native-bridge-resolution.ps1 -CandidateBinary target/release/winsmux.exe
 
+  gate-map:
+    name: Gate Map
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # check-map recomputes findings against three fixed base commits and walks per-file history.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Verify the gate map against the checked-out tree
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/workspace-gate-map/run.ps1
+
   common-contract-drift:
     name: Common Contract Drift Gate
     runs-on: ubuntu-latest
@@ -1409,6 +1427,7 @@ jobs:
       - task811-receipt-bind
       - helper-linux-negatives
       - workspace-journey-native
+      - gate-map
     if: always()
     steps:
       - name: Require all checks
@@ -1427,7 +1446,8 @@ jobs:
             "${{ needs.desktop-release-process.result }}" \
             "${{ needs.task811-receipt-bind.result }}" \
             "${{ needs.helper-linux-negatives.result }}" \
-            "${{ needs.workspace-journey-native.result }}"; do
+            "${{ needs.workspace-journey-native.result }}" \
+            "${{ needs.gate-map.result }}"; do
             if [ "$result" != "success" ]; then
               echo "Merge gate failed because a required job result was '$result'."
               exit 1
