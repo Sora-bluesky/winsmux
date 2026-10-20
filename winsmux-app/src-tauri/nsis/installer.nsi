@@ -20,6 +20,7 @@ ManifestDPIAwareness PerMonitorV2
 !include FileFunc.nsh
 !include x64.nsh
 !include WordFunc.nsh
+!include TextFunc.nsh
 
 !macro WINSMUX_OPTION_FLAG OPTION FLAG
   ${GetOptions} $CMDLINE "${OPTION}" ${FLAG}
@@ -29,6 +30,31 @@ ManifestDPIAwareness PerMonitorV2
     StrCpy ${FLAG} 1
   ${EndIf}
   ClearErrors
+!macroend
+
+; The helper's one-line classification and the root it judged go to the details view, and the
+; abort text names what that class means for the user. $0/$1 stay the plugin return/output.
+!macro WINSMUX_REPORT_HELPER_FAILURE UN
+  ${${UN}TrimNewLines} $1 $3
+  DetailPrint "winsmux installer root: $INSTDIR"
+  DetailPrint "winsmux installer helper exit $0: $3"
+  StrCpy $4 "$(WINSMUX_TRANSACTION_FAILED)"
+  ${If} $3 S== "winsmux installer: member_unconfirmed"
+    StrCpy $4 "$(WINSMUX_FAILED_MEMBER)"
+  ${ElseIf} $3 S== "winsmux installer: legacy_root_mismatch"
+    StrCpy $4 "$(WINSMUX_FAILED_LEGACY_ROOT)"
+  ${ElseIf} $3 S== "winsmux installer: legacy_inventory_incomplete"
+  ${OrIf} $3 S== "winsmux installer: legacy_receipt_missing"
+  ${OrIf} $3 S== "winsmux installer: legacy_profile_incomplete"
+    StrCpy $4 "$(WINSMUX_FAILED_LEGACY_CAPTURE)"
+  ${ElseIf} $3 S== "winsmux installer: registration_conflict"
+    StrCpy $4 "$(WINSMUX_FAILED_REGISTRATION)"
+  ${ElseIf} $3 S== "winsmux installer: work_running_or_locked"
+    StrCpy $4 "$(WINSMUX_FAILED_RUNNING)"
+  ${ElseIf} $3 S== "winsmux installer: pending_unconfirmed"
+    StrCpy $4 "$(WINSMUX_FAILED_PENDING)"
+  ${EndIf}
+  Abort $4
 !macroend
 
 ; Diagnostic-only finite observation. Remove with the exact four-file overlay.
@@ -90,6 +116,24 @@ ManifestDPIAwareness PerMonitorV2
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: legacy_inventory_incomplete$\r$\n"
       StrCpy $2 67
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_receipt_missing$\n"
+      StrCpy $2 72
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_receipt_missing$\r$\n"
+      StrCpy $2 72
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_profile_incomplete$\n"
+      StrCpy $2 73
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_profile_incomplete$\r$\n"
+      StrCpy $2 73
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_root_mismatch$\n"
+      StrCpy $2 74
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: legacy_root_mismatch$\r$\n"
+      StrCpy $2 74
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\n"
       StrCpy $2 68
@@ -942,7 +986,7 @@ Section Install
   ${If} $0 != 0
     !insertmacro WINSMUX_OBSERVE_FAILURE helper
     SetErrorLevel $2
-    Abort "$(WINSMUX_TRANSACTION_FAILED)"
+    !insertmacro WINSMUX_REPORT_HELPER_FAILURE ""
   ${EndIf}
   StrCpy $WinsmuxCommitted 1
   ${If} $PassiveMode = 1
@@ -1000,7 +1044,7 @@ Section Uninstall
   ${If} $0 != 0
     !insertmacro WINSMUX_OBSERVE_FAILURE helper
     SetErrorLevel $2
-    Abort "$(WINSMUX_TRANSACTION_FAILED)"
+    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un."
   ${EndIf}
   ${If} $PassiveMode = 1
     SetAutoClose true

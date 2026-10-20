@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 export const diagnosticBranch = 'refs/heads/codex/task880-native-lifecycle';
 export const retainedOutputLimit = 1023;
 const reasons = new Set(['usage', 'context_refused', 'plan_refused', 'actor_refused', 'path_refused',
-  'member_unconfirmed', 'registration_conflict', 'legacy_inventory_incomplete', 'work_running_or_locked',
+  'member_unconfirmed', 'registration_conflict', 'legacy_inventory_incomplete', 'legacy_receipt_missing',
+  'legacy_profile_incomplete', 'legacy_root_mismatch', 'work_running_or_locked',
   'pending_unconfirmed', 'io_unconfirmed', 'startup_unconfirmed', 'nsis_startup_usage', 'nsis_startup_plan',
   'nsis_startup_path', 'nsis_startup_member', 'nsis_startup_actor', 'nsis_startup_isolation',
   'nsis_startup_launch', 'nsis_startup_receipt', 'nsis_startup_timeout', 'nsis_startup_cleanup']);
