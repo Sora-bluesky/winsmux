@@ -306,19 +306,41 @@ function Enable-Injection {
             $result.injection.armed = (-not $witness.new_file_under_install_dir.started) -and $witness.control_copy_elsewhere.exit -eq 0 -and $witness.installed_old_native.exit -eq 0
         }
         'LaunchPublished' {
-            $result.injection.kind = 'srp-path-rule'
+            $result.injection.kind = 'ifeo-filter'
             $result.injection.expected_signature = $launchSignature
             [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($control))
             Copy-Item -LiteralPath $native -Destination $control
-            $script:injectionArm = Enable-T09PathRule $native $outRoot
-            $witness = [ordered]@{ policy = $injectionArm; published_path = $null; control_copy_elsewhere = $null }
+            $stagedDir = Join-Path $localBin ('.winsmux-install-t09-' + [Guid]::NewGuid().ToString('N'))
+            [void][IO.Directory]::CreateDirectory($stagedDir)
+            $stagedCopy = Join-Path $stagedDir 'winsmux.exe'
+            Copy-Item -LiteralPath $native -Destination $stagedCopy
+            $script:injectionArm = Enable-T09ImageExecutionFilter -ImagePath $native -EvidenceDirectory $outRoot
+            $witness = [ordered]@{
+                filter = $injectionArm; published_direct = $null; published_via_cmd = $null; published_via_pwsh = $null
+                control_copy_elsewhere = $null; staged_copy_under_install_dir = $null
+                expected_exit = $injectionArm.expected_exit; expected_exit_matched = $null
+            }
             $result.injection.witness = $witness
             Save-Result
             if ($null -eq $injectionArm.refused) {
-                $witness.published_path = Invoke-T09Launch $native -Environment $homeEnvironment
+                # Prove the filter from fresh processes launched three ways: a direct start, a new
+                # cmd.exe, and a new pwsh. The published full path must start and exit non-zero
+                # without running the real binary; the stage copy and an off-path control run on.
+                $witness.published_direct = Invoke-T09Launch $native -Environment $homeEnvironment
+                $witness.published_via_cmd = Invoke-T09Launch $env:ComSpec -Arguments @('/d', '/c', $native, '-V') -Environment $homeEnvironment
+                $witness.published_via_pwsh = Invoke-T09Launch $pwsh -Arguments @('-NoProfile', '-NonInteractive', '-Command', "& '$native' -V; exit `$LASTEXITCODE") -Environment $homeEnvironment
                 $witness.control_copy_elsewhere = Invoke-T09Launch $control -Environment $homeEnvironment
+                $witness.staged_copy_under_install_dir = Invoke-T09Launch $stagedCopy -Environment $homeEnvironment
+                $published = @($witness.published_direct, $witness.published_via_cmd, $witness.published_via_pwsh)
+                $blocked = @($published | Where-Object { $_.started -and $_.exit -eq $injectionArm.expected_exit -and [string]$_.stdout -cne "winsmux $OldVersion" })
+                $witness.expected_exit_matched = ($blocked.Count -eq $published.Count)
+                $result.injection.armed = $witness.expected_exit_matched -and
+                    $witness.control_copy_elsewhere.started -and $witness.control_copy_elsewhere.exit -eq 0 -and
+                    $witness.staged_copy_under_install_dir.started -and $witness.staged_copy_under_install_dir.exit -eq 0
+            } else {
+                $result.injection.armed = $false
             }
-            $result.injection.armed = ($null -eq $injectionArm.refused) -and (-not $witness.published_path.started) -and $witness.control_copy_elsewhere.exit -eq 0
+            Remove-Item -LiteralPath $stagedDir -Recurse -Force
         }
     }
     Save-Result
@@ -335,7 +357,7 @@ function Disable-Injection {
             $result.injection.disarmed = [ordered]@{ free_after_release = Clear-T09Shortage $arm }
         }
         'LaunchStage' { $result.injection.disarmed = Disable-T09ExecuteDeny $arm }
-        'LaunchPublished' { $result.injection.disarmed = Disable-T09PathRule $arm }
+        'LaunchPublished' { $result.injection.disarmed = Disable-T09ImageExecutionFilter $arm }
     }
     Save-Result
 }

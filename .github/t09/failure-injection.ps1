@@ -76,11 +76,7 @@ function Disable-T09ExecuteDeny($Arm) {
     }
 }
 
-$script:T09SaferRoot = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
-$script:T09SaferPolicy = [ordered]@{
-    DefaultLevel = @(0x40000, 'DWord'); TransparentEnabled = @(1, 'DWord'); PolicyScope = @(0, 'DWord')
-    AuthenticodeEnabled = @(0, 'DWord'); ExecutableTypes = @([string[]]@('EXE'), 'MultiString')
-}
+$script:T09IfeoRoot = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
 
 function Export-T09Key([string]$Path, [string]$File) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
@@ -100,74 +96,72 @@ function Get-T09KeyValues([string]$Path) {
     return $rows
 }
 
-function Get-T09PathRules([string]$Root) {
-    $rules = [Collections.Generic.List[string]]::new()
-    foreach ($level in @(Get-ChildItem -LiteralPath $Root)) {
-        $paths = Join-Path $Root ($level.PSChildName + '\Paths')
-        if (Test-Path -LiteralPath $paths) { foreach ($rule in @(Get-ChildItem -LiteralPath $paths)) { $rules.Add($level.PSChildName + '\Paths\' + $rule.PSChildName) } }
-    }
-    return @($rules)
-}
-
-# LaunchPublished: a Software Restriction Policy path rule that disallows exactly one image
-# path. The installer's stage path differs, so only the published image is refused. A policy
-# the runner image already carries is kept: its key is exported first, its values are put back
-# afterwards, and only a policy with its own path rules or a non-Unrestricted default is refused.
-function Enable-T09PathRule([string]$ImagePath, [string]$EvidenceDirectory) {
-    $root = $script:T09SaferRoot
+# LaunchPublished: an Image File Execution Options filter scoped to exactly one full image
+# path. Windows keys IFEO by the image file name, and the installer's stage copy carries the
+# same winsmux.exe name at its own full path, so a bare Debugger would also stop the stage
+# readback. UseFilter=1 plus a subkey whose FilterFullPath is the published path redirects only
+# that path to a debugger that exits non-zero immediately; the staged winsmux.exe at a
+# different full path keeps running. Unlike a Software Restriction Policy path rule, which the
+# hosted runner does not enforce (run 39354125187 armed the rule yet the published image still
+# ran), the loader applies IFEO unconditionally. A winsmux.exe IFEO key the runner already
+# carries is refused after being exported, never modified. The $IfeoRoot parameter lets the
+# arm and disarm logic run against an HKCU scratch key off the runner.
+function Enable-T09ImageExecutionFilter {
+    param(
+        [Parameter(Mandatory = $true)][string]$ImagePath,
+        [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
+        [string]$IfeoRoot = $script:T09IfeoRoot,
+        [string]$Debugger = ((Join-Path ([Environment]::SystemDirectory) 'cmd.exe') + ' /d /c exit 87'),
+        [int]$ExpectedExit = 87
+    )
+    $fullPath = [IO.Path]::GetFullPath($ImagePath)
+    $imageName = [IO.Path]::GetFileName($fullPath)
+    $imageKey = Join-Path $IfeoRoot $imageName
     $arm = [pscustomobject]@{
-        kind = 'srp-path-rule'; image_path = $ImagePath; root = $root; evidence_directory = $EvidenceDirectory
-        root_existed = (Test-Path -LiteralPath $root); before_export_sha256 = $null; prior_values = $null; prior_rules = @()
-        refused = $null; created_keys = @(); rule_key = $null; armed_values = $null; armed_export_sha256 = $null
+        kind = 'ifeo-filter'; image_path = $fullPath; image_name = $imageName; ifeo_root = $IfeoRoot
+        image_key = $imageKey; filter_key = $null; debugger = $Debugger; expected_exit = $ExpectedExit
+        evidence_directory = $EvidenceDirectory; image_key_existed = (Test-Path -LiteralPath $imageKey)
+        before_export_sha256 = $null; refused = $null; created_keys = @(); armed_values = $null; armed_export_sha256 = $null
     }
-    if ($arm.root_existed) {
-        $arm.before_export_sha256 = Export-T09Key $root (Join-Path $EvidenceDirectory 'srp-before.reg')
-        $arm.prior_values = Get-T09KeyValues $root
-        $arm.prior_rules = @(Get-T09PathRules $root)
-        if ($arm.prior_rules.Count -gt 0) { $arm.refused = 'The existing policy already has path rules: ' + ($arm.prior_rules -join ', '); return $arm }
-        if ($arm.prior_values.Contains('DefaultLevel') -and [long]$arm.prior_values.DefaultLevel.value -ne 0x40000) {
-            $arm.refused = 'The existing policy DefaultLevel is ' + $arm.prior_values.DefaultLevel.value + ', not Unrestricted (0x40000).'; return $arm
-        }
+    if ($arm.image_key_existed) {
+        $arm.before_export_sha256 = Export-T09Key $imageKey (Join-Path $EvidenceDirectory 'ifeo-before.reg')
+        $arm.refused = "An Image File Execution Options key for $imageName already exists: $imageKey"
+        return $arm
     }
-    $missing = [Collections.Generic.List[string]]::new()
-    for ($key = $root; -not (Test-Path -LiteralPath $key); $key = Split-Path -Path $key -Parent) { $missing.Insert(0, $key) }
-    foreach ($key in @($missing) + @((Join-Path $root '0'), (Join-Path $root '0\Paths'))) {
-        if (-not (Test-Path -LiteralPath $key)) { [void](New-Item -Path $key); $arm.created_keys += $key }
-    }
-    $arm.rule_key = Join-Path $root ('0\Paths\{' + [Guid]::NewGuid().ToString() + '}')
-    [void](New-Item -Path $arm.rule_key)
-    foreach ($name in $script:T09SaferPolicy.Keys) {
-        Set-ItemProperty -LiteralPath $root -Name $name -Value $script:T09SaferPolicy[$name][0] -Type $script:T09SaferPolicy[$name][1]
-    }
-    Set-ItemProperty -LiteralPath $arm.rule_key -Name ItemData -Value $ImagePath -Type String
-    Set-ItemProperty -LiteralPath $arm.rule_key -Name SaferFlags -Value 0 -Type DWord
-    Set-ItemProperty -LiteralPath $arm.rule_key -Name Description -Value 't09 launch-failure injection' -Type String
-    $arm.armed_values = Get-T09KeyValues $root
-    $arm.armed_export_sha256 = Export-T09Key $root (Join-Path $EvidenceDirectory 'srp-armed.reg')
+    $parent = Split-Path -Path $imageKey -Parent
+    if (-not (Test-Path -LiteralPath $parent)) { throw "The Image File Execution Options root is absent: $parent" }
+    # No base-key Debugger: unmatched full paths (the stage copy's winsmux.exe) stay unaffected.
+    [void](New-Item -Path $imageKey); $arm.created_keys += $imageKey
+    Set-ItemProperty -LiteralPath $imageKey -Name 'UseFilter' -Value 1 -Type DWord
+    $arm.filter_key = Join-Path $imageKey ('{' + [Guid]::NewGuid().ToString() + '}')
+    [void](New-Item -Path $arm.filter_key); $arm.created_keys += $arm.filter_key
+    Set-ItemProperty -LiteralPath $arm.filter_key -Name 'FilterFullPath' -Value $fullPath -Type String
+    Set-ItemProperty -LiteralPath $arm.filter_key -Name 'Debugger' -Value $Debugger -Type String
+    $arm.armed_values = [ordered]@{ image = Get-T09KeyValues $imageKey; filter = Get-T09KeyValues $arm.filter_key }
+    $arm.armed_export_sha256 = Export-T09Key $imageKey (Join-Path $EvidenceDirectory 'ifeo-armed.reg')
     return $arm
 }
 
-function Disable-T09PathRule($Arm) {
-    $root = $Arm.root
-    if ($Arm.rule_key -and (Test-Path -LiteralPath $Arm.rule_key)) { Remove-Item -LiteralPath $Arm.rule_key -Recurse -Force }
-    if ($Arm.rule_key -and (Test-Path -LiteralPath $root)) {
-        foreach ($name in $script:T09SaferPolicy.Keys) {
-            if ($null -ne $Arm.prior_values -and $Arm.prior_values.Contains($name)) {
-                Set-ItemProperty -LiteralPath $root -Name $name -Value $Arm.prior_values[$name].value -Type $Arm.prior_values[$name].kind
-            } else {
-                Remove-ItemProperty -LiteralPath $root -Name $name
-            }
+function Disable-T09ImageExecutionFilter($Arm) {
+    if ($Arm.image_key_existed) {
+        # Nothing was created; the pre-existing key is proven untouched by re-export.
+        $afterSha = Export-T09Key $Arm.image_key (Join-Path $Arm.evidence_directory 'ifeo-after.reg')
+        return [ordered]@{
+            image_key_existed = $true; image_key_present_after = (Test-Path -LiteralPath $Arm.image_key)
+            before_export_sha256 = $Arm.before_export_sha256; after_export_sha256 = $afterSha
+            values_after = Get-T09KeyValues $Arm.image_key
+            restored = ($null -ne $afterSha -and $afterSha -ceq $Arm.before_export_sha256)
         }
     }
     $created = @($Arm.created_keys)
     [array]::Reverse($created)
-    foreach ($key in $created) { if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key } }
-    $afterSha = Export-T09Key $root (Join-Path $Arm.evidence_directory 'srp-after.reg')
-    $restored = if ($Arm.root_existed) { $null -ne $afterSha -and $afterSha -ceq $Arm.before_export_sha256 } else { -not (Test-Path -LiteralPath $root) }
+    foreach ($key in $created) { if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Recurse -Force } }
+    $present = (Test-Path -LiteralPath $Arm.image_key)
+    $afterSha = Export-T09Key $Arm.image_key (Join-Path $Arm.evidence_directory 'ifeo-after.reg')
     return [ordered]@{
-        root_existed = $Arm.root_existed; root_present_after = (Test-Path -LiteralPath $root)
+        image_key_existed = $false; image_key_present_after = $present
         before_export_sha256 = $Arm.before_export_sha256; after_export_sha256 = $afterSha
-        values_after = Get-T09KeyValues $root; restored = $restored
+        values_after = Get-T09KeyValues $Arm.image_key; restored = (-not $present)
     }
 }
 
