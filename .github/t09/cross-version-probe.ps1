@@ -260,7 +260,7 @@ function Get-InstallerWorkEntries($Snapshot) {
     $files = [Collections.Generic.List[string]]::new()
     foreach ($key in $rows) {
         $top = $key.Split('/')[0]
-        if ($top.StartsWith('.winsmux-install-', [StringComparison]::Ordinal) -or $top.StartsWith('.winsmux-support-', [StringComparison]::Ordinal)) {
+        if ($top.StartsWith('.winsmux-install-', [StringComparison]::Ordinal) -or $top.StartsWith('.winsmux-support-', [StringComparison]::Ordinal) -or $top.StartsWith('.winsmux-lifecycle-', [StringComparison]::Ordinal)) {
             if ($key.Contains('/')) { $directories[$top] = 1 + [int]$directories[$top] } else { $files.Add($key) }
         } elseif ($key -ceq 'winsmux.install.lock') { $files.Add($key) }
     }
@@ -362,15 +362,56 @@ function Disable-Injection {
     Save-Result
 }
 
-function Get-InstalledMembers($Snapshot) {
+function Get-InstalledMembers($Snapshot, [switch]$ExceptLifecycleEntry) {
     $members = [ordered]@{}
     $localRows = if ($null -ne $Snapshot.support.local_bin) { @($Snapshot.support.local_bin.Keys) } else { @() }
     foreach ($key in $localRows) {
-        $installerWork = $key.StartsWith('.winsmux-install-', [StringComparison]::Ordinal) -or $key.StartsWith('.winsmux-support-', [StringComparison]::Ordinal) -or $key -ceq 'winsmux.install.lock'
+        $installerWork = $key.StartsWith('.winsmux-install-', [StringComparison]::Ordinal) -or $key.StartsWith('.winsmux-support-', [StringComparison]::Ordinal) -or $key.StartsWith('.winsmux-lifecycle-', [StringComparison]::Ordinal) -or $key -ceq 'winsmux.install.lock'
         if (-not $installerWork) { $members['local_bin/' + $key] = $Snapshot.support.local_bin[$key] }
     }
-    $members['winsmux_dir'] = $Snapshot.support.winsmux_dir
+    $winsmuxDir = $Snapshot.support.winsmux_dir
+    if ($ExceptLifecycleEntry -and $null -ne $winsmuxDir) {
+        $kept = [ordered]@{}
+        foreach ($key in @($winsmuxDir.Keys)) { if ($key -cne 'bin/install.ps1') { $kept[$key] = $winsmuxDir[$key] } }
+        $winsmuxDir = $kept
+    }
+    $members['winsmux_dir'] = $winsmuxDir
     return $members
+}
+
+# The lifecycle bytes the candidate installer publishes as ~/.winsmux/bin/install.ps1, computed
+# here from the installer file with its own conversion function, as the product test does.
+function Get-CandidateLifecycleSha([string]$InstallerPath, [string]$Version) {
+    $tokens = $null; $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($InstallerPath, [ref]$tokens, [ref]$errors)
+    if ($errors.Count) { throw "Candidate installer does not parse: $InstallerPath" }
+    $definitions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'ConvertTo-WinsmuxLifecycleBytes' }, $true))
+    if ($definitions.Count -ne 1) { throw 'Candidate installer lifecycle conversion is missing or ambiguous.' }
+    . ([scriptblock]::Create($definitions[0].Extent.Text))
+    $bytes = ConvertTo-WinsmuxLifecycleBytes $ast.Extent.Text $Version
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$bytes)).ToLowerInvariant()
+}
+
+# A failure after published-lifecycle leaves the candidate lifecycle entry in place by design
+# (install.ps1 Publish-WinsmuxLifecycle) and archives the old entry once under local_bin.
+# Every other installed member must be unchanged.
+function Get-RejectedMemberChecks($Before, $After, [string[]]$Trail, [string]$CandidateLifecycleSha, $InstallerWorkAfter) {
+    $lifecyclePublished = $Trail -ccontains 'published-lifecycle'
+    $membersBefore = Get-InstalledMembers $Before -ExceptLifecycleEntry:$lifecyclePublished | ConvertTo-Json -Depth 8 -Compress
+    $membersAfter = Get-InstalledMembers $After -ExceptLifecycleEntry:$lifecyclePublished | ConvertTo-Json -Depth 8 -Compress
+    $checks = [Collections.Generic.List[object]]::new()
+    $checks.Add([ordered]@{ id = 'rejected-installed-members-unchanged'; passed = ($membersBefore -ceq $membersAfter); expected = 'installed members equal'
+        observed = [ordered]@{ equal = ($membersBefore -ceq $membersAfter); lifecycle_entry_excluded = $lifecyclePublished; installer_work_dirs_after = $InstallerWorkAfter } })
+    if ($lifecyclePublished) {
+        $entryAfter = if ($null -ne $After.support.winsmux_dir) { $After.support.winsmux_dir['bin/install.ps1'] } else { $null }
+        $entryBefore = if ($null -ne $Before.support.winsmux_dir) { $Before.support.winsmux_dir['bin/install.ps1'] } else { $null }
+        $checks.Add([ordered]@{ id = 'rejected-lifecycle-entry-is-candidate'; passed = ($null -ne $entryAfter -and $entryAfter -ceq $CandidateLifecycleSha); expected = $CandidateLifecycleSha; observed = $entryAfter })
+        $archived = @(if ($null -ne $After.support.local_bin) { @($After.support.local_bin.Keys) | Where-Object { $_.StartsWith('.winsmux-lifecycle-', [StringComparison]::Ordinal) } })
+        $priorRows = @($archived | ForEach-Object { [ordered]@{ name = $_; sha256 = $After.support.local_bin[$_] } })
+        $archivedOnce = $archived.Count -eq 1 -and $archived[0] -cmatch '^\.winsmux-lifecycle-[^/]+/prior-install\.ps1$' -and $null -ne $entryBefore -and $priorRows[0].sha256 -ceq $entryBefore
+        $checks.Add([ordered]@{ id = 'rejected-prior-lifecycle-entry-archived-once'; passed = $archivedOnce; expected = [ordered]@{ count = 1; sha256 = $entryBefore }; observed = $priorRows })
+    }
+    return $checks
 }
 
 $exitCode = 0
@@ -519,13 +560,20 @@ try {
         $supportBefore = $before.support | ConvertTo-Json -Depth 8 -Compress
         $supportAfter = $after.support | ConvertTo-Json -Depth 8 -Compress
         if ($failureCase) {
-            # A refused update may leave its own .winsmux-install-* and .winsmux-support-* work
-            # directories and winsmux.install.lock; they are recorded as installer work, and the
-            # score is on the installed members and the rest of the profile support.
-            $membersBefore = Get-InstalledMembers $before | ConvertTo-Json -Depth 8 -Compress
-            $membersAfter = Get-InstalledMembers $after | ConvertTo-Json -Depth 8 -Compress
+            # A refused update may leave its own .winsmux-install-*, .winsmux-support-* and
+            # .winsmux-lifecycle-* work directories and winsmux.install.lock; they are recorded as
+            # installer work, and the score is on the installed members and the rest of the profile support.
             $result.observations.installer_work_dirs = [ordered]@{ before_update = Get-InstallerWorkEntries $before; after_update = Get-InstallerWorkEntries $after }
-            Add-Check 'rejected-installed-members-unchanged' ($membersBefore -ceq $membersAfter) 'installed members equal' ([ordered]@{ equal = ($membersBefore -ceq $membersAfter); installer_work_dirs_after = $result.observations.installer_work_dirs.after_update })
+            $trail = @($result.injection.trail)
+            $lifecycleSha = $null
+            if ($trail -ccontains 'published-lifecycle') {
+                $lifecycleSource = if ($Route -ceq 'Npm') { Join-Path $packageRoot 'install.ps1' } else { $fixture.installer }
+                $lifecycleSha = if ($Route -ceq 'Npm') { Get-CandidateLifecycleSha $lifecycleSource $candidateVersion } else { $fixture.fixture_installer_sha256 }
+                $result.observations.candidate_lifecycle = [ordered]@{ source = $lifecycleSource; source_sha256 = Get-FileDigest $lifecycleSource; lifecycle_sha256 = $lifecycleSha }
+            }
+            foreach ($check in (Get-RejectedMemberChecks $before $after $trail $lifecycleSha $result.observations.installer_work_dirs.after_update)) {
+                Add-Check $check.id $check.passed $check.expected $check.observed
+            }
             foreach ($key in @('ps_profile_all_hosts', 'ps_profile_current_host', 'terminal_fragment')) {
                 Add-Check "rejected-$key-unchanged" ($before.support[$key] -ceq $after.support[$key]) $before.support[$key] $after.support[$key]
             }
