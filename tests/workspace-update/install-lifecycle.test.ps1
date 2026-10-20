@@ -513,15 +513,22 @@ foreach($slotName in @('user','process')) {
                 Assert-Condition ([IO.File]::Exists($lease.Marker)) 'External PATH uncertainty discarded marker.'
                 Set-Item Function:Invoke-WinsmuxInstallCheckpoint $checkpoint
                 $failed=$false;try{Repair-WinsmuxPendingInstallation $lease}catch{$failed=$true}
-                Assert-Condition $failed 'External PATH recovery reported success.'
+                # The next entry restores the persisted user slot fail-closed. The process
+                # slot belonged to the exited installer, so that entry completes instead.
+                if($slotName -ceq 'user') {
+                    Assert-Condition $failed 'External PATH recovery reported success.'
+                    Assert-Condition ([IO.File]::Exists($lease.Marker)) 'Recovery discarded unknown marker.'
+                } else {
+                    Assert-Condition (-not $failed) 'Expired process slot blocked recovery.'
+                    Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Expired process slot retained marker.'
+                }
                 Assert-Condition (Test-WinsmuxNullablePath (Get-WinsmuxRegistrationPath $slotName) 'external-X') 'Recovery overwrote external PATH.'
                 Assert-Condition (Test-FailurePreserved $root $before) 'Recovery changed restored prior files.'
-                Assert-Condition ([IO.File]::Exists($lease.Marker)) 'Recovery discarded unknown marker.'
             }finally{$lease.Stream.Dispose()}
         }
     }
 }
-foreach($slotName in @('user','process')) {
+foreach($slotName in @('user')) {
     foreach($phaseTail in @('write-intent','written','restore-intent')) {
         $crashPhase='registration-'+$slotName+'-'+$phaseTail
         Run-Case ('restart-uncertain-'+$crashPhase) {
@@ -542,6 +549,49 @@ foreach($slotName in @('user','process')) {
             Assert-Condition ([IO.File]::Exists((Join-Path $bin 'winsmux.install.pending.json'))) 'Unconfirmed crash removed marker.'
         }
     }
+}
+function Invoke-ChildCrash([string]$Root,[string]$Phase) {
+    $start=[Diagnostics.ProcessStartInfo]::new((Get-Command pwsh).Source);$start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.WorkingDirectory=$repo;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+    foreach($arg in @('-NoLogo','-NoProfile','-File',$PSCommandPath,'-ChildRoot',$Root,'-ChildPhase',$Phase)){$start.ArgumentList.Add($arg)}
+    $process=[Diagnostics.Process]::Start($start);$out=$process.StandardOutput.ReadToEndAsync();$err=$process.StandardError.ReadToEndAsync();$process.WaitForExit()
+    $record=@{exit=$process.ExitCode;stdout=$out.GetAwaiter().GetResult();stderr=$err.GetAwaiter().GetResult()};$process.Dispose()
+    [IO.File]::WriteAllText((Join-Path $Root 'child.json'),(ConvertTo-Json $record),$utf8)
+    return $record
+}
+# The process slot is the installer's own $env:Path. Once that process has exited
+# nothing remains to observe or restore, so a crash anywhere in its write never
+# blocks the next public entry. The persisted user slot above stays fail-closed.
+foreach($phaseTail in @('write-intent','written','restore-intent')) {
+    $crashPhase='registration-process-'+$phaseTail
+    Run-Case ('restart-expired-process-slot-'+$crashPhase) {
+        param($root)
+        $bin=New-Fixture $root;$before=Read-FailureInventory $root
+        $record=Invoke-ChildCrash $root $crashPhase
+        Assert-Condition ($record.exit -eq 73) 'Child did not reach intended PATH interruption.'
+        $processPath=$env:Path;$outcomes=[Collections.Generic.List[string]]::new();$marker=Join-Path $bin 'winsmux.install.pending.json'
+        foreach($attempt in 1..3) {
+            $lease=$null
+            try { $lease=Open-WinsmuxInstallLease $bin -RecoverPending;$outcomes.Add('attempt'+$attempt+':recovered') }
+            catch { $outcomes.Add('attempt'+$attempt+':'+$_.Exception.Message) }
+            finally { if($lease){$lease.Stream.Dispose()} }
+        }
+        Assert-Condition ($outcomes[0] -ceq 'attempt1:recovered' -and -not [IO.File]::Exists($marker)) ('Expired process slot blocked recovery; marker '+$(if([IO.File]::Exists($marker)){'retained'}else{'absent'})+'; '+($outcomes -join ' | '))
+        Assert-Condition (Test-FailurePreserved $root $before) 'Expired process slot recovery did not restore paired bytes.'
+        Assert-Condition ($env:Path -ceq $processPath) 'Expired process slot recovery wrote the current process PATH.'
+        Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Expired process slot recovery did not restore User PATH.'
+    }
+}
+Run-Case 'restart-foreign-shell-path-recovers' {
+    param($root)
+    $bin=New-Fixture $root;$before=Read-FailureInventory $root
+    $record=Invoke-ChildCrash $root 'published-exe'
+    Assert-Condition ($record.exit -eq 73) 'Child failed before interruption.'
+    $env:Path='foreign-shell;'+$env:Path;$processPath=$env:Path
+    $lease=Open-WinsmuxInstallLease $bin -RecoverPending
+    try { Assert-Condition (-not [IO.File]::Exists($lease.Marker)) 'Recovery from a shell with a different PATH retained the marker.' } finally { $lease.Stream.Dispose() }
+    Assert-Condition (Test-FailurePreserved $root $before) 'Foreign shell recovery did not restore original bytes.'
+    Assert-Condition ($env:Path -ceq $processPath) 'Foreign shell recovery wrote the current process PATH.'
+    Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Foreign shell recovery changed User PATH.'
 }
 Run-Case 'committed-external-user-path' {
     param($root)

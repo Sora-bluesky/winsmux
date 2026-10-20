@@ -1730,7 +1730,7 @@ function Restore-WinsmuxRegistrationSlot {
 }
 
 function Restore-WinsmuxInstalledGeneration {
-    param($Lease, $Journal, [string]$OperationRoot)
+    param($Lease, $Journal, [string]$OperationRoot, [switch]$Restart)
     foreach ($entry in @($Journal.members)[($Journal.members.Count - 1)..0]) {
         $target = Get-WinsmuxMemberPath $Lease $entry.name
         $backupPath = Join-Path $OperationRoot ('old-' + $entry.id)
@@ -1759,6 +1759,9 @@ function Restore-WinsmuxInstalledGeneration {
     $registrationUncertain = $false
     if ($Journal.registration.Count -gt 0) {
         foreach ($name in @('user','process')) {
+            # The process slot is the installer's own $env:Path. After a restart that
+            # process is gone, so nothing remains to restore or to be uncertain about.
+            if ($Restart -and $name -ceq 'process') { continue }
             try { Restore-WinsmuxRegistrationSlot $Lease $Journal $OperationRoot $name }
             catch { $registrationUncertain = $true }
         }
@@ -1891,7 +1894,7 @@ function Repair-WinsmuxPendingInstallation {
         if ($journal.registration.Count -and ($journal.registration.user.phase -cne 'confirmed' -or
             -not (Test-WinsmuxNullablePath (Get-InstallUserPath) $journal.registration.user.desired))) { throw 'Committed PATH changed; pending evidence retained.' }
         Clear-WinsmuxCommittedSupportBackups $Lease $journal $operationRoot
-    } else { Restore-WinsmuxInstalledGeneration $Lease $journal $operationRoot }
+    } else { Restore-WinsmuxInstalledGeneration $Lease $journal $operationRoot -Restart }
     Invoke-WinsmuxInstallCheckpoint 'before-marker-removal'
     [IO.File]::Delete($Lease.Marker)
 }
