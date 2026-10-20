@@ -78,8 +78,11 @@ jobs:
           - { case: CrossVersion, route: Npm }
           - { case: CrossVersion, route: Direct }
           - { case: Capacity, route: Direct }
+          - { case: Capacity, route: Npm }
           - { case: LaunchStage, route: Direct }
+          - { case: LaunchStage, route: Npm }
           - { case: LaunchPublished, route: Direct }
+          - { case: LaunchPublished, route: Npm }
     steps:
       - name: Check out the build tree data from the calling commit
         uses: actions/checkout@v6
@@ -390,6 +393,7 @@ jobs:
             -RepositoryRoot $env:GITHUB_WORKSPACE -SourceCommit $env:SOURCE_COMMIT `
             -CandidateDirectory (Join-Path $env:RUNNER_TEMP 't09-candidate') -ReferenceTarballSha256 $referenceSha `
             -OutputRoot (Join-Path $env:RUNNER_TEMP "t09-evidence-$env:CASE-$env:ROUTE") -OldVersion '0.36.38'
+          if ($LASTEXITCODE -eq 2) { throw 'Cross-version probe completed and at least one scored check failed; see result.json.' }
           if ($LASTEXITCODE -ne 0) { throw "Cross-version probe could not complete its evidence (exit $LASTEXITCODE)." }
 
       - name: Record the runner environment beside the probe evidence

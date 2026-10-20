@@ -54,38 +54,121 @@ function Enable-T09ExecuteDeny([string]$Directory) {
     return [pscustomobject]@{ kind = 'execute-deny-ace'; directory = $Directory; original_sddl = $original; armed_sddl = (Get-Acl -LiteralPath $Directory).Sddl }
 }
 
+function Get-T09ComparableSddl([string]$Sddl) {
+    $match = [regex]::Match($Sddl, '^(?<head>.*?D:)(?<flags>[A-Z]*)(?<aces>\(.*)$')
+    if (-not $match.Success) { return $Sddl }
+    return $match.Groups['head'].Value + ($match.Groups['flags'].Value -creplace 'AI|AR', '') + $match.Groups['aces'].Value
+}
+
 function Disable-T09ExecuteDeny($Arm) {
     # The propagating setter restores the auto-inherited flag and strips the deny from
     # children created while armed.
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetSecurityDescriptorSddlForm($Arm.original_sddl, [Security.AccessControl.AccessControlSections]::Access)
     [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($Arm.directory), $acl)
-    return ((Get-Acl -LiteralPath $Arm.directory).Sddl -ceq $Arm.original_sddl)
+    $restored = (Get-Acl -LiteralPath $Arm.directory).Sddl
+    # That setter also sets the DACL's AI flag, which a runner directory may not have had,
+    # so the ACEs and the protected flag are compared and AI/AR are not.
+    $equivalent = (Get-T09ComparableSddl $restored) -ceq (Get-T09ComparableSddl $Arm.original_sddl)
+    return [ordered]@{
+        original_sddl = $Arm.original_sddl; armed_sddl = $Arm.armed_sddl; restored_sddl = $restored
+        exact_equal = ($restored -ceq $Arm.original_sddl); equal_ignoring_auto_inherit_flags = $equivalent; restored = $equivalent
+    }
 }
 
 $script:T09SaferRoot = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers'
+$script:T09SaferPolicy = [ordered]@{
+    DefaultLevel = @(0x40000, 'DWord'); TransparentEnabled = @(1, 'DWord'); PolicyScope = @(0, 'DWord')
+    AuthenticodeEnabled = @(0, 'DWord'); ExecutableTypes = @([string[]]@('EXE'), 'MultiString')
+}
+
+function Export-T09Key([string]$Path, [string]$File) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $reg = Join-Path ([Environment]::SystemDirectory) 'reg.exe'
+    $text = (& $reg export ($Path -replace '^(HK[A-Z]+):\\', '$1\') $File /y 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw "reg export of $Path failed with ${LASTEXITCODE}: $text" }
+    return (Get-FileHash -LiteralPath $File -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Get-T09KeyValues([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $key = Get-Item -LiteralPath $Path
+    $rows = [ordered]@{}
+    foreach ($name in $key.GetValueNames()) {
+        $rows[$name] = [ordered]@{ kind = [string]$key.GetValueKind($name); value = $key.GetValue($name, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) }
+    }
+    return $rows
+}
+
+function Get-T09PathRules([string]$Root) {
+    $rules = [Collections.Generic.List[string]]::new()
+    foreach ($level in @(Get-ChildItem -LiteralPath $Root)) {
+        $paths = Join-Path $Root ($level.PSChildName + '\Paths')
+        if (Test-Path -LiteralPath $paths) { foreach ($rule in @(Get-ChildItem -LiteralPath $paths)) { $rules.Add($level.PSChildName + '\Paths\' + $rule.PSChildName) } }
+    }
+    return @($rules)
+}
 
 # LaunchPublished: a Software Restriction Policy path rule that disallows exactly one image
-# path. The installer's stage path differs, so only the published image is refused.
-function Enable-T09PathRule([string]$ImagePath) {
-    if (Test-Path -LiteralPath $script:T09SaferRoot) { throw 'A Software Restriction Policy already exists; the probe does not overwrite it.' }
-    $guid = '{' + [Guid]::NewGuid().ToString() + '}'
-    $rule = Join-Path $script:T09SaferRoot ('0\Paths\' + $guid)
-    [void](New-Item -Path $rule -Force)
-    Set-ItemProperty -LiteralPath $script:T09SaferRoot -Name DefaultLevel -Value 0x40000 -Type DWord
-    Set-ItemProperty -LiteralPath $script:T09SaferRoot -Name TransparentEnabled -Value 1 -Type DWord
-    Set-ItemProperty -LiteralPath $script:T09SaferRoot -Name PolicyScope -Value 0 -Type DWord
-    Set-ItemProperty -LiteralPath $script:T09SaferRoot -Name AuthenticodeEnabled -Value 0 -Type DWord
-    Set-ItemProperty -LiteralPath $script:T09SaferRoot -Name ExecutableTypes -Value @('EXE') -Type MultiString
-    Set-ItemProperty -LiteralPath $rule -Name ItemData -Value $ImagePath -Type String
-    Set-ItemProperty -LiteralPath $rule -Name SaferFlags -Value 0 -Type DWord
-    Set-ItemProperty -LiteralPath $rule -Name Description -Value 't09 launch-failure injection' -Type String
-    return [pscustomobject]@{ kind = 'srp-path-rule'; image_path = $ImagePath; rule_key = $rule }
+# path. The installer's stage path differs, so only the published image is refused. A policy
+# the runner image already carries is kept: its key is exported first, its values are put back
+# afterwards, and only a policy with its own path rules or a non-Unrestricted default is refused.
+function Enable-T09PathRule([string]$ImagePath, [string]$EvidenceDirectory) {
+    $root = $script:T09SaferRoot
+    $arm = [pscustomobject]@{
+        kind = 'srp-path-rule'; image_path = $ImagePath; root = $root; evidence_directory = $EvidenceDirectory
+        root_existed = (Test-Path -LiteralPath $root); before_export_sha256 = $null; prior_values = $null; prior_rules = @()
+        refused = $null; created_keys = @(); rule_key = $null; armed_values = $null; armed_export_sha256 = $null
+    }
+    if ($arm.root_existed) {
+        $arm.before_export_sha256 = Export-T09Key $root (Join-Path $EvidenceDirectory 'srp-before.reg')
+        $arm.prior_values = Get-T09KeyValues $root
+        $arm.prior_rules = @(Get-T09PathRules $root)
+        if ($arm.prior_rules.Count -gt 0) { $arm.refused = 'The existing policy already has path rules: ' + ($arm.prior_rules -join ', '); return $arm }
+        if ($arm.prior_values.Contains('DefaultLevel') -and [long]$arm.prior_values.DefaultLevel.value -ne 0x40000) {
+            $arm.refused = 'The existing policy DefaultLevel is ' + $arm.prior_values.DefaultLevel.value + ', not Unrestricted (0x40000).'; return $arm
+        }
+    }
+    $missing = [Collections.Generic.List[string]]::new()
+    for ($key = $root; -not (Test-Path -LiteralPath $key); $key = Split-Path -Path $key -Parent) { $missing.Insert(0, $key) }
+    foreach ($key in @($missing) + @((Join-Path $root '0'), (Join-Path $root '0\Paths'))) {
+        if (-not (Test-Path -LiteralPath $key)) { [void](New-Item -Path $key); $arm.created_keys += $key }
+    }
+    $arm.rule_key = Join-Path $root ('0\Paths\{' + [Guid]::NewGuid().ToString() + '}')
+    [void](New-Item -Path $arm.rule_key)
+    foreach ($name in $script:T09SaferPolicy.Keys) {
+        Set-ItemProperty -LiteralPath $root -Name $name -Value $script:T09SaferPolicy[$name][0] -Type $script:T09SaferPolicy[$name][1]
+    }
+    Set-ItemProperty -LiteralPath $arm.rule_key -Name ItemData -Value $ImagePath -Type String
+    Set-ItemProperty -LiteralPath $arm.rule_key -Name SaferFlags -Value 0 -Type DWord
+    Set-ItemProperty -LiteralPath $arm.rule_key -Name Description -Value 't09 launch-failure injection' -Type String
+    $arm.armed_values = Get-T09KeyValues $root
+    $arm.armed_export_sha256 = Export-T09Key $root (Join-Path $EvidenceDirectory 'srp-armed.reg')
+    return $arm
 }
 
 function Disable-T09PathRule($Arm) {
-    Remove-Item -LiteralPath $script:T09SaferRoot -Recurse -Force
-    return -not (Test-Path -LiteralPath $script:T09SaferRoot)
+    $root = $Arm.root
+    if ($Arm.rule_key -and (Test-Path -LiteralPath $Arm.rule_key)) { Remove-Item -LiteralPath $Arm.rule_key -Recurse -Force }
+    if ($Arm.rule_key -and (Test-Path -LiteralPath $root)) {
+        foreach ($name in $script:T09SaferPolicy.Keys) {
+            if ($null -ne $Arm.prior_values -and $Arm.prior_values.Contains($name)) {
+                Set-ItemProperty -LiteralPath $root -Name $name -Value $Arm.prior_values[$name].value -Type $Arm.prior_values[$name].kind
+            } else {
+                Remove-ItemProperty -LiteralPath $root -Name $name
+            }
+        }
+    }
+    $created = @($Arm.created_keys)
+    [array]::Reverse($created)
+    foreach ($key in $created) { if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key } }
+    $afterSha = Export-T09Key $root (Join-Path $Arm.evidence_directory 'srp-after.reg')
+    $restored = if ($Arm.root_existed) { $null -ne $afterSha -and $afterSha -ceq $Arm.before_export_sha256 } else { -not (Test-Path -LiteralPath $root) }
+    return [ordered]@{
+        root_existed = $Arm.root_existed; root_present_after = (Test-Path -LiteralPath $root)
+        before_export_sha256 = $Arm.before_export_sha256; after_export_sha256 = $afterSha
+        values_after = Get-T09KeyValues $root; restored = $restored
+    }
 }
 
 # Capacity: a fresh NTFS volume on an owned VHDX, so the profile's free space can be driven
