@@ -161,6 +161,31 @@ $env:npm_config_cache = $npmCache
 $env:npm_config_userconfig = Join-Path $scratch 'npmrc'
 $repositoryPreparationOpen = $true
 
+function Stop-DescendantPowerShell([int]$RootProcessId) {
+    $rows = @{}
+    foreach ($row in Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name) { $rows[[int]$row.ProcessId] = $row }
+    $descendants = [Collections.Generic.List[object]]::new()
+    $visited = [Collections.Generic.HashSet[int]]::new(); [void]$visited.Add($RootProcessId)
+    $queue = [Collections.Generic.Queue[int]]::new(); $queue.Enqueue($RootProcessId)
+    while ($queue.Count) {
+        $parent = $queue.Dequeue()
+        foreach ($row in $rows.Values) {
+            if ([int]$row.ParentProcessId -ne $parent -or -not $visited.Add([int]$row.ProcessId)) { continue }
+            $descendants.Add($row); $queue.Enqueue([int]$row.ProcessId)
+        }
+    }
+    $killed = [Collections.Generic.List[object]]::new()
+    for ($index = $descendants.Count - 1; $index -ge 0; $index--) {
+        $row = $descendants[$index]
+        if ($row.Name -ine 'pwsh.exe') { continue }
+        try {
+            $victim = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId)
+            try { $victim.Kill(); $victim.WaitForExit(); $killed.Add(@{ pid = [int]$row.ProcessId; name = $row.Name; depth = $index + 1 }) } finally { $victim.Dispose() }
+        } catch {}
+    }
+    return $killed.ToArray()
+}
+
 function Invoke-CapturedProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
@@ -256,10 +281,20 @@ function Invoke-CapturedProcess {
                         $interruption = @{ operation_id=$markerValue.operation_id; phase=$journal.registration.user.phase;
                             journal_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($journalBytes)).ToLowerInvariant();
                             controller_pid=$process.Id; controller_start_utc=$process.StartTime.ToUniversalTime().ToString('o'); committed_before=$false }
-                        $process.Kill($true);$process.WaitForExit()
+                        # The installer's own pwsh dies first so the kill lands at the same
+                        # place on the Direct route and under the npm cmd/node wrapper chain.
+                        $interruption.killed_descendants = @(Stop-DescendantPowerShell $process.Id)
+                        if (-not $process.HasExited) { $process.Kill($true) }
+                        $process.WaitForExit()
                         $interruption.operation_matches = $false
                         try { $afterMarker = [IO.File]::ReadAllText($markerPath) | ConvertFrom-Json -AsHashtable; $interruption.operation_matches = $afterMarker.operation_id -ceq $interruption.operation_id } catch {}
                         $interruption.committed_after = [IO.File]::Exists((Join-Path $operation 'committed'))
+                        $interruption.user_phase_after_kill = $null; $interruption.process_phase_after_kill = $null
+                        try {
+                            $afterJournal = [Text.UTF8Encoding]::new($false,$true).GetString([IO.File]::ReadAllBytes((Join-Path $operation 'recovery.json'))) | ConvertFrom-Json -AsHashtable
+                            $interruption.user_phase_after_kill = $afterJournal.registration.user.phase
+                            $interruption.process_phase_after_kill = $afterJournal.registration.process.phase
+                        } catch {}
                         break
                     }
                     $remaining = [Math]::Max(1,[int]($TimeoutSeconds * 1000 - $watch.Elapsed.TotalMilliseconds))
@@ -830,6 +865,11 @@ if ($isGitHubRunner -and $candidateFixture) {
     $crash=Invoke-Task880Action 'update' $pristineInstaller -Interrupt;Save-Task880Command 'external-interruption' $crash
     Assert-Task880 ($crash.ExitCode -ne 0 -and $null -ne $crash.Interruption -and $crash.Interruption.operation_matches -and -not $crash.Interruption.committed_after) 'Uncommitted own-operation interruption evidence missing; lifecycle not proven.'
     Assert-Task880 ([IO.File]::Exists($marker)) 'Interrupted actual update lost pending.'
+    Assert-Task880 ($crash.Interruption.user_phase_after_kill -ceq 'confirmed') 'Interruption left the confirmed User PATH window before the kill landed; lifecycle not proven.'
+    # Any phase of the killed installer's own process slot recovers on the next
+    # entry (install.ps1 Restore-WinsmuxInstalledGeneration -Restart), so the
+    # recovery expectation below is the same for staged, write-intent and confirmed.
+    Assert-Task880 ($crash.Interruption.process_phase_after_kill -cin @('staged','write-intent','confirmed')) 'Process PATH slot phase after the kill was not recorded.'
     # The next public update recovers first, then intentionally fails acquisition.
     # It cannot publish a fresh generation over the old bytes we must observe.
     $recovery=Invoke-Task880Action 'update' $faults.missing.installer;Save-Task880Command 'pending-recovery-missing-response' $recovery
