@@ -386,6 +386,8 @@ Describe 'CLI bakeoff evidence harness' {
     It 'keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22' {
         $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\cli-comparison-bakeoff.md') -Raw -Encoding UTF8
         $contractDoc | Should -Not -Match 'publishing v0\.36\.22|Before publishing v0\.36\.22|official benchmark evidence.*v0\.36\.22'
+        $contractDoc | Should -Match 'Official scoreable evidence must come from visible desktop worker panes'
+        $contractDoc | Should -Match 'App-external batch results remain'
     }
 
     It 'treats low Codex usage remaining notices as non-blocking readiness warnings' {
@@ -747,6 +749,8 @@ Describe 'CLI bakeoff evidence harness' {
         $operatorModel = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\operator-model.md') -Raw -Encoding UTF8
         $readmeBeforeCommands = ($readme -split '(?m)^## CLI and MCP')[0]
         $readmeJaBeforeCommands = ($readmeJa -split '(?m)^## CLI・MCPで使う')[0]
+        $quickstartDesktopSteps = ($quickstart -split '(?m)^## If you want the CLI path')[0]
+        $quickstartJaDesktopSteps = ($quickstartJa -split '(?m)^## CLI で使いたい場合')[0]
         $publicInstallDocs = @(
             $readme,
             $readmeJa,
@@ -776,6 +780,8 @@ Describe 'CLI bakeoff evidence harness' {
         $publicInstallDocs | Should -Not -Match '(?i)target[\\/](release|debug)([\\/]|\\b)'
         $publicInstallDocs | Should -Not -Match '(?i)\\.local[\\/ ]*bin'
         $installation | Should -Match 'Windows installer for your architecture'
+        $installation | Should -Not -Match 'releases/latest'
+        $installationJa | Should -Not -Match 'releases/latest'
         $installation | Should -Match 'Check the actual release assets'
         $installation | Should -Match 'three executables from the same distribution'
         $installation | Should -Match 'Save work and normally close the workspace before replacing the app'
@@ -790,6 +796,7 @@ Describe 'CLI bakeoff evidence harness' {
         $installationJa | Should -Match 'プロジェクトや認証保存先を削除しない'
         $readme | Should -Match 'Start with the desktop app'
         $readme | Should -Match 'winsmux/releases'
+        $readme | Should -Not -Match 'releases/latest'
         $readme | Should -Match 'プロジェクトを開く'
         $readme | Should -Match 'winsmux workspace'
         $readme | Should -Match 'External connections require explicit project and scope permission'
@@ -798,6 +805,7 @@ Describe 'CLI bakeoff evidence harness' {
         $readmeBeforeCommands | Should -Not -Match 'winsmux launch'
         $readmeJa | Should -Match 'デスクトップアプリから始める'
         $readmeJa | Should -Match 'winsmux/releases'
+        $readmeJa | Should -Not -Match 'releases/latest'
         $readmeJa | Should -Match 'プロジェクトを開く'
         $readmeJa | Should -Match 'winsmux workspace'
         $readmeJa | Should -Match '(?m)^## CLI・MCPで使う'
@@ -805,9 +813,16 @@ Describe 'CLI bakeoff evidence harness' {
         $readmeJaBeforeCommands | Should -Not -Match 'winsmux launch'
         $quickstart | Should -Match '# Quickstart: Desktop app'
         $quickstart | Should -Match 'You do not need to run CLI initialization commands by hand for the desktop path'
+        $quickstart | Should -Match '(?m)^## If you want the CLI path'
+        $quickstart | Should -Not -Match 'releases/latest'
+        $quickstartDesktopSteps | Should -Not -Match 'npm install -g winsmux|winsmux init|winsmux launch|Create project settings'
         $quickstartJa | Should -Match '# クイックスタート: デスクトップアプリ'
         $quickstartJa | Should -Match 'CLI 用の初期化コマンドを手で実行する必要はありません'
+        $quickstartJa | Should -Match '(?m)^## CLI で使いたい場合'
+        $quickstartJa | Should -Not -Match 'releases/latest'
+        $quickstartJaDesktopSteps | Should -Not -Match 'npm install -g winsmux|winsmux init|winsmux launch|プロジェクト設定を作る'
         $publicInstallDocs | Should -Not -Match 'winsmux_0\.\d+\.\d+_x64-setup\.exe'
+        $packageReadme | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
         $packageReadme | Should -Match 'It does not install or open the desktop app'
         $packageReadme | Should -Match 'CLI package path'
         $operatorModel | Should -Match 'https://github\.com/Sora-bluesky/winsmux/releases/latest'
