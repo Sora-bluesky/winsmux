@@ -36,11 +36,20 @@ const npmHead='a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3';
 // Retired b048b00b/c36c0265 and c43aed07/9fba0d77 coordinates: the module must refuse the superseded producers.
 const retiredNpmHead='b048b00b9291e346c247f2799d96283e21cb471e', retiredNpmTree='c36c02659c7de29251af25d1ae58fdfd45a6bd26';
 const retiredBase='c43aed076c076726f616e8a6bf489c8709246f17', retiredTree='9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7', retiredAssemblyRun='local-assembly-c827d952-2d96-4128-adb3-83ce48fbc67b';
-// The two S5 rows: a1ce1975 before bytes are real pins, after digests are synthetic.
+// The S rows: a1ce1975 before bytes are real pins (null for paths absent there), after digests are synthetic.
 const s5Changes = Object.freeze([
   { path: 'scripts/integrated-publication-origins.mjs', before_sha256: '4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba', after_sha256: 'd'.repeat(64) },
   { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: '4939caa74ca878a68183f1d410c2adfb423fc089588b27fd33b33cb0c7102a4b', after_sha256: 'e'.repeat(64) },
+  { path: '.githooks/pre-commit-whitelist.ps1', before_sha256: '6e255e6b06c7459c9a8ebd41ee4ddcb79f582c303650a2f31528251d677a03ea', after_sha256: 'f'.repeat(64) },
+  { path: '.gitignore', before_sha256: 'b67997120ecc01d7cbca130dc209249f4f4323ae9f832140abb4ed8360f58c48', after_sha256: 'f'.repeat(64) },
+  { path: 'docs/provider-and-model-support.ja.md', before_sha256: '38af1919139e82b1515a350f286f50a8b1d4f8546c329df1a961c8a820274235', after_sha256: 'f'.repeat(64) },
+  { path: 'docs/provider-and-model-support.md', before_sha256: '967281c6fc775af3ab1e3ccd0db5321071cb5e84d1cf03740d5e67ef29f982f2', after_sha256: 'f'.repeat(64) },
+  { path: 'tests/workspace-gate-map/check-map.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },
+  { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: null, after_sha256: 'c'.repeat(64) },
+  { path: 'tests/workspace-gate-map/preserved-contracts.test.ps1', before_sha256: null, after_sha256: 'c'.repeat(64) },
+  { path: 'tests/workspace-gate-map/run.ps1', before_sha256: null, after_sha256: 'c'.repeat(64) },
 ]);
+const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
 const rows=input.sources.map(row=>({path:row.path,source_file:row.source_file,bytes:fs.statSync(row.source_file).size,sha256:row.observed_sha256}));
 const repositoryRoot=path.resolve(path.dirname(npmTrialFile),'../../..');
@@ -130,11 +139,20 @@ const reject = (action, pattern) => check(() => assert.throws(action, pattern));
 const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
-// Final-source applicability is exactly the two S5 rows with their a1ce1975 before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,27); assert.equal(new Set(publicationCutoverPaths).size,27); });
+// Final-source applicability is exactly the S rows with their a1ce1975 before bytes, independent of producer coordinates.
+check(() => { assert.equal(publicationCutoverPaths.length,33); assert.equal(new Set(publicationCutoverPaths).size,33); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
-reject(() => { const value=projection(); value.source.changes.push({path:'.gitignore',before_sha256:null,after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);
+for (const change of [
+  value => { rowOf(value,'tests/workspace-gate-map/run.ps1').before_sha256='0'.repeat(64); },
+  value => { rowOf(value,'tests/workspace-gate-map/gate-map.json').before_sha256=rowOf(value,'.gitignore').before_sha256; },
+  value => { rowOf(value,'.gitignore').before_sha256=null; },
+  value => { rowOf(value,'docs/provider-and-model-support.md').before_sha256=rowOf(value,'docs/provider-and-model-support.ja.md').before_sha256; },
+  value => { value.source.changes=value.source.changes.filter(row=>row.path!=='tests/workspace-gate-map/check-map.mjs'); },
+  value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },
+  value => { value.source.changes.push({path:'tests/workspace-gate-map/extra.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },
+  value => { value.source.changes.push({...rowOf(value,'tests/workspace-gate-map/run.ps1')}); },
+]) { const value=projection(); change(value); reject(()=>validateOriginProjection(value), /applicability/); }
 reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);
 for (const change of [
   value => { value.source.changes=[]; },

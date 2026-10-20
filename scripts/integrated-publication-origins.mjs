@@ -37,6 +37,9 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/DesktopInstallReceipt.Tests.ps1',
   'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',
   'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',
+  'docs/provider-and-model-support.md', 'docs/provider-and-model-support.ja.md',
+  'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',
+  'tests/workspace-gate-map/preserved-contracts.test.ps1', 'tests/workspace-gate-map/run.ps1',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -123,12 +126,22 @@ const desktopAssetPaths = Object.freeze([
   "desktop/winsmux_0.38.0_x64-setup.inventory.json",
   "desktop/winsmux_0.38.0_x64_en-US.msi"
 ]);
-// The final source S5 differs from fixedBase only in these two files. Their after bytes contain this module,
+// The final source S differs from fixedBase only in these paths. Their after bytes include this module,
 // so only the a1ce1975 before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
+  '.githooks/pre-commit-whitelist.ps1': '6e255e6b06c7459c9a8ebd41ee4ddcb79f582c303650a2f31528251d677a03ea',
+  '.gitignore': 'b67997120ecc01d7cbca130dc209249f4f4323ae9f832140abb4ed8360f58c48',
+  'docs/provider-and-model-support.ja.md': '38af1919139e82b1515a350f286f50a8b1d4f8546c329df1a961c8a820274235',
+  'docs/provider-and-model-support.md': '967281c6fc775af3ab1e3ccd0db5321071cb5e84d1cf03740d5e67ef29f982f2',
   'scripts/integrated-publication-origins.mjs': '4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': '4939caa74ca878a68183f1d410c2adfb423fc089588b27fd33b33cb0c7102a4b',
 });
+// Paths absent at fixedBase; their rows carry before_sha256 null.
+const expectedSourceAdditions = Object.freeze([
+  'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',
+  'tests/workspace-gate-map/preserved-contracts.test.ps1', 'tests/workspace-gate-map/run.ps1',
+]);
+const expectedSourcePaths = Object.freeze([...Object.keys(expectedSourceChanges), ...expectedSourceAdditions].sort());
 // Pure projection is exported for finite positive/negative tests. It never
 // issues an origin capability and never makes an original producer current.
 export function validateOriginProjection(value) {
@@ -137,9 +150,12 @@ export function validateOriginProjection(value) {
   need(exact(source, ['kind', 'base_commit', 'base_tree', 'source_commit', 'source_tree', 'changes', 'originals'])
     && source.kind === 'parent-observed-final-source' && source.base_commit === fixedBase && source.base_tree === fixedTree
     && commit(source.source_commit) && commit(source.source_tree) && Array.isArray(source.changes)
-    && JSON.stringify(source.changes.map(row => row.path).sort()) === JSON.stringify(Object.keys(expectedSourceChanges).sort())
+    && JSON.stringify(source.changes.map(row => row.path).sort()) === JSON.stringify(expectedSourcePaths)
     && source.changes.every(row => exact(row, ['path', 'before_sha256', 'after_sha256'])
-      && publicationCutoverPaths.includes(row.path) && row.before_sha256 === expectedSourceChanges[row.path]
+      && publicationCutoverPaths.includes(row.path)
+      && (expectedSourceAdditions.includes(row.path)
+        ? row.before_sha256 === null
+        : Object.hasOwn(expectedSourceChanges, row.path) && row.before_sha256 === expectedSourceChanges[row.path])
       && digest(row.after_sha256) && row.before_sha256 !== row.after_sha256), 'Final source applicability differs.');
   for (const [surface, expected] of Object.entries(producerCoordinates)) {
     const row = value[surface];
