@@ -161,51 +161,23 @@ $env:npm_config_cache = $npmCache
 $env:npm_config_userconfig = Join-Path $scratch 'npmrc'
 $repositoryPreparationOpen = $true
 
-function Select-DescendantProcessRows([int]$RootProcessId, [object[]]$Rows) {
-    # A process id outlives its process. A row is a child only while it was created
-    # no earlier than the parent row it hangs from, so a reused parent id cannot
-    # pull in a process that predates the real parent.
-    $root = @($Rows | Where-Object { [int]$_.ProcessId -eq $RootProcessId })
-    if ($root.Count -ne 1 -or $null -eq $root[0].CreationDate) { throw "Root process $RootProcessId has no dated row in the process table." }
-    $descendants = [Collections.Generic.List[object]]::new()
-    $visited = [Collections.Generic.HashSet[int]]::new(); [void]$visited.Add($RootProcessId)
-    $queue = [Collections.Generic.Queue[object]]::new(); $queue.Enqueue($root[0])
-    while ($queue.Count) {
-        $parent = $queue.Dequeue()
-        foreach ($row in $Rows) {
-            if ([int]$row.ParentProcessId -ne [int]$parent.ProcessId -or $null -eq $row.CreationDate -or $row.CreationDate -lt $parent.CreationDate) { continue }
-            if (-not $visited.Add([int]$row.ProcessId)) { continue }
-            $descendants.Add($row); $queue.Enqueue($row)
-        }
-    }
-    return $descendants.ToArray()
-}
-
-function Stop-DescendantPowerShell([int]$RootProcessId) {
-    $rows = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, Name, CreationDate, CommandLine)
-    $descendants = @(Select-DescendantProcessRows $RootProcessId $rows)
-    $targets = [Collections.Generic.List[object]]::new()
+function Stop-JournalOwnerProcess($ProcessSlot) {
+    # The journal names the installer pwsh by id and start FILETIME, both written by
+    # the installer from its own Process object. The handle is opened before the
+    # comparison so the id cannot be reused between the check and the kill, and the
+    # start must match exactly: both sides are StartTime.ToFileTimeUtc() of the same
+    # kernel creation time, so no tolerance is needed and none is allowed.
+    $ownerId = [int]$ProcessSlot.owner_pid; $ownerStart = [long]$ProcessSlot.owner_start
+    try { $victim = [Diagnostics.Process]::GetProcessById($ownerId); [void]$victim.SafeHandle }
+    catch { throw ('Installer process ' + $ownerId + ' named by the journal could not be opened: ' + $_.Exception.Message) }
     try {
-        # Every handle is opened before the first kill. A held handle keeps the id from
-        # being reused, and the start time binds that handle to the enumerated row, so
-        # the kill below lands on the process the table described and nothing else.
-        for ($index = $descendants.Count - 1; $index -ge 0; $index--) {
-            $row = $descendants[$index]
-            if ($row.Name -ine 'pwsh.exe') { continue }
-            try { $victim = [Diagnostics.Process]::GetProcessById([int]$row.ProcessId); [void]$victim.SafeHandle }
-            catch { continue }
-            if ([Math]::Abs(($victim.StartTime - $row.CreationDate).TotalSeconds) -ge 1) { $victim.Dispose(); continue }
-            $targets.Add(@{ row = $row; process = $victim })
-        }
-        $killed = [Collections.Generic.List[object]]::new()
-        foreach ($target in $targets) {
-            $victim = $target.process
-            try { $victim.Kill(); if (-not $victim.WaitForExit(30000)) { throw 'still running after 30s' } }
-            catch { throw ('Descendant pwsh ' + $target.row.ProcessId + ' could not be stopped: ' + $_.Exception.Message) }
-            $killed.Add(@{ pid = [int]$target.row.ProcessId; name = $target.row.Name; command_line = [string]$target.row.CommandLine; exit_code = $victim.ExitCode })
-        }
-        return $killed.ToArray()
-    } finally { foreach ($target in $targets) { $target.process.Dispose() } }
+        $name = $victim.ProcessName
+        $liveStart = [long]$victim.StartTime.ToFileTimeUtc()
+        if ($liveStart -ne $ownerStart) { throw ('Process ' + $ownerId + ' started at FILETIME ' + $liveStart + ' but the journal owner started at ' + $ownerStart + '; refusing to kill a process the journal did not name.') }
+        $victim.Kill()
+        if (-not $victim.WaitForExit(30000)) { throw ('Installer process ' + $ownerId + ' still running 30s after Kill.') }
+        return @{ pid = $ownerId; start_filetime_utc = $liveStart; name = $name; exit_code = $victim.ExitCode }
+    } finally { $victim.Dispose() }
 }
 
 function Invoke-CapturedProcess {
@@ -302,10 +274,12 @@ function Invoke-CapturedProcess {
                         -not [IO.File]::Exists((Join-Path $operation 'committed'))) {
                         $interruption = @{ operation_id=$markerValue.operation_id; phase=$journal.registration.user.phase;
                             journal_sha256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($journalBytes)).ToLowerInvariant();
-                            controller_pid=$process.Id; controller_start_utc=$process.StartTime.ToUniversalTime().ToString('o'); committed_before=$false }
-                        # The installer's own pwsh dies first so the kill lands at the same
-                        # place on the Direct route and under the npm cmd/node wrapper chain.
-                        $interruption.killed_descendants = @(Stop-DescendantPowerShell $process.Id)
+                            controller_pid=$process.Id; controller_start_utc=$process.StartTime.ToUniversalTime().ToString('o'); committed_before=$false;
+                            journal_owner_pid=[int]$journal.registration.process.owner_pid; journal_owner_start=[long]$journal.registration.process.owner_start }
+                        # The installer's own pwsh, the process the journal names, dies first so
+                        # the kill lands at the same place on the Direct route and under the npm
+                        # cmd/node wrapper chain.
+                        $interruption.killed_installer = Stop-JournalOwnerProcess $journal.registration.process
                         if (-not $process.HasExited) { $process.Kill($true) }
                         $process.WaitForExit()
                         $interruption.operation_matches = $false
@@ -888,14 +862,18 @@ if ($isGitHubRunner -and $candidateFixture) {
     Assert-Task880 ($crash.ExitCode -ne 0 -and $null -ne $crash.Interruption -and $crash.Interruption.operation_matches -and -not $crash.Interruption.committed_after) 'Uncommitted own-operation interruption evidence missing; lifecycle not proven.'
     Assert-Task880 ([IO.File]::Exists($marker)) 'Interrupted actual update lost pending.'
     Assert-Task880 ($crash.Interruption.user_phase_after_kill -ceq 'confirmed') 'Interruption left the confirmed User PATH window before the kill landed; lifecycle not proven.'
-    # The killed installer no longer exists, so its own process PATH slot is skipped
+    # The killed installer no longer exists, so its own process PATH slot is 'gone'
     # on the next entry whatever phase it reached (install.ps1
-    # Test-WinsmuxRegistrationOwnerLive). The recovery expectation below is the same
+    # Get-WinsmuxRegistrationOwnerState). The recovery expectation below is the same
     # for staged, write-intent and confirmed.
     Assert-Task880 ($crash.Interruption.process_phase_after_kill -cin @('staged','write-intent','confirmed')) 'Process PATH slot phase after the kill was not recorded.'
-    # Under the npm shim the installer runs in a pwsh below cmd and node. The kill
-    # must have reached that pwsh, or the installer outlived its wrapper.
-    if ($Route -ceq 'Npm') { Assert-Task880 (@($crash.Interruption.killed_descendants).Count -ge 1) 'Npm route interruption stopped no descendant pwsh; the installer pwsh was not killed first.' }
+    # The kill went through a handle to the process the journal named, with an exact
+    # start match. On the Direct route that process is the controller's child itself;
+    # under the npm shim it is the pwsh below cmd and node.
+    $killed = $crash.Interruption.killed_installer
+    Assert-Task880 ($null -ne $killed -and [int]$killed.pid -eq $crash.Interruption.journal_owner_pid -and [long]$killed.start_filetime_utc -eq $crash.Interruption.journal_owner_start -and $killed.name -ceq 'pwsh') 'Interruption did not kill the installer process named by the journal.'
+    if ($Route -ceq 'Npm') { Assert-Task880 ($crash.Interruption.journal_owner_pid -ne $crash.Interruption.controller_pid) 'Npm route journal owner was the wrapper, not the installer pwsh below it.' }
+    else { Assert-Task880 ($crash.Interruption.journal_owner_pid -eq $crash.Interruption.controller_pid) 'Direct route journal owner was not the launched installer pwsh.' }
     # The next public update recovers first, then intentionally fails acquisition.
     # It cannot publish a fresh generation over the old bytes we must observe.
     $recovery=Invoke-Task880Action 'update' $faults.missing.installer;Save-Task880Command 'pending-recovery-missing-response' $recovery
