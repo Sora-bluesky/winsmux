@@ -1680,25 +1680,25 @@ function Get-WinsmuxProcessStartStamp {
     return [long]$Process.StartTime.ToFileTimeUtc()
 }
 
-function Test-WinsmuxRegistrationOwnerLive {
+function Get-WinsmuxRegistrationOwnerState {
     param($Slot)
     # The process slot is $env:Path of the installer that staged it. Only that process
-    # can observe or restore it, so the slot is skipped once no process with the
-    # recorded id and start time exists. A journal written before the owner was
-    # recorded cannot be matched to any process; it is treated as gone so the next
-    # entry completes, and the warning names the shell that still carries the change.
-    if (-not $Slot.Contains('owner_pid')) {
-        Write-Warning 'Pending PATH owner is unrecorded; restart the shell that ran the interrupted installer to drop its PATH change.'
-        return $false
-    }
+    # can observe or restore it. 'gone' needs positive evidence that no process with
+    # the recorded id and start exists: the not-running ArgumentException from
+    # GetProcessById, or a live process with that id but another start (id reused).
+    # Any other failure, such as access denied on the start time, is 'indeterminate'.
     $ownerId = [int]$Slot.owner_pid
-    $current = [Diagnostics.Process]::GetCurrentProcess()
     $ownerStart = [long]$Slot.owner_start
-    if ($current.Id -eq $ownerId -and (Get-WinsmuxProcessStartStamp $current) -eq $ownerStart) { return $true }
-    try { $owner = [Diagnostics.Process]::GetProcessById($ownerId) } catch { return $false }
-    try { return ((Get-WinsmuxProcessStartStamp $owner) -eq $ownerStart) }
-    catch { return $false }
+    $current = [Diagnostics.Process]::GetCurrentProcess()
+    if ($current.Id -eq $ownerId -and (Get-WinsmuxProcessStartStamp $current) -eq $ownerStart) { return 'current' }
+    try { $owner = [Diagnostics.Process]::GetProcessById($ownerId) }
+    catch [ArgumentException] { return 'gone' }
+    catch { return 'indeterminate' }
+    try { $liveStart = Get-WinsmuxProcessStartStamp $owner }
+    catch { return 'indeterminate' }
     finally { $owner.Dispose() }
+    if ($liveStart -eq $ownerStart) { return 'live-elsewhere' }
+    return 'gone'
 }
 
 function Set-WinsmuxRegistrationPath {
@@ -1788,10 +1788,18 @@ function Restore-WinsmuxInstalledGeneration {
         }
         Assert-WinsmuxInstallSnapshot $target $prior
     }
-    $registrationUncertain = $false
+    $registrationUncertain = $false; $ownerHold = ''
     if ($Journal.registration.Count -gt 0) {
         foreach ($name in @('user','process')) {
-            if ($name -ceq 'process' -and -not (Test-WinsmuxRegistrationOwnerLive $Journal.registration.process)) { continue }
+            if ($name -ceq 'process') {
+                # Only the owner can restore its own $env:Path. Another live owner, or
+                # one this process cannot inspect, keeps the slot and the marker.
+                $ownerId = $Journal.registration.process.owner_pid
+                $ownerState = Get-WinsmuxRegistrationOwnerState $Journal.registration.process
+                if ($ownerState -ceq 'live-elsewhere') { $ownerHold = "The pending PATH change belongs to the still-running shell with process id $ownerId; close that shell or run this command from it, then retry. Pending evidence retained." }
+                elseif ($ownerState -ceq 'indeterminate') { $ownerHold = "The shell that owns the pending PATH change (process id $ownerId) could not be inspected; close that shell or run this command from it, then retry. Pending evidence retained." }
+                if ($ownerState -cne 'current') { continue }
+            }
             try { Restore-WinsmuxRegistrationSlot $Lease $Journal $OperationRoot $name }
             catch { $registrationUncertain = $true }
         }
@@ -1802,6 +1810,7 @@ function Restore-WinsmuxInstalledGeneration {
     }
     Invoke-WinsmuxInstallCheckpoint 'restoration-readback-complete'
     if ($registrationUncertain) { throw 'PATH restoration is uncertain; observed external values and pending evidence retained.' }
+    if ($ownerHold) { throw $ownerHold }
 }
 
 function ConvertTo-WinsmuxRecoverySnapshot {
@@ -1852,13 +1861,10 @@ function Read-WinsmuxRecoveryJournal {
         foreach ($name in @('user','process')) {
             $slot = $journal.registration[$name]
             $fields = @{ prior='nullable-text'; desired='nullable-text'; phase='string' }
-            # The owner fields were added after the first journals of this schema were
-            # written; a process slot without them is still a valid v2 journal.
-            $owned = $name -ceq 'process' -and $slot -is [Collections.IDictionary] -and $slot.Contains('owner_pid')
-            if ($owned) { $fields.owner_pid = 'integer'; $fields.owner_start = 'integer' }
+            if ($name -ceq 'process') { $fields.owner_pid = 'integer'; $fields.owner_start = 'integer' }
             Assert-WinsmuxLicenseObjectKeys $slot $fields
             if ($slot.phase -cnotin @('staged','write-intent','confirmed','restore-intent','restored')) { throw 'Invalid pending PATH phase.' }
-            if ($owned -and ($slot.owner_pid -lt 1 -or $slot.owner_pid -gt [int]::MaxValue -or $slot.owner_start -lt 1)) { throw 'Invalid pending PATH owner.' }
+            if ($name -ceq 'process' -and ($slot.owner_pid -lt 1 -or $slot.owner_pid -gt [int]::MaxValue -or $slot.owner_start -lt 1)) { throw 'Invalid pending PATH owner.' }
         }
         $expected = $journal.registration.user.prior
         if (-not @($expected -split ';' | Where-Object { $_.TrimEnd('\') -ieq $Lease.LocalBin.TrimEnd('\') })) {

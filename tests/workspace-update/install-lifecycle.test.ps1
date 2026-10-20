@@ -149,6 +149,7 @@ $writer=(Get-Item Function:Write-WinsmuxInstallFile).ScriptBlock
 $pathSetter=(Get-Item Function:Set-InstallUserPath).ScriptBlock
 $volumeResolver=(Get-Item Function:Get-WinsmuxInstallVolume).ScriptBlock
 $pathInspector=(Get-Item Function:Assert-WinsmuxInstallPath).ScriptBlock
+$startStamp=(Get-Item Function:Get-WinsmuxProcessStartStamp).ScriptBlock
 $originalEnvPath=$env:Path;$originalLocal=$env:LOCALAPPDATA
 function Run-Case([string]$Name,[scriptblock]$Body) {
     if($SelectedCase -and $Name -cnotin $SelectedCase.Split(',')){return}
@@ -156,7 +157,7 @@ function Run-Case([string]$Name,[scriptblock]$Body) {
     $script:GenerationFailure=''
     try{& $Body $root;$results.Add(@{name=$Name;passed=$true})}
     catch{$results.Add(@{name=$Name;passed=$false;error=$_.Exception.Message;generation_error=$script:GenerationFailure;stack=$_.ScriptStackTrace})}
-    finally{Set-Item Function:Invoke-WinsmuxInstallCheckpoint $checkpoint;Set-Item Function:Write-WinsmuxInstallFile $writer;Set-Item Function:Set-InstallUserPath $pathSetter;Set-Item Function:Get-WinsmuxInstallVolume $volumeResolver;Set-Item Function:Assert-WinsmuxInstallPath $pathInspector;$env:Path=$originalEnvPath;$env:LOCALAPPDATA=$originalLocal;$script:StartupFailure=$false}
+    finally{Set-Item Function:Invoke-WinsmuxInstallCheckpoint $checkpoint;Set-Item Function:Write-WinsmuxInstallFile $writer;Set-Item Function:Set-InstallUserPath $pathSetter;Set-Item Function:Get-WinsmuxInstallVolume $volumeResolver;Set-Item Function:Assert-WinsmuxInstallPath $pathInspector;Set-Item Function:Get-WinsmuxProcessStartStamp $startStamp;$env:Path=$originalEnvPath;$env:LOCALAPPDATA=$originalLocal;$script:StartupFailure=$false}
 }
 # Frozen class decision table: staging failures mutate no protected member;
 # every pre-commit publication failure restores all paired/support/registration;
@@ -582,62 +583,128 @@ foreach($phaseTail in @('write-intent','written','restore-intent')) {
         Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Expired process slot recovery did not restore User PATH.'
     }
 }
-# A process id is reused after its owner exits. The journal pins the owner by id
-# and start time, so a live process that merely inherited the id counts as dead.
-Run-Case 'restart-reused-pid-process-slot-recovers' {
-    param($root)
-    $bin=New-Fixture $root;$before=Read-FailureInventory $root
-    $record=Invoke-ChildCrash $root 'registration-process-written'
-    Assert-Condition ($record.exit -eq 73) 'Child did not reach intended PATH interruption.'
-    $marker=Join-Path $bin 'winsmux.install.pending.json';$processPath=$env:Path
-    Edit-PendingProcessSlot $bin {param($slot) Assert-Condition ($slot.owner_pid -ne $PID -and $slot.phase -ceq 'write-intent') 'Child journal did not record its own process slot owner.';$slot.owner_pid=$PID}
-    $lease=Open-WinsmuxInstallLease $bin -RecoverPending
-    try { Assert-Condition (-not [IO.File]::Exists($marker)) 'Reused process id was treated as the live installer; marker retained.' } finally { $lease.Stream.Dispose() }
-    Assert-Condition (Test-FailurePreserved $root $before) 'Reused process id recovery did not restore paired bytes.'
-    Assert-Condition ($env:Path -ceq $processPath) 'Reused process id recovery wrote the current process PATH.'
-    Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Reused process id recovery did not restore User PATH.'
+# The process slot owner is classified from the journal's owner_pid/owner_start:
+# current, live-elsewhere, gone, indeterminate (install.ps1
+# Get-WinsmuxRegistrationOwnerState). The crash phases below leave the slot at
+# write-intent ('registration-process-written') and confirmed
+# ('registration-process-confirmed'); the confirmed case is the one where the
+# recovering shell's own $env:Path can look like a restoration target.
+$ownerCrashPhases=[ordered]@{'registration-process-written'='write-intent';'registration-process-confirmed'='confirmed'}
+function Read-PendingProcessPhase([string]$Bin) {
+    $marker=ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $Bin 'winsmux.install.pending.json'))) -AsHashtable
+    return (ConvertFrom-Json ([IO.File]::ReadAllText((Join-Path $Bin ('.winsmux-install-'+$marker.operation_id+'/recovery.json')))) -AsHashtable).registration.process.phase
 }
-# A live process with the recorded id and start time still owns the mutated PATH,
-# so the slot keeps its fail-closed rules until that process is gone.
-Run-Case 'restart-live-owner-process-slot-retained-until-exit' {
+# A shell that stands in for the interrupted installer. It carries a PATH of its
+# own, writes that PATH once at start (pwsh prepends $PSHOME, so the handed-in value
+# is not the reference), waits for the stop file, then writes the PATH again so the
+# test can prove the recovering process never reached into it.
+function Start-OwnerShell([string]$Root) {
+    $stop=Join-Path $Root 'owner-stop';$first=Join-Path $Root 'owner-path-start.txt';$out=Join-Path $Root 'owner-path-stop.txt'
+    $start=[Diagnostics.ProcessStartInfo]::new((Get-Command pwsh).Source);$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+    $start.Environment['Path']='owner-shell-path;'+$env:Path
+    foreach($arg in @('-NoLogo','-NoProfile','-Command',"[IO.File]::WriteAllText('$first',`$env:Path); while(-not [IO.File]::Exists('$stop')){Start-Sleep -Milliseconds 100}; [IO.File]::WriteAllText('$out',`$env:Path)")){$start.ArgumentList.Add($arg)}
+    $process=[Diagnostics.Process]::Start($start)
+    return [PSCustomObject]@{Process=$process;Pid=$process.Id;Start=[long]$process.StartTime.ToFileTimeUtc();First=$first;Stop=$stop;Out=$out}
+}
+function Stop-OwnerShell($Owner) {
+    if(-not $Owner.Process.HasExited){[IO.File]::WriteAllText($Owner.Stop,'stop',$utf8);if(-not $Owner.Process.WaitForExit(30000)){$Owner.Process.Kill()}}
+    $Owner.Process.Dispose()
+}
+function Test-OwnerPathUntouched($Owner) {
+    if(-not [IO.File]::Exists($Owner.First) -or -not [IO.File]::Exists($Owner.Out)){return $false}
+    $first=[IO.File]::ReadAllText($Owner.First)
+    return ($first -clike '*owner-shell-path;*' -and [IO.File]::ReadAllText($Owner.Out) -ceq $first)
+}
+function Invoke-HeldRecovery([string]$Bin) {
+    $lease=$null;$message=''
+    try { $lease=Open-WinsmuxInstallLease $Bin -RecoverPending } catch { $message=$_.Exception.Message } finally { if($lease){$lease.Stream.Dispose()} }
+    return $message
+}
+# gone: a process id is reused after its owner exits. The journal pins the owner
+# by id and start time, so a live process that merely inherited the id is gone.
+foreach($crashPhase in $ownerCrashPhases.Keys) {
+    Run-Case ('restart-reused-pid-process-slot-recovers-'+$ownerCrashPhases[$crashPhase]) {
+        param($root)
+        $bin=New-Fixture $root;$before=Read-FailureInventory $root
+        $record=Invoke-ChildCrash $root $crashPhase
+        Assert-Condition ($record.exit -eq 73) 'Child did not reach intended PATH interruption.'
+        $marker=Join-Path $bin 'winsmux.install.pending.json';$processPath=$env:Path
+        Edit-PendingProcessSlot $bin {param($slot) Assert-Condition ($slot.owner_pid -ne $PID -and $slot.phase -ceq $ownerCrashPhases[$crashPhase]) 'Child journal did not record its own process slot owner.';$slot.owner_pid=$PID}
+        $lease=Open-WinsmuxInstallLease $bin -RecoverPending
+        try { Assert-Condition (-not [IO.File]::Exists($marker)) 'Reused process id was treated as the live installer; marker retained.' } finally { $lease.Stream.Dispose() }
+        Assert-Condition (Test-FailurePreserved $root $before) 'Reused process id recovery did not restore paired bytes.'
+        Assert-Condition ($env:Path -ceq $processPath) 'Reused process id recovery wrote the current process PATH.'
+        Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Reused process id recovery did not restore User PATH.'
+    }
+}
+# live-elsewhere: a live process with the recorded id and start time still owns
+# the mutated PATH. Recovery from any other process must hold the slot and the
+# marker, name that process, and leave its PATH alone, whatever phase the slot
+# reached. Once the owner exits the slot is gone and recovery completes.
+foreach($crashPhase in $ownerCrashPhases.Keys) {
+    Run-Case ('restart-live-owner-process-slot-held-'+$ownerCrashPhases[$crashPhase]) {
+        param($root)
+        $bin=New-Fixture $root;$before=Read-FailureInventory $root
+        $record=Invoke-ChildCrash $root $crashPhase
+        Assert-Condition ($record.exit -eq 73) 'Child did not reach intended PATH interruption.'
+        $marker=Join-Path $bin 'winsmux.install.pending.json';$processPath=$env:Path;$phase=$ownerCrashPhases[$crashPhase]
+        Assert-Condition ((Read-PendingProcessPhase $bin) -ceq $phase) 'Child journal did not record the intended process slot phase.'
+        $owner=Start-OwnerShell $root
+        try {
+            Edit-PendingProcessSlot $bin {param($slot) $slot.owner_pid=$owner.Pid;$slot.owner_start=$owner.Start}
+            $message=Invoke-HeldRecovery $bin
+            Assert-Condition ($message -and [IO.File]::Exists($marker)) ('Live owner process slot was skipped; uncertain write converted to success. message='+$message)
+            Assert-Condition ($message -clike ('*still-running shell with process id '+$owner.Pid+';*close that shell*')) ('Held recovery did not name the owner shell: '+$message)
+            Assert-Condition ((Read-PendingProcessPhase $bin) -ceq $phase) ('Held recovery changed the process slot phase from '+$phase+' to '+(Read-PendingProcessPhase $bin))
+            Assert-Condition (Test-FailurePreserved $root $before) 'Live owner hold did not restore paired bytes.'
+            Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Live owner hold did not restore User PATH.'
+            Assert-Condition (-not $owner.Process.HasExited) 'Owner shell exited during the held recovery.'
+        } finally { Stop-OwnerShell $owner }
+        Assert-Condition (Test-OwnerPathUntouched $owner) 'Owner shell PATH was touched or not reported.'
+        $lease=Open-WinsmuxInstallLease $bin -RecoverPending
+        try { Assert-Condition (-not [IO.File]::Exists($marker)) 'Exited owner still blocked recovery.' } finally { $lease.Stream.Dispose() }
+        Assert-Condition ($env:Path -ceq $processPath) 'Owner tracking wrote the current process PATH.'
+        Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Owner tracking did not restore User PATH.'
+    }
+}
+# indeterminate: the owner id is live but its start time cannot be read (access
+# denied: elevated, another session, protected). A real denied process cannot be
+# created from an unelevated test, so the start-time reader is the seam: it throws
+# for every process except the test's own, which keeps the 'current' check honest.
+Run-Case 'restart-indeterminate-owner-process-slot-held-confirmed' {
     param($root)
     $bin=New-Fixture $root;$before=Read-FailureInventory $root
-    $record=Invoke-ChildCrash $root 'registration-process-written'
+    $record=Invoke-ChildCrash $root 'registration-process-confirmed'
     Assert-Condition ($record.exit -eq 73) 'Child did not reach intended PATH interruption.'
     $marker=Join-Path $bin 'winsmux.install.pending.json';$processPath=$env:Path
-    $owner=Start-Process (Get-Command pwsh).Source -ArgumentList @('-NoLogo','-NoProfile','-Command','Start-Sleep 300') -WindowStyle Hidden -PassThru
+    $owner=Start-OwnerShell $root
     try {
-        $ownerStart=[long]$owner.StartTime.ToFileTimeUtc()
-        Edit-PendingProcessSlot $bin {param($slot) $slot.owner_pid=$owner.Id;$slot.owner_start=$ownerStart}
-        $failed=$false;$lease=$null
-        try { $lease=Open-WinsmuxInstallLease $bin -RecoverPending } catch { $failed=$true } finally { if($lease){$lease.Stream.Dispose()} }
-        Assert-Condition ($failed -and [IO.File]::Exists($marker)) 'Live owner process slot was skipped; uncertain write converted to success.'
-        Assert-Condition (Test-FailurePreserved $root $before) 'Live owner uncertainty did not restore paired bytes.'
-        $owner.Kill();$owner.WaitForExit()
-    } finally { if(-not $owner.HasExited){$owner.Kill();$owner.WaitForExit()};$owner.Dispose() }
+        Edit-PendingProcessSlot $bin {param($slot) $slot.owner_pid=$owner.Pid;$slot.owner_start=$owner.Start}
+        Set-Item Function:Get-WinsmuxProcessStartStamp {param([Diagnostics.Process]$Process) if($Process.Id -ne $PID){throw [ComponentModel.Win32Exception]::new(5)}; return [long]$Process.StartTime.ToFileTimeUtc()}
+        try { $message=Invoke-HeldRecovery $bin } finally { Set-Item Function:Get-WinsmuxProcessStartStamp $startStamp }
+        Assert-Condition ($message -and [IO.File]::Exists($marker)) ('Uninspectable owner was treated as gone; marker removed. message='+$message)
+        Assert-Condition ($message -clike ('*(process id '+$owner.Pid+') could not be inspected;*close that shell*')) ('Held recovery did not name the uninspectable owner: '+$message)
+        Assert-Condition ((Read-PendingProcessPhase $bin) -ceq 'confirmed') 'Held recovery changed the confirmed process slot phase.'
+        Assert-Condition (Test-FailurePreserved $root $before) 'Indeterminate owner hold did not restore paired bytes.'
+        Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Indeterminate owner hold did not restore User PATH.'
+    } finally { Stop-OwnerShell $owner }
+    Assert-Condition (Test-OwnerPathUntouched $owner) 'Owner shell PATH was touched or not reported.'
     $lease=Open-WinsmuxInstallLease $bin -RecoverPending
     try { Assert-Condition (-not [IO.File]::Exists($marker)) 'Exited owner still blocked recovery.' } finally { $lease.Stream.Dispose() }
-    Assert-Condition ($env:Path -ceq $processPath) 'Owner tracking wrote the current process PATH.'
-    Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Owner tracking did not restore User PATH.'
+    Assert-Condition ($env:Path -ceq $processPath) 'Indeterminate owner recovery wrote the current process PATH.'
 }
-# A journal from before owner tracking cannot name its process. Treating it as
-# gone keeps the next entry unblocked; the only cost is a PATH entry in a shell
-# that this code cannot identify, and a warning names that shell.
-Run-Case 'restart-unrecorded-owner-process-slot-recovers' {
+# owner_pid and owner_start are required: a process slot without them cannot be
+# classified, so the journal fails the schema check and the marker stays.
+Run-Case 'restart-unrecorded-owner-process-slot-rejected' {
     param($root)
     $bin=New-Fixture $root;$before=Read-FailureInventory $root
-    $record=Invoke-ChildCrash $root 'registration-process-written'
+    $record=Invoke-ChildCrash $root 'registration-process-confirmed'
     Assert-Condition ($record.exit -eq 73) 'Child did not reach intended PATH interruption.'
     $marker=Join-Path $bin 'winsmux.install.pending.json';$processPath=$env:Path
     Edit-PendingProcessSlot $bin {param($slot) $slot.Remove('owner_pid');$slot.Remove('owner_start')}
-    $script:OwnerWarnings=[Collections.Generic.List[string]]::new()
-    Set-Item Function:Write-Warning {param([string]$Message) $script:OwnerWarnings.Add($Message)}
-    try { $lease=Open-WinsmuxInstallLease $bin -RecoverPending } finally { Remove-Item Function:Write-Warning }
-    try { Assert-Condition (-not [IO.File]::Exists($marker)) 'Unrecorded owner blocked recovery.' } finally { $lease.Stream.Dispose() }
-    Assert-Condition (@($script:OwnerWarnings | Where-Object { $_ -like '*owner is unrecorded*' }).Count -eq 1) ('Unrecorded owner recovery did not warn: '+($script:OwnerWarnings -join ' | '))
-    Assert-Condition (Test-FailurePreserved $root $before) 'Unrecorded owner recovery did not restore paired bytes.'
-    Assert-Condition ($env:Path -ceq $processPath) 'Unrecorded owner recovery wrote the current process PATH.'
-    Assert-Condition ((Get-InstallUserPath) -ceq 'prior-user-path') 'Unrecorded owner recovery did not restore User PATH.'
+    $message=Invoke-HeldRecovery $bin
+    Assert-Condition ($message -ceq 'License manifest fields differ from the supported schema.' -and [IO.File]::Exists($marker)) ('Journal without a process slot owner was accepted: message='+$message+'; marker '+$(if([IO.File]::Exists($marker)){'retained'}else{'absent'}))
+    Assert-Condition ($env:Path -ceq $processPath) 'Rejected journal wrote the current process PATH.'
 }
 Run-Case 'restart-foreign-shell-path-recovers' {
     param($root)
