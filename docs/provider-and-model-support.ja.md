@@ -241,7 +241,7 @@ run 証跡にモデル名とランタイム情報が出てくる場合、winsmux
 ロジットを出し、`local-router-shadow.ps1` が softmax で確率へ変換します。
 `PowerShell 7` 上で `shadow_only` として動作し、出力は提案に限られます。実行権限は
 決定論的ルーティングに残ります。必要な配布・信頼性の証跡は、
-[Local Router Shadow Mode operations](operator-playbook.md#v03638-local-router-shadow-mode-operations)
+[Local Router Shadow Mode operations](operator-playbook.md#local-router-shadow-mode)
 を参照してください。
 
 | 区分 | このモデルカードで言える範囲 |

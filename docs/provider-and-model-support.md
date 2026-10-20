@@ -271,7 +271,7 @@ The artifact has 12 route-state features. Its weighted slot heads and role heads
 which `local-router-shadow.ps1` converts to probabilities with softmax. It runs in
 `PowerShell 7` with `shadow_only` execution. The shadow result is a proposal; deterministic
 routing remains the execution authority. See the
-[Local Router Shadow Mode operations](operator-playbook.md#v03638-local-router-shadow-mode-operations)
+[Local Router Shadow Mode operations](operator-playbook.md#local-router-shadow-mode)
 for the distribution and reliability evidence required by operators.
 
 | Claim class | Boundary |
