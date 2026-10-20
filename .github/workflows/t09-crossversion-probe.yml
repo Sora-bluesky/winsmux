@@ -457,8 +457,8 @@ jobs:
       MSI_ARTIFACT: 'winsmux-desktop-bundles'
       MSI_CANDIDATE_NAME: 'winsmux_0.38.0_x64_en-US.msi'
       # 64 hex pins the file; 'unpinned' accepts the run-bound file and records its sha256.
-      MSI_CANDIDATE_SHA256: 'unpinned'
-      MSI_CANDIDATE_BYTES: 'unpinned'
+      MSI_CANDIDATE_SHA256: 'a7d7c1ce845ccc8a93e980340dfd13bc603c7c18dd4c7e4df4ce1784741eb05d'
+      MSI_CANDIDATE_BYTES: '34807808'
     steps:
       - name: Check out the MSI probe from the calling commit
         uses: actions/checkout@v6
