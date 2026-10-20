@@ -6,7 +6,10 @@ param(
     [Parameter(Mandatory = $true)][string]$CandidateDirectory,
     [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-f]{64}$')][string]$ReferenceTarballSha256,
     [Parameter(Mandatory = $true)][string]$OutputRoot,
-    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$OldVersion = '0.36.38'
+    [ValidatePattern('^\d+\.\d+\.\d+$')][string]$OldVersion = '0.36.38',
+    # CrossVersion updates normally. The other cases inject one external failure into the same
+    # Direct update and expect the old installation to stay in place and runnable.
+    [ValidateSet('CrossVersion', 'Capacity', 'LaunchStage', 'LaunchPublished')][string]$Case = 'CrossVersion'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,15 +20,36 @@ if ($env:CI -ne 'true' -or $env:GITHUB_ACTIONS -ne 'true' -or [string]::IsNullOr
     throw 'This probe installs into the real user profile and User PATH. Run it only on a disposable GitHub runner.'
 }
 
+if ($Case -cne 'CrossVersion' -and $Route -cne 'Direct') { throw 'Failure cases run on the Direct route only.' }
+. (Join-Path $PSScriptRoot 'failure-injection.ps1')
+
 $utf8 = [Text.UTF8Encoding]::new($false)
 $repoRoot = [IO.Path]::GetFullPath($RepositoryRoot)
 $candidateRoot = [IO.Path]::GetFullPath($CandidateDirectory)
 $outRoot = [IO.Path]::GetFullPath($OutputRoot)
-$work = Join-Path $env:RUNNER_TEMP ('t09-work-' + $Route)
+$work = Join-Path $env:RUNNER_TEMP ('t09-work-' + $Case + '-' + $Route)
 foreach ($fresh in @($outRoot, $work)) {
     if (Test-Path -LiteralPath $fresh) { throw "Probe root must not exist before the run: $fresh" }
     [void][IO.Directory]::CreateDirectory($fresh)
 }
+$failureCase = $Case -cne 'CrossVersion'
+
+# Capacity puts the whole profile on an owned small volume; every child gets that profile
+# through USERPROFILE, which is what pwsh resolves $HOME from.
+$volume = $null
+$probeHome = $HOME
+if ($Case -ceq 'Capacity') {
+    try {
+        $volume = New-T09Volume (Join-Path $env:RUNNER_TEMP 't09-capacity-vhd') 256
+        $probeHome = Join-Path $volume.root 'home'
+        [void][IO.Directory]::CreateDirectory($probeHome)
+    } catch {
+        $failed = [ordered]@{ schema = 't09-cross-version-probe/v1'; case = $Case; route = $Route; state = 'harness_error'; passed = $false; failure = 'Owned VHD setup failed: ' + $_.Exception.Message }
+        [IO.File]::WriteAllText((Join-Path $outRoot 'result.json'), ($failed | ConvertTo-Json), $utf8)
+        exit 1
+    }
+}
+$homeEnvironment = @{ USERPROFILE = $probeHome; HOME = $probeHome }
 $logPath = Join-Path $outRoot 'probe.log'
 $resultPath = Join-Path $outRoot 'result.json'
 $candidateVersion = ([IO.File]::ReadAllText((Join-Path $repoRoot 'VERSION'))).Trim()
@@ -35,15 +59,16 @@ $candidateTag = 'v' + $candidateVersion
 $pwsh = (Get-Command pwsh -CommandType Application -TotalCount 1).Source
 $node = (Get-Command node -CommandType Application -TotalCount 1).Source
 $npm = (Get-Command npm.cmd -CommandType Application -TotalCount 1).Source
-$native = Join-Path $HOME '.local\bin\winsmux.exe'
-$wrapper = Join-Path $HOME '.winsmux\bin\winsmux.cmd'
-$owner = Join-Path $HOME '.winsmux\install-owner.json'
-$profileManifest = Join-Path $HOME '.winsmux\install-profile.json'
-$versionFile = Join-Path $HOME '.winsmux\version'
-$pendingMarker = Join-Path $HOME '.local\bin\winsmux.install.pending.json'
-$settings = Join-Path $HOME '.winsmux.conf'
-$project = Join-Path $HOME '.winsmux\projects\t09\project.json'
-$unknown = Join-Path $HOME '.winsmux\t09-unknown.json'
+$localBin = Join-Path $probeHome '.local\bin'
+$native = Join-Path $localBin 'winsmux.exe'
+$wrapper = Join-Path $probeHome '.winsmux\bin\winsmux.cmd'
+$owner = Join-Path $probeHome '.winsmux\install-owner.json'
+$profileManifest = Join-Path $probeHome '.winsmux\install-profile.json'
+$versionFile = Join-Path $probeHome '.winsmux\version'
+$pendingMarker = Join-Path $localBin 'winsmux.install.pending.json'
+$settings = Join-Path $probeHome '.winsmux.conf'
+$project = Join-Path $probeHome '.winsmux\projects\t09\project.json'
+$unknown = Join-Path $probeHome '.winsmux\t09-unknown.json'
 $fragment = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows Terminal\Fragments\winsmux\winsmux.json'
 
 # Public entry for the old release: no installer E2E switch, so it reads only its own published sources.
@@ -51,23 +76,25 @@ $oldEnvironment = @{
     WINSMUX_INSTALL_E2E = $null; WINSMUX_INSTALL_SOURCE_REF = $null; WINSMUX_INSTALL_E2E_RELEASE_TAG = $null
     WINSMUX_INSTALL_E2E_GITHUB_ACCESS = $null; WINSMUX_INSTALL_STATE_ROOT = $null
     WINSMUX_RELEASE_TAG = $oldTag; WINSMUX_INSTALL_PROFILE = 'full'
-}
+} + $homeEnvironment
 # Same candidate selection as scripts/test-install-e2e.ps1 on a GitHub runner with -CandidateDirectory.
 $candidateEnvironment = @{
     WINSMUX_INSTALL_E2E = 'true'; WINSMUX_INSTALL_SOURCE_REF = $SourceCommit; WINSMUX_INSTALL_E2E_RELEASE_TAG = $null
     WINSMUX_INSTALL_E2E_GITHUB_ACCESS = $null; WINSMUX_INSTALL_STATE_ROOT = $null
     WINSMUX_RELEASE_TAG = $candidateTag; WINSMUX_INSTALL_PROFILE = 'full'
-}
+} + $homeEnvironment
 
 $result = [ordered]@{
     schema = 't09-cross-version-probe/v1'
+    case = $Case
     route = $Route
     state = 'running'
     outcome = $null
     passed = $false
     failure = $null
-    home = $HOME
-    old = [ordered]@{ version = $OldVersion; release_tag = $oldTag; entry = $null; package = $null }
+    home = $probeHome
+    injection = [ordered]@{ kind = $null; armed = $null; witness = $null; disarmed = $null; trail = @(); expected_signature = $null; signature_matched = $null }
+    old =[ordered]@{ version = $OldVersion; release_tag = $oldTag; entry = $null; package = $null }
     candidate = [ordered]@{ source_commit = $SourceCommit; version = $candidateVersion; release_tag = $candidateTag; assets = @(); fixture = $null; npm = $null }
     update = [ordered]@{ entry = $null; exit = $null; rejected_at = $null; rejection_lines = @(); pending_marker_after = $null }
     observations = [ordered]@{}
@@ -80,6 +107,11 @@ function Save-Result { [IO.File]::WriteAllText($resultPath, ($result | ConvertTo
 
 function Get-FileDigest([string]$Path) {
     if ([IO.File]::Exists($Path)) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+    return $null
+}
+
+function Get-FileBase64([string]$Path) {
+    if ([IO.File]::Exists($Path)) { return [Convert]::ToBase64String([IO.File]::ReadAllBytes($Path)) }
     return $null
 }
 
@@ -101,8 +133,8 @@ function Get-Snapshot {
     return [ordered]@{
         user_data = [ordered]@{ settings = Get-FileDigest $settings; project = Get-FileDigest $project; unknown = Get-FileDigest $unknown }
         support = [ordered]@{
-            local_bin = Get-TreeDigest (Join-Path $HOME '.local\bin')
-            winsmux_dir = Get-TreeDigest (Join-Path $HOME '.winsmux')
+            local_bin = Get-TreeDigest $localBin
+            winsmux_dir = Get-TreeDigest (Join-Path $probeHome '.winsmux')
             ps_profile_all_hosts = Get-FileDigest ([string]$PROFILE.CurrentUserAllHosts)
             ps_profile_current_host = Get-FileDigest ([string]$PROFILE.CurrentUserCurrentHost)
             terminal_fragment = Get-FileDigest $fragment
@@ -196,7 +228,7 @@ function Get-VersionProbe([string]$Prefix) {
         @{ key = 'wrapper_raw'; file = $wrapper; args = @('-V') }
     )) {
         if (-not [IO.File]::Exists($row.file)) { $probe[$row.key] = [ordered]@{ present = $false; exit = $null; stdout = $null }; continue }
-        $run = Invoke-Probe -Name "$Prefix-$($row.key)" -FilePath $row.file -Arguments $row.args -TimeoutSeconds 120
+        $run = Invoke-Probe -Name "$Prefix-$($row.key)" -FilePath $row.file -Arguments $row.args -Environment $homeEnvironment -TimeoutSeconds 120
         $probe[$row.key] = [ordered]@{ present = $true; exit = $run.ExitCode; stdout = $run.StdOut }
     }
     return $probe
@@ -208,6 +240,85 @@ function Test-VersionLine($Probe, [string]$Version) {
 
 function Get-RejectionLines([string]$Text) {
     return @($Text -split "`r?`n" | Where-Object { $_ -match '(?i)error|fail|refus|reject|invalid|cannot|preserved|denied|throw|exception' } | Select-Object -First 40)
+}
+
+$injectionArm = $null
+$launchSignature = 'Installed executable version does not match the selected release'
+
+function Enable-Injection {
+    $exeRows = @($result.candidate.assets | Where-Object { $_.name -ceq 'winsmux-x64.exe' })
+    if ($exeRows.Count -ne 1) { throw 'Candidate executable size is unknown.' }
+    $control = Join-Path $work 'launch-control\winsmux.exe'
+    switch ($Case) {
+        'Capacity' {
+            $result.injection.kind = 'owned-vhd-shortage'
+            $result.injection.expected_signature = '(?i)not enough space on the disk|disk is full|0x80070070'
+            $shortage = Set-T09Shortage $volume ([long]$exeRows[0].bytes)
+            $result.injection.witness = [ordered]@{ volume = [ordered]@{ image = $volume.image; root = $volume.root; mib = $volume.mib }; shortage = $shortage }
+            $result.injection.armed = [bool]$shortage.armed
+            $script:injectionArm = $volume
+        }
+        'LaunchStage' {
+            $result.injection.kind = 'execute-deny-ace'
+            $result.injection.expected_signature = $launchSignature
+            $script:injectionArm = Enable-T09ExecuteDeny $localBin
+            $probeDir = Join-Path $localBin ('.t09-arm-' + [Guid]::NewGuid().ToString('N'))
+            [void][IO.Directory]::CreateDirectory($probeDir)
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($control))
+            Copy-Item -LiteralPath $native -Destination (Join-Path $probeDir 'winsmux.exe')
+            Copy-Item -LiteralPath $native -Destination $control
+            $witness = [ordered]@{
+                original_sddl = $injectionArm.original_sddl; armed_sddl = $injectionArm.armed_sddl
+                new_file_under_install_dir = Invoke-T09Launch (Join-Path $probeDir 'winsmux.exe') -Environment $homeEnvironment
+                control_copy_elsewhere = Invoke-T09Launch $control -Environment $homeEnvironment
+                installed_old_native = Invoke-T09Launch $native -Environment $homeEnvironment
+            }
+            Remove-Item -LiteralPath $probeDir -Recurse -Force
+            $result.injection.witness = $witness
+            $result.injection.armed = (-not $witness.new_file_under_install_dir.started) -and $witness.control_copy_elsewhere.exit -eq 0 -and $witness.installed_old_native.exit -eq 0
+        }
+        'LaunchPublished' {
+            $result.injection.kind = 'srp-path-rule'
+            $result.injection.expected_signature = $launchSignature
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($control))
+            Copy-Item -LiteralPath $native -Destination $control
+            $script:injectionArm = Enable-T09PathRule $native
+            $witness = [ordered]@{
+                rule_key = $injectionArm.rule_key; image_path = $injectionArm.image_path
+                published_path = Invoke-T09Launch $native -Environment $homeEnvironment
+                control_copy_elsewhere = Invoke-T09Launch $control -Environment $homeEnvironment
+            }
+            $result.injection.witness = $witness
+            $result.injection.armed = (-not $witness.published_path.started) -and $witness.control_copy_elsewhere.exit -eq 0
+        }
+    }
+    Save-Result
+    if (-not $result.injection.armed) { throw "The $Case injection did not take effect; the update was not attempted." }
+}
+
+function Disable-Injection {
+    if ($null -eq $script:injectionArm) { return }
+    $arm = $script:injectionArm
+    $script:injectionArm = $null
+    switch ($Case) {
+        'Capacity' {
+            $result.observations.native_while_full = Invoke-T09Launch $native -Environment $homeEnvironment
+            $result.injection.disarmed = [ordered]@{ free_after_release = Clear-T09Shortage $arm }
+        }
+        'LaunchStage' { $result.injection.disarmed = Disable-T09ExecuteDeny $arm }
+        'LaunchPublished' { $result.injection.disarmed = Disable-T09PathRule $arm }
+    }
+    Save-Result
+}
+
+function Get-InstalledMembers($Snapshot) {
+    $members = [ordered]@{}
+    $localRows = if ($null -ne $Snapshot.support.local_bin) { @($Snapshot.support.local_bin.Keys) } else { @() }
+    foreach ($key in $localRows) {
+        if (-not $key.StartsWith('.winsmux-install-', [StringComparison]::Ordinal)) { $members['local_bin/' + $key] = $Snapshot.support.local_bin[$key] }
+    }
+    $members['winsmux_dir'] = $Snapshot.support.winsmux_dir
+    return $members
 }
 
 $exitCode = 0
@@ -280,8 +391,10 @@ try {
     [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($project))
     [IO.File]::WriteAllText($project, '{"t09":"protected-project"}', $utf8)
     [IO.File]::WriteAllText($unknown, 't09 unknown user bytes', $utf8)
+    if ($failureCase) { Enable-Injection }
     $before = Get-Snapshot
     $result.snapshots.before_update = $before
+    $result.observations.settings_before_update_base64 = Get-FileBase64 $settings
 
     if ($Route -ceq 'Npm') {
         $result.update.entry = "npm install --global <candidate tarball>; winsmux update --profile full"
@@ -295,14 +408,22 @@ try {
         }
     } else {
         $result.update.entry = "pwsh -File <candidate install.ps1> update -ReleaseTag $candidateTag -InstallProfile full"
-        $update = Invoke-Probe -Name 'candidate-update' -FilePath $pwsh -Environment $candidateEnvironment -Arguments @(
-            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fixture.installer, 'update', '-ReleaseTag', $candidateTag, '-InstallProfile', 'full')
+        # -Verbose surfaces the installer's own "Paired installation: <phase>" checkpoints.
+        $verbose = if ($failureCase) { @('-Verbose') } else { @() }
+        $update = Invoke-Probe -Name 'candidate-update' -FilePath $pwsh -Environment $candidateEnvironment -Arguments (@(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fixture.installer, 'update', '-ReleaseTag', $candidateTag, '-InstallProfile', 'full') + $verbose)
     }
     $result.update.exit = $update.ExitCode
     $result.update.pending_marker_after = [IO.File]::Exists($pendingMarker)
     $after = Get-Snapshot
     $result.snapshots.after_update = $after
+    $result.observations.settings_after_update_base64 = Get-FileBase64 $settings
     $result.observations.after_support = Get-SupportState
+    if ($failureCase) {
+        $result.injection.trail = @([regex]::Matches($update.Combined, 'Paired installation: (\S+)') | ForEach-Object { $_.Groups[1].Value })
+        $result.injection.signature_matched = [regex]::IsMatch($update.Combined, $result.injection.expected_signature)
+        Disable-Injection
+    }
     $afterVersions = Get-VersionProbe 'after'
     $result.observations.after_versions = $afterVersions
     if ($Route -ceq 'Npm') {
@@ -312,6 +433,20 @@ try {
 
     foreach ($key in @('settings', 'project', 'unknown')) {
         Add-Check "user-data-$key-preserved" ($before.user_data[$key] -ceq $after.user_data[$key]) $before.user_data[$key] $after.user_data[$key]
+    }
+    if ($failureCase) {
+        $trail = @($result.injection.trail)
+        $published = @($trail | Where-Object { $_ -like 'published-*' })
+        Add-Check 'injection-armed' ([bool]$result.injection.armed) $true $result.injection.armed
+        Add-Check 'failure-case-update-rejected' ($update.ExitCode -ne 0) 'non-zero exit' $update.ExitCode
+        Add-Check 'failure-signature-matched' ([bool]$result.injection.signature_matched) $result.injection.expected_signature $result.injection.signature_matched
+        switch ($Case) {
+            'Capacity' { Add-Check 'capacity-refused-before-publication' ($published.Count -eq 0) 'no published-* checkpoint' $trail }
+            'LaunchStage' { Add-Check 'launch-refused-at-stage-readback' (($trail -ccontains 'stage-exe-write') -and ($trail -cnotcontains 'stage-readback') -and $published.Count -eq 0) 'stage-exe-write, no stage-readback, nothing published' $trail }
+            'LaunchPublished' { Add-Check 'launch-refused-after-publication-then-restored' (($trail -ccontains 'published-exe') -and ($trail -ccontains 'before-readback') -and ($trail -cnotcontains 'readback-complete') -and ($trail -ccontains 'restoration-readback-complete')) 'published-exe, before-readback, restoration-readback-complete, no readback-complete' $trail }
+        }
+        $disarmed = if ($Case -ceq 'Capacity') { $null -ne $result.injection.disarmed } else { $result.injection.disarmed -eq $true }
+        Add-Check 'injection-disarmed' $disarmed $true $result.injection.disarmed
     }
     if ($update.ExitCode -eq 0) {
         $result.outcome = 'updated'
@@ -330,7 +465,20 @@ try {
         Add-Check 'rejected-old-wrapper-raw-still-runs' (Test-VersionLine $afterVersions.wrapper_raw $OldVersion) "winsmux $OldVersion" $afterVersions.wrapper_raw
         $supportBefore = $before.support | ConvertTo-Json -Depth 8 -Compress
         $supportAfter = $after.support | ConvertTo-Json -Depth 8 -Compress
-        Add-Check 'rejected-support-state-unchanged' ($supportBefore -ceq $supportAfter) 'support snapshot equal' ([ordered]@{ equal = ($supportBefore -ceq $supportAfter) })
+        if ($failureCase) {
+            # A refused update may leave its own .winsmux-install-* stage; that residue is recorded,
+            # and the score is on the installed members and the rest of the profile support.
+            $membersBefore = Get-InstalledMembers $before | ConvertTo-Json -Depth 8 -Compress
+            $membersAfter = Get-InstalledMembers $after | ConvertTo-Json -Depth 8 -Compress
+            $residue = if ($null -ne $after.support.local_bin) { @($after.support.local_bin.Keys | Where-Object { $_.StartsWith('.winsmux-install-', [StringComparison]::Ordinal) }) } else { @() }
+            Add-Check 'rejected-installed-members-unchanged' ($membersBefore -ceq $membersAfter) 'installed members equal' ([ordered]@{ equal = ($membersBefore -ceq $membersAfter); stage_residue = $residue })
+            foreach ($key in @('ps_profile_all_hosts', 'ps_profile_current_host', 'terminal_fragment')) {
+                Add-Check "rejected-$key-unchanged" ($before.support[$key] -ceq $after.support[$key]) $before.support[$key] $after.support[$key]
+            }
+            Add-Check 'rejected-support-state-unchanged' $null 'recorded only for failure cases' ([ordered]@{ equal = ($supportBefore -ceq $supportAfter) })
+        } else {
+            Add-Check 'rejected-support-state-unchanged' ($supportBefore -ceq $supportAfter) 'support snapshot equal' ([ordered]@{ equal = ($supportBefore -ceq $supportAfter) })
+        }
         Add-Check 'rejected-user-path-unchanged' ($before.user_path -ceq $after.user_path) $before.user_path $after.user_path
         Add-Check 'rejected-no-pending-marker' (-not $result.update.pending_marker_after) $false $result.update.pending_marker_after
     }
@@ -342,6 +490,10 @@ try {
     $result.failure = [string]$_.Exception.Message
     $exitCode = 1
 } finally {
+    try { Disable-Injection } catch { $result.observations.disarm_error = [string]$_.Exception.Message; $result.passed = $false; $exitCode = 1 }
+    if ($null -ne $volume) {
+        try { Remove-T09Volume $volume; $result.observations.volume_detached = $true } catch { $result.observations.volume_detached = [string]$_.Exception.Message }
+    }
     Save-Result
     Write-Host ($result | ConvertTo-Json -Depth 14)
 }

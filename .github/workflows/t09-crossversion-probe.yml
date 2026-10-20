@@ -8,17 +8,19 @@ permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: 'b048b00b9291e346c247f2799d96283e21cb471e'
-  SOURCE_TREE: 'c36c02659c7de29251af25d1ae58fdfd45a6bd26'
+  SOURCE_COMMIT: 'c43aed076c076726f616e8a6bf489c8709246f17'
+  SOURCE_TREE: '9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7'
   # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
-  SOURCE_INVENTORY: '80e249111f764d6fe34263a3919935fb889e0e3bb953f14ccf65e173efe23362'
-  # Unpublished draft release 416909119 (codex-task879-core-b048b00b): id, bytes, sha256, name.
+  SOURCE_INVENTORY: 'f2c0b342b37582f291a27ecf2d1644a1c9564fc4f64dcc8cad8f05df1cbf14e8'
+  # Unpublished draft release DRAFT_RELEASE_ID (codex-task879-core-c43aed07, target c43aed076c076726f616e8a6bf489c8709246f17): id, bytes, sha256, name.
+  # Ids stay placeholders, which the manifest check refuses, until
+  # .github/task879/fill-draft-asset-ids.py fills them from a GET of that draft.
   TASK879_ASSETS: |
-    655258651 18353152 53dd2a71a2ba1c14aa8b50c011e027a77f18aa89669cb2453bf3eb94af07f512 winsmux-x64.exe
-    655258649 6724597 aab94216ef8f3218f1bf3e532d63c95c8a2b0ca5fa7fe8e647151c10ca85ec59 winsmux-x64.exe.licenses.zip
-    655258647 177 c8407967ceff0cd752a0af293dd8da5762f9db2757dad8c8d5d8b921c6d28398 SHA256SUMS
-    655258648 1785 cc767bd5bb8902d092b392855a41caf54e166e7c35c45867d8d99b4f8dca807d core-candidate.json
-    655258650 34640 17936f2b4367aba230770390726515103bca81e9865724fbb630421171e2dfa6 winsmux-0.38.0.tgz
+    DRAFT_ASSET_ID 18357248 f4a90b323c5f9aa4bd0c620ea088725abe8c04af5e4f202a5839673e57d15e3e winsmux-x64.exe
+    DRAFT_ASSET_ID 6724597 43196fc0b30130c748eff0a7d6d01b3edafd0965f14b33f01387b4849d128c80 winsmux-x64.exe.licenses.zip
+    DRAFT_ASSET_ID 177 cf2ce7ce572ac2af6d6c1b306b2393c71a60742627ceda4e19b5e278a9e49406 SHA256SUMS
+    DRAFT_ASSET_ID 1785 c6ba30bae4cbec455deccb6b924b20bd76cadd0ef3dc678575df8873a77380af core-candidate.json
+    DRAFT_ASSET_ID 35397 5acaca5cb3e2cb6ba3b25aeb9f2fb3719168d07690bff96bb48361b3ff726c64 winsmux-0.38.0.tgz
 
 jobs:
   fetch:
@@ -62,7 +64,7 @@ jobs:
           if-no-files-found: error
 
   probe:
-    name: Cross-version probe (${{ matrix.route }})
+    name: T-09 ${{ matrix.case }} (${{ matrix.route }})
     needs: fetch
     permissions:
       contents: read
@@ -72,7 +74,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        route: [Npm, Direct]
+        include:
+          - { case: CrossVersion, route: Npm }
+          - { case: CrossVersion, route: Direct }
+          - { case: Capacity, route: Direct }
+          - { case: LaunchStage, route: Direct }
+          - { case: LaunchPublished, route: Direct }
     steps:
       - name: Check out the build tree data from the calling commit
         uses: actions/checkout@v6
@@ -95,12 +102,14 @@ jobs:
           $destination = Join-Path $env:RUNNER_TEMP 't09-build-tree.json'
           if (Test-Path -LiteralPath $destination) { throw 'Build tree data destination already exists.' }
           Copy-Item -LiteralPath $source -Destination $destination
-          $probeSource = Join-Path $callerRoot '.github/t09/cross-version-probe.ps1'
-          $probeItem = Get-Item -LiteralPath $probeSource -Force
-          if ($probeItem.PSIsContainer -or $probeItem.Length -le 0) { throw 'Cross-version probe script is missing.' }
-          $probeDestination = Join-Path $env:RUNNER_TEMP 't09-cross-version-probe.ps1'
+          $probeDestination = Join-Path $env:RUNNER_TEMP 't09-scripts'
           if (Test-Path -LiteralPath $probeDestination) { throw 'Probe script destination already exists.' }
-          Copy-Item -LiteralPath $probeSource -Destination $probeDestination
+          [void][IO.Directory]::CreateDirectory($probeDestination)
+          foreach ($name in @('cross-version-probe.ps1', 'failure-injection.ps1')) {
+            $probeItem = Get-Item -LiteralPath (Join-Path $callerRoot ".github/t09/$name") -Force
+            if ($probeItem.PSIsContainer -or $probeItem.Length -le 0) { throw "Probe script is missing: $name" }
+            Copy-Item -LiteralPath $probeItem.FullName -Destination (Join-Path $probeDestination $name)
+          }
           Remove-Item -LiteralPath $callerRoot -Recurse -Force
           if (@(Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Force).Count -ne 0) {
             throw 'Workspace must be empty before the fixed source checkout.'
@@ -362,7 +371,7 @@ jobs:
         if: always() && steps.rebuild.outcome != 'skipped'
         uses: actions/upload-artifact@v7
         with:
-          name: t09-build-tree-${{ matrix.route }}-${{ github.sha }}
+          name: t09-build-tree-${{ matrix.case }}-${{ matrix.route }}-${{ github.sha }}
           path: ${{ runner.temp }}/t09-rebuild-${{ matrix.route }}/
           if-no-files-found: error
 
@@ -371,15 +380,16 @@ jobs:
         shell: pwsh
         env:
           ROUTE: ${{ matrix.route }}
+          CASE: ${{ matrix.case }}
         run: |
           $ErrorActionPreference = 'Stop'
           $referenceRows = @(($env:TASK879_ASSETS -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -cmatch '^[0-9]+ [0-9]+ [0-9a-f]{64} winsmux-0\.38\.0\.tgz$' })
           if ($referenceRows.Count -ne 1) { throw 'Reference tarball manifest row is ambiguous.' }
           $referenceSha = [string]@($referenceRows[0] -split ' ')[2]
-          pwsh -NoProfile -File (Join-Path $env:RUNNER_TEMP 't09-cross-version-probe.ps1') -Route $env:ROUTE `
+          pwsh -NoProfile -File (Join-Path $env:RUNNER_TEMP 't09-scripts/cross-version-probe.ps1') -Case $env:CASE -Route $env:ROUTE `
             -RepositoryRoot $env:GITHUB_WORKSPACE -SourceCommit $env:SOURCE_COMMIT `
             -CandidateDirectory (Join-Path $env:RUNNER_TEMP 't09-candidate') -ReferenceTarballSha256 $referenceSha `
-            -OutputRoot (Join-Path $env:RUNNER_TEMP "t09-evidence-$env:ROUTE") -OldVersion '0.36.38'
+            -OutputRoot (Join-Path $env:RUNNER_TEMP "t09-evidence-$env:CASE-$env:ROUTE") -OldVersion '0.36.38'
           if ($LASTEXITCODE -ne 0) { throw "Cross-version probe could not complete its evidence (exit $LASTEXITCODE)." }
 
       - name: Record the runner environment beside the probe evidence
@@ -387,6 +397,7 @@ jobs:
         shell: pwsh
         env:
           ROUTE: ${{ matrix.route }}
+          CASE: ${{ matrix.case }}
           CALLER_SHA: ${{ github.sha }}
           BIND_OUTCOME: ${{ steps.bind.outcome }}
           CANDIDATE_OUTCOME: ${{ steps.candidate.outcome }}
@@ -395,11 +406,12 @@ jobs:
           PROBE_OUTCOME: ${{ steps.probe.outcome }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $evidenceRoot = Join-Path $env:RUNNER_TEMP "t09-evidence-$env:ROUTE"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "t09-evidence-$env:CASE-$env:ROUTE"
           [void][IO.Directory]::CreateDirectory($evidenceRoot)
           $nt = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
           $record = [ordered]@{
             schema = 't09-cross-version-environment/v1'
+            case = $env:CASE
             route = $env:ROUTE
             source_commit = $env:SOURCE_COMMIT
             source_tree = $env:SOURCE_TREE
@@ -418,6 +430,96 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: t09-crossversion-${{ matrix.route }}-${{ github.sha }}
-          path: ${{ runner.temp }}/t09-evidence-${{ matrix.route }}/
+          name: t09-${{ matrix.case }}-${{ matrix.route }}-${{ github.sha }}
+          path: ${{ runner.temp }}/t09-evidence-${{ matrix.case }}-${{ matrix.route }}/
+          if-no-files-found: error
+
+  msi:
+    name: T-09 MSI update, tamper and missing (en-US)
+    permissions:
+      contents: read
+      actions: read
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      OLD_MSI_URL: 'https://github.com/Sora-bluesky/winsmux/releases/download/v0.36.38/winsmux_0.36.38_x64_en-US.msi'
+      OLD_MSI_BYTES: '10375168'
+      OLD_MSI_SHA256: '2a55c4838714386fe8493ffc85fd23927a64d62dc8c1a3be6e49b66510c135a2'
+      # Only a completed, successful release-desktop.yml dispatch on the final candidate commit
+      # is accepted as the signed MSI source.
+      MSI_SOURCE_RUN_ID: '39341803788'
+      MSI_SOURCE_SHA: '2db67a86120102c3f73e5e13bf6b8b3c9d72a450'
+      MSI_ARTIFACT: 'winsmux-desktop-bundles'
+      MSI_CANDIDATE_NAME: 'winsmux_0.38.0_x64_en-US.msi'
+      # 64 hex pins the file; 'unpinned' accepts the run-bound file and records its sha256.
+      MSI_CANDIDATE_SHA256: 'unpinned'
+    steps:
+      - name: Check out the MSI probe from the calling commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: t09-caller
+          sparse-checkout: .github/t09
+          persist-credentials: false
+
+      - name: Fetch the v0.36.38 public MSI and the signed candidate MSI
+        id: fetch
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $inputs = Join-Path $env:RUNNER_TEMP 't09-msi-input'
+          if (Test-Path -LiteralPath $inputs) { throw 'MSI input root already exists.' }
+          [void][IO.Directory]::CreateDirectory($inputs)
+          $old = Join-Path $inputs 'winsmux_0.36.38_x64_en-US.msi'
+          Invoke-WebRequest -Uri $env:OLD_MSI_URL -OutFile $old
+          $oldSha = (Get-FileHash -LiteralPath $old -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ((Get-Item -LiteralPath $old).Length -ne [long]$env:OLD_MSI_BYTES -or $oldSha -cne $env:OLD_MSI_SHA256) { throw 'The v0.36.38 public MSI differs from its published identity.' }
+          $run = (gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:MSI_SOURCE_RUN_ID" | Out-String) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Signed source run lookup failed.' }
+          if ($run.head_sha -cne $env:MSI_SOURCE_SHA -or $run.path -cne '.github/workflows/release-desktop.yml' -or $run.event -cne 'workflow_dispatch' -or $run.status -cne 'completed' -or $run.conclusion -cne 'success') {
+            throw "Run $env:MSI_SOURCE_RUN_ID is not a completed successful release-desktop dispatch on $env:MSI_SOURCE_SHA (status $($run.status), conclusion $($run.conclusion))."
+          }
+          $download = Join-Path $inputs 'artifact'
+          gh run download $env:MSI_SOURCE_RUN_ID -R $env:GITHUB_REPOSITORY -n $env:MSI_ARTIFACT -D $download
+          if ($LASTEXITCODE -ne 0) { throw 'Signed artifact download failed.' }
+          $found = @(Get-ChildItem -LiteralPath $download -Recurse -File -Filter $env:MSI_CANDIDATE_NAME)
+          if ($found.Count -ne 1) { throw "Expected one $env:MSI_CANDIDATE_NAME in the artifact, found $($found.Count)." }
+          $candidateSha = (Get-FileHash -LiteralPath $found[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($env:MSI_CANDIDATE_SHA256 -cne 'unpinned' -and $candidateSha -cne $env:MSI_CANDIDATE_SHA256) { throw 'Signed candidate MSI differs from the pinned sha256.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $found[0].FullName
+          $identity = [ordered]@{
+            run_id = [long]$run.id; run_attempt = [int]$run.run_attempt; head_sha = $run.head_sha; workflow_path = $run.path
+            artifact = $env:MSI_ARTIFACT; name = $found[0].Name; bytes = $found[0].Length; sha256 = $candidateSha
+            sha256_pinned = ($env:MSI_CANDIDATE_SHA256 -cne 'unpinned')
+            authenticode_status = [string]$signature.Status; signer = [string]$signature.SignerCertificate.Subject
+          }
+          [IO.File]::WriteAllText((Join-Path $inputs 'candidate-identity.json'), ($identity | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value "candidate=$($found[0].FullName)"
+
+      - name: Run the MSI update, tamper and missing cases
+        id: probe
+        shell: pwsh
+        env:
+          CANDIDATE: ${{ steps.fetch.outputs.candidate }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputs = Join-Path $env:RUNNER_TEMP 't09-msi-input'
+          pwsh -NoProfile -File (Join-Path $env:GITHUB_WORKSPACE 't09-caller/.github/t09/msi-probe.ps1') `
+            -OldMsi (Join-Path $inputs 'winsmux_0.36.38_x64_en-US.msi') -CandidateMsi $env:CANDIDATE `
+            -OutputRoot (Join-Path $env:RUNNER_TEMP 't09-msi-evidence') -InstallRoot (Join-Path $env:RUNNER_TEMP 't09-msi-root') `
+            -CandidateIdentityPath (Join-Path $inputs 'candidate-identity.json')
+          if ($LASTEXITCODE -ne 0) { throw "MSI probe could not complete its evidence (exit $LASTEXITCODE)." }
+
+      - name: Preserve the MSI evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: t09-msi-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/t09-msi-evidence/
+            ${{ runner.temp }}/t09-msi-input/candidate-identity.json
           if-no-files-found: error
