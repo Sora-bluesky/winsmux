@@ -5658,6 +5658,73 @@ mod native {
             assert_eq!(Error::Busy.classification(), "work_running_or_locked");
             assert_eq!(Error::Io.classification(), "io_unconfirmed");
         }
+        // TASK-881 real-machine refusal (2026-10-21): %LOCALAPPDATA%\winsmux already held the private
+        // GUI's runtime entries and no .winsmux-desktop/installed.json. admit_previous treats every
+        // non-empty unmanaged root as a legacy install, and the compiled legacy profile root is the CI
+        // capture path, so a first install onto a used root is refused instead of preserving the entries.
+        #[test]
+        fn first_install_onto_root_with_foreign_user_entries_preserves_them() {
+            let f = fixture();
+            for dir in ["artifact-snapshots", "ui-attach", "workspace"] {
+                fs::create_dir(f.root.path.join(dir)).unwrap();
+            }
+            fs::write(f.root.path.join("workspace/layout.json"), b"user layout preserved").unwrap();
+            fs::write(f.root.path.join("planning-root.txt"), b"C:\\project\\winsmux\r\n").unwrap();
+            reset_steps(None, false);
+            let result = execute(&f);
+            assert_eq!(result.as_ref().err(), None, "a used root without installed.json is a first install, not a legacy inventory");
+            assert!(result.unwrap().durable_commit);
+            assert_eq!(old(&f).unwrap().0.generation, "managed");
+            assert_eq!(fs::read(f.root.path.join("workspace/layout.json")).unwrap(), b"user layout preserved");
+            assert_eq!(fs::read(f.root.path.join("planning-root.txt")).unwrap(), b"C:\\project\\winsmux\r\n");
+            for dir in ["artifact-snapshots", "ui-attach"] {
+                assert!(f.root.path.join(dir).is_dir(), "{dir} was removed");
+            }
+        }
+
+        // Same machine, next refusal once the root is admitted: Desktop\winsmux.lnk and
+        // Programs\winsmux.lnk already pointed at another winsmux-app.exe (TASK-876 private install).
+        // run_context and run_transaction both refuse a live link that is not an owned old row.
+        #[test]
+        fn first_install_with_foreign_same_name_shortcuts_completes_and_preserves_them() {
+            let mut f = fixture();
+            let known = f.base.join("synthetic-known-folders");
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().shortcut_root = Some(known.clone()));
+            let foreign_target = f.base.join("private-install").join("winsmux-app.exe");
+            fs::create_dir_all(foreign_target.parent().unwrap()).unwrap();
+            fs::write(&foreign_target, b"private gui").unwrap();
+            let mut foreign = Vec::new();
+            for kind in ["desktop", "start_menu"] {
+                let link = known.join(kind).join("winsmux.lnk");
+                fs::create_dir_all(link.parent().unwrap()).unwrap();
+                identity_test_link(&link, &foreign_target);
+                foreign.push(fs::read(&link).unwrap());
+                let source = f.ctx.source.join("shortcuts").join(format!("{kind}.lnk"));
+                fs::create_dir_all(source.parent().unwrap()).unwrap();
+                identity_test_link(&source, &f.root.path.join("winsmux-app.exe"));
+            }
+            f.ctx.desktop = true;
+            f.ctx.start_menu = true;
+            reset_steps(None, false);
+            let result = execute(&f);
+            assert_eq!(result.as_ref().err(), None, "a same-name link owned by another install must not refuse the install");
+            assert!(result.unwrap().durable_commit);
+            for kind in ["desktop", "start_menu"] {
+                verify_link(&known.join(kind).join("winsmux.lnk"), &f.root.path.join("winsmux-app.exe")).unwrap();
+            }
+            for bytes in &foreign {
+                assert!(file_with_bytes_exists(&f.base, bytes), "foreign link bytes were destroyed");
+            }
+        }
+        fn file_with_bytes_exists(dir: &Path, bytes: &[u8]) -> bool {
+            fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).any(|p| {
+                if fs::symlink_metadata(&p).unwrap().is_dir() {
+                    file_with_bytes_exists(&p, bytes)
+                } else {
+                    fs::read(&p).is_ok_and(|b| b == bytes)
+                }
+            })
+        }
         #[test]
         fn observed_open_native_readonly_and_mutable_success_missing_and_sharing() {
             for mutable in [false, true] {
