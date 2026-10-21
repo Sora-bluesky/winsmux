@@ -2804,15 +2804,17 @@ mod native {
             .as_ref()
             .map(|bytes| serde_json::from_slice(bytes).map_err(|_| Error::Pending))
             .transpose()?;
-        let mut shortcuts = prior
-            .as_ref()
-            .map(|state| state.shortcuts.clone())
-            .unwrap_or_default();
-        for row in p
+        let published: Vec<&Move> = p
             .new
             .iter()
             .filter(|r| matches!(r.domain.as_str(), "desktop" | "start_menu"))
-        {
+            .collect();
+        // A kind published again replaces the prior row, which an update does only when that link was gone.
+        let mut shortcuts: Vec<Shortcut> = prior
+            .as_ref()
+            .map(|state| state.shortcuts.iter().filter(|s| !published.iter().any(|r| r.domain == s.kind)).cloned().collect())
+            .unwrap_or_default();
+        for row in published {
             shortcuts.push(Shortcut {
                 kind: row.domain.clone(),
                 member: row.member.clone(),
@@ -2960,6 +2962,9 @@ mod native {
         }
         let plan = checked_owned_plan(&p.plan_bytes, &p.plan_sha256)?;
         let mut old_expected = Vec::new();
+        // Uninstall backs up only the product links still in their known folders, so these rows
+        // may be absent from p.old but nothing else may stand in for them.
+        let mut old_optional = Vec::new();
         let mut prior_preserved = Vec::new();
         if let Some(bytes) = &p.prior_state {
             let s: Installed = serde_json::from_slice(bytes).map_err(|_| Error::Pending)?;
@@ -2967,7 +2972,7 @@ mod native {
             prior_preserved = s.preserved.clone();
             old_expected.extend(s.members.iter().map(|m| ("root".to_string(), m.clone())));
             if p.action == Action::Uninstall {
-                old_expected.extend(
+                old_optional.extend(
                     s.shortcuts
                         .iter()
                         .map(|s| (s.kind.clone(), s.member.clone())),
@@ -2988,11 +2993,13 @@ mod native {
                 old_expected.push(("state".into(), state.member.clone()));
             }
         }
-        if p.old.len() != old_expected.len()
+        let matches_row = |m: &Move, rows: &[(String, Member)]| rows.iter().any(|(d, row)| d == &m.domain && row == &m.member);
+        let required = p.old.iter().filter(|m| matches_row(m, &old_expected)).count();
+        let mut seen_old = HashSet::new();
+        if required != old_expected.len()
             || p.old.iter().any(|m| {
-                !old_expected
-                    .iter()
-                    .any(|(d, row)| d == &m.domain && row == &m.member)
+                !seen_old.insert((m.domain.clone(), m.member.path.clone()))
+                    || !(matches_row(m, &old_expected) || matches_row(m, &old_optional))
             })
         {
             return Err(Error::Pending);
@@ -3261,8 +3268,13 @@ mod native {
         if let Some(bytes) = &p.prior_state {
             let old: Installed = serde_json::from_slice(bytes).map_err(|_| Error::Pending)?;
             validate_installed(&old, root, &p.actor_sid)?;
+            // A link this operation backed up is checked with p.old above. One it never touched
+            // was either in place or already gone before the operation, and stays whichever it was.
             for link in &old.shortcuts {
                 let path = known_shortcut(&link.kind)?;
+                if !p.old.iter().any(|row| row.domain == link.kind) && !exists(&path)? {
+                    continue;
+                }
                 let mut held = exact(&path, &link.member, false).map_err(|_| Error::Pending)?;
                 verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
             }
@@ -3582,9 +3594,9 @@ mod native {
                 derived_origin(exact(&root.path.join(&member.path), member, true), Some(DerivedOrigin::ManagedMemberParent))?;
             }
             for link in &state.shortcuts {
-                let path = known_shortcut(&link.kind)?;
-                let mut held = derived_origin(exact(&path, &link.member, true), shortcut_origin(&link.kind, DerivedOrigin::ManagedDesktopParent, DerivedOrigin::ManagedProgramsParent))?;
-                verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
+                if let Some(mut held) = owned_shortcut_or_absent(link)? {
+                    verify_link_held(&mut held, &root.path.join("winsmux-app.exe"))?;
+                }
             }
             for row in &state.preserved {
                 exact(&preserved_path(&root.path, &row.kind)?, &row.member, true)?;
@@ -3613,6 +3625,20 @@ mod native {
             .unwrap_or_default();
         admit_control_namespace(root, inherited.as_ref(), &preserved_kinds)?;
         Ok((old, inherited))
+    }
+    /// A product link another installer deleted from its known folder is already in the state an
+    /// uninstall would leave, and an update publishes it again, so its absence is admitted. Anything
+    /// else at that path is a foreign file the user moves away; the parked link stays untouched.
+    fn owned_shortcut_or_absent(link: &Shortcut) -> Result<Option<Observed>> {
+        let path = known_shortcut(&link.kind)?;
+        if !exists(&path)? {
+            return Ok(None);
+        }
+        let origin = shortcut_origin(&link.kind, DerivedOrigin::ManagedDesktopParent, DerivedOrigin::ManagedProgramsParent);
+        match derived_origin(exact(&path, &link.member, true), origin) {
+            Err(Error::Member) => Err(Error::Occupied),
+            held => held.map(Some),
+        }
     }
     fn legacy_profile_claims(root: &Dirs) -> Result<bool> {
         Ok(legacy()?
@@ -3837,12 +3863,16 @@ mod native {
                 });
             }
             if ctx.action == Action::Uninstall {
+                // A product link already gone from its known folder has no row: there is nothing to
+                // back up or remove, and the parked link below returns to the free path.
                 for link in &state.shortcuts {
-                    old_rows.push(Move {
-                        member: link.member.clone(),
-                        domain: link.kind.clone(),
-                        phase: MovePhase::Prepared,
-                    });
+                    if exists(&known_shortcut(&link.kind)?)? {
+                        old_rows.push(Move {
+                            member: link.member.clone(),
+                            domain: link.kind.clone(),
+                            phase: MovePhase::Prepared,
+                        });
+                    }
                 }
             }
             if state.generation == "managed" {
@@ -3857,10 +3887,12 @@ mod native {
         if ctx.action == Action::Install {
             for (domain, relative, from, admitted) in sources {
                 derived_origin(exact(&from, &admitted, false), Some(DerivedOrigin::TransactionSourceAdmitParent))?;
+                // An update keeps a product link that is still in place and publishes one that is gone.
                 if domain != "root"
                     && old
                         .as_ref()
                         .is_some_and(|(state, _)| state.shortcuts.iter().any(|s| s.kind == domain))
+                    && exists(&known_shortcut(&domain)?)?
                 {
                     continue;
                 }
@@ -5995,6 +6027,10 @@ mod native {
         // Same machine, next refusal once the root is admitted: Desktop\winsmux.lnk and
         // Programs\winsmux.lnk already pointed at another winsmux-app.exe (TASK-876 private install).
         fn foreign_shortcut_fixture() -> (Fixture, PathBuf, Vec<(String, Vec<u8>)>) {
+            foreign_shortcut_fixture_enabling(&["desktop", "start_menu"])
+        }
+        /// Both known folders hold a link another install owns; the install publishes only `enabled`.
+        fn foreign_shortcut_fixture_enabling(enabled: &[&str]) -> (Fixture, PathBuf, Vec<(String, Vec<u8>)>) {
             let mut f = fixture();
             let known = f.base.join("synthetic-known-folders");
             hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().shortcut_root = Some(known.clone()));
@@ -6007,14 +6043,27 @@ mod native {
                 fs::create_dir_all(link.parent().unwrap()).unwrap();
                 identity_test_link(&link, &foreign_target);
                 foreign.push((kind.to_string(), fs::read(&link).unwrap()));
-                let source = f.ctx.source.join("shortcuts").join(format!("{kind}.lnk"));
-                fs::create_dir_all(source.parent().unwrap()).unwrap();
-                identity_test_link(&source, &f.root.path.join("winsmux-app.exe"));
             }
-            f.ctx.desktop = true;
-            f.ctx.start_menu = true;
+            for kind in enabled {
+                enable_shortcut_source(&mut f, kind);
+            }
             reset_steps(None, false);
             (f, known, foreign)
+        }
+        fn enable_shortcut_source(f: &mut Fixture, kind: &str) {
+            let source = f.ctx.source.join("shortcuts").join(format!("{kind}.lnk"));
+            fs::create_dir_all(source.parent().unwrap()).unwrap();
+            identity_test_link(&source, &f.root.path.join("winsmux-app.exe"));
+            match kind {
+                "desktop" => f.ctx.desktop = true,
+                "start_menu" => f.ctx.start_menu = true,
+                _ => panic!("unknown shortcut kind"),
+            }
+        }
+        fn parked_bytes_intact(f: &Fixture, foreign: &[(String, Vec<u8>)]) {
+            for (kind, bytes) in foreign {
+                assert_eq!(fs::read(parked_link(f, kind)).unwrap(), *bytes, "{kind} parked bytes");
+            }
         }
         fn parked_link(f: &Fixture, kind: &str) -> PathBuf {
             preserved_path(&f.root.path, kind).unwrap()
@@ -6102,6 +6151,130 @@ mod native {
                     }
                 }
             }
+        }
+        #[test]
+        fn every_uninstall_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
+            let (mut good, _, _) = foreign_shortcut_fixture();
+            assert!(execute(&good).unwrap().durable_commit);
+            good.ctx.action = Action::Uninstall;
+            operation_trace(&good);
+            for at in identity_cut_selection("foreign-shortcuts-uninstall") {
+                for crash in [false, true] {
+                    let (mut f, known, foreign) = foreign_shortcut_fixture();
+                    assert!(execute(&f).unwrap().durable_commit);
+                    f.ctx.action = Action::Uninstall;
+                    reset_steps(Some(at), crash);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&f)));
+                    reset_steps(None, false);
+                    let recovery = recover_if_readable(&f);
+                    for (kind, bytes) in &foreign {
+                        let live = fs::read(known.join(kind).join("winsmux.lnk")).ok() == Some(bytes.clone());
+                        let parked = fs::read(parked_link(&f, kind)).ok() == Some(bytes.clone());
+                        assert!(live ^ parked, "uninstall cut {at} crash {crash} {kind}: live={live} parked={parked}");
+                    }
+                    if recovery.is_ok() {
+                        if old(&f).is_some() {
+                            assert_foreign_parked(&f, &known, &foreign);
+                            assert!(execute(&f).unwrap().durable_commit, "uninstall cut {at} crash {crash}");
+                        }
+                        assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+                        assert_foreign_live(&f, &known, &foreign);
+                    }
+                }
+            }
+        }
+        #[test]
+        fn first_install_refuses_a_stray_file_in_the_parked_area_and_leaves_everything() {
+            let (f, known, foreign) = foreign_shortcut_fixture();
+            let stray = parked_link(&f, "desktop");
+            fs::create_dir_all(stray.parent().unwrap()).unwrap();
+            fs::write(&stray, b"not parked by winsmux").unwrap();
+            assert_eq!(execute(&f).err(), Some(Error::Path(155)), "a parked area nobody's state records is refused before anything moves");
+            assert_eq!(fs::read(&stray).unwrap(), b"not parked by winsmux");
+            for (kind, bytes) in &foreign {
+                assert_eq!(fs::read(known.join(kind).join("winsmux.lnk")).unwrap(), *bytes, "{kind} live bytes");
+            }
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert!(!exists(&f.root.path.join("winsmux-app.exe")).unwrap());
+        }
+        #[test]
+        fn update_and_uninstall_refuse_a_changed_parked_link_and_leave_everything() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            let before = old(&f).unwrap().1;
+            fs::write(parked_link(&f, "desktop"), b"edited while parked").unwrap();
+            assert_eq!(execute(&f).err(), Some(Error::Member), "update: a parked link winsmux cannot vouch for");
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert_eq!(execute(&f).err(), Some(Error::Member), "uninstall: a parked link winsmux cannot vouch for");
+            assert_eq!(fs::read(parked_link(&f, "desktop")).unwrap(), b"edited while parked");
+            assert_eq!(fs::read(parked_link(&f, "start_menu")).unwrap(), foreign[1].1);
+            assert_eq!(old(&f).unwrap().1, before, "owned state changed by a refusal");
+            for kind in ["desktop", "start_menu"] {
+                verify_link(&known.join(kind).join("winsmux.lnk"), &f.root.path.join("winsmux-app.exe")).unwrap();
+            }
+        }
+        #[test]
+        fn update_parks_a_newly_enabled_kind_beside_the_one_already_parked() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture_enabling(&["desktop"]);
+            assert!(execute(&f).unwrap().durable_commit);
+            let state = old(&f).unwrap().0;
+            assert_eq!(state.preserved.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(), ["desktop"]);
+            assert_eq!(fs::read(known.join("start_menu").join("winsmux.lnk")).unwrap(), foreign[1].1, "a kind the install does not publish stays where it is");
+            enable_shortcut_source(&mut f, "start_menu");
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_live(&f, &known, &foreign);
+        }
+        // Another install (the TASK-876 private build) owns the parked links. When it is updated or
+        // removed it may delete or recreate Desktop\winsmux.lnk by name, which is now the product link.
+        #[test]
+        fn product_link_deleted_by_another_install_is_republished_on_update_and_skipped_on_uninstall() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            let desktop = known.join("desktop").join("winsmux.lnk");
+            fs::remove_file(&desktop).unwrap();
+            reset_steps(None, false);
+            let update = execute(&f);
+            assert_eq!(update.as_ref().err(), None, "a product link already gone must not stop the update");
+            assert!(update.unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            let state = old(&f).unwrap().0;
+            assert_eq!(state.shortcuts.len(), 2);
+            assert_eq!(state.shortcuts.iter().find(|s| s.kind == "desktop").unwrap().member.sha256, hash(&fs::read(&desktop).unwrap()));
+            fs::remove_file(&desktop).unwrap();
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            let uninstall = execute(&f);
+            assert_eq!(uninstall.as_ref().err(), None, "a product link already gone must not stop the uninstall");
+            assert!(uninstall.unwrap().durable_commit);
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert_foreign_live(&f, &known, &foreign);
+        }
+        #[test]
+        fn product_link_recreated_by_another_install_is_occupied_until_the_user_moves_it() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            let before = old(&f).unwrap().1;
+            let desktop = known.join("desktop").join("winsmux.lnk");
+            fs::remove_file(&desktop).unwrap();
+            fs::write(&desktop, b"recreated by the other install").unwrap();
+            reset_steps(None, false);
+            assert_eq!(execute(&f).err(), Some(Error::Occupied), "update");
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert_eq!(execute(&f).err(), Some(Error::Occupied), "uninstall");
+            assert_eq!(fs::read(&desktop).unwrap(), b"recreated by the other install");
+            parked_bytes_intact(&f, &foreign);
+            assert_eq!(old(&f).unwrap().1, before, "owned state changed by a refusal");
+            fs::remove_file(&desktop).unwrap();
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_live(&f, &known, &foreign);
         }
         // The 23b679cc helper wrote installed.json and pending.json without a preserved field. The
         // fixtures below are the current files with any such field removed, which is byte for byte
