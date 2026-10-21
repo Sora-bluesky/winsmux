@@ -6484,34 +6484,57 @@ mod native {
             assert!(!exists(&known.join("desktop").join("winsmux.lnk")).unwrap());
             assert_eq!(fs::read(known.join("start_menu").join("winsmux.lnk")).unwrap(), start_menu);
         }
-        /// Fails unless `text` (installed.json, or pending.json with the states it embeds) carries
-        /// exactly the keys the 23b679cc helper wrote.
-        fn assert_23b679cc_keys(text: &str) {
-            let keys = |v: &serde_json::Value| {
-                let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
-                keys.sort();
-                keys
-            };
-            let state = |v: &serde_json::Value| {
-                assert_eq!(keys(v), ["action", "actor_sid", "generation", "host", "legacy_capture", "members", "operation_id", "plan_bytes", "plan_sha256", "registration", "root", "root_identity", "schema", "shortcuts", "version"]);
-                for link in v["shortcuts"].as_array().unwrap() {
-                    assert_eq!(keys(link), ["aumid", "kind", "member", "target"]);
+        /// The objects the 23b679cc helper serialized, named by the field or list that holds them,
+        /// with their keys sorted.
+        const SHAPES_23B679CC: &[(&str, &[&str])] = &[
+            ("installed", &["action", "actor_sid", "generation", "host", "legacy_capture", "members", "operation_id", "plan_bytes", "plan_sha256", "registration", "root", "root_identity", "schema", "shortcuts", "version"]),
+            ("journal", &["payload", "schema", "sha256"]),
+            ("payload", &["action", "actor_sid", "commit_bytes", "control_identity", "journal_identity", "new", "old", "operation_id", "ops_identity", "owned_dirs", "phase", "plan_bytes", "plan_sha256", "prior_state", "root", "root_identity", "schema", "slots"]),
+            ("legacy_capture", &["capture_receipt_sha256", "original_installer_sha256"]),
+            ("shortcuts", &["aumid", "kind", "member", "target"]),
+            ("old", &["domain", "member", "phase"]),
+            ("new", &["domain", "member", "phase"]),
+            ("members", &["bytes", "identity", "path", "sha256"]),
+            ("member", &["bytes", "identity", "path", "sha256"]),
+            ("slots", &["desired", "id", "phase", "prior"]),
+            ("registration", &["data", "type"]),
+            ("prior", &["data", "type"]),
+            ("desired", &["data", "type"]),
+            ("owned_dirs", &["identity", "path"]),
+            ("identity", &["index", "volume"]),
+            ("root_identity", &["index", "volume"]),
+            ("journal_identity", &["index", "volume"]),
+            ("control_identity", &["index", "volume"]),
+            ("ops_identity", &["index", "volume"]),
+        ];
+        fn assert_23b679cc_shape(value: &serde_json::Value, held_by: &str) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    let expected = SHAPES_23B679CC.iter().find(|(name, _)| *name == held_by).unwrap_or_else(|| panic!("the 23b679cc helper wrote no object in {held_by}")).1;
+                    let mut keys: Vec<&str> = map.keys().map(String::as_str).collect();
+                    keys.sort();
+                    assert_eq!(keys, expected, "keys of an object in {held_by}");
+                    for (key, child) in map {
+                        assert_23b679cc_shape(child, key);
+                    }
                 }
-            };
+                serde_json::Value::Array(items) => items.iter().for_each(|item| assert_23b679cc_shape(item, held_by)),
+                _ => {}
+            }
+        }
+        /// Fails unless `text` (installed.json, or pending.json with the states it embeds) has,
+        /// at every depth, exactly the keys the 23b679cc helper wrote.
+        fn assert_23b679cc_keys(text: &str) {
             let value: serde_json::Value = serde_json::from_str(text).unwrap();
             if value["schema"] == "winsmux-desktop-nsis-installed/v1" {
-                return state(&value);
+                return assert_23b679cc_shape(&value, "installed");
             }
             assert_eq!(value["schema"], "winsmux-desktop-nsis-journal/v1");
-            let p = &value["payload"];
-            assert_eq!(keys(p), ["action", "actor_sid", "commit_bytes", "control_identity", "journal_identity", "new", "old", "operation_id", "ops_identity", "owned_dirs", "phase", "plan_bytes", "plan_sha256", "prior_state", "root", "root_identity", "schema", "slots"]);
-            for row in p["old"].as_array().unwrap().iter().chain(p["new"].as_array().unwrap()) {
-                assert_eq!(keys(row), ["domain", "member", "phase"]);
-            }
-            for embedded in [&p["prior_state"], &p["commit_bytes"]] {
+            assert_23b679cc_shape(&value, "journal");
+            for embedded in [&value["payload"]["prior_state"], &value["payload"]["commit_bytes"]] {
                 if let Some(bytes) = embedded.as_array() {
                     let bytes: Vec<u8> = bytes.iter().map(|b| b.as_u64().unwrap() as u8).collect();
-                    state(&serde_json::from_slice(&bytes).unwrap());
+                    assert_23b679cc_shape(&serde_json::from_slice(&bytes).unwrap(), "installed");
                 }
             }
         }
