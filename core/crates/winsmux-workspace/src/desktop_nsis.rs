@@ -632,7 +632,9 @@ struct Installed {
     members: Vec<Member>,
     registration: Vec<Option<RawValue>>,
     shortcuts: Vec<Shortcut>,
-    #[serde(default)]
+    // Helpers before 0.38.0 wrote no preserved field. An empty list serializes to their exact bytes,
+    // so their state files, journals and commit bytes still pass the re-serialization checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     preserved: Vec<PreservedShortcut>,
     operation_id: String,
     action: Action,
@@ -689,6 +691,7 @@ struct Pending {
     prior_state: Option<Vec<u8>>,
     old: Vec<Move>,
     new: Vec<Move>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     preserved: Vec<Move>,
     slots: Vec<Slot>,
     phase: Phase,
@@ -6097,6 +6100,62 @@ mod native {
                     }
                 }
             }
+        }
+        // The 23b679cc helper wrote installed.json and pending.json without a preserved field. The
+        // fixtures below are the current files with any such field removed, which is byte for byte
+        // what that helper produced when no foreign link was involved.
+        fn strip_preserved_field(path: &Path) -> String {
+            let text = String::from_utf8(fs::read(path).unwrap()).unwrap();
+            let needle = ",\"preserved\":[]";
+            assert!(text.matches(needle).count() <= 1, "{}", path.display());
+            let stripped = text.replace(needle, "");
+            assert!(!stripped.contains("\"preserved\""), "{}", path.display());
+            stripped
+        }
+        fn write_pre_preserved_state(f: &Fixture) {
+            let state = f.root.path.join(CONTROL).join("installed.json");
+            fs::write(&state, strip_preserved_field(&state)).unwrap();
+        }
+        fn write_pre_preserved_journal(f: &Fixture) {
+            let journal = f.root.path.join(CONTROL).join("pending.json");
+            let text = strip_preserved_field(&journal);
+            let start = text.find("\"payload\":").unwrap() + "\"payload\":".len();
+            let payload = &text[start..text.len() - 1];
+            let sha = hash(payload.as_bytes());
+            let old_sha = text["{\"schema\":\"winsmux-desktop-nsis-journal/v1\",\"sha256\":\"".len()..][..64].to_string();
+            fs::write(&journal, text.replacen(&old_sha, &sha, 1)).unwrap();
+        }
+        #[test]
+        fn update_interrupted_by_the_pre_preserved_helper_during_backing_up_is_completed() {
+            let good = mode_fixture("managed");
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "move_after").unwrap() + 1;
+            let f = mode_fixture("managed");
+            write_pre_preserved_state(&f);
+            let previous = old(&f).unwrap().0;
+            assert!(previous.preserved.is_empty());
+            crash_at(&f, at);
+            assert!(exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap());
+            write_pre_preserved_journal(&f);
+            let result = execute(&f);
+            assert_eq!(result.as_ref().err(), None, "the pre-preserved journal must be recovered, not refused");
+            assert!(result.unwrap().durable_commit);
+            let state = old(&f).unwrap().0;
+            assert_ne!(state.operation_id, previous.operation_id);
+            assert_previous(&f, &state);
+            assert!(!exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap());
+        }
+        #[test]
+        fn install_committed_by_the_pre_preserved_helper_is_admitted_for_update_and_uninstall() {
+            let mut f = mode_fixture("managed");
+            write_pre_preserved_state(&f);
+            let previous = old(&f).unwrap().0;
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_ne!(old(&f).unwrap().0.operation_id, previous.operation_id);
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
         }
         #[test]
         fn observed_open_native_readonly_and_mutable_success_missing_and_sharing() {
