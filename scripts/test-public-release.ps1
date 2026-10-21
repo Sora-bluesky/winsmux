@@ -6535,6 +6535,101 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ([regex]::Matches($template, '(?m)^!insertmacro WINSMUX_CONTEXT_FUNCTION un\.WinsmuxWriteUninstallContext uninstall$').Count -eq 1) 'Desktop NSIS native uninstall context action differs.'
 }
 
+# A committed NSIS uninstall journal and the installed states on either side of it, in the shape the desktop_nsis.rs
+# helper writes for legacy adopt, same-version update and uninstall. $Mutate edits the documents before they are
+# sealed, so prior_state, digests and witness rows always agree with the edit and a case fails only for its edit.
+function New-DesktopNativeJournalFixture {
+    param([switch]$Preserved, [scriptblock]$Mutate)
+    $volume = '\\?\Volume{00000000-0000-4000-8000-000000000000}'
+    $root = 'C:\winsmux-selftest\installed'
+    $sid = 'S-1-5-21-0-0-0-1001'
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    $hash = { param([byte[]]$Bytes) [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($Bytes)).ToLowerInvariant() }
+    $id = { param([uint64]$Index) [ordered]@{ volume = $volume; index = $Index } }
+    $observed = { param([uint64]$Index) 'selftest:' + ($Index -shr 32) + ':' + ($Index -band 0xffffffffL) }
+    $member = { param([string]$Path, [string]$Text, [uint64]$Index) $bytes = $utf8.GetBytes($Text); [ordered]@{ path = $Path; bytes = $bytes.Length; sha256 = (& $hash $bytes); identity = (& $id $Index) } }
+    $copy = { param($Value) ConvertTo-Json -InputObject $Value -Depth 64 -Compress | ConvertFrom-Json -AsHashtable }
+    $plan = $utf8.GetBytes('{"schema":"selftest-plan"}')
+    $registration = [object[]]::new(22)
+    $registration[1] = [ordered]@{ type = 1; data = [int[]][Text.UnicodeEncoding]::new($false, $false, $true).GetBytes('1041' + [char]0) }
+    $state = {
+        param([string]$OperationId)
+        $value = [ordered]@{ schema = 'winsmux-desktop-nsis-installed/v1'; generation = 'managed'; legacy_capture = $null; actor_sid = $sid; root = $root; root_identity = (& $id 1); host = 'x86_64-pc-windows-msvc'; version = '0.38.0'; plan_sha256 = (& $hash $plan); plan_bytes = [int[]]$plan; members = @(& $member 'winsmux-app.exe' 'selftest gui' 2); registration = $registration }
+        $value.shortcuts = @([ordered]@{ kind = 'desktop'; member = (& $member 'winsmux.lnk' 'product desktop link' 3); target = (Join-Path $root 'winsmux-app.exe'); aumid = 'io.github.sora-bluesky.winsmux'; folder = (Get-DesktopNativeShortcutFolder desktop) }, [ordered]@{ kind = 'start_menu'; member = (& $member 'winsmux.lnk' 'product start menu link' 4); target = (Join-Path $root 'winsmux-app.exe'); aumid = 'io.github.sora-bluesky.winsmux'; folder = (Get-DesktopNativeShortcutFolder start_menu) })
+        if ($Preserved) { $value.preserved = @([ordered]@{ kind = 'desktop'; member = (& $member 'winsmux.lnk' 'foreign desktop link' 5); folder = (Get-DesktopNativeShortcutFolder desktop) }) }
+        $value.operation_id = $OperationId; $value.action = 'install'
+        return $value
+    }
+    $prior = & $state '11111111-1111-4111-8111-111111111111'
+    $payload = [ordered]@{ schema = 'winsmux-desktop-nsis-pending/v1'; operation_id = '33333333-3333-4333-8333-333333333333'; action = 'uninstall'; actor_sid = $sid; root = $root; root_identity = (& $id 1); plan_sha256 = $prior.plan_sha256; plan_bytes = [int[]]$plan; prior_state = $null }
+    $payload.old = @(@($prior.members | ForEach-Object { [ordered]@{ member = (& $copy $_); domain = 'root'; phase = 'moved_confirmed' } }) + @($prior.shortcuts | ForEach-Object { [ordered]@{ member = (& $copy $_.member); domain = $_.kind; phase = 'moved_confirmed'; folder = $_.folder } }) + @([ordered]@{ member = [ordered]@{ path = 'installed.json'; bytes = 0; sha256 = ''; identity = (& $id 6) }; domain = 'state'; phase = 'moved_confirmed' }))
+    $payload.new = @()
+    if ($Preserved) { $payload.preserved = @($prior.preserved | ForEach-Object { [ordered]@{ member = (& $copy $_.member); domain = $_.kind; phase = 'moved_confirmed'; folder = $_.folder } }) }
+    $payload.slots = @(for ($i = 0; $i -lt 22; $i++) { [ordered]@{ id = $i; prior = $registration[$i]; desired = $null; phase = 'published_confirmed' } })
+    $payload.phase = 'committed'; $payload.commit_bytes = $null; $payload.journal_identity = (& $id 7); $payload.control_identity = (& $id 8); $payload.ops_identity = (& $id 9); $payload.owned_dirs = @()
+    $links = [object[]]::new(2)
+    if ($Preserved) { $row = $prior.preserved[0]; $links[0] = [ordered]@{ kind = 'desktop'; path = (Join-Path $row.folder 'winsmux.lnk'); bytes = $row.member.bytes; sha256 = $row.member.sha256; identity = (& $observed $row.member.identity.index) } }
+    $fx = [ordered]@{ prior = $prior; state = (& $state '22222222-2222-4222-8222-222222222222'); payload = $payload; links = $links }
+    if ($null -ne $Mutate) { & $Mutate $fx }
+    $priorText = ConvertTo-Json -InputObject $fx.prior -Depth 64 -Compress
+    $priorBytes = $utf8.GetBytes($priorText)
+    $stateRow = [ordered]@{ path = '.winsmux-desktop/installed.json'; bytes = $priorBytes.Length; sha256 = (& $hash $priorBytes); identity = (& $observed 6) }
+    $fx.payload.prior_state = [int[]]$priorBytes
+    foreach ($row in @($fx.payload.old | Where-Object { $_.domain -ceq 'state' })) { $row.member.bytes = $stateRow.bytes; $row.member.sha256 = $stateRow.sha256 }
+    $envelope = [ordered]@{ schema = 'winsmux-desktop-nsis-journal/v1'; sha256 = ''; payload = $fx.payload }
+    $envelope.sha256 = Get-DesktopNativeJournalPayloadSha256 $utf8.GetBytes((ConvertTo-Json -InputObject $envelope -Depth 64 -Compress))
+    $raw = $utf8.GetBytes((ConvertTo-Json -InputObject $envelope -Depth 64 -Compress))
+    $sentinel = [ordered]@{ identity = 'selftest:0:10'; bytes = 1; sha256 = ('0' * 64) }
+    return [ordered]@{
+        PlanSha256 = (& $hash $plan)
+        Binding = [ordered]@{ root = $root; actor_sid = $sid; root_identity = (& $id 1); envelope = (ConvertFrom-DesktopStrictJsonText $utf8.GetString($raw)); payload_sha256 = (Get-DesktopNativeJournalPayloadSha256 $raw); journal_identity = (& $id 7); journal_bytes = $raw.Length; journal_sha256 = (& $hash $raw); control_identity = (& $id 8); ops_identity = (& $id 9); ops_empty = $true }
+        State = (ConvertFrom-DesktopStrictJsonText (ConvertTo-Json -InputObject $fx.state -Depth 64 -Compress))
+        PriorState = (ConvertFrom-DesktopStrictJsonText $priorText)
+        Receipt = [ordered]@{ operation_id = $fx.state.operation_id; action = 'install'; plan_sha256 = (& $hash $plan); outcome = 'committed'; durable_commit = $true; owned_registration_verified = $true }
+        PriorWitness = [ordered]@{ root = $root; root_identity = 'selftest-root'; files = @($stateRow); registration = @(); shortcuts = @(); user_sentinel = $sentinel }
+        Witness = [ordered]@{ root = $root; root_identity = 'selftest-root'; files = @([ordered]@{ path = '.winsmux-desktop/pending.json'; bytes = $raw.Length; sha256 = (& $hash $raw); identity = (& $observed 7) }); registration = @(); shortcuts = $fx.links; user_sentinel = $sentinel }
+    }
+}
+
+# Each case runs one journal fixture through Assert-DesktopNativeNsisObservation and records the refusal it raised.
+function Invoke-DesktopNativeJournalCases {
+    $results = [ordered]@{}
+    $run = {
+        param([string]$Name, [string]$Kind, [bool]$Preserved, [string]$Expected, [scriptblock]$Mutate)
+        $fixture = New-DesktopNativeJournalFixture -Preserved:$Preserved -Mutate $Mutate
+        $outcome = try {
+            if ($Kind -ceq 'installed') { [void](Assert-DesktopNativeNsisObservation -Kind installed -Binding $fixture.Binding -PlanSha256 $fixture.PlanSha256 -State $fixture.State) }
+            elseif ($Kind -ceq 'updated') { [void](Assert-DesktopNativeNsisObservation -Kind updated -Binding $fixture.Binding -PlanSha256 $fixture.PlanSha256 -State $fixture.State -PriorState $fixture.PriorState -Receipt $fixture.Receipt) }
+            else { [void](Assert-DesktopNativeNsisObservation -Kind uninstalled -Binding $fixture.Binding -PlanSha256 $fixture.PlanSha256 -PriorState $fixture.PriorState -PriorWitness $fixture.PriorWitness -Witness $fixture.Witness) }
+            'accepted'
+        } catch { $_.Exception.Message }
+        $results[$Name] = [ordered]@{ expected = $Expected; outcome = $outcome }
+    }
+    $elsewhere = 'C:\winsmux-selftest\elsewhere'
+    & $run 'installed_state' installed $true 'accepted' $null
+    & $run 'state_shortcut_folder_array' installed $false 'desktop_native_shortcut_row_refused' { param($f) $f.state.shortcuts[0].folder = @($f.state.shortcuts[0].folder, $elsewhere) }
+    & $run 'state_preserved_folder_array' installed $true 'desktop_native_preserved_row_refused' { param($f) $f.state.preserved[0].folder = @($f.state.preserved[0].folder, $elsewhere) }
+    & $run 'state_preserved_not_list' installed $true 'desktop_native_preserved_not_list' { param($f) $f.state.preserved = $f.state.preserved[0] }
+    & $run 'state_preserved_without_link' installed $true 'desktop_native_preserved_row_refused' { param($f) $f.state.shortcuts = @($f.state.shortcuts[1]) }
+    & $run 'updated_state' updated $true 'accepted' $null
+    & $run 'updated_preserved_dropped' updated $true 'desktop_native_update_preserved_not_carried' { param($f) $f.state.Remove('preserved') }
+    & $run 'uninstall' uninstalled $false 'accepted' $null
+    & $run 'uninstall_restores_preserved' uninstalled $true 'accepted' $null
+    & $run 'old_folder_missing' uninstalled $false 'desktop_inventory_shape_invalid' { param($f) @($f.payload.old | Where-Object { $_.domain -ceq 'desktop' })[0].Remove('folder') }
+    & $run 'old_root_folder_added' uninstalled $false 'desktop_inventory_shape_invalid' { param($f) $f.payload.old[0].folder = (Get-DesktopNativeShortcutFolder desktop) }
+    & $run 'old_folder_moved' uninstalled $false 'desktop_native_shortcut_folder_refused' { param($f) @($f.payload.old | Where-Object { $_.domain -ceq 'desktop' })[0].folder = $elsewhere }
+    & $run 'preserved_empty_serialized' uninstalled $false 'desktop_native_preserved_empty_serialized' { param($f) $f.payload.preserved = @() }
+    & $run 'preserved_not_list' uninstalled $true 'desktop_native_preserved_not_list' { param($f) $f.payload.preserved = $f.payload.preserved[0] }
+    & $run 'preserved_phase_prepared' uninstalled $true 'desktop_native_uninstall_preserved_row_refused' { param($f) $f.payload.preserved[0].phase = 'prepared' }
+    & $run 'preserved_phase_unknown' uninstalled $true 'desktop_native_move_phase_refused' { param($f) $f.payload.preserved[0].phase = 'not-a-phase' }
+    & $run 'preserved_prior_mismatch' uninstalled $true 'desktop_native_uninstall_preserved_row_refused' { param($f) $f.payload.preserved[0].member.sha256 = ('0' * 64) }
+    & $run 'prior_preserved_kind_array' uninstalled $true 'desktop_native_preserved_row_refused' { param($f) $f.prior.preserved[0].kind = @('desktop', 'start_menu') }
+    & $run 'preserved_lost' uninstalled $true 'desktop_native_uninstall_links_refused' { param($f) $f.links[0] = $null }
+    & $run 'preserved_wrong_link' uninstalled $true 'desktop_native_uninstall_links_refused' { param($f) $f.links[0].sha256 = ('0' * 64) }
+    & $run 'link_residue' uninstalled $false 'desktop_native_uninstall_links_refused' { param($f) $product = $f.prior.shortcuts[1].member; $f.links[1] = [ordered]@{ kind = 'start_menu'; path = (Join-Path $f.prior.shortcuts[1].folder 'winsmux.lnk'); bytes = $product.bytes; sha256 = $product.sha256; identity = ('selftest:0:' + $product.identity.index) } }
+    return $results
+}
+
 function Invoke-SelfTest {
     # GetNewClosure captures factory-local values, not inherited script parameters.
     # Pin the normalized coordinates for every surface and every fixture callback.
@@ -6758,6 +6853,10 @@ function Invoke-SelfTest {
                 Assert-Condition ($mutation.Value -cne $nsisTemplateSource) 'Desktop NSIS native adapter negative fixture was unchanged.'
                 Assert-Condition (Test-Throws { Assert-DesktopNativeNsisUninstallAdapterSource -HookSource $nsisHookSource -TemplateSource $mutation.Value }) ('Desktop NSIS native adapter accepted ' + $mutation.Key)
                 $caseIds.Add('desktop_native_uninstall_' + $mutation.Key)
+            }
+            foreach ($journalCase in (Invoke-DesktopNativeJournalCases).GetEnumerator()) {
+                Assert-Condition ($journalCase.Value.outcome -ceq $journalCase.Value.expected) ('Desktop native journal case ' + $journalCase.Key + ' expected ' + $journalCase.Value.expected + ' but got ' + $journalCase.Value.outcome)
+                $caseIds.Add('desktop_native_journal_' + $journalCase.Key)
             }
 
             Assert-DesktopProductVersion -ActualVersion $Version -ExpectedVersion $Version
