@@ -6233,13 +6233,14 @@ mod native {
             let (good, _, _) = without_desktop_link();
             operation_trace(&good);
             let cuts = identity_cut_selection("foreign-shortcuts-uninstall-without-desktop-link");
-            let mut restored = 0;
+            let mut rolled_back = 0;
             for &at in &cuts {
                 for crash in [false, true] {
                     let (f, known, foreign) = without_desktop_link();
                     reset_steps(Some(at), crash);
                     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&f)));
                     reset_steps(None, false);
+                    let interrupted = exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap();
                     let recovery = recover_if_readable(&f);
                     for (kind, bytes) in &foreign {
                         let live = fs::read(known.join(kind).join("winsmux.lnk")).ok() == Some(bytes.clone());
@@ -6248,7 +6249,7 @@ mod native {
                     }
                     if recovery.is_ok() {
                         if old(&f).is_some() {
-                            restored += 1;
+                            rolled_back += usize::from(interrupted);
                             parked_bytes_intact(&f, &foreign);
                             assert!(!exists(&known.join("desktop").join("winsmux.lnk")).unwrap(), "cut {at} crash {crash}: a link the operation never touched came back");
                             verify_link(&known.join("start_menu").join("winsmux.lnk"), &f.root.path.join("winsmux-app.exe")).unwrap();
@@ -6259,7 +6260,7 @@ mod native {
                     }
                 }
             }
-            assert!(restored > 0, "no cut rolled the uninstall back, so the restore path was never exercised");
+            assert!(rolled_back > 0, "no recovery rolled an interrupted uninstall back, so the restore verifier never ran");
         }
         #[test]
         fn first_install_refuses_a_stray_file_in_the_parked_area_and_leaves_everything() {
