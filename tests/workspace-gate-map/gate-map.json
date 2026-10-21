@@ -5608,45 +5608,9 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 135,
-   "text": "'.githooks/pre-commit-whitelist.ps1': '6e255e6b06c7459c9a8ebd41ee4ddcb79f582c303650a2f31528251d677a03ea',",
-   "invokes": ".githooks/pre-commit-whitelist.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 140,
-   "text": "'tests/CliBakeoff.Tests.ps1': '0ba34a19a155689e2f65e381334fd0c1073331f62062ac96a62601d00971c7e1',",
-   "invokes": "tests/CliBakeoff.Tests.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 141,
-   "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': '4939caa74ca878a68183f1d410c2adfb423fc089588b27fd33b33cb0c7102a4b',",
+   "line": 136,
+   "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 145,
-   "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json', 'tests/workspace-gate-map/run.ps1',",
-   "invokes": "tests/workspace-gate-map/check-map.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 145,
-   "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json', 'tests/workspace-gate-map/run.ps1',",
-   "invokes": "tests/workspace-gate-map/run.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 146,
-   "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
-   "invokes": "tests/workspace-gate-map/build-map.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 146,
-   "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
-   "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": "scripts/invoke-headless-startup-actor.ps1",
@@ -8950,73 +8914,37 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 41,
-   "text": "{ path: 'scripts/integrated-publication-origins.mjs', before_sha256: '4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba', after_sha256: 'd'.repeat(64) },",
+   "line": 42,
+   "text": "{ path: 'scripts/integrated-publication-origins.mjs', before_sha256: '618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77', after_sha256: 'd'.repeat(64) },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 43,
-   "text": "{ path: '.githooks/pre-commit-whitelist.ps1', before_sha256: '6e255e6b06c7459c9a8ebd41ee4ddcb79f582c303650a2f31528251d677a03ea', after_sha256: 'f'.repeat(64) },",
-   "invokes": ".githooks/pre-commit-whitelist.ps1"
+   "line": 141,
+   "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
+   "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 47,
-   "text": "{ path: 'tests/CliBakeoff.Tests.ps1', before_sha256: '0ba34a19a155689e2f65e381334fd0c1073331f62062ac96a62601d00971c7e1', after_sha256: 'f'.repeat(64) },",
-   "invokes": "tests/CliBakeoff.Tests.ps1"
+   "line": 142,
+   "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba'; },",
+   "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 49,
-   "text": "{ path: 'tests/workspace-gate-map/check-map.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },",
-   "invokes": "tests/workspace-gate-map/check-map.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 51,
-   "text": "{ path: 'tests/workspace-gate-map/run.ps1', before_sha256: null, after_sha256: 'c'.repeat(64) },",
-   "invokes": "tests/workspace-gate-map/run.ps1"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 52,
-   "text": "{ path: 'tests/workspace-gate-map/build-map.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },",
-   "invokes": "tests/workspace-gate-map/build-map.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 53,
-   "text": "{ path: 'tests/workspace-gate-map/dispositions.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },",
-   "invokes": "tests/workspace-gate-map/dispositions.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 151,
-   "text": "value => { rowOf(value,'tests/workspace-gate-map/run.ps1').before_sha256='0'.repeat(64); },",
-   "invokes": "tests/workspace-gate-map/run.ps1"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 155,
-   "text": "value => { value.source.changes=value.source.changes.filter(row=>row.path!=='tests/workspace-gate-map/check-map.mjs'); },",
-   "invokes": "tests/workspace-gate-map/check-map.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 156,
+   "line": 144,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 158,
-   "text": "value => { value.source.changes.push({...rowOf(value,'tests/workspace-gate-map/run.ps1')}); },",
+   "line": 146,
+   "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 160,
+   "line": 149,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
