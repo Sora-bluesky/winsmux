@@ -757,7 +757,7 @@ RequestExecutionLevel user
 ; 2. License Page (if defined)
 !if "${LICENSE}" != ""
   !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
-  !insertmacro MUI_PAGE_LICENSE "${LICENSE}"
+  !insertmacro MUI_PAGE_LICENSE "$(WINSMUX_LICENSE)"
 !endif
 
 ; Choose install directory and shortcut intent before publication.
@@ -802,6 +802,10 @@ FunctionEnd
 !insertmacro MUI_LANGUAGE "{{this}}"
 {{/each}}
 !insertmacro MUI_RESERVEFILE_LANGDLL
+!if "${LICENSE}" != ""
+  LicenseLangString WINSMUX_LICENSE ${LANG_ENGLISH} "${LICENSE}"
+  LicenseLangString WINSMUX_LICENSE ${LANG_JAPANESE} "${WINSMUX_LICENSE_JAPANESE}"
+!endif
 {{#each language_files}}
   !include "{{this}}"
 {{/each}}

@@ -41,6 +41,7 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',
   'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',
   'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',
+  'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -143,6 +144,7 @@ const expectedSourceChanges = Object.freeze({
 const expectedSourceAdditions = Object.freeze([
   'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json', 'tests/workspace-gate-map/run.ps1',
   'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',
+  'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt',
 ]);
 const expectedSourcePaths = Object.freeze([...Object.keys(expectedSourceChanges), ...expectedSourceAdditions].sort());
 // Pure projection is exported for finite positive/negative tests. It never

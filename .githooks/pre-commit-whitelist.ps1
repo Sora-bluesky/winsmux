@@ -14,6 +14,7 @@ $whitelistPatterns = @(
     'scripts/desktop-native-nsis-observer.mjs',
     'tests/workspace-package/nsis-observer.test.mjs',
     'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt',
+    'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt',
     'distribution/windows-licenses/texts/a38d10afc3ef8fb2e64af972a9c64d998ef964de8101b9f7a59703f72fa3a5ab',
     'distribution/windows-licenses/texts/f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2',
     'core/crates/winsmux-workspace/src/desktop_install.rs',

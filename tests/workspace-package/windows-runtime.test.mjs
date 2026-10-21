@@ -24,8 +24,9 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', '11eb0ec4a8735d47e5468e4be1e9ac0aa805b9b82120ad6541139e74599fa034'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', 'e57b365db191a42b35673fc866f3657aa1a2fcdf8de22a921503661c588353ca'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
+    ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'f90d5194b71858a9db453778c844d2eff25e96d1b1cd3788ded1a7ae64dfc6cf'],
   ]);
   const attributes = spawnSync('git', ['check-attr', 'text', '--', ...files.keys()], { cwd: repoRoot, encoding: 'utf8', windowsHide: true });
   assert.equal(attributes.status, 0, attributes.stderr);
@@ -40,6 +41,17 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
     assert.deepEqual(bytes, blob.stdout, file);
     assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, file);
   }
+});
+
+test('Japanese installer license is a marked reference translation followed by the English original byte for byte', () => {
+  const licenses = path.join(repoRoot, 'distribution/windows-licenses');
+  const english = fs.readFileSync(path.join(licenses, 'MICROSOFT-COMPONENT-TERMS.txt'));
+  const japanese = fs.readFileSync(path.join(licenses, 'MICROSOFT-COMPONENT-TERMS.ja.txt'));
+  assert.deepEqual([...japanese.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  assert.equal(japanese.toString('utf8', 3).split('\n')[0],
+    'この日本語は参考訳です。英語の原文と内容が異なる場合は、英語の原文が優先します。英語の原文は、この訳文のあとにそのまま掲載しています。');
+  assert.deepEqual(japanese.subarray(japanese.length - english.length), english);
+  assert.equal(japanese.toString('utf8', 3, japanese.length - english.length).endsWith('\n英語の原文（English original）\n\n'), true);
 });
 
 test('compiler identity refuses unsuccessful observations and malformed captured bytes', () => {

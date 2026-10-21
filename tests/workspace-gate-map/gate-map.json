@@ -3028,1093 +3028,1093 @@
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 25,
+   "line": 26,
    "text": "'scripts/stage-desktop-msi-plan.mjs',",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 26,
+   "line": 27,
    "text": "'scripts/stage-desktop-nsis-plan.mjs',",
    "invokes": "scripts/stage-desktop-nsis-plan.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 27,
+   "line": 28,
    "text": "'tests/workspace-package/desktop-msi-plan.test.mjs',",
    "invokes": "tests/workspace-package/desktop-msi-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 28,
+   "line": 29,
    "text": "'tests/workspace-package/desktop-build-entry.test.mjs',",
    "invokes": "tests/workspace-package/desktop-build-entry.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 29,
+   "line": 30,
    "text": "'tests/workspace-package/desktop-nsis-plan.test.mjs',",
    "invokes": "tests/workspace-package/desktop-nsis-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 30,
+   "line": 31,
    "text": "'tests/workspace-update/install-lifecycle.test.ps1',",
    "invokes": "tests/workspace-update/install-lifecycle.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 31,
+   "line": 32,
    "text": "'tests/workspace-update/run.ps1',",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 32,
+   "line": 33,
    "text": "'tests/workspace-gate-map/build-map.mjs',",
    "invokes": "tests/workspace-gate-map/build-map.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 33,
+   "line": 34,
    "text": "'tests/workspace-gate-map/check-map.mjs',",
    "invokes": "tests/workspace-gate-map/check-map.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 34,
+   "line": 35,
    "text": "'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 36,
+   "line": 37,
    "text": "'tests/workspace-gate-map/run.ps1',",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 134,
+   "line": 135,
    "text": "'scripts/bootstrap-git-guard.ps1',",
    "invokes": "scripts/bootstrap-git-guard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 135,
+   "line": 136,
    "text": "'scripts/bump-version.ps1',",
    "invokes": "scripts/bump-version.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 136,
+   "line": 137,
    "text": "'scripts/git-guard.ps1',",
    "invokes": "scripts/git-guard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 137,
+   "line": 138,
    "text": "'scripts/gitleaks-history.ps1',",
    "invokes": "scripts/gitleaks-history.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 139,
+   "line": 140,
    "text": "'scripts/audit-public-surface.ps1',",
    "invokes": "scripts/audit-public-surface.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 140,
+   "line": 141,
    "text": "'scripts/assert-release-notes-quality.ps1',",
    "invokes": "scripts/assert-release-notes-quality.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 141,
+   "line": 142,
    "text": "'scripts/assert-pester-shard-coverage.ps1',",
    "invokes": "scripts/assert-pester-shard-coverage.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 142,
+   "line": 143,
    "text": "'scripts/run-pester-shard.ps1',",
    "invokes": "scripts/run-pester-shard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 143,
+   "line": 144,
    "text": "'scripts/operator-run-full-tests.ps1',",
    "invokes": "scripts/operator-run-full-tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 144,
+   "line": 145,
    "text": "'scripts/winsmux-core.ps1',",
    "invokes": "scripts/winsmux-core.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 145,
+   "line": 146,
    "text": "'scripts/run-tests.ps1',",
    "invokes": "scripts/run-tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 146,
+   "line": 147,
    "text": "'scripts/winsmux-pester.psm1',",
    "invokes": "scripts/winsmux-pester.psm1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 147,
+   "line": 148,
    "text": "'scripts/winsmux-task811-authority.ps1',",
    "invokes": "scripts/winsmux-task811-authority.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 148,
+   "line": 149,
    "text": "'scripts/assert-install-downloads-exist.ps1',",
    "invokes": "scripts/assert-install-downloads-exist.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 149,
+   "line": 150,
    "text": "'scripts/codex-subagent-worktree-guard.ps1',",
    "invokes": "scripts/codex-subagent-worktree-guard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 150,
+   "line": 151,
    "text": "'scripts/run-cli-bakeoff-openrouter.ps1',",
    "invokes": "scripts/run-cli-bakeoff-openrouter.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 151,
+   "line": 152,
    "text": "'scripts/run-cli-bakeoff-local-workers.ps1',",
    "invokes": "scripts/run-cli-bakeoff-local-workers.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 152,
+   "line": 153,
    "text": "'scripts/start-cli-bakeoff-desktop.ps1',",
    "invokes": "scripts/start-cli-bakeoff-desktop.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 153,
+   "line": 154,
    "text": "'scripts/summarize-cli-bakeoff.ps1',",
    "invokes": "scripts/summarize-cli-bakeoff.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 154,
+   "line": 155,
    "text": "'scripts/test-cli-bakeoff-preflight.ps1',",
    "invokes": "scripts/test-cli-bakeoff-preflight.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 155,
+   "line": 156,
    "text": "'scripts/test-install-e2e.ps1',",
    "invokes": "scripts/test-install-e2e.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 156,
+   "line": 157,
    "text": "'scripts/test-native-bridge-resolution.ps1',",
    "invokes": "scripts/test-native-bridge-resolution.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 157,
+   "line": 158,
    "text": "'scripts/test-install-redirected.ps1',",
    "invokes": "scripts/test-install-redirected.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 158,
+   "line": 159,
    "text": "'scripts/package-remote-helper.sh',",
    "invokes": "scripts/package-remote-helper.sh"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 159,
+   "line": 160,
    "text": "'scripts/test-public-remote-helper.sh',",
    "invokes": "scripts/test-public-remote-helper.sh"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 160,
+   "line": 161,
    "text": "'scripts/test-public-release.ps1',",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 161,
+   "line": 162,
    "text": "'scripts/invoke-headless-startup-actor.ps1',",
    "invokes": "scripts/invoke-headless-startup-actor.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 162,
+   "line": 163,
    "text": "'scripts/desktop-install-inventory.ps1',",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 163,
+   "line": 164,
    "text": "'scripts/capture-desktop-baseline.ps1',",
    "invokes": "scripts/capture-desktop-baseline.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 165,
+   "line": 166,
    "text": "'scripts/test-v03617-reliability-gate.ps1',",
    "invokes": "scripts/test-v03617-reliability-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 166,
+   "line": 167,
    "text": "'scripts/test-v03618-release-hardening.ps1',",
    "invokes": "scripts/test-v03618-release-hardening.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 167,
+   "line": 168,
    "text": "'scripts/test-v03619-repo-audit.ps1',",
    "invokes": "scripts/test-v03619-repo-audit.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 168,
+   "line": 169,
    "text": "'scripts/test-v03620-coordinator-foundation.ps1',",
    "invokes": "scripts/test-v03620-coordinator-foundation.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 169,
+   "line": 170,
    "text": "'scripts/test-v03621-local-router-shadow.ps1',",
    "invokes": "scripts/test-v03621-local-router-shadow.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 170,
+   "line": 171,
    "text": "'scripts/test-v03623-session-readiness.ps1',",
    "invokes": "scripts/test-v03623-session-readiness.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 171,
+   "line": 172,
    "text": "'scripts/test-v03626-desktop-split-gate.ps1',",
    "invokes": "scripts/test-v03626-desktop-split-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 172,
+   "line": 173,
    "text": "'scripts/test-v03627-compat-performance-gate.ps1',",
    "invokes": "scripts/test-v03627-compat-performance-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 173,
+   "line": 174,
    "text": "'scripts/test-v03628-race-abnormal-soak.ps1',",
    "invokes": "scripts/test-v03628-race-abnormal-soak.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 174,
+   "line": 175,
    "text": "'scripts/test-v03628-runtime-reliability-gate.ps1',",
    "invokes": "scripts/test-v03628-runtime-reliability-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 175,
+   "line": 176,
    "text": "'scripts/test-v03628-packaged-restore-gate.ps1',",
    "invokes": "scripts/test-v03628-packaged-restore-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 176,
+   "line": 177,
    "text": "'scripts/test-v03638-router-distribution.ps1',",
    "invokes": "scripts/test-v03638-router-distribution.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 177,
+   "line": 178,
    "text": "'scripts/test-v03638-router-reliability.ps1',",
    "invokes": "scripts/test-v03638-router-reliability.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 178,
+   "line": 179,
    "text": "'scripts/upstream-reevaluation.ps1',",
    "invokes": "scripts/upstream-reevaluation.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 179,
+   "line": 180,
    "text": "'scripts/validate-pester-reduction-plan.ps1',",
    "invokes": "scripts/validate-pester-reduction-plan.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 180,
+   "line": 181,
    "text": "'scripts/validate-legacy-compat-inventory.ps1',",
    "invokes": "scripts/validate-legacy-compat-inventory.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 181,
+   "line": 182,
    "text": "'scripts/stage-npm-release.mjs',",
    "invokes": "scripts/stage-npm-release.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 182,
+   "line": 183,
    "text": "'scripts/prepare-install-e2e-fixture.mjs',",
    "invokes": "scripts/prepare-install-e2e-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 183,
+   "line": 184,
    "text": "'tests/workspace-package/install-transport.test.mjs',",
    "invokes": "tests/workspace-package/install-transport.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 186,
+   "line": 187,
    "text": "'tests/PublicSurfacePolicy.Tests.ps1',",
    "invokes": "tests/PublicSurfacePolicy.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 187,
+   "line": 188,
    "text": "'tests/GitGuard.Tests.ps1',",
    "invokes": "tests/GitGuard.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 188,
+   "line": 189,
    "text": "'tests/GitHubWritePreflight.Tests.ps1',",
    "invokes": "tests/GitHubWritePreflight.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 189,
+   "line": 190,
    "text": "'tests/McpServerContract.Tests.ps1',",
    "invokes": "tests/McpServerContract.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 190,
+   "line": 191,
    "text": "'tests/codex-subagent-worktree-guard.Tests.ps1',",
    "invokes": "tests/codex-subagent-worktree-guard.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 191,
+   "line": 192,
    "text": "'tests/HarnessContract.Tests.ps1',",
    "invokes": "tests/HarnessContract.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 192,
+   "line": 193,
    "text": "'tests/DeclarativeWorkflow.Tests.ps1',",
    "invokes": "tests/DeclarativeWorkflow.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 193,
+   "line": 194,
    "text": "'tests/NpmReleasePackage.Tests.ps1',",
    "invokes": "tests/NpmReleasePackage.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 194,
+   "line": 195,
    "text": "'tests/VersionSurface.Tests.ps1',",
    "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 195,
+   "line": 196,
    "text": "'tests/DesktopInstallReceipt.Tests.ps1',",
    "invokes": "tests/DesktopInstallReceipt.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 196,
+   "line": 197,
    "text": "'tests/CliBakeoff.Tests.ps1',",
    "invokes": "tests/CliBakeoff.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 197,
+   "line": 198,
    "text": "'tests/ThreatModelContract.Tests.ps1',",
    "invokes": "tests/ThreatModelContract.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 198,
+   "line": 199,
    "text": "'tests/V03630DesktopDebugGate.Tests.ps1',",
    "invokes": "tests/V03630DesktopDebugGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 199,
+   "line": 200,
    "text": "'tests/V03630DesktopDebugGateProcess.Tests.ps1',",
    "invokes": "tests/V03630DesktopDebugGateProcess.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 200,
+   "line": 201,
    "text": "'tests/Integration.PluginHookLoader.Tests.ps1',",
    "invokes": "tests/Integration.PluginHookLoader.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 201,
+   "line": 202,
    "text": "'tests/UpstreamReevaluation.Tests.ps1',",
    "invokes": "tests/UpstreamReevaluation.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 202,
+   "line": 203,
    "text": "'tests/EnterpriseStrategyAlignment.Tests.ps1',",
    "invokes": "tests/EnterpriseStrategyAlignment.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 203,
+   "line": 204,
    "text": "'tests/ReviewLatencyHardening.Tests.ps1',",
    "invokes": "tests/ReviewLatencyHardening.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 204,
+   "line": 205,
    "text": "'tests/Task781RuntimeCompatibility.Tests.ps1',",
    "invokes": "tests/Task781RuntimeCompatibility.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 205,
+   "line": 206,
    "text": "'tests/Task839WorktreeReviewState.Tests.ps1',",
    "invokes": "tests/Task839WorktreeReviewState.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 206,
+   "line": 207,
    "text": "'tests/V03618ReleaseHardening.Tests.ps1',",
    "invokes": "tests/V03618ReleaseHardening.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 207,
+   "line": 208,
    "text": "'tests/V03619RepoAudit.Tests.ps1',",
    "invokes": "tests/V03619RepoAudit.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 208,
+   "line": 209,
    "text": "'tests/Task810PesterRunner.Tests.ps1',",
    "invokes": "tests/Task810PesterRunner.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 209,
+   "line": 210,
    "text": "'tests/planning-model.Tests.ps1',",
    "invokes": "tests/planning-model.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 210,
+   "line": 211,
    "text": "'tests/Task800OperatorShellBoundary.Tests.ps1',",
    "invokes": "tests/Task800OperatorShellBoundary.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 211,
+   "line": 212,
    "text": "'tests/PesterGitIsolation.Tests.ps1',",
    "invokes": "tests/PesterGitIsolation.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 212,
+   "line": 213,
    "text": "'tests/Task811OperatorInfraGate.Tests.ps1',",
    "invokes": "tests/Task811OperatorInfraGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 213,
+   "line": 214,
    "text": "'tests/Integration.WorktreeHook.Tests.ps1',",
    "invokes": "tests/Integration.WorktreeHook.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 215,
+   "line": 216,
    "text": "'tests/V03620CoordinatorFoundation.Tests.ps1',",
    "invokes": "tests/V03620CoordinatorFoundation.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 216,
+   "line": 217,
    "text": "'tests/V03621LocalRouterShadow.Tests.ps1',",
    "invokes": "tests/V03621LocalRouterShadow.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 217,
+   "line": 218,
    "text": "'tests/V03638RouterReliability.Tests.ps1',",
    "invokes": "tests/V03638RouterReliability.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 218,
+   "line": 219,
    "text": "'tests/V03626DesktopSplitGate.Tests.ps1',",
    "invokes": "tests/V03626DesktopSplitGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 219,
+   "line": 220,
    "text": "'tests/V03627CompatPerformanceGate.Tests.ps1',",
    "invokes": "tests/V03627CompatPerformanceGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 220,
+   "line": 221,
    "text": "'tests/V03628RaceAbnormalSoak.Tests.ps1',",
    "invokes": "tests/V03628RaceAbnormalSoak.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 221,
+   "line": 222,
    "text": "'tests/V03628RuntimeReliabilityGate.Tests.ps1',",
    "invokes": "tests/V03628RuntimeReliabilityGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 222,
+   "line": 223,
    "text": "'tests/V03628PackagedRestoreGate.Tests.ps1',",
    "invokes": "tests/V03628PackagedRestoreGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 224,
+   "line": 225,
    "text": "'tests/bridge/_helpers/BridgeTestCommon.ps1',",
    "invokes": "tests/bridge/_helpers/BridgeTestCommon.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 233,
+   "line": 234,
    "text": "'tests/workspace-efficiency/measure.py',",
    "invokes": "tests/workspace-efficiency/measure.py"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 234,
+   "line": 235,
    "text": "'tests/workspace-efficiency/run.ps1',",
    "invokes": "tests/workspace-efficiency/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 628,
+   "line": 629,
    "text": "'scripts/assert-core-publication-ready.mjs',",
    "invokes": "scripts/assert-core-publication-ready.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 629,
+   "line": 630,
    "text": "'scripts/assert-core-sidecar.ps1',",
    "invokes": "scripts/assert-core-sidecar.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 630,
+   "line": 631,
    "text": "'scripts/assert-distribution-version.ps1',",
    "invokes": "scripts/assert-distribution-version.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 631,
+   "line": 632,
    "text": "'scripts/assert-license-inputs.mjs',",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 632,
+   "line": 633,
    "text": "'scripts/assert-nsis-generation.mjs',",
    "invokes": "scripts/assert-nsis-generation.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 633,
+   "line": 634,
    "text": "'scripts/assert-windows-runtime.mjs',",
    "invokes": "scripts/assert-windows-runtime.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 634,
+   "line": 635,
    "text": "'scripts/bind-native-publication-operations.mjs',",
    "invokes": "scripts/bind-native-publication-operations.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 635,
+   "line": 636,
    "text": "'scripts/build-core-candidate.mjs',",
    "invokes": "scripts/build-core-candidate.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 636,
+   "line": 637,
    "text": "'scripts/check-parent-publication-prerequisites.mjs',",
    "invokes": "scripts/check-parent-publication-prerequisites.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 637,
+   "line": 638,
    "text": "'scripts/collect-core-candidates.mjs',",
    "invokes": "scripts/collect-core-candidates.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 638,
+   "line": 639,
    "text": "'scripts/distribution-prelaunch.mjs',",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 639,
+   "line": 640,
    "text": "'scripts/hold-publication-job.ps1',",
    "invokes": "scripts/hold-publication-job.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 640,
+   "line": 641,
    "text": "'scripts/integrated-publication-assets.mjs',",
    "invokes": "scripts/integrated-publication-assets.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 641,
+   "line": 642,
    "text": "'scripts/integrated-publication-attempt.mjs',",
    "invokes": "scripts/integrated-publication-attempt.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 642,
+   "line": 643,
    "text": "'scripts/integrated-publication-contract.mjs',",
    "invokes": "scripts/integrated-publication-contract.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 643,
+   "line": 644,
    "text": "'scripts/integrated-publication-origins.mjs',",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 644,
+   "line": 645,
    "text": "'tests/workspace-package/publication-native-v2.test.ps1',",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 645,
+   "line": 646,
    "text": "'scripts/integrated-publication-evidence.mjs',",
    "invokes": "scripts/integrated-publication-evidence.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 646,
+   "line": 647,
    "text": "'scripts/observe-github-candidate-artifacts.mjs',",
    "invokes": "scripts/observe-github-candidate-artifacts.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 647,
+   "line": 648,
    "text": "'scripts/observe-github-required-checks.mjs',",
    "invokes": "scripts/observe-github-required-checks.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 648,
+   "line": 649,
    "text": "'scripts/observe-publication-destinations.mjs',",
    "invokes": "scripts/observe-publication-destinations.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 649,
+   "line": 650,
    "text": "'scripts/observe-publication-runtime-sources.mjs',",
    "invokes": "scripts/observe-publication-runtime-sources.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 650,
+   "line": 651,
    "text": "'scripts/observe-publication-source-tree.mjs',",
    "invokes": "scripts/observe-publication-source-tree.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 651,
+   "line": 652,
    "text": "'scripts/observe-publication-tools.mjs',",
    "invokes": "scripts/observe-publication-tools.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 652,
+   "line": 653,
    "text": "'scripts/plan-integrated-publication.mjs',",
    "invokes": "scripts/plan-integrated-publication.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 653,
+   "line": 654,
    "text": "'scripts/prepare-core-release.mjs',",
    "invokes": "scripts/prepare-core-release.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 654,
+   "line": 655,
    "text": "'scripts/prepare-integrated-npm-tarball.mjs',",
    "invokes": "scripts/prepare-integrated-npm-tarball.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 655,
+   "line": 656,
    "text": "'scripts/prepare-integrated-publication.mjs',",
    "invokes": "scripts/prepare-integrated-publication.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 656,
+   "line": 657,
    "text": "'scripts/prepare-verified-npm-candidate.mjs',",
    "invokes": "scripts/prepare-verified-npm-candidate.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 657,
+   "line": 658,
    "text": "'scripts/publication-node-source-guard.mjs',",
    "invokes": "scripts/publication-node-source-guard.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 658,
+   "line": 659,
    "text": "'scripts/read-ci-artifact.py',",
    "invokes": "scripts/read-ci-artifact.py"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 659,
+   "line": 660,
    "text": "'scripts/read-required-ci-jobs.py',",
    "invokes": "scripts/read-required-ci-jobs.py"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 660,
+   "line": 661,
    "text": "'scripts/stage-bundled-distribution.mjs',",
    "invokes": "scripts/stage-bundled-distribution.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 661,
+   "line": 662,
    "text": "'scripts/stage-core-generation.mjs',",
    "invokes": "scripts/stage-core-generation.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 662,
+   "line": 663,
    "text": "'scripts/stage-core-release.mjs',",
    "invokes": "scripts/stage-core-release.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 663,
+   "line": 664,
    "text": "'scripts/stage-distribution-licenses.mjs',",
    "invokes": "scripts/stage-distribution-licenses.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 664,
+   "line": 665,
    "text": "'scripts/stage-integrated-ci-artifact.mjs',",
    "invokes": "scripts/stage-integrated-ci-artifact.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 665,
+   "line": 666,
    "text": "'scripts/windows-distribution-build.mjs',",
    "invokes": "scripts/windows-distribution-build.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 666,
+   "line": 667,
    "text": "'scripts/windows-license-build-inputs.mjs',",
    "invokes": "scripts/windows-license-build-inputs.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 667,
+   "line": 668,
    "text": "'scripts/assert-windows-distribution-toolchain.mjs',",
    "invokes": "scripts/assert-windows-distribution-toolchain.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 668,
+   "line": 669,
    "text": "'tests/workspace-package/barrier-fault.ps1',",
    "invokes": "tests/workspace-package/barrier-fault.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 669,
+   "line": 670,
    "text": "'tests/workspace-package/windows-runtime.test.mjs',",
    "invokes": "tests/workspace-package/windows-runtime.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 670,
+   "line": 671,
    "text": "'tests/workspace-package/bundled-distribution.test.mjs',",
    "invokes": "tests/workspace-package/bundled-distribution.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 671,
+   "line": 672,
    "text": "'tests/workspace-package/nsis-generation.test.mjs',",
    "invokes": "tests/workspace-package/nsis-generation.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 672,
+   "line": 673,
    "text": "'tests/workspace-package/fixture-pe.mjs',",
    "invokes": "tests/workspace-package/fixture-pe.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 673,
+   "line": 674,
    "text": "'tests/workspace-package/install-lifecycle-source.test.ps1',",
    "invokes": "tests/workspace-package/install-lifecycle-source.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 674,
+   "line": 675,
    "text": "'tests/workspace-package/install-generation.test.ps1',",
    "invokes": "tests/workspace-package/install-generation.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 675,
+   "line": 676,
    "text": "'tests/workspace-package/fixture-child.ps1',",
    "invokes": "tests/workspace-package/fixture-child.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 676,
+   "line": 677,
    "text": "'tests/workspace-package/github-candidate-artifacts.test.mjs',",
    "invokes": "tests/workspace-package/github-candidate-artifacts.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 677,
+   "line": 678,
    "text": "'tests/workspace-package/github-required-checks.test.mjs',",
    "invokes": "tests/workspace-package/github-required-checks.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 678,
+   "line": 679,
    "text": "'tests/workspace-package/integrated-npm-tarball.test.mjs',",
    "invokes": "tests/workspace-package/integrated-npm-tarball.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 679,
+   "line": 680,
    "text": "'tests/workspace-package/integrated-publication-assets.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-assets.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 680,
+   "line": 681,
    "text": "'tests/workspace-package/integrated-publication-attempt.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-attempt.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 681,
+   "line": 682,
    "text": "'tests/workspace-package/integrated-publication-contract.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-contract.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 682,
+   "line": 683,
    "text": "'tests/workspace-package/integrated-publication-evidence.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-evidence.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 683,
+   "line": 684,
    "text": "'tests/workspace-package/npm-version.test.mjs',",
    "invokes": "tests/workspace-package/npm-version.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 684,
+   "line": 685,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 685,
+   "line": 686,
    "text": "'tests/workspace-package/prepare-publication-custody-fixture.mjs',",
    "invokes": "tests/workspace-package/prepare-publication-custody-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 686,
+   "line": 687,
    "text": "'tests/workspace-package/publication-authority-owner-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-authority-owner-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 687,
+   "line": 688,
    "text": "'tests/workspace-package/publication-authority-recovery-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-authority-recovery-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 688,
+   "line": 689,
    "text": "'tests/workspace-package/publication-authority.test.mjs',",
    "invokes": "tests/workspace-package/publication-authority.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 689,
+   "line": 690,
    "text": "'tests/workspace-package/publication-custody-child.mjs',",
    "invokes": "tests/workspace-package/publication-custody-child.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 690,
+   "line": 691,
    "text": "'tests/workspace-package/publication-destinations.test.mjs',",
    "invokes": "tests/workspace-package/publication-destinations.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 691,
+   "line": 692,
    "text": "'tests/workspace-package/publication-environment.test.ps1',",
    "invokes": "tests/workspace-package/publication-environment.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 692,
+   "line": 693,
    "text": "'tests/workspace-package/publication-fixture.mjs',",
    "invokes": "tests/workspace-package/publication-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 693,
+   "line": 694,
    "text": "'tests/workspace-package/publication-keeper-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-keeper-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 694,
+   "line": 695,
    "text": "'tests/workspace-package/publication-npm-guard.test.mjs',",
    "invokes": "tests/workspace-package/publication-npm-guard.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 695,
+   "line": 696,
    "text": "'tests/workspace-package/publication-npm-native.test.ps1',",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 696,
+   "line": 697,
    "text": "'tests/workspace-package/publication-output.test.ps1',",
    "invokes": "tests/workspace-package/publication-output.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 697,
+   "line": 698,
    "text": "'tests/workspace-package/publication-owner-death-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-owner-death-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 698,
+   "line": 699,
    "text": "'tests/workspace-package/publication-owner-freeze-fixture.mjs',",
    "invokes": "tests/workspace-package/publication-owner-freeze-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 699,
+   "line": 700,
    "text": "'tests/workspace-package/publication-plan.test.mjs',",
    "invokes": "tests/workspace-package/publication-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 700,
+   "line": 701,
    "text": "'tests/workspace-package/publication-source-guard.test.mjs',",
    "invokes": "tests/workspace-package/publication-source-guard.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 701,
+   "line": 702,
    "text": "'tests/workspace-package/publication-source-tree.test.mjs',",
    "invokes": "tests/workspace-package/publication-source-tree.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 702,
+   "line": 703,
    "text": "'tests/workspace-package/publication-tools.test.mjs',",
    "invokes": "tests/workspace-package/publication-tools.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 703,
+   "line": 704,
    "text": "'tests/workspace-package/run.ps1',",
    "invokes": "tests/workspace-package/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 704,
+   "line": 705,
    "text": "'tests/workspace-package/stage-ci-artifact.test.mjs',",
    "invokes": "tests/workspace-package/stage-ci-artifact.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 705,
+   "line": 706,
    "text": "'tests/workspace-package/verified-npm-candidate.test.mjs',",
    "invokes": "tests/workspace-package/verified-npm-candidate.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 706,
+   "line": 707,
    "text": "'tests/workspace-package/verify-publication-child-custody.ps1',",
    "invokes": "tests/workspace-package/verify-publication-child-custody.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 707,
+   "line": 708,
    "text": "'tests/workspace-package/verify-publication-custody.ps1',",
    "invokes": "tests/workspace-package/verify-publication-custody.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 708,
+   "line": 709,
    "text": "'tests/workspace-package/verify-publication-owner-recovery.ps1',",
    "invokes": "tests/workspace-package/verify-publication-owner-recovery.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 709,
+   "line": 710,
    "text": "'tests/workspace-package/version-contract.ps1',",
    "invokes": "tests/workspace-package/version-contract.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 717,
+   "line": 718,
    "text": "'winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs',",
    "invokes": "winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 718,
+   "line": 719,
    "text": "'winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs',",
    "invokes": "winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs"
   },
@@ -5278,73 +5278,73 @@
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 409,
+   "line": 410,
    "text": "const { physicalPath }=await import(pathToFileURL(path.join(snapshot.repo_root,'scripts/distribution-prelaunch.mjs')));",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 423,
+   "line": 424,
    "text": "const { physicalPath }=await import(pathToFileURL(path.join(repo,'scripts/distribution-prelaunch.mjs')));",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 424,
+   "line": 425,
    "text": "const { parseStrictJson }=await import(pathToFileURL(path.join(repo,'scripts/assert-license-inputs.mjs')));",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 425,
+   "line": 426,
    "text": "const { assertCanonicalBundledDistribution }=await import(pathToFileURL(path.join(repo,'scripts/stage-bundled-distribution.mjs')));",
    "invokes": "scripts/stage-bundled-distribution.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 456,
+   "line": 457,
    "text": "const scriptQueue=['scripts/stage-bundled-distribution.mjs','scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','scripts/stage-desktop-msi-plan.mjs'],seenScripts=new Set();",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 456,
+   "line": 457,
    "text": "const scriptQueue=['scripts/stage-bundled-distribution.mjs','scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','scripts/stage-desktop-msi-plan.mjs'],seenScripts=new Set();",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 456,
+   "line": 457,
    "text": "const scriptQueue=['scripts/stage-bundled-distribution.mjs','scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','scripts/stage-desktop-msi-plan.mjs'],seenScripts=new Set();",
    "invokes": "scripts/stage-bundled-distribution.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 456,
+   "line": 457,
    "text": "const scriptQueue=['scripts/stage-bundled-distribution.mjs','scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','scripts/stage-desktop-msi-plan.mjs'],seenScripts=new Set();",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 468,
+   "line": 469,
    "text": "const config=parseStrictJson(track(path.join(source,'tauri.conf.json')));track(path.join(source,'nsis/installer.nsi'));track(path.join(repo,'scripts/stage-desktop-msi-plan.mjs'));",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 510,
+   "line": 513,
    "text": "const { physicalPath } = await import(new URL('./distribution-prelaunch.mjs', import.meta.url));",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 511,
+   "line": 514,
    "text": "const { parseStrictJson } = await import(new URL('./assert-license-inputs.mjs', import.meta.url));",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": "scripts/desktop-native-nsis-observer.mjs",
-   "line": 528,
+   "line": 531,
    "text": "const transfer = path.join(repo,'scripts/test-public-release.ps1');",
    "invokes": "scripts/test-public-release.ps1"
   },
@@ -5608,43 +5608,43 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 134,
+   "line": 135,
    "text": "'.githooks/pre-commit-whitelist.ps1': '6e255e6b06c7459c9a8ebd41ee4ddcb79f582c303650a2f31528251d677a03ea',",
    "invokes": ".githooks/pre-commit-whitelist.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 139,
+   "line": 140,
    "text": "'tests/CliBakeoff.Tests.ps1': '0ba34a19a155689e2f65e381334fd0c1073331f62062ac96a62601d00971c7e1',",
    "invokes": "tests/CliBakeoff.Tests.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 140,
+   "line": 141,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': '4939caa74ca878a68183f1d410c2adfb423fc089588b27fd33b33cb0c7102a4b',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 144,
+   "line": 145,
    "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json', 'tests/workspace-gate-map/run.ps1',",
    "invokes": "tests/workspace-gate-map/check-map.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 144,
+   "line": 145,
    "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json', 'tests/workspace-gate-map/run.ps1',",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 145,
+   "line": 146,
    "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/build-map.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 145,
+   "line": 146,
    "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
@@ -8992,31 +8992,31 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 150,
+   "line": 151,
    "text": "value => { rowOf(value,'tests/workspace-gate-map/run.ps1').before_sha256='0'.repeat(64); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 154,
+   "line": 155,
    "text": "value => { value.source.changes=value.source.changes.filter(row=>row.path!=='tests/workspace-gate-map/check-map.mjs'); },",
    "invokes": "tests/workspace-gate-map/check-map.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 155,
+   "line": 156,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 157,
+   "line": 158,
    "text": "value => { value.source.changes.push({...rowOf(value,'tests/workspace-gate-map/run.ps1')}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 159,
+   "line": 160,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
@@ -9646,7 +9646,7 @@
   },
   {
    "source": "tests/workspace-package/windows-runtime.test.mjs",
-   "line": 95,
+   "line": 107,
    "text": "const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/assert-windows-distribution-toolchain.mjs')],",
    "invokes": "scripts/assert-windows-distribution-toolchain.mjs"
   },

@@ -18,13 +18,14 @@
     "T-only diagnostic: preserve all ten DesktopInstallError startup classes through exact stderr labels and NSIS exit codes 380-389; retain generic startup 71",
     "T-only diagnostic: at original startup timeout preserve last existing root wait and receiver phase in one fixed stderr line; map 12 finite two-line classes to 390-401, retaining single-line 388",
     "T-only diagnostic: distinguish the three legacy admission refusals legacy_receipt_missing, legacy_profile_incomplete and legacy_root_mismatch as exit codes 72-74 beside 67",
-    "Print the helper classification and the judged root to the details view and abort with a per-class user message from the installer hook"
+    "Print the helper classification and the judged root to the details view and abort with a per-class user message from the installer hook",
+    "Bind the license page per language: English shows the rendered license, Japanese shows the hook-anchored reference translation"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 43146,
-      "sha256": "11eb0ec4a8735d47e5468e4be1e9ac0aa805b9b82120ad6541139e74599fa034"
+      "bytes": 43332,
+      "sha256": "e57b365db191a42b35673fc866f3657aa1a2fcdf8de22a921503661c588353ca"
     },
     {
       "path": "winsmux-utils.nsh",

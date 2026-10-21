@@ -51,6 +51,7 @@ const s5Changes = Object.freeze([
   { path: 'tests/workspace-gate-map/run.ps1', before_sha256: null, after_sha256: 'c'.repeat(64) },
   { path: 'tests/workspace-gate-map/build-map.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },
   { path: 'tests/workspace-gate-map/dispositions.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },
+  { path: 'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', before_sha256: null, after_sha256: 'c'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -143,7 +144,7 @@ const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
 // Final-source applicability is exactly the S rows with their a1ce1975 before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,35); assert.equal(new Set(publicationCutoverPaths).size,35); });
+check(() => { assert.equal(publicationCutoverPaths.length,36); assert.equal(new Set(publicationCutoverPaths).size,36); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [

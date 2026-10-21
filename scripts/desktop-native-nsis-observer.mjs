@@ -470,7 +470,9 @@ export async function prepareCompilerClosure({repoRoot,releaseDirectory,sdkRoot,
   need(config.bundle?.windows?.signCommand?.cmd==='node'&&JSON.stringify(config.bundle.windows.signCommand.args)===JSON.stringify(['../../scripts/stage-desktop-msi-plan.mjs','--sign-asset','%1','--unsigned']),'nsis_observer_sign_config_refused');
   const licensePath=config.bundle.licenseFile?physical(path.resolve(source,config.bundle.licenseFile)):null,renderedLicensePath=path.join(release,'nsis/x64/license_file');
   if(licensePath){const bytes=track(licensePath),canonical=track(path.join(source,'binaries','licenses/texts',hash(bytes))),ui=track(renderedLicensePath);
-    bindUiLicense(bytes,generation,plan,canonical,ui);map(licensePath,path.join(diagnostic,'source/distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt'));map(renderedLicensePath,path.join(dRelease,'nsis/x64/license_file'));}
+    bindUiLicense(bytes,generation,plan,canonical,ui);map(licensePath,path.join(diagnostic,'source/distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt'));map(renderedLicensePath,path.join(dRelease,'nsis/x64/license_file'));
+    // The hook reaches the Japanese page text relative to its own directory, so it keeps the source-tree offset.
+    map(path.join(assets,'MICROSOFT-COMPONENT-TERMS.ja.txt'),path.join(diagnostic,'source/distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt'));}
   for(const row of generation.files){need(typeof row.path==='string'&&/^[A-Za-z0-9._/-]+$/u.test(row.path)&&!row.path.split('/').some(x=>!x||x==='.'||x==='..'),'nsis_observer_generation_path_refused');
     const from=path.join(source,'binaries',row.path),to=path.join(dSource,'binaries',row.path),bytes=track(from,to);need(bytes.length===row.bytes&&hash(bytes)===row.sha256,'nsis_observer_generation_changed');map(from,to);}
   const expected=[...selectTransportLicenseRows(generation),{role:'gui',path:'winsmux-app.exe',bytes:track(guiPath).length,sha256:record.gui_sha256},
