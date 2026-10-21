@@ -5160,32 +5160,55 @@ function Get-DesktopNativeShortcutFolder {
 # desktop_nsis.rs serializes `folder` only when the helper recorded one, and it records the known folder for
 # every desktop and start_menu row and for no root or state row. `preserved` is serialized only when a
 # foreign same-name link was parked, so an empty list leaves the key out.
+# A known-folder link row: `kind` in installed.json, `domain` in a journal Move. -ceq and -cin against an array
+# return its matching elements, which are truthy, so each value is proved a string before it is compared.
+function Test-DesktopNativeShortcutRow {
+    param([Parameter(Mandatory)]$Row, [Parameter(Mandatory)][ValidateSet('kind','domain')][string]$KindKey, [Collections.Generic.HashSet[string]]$Kinds)
+    $kind = $Row.$KindKey
+    return ($kind -is [string] -and $kind -cin @('desktop','start_menu') -and $Row.member.path -is [string] -and $Row.member.path -ceq 'winsmux.lnk' -and $Row.folder -is [string] -and $Row.folder -ceq (Get-DesktopNativeShortcutFolder $kind) -and ($null -eq $Kinds -or $Kinds.Add($kind)))
+}
+
 function Assert-DesktopNativeMoveRow {
     param([Parameter(Mandatory)]$Row)
-    if ($Row.domain -cin @('desktop','start_menu')) {
-        Assert-DesktopInventoryShape $Row @('member','domain','phase','folder')
-        Assert-Condition ($Row.folder -is [string] -and $Row.folder -ceq (Get-DesktopNativeShortcutFolder $Row.domain) -and $Row.member.path -ceq 'winsmux.lnk') 'desktop_native_shortcut_folder_refused'
-    } else {
-        Assert-Condition ($Row.domain -cin @('root','state')) 'desktop_native_move_domain_refused'
+    $isLink = $Row.domain -is [string] -and $Row.domain -cin @('desktop','start_menu')
+    if ($isLink) { Assert-DesktopInventoryShape $Row @('member','domain','phase','folder') } else {
+        Assert-Condition ($Row.domain -is [string] -and $Row.domain -cin @('root','state')) 'desktop_native_move_domain_refused'
         Assert-DesktopInventoryShape $Row @('member','domain','phase')
     }
     Assert-DesktopInventoryShape $Row.member @('path','bytes','sha256','identity')
+    Assert-Condition ($Row.phase -is [string] -and $Row.phase -cin @('prepared','move_intent','moved_confirmed','restore_intent','restored')) 'desktop_native_move_phase_refused'
+    if ($isLink) { Assert-Condition (Test-DesktopNativeShortcutRow $Row domain) 'desktop_native_shortcut_folder_refused' }
 }
 
+# Returns the preserved rows. @() would turn a single object into a one-row list, so the list type is checked first.
 function Assert-DesktopNativePreservedRows {
     param([Parameter(Mandatory)]$Owner, [Parameter(Mandatory)][string[]]$RequiredKeys, [Parameter(Mandatory)][ValidateSet('kind','domain')][string]$KindKey)
-    if (-not (Test-DesktopNativeKey $Owner 'preserved')) { Assert-DesktopInventoryShape $Owner $RequiredKeys; return 0 }
+    if (-not (Test-DesktopNativeKey $Owner 'preserved')) { Assert-DesktopInventoryShape $Owner $RequiredKeys; return ,@() }
     Assert-DesktopInventoryShape $Owner ($RequiredKeys + @('preserved'))
-    $rows = @($Owner.preserved)
-    Assert-Condition ($rows.Count -ge 1) 'desktop_native_preserved_empty_serialized'
+    Assert-Condition ($Owner.preserved -is [array]) 'desktop_native_preserved_not_list'
+    Assert-Condition ($Owner.preserved.Count -ge 1) 'desktop_native_preserved_empty_serialized'
     $kinds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($row in $rows) {
-        if ($KindKey -ceq 'kind') { Assert-DesktopInventoryShape $row @('kind','member','folder') } else { Assert-DesktopNativeMoveRow $row }
-        Assert-DesktopInventoryShape $row.member @('path','bytes','sha256','identity')
-        $kind = [string]$row.$KindKey
-        Assert-Condition ($kind -cin @('desktop','start_menu') -and $kinds.Add($kind) -and $row.member.path -ceq 'winsmux.lnk' -and $row.folder -ceq (Get-DesktopNativeShortcutFolder $kind)) 'desktop_native_preserved_row_refused'
+    foreach ($row in $Owner.preserved) {
+        if ($KindKey -ceq 'kind') { Assert-DesktopInventoryShape $row @('kind','member','folder'); Assert-DesktopInventoryShape $row.member @('path','bytes','sha256','identity') } else { Assert-DesktopNativeMoveRow $row }
+        Assert-Condition (Test-DesktopNativeShortcutRow $row $KindKey $kinds) 'desktop_native_preserved_row_refused'
     }
-    return $rows.Count
+    return ,$Owner.preserved
+}
+
+# installed.json links: product shortcuts of distinct kinds, and parked foreign links only for a kind the state
+# also publishes (validate_installed). Returns the preserved rows.
+function Assert-DesktopNativeStateLinks {
+    param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$Root)
+    $preserved = Assert-DesktopNativePreservedRows -Owner $State -RequiredKeys @('schema','generation','legacy_capture','actor_sid','root','root_identity','host','version','plan_sha256','plan_bytes','members','registration','shortcuts','operation_id','action') -KindKey kind
+    Assert-Condition ($State.shortcuts -is [array]) 'desktop_native_shortcut_row_refused'
+    $kinds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($link in $State.shortcuts) {
+        Assert-DesktopInventoryShape $link @('kind','member','target','aumid','folder')
+        Assert-DesktopInventoryShape $link.member @('path','bytes','sha256','identity')
+        Assert-Condition ((Test-DesktopNativeShortcutRow $link kind $kinds) -and $link.aumid -is [string] -and $link.aumid -ceq 'io.github.sora-bluesky.winsmux' -and [string]::Equals([string]$link.target, (Join-Path $Root 'winsmux-app.exe'), [StringComparison]::OrdinalIgnoreCase)) 'desktop_native_shortcut_row_refused'
+    }
+    Assert-Condition (@($preserved | Where-Object { -not $kinds.Contains($_.kind) }).Count -eq 0) 'desktop_native_preserved_row_refused'
+    return ,$preserved
 }
 
 function Assert-DesktopNativeNsisObservation {
@@ -5193,13 +5216,7 @@ function Assert-DesktopNativeNsisObservation {
     $equal = { param($Left, $Right) (ConvertTo-Json -InputObject $Left -Depth 64 -Compress) -ceq (ConvertTo-Json -InputObject $Right -Depth 64 -Compress) }
     $uuid = '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
     if ($Kind -cin @('installed','updated')) {
-        [void](Assert-DesktopNativePreservedRows -Owner $State -RequiredKeys @('schema','generation','legacy_capture','actor_sid','root','root_identity','host','version','plan_sha256','plan_bytes','members','registration','shortcuts','operation_id','action') -KindKey kind)
-        $linkKinds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-        foreach ($link in @($State.shortcuts)) {
-            Assert-DesktopInventoryShape $link @('kind','member','target','aumid','folder')
-            Assert-DesktopInventoryShape $link.member @('path','bytes','sha256','identity')
-            Assert-Condition ($link.kind -cin @('desktop','start_menu') -and $linkKinds.Add([string]$link.kind) -and $link.member.path -ceq 'winsmux.lnk' -and $link.aumid -ceq 'io.github.sora-bluesky.winsmux' -and [string]::Equals([string]$link.target, (Join-Path $Binding.root 'winsmux-app.exe'), [StringComparison]::OrdinalIgnoreCase) -and $link.folder -ceq (Get-DesktopNativeShortcutFolder $link.kind)) 'desktop_native_shortcut_row_refused'
-        }
+        $preserved = Assert-DesktopNativeStateLinks -State $State -Root $Binding.root
         Assert-Condition ($State.schema -ceq 'winsmux-desktop-nsis-installed/v1' -and $State.generation -ceq 'managed' -and $State.action -ceq 'install' -and $State.version -ceq '0.38.0' -and $State.host -ceq 'x86_64-pc-windows-msvc' -and $State.root -ceq $Binding.root -and $State.actor_sid -ceq $Binding.actor_sid -and (& $equal $State.root_identity $Binding.root_identity) -and $State.plan_sha256 -ceq $PlanSha256 -and $State.operation_id -cmatch $uuid) 'desktop_native_managed_observation_refused'
         Assert-Condition ($State.registration.Count -eq 22 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$State.plan_bytes)).ToLowerInvariant() -ceq $PlanSha256) 'desktop_native_managed_plan_bytes_refused'
         if ($null -ne $State.legacy_capture) { Assert-DesktopInventoryShape $State.legacy_capture @('original_installer_sha256','capture_receipt_sha256'); Assert-Condition ($State.legacy_capture.original_installer_sha256 -ceq 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2' -and $State.legacy_capture.capture_receipt_sha256 -cmatch '^[a-f0-9]{64}$') 'desktop_native_legacy_binding_refused' }
@@ -5207,13 +5224,17 @@ function Assert-DesktopNativeNsisObservation {
             Assert-Condition ($State.operation_id -cne $PriorState.operation_id -and $State.operation_id -ceq $Receipt.operation_id -and $Receipt.action -ceq 'install' -and $Receipt.plan_sha256 -ceq $PlanSha256 -and $Receipt.outcome -ceq 'committed' -and $Receipt.durable_commit -eq $true -and $Receipt.owned_registration_verified -eq $true -and (& $equal $State.legacy_capture $PriorState.legacy_capture)) 'desktop_native_same_version_update_not_committed'
             $language = [Text.UnicodeEncoding]::new($false,$false,$true).GetBytes('1041' + [char]0)
             Assert-Condition ($State.registration.Count -eq 22 -and $State.registration[1].type -eq 1 -and [Convert]::ToBase64String([byte[]]$State.registration[1].data) -ceq [Convert]::ToBase64String($language)) 'desktop_native_update_language_not_committed'
+            # commit_state keeps the prior parked links ahead of any this update parked.
+            $carried = Assert-DesktopNativeStateLinks -State $PriorState -Root $Binding.root
+            Assert-Condition ($preserved.Count -ge $carried.Count) 'desktop_native_update_preserved_not_carried'
+            for ($i = 0; $i -lt $carried.Count; $i++) { Assert-Condition (& $equal $preserved[$i] $carried[$i]) 'desktop_native_update_preserved_not_carried' }
         }
         return $State
     }
     $envelope = $Binding.envelope
     Assert-DesktopInventoryShape $envelope @('schema','sha256','payload')
     $p = $envelope.payload
-    $preservedCount = Assert-DesktopNativePreservedRows -Owner $p -RequiredKeys @('schema','operation_id','action','actor_sid','root','root_identity','plan_sha256','plan_bytes','prior_state','old','new','slots','phase','commit_bytes','journal_identity','control_identity','ops_identity','owned_dirs') -KindKey domain
+    $preserved = Assert-DesktopNativePreservedRows -Owner $p -RequiredKeys @('schema','operation_id','action','actor_sid','root','root_identity','plan_sha256','plan_bytes','prior_state','old','new','slots','phase','commit_bytes','journal_identity','control_identity','ops_identity','owned_dirs') -KindKey domain
     foreach ($row in @($p.new)) { Assert-DesktopNativeMoveRow $row }
     Assert-Condition ($envelope.schema -ceq 'winsmux-desktop-nsis-journal/v1' -and $envelope.sha256 -ceq $Binding.payload_sha256 -and $p.schema -ceq 'winsmux-desktop-nsis-pending/v1' -and $p.operation_id -cmatch $uuid -and $p.root -ceq $Binding.root -and $p.actor_sid -ceq $Binding.actor_sid -and $p.plan_sha256 -ceq $PlanSha256 -and (& $equal $p.root_identity $Binding.root_identity) -and (& $equal $p.journal_identity $Binding.journal_identity) -and (& $equal $p.control_identity $Binding.control_identity) -and (& $equal $p.ops_identity $Binding.ops_identity)) 'desktop_native_journal_projection_refused'
     $stateRow = @($PriorWitness.files | Where-Object path -CEQ '.winsmux-desktop/installed.json')
@@ -5228,7 +5249,8 @@ function Assert-DesktopNativeNsisObservation {
         return $p
     }
     Assert-Condition ($p.phase -ceq 'committed' -and $p.action -ceq 'uninstall' -and @($p.new).Count -eq 0 -and $null -eq $p.commit_bytes -and $Binding.ops_empty -eq $true) 'desktop_native_uninstall_terminal_refused'
-    Assert-Condition ($Witness.root -ceq $Binding.root -and $PriorWitness.root -ceq $Binding.root -and @($Witness.files).Count -eq 1 -and $Witness.files[0].path -ceq '.winsmux-desktop/pending.json' -and $Witness.files[0].bytes -eq $Binding.journal_bytes -and $Witness.files[0].sha256 -ceq $Binding.journal_sha256 -and (& $equal (Convert-DesktopNativeObservedIdentity $Witness.files[0].identity $Binding.root_identity.volume) $Binding.journal_identity) -and @($Witness.registration | Where-Object { $null -ne $_ }).Count -eq 0 -and @($Witness.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0 -and $Witness.root_identity -ceq $PriorWitness.root_identity -and $Witness.user_sentinel['identity'] -ceq $PriorWitness.user_sentinel['identity'] -and $Witness.user_sentinel['bytes'] -eq $PriorWitness.user_sentinel['bytes'] -and $Witness.user_sentinel['sha256'] -ceq $PriorWitness.user_sentinel['sha256']) 'desktop_native_uninstall_preservation_failed'
+    Assert-Condition ($Witness.root -ceq $Binding.root -and $PriorWitness.root -ceq $Binding.root -and @($Witness.files).Count -eq 1 -and $Witness.files[0].path -ceq '.winsmux-desktop/pending.json' -and $Witness.files[0].bytes -eq $Binding.journal_bytes -and $Witness.files[0].sha256 -ceq $Binding.journal_sha256 -and (& $equal (Convert-DesktopNativeObservedIdentity $Witness.files[0].identity $Binding.root_identity.volume) $Binding.journal_identity) -and @($Witness.registration | Where-Object { $null -ne $_ }).Count -eq 0 -and $Witness.root_identity -ceq $PriorWitness.root_identity -and $Witness.user_sentinel['identity'] -ceq $PriorWitness.user_sentinel['identity'] -and $Witness.user_sentinel['bytes'] -eq $PriorWitness.user_sentinel['bytes'] -and $Witness.user_sentinel['sha256'] -ceq $PriorWitness.user_sentinel['sha256']) 'desktop_native_uninstall_preservation_failed'
+    $priorPreserved = Assert-DesktopNativeStateLinks -State $PriorState -Root $Binding.root
     $seenOld = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $expected = @($PriorState.members | ForEach-Object { [ordered]@{domain='root';member=$_} })
     $expected += [ordered]@{domain='state';member=[ordered]@{path='installed.json';bytes=$stateRow[0].bytes;sha256=$stateRow[0].sha256;identity=(Convert-DesktopNativeObservedIdentity $stateRow[0].identity $Binding.root_identity.volume)}}
@@ -5241,13 +5263,18 @@ function Assert-DesktopNativeNsisObservation {
         Assert-Condition ($match.Count -eq 1 -and $old.phase -ceq 'moved_confirmed' -and (& $equal $old.member $match[0].member)) 'desktop_native_uninstall_owned_row_refused'
         if ($old.domain -cin @('desktop','start_menu')) { Assert-Condition ($old.folder -ceq $match[0].folder) 'desktop_native_uninstall_shortcut_folder_refused' }
     }
-    $priorPreserved = @(if (Test-DesktopNativeKey $PriorState 'preserved') { $PriorState.preserved })
-    Assert-Condition ($preservedCount -eq $priorPreserved.Count) 'desktop_native_uninstall_preserved_inventory_refused'
-    foreach ($row in @(if ($preservedCount -gt 0) { $p.preserved })) {
+    Assert-Condition ($preserved.Count -eq $priorPreserved.Count) 'desktop_native_uninstall_preserved_inventory_refused'
+    foreach ($row in $preserved) {
         $match = @($priorPreserved | Where-Object { $_.kind -ceq $row.domain })
-        Assert-Condition ($match.Count -eq 1) 'desktop_native_uninstall_preserved_row_refused'
-        Assert-DesktopInventoryShape $match[0] @('kind','member','folder')
-        Assert-Condition ((& $equal $row.member $match[0].member) -and $row.folder -ceq $match[0].folder) 'desktop_native_uninstall_preserved_row_refused'
+        Assert-Condition ($match.Count -eq 1 -and $row.phase -ceq 'moved_confirmed' -and (& $equal $row.member $match[0].member) -and $row.folder -ceq $match[0].folder) 'desktop_native_uninstall_preserved_row_refused'
+    }
+    # Uninstall renames each parked foreign link back into its known folder, so the link found there is the
+    # parked member itself, and a kind with nothing parked is left empty.
+    $links = @($Witness.shortcuts | Where-Object { $null -ne $_ })
+    Assert-Condition ($links.Count -eq $priorPreserved.Count) 'desktop_native_uninstall_links_refused'
+    foreach ($link in $links) {
+        $parked = @($priorPreserved | Where-Object { $_.kind -ceq $link.kind })
+        Assert-Condition ($parked.Count -eq 1 -and $link.bytes -eq $parked[0].member.bytes -and $link.sha256 -ceq $parked[0].member.sha256 -and (& $equal (Convert-DesktopNativeObservedIdentity $link.identity $Binding.root_identity.volume) $parked[0].member.identity)) 'desktop_native_uninstall_links_refused'
     }
     Assert-Condition ($p.slots.Count -ge 22 -and $p.slots.Count -le 23) 'desktop_native_uninstall_slots_refused'
     for ($i=0; $i -lt $p.slots.Count; $i++) { Assert-DesktopInventoryShape $p.slots[$i] @('id','prior','desired','phase'); Assert-Condition ($p.slots[$i].id -eq $i -and $p.slots[$i].phase -ceq 'published_confirmed' -and $null -eq $p.slots[$i].desired -and ($i -ge 22 -or (& $equal $p.slots[$i].prior $PriorState.registration[$i]))) 'desktop_native_uninstall_slot_refused' }
