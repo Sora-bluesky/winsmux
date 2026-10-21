@@ -10,9 +10,9 @@ Set-StrictMode -Version Latest
 # It never reads a credential store or resumes an actual gh/npm payload.
 $repoRoot=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $implementation=Join-Path $repoRoot 'scripts/IntegratedPublicationCustody.cs'
-$expectedImplementation='747acaedc08b4fa4f30c3cd56b340cca66b06896ec8516b6459f7bda2db3d573'
+$expectedImplementation='4c984484ca56cf7b5a2197782bdd3bc45d398d4675978016a010b003f563d453'
 if(-not $IsWindows -or (Get-FileHash -LiteralPath $implementation -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedImplementation){throw 'Exact candidate Windows implementation required'}
-if($NodeHash -cne 'b3094d0b49f9ad602262a9921551737bb97637c05dd357a06ae98188d7290aa3' -or (Get-FileHash -LiteralPath $NodeImage -Algorithm SHA256).Hash.ToLowerInvariant() -cne $NodeHash){throw 'Fixed Node image differs'}
+if($NodeHash -cne 'd702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5' -or (Get-FileHash -LiteralPath $NodeImage -Algorithm SHA256).Hash.ToLowerInvariant() -cne $NodeHash){throw 'Fixed Node image differs'}
 $lease=[IO.FileStream]::new($implementation,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
 $reader=[IO.StreamReader]::new($lease,[Text.UTF8Encoding]::new($false,$true),$true,1024,$true)
 $fixtureHelper=@'

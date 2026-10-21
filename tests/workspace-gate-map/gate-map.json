@@ -5501,116 +5501,134 @@
   {
    "source": "scripts/integrated-publication-origins.mjs",
    "line": 31,
+   "text": "'tests/workspace-package/publication-npm-native.test.ps1',",
+   "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 32,
    "text": "'.githooks/pre-commit-whitelist.ps1', '.gitignore',",
    "invokes": ".githooks/pre-commit-whitelist.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 32,
+   "line": 33,
    "text": "'scripts/test-public-release.ps1',",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 33,
+   "line": 34,
    "text": "'scripts/observe-github-candidate-artifacts.mjs', 'scripts/stage-desktop-msi-plan.mjs',",
    "invokes": "scripts/observe-github-candidate-artifacts.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 33,
+   "line": 34,
    "text": "'scripts/observe-github-candidate-artifacts.mjs', 'scripts/stage-desktop-msi-plan.mjs',",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 34,
+   "line": 35,
    "text": "'scripts/desktop-install-inventory.ps1',",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 35,
+   "line": 36,
    "text": "'tests/workspace-package/github-candidate-artifacts.test.mjs',",
    "invokes": "tests/workspace-package/github-candidate-artifacts.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 36,
+   "line": 37,
    "text": "'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',",
    "invokes": "tests/workspace-package/desktop-msi-plan.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 36,
+   "line": 37,
    "text": "'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',",
    "invokes": "tests/workspace-package/stage-ci-artifact.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 37,
+   "line": 38,
    "text": "'tests/DesktopInstallReceipt.Tests.ps1',",
    "invokes": "tests/DesktopInstallReceipt.Tests.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 38,
+   "line": 39,
    "text": "'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',",
    "invokes": "tests/CliBakeoff.Tests.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 38,
+   "line": 39,
    "text": "'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',",
    "invokes": "tests/PublicSurfacePolicy.Tests.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 38,
+   "line": 39,
    "text": "'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',",
    "invokes": "tests/ThreatModelContract.Tests.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 39,
+   "line": 40,
    "text": "'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',",
    "invokes": "tests/workspace-update/install-lifecycle.test.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 39,
+   "line": 40,
    "text": "'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 41,
+   "line": 42,
    "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',",
    "invokes": "tests/workspace-gate-map/check-map.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 42,
+   "line": 43,
    "text": "'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 43,
+   "line": 44,
    "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/build-map.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 43,
+   "line": 44,
    "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 136,
+   "line": 137,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 138,
+   "text": "'tests/workspace-package/publication-native-v2.test.ps1': 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af',",
+   "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 139,
+   "text": "'tests/workspace-package/publication-npm-native.test.ps1': 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d',",
+   "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "scripts/invoke-headless-startup-actor.ps1",
@@ -8920,31 +8938,55 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 141,
+   "line": 45,
+   "text": "{ path: 'tests/workspace-package/publication-native-v2.test.ps1', before_sha256: 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af', after_sha256: 'a'.repeat(64) },",
+   "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 46,
+   "text": "{ path: 'tests/workspace-package/publication-npm-native.test.ps1', before_sha256: 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d', after_sha256: 'b'.repeat(64) },",
+   "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 143,
    "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 142,
+   "line": 144,
+   "text": "value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },",
+   "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 144,
+   "text": "value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },",
+   "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 145,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 144,
+   "line": 147,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 146,
+   "line": 149,
    "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 149,
+   "line": 152,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },

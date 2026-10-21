@@ -28,6 +28,7 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/workspace-package/integrated-publication-assets.test.mjs',
   'tests/workspace-package/prepare-integrated-publication.test.mjs',
   'tests/workspace-package/publication-native-v2.test.ps1',
+  'tests/workspace-package/publication-npm-native.test.ps1',
   '.githooks/pre-commit-whitelist.ps1', '.gitignore',
   'scripts/test-public-release.ps1',
   'scripts/observe-github-candidate-artifacts.mjs', 'scripts/stage-desktop-msi-plan.mjs',
@@ -134,6 +135,8 @@ const expectedSourceChanges = Object.freeze({
   'scripts/integrated-publication-origins.mjs': '618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77',
   'tests/workspace-gate-map/gate-map.json': '5146e8888a1099c82fd48ac0fd462c5b16a393e7c9e1396474dc08c74189a435',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',
+  'tests/workspace-package/publication-native-v2.test.ps1': 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af',
+  'tests/workspace-package/publication-npm-native.test.ps1': 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);

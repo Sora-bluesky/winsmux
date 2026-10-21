@@ -42,6 +42,8 @@ const s5Changes = Object.freeze([
   { path: 'scripts/integrated-publication-origins.mjs', before_sha256: '618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77', after_sha256: 'd'.repeat(64) },
   { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff', after_sha256: 'e'.repeat(64) },
   { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: '5146e8888a1099c82fd48ac0fd462c5b16a393e7c9e1396474dc08c74189a435', after_sha256: 'f'.repeat(64) },
+  { path: 'tests/workspace-package/publication-native-v2.test.ps1', before_sha256: 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af', after_sha256: 'a'.repeat(64) },
+  { path: 'tests/workspace-package/publication-npm-native.test.ps1', before_sha256: 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d', after_sha256: 'b'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -134,11 +136,12 @@ const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
 // Final-source applicability is exactly the S rows with their 9be98eb5 before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,36); assert.equal(new Set(publicationCutoverPaths).size,36); });
+check(() => { assert.equal(publicationCutoverPaths.length,37); assert.equal(new Set(publicationCutoverPaths).size,37); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },
+  value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },
   value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba'; },
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256='4939caa74ca878a68183f1d410c2adfb423fc089588b27fd33b33cb0c7102a4b'; },
   value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },
