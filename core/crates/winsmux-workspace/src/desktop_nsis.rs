@@ -6217,6 +6217,50 @@ mod native {
                 }
             }
         }
+        // The uninstall backs up only the product links still in their known folders, so with the
+        // Desktop one already gone the pending validator and the restore verifier take the shorter
+        // set of old rows. Every cut of that uninstall keeps each foreign link in exactly one place.
+        #[test]
+        fn every_uninstall_cut_class_without_the_desktop_product_link_keeps_the_foreign_bytes_in_one_place() {
+            let without_desktop_link = || {
+                let (mut f, known, foreign) = foreign_shortcut_fixture();
+                assert!(execute(&f).unwrap().durable_commit);
+                fs::remove_file(known.join("desktop").join("winsmux.lnk")).unwrap();
+                f.ctx.action = Action::Uninstall;
+                reset_steps(None, false);
+                (f, known, foreign)
+            };
+            let (good, _, _) = without_desktop_link();
+            operation_trace(&good);
+            let cuts = identity_cut_selection("foreign-shortcuts-uninstall-without-desktop-link");
+            let mut restored = 0;
+            for &at in &cuts {
+                for crash in [false, true] {
+                    let (f, known, foreign) = without_desktop_link();
+                    reset_steps(Some(at), crash);
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| execute(&f)));
+                    reset_steps(None, false);
+                    let recovery = recover_if_readable(&f);
+                    for (kind, bytes) in &foreign {
+                        let live = fs::read(known.join(kind).join("winsmux.lnk")).ok() == Some(bytes.clone());
+                        let parked = fs::read(parked_link(&f, kind)).ok() == Some(bytes.clone());
+                        assert!(live ^ parked, "uninstall cut {at} crash {crash} {kind}: live={live} parked={parked}");
+                    }
+                    if recovery.is_ok() {
+                        if old(&f).is_some() {
+                            restored += 1;
+                            parked_bytes_intact(&f, &foreign);
+                            assert!(!exists(&known.join("desktop").join("winsmux.lnk")).unwrap(), "cut {at} crash {crash}: a link the operation never touched came back");
+                            verify_link(&known.join("start_menu").join("winsmux.lnk"), &f.root.path.join("winsmux-app.exe")).unwrap();
+                            assert!(execute(&f).unwrap().durable_commit, "uninstall after cut {at} crash {crash}");
+                        }
+                        assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+                        assert_foreign_live(&f, &known, &foreign);
+                    }
+                }
+            }
+            assert!(restored > 0, "no cut rolled the uninstall back, so the restore path was never exercised");
+        }
         #[test]
         fn first_install_refuses_a_stray_file_in_the_parked_area_and_leaves_everything() {
             let (f, known, foreign) = foreign_shortcut_fixture();
