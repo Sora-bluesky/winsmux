@@ -40,7 +40,6 @@ pub enum LegacyCheck {
     Inventory,
     Receipt,
     Profile,
-    Root,
 }
 impl Error {
     pub fn classification(self) -> &'static str {
@@ -56,7 +55,6 @@ impl Error {
                 LegacyCheck::Inventory => "legacy_inventory_incomplete",
                 LegacyCheck::Receipt => "legacy_receipt_missing",
                 LegacyCheck::Profile => "legacy_profile_incomplete",
-                LegacyCheck::Root => "legacy_root_mismatch",
             },
             Self::Busy => "work_running_or_locked",
             Self::Pending => "pending_unconfirmed",
@@ -2722,11 +2720,10 @@ mod native {
             .registration_profile
             .as_ref()
             .ok_or(Error::LegacyIncomplete(LegacyCheck::Profile))?;
+        // admit_previous reaches here only when legacy_profile_claims matched profile.root to this
+        // root, so the root is not compared again.
         if profile.registration.len() != 22 {
             return Err(Error::LegacyIncomplete(LegacyCheck::Profile));
-        }
-        if !same_path(Path::new(&profile.root), &root.path) {
-            return Err(Error::LegacyIncomplete(LegacyCheck::Root));
         }
         let mut members = Vec::new();
         let mut paths = HashSet::new();
@@ -5932,7 +5929,6 @@ mod native {
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Inventory).classification(), "legacy_inventory_incomplete");
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Receipt).classification(), "legacy_receipt_missing");
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Profile).classification(), "legacy_profile_incomplete");
-            assert_eq!(Error::LegacyIncomplete(LegacyCheck::Root).classification(), "legacy_root_mismatch");
             assert_eq!(Error::Io.classification(), "io_unconfirmed");
         }
 

@@ -7,8 +7,6 @@ LangString WINSMUX_TRANSACTION_FAILED 1033 "Installation could not be confirmed.
 LangString WINSMUX_TRANSACTION_FAILED 1041 "インストールを確認できませんでした。既存の作業と復旧データを保全しました。"
 LangString WINSMUX_FAILED_MEMBER 1033 "The install folder already holds a file with a winsmux name that this installer did not create. Nothing was changed. Move that file away or choose another folder, then run the installer again."
 LangString WINSMUX_FAILED_MEMBER 1041 "インストール先に、この installer が作っていない winsmux と同名のファイルがあります。何も変更していません。そのファイルを移すか別のフォルダーを選んで、もう一度実行してください。"
-LangString WINSMUX_FAILED_LEGACY_ROOT 1033 "This folder holds an earlier winsmux install that this installer cannot take over because its recorded location differs. Nothing was changed. Uninstall the earlier winsmux first, or choose another folder."
-LangString WINSMUX_FAILED_LEGACY_ROOT 1041 "このフォルダーには以前の winsmux が入っていますが、記録された場所と違うため引き継げません。何も変更していません。先に以前の winsmux をアンインストールするか、別のフォルダーを選んでください。"
 LangString WINSMUX_FAILED_LEGACY_CAPTURE 1033 "This installer's record of the earlier winsmux install is incomplete, so the folder cannot be taken over. Nothing was changed. Uninstall the earlier winsmux first, or choose another folder."
 LangString WINSMUX_FAILED_LEGACY_CAPTURE 1041 "以前の winsmux に関する installer 側の記録が不完全なため、このフォルダーを引き継げません。何も変更していません。先に以前の winsmux をアンインストールするか、別のフォルダーを選んでください。"
 LangString WINSMUX_FAILED_REGISTRATION 1033 "The winsmux registry entries do not match what this installer expected, so nothing was changed. Uninstall the earlier winsmux first, then run the installer again."

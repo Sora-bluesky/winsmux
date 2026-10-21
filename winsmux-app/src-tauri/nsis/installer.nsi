@@ -41,8 +41,6 @@ ManifestDPIAwareness PerMonitorV2
   StrCpy $4 "$(WINSMUX_TRANSACTION_FAILED)"
   ${If} $3 S== "winsmux installer: member_unconfirmed"
     StrCpy $4 "$(WINSMUX_FAILED_MEMBER)"
-  ${ElseIf} $3 S== "winsmux installer: legacy_root_mismatch"
-    StrCpy $4 "$(WINSMUX_FAILED_LEGACY_ROOT)"
   ${ElseIf} $3 S== "winsmux installer: legacy_inventory_incomplete"
   ${OrIf} $3 S== "winsmux installer: legacy_receipt_missing"
   ${OrIf} $3 S== "winsmux installer: legacy_profile_incomplete"
@@ -128,12 +126,6 @@ ManifestDPIAwareness PerMonitorV2
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: legacy_profile_incomplete$\r$\n"
       StrCpy $2 73
-    ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_root_mismatch$\n"
-      StrCpy $2 74
-    ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_root_mismatch$\r$\n"
-      StrCpy $2 74
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\n"
       StrCpy $2 68

@@ -202,7 +202,7 @@ fn actual_sdk_flag_emissions_use_the_production_context_parser() {
     let manifest_path=std::path::PathBuf::from(std::env::var_os("WINSMUX_NSIS_FLAG_EMISSIONS").expect("actual SDK emissions required"));
     let manifest:ActualFlagEmissions=serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
     assert_eq!(manifest.schema,"winsmux-nsis-flag-emissions/v1");
-    assert_eq!(manifest.template_sha256,"e57b365db191a42b35673fc866f3657aa1a2fcdf8de22a921503661c588353ca");
+    assert_eq!(manifest.template_sha256,"cad5494074e6d2532a247be39c7bcda73e9bf118a318334f909407244117314e");
     assert_eq!(manifest.filefunc_sha256,"476f33722ff773cfec60876c5f270f2aadb9529e9b73730fa8c41e9490f4b0d6");
     assert_eq!((manifest.baseline_roots,manifest.sibling_roots,manifest.initial_states),(24,6,6));
     assert_eq!(manifest.cases.len(),180);
