@@ -2606,6 +2606,13 @@ mod native {
         let parked = preserved_path(root, &row.domain)?;
         Ok(if action == Action::Install { (live, parked) } else { (parked, live) })
     }
+    /// Whether one of `rows` accounts for `live`: its `path_of` resolves to the same path and, when
+    /// `verify` is set, its recorded member is what sits there.
+    fn row_holds(rows: &[Move], live: &Path, path_of: impl Fn(&Move) -> Result<PathBuf>, verify: bool) -> bool {
+        rows.iter().any(|row| {
+            path_of(row).is_ok_and(|path| same_path(&path, live) && (!verify || exact(live, &row.member, false).is_ok()))
+        })
+    }
     fn preserved_move(row: &PreservedShortcut) -> Move {
         Move { member: row.member.clone(), domain: row.kind.clone(), phase: MovePhase::Prepared }
     }
@@ -3290,16 +3297,8 @@ mod native {
         for row in &p.new {
             let live = live_path(&root.path, row)?;
             if exists(&live)?
-                && !p.old.iter().any(|old| {
-                    live_path(&root.path, old).is_ok_and(|path| {
-                        same_path(&path, &live) && exact(&live, &old.member, false).is_ok()
-                    })
-                })
-                && !p.preserved.iter().any(|kept| {
-                    preserved_endpoints(&root.path, p.action, kept).is_ok_and(|(from, _)| {
-                        same_path(&from, &live) && exact(&live, &kept.member, false).is_ok()
-                    })
-                })
+                && !row_holds(&p.old, &live, |old| live_path(&root.path, old), true)
+                && !row_holds(&p.preserved, &live, |kept| preserved_endpoints(&root.path, p.action, kept).map(|(from, _)| from), true)
             {
                 return Err(Error::Pending);
             }
@@ -3347,11 +3346,7 @@ mod native {
             for m in &p.old {
                 let live = live_path(&root.path, m)?;
                 if exists(&live)?
-                    && !p.preserved.iter().any(|kept| {
-                        preserved_endpoints(&root.path, p.action, kept).is_ok_and(|(_, to)| {
-                            same_path(&to, &live) && exact(&live, &kept.member, false).is_ok()
-                        })
-                    })
+                    && !row_holds(&p.preserved, &live, |kept| preserved_endpoints(&root.path, p.action, kept).map(|(_, to)| to), true)
                 {
                     return Err(Error::Pending);
                 }
@@ -3930,11 +3925,8 @@ mod native {
         if ctx.action == Action::Install {
             for row in &new_rows {
                 let live = live_path(&root.path, row)?;
-                if !exists(&live)?
-                    || old_rows
-                        .iter()
-                        .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
-                {
+                // An update's root members are old rows at the same paths; only a path nobody owns is judged.
+                if !exists(&live)? || row_holds(&old_rows, &live, |m| live_path(&root.path, m), false) {
                     continue;
                 }
                 if !matches!(row.domain.as_str(), "desktop" | "start_menu") {
@@ -3990,12 +3982,8 @@ mod native {
             ), Some(DerivedOrigin::TransactionNewPrivateParent))?;
             let live = live_path(&root.path, row)?;
             if exists(&live)?
-                && !old_rows
-                    .iter()
-                    .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
-                && !preserved_rows
-                    .iter()
-                    .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
+                && !row_holds(&old_rows, &live, |m| live_path(&root.path, m), false)
+                && !row_holds(&preserved_rows, &live, |m| live_path(&root.path, m), false)
             {
                 return Err(Error::Occupied);
             }
