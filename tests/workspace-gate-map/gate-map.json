@@ -5614,19 +5614,25 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 137,
+   "line": 136,
+   "text": "'scripts/test-public-release.ps1': 'ca93ce3f783306e6e479b5222e469697ac37060e818bcc06756a21ad568707b0',",
+   "invokes": "scripts/test-public-release.ps1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 138,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 138,
+   "line": 139,
    "text": "'tests/workspace-package/publication-native-v2.test.ps1': 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af',",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 139,
+   "line": 140,
    "text": "'tests/workspace-package/publication-npm-native.test.ps1': 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d',",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
@@ -8938,55 +8944,61 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 45,
+   "line": 43,
+   "text": "{ path: 'scripts/test-public-release.ps1', before_sha256: 'ca93ce3f783306e6e479b5222e469697ac37060e818bcc06756a21ad568707b0', after_sha256: '1'.repeat(64) },",
+   "invokes": "scripts/test-public-release.ps1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 46,
    "text": "{ path: 'tests/workspace-package/publication-native-v2.test.ps1', before_sha256: 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af', after_sha256: 'a'.repeat(64) },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 46,
+   "line": 47,
    "text": "{ path: 'tests/workspace-package/publication-npm-native.test.ps1', before_sha256: 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d', after_sha256: 'b'.repeat(64) },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 143,
+   "line": 144,
    "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 144,
+   "line": 145,
    "text": "value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 144,
+   "line": 145,
    "text": "value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 145,
+   "line": 146,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 147,
+   "line": 148,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 149,
+   "line": 150,
    "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 152,
+   "line": 153,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },

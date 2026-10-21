@@ -5145,12 +5145,61 @@ function Get-DesktopNativeNsisObservationBinding {
     return $binding
 }
 
+function Test-DesktopNativeKey {
+    param([Parameter(Mandatory)]$Value, [Parameter(Mandatory)][string]$Key)
+    if ($Value -is [Collections.IDictionary]) { return $Value.Contains($Key) }
+    return $null -ne $Value.PSObject.Properties[$Key]
+}
+
+function Get-DesktopNativeShortcutFolder {
+    param([Parameter(Mandatory)][ValidateSet('desktop','start_menu')][string]$Kind)
+    $path = if ($Kind -ceq 'desktop') { Get-DesktopShortcutPath } else { Get-DesktopStartMenuShortcutPath }
+    return [IO.Path]::GetDirectoryName($path)
+}
+
+# desktop_nsis.rs serializes `folder` only when the helper recorded one, and it records the known folder for
+# every desktop and start_menu row and for no root or state row. `preserved` is serialized only when a
+# foreign same-name link was parked, so an empty list leaves the key out.
+function Assert-DesktopNativeMoveRow {
+    param([Parameter(Mandatory)]$Row)
+    if ($Row.domain -cin @('desktop','start_menu')) {
+        Assert-DesktopInventoryShape $Row @('member','domain','phase','folder')
+        Assert-Condition ($Row.folder -is [string] -and $Row.folder -ceq (Get-DesktopNativeShortcutFolder $Row.domain) -and $Row.member.path -ceq 'winsmux.lnk') 'desktop_native_shortcut_folder_refused'
+    } else {
+        Assert-Condition ($Row.domain -cin @('root','state')) 'desktop_native_move_domain_refused'
+        Assert-DesktopInventoryShape $Row @('member','domain','phase')
+    }
+    Assert-DesktopInventoryShape $Row.member @('path','bytes','sha256','identity')
+}
+
+function Assert-DesktopNativePreservedRows {
+    param([Parameter(Mandatory)]$Owner, [Parameter(Mandatory)][string[]]$RequiredKeys, [Parameter(Mandatory)][ValidateSet('kind','domain')][string]$KindKey)
+    if (-not (Test-DesktopNativeKey $Owner 'preserved')) { Assert-DesktopInventoryShape $Owner $RequiredKeys; return 0 }
+    Assert-DesktopInventoryShape $Owner ($RequiredKeys + @('preserved'))
+    $rows = @($Owner.preserved)
+    Assert-Condition ($rows.Count -ge 1) 'desktop_native_preserved_empty_serialized'
+    $kinds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($row in $rows) {
+        if ($KindKey -ceq 'kind') { Assert-DesktopInventoryShape $row @('kind','member','folder') } else { Assert-DesktopNativeMoveRow $row }
+        Assert-DesktopInventoryShape $row.member @('path','bytes','sha256','identity')
+        $kind = [string]$row.$KindKey
+        Assert-Condition ($kind -cin @('desktop','start_menu') -and $kinds.Add($kind) -and $row.member.path -ceq 'winsmux.lnk' -and $row.folder -ceq (Get-DesktopNativeShortcutFolder $kind)) 'desktop_native_preserved_row_refused'
+    }
+    return $rows.Count
+}
+
 function Assert-DesktopNativeNsisObservation {
     param([Parameter(Mandatory)][ValidateSet('installed','updated','publishing','uninstalled')][string]$Kind, [Parameter(Mandatory)]$Binding, [Parameter(Mandatory)][string]$PlanSha256, $State, $PriorState, $Receipt, $Witness, $PriorWitness, $Published)
     $equal = { param($Left, $Right) (ConvertTo-Json -InputObject $Left -Depth 64 -Compress) -ceq (ConvertTo-Json -InputObject $Right -Depth 64 -Compress) }
     $uuid = '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'
     if ($Kind -cin @('installed','updated')) {
-        Assert-DesktopInventoryShape $State @('schema','generation','legacy_capture','actor_sid','root','root_identity','host','version','plan_sha256','plan_bytes','members','registration','shortcuts','operation_id','action')
+        [void](Assert-DesktopNativePreservedRows -Owner $State -RequiredKeys @('schema','generation','legacy_capture','actor_sid','root','root_identity','host','version','plan_sha256','plan_bytes','members','registration','shortcuts','operation_id','action') -KindKey kind)
+        $linkKinds = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($link in @($State.shortcuts)) {
+            Assert-DesktopInventoryShape $link @('kind','member','target','aumid','folder')
+            Assert-DesktopInventoryShape $link.member @('path','bytes','sha256','identity')
+            Assert-Condition ($link.kind -cin @('desktop','start_menu') -and $linkKinds.Add([string]$link.kind) -and $link.member.path -ceq 'winsmux.lnk' -and $link.aumid -ceq 'io.github.sora-bluesky.winsmux' -and [string]::Equals([string]$link.target, (Join-Path $Binding.root 'winsmux-app.exe'), [StringComparison]::OrdinalIgnoreCase) -and $link.folder -ceq (Get-DesktopNativeShortcutFolder $link.kind)) 'desktop_native_shortcut_row_refused'
+        }
         Assert-Condition ($State.schema -ceq 'winsmux-desktop-nsis-installed/v1' -and $State.generation -ceq 'managed' -and $State.action -ceq 'install' -and $State.version -ceq '0.38.0' -and $State.host -ceq 'x86_64-pc-windows-msvc' -and $State.root -ceq $Binding.root -and $State.actor_sid -ceq $Binding.actor_sid -and (& $equal $State.root_identity $Binding.root_identity) -and $State.plan_sha256 -ceq $PlanSha256 -and $State.operation_id -cmatch $uuid) 'desktop_native_managed_observation_refused'
         Assert-Condition ($State.registration.Count -eq 22 -and [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$State.plan_bytes)).ToLowerInvariant() -ceq $PlanSha256) 'desktop_native_managed_plan_bytes_refused'
         if ($null -ne $State.legacy_capture) { Assert-DesktopInventoryShape $State.legacy_capture @('original_installer_sha256','capture_receipt_sha256'); Assert-Condition ($State.legacy_capture.original_installer_sha256 -ceq 'c1f3ea807a035978a78ec12df3bb70bbf1e869cf83c7563715821df0887798e2' -and $State.legacy_capture.capture_receipt_sha256 -cmatch '^[a-f0-9]{64}$') 'desktop_native_legacy_binding_refused' }
@@ -5164,7 +5213,8 @@ function Assert-DesktopNativeNsisObservation {
     $envelope = $Binding.envelope
     Assert-DesktopInventoryShape $envelope @('schema','sha256','payload')
     $p = $envelope.payload
-    Assert-DesktopInventoryShape $p @('schema','operation_id','action','actor_sid','root','root_identity','plan_sha256','plan_bytes','prior_state','old','new','slots','phase','commit_bytes','journal_identity','control_identity','ops_identity','owned_dirs')
+    $preservedCount = Assert-DesktopNativePreservedRows -Owner $p -RequiredKeys @('schema','operation_id','action','actor_sid','root','root_identity','plan_sha256','plan_bytes','prior_state','old','new','slots','phase','commit_bytes','journal_identity','control_identity','ops_identity','owned_dirs') -KindKey domain
+    foreach ($row in @($p.new)) { Assert-DesktopNativeMoveRow $row }
     Assert-Condition ($envelope.schema -ceq 'winsmux-desktop-nsis-journal/v1' -and $envelope.sha256 -ceq $Binding.payload_sha256 -and $p.schema -ceq 'winsmux-desktop-nsis-pending/v1' -and $p.operation_id -cmatch $uuid -and $p.root -ceq $Binding.root -and $p.actor_sid -ceq $Binding.actor_sid -and $p.plan_sha256 -ceq $PlanSha256 -and (& $equal $p.root_identity $Binding.root_identity) -and (& $equal $p.journal_identity $Binding.journal_identity) -and (& $equal $p.control_identity $Binding.control_identity) -and (& $equal $p.ops_identity $Binding.ops_identity)) 'desktop_native_journal_projection_refused'
     $stateRow = @($PriorWitness.files | Where-Object path -CEQ '.winsmux-desktop/installed.json')
     Assert-Condition ($stateRow.Count -eq 1 -and $null -ne $p.prior_state) 'desktop_native_journal_prior_missing'
@@ -5182,14 +5232,22 @@ function Assert-DesktopNativeNsisObservation {
     $seenOld = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $expected = @($PriorState.members | ForEach-Object { [ordered]@{domain='root';member=$_} })
     $expected += [ordered]@{domain='state';member=[ordered]@{path='installed.json';bytes=$stateRow[0].bytes;sha256=$stateRow[0].sha256;identity=(Convert-DesktopNativeObservedIdentity $stateRow[0].identity $Binding.root_identity.volume)}}
-    foreach ($link in $PriorState.shortcuts) { $expected += [ordered]@{domain=$link.kind;member=$link.member} }
+    foreach ($link in @($PriorState.shortcuts)) { $expected += [ordered]@{domain=$link.kind;member=$link.member;folder=$link.folder} }
     Assert-Condition (@($p.old).Count -eq $expected.Count) 'desktop_native_uninstall_old_inventory_refused'
     foreach ($old in $p.old) {
-        Assert-DesktopInventoryShape $old @('member','domain','phase')
-        Assert-DesktopInventoryShape $old.member @('path','bytes','sha256','identity')
+        Assert-DesktopNativeMoveRow $old
         Assert-Condition ($seenOld.Add($old.domain + ':' + $old.member.path)) 'desktop_native_uninstall_duplicate_row'
         $match = @($expected | Where-Object { $_.domain -ceq $old.domain -and $_.member.path -ceq $old.member.path })
         Assert-Condition ($match.Count -eq 1 -and $old.phase -ceq 'moved_confirmed' -and (& $equal $old.member $match[0].member)) 'desktop_native_uninstall_owned_row_refused'
+        if ($old.domain -cin @('desktop','start_menu')) { Assert-Condition ($old.folder -ceq $match[0].folder) 'desktop_native_uninstall_shortcut_folder_refused' }
+    }
+    $priorPreserved = @(if (Test-DesktopNativeKey $PriorState 'preserved') { $PriorState.preserved })
+    Assert-Condition ($preservedCount -eq $priorPreserved.Count) 'desktop_native_uninstall_preserved_inventory_refused'
+    foreach ($row in @(if ($preservedCount -gt 0) { $p.preserved })) {
+        $match = @($priorPreserved | Where-Object { $_.kind -ceq $row.domain })
+        Assert-Condition ($match.Count -eq 1) 'desktop_native_uninstall_preserved_row_refused'
+        Assert-DesktopInventoryShape $match[0] @('kind','member','folder')
+        Assert-Condition ((& $equal $row.member $match[0].member) -and $row.folder -ceq $match[0].folder) 'desktop_native_uninstall_preserved_row_refused'
     }
     Assert-Condition ($p.slots.Count -ge 22 -and $p.slots.Count -le 23) 'desktop_native_uninstall_slots_refused'
     for ($i=0; $i -lt $p.slots.Count; $i++) { Assert-DesktopInventoryShape $p.slots[$i] @('id','prior','desired','phase'); Assert-Condition ($p.slots[$i].id -eq $i -and $p.slots[$i].phase -ceq 'published_confirmed' -and $null -eq $p.slots[$i].desired -and ($i -ge 22 -or (& $equal $p.slots[$i].prior $PriorState.registration[$i]))) 'desktop_native_uninstall_slot_refused' }
@@ -6420,7 +6478,25 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($observers.Count -eq 1) 'Desktop NSIS failure observer must be unique.'
     $observerBytes = [Text.Encoding]::UTF8.GetBytes($observers[0].Groups['body'].Value)
     $observerSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observerBytes)).ToLowerInvariant()
-    Assert-Condition ($observerSha256 -ceq 'd15f7be37248c3e5c6ea299175fc41b1d896d1dfee13e60f1eae470a2905e5de') 'Desktop NSIS finite nonzero failure observer differs.'
+    Assert-Condition ($observerSha256 -ceq '44c242822cb5ff7ceeebb40879346c747f6e2291f0ec41a6ea337867f5dc5395') 'Desktop NSIS finite nonzero failure observer differs.'
+    # The per-class failure report prints the helper classification and the judged root to the details view
+    # and aborts with the install or uninstall string the PREFIX selects. Its body is pinned the same way.
+    $reports = [regex]::Matches($template, '(?ms)^!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n(?<body>.*?)^!macroend$')
+    Assert-Condition ($reports.Count -eq 1) 'Desktop NSIS helper failure report must be unique.'
+    $reportBody = $reports[0].Groups['body'].Value
+    $reportSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($reportBody))).ToLowerInvariant()
+    Assert-Condition ($reportSha256 -ceq '41ed7fc689d8ba838475c4a95c08eaa8b2120753add23c101ed2dd5b672f24fb') 'Desktop NSIS helper failure report differs.'
+    Assert-Condition ([regex]::Matches($reportBody, '(?m)^  Abort \$4$').Count -eq 1) 'Desktop NSIS helper failure report must abort.'
+    # Every string the report selects must exist in the hook for both prefixes and both installer languages.
+    $reportStrings = @([regex]::Matches($reportBody, '\$\(WINSMUX_\$\{PREFIX\}(?<name>[A-Z_]+)\)') | ForEach-Object { $_.Groups['name'].Value } | Sort-Object -Unique)
+    Assert-Condition (($reportStrings -join ',') -ceq 'FAILED_FOLDER_MOVED,FAILED_LEGACY_CAPTURE,FAILED_MEMBER,FAILED_OCCUPIED,FAILED_PENDING,FAILED_REGISTRATION,FAILED_RUNNING,TRANSACTION_FAILED') 'Desktop NSIS helper failure report strings differ.'
+    foreach ($prefix in @('', 'UN_')) {
+        foreach ($name in $reportStrings) {
+            foreach ($language in @('1033', '1041')) {
+                Assert-Condition ([regex]::Matches($hook, '(?m)^LangString WINSMUX_' + $prefix + $name + ' ' + $language + ' "[^"\n]+"$').Count -eq 1) 'Desktop NSIS helper failure string is not defined once per language.'
+            }
+        }
+    }
     $failure = @'
   nsExec::ExecToStack $WinsmuxCommand
   Pop $0
@@ -6428,7 +6504,7 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
   ${If} $0 != 0
     !insertmacro WINSMUX_OBSERVE_FAILURE helper
     SetErrorLevel $2
-    Abort "$(WINSMUX_TRANSACTION_FAILED)"
+    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." "UN_"
   ${EndIf}
 '@
     $failure = $failure.Replace(([string][char]13 + [char]10), [string][char]10)
@@ -6648,6 +6724,17 @@ function Invoke-SelfTest {
             $caseIds.Add('desktop_native_uninstall_adapter_crlf')
             $nativeFailureObservers = [regex]::Matches($nsisTemplateSource, '(?ms)^!macro WINSMUX_OBSERVE_FAILURE STAGE\n.*?^!macroend$')
             Assert-Condition ($nativeFailureObservers.Count -eq 1) 'Desktop NSIS finite failure observer source differs.'
+            $nativeFailureReports = [regex]::Matches($nsisTemplateSource, '(?ms)^!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n.*?^!macroend$')
+            Assert-Condition ($nativeFailureReports.Count -eq 1) 'Desktop NSIS helper failure report source differs.'
+            $hookMutations = [ordered]@{
+                missing_uninstall_japanese_string = $nsisHookSource -creplace '(?m)^LangString WINSMUX_UN_FAILED_PENDING 1041 "[^"\r\n]+"', '; uninstall pending string missing'
+                duplicate_install_english_string = $nsisHookSource -creplace '(?m)^(LangString WINSMUX_FAILED_MEMBER 1033 "[^"\r\n]+")', ('$1' + [char]10 + '$1')
+            }
+            foreach ($mutation in $hookMutations.GetEnumerator()) {
+                Assert-Condition ($mutation.Value -cne $nsisHookSource) 'Desktop NSIS hook negative fixture was unchanged.'
+                Assert-Condition (Test-Throws { Assert-DesktopNativeNsisUninstallAdapterSource -HookSource $mutation.Value -TemplateSource $nsisTemplateSource }) ('Desktop NSIS hook accepted ' + $mutation.Key)
+                $caseIds.Add('desktop_native_hook_' + $mutation.Key)
+            }
             $adapterMutations = [ordered]@{
                 missing_dispatch = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace($nativeUninstallDispatch, '  ; native dispatch missing'))
                 wrong_action = $nsisTemplateSource.Replace('!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace uninstall 117', '!insertmacro WINSMUX_WORKSPACE_FUNCTION un.WinsmuxInitWorkspace install 115')
@@ -6656,7 +6743,10 @@ function Invoke-SelfTest {
                 wrong_failure_observer_stage = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    !insertmacro WINSMUX_OBSERVE_FAILURE helper', '    !insertmacro WINSMUX_OBSERVE_FAILURE context-write'))
                 failure_exit_zero = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    SetErrorLevel $2', '    SetErrorLevel 0'))
                 legacy_fixed_failure_exit = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    SetErrorLevel $2', '    SetErrorLevel 2'))
-                missing_failure_abort = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    Abort "$(WINSMUX_TRANSACTION_FAILED)"', '    ; failure abort missing'))
+                missing_failure_abort = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." "UN_"', '    ; failure abort missing'))
+                install_strings_on_uninstall = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." "UN_"', '    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." ""'))
+                missing_failure_report_definition = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, '')
+                failure_report_without_abort = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('  Abort $4', '  DetailPrint $4'))
                 missing_failure_observer_definition = $nsisTemplateSource.Replace($nativeFailureObservers[0].Value, '')
                 duplicate_failure_observer_definition = $nsisTemplateSource + [char]10 + $nativeFailureObservers[0].Value
                 failure_observer_default_zero = $nsisTemplateSource.Replace('  StrCpy $2 59', '  StrCpy $2 0')
