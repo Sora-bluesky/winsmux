@@ -5535,13 +5535,12 @@ mod native {
                     }
                 }
             }
+            // An empty control namespace is what a pre-journal error leaves behind. It is a
+            // first install, not an unknown legacy inventory.
             let unknown = fixture();
             fs::create_dir(unknown.root.path.join(CONTROL)).unwrap();
-            assert!(execute(&unknown).is_err());
-            assert!(fs::read_dir(unknown.root.path.join(CONTROL))
-                .unwrap()
-                .next()
-                .is_none());
+            assert!(execute(&unknown).unwrap().durable_commit);
+            assert_eq!(old(&unknown).unwrap().0.generation, "managed");
         }
         #[test]
         fn nullable_language_restore_preserves_absence_and_external_registration() {
@@ -6150,9 +6149,17 @@ mod native {
                     assert_eq!(exact(&target, &member, mutable).map(|_| ()), Err(Error::Member), "missing expected installed/control leaf classification");
                 }
                 assert_eq!(read_plain(&target).map(|_| ()), Err(Error::Member), "missing control/read-only leaf classification");
-                assert!(admit_previous(&f.root, "S-1-5-21-100", &f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256)).is_err(), "missing installed/control member became ownership");
+                let admitted = admit_previous(&f.root, "S-1-5-21-100", &f.plan_bytes, &sha256_hex(&f.ctx.plan_sha256));
+                if relative == "winsmux-app.exe" {
+                    assert!(admitted.is_err(), "missing installed member became ownership");
+                    assert_eq!(hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().steps), 0);
+                } else {
+                    // Without installed.json the root is a first install. Its registration is
+                    // still live, so the transaction refuses before anything moves.
+                    assert!(admitted.unwrap().0.is_none(), "missing control member became ownership");
+                    assert_eq!(execute(&f).err(), Some(Error::Registration), "orphaned registration classification");
+                }
                 assert!(observed_open_snapshot(&f) == before, "protected state changed after installed/control absence");
-                assert_eq!(hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().steps), 0);
             }
         }
         #[test]
