@@ -9646,7 +9646,7 @@
   },
   {
    "source": "tests/workspace-package/windows-runtime.test.mjs",
-   "line": 167,
+   "line": 171,
    "text": "const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/assert-windows-distribution-toolchain.mjs')],",
    "invokes": "scripts/assert-windows-distribution-toolchain.mjs"
   },
