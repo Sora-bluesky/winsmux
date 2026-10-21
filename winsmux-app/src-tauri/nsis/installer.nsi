@@ -33,25 +33,31 @@ ManifestDPIAwareness PerMonitorV2
 !macroend
 
 ; The helper's one-line classification and the root it judged go to the details view, and the
-; abort text names what that class means for the user. $0/$1 stay the plugin return/output.
-!macro WINSMUX_REPORT_HELPER_FAILURE UN
+; abort text names what that class means for the user. The text is printed to the details view
+; before the abort because the status line truncates it and /P and /S runs do not show it at all.
+; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
+; $0/$1 stay the plugin return/output.
+!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX
   ${${UN}TrimNewLines} $1 $3
   DetailPrint "winsmux installer root: $INSTDIR"
   DetailPrint "winsmux installer helper exit $0: $3"
-  StrCpy $4 "$(WINSMUX_TRANSACTION_FAILED)"
+  StrCpy $4 "$(WINSMUX_${PREFIX}TRANSACTION_FAILED)"
   ${If} $3 S== "winsmux installer: member_unconfirmed"
-    StrCpy $4 "$(WINSMUX_FAILED_MEMBER)"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_MEMBER)"
+  ${ElseIf} $3 S== "winsmux installer: destination_occupied"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_OCCUPIED)"
   ${ElseIf} $3 S== "winsmux installer: legacy_inventory_incomplete"
   ${OrIf} $3 S== "winsmux installer: legacy_receipt_missing"
   ${OrIf} $3 S== "winsmux installer: legacy_profile_incomplete"
-    StrCpy $4 "$(WINSMUX_FAILED_LEGACY_CAPTURE)"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_LEGACY_CAPTURE)"
   ${ElseIf} $3 S== "winsmux installer: registration_conflict"
-    StrCpy $4 "$(WINSMUX_FAILED_REGISTRATION)"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_REGISTRATION)"
   ${ElseIf} $3 S== "winsmux installer: work_running_or_locked"
-    StrCpy $4 "$(WINSMUX_FAILED_RUNNING)"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_RUNNING)"
   ${ElseIf} $3 S== "winsmux installer: pending_unconfirmed"
-    StrCpy $4 "$(WINSMUX_FAILED_PENDING)"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_PENDING)"
   ${EndIf}
+  DetailPrint $4
   Abort $4
 !macroend
 
@@ -126,6 +132,12 @@ ManifestDPIAwareness PerMonitorV2
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: legacy_profile_incomplete$\r$\n"
       StrCpy $2 73
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: destination_occupied$\n"
+      StrCpy $2 75
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: destination_occupied$\r$\n"
+      StrCpy $2 75
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\n"
       StrCpy $2 68
@@ -982,7 +994,7 @@ Section Install
   ${If} $0 != 0
     !insertmacro WINSMUX_OBSERVE_FAILURE helper
     SetErrorLevel $2
-    !insertmacro WINSMUX_REPORT_HELPER_FAILURE ""
+    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "" ""
   ${EndIf}
   StrCpy $WinsmuxCommitted 1
   ${If} $PassiveMode = 1
@@ -1040,7 +1052,7 @@ Section Uninstall
   ${If} $0 != 0
     !insertmacro WINSMUX_OBSERVE_FAILURE helper
     SetErrorLevel $2
-    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un."
+    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." "UN_"
   ${EndIf}
   ${If} $PassiveMode = 1
     SetAutoClose true

@@ -24,7 +24,10 @@ pub enum Error {
     Plan,
     Actor,
     Path(u16),
+    // A file winsmux created or parked cannot be confirmed by presence, content and ownership.
     Member,
+    // A path this install publishes to holds something winsmux does not own and cannot park.
+    Occupied,
     Registration,
     LegacyIncomplete(LegacyCheck),
     Busy,
@@ -50,6 +53,7 @@ impl Error {
             Self::Actor => "actor_refused",
             Self::Path(_) => "path_refused",
             Self::Member => "member_unconfirmed",
+            Self::Occupied => "destination_occupied",
             Self::Registration => "registration_conflict",
             Self::LegacyIncomplete(check) => match check {
                 LegacyCheck::Inventory => "legacy_inventory_incomplete",
@@ -3902,12 +3906,13 @@ mod native {
                     continue;
                 }
                 if !matches!(row.domain.as_str(), "desktop" | "start_menu") {
-                    return Err(Error::Member);
+                    return Err(Error::Occupied);
                 }
                 // A same-name link that another install owns is parked intact and comes back on uninstall.
+                // One on another volume cannot be moved intact, so the user moves it away instead.
                 let seen = observe(&live, "winsmux.lnk", true)?;
                 if seen.member.identity.volume != root.id.volume {
-                    return Err(Error::Member);
+                    return Err(Error::Occupied);
                 }
                 preserved_rows.push(Move {
                     member: seen.member.clone(),
@@ -3960,7 +3965,7 @@ mod native {
                     .iter()
                     .any(|m| live_path(&root.path, m).is_ok_and(|p| same_path(&p, &live)))
             {
-                return Err(Error::Member);
+                return Err(Error::Occupied);
             }
         }
         for row in &preserved_rows {
@@ -5925,6 +5930,7 @@ mod native {
                 assert_eq!(observed_open_error(std::io::Error::new(kind, "synthetic error without raw code")), Error::Io);
             }
             assert_eq!(Error::Member.classification(), "member_unconfirmed");
+            assert_eq!(Error::Occupied.classification(), "destination_occupied");
             assert_eq!(Error::Busy.classification(), "work_running_or_locked");
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Inventory).classification(), "legacy_inventory_incomplete");
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Receipt).classification(), "legacy_receipt_missing");
@@ -5978,7 +5984,7 @@ mod native {
             fs::write(f.root.path.join("winsmux.exe"), b"another product's cli").unwrap();
             fs::write(f.root.path.join("notes.txt"), b"user notes").unwrap();
             reset_steps(None, false);
-            assert_eq!(execute(&f).err(), Some(Error::Member));
+            assert_eq!(execute(&f).err(), Some(Error::Occupied), "a foreign file at a member path is a collision, not an unconfirmed member");
             assert_eq!(fs::read(f.root.path.join("winsmux.exe")).unwrap(), b"another product's cli");
             assert_eq!(fs::read(f.root.path.join("notes.txt")).unwrap(), b"user notes");
             assert!(!exists(&f.root.path.join("winsmux-app.exe")).unwrap());

@@ -24,7 +24,7 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', 'cad5494074e6d2532a247be39c7bcda73e9bf118a318334f909407244117314e'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', 'c9dabf47591dcf81ad9141d38b9921aebbcbe35b505be25a84eb1a815aeb43d1'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
     ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'f90d5194b71858a9db453778c844d2eff25e96d1b1cd3788ded1a7ae64dfc6cf'],
   ]);
@@ -52,6 +52,66 @@ test('Japanese installer license is a marked reference translation followed by t
     'この日本語は参考訳です。英語の原文と内容が異なる場合は、英語の原文が優先します。英語の原文は、この訳文のあとにそのまま掲載しています。');
   assert.deepEqual(japanese.subarray(japanese.length - english.length), english);
   assert.equal(japanese.toString('utf8', 3, japanese.length - english.length).endsWith('\n英語の原文（English original）\n\n'), true);
+});
+
+test('every helper refusal the installer names gets an install and an uninstall message that says what that class guarantees', () => {
+  const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8').replaceAll('\r\n', '\n');
+  const hooks = read('winsmux-app/src-tauri/nsis-installer-hooks.nsh');
+  const template = read('winsmux-app/src-tauri/nsis/installer.nsi');
+  const helper = read('core/crates/winsmux-workspace/src/desktop_nsis.rs');
+  const strings = new Map();
+  for (const m of hooks.matchAll(/^LangString (WINSMUX_\w+) (1033|1041) "(.*)"$/gmu)) {
+    if (!strings.has(m[1])) strings.set(m[1], {});
+    assert.equal(strings.get(m[1])[m[2]], undefined, `${m[1]} ${m[2]} defined twice`);
+    strings.get(m[1])[m[2]] = m[3];
+  }
+  const classificationBody = helper.slice(helper.indexOf('pub fn classification(self)'), helper.indexOf('#[derive', helper.indexOf('pub fn classification(self)')));
+  const emitted = new Set([...classificationBody.matchAll(/=> "([a-z_]+)"/gu)].map(m => m[1]));
+  assert.ok(emitted.has('member_unconfirmed') && emitted.has('destination_occupied') && !emitted.has('legacy_root_mismatch'));
+  const macroStart = template.indexOf('!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n');
+  assert.ok(macroStart >= 0);
+  const macro = template.slice(macroStart, template.indexOf('!macroend', macroStart));
+  const branches = [...macro.matchAll(/\$\{(?:If|ElseIf|OrIf)\} \$3 S== "winsmux installer: ([a-z_]+)"\n(?:\s+\$\{OrIf\} \$3 S== "winsmux installer: ([a-z_]+)"\n)*\s+StrCpy \$4 "\$\(WINSMUX_\$\{PREFIX\}(\w+)\)"/gu)];
+  const mapped = new Map();
+  for (const branch of branches) {
+    for (const cls of branch[0].matchAll(/winsmux installer: ([a-z_]+)/gu)) mapped.set(cls[1], branch[3]);
+  }
+  assert.deepEqual([...mapped.keys()].sort(), ['destination_occupied', 'legacy_inventory_incomplete', 'legacy_profile_incomplete',
+    'legacy_receipt_missing', 'member_unconfirmed', 'pending_unconfirmed', 'registration_conflict', 'work_running_or_locked']);
+  for (const cls of mapped.keys()) assert.ok(emitted.has(cls), `${cls} is not a classification the helper emits`);
+  assert.ok(macro.includes('  DetailPrint $4\n  Abort $4\n'), 'the message is printed to the details view before the abort');
+  assert.equal((macro.match(/\$\{PREFIX\}/gu) ?? []).length, new Set(mapped.values()).size + 1, 'every string selection, the default included, goes through the prefix');
+  assert.ok(/Section Install\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "" ""\n[\s\S]*?SectionEnd/u.test(template));
+  assert.ok(/Section Uninstall\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "un\." "UN_"\n[\s\S]*?SectionEnd/u.test(template));
+  // What each class guarantees, in the words the helper's Error enum documents: a Member is unconfirmed
+  // (never asserted to be a collision), Occupied is a collision the user moves away, and only an
+  // install run says "installer" or "nothing was changed".
+  const expectations = {
+    FAILED_MEMBER: { 1033: [/could not confirm/u, /^(?!.*already holds)/u], 1041: [/確認できない/u, /^(?!.*同名のファイルがあります)/u] },
+    FAILED_OCCUPIED: { 1033: [/holds a file with a winsmux name/u, /Move that file away/u], 1041: [/同名のファイルがあります/u, /そのファイルを移/u] },
+    FAILED_LEGACY_CAPTURE: { 1033: [/record of the earlier winsmux install is incomplete/u], 1041: [/記録が不完全/u] },
+    FAILED_REGISTRATION: { 1033: [/registry entries do not match/u], 1041: [/レジストリ項目が.*一致しない/u] },
+    FAILED_RUNNING: { 1033: [/still running or its folder is locked/u], 1041: [/起動中か、フォルダーがロック/u] },
+    FAILED_PENDING: { 1033: [/did not finish and its recovery data is kept/u, /preserved/u], 1041: [/完了しておらず、復旧データを残して/u, /保全/u] },
+    TRANSACTION_FAILED: { 1033: [/could not be confirmed/u, /preserved/u], 1041: [/確認できませんでした/u, /保全/u] },
+  };
+  const outcome = {
+    '': { 1033: [/nothing was changed|preserved/iu, /^(?!.*uninstaller)/u], 1041: [/何も変更していません|保全/u, /^(?!.*アンインストールしてください)/u] },
+    UN_: { 1033: [/nothing was removed|preserved/iu, /^(?!.*\binstaller\b)/u, /^(?!.*nothing was changed)/iu], 1041: [/何も削除していません|保全/u, /^(?!.*何も変更していません)/u] },
+  };
+  for (const prefix of ['', 'UN_']) {
+    for (const [suffix, perLanguage] of Object.entries(expectations)) {
+      const key = `WINSMUX_${prefix}${suffix}`;
+      const text = strings.get(key);
+      assert.ok(text, `${key} is not defined in the installer hook`);
+      for (const language of ['1033', '1041']) {
+        assert.ok(text[language], `${key} has no ${language} string`);
+        for (const rule of [...perLanguage[language], ...outcome[prefix][language]]) assert.match(text[language], rule, `${key} ${language}`);
+      }
+    }
+  }
+  for (const suffix of new Set(mapped.values())) assert.ok(Object.hasOwn(expectations, suffix), `${suffix} has no expectation row`);
+  assert.ok(!hooks.includes('LEGACY_ROOT') && !template.includes('legacy_root_mismatch'));
 });
 
 test('compiler identity refuses unsuccessful observations and malformed captured bytes', () => {
