@@ -3622,17 +3622,22 @@ mod native {
         Ok((old, inherited))
     }
     /// A product link another installer deleted from its known folder is already in the state an
-    /// uninstall would leave, and an update publishes it again, so its absence is admitted. Anything
-    /// else at that path is a foreign file the user moves away; the parked link stays untouched.
+    /// uninstall would leave, and an update publishes it again, so its absence is admitted. The
+    /// recorded file with other content (the user edited it in place) is unconfirmed. A different
+    /// file at that path is foreign and the user moves it away. The parked link stays untouched.
     fn owned_shortcut_or_absent(link: &Shortcut) -> Result<Option<Observed>> {
         let path = known_shortcut(&link.kind)?;
         if !exists(&path)? {
             return Ok(None);
         }
         let origin = shortcut_origin(&link.kind, DerivedOrigin::ManagedDesktopParent, DerivedOrigin::ManagedProgramsParent);
-        match derived_origin(exact(&path, &link.member, true), origin) {
-            Err(Error::Member) => Err(Error::Occupied),
-            held => held.map(Some),
+        let seen = derived_origin(observe(&path, &link.member.path, true), origin)?;
+        if seen.member == link.member {
+            Ok(Some(seen))
+        } else if seen.member.identity == link.member.identity {
+            Err(Error::Member)
+        } else {
+            Err(Error::Occupied)
         }
     }
     fn legacy_profile_claims(root: &Dirs) -> Result<bool> {
@@ -6263,6 +6268,40 @@ mod native {
             reset_steps(None, false);
             assert!(execute(&f).unwrap().durable_commit);
             assert_foreign_live(&f, &known, &foreign);
+        }
+        /// Update and uninstall both refuse with `expected`, and neither touches the owned state or
+        /// the parked links.
+        fn refuse_update_and_uninstall(f: &mut Fixture, foreign: &[(String, Vec<u8>)], expected: Error, case: &str) {
+            let before = old(f).unwrap().1;
+            for action in [Action::Install, Action::Uninstall] {
+                f.ctx.action = action;
+                reset_steps(None, false);
+                assert_eq!(execute(f).err(), Some(expected), "{case}: {action:?}");
+            }
+            f.ctx.action = Action::Install;
+            reset_steps(None, false);
+            parked_bytes_intact(f, foreign);
+            assert_eq!(old(f).unwrap().1, before, "{case}: owned state changed by a refusal");
+        }
+        #[test]
+        fn product_link_edited_in_place_is_unconfirmed_and_a_replacing_file_is_occupied() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            let desktop = known.join("desktop").join("winsmux.lnk");
+            let published = fs::read(&desktop).unwrap();
+            // Changing the icon in the link's properties rewrites the same file with other bytes.
+            let mut edited = published.clone();
+            edited.extend_from_slice(b"edited in place");
+            fs::write(&desktop, &edited).unwrap();
+            refuse_update_and_uninstall(&mut f, &foreign, Error::Member, "edited in place");
+            assert_eq!(fs::read(&desktop).unwrap(), edited);
+            fs::write(&desktop, &published).unwrap();
+            assert!(execute(&f).unwrap().durable_commit, "the link put back is the product link again");
+            let replacement = known.join("desktop").join("replacement.lnk");
+            fs::write(&replacement, &published).unwrap();
+            fs::rename(&replacement, &desktop).unwrap();
+            refuse_update_and_uninstall(&mut f, &foreign, Error::Occupied, "the same bytes in another file");
+            assert_eq!(fs::read(&desktop).unwrap(), published);
         }
         // The 23b679cc helper wrote installed.json and pending.json without a preserved field. The
         // fixtures below are the current files with any such field removed, which is byte for byte
