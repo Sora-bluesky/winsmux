@@ -5555,8 +5555,14 @@
   {
    "source": "scripts/integrated-publication-origins.mjs",
    "line": 38,
-   "text": "'tests/DesktopInstallReceipt.Tests.ps1',",
+   "text": "'tests/DesktopInstallReceipt.Tests.ps1', 'tests/VersionSurface.Tests.ps1',",
    "invokes": "tests/DesktopInstallReceipt.Tests.ps1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 38,
+   "text": "'tests/DesktopInstallReceipt.Tests.ps1', 'tests/VersionSurface.Tests.ps1',",
+   "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
@@ -5620,19 +5626,25 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 138,
+   "line": 137,
+   "text": "'tests/VersionSurface.Tests.ps1': '55abd3292db35072a68fbeed49ced2d679cf62374ee757239ee77f716dd59c66',",
+   "invokes": "tests/VersionSurface.Tests.ps1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 139,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 139,
+   "line": 140,
    "text": "'tests/workspace-package/publication-native-v2.test.ps1': 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af',",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 140,
+   "line": 141,
    "text": "'tests/workspace-package/publication-npm-native.test.ps1': 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d',",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
@@ -8950,55 +8962,61 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 46,
+   "line": 44,
+   "text": "{ path: 'tests/VersionSurface.Tests.ps1', before_sha256: '55abd3292db35072a68fbeed49ced2d679cf62374ee757239ee77f716dd59c66', after_sha256: '2'.repeat(64) },",
+   "invokes": "tests/VersionSurface.Tests.ps1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 47,
    "text": "{ path: 'tests/workspace-package/publication-native-v2.test.ps1', before_sha256: 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af', after_sha256: 'a'.repeat(64) },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 47,
+   "line": 48,
    "text": "{ path: 'tests/workspace-package/publication-npm-native.test.ps1', before_sha256: 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d', after_sha256: 'b'.repeat(64) },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 144,
+   "line": 145,
    "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 145,
+   "line": 146,
    "text": "value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 145,
+   "line": 146,
    "text": "value => { rowOf(value,'tests/workspace-package/publication-npm-native.test.ps1').before_sha256=rowOf(value,'tests/workspace-package/publication-native-v2.test.ps1').before_sha256; },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 146,
+   "line": 147,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='4eeeb9fb17280f69edf122d8615d54e01680d94d94205e60cf6946c06c6b67ba'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 148,
+   "line": 149,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 150,
+   "line": 151,
    "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 153,
+   "line": 154,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },

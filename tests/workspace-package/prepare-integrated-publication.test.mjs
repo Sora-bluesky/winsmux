@@ -41,6 +41,7 @@ const retiredA1ceBase='a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3', retiredA1ceTre
 const s5Changes = Object.freeze([
   { path: 'scripts/integrated-publication-origins.mjs', before_sha256: '618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77', after_sha256: 'd'.repeat(64) },
   { path: 'scripts/test-public-release.ps1', before_sha256: 'ca93ce3f783306e6e479b5222e469697ac37060e818bcc06756a21ad568707b0', after_sha256: '1'.repeat(64) },
+  { path: 'tests/VersionSurface.Tests.ps1', before_sha256: '55abd3292db35072a68fbeed49ced2d679cf62374ee757239ee77f716dd59c66', after_sha256: '2'.repeat(64) },
   { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff', after_sha256: 'e'.repeat(64) },
   { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: '5146e8888a1099c82fd48ac0fd462c5b16a393e7c9e1396474dc08c74189a435', after_sha256: 'f'.repeat(64) },
   { path: 'tests/workspace-package/publication-native-v2.test.ps1', before_sha256: 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af', after_sha256: 'a'.repeat(64) },
@@ -137,7 +138,7 @@ const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
 // Final-source applicability is exactly the S rows with their 9be98eb5 before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,37); assert.equal(new Set(publicationCutoverPaths).size,37); });
+check(() => { assert.equal(publicationCutoverPaths.length,38); assert.equal(new Set(publicationCutoverPaths).size,38); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [

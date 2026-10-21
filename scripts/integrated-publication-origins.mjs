@@ -35,7 +35,7 @@ export const publicationCutoverPaths = Object.freeze([
   'scripts/desktop-install-inventory.ps1',
   'tests/workspace-package/github-candidate-artifacts.test.mjs',
   'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',
-  'tests/DesktopInstallReceipt.Tests.ps1',
+  'tests/DesktopInstallReceipt.Tests.ps1', 'tests/VersionSurface.Tests.ps1',
   'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',
   'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',
   'docs/provider-and-model-support.md', 'docs/provider-and-model-support.ja.md',
@@ -134,6 +134,7 @@ const desktopAssetPaths = Object.freeze([
 const expectedSourceChanges = Object.freeze({
   'scripts/integrated-publication-origins.mjs': '618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77',
   'scripts/test-public-release.ps1': 'ca93ce3f783306e6e479b5222e469697ac37060e818bcc06756a21ad568707b0',
+  'tests/VersionSurface.Tests.ps1': '55abd3292db35072a68fbeed49ced2d679cf62374ee757239ee77f716dd59c66',
   'tests/workspace-gate-map/gate-map.json': '5146e8888a1099c82fd48ac0fd462c5b16a393e7c9e1396474dc08c74189a435',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',
   'tests/workspace-package/publication-native-v2.test.ps1': 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af',
