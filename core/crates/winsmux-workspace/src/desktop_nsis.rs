@@ -634,8 +634,8 @@ struct Installed {
     members: Vec<Member>,
     registration: Vec<Option<RawValue>>,
     shortcuts: Vec<Shortcut>,
-    // Helpers before 0.38.0 wrote no preserved field. An empty list serializes to their exact bytes,
-    // so their state files, journals and commit bytes still pass the re-serialization checks.
+    // Helpers before c3394c04 wrote no preserved field. An empty list serializes to their exact
+    // bytes, so their state files, journals and commit bytes still pass the re-serialization checks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     preserved: Vec<PreservedShortcut>,
     operation_id: String,
@@ -3611,7 +3611,7 @@ mod native {
             Some(admit_legacy(root, sid, plan_bytes, plan_sha256)?)
         } else {
             // A used root the captured legacy profile does not name is a first install. Its entries
-            // stay untouched and any collision with a member path is refused later as Member.
+            // stay untouched and any collision with a member path is refused later as Occupied.
             None
         };
         let preserved_kinds: Vec<String> = old
@@ -6303,24 +6303,53 @@ mod native {
             refuse_update_and_uninstall(&mut f, &foreign, Error::Occupied, "the same bytes in another file");
             assert_eq!(fs::read(&desktop).unwrap(), published);
         }
-        // The 23b679cc helper wrote installed.json and pending.json without a preserved field. The
-        // fixtures below are the current files with any such field removed, which is byte for byte
-        // what that helper produced when no foreign link was involved.
-        fn strip_preserved_field(path: &Path) -> String {
+        /// Fails unless `text` (installed.json, or pending.json with the states it embeds) carries
+        /// exactly the keys the 23b679cc helper wrote.
+        fn assert_23b679cc_keys(text: &str) {
+            let keys = |v: &serde_json::Value| {
+                let mut keys: Vec<_> = v.as_object().unwrap().keys().cloned().collect();
+                keys.sort();
+                keys
+            };
+            let state = |v: &serde_json::Value| {
+                assert_eq!(keys(v), ["action", "actor_sid", "generation", "host", "legacy_capture", "members", "operation_id", "plan_bytes", "plan_sha256", "registration", "root", "root_identity", "schema", "shortcuts", "version"]);
+                for link in v["shortcuts"].as_array().unwrap() {
+                    assert_eq!(keys(link), ["aumid", "kind", "member", "target"]);
+                }
+            };
+            let value: serde_json::Value = serde_json::from_str(text).unwrap();
+            if value["schema"] == "winsmux-desktop-nsis-installed/v1" {
+                return state(&value);
+            }
+            assert_eq!(value["schema"], "winsmux-desktop-nsis-journal/v1");
+            let p = &value["payload"];
+            assert_eq!(keys(p), ["action", "actor_sid", "commit_bytes", "control_identity", "journal_identity", "new", "old", "operation_id", "ops_identity", "owned_dirs", "phase", "plan_bytes", "plan_sha256", "prior_state", "root", "root_identity", "schema", "slots"]);
+            for row in p["old"].as_array().unwrap().iter().chain(p["new"].as_array().unwrap()) {
+                assert_eq!(keys(row), ["domain", "member", "phase"]);
+            }
+            for embedded in [&p["prior_state"], &p["commit_bytes"]] {
+                if let Some(bytes) = embedded.as_array() {
+                    let bytes: Vec<u8> = bytes.iter().map(|b| b.as_u64().unwrap() as u8).collect();
+                    state(&serde_json::from_slice(&bytes).unwrap());
+                }
+            }
+        }
+        /// What the 23b679cc helper would have written for this file. That helper wrote no preserved
+        /// field, and the current helper leaves an empty one out, so with no parked link the current
+        /// bytes are already that shape. The key check pins this premise: a field added later fails
+        /// here instead of silently turning these fixtures into current-helper files.
+        fn bytes_of_23b679cc(path: &Path) -> String {
             let text = String::from_utf8(fs::read(path).unwrap()).unwrap();
-            let needle = ",\"preserved\":[]";
-            assert!(text.matches(needle).count() <= 1, "{}", path.display());
-            let stripped = text.replace(needle, "");
-            assert!(!stripped.contains("\"preserved\""), "{}", path.display());
-            stripped
+            assert_23b679cc_keys(&text);
+            text
         }
         fn write_pre_preserved_state(f: &Fixture) {
             let state = f.root.path.join(CONTROL).join("installed.json");
-            fs::write(&state, strip_preserved_field(&state)).unwrap();
+            fs::write(&state, bytes_of_23b679cc(&state)).unwrap();
         }
         fn write_pre_preserved_journal(f: &Fixture) {
             let journal = f.root.path.join(CONTROL).join("pending.json");
-            let text = strip_preserved_field(&journal);
+            let text = bytes_of_23b679cc(&journal);
             let start = text.find("\"payload\":").unwrap() + "\"payload\":".len();
             let payload = &text[start..text.len() - 1];
             let sha = hash(payload.as_bytes());
