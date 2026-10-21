@@ -21,13 +21,14 @@
     "Print the helper classification and the judged root to the details view and abort with a per-class user message from the installer hook",
     "T-only diagnostic: map destination_occupied to exit 75",
     "Print the per-class message to the details view before the abort and select install or uninstall strings by macro prefix",
-    "Bind the license page per language: English shows the rendered license, Japanese shows the hook-anchored reference translation"
+    "Bind the license page per language: English shows the rendered license, Japanese shows the hook-anchored reference translation",
+    "Abort shortcut_folder_moved with its own per-class message; T-only diagnostic: map it to exit 76"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 43654,
-      "sha256": "c9dabf47591dcf81ad9141d38b9921aebbcbe35b505be25a84eb1a815aeb43d1"
+      "bytes": 43995,
+      "sha256": "6f65d71b28c15d6242f2a2d8c9c90f4e9669afc66d969ff8d246e8f641a9fe50"
     },
     {
       "path": "winsmux-utils.nsh",

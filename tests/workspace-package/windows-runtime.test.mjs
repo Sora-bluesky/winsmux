@@ -24,7 +24,7 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', 'c9dabf47591dcf81ad9141d38b9921aebbcbe35b505be25a84eb1a815aeb43d1'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', '6f65d71b28c15d6242f2a2d8c9c90f4e9669afc66d969ff8d246e8f641a9fe50'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
     ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'bbc1e106fce5d78e2f7d8823f98e7b13a3c56b0307154a26c0fddb798f1a235c'],
   ]);
@@ -67,7 +67,8 @@ test('every helper refusal the installer names gets an install and an uninstall 
   }
   const classificationBody = helper.slice(helper.indexOf('pub fn classification(self)'), helper.indexOf('#[derive', helper.indexOf('pub fn classification(self)')));
   const emitted = new Set([...classificationBody.matchAll(/=> "([a-z_]+)"/gu)].map(m => m[1]));
-  assert.ok(emitted.has('member_unconfirmed') && emitted.has('destination_occupied') && !emitted.has('legacy_root_mismatch'));
+  assert.ok(emitted.has('member_unconfirmed') && emitted.has('destination_occupied') && emitted.has('shortcut_folder_moved')
+    && !emitted.has('legacy_root_mismatch'));
   const macroStart = template.indexOf('!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n');
   assert.ok(macroStart >= 0);
   const macro = template.slice(macroStart, template.indexOf('!macroend', macroStart));
@@ -77,18 +78,21 @@ test('every helper refusal the installer names gets an install and an uninstall 
     for (const cls of branch[0].matchAll(/winsmux installer: ([a-z_]+)/gu)) mapped.set(cls[1], branch[3]);
   }
   assert.deepEqual([...mapped.keys()].sort(), ['destination_occupied', 'legacy_inventory_incomplete', 'legacy_profile_incomplete',
-    'legacy_receipt_missing', 'member_unconfirmed', 'pending_unconfirmed', 'registration_conflict', 'work_running_or_locked']);
+    'legacy_receipt_missing', 'member_unconfirmed', 'pending_unconfirmed', 'registration_conflict', 'shortcut_folder_moved',
+    'work_running_or_locked']);
   for (const cls of mapped.keys()) assert.ok(emitted.has(cls), `${cls} is not a classification the helper emits`);
   assert.ok(macro.includes('  DetailPrint $4\n  Abort $4\n'), 'the message is printed to the details view before the abort');
   assert.equal((macro.match(/\$\{PREFIX\}/gu) ?? []).length, new Set(mapped.values()).size + 1, 'every string selection, the default included, goes through the prefix');
   assert.ok(/Section Install\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "" ""\n[\s\S]*?SectionEnd/u.test(template));
   assert.ok(/Section Uninstall\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "un\." "UN_"\n[\s\S]*?SectionEnd/u.test(template));
   // What each class guarantees, in the words the helper's Error enum documents: a Member is unconfirmed
-  // (never asserted to be a collision), Occupied is a collision the user moves away, and only an
-  // install run says "installer" or "nothing was changed".
+  // (never asserted to be a collision), Occupied is a collision the user moves away, FolderMoved is a
+  // known folder the user moves back, and only an install run says "installer" or "nothing was changed".
   const expectations = {
     FAILED_MEMBER: { 1033: [/could not confirm/u, /^(?!.*already holds)/u], 1041: [/確認できない/u, /^(?!.*同名のファイルがあります)/u] },
     FAILED_OCCUPIED: { 1033: [/holds a file with a winsmux name/u, /Move that file away/u], 1041: [/同名のファイルがあります/u, /そのファイルを移/u] },
+    FAILED_FOLDER_MOVED: { 1033: [/Desktop or Start menu folder .* has moved since winsmux was installed/u, /Move the folder back/u],
+      1041: [/デスクトップかスタートメニューのフォルダーが.*移動している/u, /元の場所に戻して/u] },
     FAILED_LEGACY_CAPTURE: { 1033: [/record of the earlier winsmux install is incomplete/u], 1041: [/記録が不完全/u] },
     FAILED_REGISTRATION: { 1033: [/registry entries do not match/u], 1041: [/レジストリ項目が.*一致しない/u] },
     FAILED_RUNNING: { 1033: [/still running or its folder is locked/u], 1041: [/起動中か、フォルダーがロック/u] },

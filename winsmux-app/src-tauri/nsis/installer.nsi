@@ -46,6 +46,8 @@ ManifestDPIAwareness PerMonitorV2
     StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_MEMBER)"
   ${ElseIf} $3 S== "winsmux installer: destination_occupied"
     StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_OCCUPIED)"
+  ${ElseIf} $3 S== "winsmux installer: shortcut_folder_moved"
+    StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_FOLDER_MOVED)"
   ${ElseIf} $3 S== "winsmux installer: legacy_inventory_incomplete"
   ${OrIf} $3 S== "winsmux installer: legacy_receipt_missing"
   ${OrIf} $3 S== "winsmux installer: legacy_profile_incomplete"
@@ -138,6 +140,12 @@ ManifestDPIAwareness PerMonitorV2
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: destination_occupied$\r$\n"
       StrCpy $2 75
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: shortcut_folder_moved$\n"
+      StrCpy $2 76
+    ${ElseIf} $0 S== "2"
+    ${AndIf} $1 S== "winsmux installer: shortcut_folder_moved$\r$\n"
+      StrCpy $2 76
     ${ElseIf} $0 S== "2"
     ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\n"
       StrCpy $2 68

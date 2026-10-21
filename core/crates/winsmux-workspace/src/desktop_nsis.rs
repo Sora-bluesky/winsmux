@@ -28,6 +28,8 @@ pub enum Error {
     Member,
     // A path this install publishes to holds something winsmux does not own and cannot park.
     Occupied,
+    // A known folder this install published a link to no longer resolves where it did.
+    FolderMoved,
     Registration,
     LegacyIncomplete(LegacyCheck),
     Busy,
@@ -54,6 +56,7 @@ impl Error {
             Self::Path(_) => "path_refused",
             Self::Member => "member_unconfirmed",
             Self::Occupied => "destination_occupied",
+            Self::FolderMoved => "shortcut_folder_moved",
             Self::Registration => "registration_conflict",
             Self::LegacyIncomplete(check) => match check {
                 LegacyCheck::Inventory => "legacy_inventory_incomplete",
@@ -609,6 +612,10 @@ struct Shortcut {
     member: Member,
     target: String,
     aumid: String,
+    // The known folder the link was published to, as it resolved then. The 23b679cc helper recorded
+    // none, and an absent value is left out so its state files keep their exact bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 // A same-name link another install owns, parked under the control namespace for the
 // lifetime of this install and moved back to its known folder on uninstall.
@@ -617,6 +624,8 @@ struct Shortcut {
 struct PreservedShortcut {
     kind: String,
     member: Member,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -658,6 +667,10 @@ struct Move {
     member: Member,
     domain: String,
     phase: MovePhase,
+    // A known-folder row names the folder it resolved to when the operation was planned, so recovery
+    // never moves a link into a folder that resolves elsewhere by then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
 }
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1953,6 +1966,19 @@ mod native {
         strict_absolute_role(&p, role)?;
         Ok(p)
     }
+    /// The link path for `kind` as its known folder resolves now. A recorded folder that resolves
+    /// elsewhere, as after a moved Desktop or OneDrive backing it up, is refused, so nothing is
+    /// published to, removed from or returned to a folder the record does not name.
+    fn recorded_shortcut(kind: &str, folder: Option<&str>) -> Result<PathBuf> {
+        let path = known_shortcut(kind)?;
+        if folder.is_some_and(|recorded| !path.parent().is_some_and(|now| same_path(Path::new(recorded), now))) {
+            return Err(Error::FolderMoved);
+        }
+        Ok(path)
+    }
+    fn shortcut_folder(link: &Path) -> Result<String> {
+        path_text(link.parent().ok_or(Error::Path(117))?)
+    }
     struct Key(HKEY);
     impl Drop for Key {
         fn drop(&mut self) {
@@ -2581,7 +2607,7 @@ mod native {
                 Ok(root.join(CONTROL).join("installed.json"))
             }
             "desktop" | "start_menu" if row.member.path == "winsmux.lnk" => {
-                known_shortcut(&row.domain)
+                recorded_shortcut(&row.domain, row.folder.as_deref())
             }
             _ => Err(Error::Plan),
         }
@@ -2614,7 +2640,7 @@ mod native {
         })
     }
     fn preserved_move(row: &PreservedShortcut) -> Move {
-        Move { member: row.member.clone(), domain: row.kind.clone(), phase: MovePhase::Prepared }
+        Move { member: row.member.clone(), domain: row.kind.clone(), phase: MovePhase::Prepared, folder: row.folder.clone() }
     }
     fn validate_installed(s: &Installed, root: &Dirs, sid: &str) -> Result<()> {
         if s.schema != "winsmux-desktop-nsis-installed/v1"
@@ -2772,6 +2798,7 @@ mod native {
                 member,
                 target: row.target.clone(),
                 aumid: row.aumid.clone(),
+                folder: Some(shortcut_folder(&path)?),
             });
         }
         for (i, v) in profile.registration.iter().enumerate() {
@@ -2827,6 +2854,7 @@ mod native {
                 member: row.member.clone(),
                 target: path_text(&root.path.join("winsmux-app.exe"))?,
                 aumid: "io.github.sora-bluesky.winsmux".into(),
+                folder: row.folder.clone(),
             });
         }
         let mut preserved = prior
@@ -2836,6 +2864,7 @@ mod native {
         preserved.extend(p.preserved.iter().map(|row| PreservedShortcut {
             kind: row.domain.clone(),
             member: row.member.clone(),
+            folder: row.folder.clone(),
         }));
         let state = Installed {
             schema: "winsmux-desktop-nsis-installed/v1".into(),
@@ -3278,7 +3307,7 @@ mod native {
             // A link this operation backed up is checked with p.old above. One it never touched
             // was either in place or already gone before the operation, and stays whichever it was.
             for link in &old.shortcuts {
-                let path = known_shortcut(&link.kind)?;
+                let path = recorded_shortcut(&link.kind, link.folder.as_deref())?;
                 if !p.old.iter().any(|row| row.domain == link.kind) && !exists(&path)? {
                     continue;
                 }
@@ -3622,13 +3651,15 @@ mod native {
         Ok((old, inherited))
     }
     /// A product link another installer deleted from its known folder is already in the state an
-    /// uninstall would leave, and an update publishes it again, so its absence is admitted. The
-    /// recorded file with other content (the user edited it in place) is unconfirmed. A different
-    /// file at that path is foreign and the user moves it away. The parked link stays untouched.
+    /// uninstall would leave, and an update publishes it again, so its absence is admitted while the
+    /// recorded folder still resolves there. A state with no folder record cannot tell a deleted link
+    /// from a moved folder, so there the absent link stays unconfirmed. The recorded file with other
+    /// content (the user edited it in place) is unconfirmed. A different file at that path is foreign
+    /// and the user moves it away. The parked link stays untouched.
     fn owned_shortcut_or_absent(link: &Shortcut) -> Result<Option<Observed>> {
-        let path = known_shortcut(&link.kind)?;
+        let path = recorded_shortcut(&link.kind, link.folder.as_deref())?;
         if !exists(&path)? {
-            return Ok(None);
+            return if link.folder.is_some() { Ok(None) } else { Err(Error::Member) };
         }
         let origin = shortcut_origin(&link.kind, DerivedOrigin::ManagedDesktopParent, DerivedOrigin::ManagedProgramsParent);
         let seen = derived_origin(observe(&path, &link.member.path, true), origin)?;
@@ -3860,17 +3891,20 @@ mod native {
                     member: m.clone(),
                     domain: "root".into(),
                     phase: MovePhase::Prepared,
+                    folder: None,
                 });
             }
             if ctx.action == Action::Uninstall {
                 // A product link already gone from its known folder has no row: there is nothing to
                 // back up or remove, and the parked link below returns to the free path.
                 for link in &state.shortcuts {
-                    if exists(&known_shortcut(&link.kind)?)? {
+                    let path = recorded_shortcut(&link.kind, link.folder.as_deref())?;
+                    if exists(&path)? {
                         old_rows.push(Move {
                             member: link.member.clone(),
                             domain: link.kind.clone(),
                             phase: MovePhase::Prepared,
+                            folder: Some(shortcut_folder(&path)?),
                         });
                     }
                 }
@@ -3880,6 +3914,7 @@ mod native {
                     member: state.state_member.clone().ok_or(Error::Pending)?,
                     domain: "state".into(),
                     phase: MovePhase::Prepared,
+                    folder: None,
                 });
             }
         }
@@ -3887,14 +3922,16 @@ mod native {
         if ctx.action == Action::Install {
             for (domain, relative, from, admitted) in sources {
                 derived_origin(exact(&from, &admitted, false), Some(DerivedOrigin::TransactionSourceAdmitParent))?;
-                // An update keeps a product link that is still in place and publishes one that is gone.
-                if domain != "root"
-                    && old
-                        .as_ref()
-                        .is_some_and(|(state, _)| state.shortcuts.iter().any(|s| s.kind == domain))
-                    && exists(&known_shortcut(&domain)?)?
-                {
-                    continue;
+                let mut folder = None;
+                if domain != "root" {
+                    // An update keeps a product link that is still in place and publishes one that is gone.
+                    let kept = old.as_ref().and_then(|(state, _)| state.shortcuts.iter().find(|s| s.kind == domain));
+                    if let Some(link) = kept {
+                        if exists(&recorded_shortcut(&domain, link.folder.as_deref())?)? {
+                            continue;
+                        }
+                    }
+                    folder = Some(shortcut_folder(&known_shortcut(&domain)?)?);
                 }
                 let row = Move {
                     member: Member {
@@ -3905,6 +3942,7 @@ mod native {
                     },
                     domain,
                     phase: MovePhase::Prepared,
+                    folder,
                 };
                 let path = private_path(&root.path, &id, "new", &row);
                 import_guard.rows.push(row.clone());
@@ -3947,6 +3985,7 @@ mod native {
                     member: seen.member.clone(),
                     domain: row.domain.clone(),
                     phase: MovePhase::Prepared,
+                    folder: row.folder.clone(),
                 });
             }
         } else if let Some((state, _)) = &old {
@@ -4030,6 +4069,7 @@ mod native {
                 },
                 domain: "state".into(),
                 phase: MovePhase::Prepared,
+                folder: None,
             };
             let path = private_path(&root.path, &id, "new", &row);
             import_guard.rows.push(row.clone());
@@ -4317,10 +4357,10 @@ mod native {
         }
         if let Some((state, _)) = &old {
             for link in &state.shortcuts {
-                targets.push(known_shortcut(&link.kind)?);
+                targets.push(recorded_shortcut(&link.kind, link.folder.as_deref())?);
             }
             for row in &state.preserved {
-                targets.push(known_shortcut(&row.kind)?);
+                targets.push(recorded_shortcut(&row.kind, row.folder.as_deref())?);
                 targets.push(preserved_path(&root.path, &row.kind)?);
             }
         }
@@ -5956,6 +5996,7 @@ mod native {
             }
             assert_eq!(Error::Member.classification(), "member_unconfirmed");
             assert_eq!(Error::Occupied.classification(), "destination_occupied");
+            assert_eq!(Error::FolderMoved.classification(), "shortcut_folder_moved");
             assert_eq!(Error::Busy.classification(), "work_running_or_locked");
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Inventory).classification(), "legacy_inventory_incomplete");
             assert_eq!(Error::LegacyIncomplete(LegacyCheck::Receipt).classification(), "legacy_receipt_missing");
@@ -6303,6 +6344,102 @@ mod native {
             refuse_update_and_uninstall(&mut f, &foreign, Error::Occupied, "the same bytes in another file");
             assert_eq!(fs::read(&desktop).unwrap(), published);
         }
+        fn set_shortcut_root(root: &Path) {
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().shortcut_root = Some(root.to_path_buf()));
+        }
+        /// OneDrive backing up the Desktop, or the user moving it from its properties, points the
+        /// known folders at new, empty folders while the old ones keep their links.
+        fn move_known_folders(f: &Fixture) -> PathBuf {
+            let moved = f.base.join("moved-known-folders");
+            for kind in ["desktop", "start_menu"] {
+                fs::create_dir_all(moved.join(kind)).unwrap();
+            }
+            set_shortcut_root(&moved);
+            moved
+        }
+        #[test]
+        fn a_moved_known_folder_stops_update_and_uninstall_and_leaves_every_link_where_it_was() {
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            let product = ["desktop", "start_menu"].map(|kind| fs::read(known.join(kind).join("winsmux.lnk")).unwrap());
+            let moved = move_known_folders(&f);
+            refuse_update_and_uninstall(&mut f, &foreign, Error::FolderMoved, "moved known folders");
+            for (kind, bytes) in ["desktop", "start_menu"].iter().zip(&product) {
+                assert_eq!(fs::read(known.join(kind).join("winsmux.lnk")).unwrap(), *bytes, "{kind} product link in the recorded folder");
+                assert!(!exists(&moved.join(kind).join("winsmux.lnk")).unwrap(), "{kind} link written to the moved folder");
+            }
+            set_shortcut_root(&known);
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit, "uninstall with the folders back in place");
+            assert_foreign_live(&f, &known, &foreign);
+        }
+        #[test]
+        fn a_known_folder_moved_during_an_interrupted_uninstall_stops_recovery_until_it_is_back() {
+            let (mut good, _, _) = foreign_shortcut_fixture();
+            assert!(execute(&good).unwrap().durable_commit);
+            good.ctx.action = Action::Uninstall;
+            operation_trace(&good);
+            let trace = hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().proof_trace.clone());
+            let at = trace.iter().position(|(label, key)| label == "move_after" && key.contains("old:desktop:MoveIntent")).unwrap() + 1;
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            f.ctx.action = Action::Uninstall;
+            crash_at(&f, at);
+            let journal = f.root.path.join(CONTROL).join("pending.json");
+            let pending = fs::read(&journal).unwrap();
+            assert!(!exists(&known.join("desktop").join("winsmux.lnk")).unwrap(), "the product link is in the operation's backup");
+            let moved = move_known_folders(&f);
+            assert_eq!(recover_if_readable(&f), Err(Error::FolderMoved));
+            assert_eq!(fs::read(&journal).unwrap(), pending, "recovery data changed by a refusal");
+            for kind in ["desktop", "start_menu"] {
+                assert!(!exists(&moved.join(kind).join("winsmux.lnk")).unwrap(), "{kind} link restored into the moved folder");
+            }
+            parked_bytes_intact(&f, &foreign);
+            set_shortcut_root(&known);
+            recover_if_readable(&f).unwrap();
+            assert_foreign_parked(&f, &known, &foreign);
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit, "uninstall after the recovery");
+            assert_foreign_live(&f, &known, &foreign);
+        }
+        /// Desktop and Start menu links the install publishes, with no foreign link in either folder.
+        fn product_shortcut_fixture() -> (Fixture, PathBuf) {
+            let mut f = fixture();
+            let known = f.base.join("synthetic-known-folders");
+            set_shortcut_root(&known);
+            for kind in ["desktop", "start_menu"] {
+                fs::create_dir_all(known.join(kind)).unwrap();
+                enable_shortcut_source(&mut f, kind);
+            }
+            reset_steps(None, false);
+            (f, known)
+        }
+        // The 23b679cc helper recorded no folder. A link of its state still in place passes the exact
+        // check, which binds its file identity, and stays unrecorded until it is published again. A
+        // missing one may be deleted or may sit in a folder that has moved, so it is not taken as removed.
+        #[test]
+        fn a_state_without_folder_records_keeps_links_in_place_and_refuses_a_missing_one() {
+            let (mut f, known) = product_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            write_pre_preserved_state(&f);
+            assert!(execute(&f).unwrap().durable_commit, "update");
+            assert!(!String::from_utf8(old(&f).unwrap().1).unwrap().contains("\"folder\""), "a kept link gains no record");
+            f.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert!(execute(&f).unwrap().durable_commit, "uninstall");
+            for kind in ["desktop", "start_menu"] {
+                assert!(!exists(&known.join(kind).join("winsmux.lnk")).unwrap(), "{kind} link left after uninstall");
+            }
+            let (mut f, known) = product_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            write_pre_preserved_state(&f);
+            let start_menu = fs::read(known.join("start_menu").join("winsmux.lnk")).unwrap();
+            fs::remove_file(known.join("desktop").join("winsmux.lnk")).unwrap();
+            refuse_update_and_uninstall(&mut f, &[], Error::Member, "a missing link without a folder record");
+            assert!(!exists(&known.join("desktop").join("winsmux.lnk")).unwrap());
+            assert_eq!(fs::read(known.join("start_menu").join("winsmux.lnk")).unwrap(), start_menu);
+        }
         /// Fails unless `text` (installed.json, or pending.json with the states it embeds) carries
         /// exactly the keys the 23b679cc helper wrote.
         fn assert_23b679cc_keys(text: &str) {
@@ -6335,13 +6472,24 @@ mod native {
             }
         }
         /// What the 23b679cc helper would have written for this file. That helper wrote no preserved
-        /// field, and the current helper leaves an empty one out, so with no parked link the current
-        /// bytes are already that shape. The key check pins this premise: a field added later fails
-        /// here instead of silently turning these fixtures into current-helper files.
+        /// field and no folder record. The current helper leaves an empty preserved list out, so with
+        /// no parked link only the folder records differ, and they are removed here. The key check
+        /// pins this premise: a field added later fails here instead of silently turning these
+        /// fixtures into current-helper files.
         fn bytes_of_23b679cc(path: &Path) -> String {
             let text = String::from_utf8(fs::read(path).unwrap()).unwrap();
-            assert_23b679cc_keys(&text);
-            text
+            let needle = ",\"folder\":\"";
+            let mut stripped = String::new();
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find(needle) {
+                stripped.push_str(&rest[..at]);
+                // A Windows path holds no quote, so the value ends at the next one.
+                let value = &rest[at + needle.len()..];
+                rest = &value[value.find('"').unwrap() + 1..];
+            }
+            stripped.push_str(rest);
+            assert_23b679cc_keys(&stripped);
+            stripped
         }
         fn write_pre_preserved_state(f: &Fixture) {
             let state = f.root.path.join(CONTROL).join("installed.json");
