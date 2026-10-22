@@ -1016,7 +1016,9 @@ const REPORTED_READBACKS: usize = 2;
 /// readback lines.
 fn printed_lines(error: Option<Error>) -> Vec<String> {
     let restore = RESTORE_LINES.take();
-    let readback = READBACK_LINES.take();
+    let mut readback = READBACK_LINES.take();
+    // A refused readback can be why the run failed, so it takes the reported places before a recovered one.
+    readback.sort_by_key(|line| line.starts_with("winsmux installer: readback_recovered "));
     let more = readback.len().saturating_sub(REPORTED_READBACKS);
     error
         .map_or_else(Vec::new, |error| failure_lines(error, restore))
