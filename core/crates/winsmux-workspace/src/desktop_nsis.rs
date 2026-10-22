@@ -1219,8 +1219,10 @@ mod native {
     }
     fn final_name(h: HANDLE, flags: u32) -> Result<String> {
         #[cfg(test)]
-        if let Some(win32) = hooks::take_final_name_refusal() {
-            return Err(final_name_refused(106, win32));
+        match hooks::take_final_name() {
+            Some(hooks::FinalName::Refused(win32)) => return Err(final_name_refused(106, win32)),
+            Some(hooks::FinalName::Named(name)) => return Ok(name.into()),
+            None => {}
         }
         let n = unsafe { GetFinalPathNameByHandleW(h, null_mut(), 0, flags) };
         if n == 0 {
@@ -2302,22 +2304,28 @@ mod native {
             pub shortcut_root: Option<PathBuf>,
             pub proof_key: String,
             pub proof_trace: Vec<(String, String)>,
-            // The Win32 error the next final-name query refuses with.
-            pub final_name_refusal: Option<u32>,
-            // Readback refusals still to come, in order: the step whose handle comes next refuses its
-            // first final-name query with the Win32 error.
-            pub readback_refusals: std::collections::VecDeque<(ReadbackHandle, u32)>,
+            // What the next final-name query answers.
+            pub final_name: Option<FinalName>,
+            // Readback answers still to come, in order: the step whose handle comes next answers its
+            // first final-name query so.
+            pub readback_refusals: std::collections::VecDeque<(ReadbackHandle, FinalName)>,
             pub reports: Vec<String>,
         }
+        /// A synthetic final-name answer: a refusal with its Win32 error, or a name.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(super) enum FinalName {
+            Refused(u32),
+            Named(&'static str),
+        }
         thread_local! {pub(super) static MOCK:RefCell<Option<Mock>>=const{RefCell::new(None)};}
-        pub(super) fn take_final_name_refusal() -> Option<u32> {
-            MOCK.with(|m| m.borrow_mut().as_mut().and_then(|m| m.final_name_refusal.take()))
+        pub(super) fn take_final_name() -> Option<FinalName> {
+            MOCK.with(|m| m.borrow_mut().as_mut().and_then(|m| m.final_name.take()))
         }
         pub(super) fn arm_final_name_refusal(handle: ReadbackHandle) {
             MOCK.with(|m| {
                 if let Some(m) = m.borrow_mut().as_mut() {
                     if m.readback_refusals.front().is_some_and(|(next, _)| *next == handle) {
-                        m.final_name_refusal = m.readback_refusals.pop_front().map(|(_, win32)| win32);
+                        m.final_name = m.readback_refusals.pop_front().map(|(_, answer)| answer);
                     }
                 }
             });
@@ -2325,7 +2333,7 @@ mod native {
         pub(super) fn disarm_final_name_refusal() {
             MOCK.with(|m| {
                 if let Some(m) = m.borrow_mut().as_mut() {
-                    m.final_name_refusal = None;
+                    m.final_name = None;
                 }
             });
         }
@@ -5664,6 +5672,8 @@ mod native {
             Some((s, bytes))
         }
         fn execute(f: &Fixture) -> Result<Receipt> {
+            // Each run is a new helper process, so it starts with nothing to print.
+            printed(None);
             let (previous, inherited) = admit_previous(
                 &f.root,
                 "S-1-5-21-100",
@@ -5701,13 +5711,23 @@ mod native {
                 m.trace.clear();
                 m.proof_trace.clear();
                 m.proof_key.clear();
-                m.final_name_refusal = None;
+                m.final_name = None;
                 m.readback_refusals.clear();
                 m.reports.clear();
             });
         }
         fn reports() -> Vec<String> {
             hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().reports.clone())
+        }
+        /// The stderr lines run prints for the last run, which ended with `error` or succeeded, and
+        /// forgets them.
+        fn printed(error: Option<Error>) -> Vec<String> {
+            let restore = RESTORE_LINES.take();
+            error.map_or_else(Vec::new, |error| failure_lines(error, restore))
+        }
+        /// What ExecToStack keeps of `lines`: the first 1023 characters.
+        fn kept(lines: &[String]) -> String {
+            lines.iter().map(|line| format!("{line}\n")).collect::<String>().chars().take(1023).collect()
         }
         fn assert_previous(f: &Fixture, state: &Installed) {
             for m in &state.members {
@@ -6581,12 +6601,14 @@ mod native {
             assert_eq!(fail_restore_of_preserved_at(&f, "desktop", true).err(), Some(Error::Startup));
             assert_foreign_live(&f, &known, &foreign);
             let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
-            // The link is back at its known folder, so nothing is said about where it is.
+            // The link is back at its known folder, so nothing is said about where it is. The readback
+            // line comes after the restore line.
             assert_eq!(
-                reports(),
+                printed(Some(Error::Startup)),
                 vec![
-                    format!("winsmux installer: readback_refused 171 file:{HELD_REFUSAL} reopen:{NAMED_REFUSAL}"),
+                    "winsmux installer: startup_unconfirmed".to_string(),
                     format!("winsmux installer: restore_incomplete path_refused:171 preserved desktop {live}"),
+                    format!("winsmux installer: readback_refused 171 file:{HELD_REFUSAL} reopen:{NAMED_REFUSAL}"),
                 ]
             );
             let journal = f.root.path.join(CONTROL).join("pending.json");
@@ -6621,14 +6643,16 @@ mod native {
         const HELD_REFUSAL: u32 = 6;
         const NAMED_REFUSAL: u32 = 5;
         /// The real machine's refusal: a held handle refuses its final name after the rename.
-        const HELD_FILE_REFUSES: &[(ReadbackHandle, u32)] = &[(ReadbackHandle::File, HELD_REFUSAL)];
-        const HELD_PARENT_REFUSES: &[(ReadbackHandle, u32)] = &[(ReadbackHandle::FromParent, HELD_REFUSAL)];
+        const HELD_FILE_REFUSES: &[(ReadbackHandle, hooks::FinalName)] = &[(ReadbackHandle::File, hooks::FinalName::Refused(HELD_REFUSAL))];
+        const HELD_PARENT_REFUSES: &[(ReadbackHandle, hooks::FinalName)] = &[(ReadbackHandle::FromParent, hooks::FinalName::Refused(HELD_REFUSAL))];
         /// A refusal that stays: the held file refuses, then the file reopened by its new name.
-        const BOTH_READBACKS_REFUSE: &[(ReadbackHandle, u32)] =
-            &[(ReadbackHandle::File, HELD_REFUSAL), (ReadbackHandle::Reopen, NAMED_REFUSAL)];
+        const BOTH_READBACKS_REFUSE: &[(ReadbackHandle, hooks::FinalName)] = &[
+            (ReadbackHandle::File, hooks::FinalName::Refused(HELD_REFUSAL)),
+            (ReadbackHandle::Reopen, hooks::FinalName::Refused(NAMED_REFUSAL)),
+        ];
         /// Queues `refusals` right after the rename of the first move made while the journal shows
         /// `phase` and `class`.
-        fn refuse_readback_after_rename(phase: &'static str, class: &'static str, refusals: &'static [(ReadbackHandle, u32)]) {
+        fn refuse_readback_after_rename(phase: &'static str, class: &'static str, refusals: &'static [(ReadbackHandle, hooks::FinalName)]) {
             let mut fired = false;
             set_barrier(move |label| {
                 if fired || label != "move_after" {
@@ -6654,6 +6678,8 @@ mod native {
             let result = execute(&f);
             disarm_restore_faults();
             assert_eq!(result.as_ref().err(), None, "one final-name refusal after the rename aborted the install");
+            // The run that went through still says which handle refused with which Win32 error.
+            assert_eq!(printed(None), vec![format!("winsmux installer: readback_recovered 167 file:{HELD_REFUSAL}")]);
             assert!(result.unwrap().durable_commit);
             assert_foreign_parked(&f, &known, &foreign);
             assert!(!exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap());
@@ -6689,23 +6715,95 @@ mod native {
             assert_eq!(member_named(&mut held.file, named.0, &renamed, "renamed"), Ok(held.member.clone()));
             assert_eq!(member_named(&mut held.file, named.0, &other, "renamed"), Err(Error::Path(116)));
         }
+        const SHORTCUT_ORIGINS: MoveOrigins =
+            (DerivedOrigin::PublishShortcutMoveSource, DerivedOrigin::PublishShortcutMoveDestination, DerivedOrigin::PublishShortcutMoveReadback);
+        /// A file at `renamed` in a fresh root, held the way a move holds the file it has just renamed
+        /// there, with its member row and the root opened as the destination parent.
+        fn renamed_and_held() -> (Fixture, PathBuf, Observed, Member, Dirs) {
+            let f = fixture();
+            let renamed = f.root.path.join("renamed");
+            fs::write(&renamed, b"renamed bytes").unwrap();
+            let held = observe(&renamed, "renamed", true).unwrap();
+            let row = held.member.clone();
+            let parent = Dirs::open(&f.root.path).unwrap();
+            (f, renamed, held, row, parent)
+        }
+        fn queue_readbacks(answers: &[(ReadbackHandle, hooks::FinalName)]) {
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().readback_refusals.extend(answers.iter().copied()));
+        }
+        fn queued_readbacks() -> Vec<(ReadbackHandle, hooks::FinalName)> {
+            hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().readback_refusals.iter().copied().collect())
+        }
+        /// After the held file refuses its final name, the second readback cannot open the source parent
+        /// by its name. The rename is done, so the move fails as its readback (167), not as the source
+        /// refusal before the rename (365), and the line names what the second readback met.
+        #[test]
+        fn task881_second_readback_failure_names_the_readback_site() {
+            let (f, renamed, mut held, row, parent) = renamed_and_held();
+            let from = f.root.path.join("gone-parent").join("gone");
+            queue_readbacks(HELD_FILE_REFUSES);
+            assert_eq!(confirm_move(&mut held, &parent, (&from, &renamed), &row, Some(SHORTCUT_ORIGINS)), Err(Error::Path(167)));
+            assert_eq!(reports(), vec![format!("winsmux installer: readback_refused 167 file:{HELD_REFUSAL} path_refused:276")]);
+        }
+        /// After the held file refuses its final name, the second readback finds another directory than
+        /// the held destination parent under that parent's name. There is no proof, so the move stays
+        /// pending, and the line still says which handle refused first with which Win32 error.
+        #[test]
+        fn task881_second_readback_mismatch_still_reports_the_first_refusal() {
+            let (f, renamed, mut held, row, _) = renamed_and_held();
+            let other = f.root.path.join("other-parent");
+            fs::create_dir(&other).unwrap();
+            let swapped = Dirs::open(&other).unwrap();
+            queue_readbacks(HELD_FILE_REFUSES);
+            let from = f.root.path.join("gone");
+            assert_eq!(confirm_move(&mut held, &swapped, (&from, &renamed), &row, Some(SHORTCUT_ORIGINS)), Ok(false));
+            assert_eq!(reports(), vec![format!("winsmux installer: readback_refused 167 file:{HELD_REFUSAL} mismatch")]);
+        }
+        /// Only a final-name refusal is proved again by name. A readback that fails any other way (a
+        /// volume name without its GUID, 109 and 110; a network path, 111; another path, 116) fails the
+        /// move as before: the second readback never asks for a final name and nothing is reported.
+        #[test]
+        fn task881_only_a_final_name_refusal_proves_a_move_again() {
+            let (f, renamed, mut held, row, parent) = renamed_and_held();
+            let from = f.root.path.join("gone");
+            let reopen = (ReadbackHandle::Reopen, hooks::FinalName::Refused(NAMED_REFUSAL));
+            for (first, code) in [
+                ((ReadbackHandle::FromParent, hooks::FinalName::Named("x")), 109),
+                ((ReadbackHandle::FromParent, hooks::FinalName::Named("x}")), 110),
+                ((ReadbackHandle::File, hooks::FinalName::Named(r"\\?\UNC\server\share\renamed")), 111),
+                ((ReadbackHandle::File, hooks::FinalName::Named(r"\\?\C:\elsewhere")), 116),
+            ] {
+                reset_steps(None, false);
+                queue_readbacks(&[first, reopen]);
+                assert_eq!(confirm_move(&mut held, &parent, (&from, &renamed), &row, Some(SHORTCUT_ORIGINS)), Err(Error::Path(code)));
+                assert_eq!(queued_readbacks(), vec![reopen], "{code}: the second readback ran");
+                assert_eq!(reports(), Vec::<String>::new(), "{code}");
+            }
+        }
         /// TASK-881 realmachine-65d64351, second half: the rollback renames the parked Desktop link back
-        /// and its final-name readback refuses once (restore_incomplete path_refused:171). The link is
-        /// back, so the restore must confirm it and report nothing, as a rollback without the refusal does.
+        /// and its final-name readback refuses once (restore_incomplete path_refused:171), from the held
+        /// parent or, as on the real machine, from the held link. The link is back, so the restore
+        /// confirms it, leaves no restore line, and says only which handle refused.
         #[test]
         fn task881_restore_preserved_readback_refusal_after_the_rename_still_restores() {
-            let (f, known, foreign) = task881_layout_fixture();
-            refuse_readback_after_rename("Restoring|", "preserved:desktop:RestoreIntent", HELD_PARENT_REFUSES);
-            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
-            let result = execute(&f);
-            let lines = reports();
-            disarm_restore_faults();
-            assert_eq!(result.err(), Some(Error::Startup));
-            assert_eq!(lines, Vec::<String>::new(), "the restore reported a link it had put back");
-            assert_foreign_live(&f, &known, &foreign);
-            assert_eq!(recover_if_readable(&f), Ok(()));
-            assert!(execute(&f).unwrap().durable_commit);
-            assert_foreign_parked(&f, &known, &foreign);
+            for (refusals, handle) in [(HELD_PARENT_REFUSES, "from_parent"), (HELD_FILE_REFUSES, "file")] {
+                let (f, known, foreign) = task881_layout_fixture();
+                refuse_readback_after_rename("Restoring|", "preserved:desktop:RestoreIntent", refusals);
+                hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
+                let result = execute(&f);
+                let lines = printed(Some(Error::Startup));
+                disarm_restore_faults();
+                assert_eq!(result.err(), Some(Error::Startup));
+                assert_eq!(
+                    lines,
+                    vec!["winsmux installer: startup_unconfirmed".to_string(), format!("winsmux installer: readback_recovered 171 {handle}:{HELD_REFUSAL}")],
+                    "the restore reported a link it had put back"
+                );
+                assert_foreign_live(&f, &known, &foreign);
+                assert_eq!(recover_if_readable(&f), Ok(()));
+                assert!(execute(&f).unwrap().durable_commit);
+                assert_foreign_parked(&f, &known, &foreign);
+            }
         }
         #[test]
         fn task881_rerun_from_the_interrupted_journal_returns_the_parked_link_and_installs() {
@@ -6879,16 +6977,17 @@ mod native {
                 fired = fired || restore_fault_at(label, "new:desktop:RestoreIntent", RestoreFault::Readback);
             });
             assert_eq!(execute(&f).err(), Some(Error::Io));
-            let lines = reports();
+            let lines = printed(Some(Error::Io));
             disarm_restore_faults();
             let link = |kind: &str| path_text(&known.join(kind).join("winsmux.lnk")).unwrap();
             assert_eq!(
                 lines,
                 vec![
-                    format!("winsmux installer: readback_refused 170 file:{HELD_REFUSAL} reopen:{NAMED_REFUSAL}"),
+                    "winsmux installer: io_unconfirmed".to_string(),
                     "winsmux installer: restore_shortcut_unconfirmed start_menu".to_string(),
                     format!("winsmux installer: restore_incomplete path_refused:170 new desktop {}", link("desktop")),
                     format!("winsmux installer: restore_incomplete uncertain preserved start_menu {}", link("start_menu")),
+                    format!("winsmux installer: readback_refused 170 file:{HELD_REFUSAL} reopen:{NAMED_REFUSAL}"),
                 ]
             );
         }
@@ -6985,6 +7084,44 @@ mod native {
             for line in &lines[..4] {
                 assert!(kept.contains(&format!("\n{line}\n")), "{line} is in {kept}");
             }
+        }
+        /// The same restore, but every restore move is renamed and both of its readbacks refuse. The
+        /// readback lines come after the restore lines and stop after two with a count of the rest, so
+        /// what ExecToStack keeps starts with the classification and the first row however many moves
+        /// refused.
+        #[test]
+        fn task881_restore_prints_its_notices_before_the_readback_lines_and_counts_those_past_two() {
+            let (good, _, _) = foreign_shortcut_fixture();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, _) = foreign_shortcut_fixture();
+            reset_steps(Some(at), false);
+            set_barrier(|label| {
+                restore_fault_at(label, ":RestoreIntent", RestoreFault::Readback);
+            });
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            let lines = printed(Some(Error::Io));
+            disarm_restore_faults();
+            let link = |kind: &str| path_text(&known.join(kind).join("winsmux.lnk")).unwrap();
+            let row = |kind: &str, path: String| format!("winsmux installer: restore_incomplete path_refused:170 new {kind} {path}");
+            let refused = format!("winsmux installer: readback_refused 170 file:{HELD_REFUSAL} reopen:{NAMED_REFUSAL}");
+            // Ten moves were renamed and refused; their rows come first, three of them and a count, then
+            // two readback lines and a count of the other eight.
+            assert_eq!(
+                lines,
+                vec![
+                    "winsmux installer: io_unconfirmed".to_string(),
+                    row("desktop", link("desktop")),
+                    row("start_menu", link("start_menu")),
+                    row("root", path_text(&f.root.path.join("uninstall.exe")).unwrap()),
+                    "winsmux installer: restore_incomplete_more 7".to_string(),
+                    refused.clone(),
+                    refused,
+                    "winsmux installer: readback_more 8".to_string(),
+                ]
+            );
+            let kept = kept(&lines);
+            assert!(kept.starts_with(&format!("{}\n{}\n", lines[0], lines[1])), "{kept}");
         }
         /// A first install over two foreign links rolls back after publishing its own links, and the
         /// product Desktop link's move back refuses before its rename, so it keeps the Desktop path.

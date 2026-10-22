@@ -272,25 +272,26 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
   const hook = (name, language) => hooks.match(new RegExp(`^LangString ${name} ${language} "(.*)"$`, 'mu'))?.[1];
   const desktop = 'C:\\Users\\u\\Desktop\\winsmux.lnk';
   const programs = 'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\winsmux.lnk';
-  // The helper output for these runs: the classification, then the restore lines desktop_nsis.rs pins. A
-  // slot the restore found holding an external value (crash_reentry_and_external_registration_are_preserved),
-  // a foreign link back in its folder after its readback refused
-  // (task881_rollback_readback_refusal_names_the_restore_move_and_returns_the_other_link), a product link that
-  // could not leave the Desktop (task881_restore_never_calls_a_product_link_parked), a foreign link left
-  // parked (task881_restore_reports_a_link_it_left_parked), and two rows left with a link the files do not
-  // place (task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place).
+  // The helper output for these runs: the classification, then the restore lines desktop_nsis.rs pins, then
+  // the readback lines. A slot the restore found holding an external value
+  // (crash_reentry_and_external_registration_are_preserved), a foreign link back in its folder after its
+  // readback refused (task881_rollback_readback_refusal_names_the_restore_move_and_returns_the_other_link), a
+  // product link that could not leave the Desktop (task881_restore_never_calls_a_product_link_parked), a
+  // foreign link left parked (task881_restore_reports_a_link_it_left_parked), and two rows left with a link the
+  // files do not place (task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place).
   const cases = {
     slot_left_external: ['winsmux installer: registration_conflict', 'winsmux installer: restore_incomplete uncertain slot registration slot:0'],
-    link_back_after_readback: ['winsmux installer: startup_unconfirmed', 'winsmux installer: readback_refused 171 file:6 reopen:5',
-      `winsmux installer: restore_incomplete path_refused:171 preserved desktop ${desktop}`],
+    link_back_after_readback: ['winsmux installer: startup_unconfirmed',
+      `winsmux installer: restore_incomplete path_refused:171 preserved desktop ${desktop}`,
+      'winsmux installer: readback_refused 171 file:6 reopen:5'],
     product_link_stayed: ['winsmux installer: io_unconfirmed', 'winsmux installer: restore_shortcut_unconfirmed desktop',
       `winsmux installer: restore_incomplete io_unconfirmed new desktop ${desktop}`],
     link_left_parked: ['winsmux installer: startup_unconfirmed', 'winsmux installer: restore_shortcut_parked desktop',
       `winsmux installer: restore_incomplete io_unconfirmed preserved desktop ${desktop}`],
-    link_not_placed: ['winsmux installer: io_unconfirmed', 'winsmux installer: readback_refused 170 file:6 reopen:5',
-      'winsmux installer: restore_shortcut_unconfirmed start_menu',
+    link_not_placed: ['winsmux installer: io_unconfirmed', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
       `winsmux installer: restore_incomplete path_refused:170 new desktop ${desktop}`,
-      `winsmux installer: restore_incomplete uncertain preserved start_menu ${programs}`],
+      `winsmux installer: restore_incomplete uncertain preserved start_menu ${programs}`,
+      'winsmux installer: readback_refused 170 file:6 reopen:5'],
   };
   for (const [prefix, language] of [['', '1041'], ['', '1033'], ['UN_', '1041'], ['UN_', '1033']]) {
     const said = name => hook(`WINSMUX_${prefix}${name}`, language);
@@ -308,7 +309,7 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
     assert.equal(helperFailureAbort(template, hooks, { prefix, language, lines: ['winsmux installer: member_unconfirmed'] }).abort,
       said('FAILED_MEMBER'), `${prefix}${language}: without a restore line the class message stands`);
     // A readback that still refused after the rename (task881_preserved_link_readback_refusal_names_the_publish_move)
-    // prints its line after the class and before any restore line, and the message is the class message.
+    // prints its line after the class, and the message is the class message.
     const refused = ['winsmux installer: path_refused', 'winsmux installer: readback_refused 169 file:6 reopen:5'];
     const { abort, details } = helperFailureAbort(template, hooks, { prefix, language, lines: refused, exit: '169' });
     assert.equal(abort, said('TRANSACTION_FAILED'), `${prefix}${language}: a readback line keeps the class message`);
@@ -427,6 +428,34 @@ test('the abort notices and the T-only exit code survive wherever ExecToStack cu
       assert.equal(abort, [said('RESTORE_INCOMPLETE'), said('RESTORE_PARKED'), said('RESTORE_SHORTCUT_UNCONFIRMED')].join(' '), `${prefix}${language}: cut at ${cut}`);
       assert.ok(details.includes(`winsmux installer helper: ${lines[0]}`), `${prefix}${language}: the classification reaches the details view with the output cut at ${cut}`);
     }
+  }
+});
+
+test('the restore notices survive what ExecToStack keeps however many readbacks refused', () => {
+  const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8').replaceAll('\r\n', '\n');
+  const template = read('winsmux-app/src-tauri/nsis/installer.nsi');
+  const hooks = read('winsmux-app/src-tauri/nsis-installer-hooks.nsh');
+  const hook = (name, language) => hooks.match(new RegExp(`^LangString ${name} ${language} "(.*)"$`, 'mu'))?.[1];
+  // A restore after startup_unconfirmed where eighteen moves were renamed and both of their readbacks refused,
+  // a link was left parked and a row left. The helper prints the restore lines before the readback lines, and
+  // two of those with a count of the rest
+  // (task881_restore_prints_its_notices_before_the_readback_lines_and_counts_those_past_two).
+  const refused = 'winsmux installer: readback_refused 170 file:6 reopen:5';
+  const restore = ['winsmux installer: restore_shortcut_parked start_menu',
+    'winsmux installer: restore_incomplete path_refused:170 new root C:\\winsmux\\winsmux.exe'];
+  const printed = ['winsmux installer: startup_unconfirmed', ...restore, refused, refused, 'winsmux installer: readback_more 16'];
+  // The order 557251d0 printed: every readback line before the restore lines.
+  const unbounded = ['winsmux installer: startup_unconfirmed', ...Array(18).fill(refused), ...restore];
+  const kept = lines => lines.map(line => `${line}\n`).join('').slice(0, 1023);
+  assert.ok(unbounded.map(line => `${line}\n`).join('').length > 1023, 'the unbounded output is longer than ExecToStack carries');
+  assert.equal(helperObservedExit(template, '2', kept(printed)), '71', 'the class exit code');
+  for (const [prefix, language] of [['', '1041'], ['', '1033'], ['UN_', '1041'], ['UN_', '1033']]) {
+    const said = name => hook(`WINSMUX_${prefix}${name}`, language);
+    const { abort, details } = helperFailureAbort(template, hooks, { prefix, language, output: kept(printed) });
+    assert.equal(abort, [said('RESTORE_INCOMPLETE'), said('RESTORE_PARKED')].join(' '), `${prefix}${language}`);
+    for (const line of printed) assert.ok(details.includes(`winsmux installer helper: ${line}`), `${prefix}${language}: ${line}`);
+    // Printed first, the readback lines took both notices out of what ExecToStack kept.
+    assert.equal(helperFailureAbort(template, hooks, { prefix, language, output: kept(unbounded) }).abort, said('TRANSACTION_FAILED'), `${prefix}${language}: unbounded`);
   }
 });
 
