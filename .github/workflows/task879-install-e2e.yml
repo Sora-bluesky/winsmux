@@ -8,19 +8,19 @@ permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: '9be98eb53433e021315d851ca27bacc9ca44d7f7'
-  SOURCE_TREE: '92b559597878265f1a465a2e500311118a231a86'
+  SOURCE_COMMIT: 'ce0c39ba0d4852195df95c5b99666a1a3441c887'
+  SOURCE_TREE: '4dcec20aafed921f62ce29ebbe148545d39b01c3'
   # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
-  SOURCE_INVENTORY: '8c36dd44b17f160bbdafa75a8e35a9dcc45baccf15b0458e8f5229258967268d'
-  # Unpublished draft release 420215931 (codex-task879-core-9be98eb5, target 9be98eb53433e021315d851ca27bacc9ca44d7f7): id, bytes, sha256, name.
+  SOURCE_INVENTORY: '1cfe132a602a0c2a1bd49c30448ade764786f633a2b8e1fd93d14269a51d5b9b'
+  # Unpublished draft release 420881620 (codex-task879-core-ce0c39ba, target ce0c39ba0d4852195df95c5b99666a1a3441c887): id, bytes, sha256, name.
   # Ids stay placeholders, which the manifest check refuses, until
   # .github/task879/fill-draft-asset-ids.py fills them from a GET of that draft.
   TASK879_ASSETS: |
-    664318832 18411008 87088958aef5db4a44ebf7eca1fcce40610b5df0ad8f4be7aef26c68b7b70ced winsmux-x64.exe
-    664318833 6724597 93979ea43e4e01f6bd38ff42785c731bed01e3c310f022bc1cdecad293163980 winsmux-x64.exe.licenses.zip
-    664318835 177 b45439e410b1bf1fd5a16503125e28343369e64065b344ec50438f3e4d777eef SHA256SUMS
-    664318840 1785 01bd1c650d462e5b0f1906cf4ac0e8b7fdead8b74caa423e7c520eb4c59add02 core-candidate.json
-    664318834 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
+    666242714 18426880 43d976885dd675728f1184508b392d14ba47455e71632221ea9a831c97e19c98 winsmux-x64.exe
+    666242867 6724597 97fe6ac2a69370eb21e1231d3effc3e14600cff767a8f4c0474c5208f4f0eceb winsmux-x64.exe.licenses.zip
+    666242968 177 86ce8c1624e2955dec8b3d367515b7934a6d424a34ce692930fe1a6d0cace4f5 SHA256SUMS
+    666243024 1785 415ee98ca13d883c2a4e23f52a727c79e179253008a00f0cfbf38c036fe9de31 core-candidate.json
+    666243064 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
 
 jobs:
   fetch:
