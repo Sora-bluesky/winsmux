@@ -6693,17 +6693,19 @@ mod native {
         /// Queues `refusals` right after the rename of the first move made while the journal shows
         /// `phase` and `class`.
         fn refuse_readback_after_rename(phase: &'static str, class: &'static str, refusals: &'static [(ReadbackHandle, hooks::FinalName)]) {
-            let mut fired = false;
+            refuse_readbacks_after_renames(vec![(phase, class, refusals)]);
+        }
+        /// The same for each `(phase, class, refusals)`, each queued once.
+        fn refuse_readbacks_after_renames(mut pending: Vec<(&'static str, &'static str, &'static [(ReadbackHandle, hooks::FinalName)])>) {
             set_barrier(move |label| {
-                if fired || label != "move_after" {
+                if label != "move_after" {
                     return;
                 }
                 hooks::MOCK.with(|m| {
                     let mut m = m.borrow_mut();
                     let m = m.as_mut().unwrap();
-                    if m.proof_key.starts_with(phase) && m.proof_key.contains(class) {
-                        m.readback_refusals.extend(refusals.iter().copied());
-                        fired = true;
+                    if let Some(at) = pending.iter().position(|(phase, class, _)| m.proof_key.starts_with(phase) && m.proof_key.contains(class)) {
+                        m.readback_refusals.extend(pending.remove(at).2.iter().copied());
                     }
                 });
             });
@@ -6844,6 +6846,40 @@ mod native {
                 assert!(execute(&f).unwrap().durable_commit);
                 assert_foreign_parked(&f, &known, &foreign);
             }
+        }
+        /// Both product links' readbacks recover when they are published, the run fails at its commit, and
+        /// both readbacks refuse the parked Desktop link's move back. The refused line says why the restore
+        /// is incomplete, so it takes one of the two places before the recovered lines that came first.
+        #[test]
+        fn task881_a_refused_readback_is_printed_before_recovered_ones_that_came_first() {
+            let publish = vec![
+                ("Registering|", "new:desktop:MoveIntent", HELD_FILE_REFUSES),
+                ("Registering|", "new:start_menu:MoveIntent", HELD_FILE_REFUSES),
+            ];
+            let (good, _, _) = task881_layout_fixture();
+            refuse_readbacks_after_renames(publish.clone());
+            let trace = operation_trace(&good);
+            let recovered = format!("winsmux installer: readback_recovered 167 file:{HELD_REFUSAL}");
+            assert_eq!(printed(None), vec![recovered.clone(), recovered.clone()], "both links were published after a recovered readback");
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, _) = task881_layout_fixture();
+            reset_steps(Some(at), false);
+            refuse_readbacks_after_renames([publish, vec![("Restoring|", "preserved:desktop:RestoreIntent", BOTH_READBACKS_REFUSE)]].concat());
+            let result = execute(&f);
+            let lines = printed(Some(Error::Io));
+            disarm_restore_faults();
+            assert_eq!(result.err(), Some(Error::Io));
+            let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
+            assert_eq!(
+                lines,
+                vec![
+                    "winsmux installer: io_unconfirmed".to_string(),
+                    format!("winsmux installer: restore_incomplete path_refused:171 preserved desktop {live}"),
+                    format!("winsmux installer: readback_refused 171 file:{HELD_REFUSAL} reopen:{NAMED_REFUSAL}"),
+                    recovered,
+                    "winsmux installer: readback_more 1".to_string(),
+                ]
+            );
         }
         #[test]
         fn task881_rerun_from_the_interrupted_journal_returns_the_parked_link_and_installs() {
