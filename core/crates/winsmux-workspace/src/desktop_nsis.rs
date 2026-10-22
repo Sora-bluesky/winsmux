@@ -997,12 +997,33 @@ fn desired_slots(root: &str, language: u32, total: u64) -> Result<Vec<Option<Raw
 thread_local! {
     // The restore lines this run reports. run prints them after the classification.
     static RESTORE_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+    // The readback lines this run reports, what each move's readback after its rename met. run prints
+    // them last, after a success too.
+    static READBACK_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// What a failed run prints. The installer reads it through ExecToStack, which keeps only the first
 /// NSIS_MAX_STRLEN characters, so the classification goes before the restore lines.
 fn failure_lines(error: Error, restore: Vec<String>) -> Vec<String> {
     std::iter::once(format!("winsmux installer: {}", error.classification())).chain(restore).collect()
+}
+
+/// Readback lines past this many are counted in one readback_more line, so they take a bounded share of
+/// what ExecToStack keeps after the classification and the restore lines.
+const REPORTED_READBACKS: usize = 2;
+
+/// The stderr lines a run that ended with `error`, or succeeded, prints: the failure lines, then the
+/// readback lines.
+fn printed_lines(error: Option<Error>) -> Vec<String> {
+    let restore = RESTORE_LINES.take();
+    let readback = READBACK_LINES.take();
+    let more = readback.len().saturating_sub(REPORTED_READBACKS);
+    error
+        .map_or_else(Vec::new, |error| failure_lines(error, restore))
+        .into_iter()
+        .chain(readback.into_iter().take(REPORTED_READBACKS))
+        .chain((more > 0).then(|| format!("winsmux installer: readback_more {more}")))
+        .collect()
 }
 
 pub fn run(args: &[String]) -> i32 {
@@ -1018,18 +1039,23 @@ pub fn run(args: &[String]) -> i32 {
         }
     });
     match result {
-        Ok(receipt) => match serde_json::to_string(&receipt) {
-            Ok(json) => {
-                println!("{json}");
-                0
+        Ok(receipt) => {
+            for line in printed_lines(None) {
+                eprintln!("{line}");
             }
-            Err(_) => {
-                eprintln!("winsmux installer: pending_unconfirmed");
-                3
+            match serde_json::to_string(&receipt) {
+                Ok(json) => {
+                    println!("{json}");
+                    0
+                }
+                Err(_) => {
+                    eprintln!("winsmux installer: pending_unconfirmed");
+                    3
+                }
             }
-        },
+        }
         Err(error) => {
-            for line in failure_lines(error, RESTORE_LINES.take()) {
+            for line in printed_lines(Some(error)) {
                 eprintln!("{line}");
             }
             match error {
@@ -1663,42 +1689,50 @@ mod native {
     /// Confirms a done rename: both parents are still the directories held before it, the renamed file
     /// is the planned member at `to`, and `from` is gone. A held handle can refuse its final name after
     /// the rename while the file still opens by its new name, so a final-name refusal is answered by
-    /// proving the same facts again through handles opened by name. A move that still refuses with a
-    /// path refusal reports each attempt's handle and Win32 error.
+    /// proving the same facts again through handles opened by name. Whatever that second readback ends
+    /// in is the move's readback: it is reported with the first refusal's handle and Win32 error, and a
+    /// path refusal in it fails the move as its readback site.
     fn confirm_move(source: &mut Observed, parent: &Dirs, (from, to): (&Path, &Path), row: &Member, origins: Option<MoveOrigins>) -> Result<bool> {
         let held = source.file.as_raw_handle() as HANDLE;
+        let readback = origins.map(|o| o.2);
         let mut first = None;
-        let mut confirmed = (|| -> Result<bool> {
+        let confirmed = (|| -> Result<bool> {
             flush_handle(held)?;
             readback_step(ReadbackHandle::FromParent, &mut first, || source._parents.flush())?;
             readback_step(ReadbackHandle::ToParent, &mut first, || parent.flush())?;
             let member = readback_step(ReadbackHandle::File, &mut first, || file_member(&mut source.file, to, &row.path))?;
             Ok(member == *row && !exists(from)?)
         })();
+        let Some(first) = first else {
+            return readback_origin(confirmed, readback);
+        };
         let mut second = None;
-        if let (Err(Error::Path(106..=108)), Some(_)) = (confirmed, first) {
-            confirmed = reconfirm_by_name(source, parent, (from, to), row, origins, &mut second);
+        let again = reconfirm_by_name(source, parent, (from, to), row, &mut second);
+        let site = readback.map_or(0, |o| o as u16);
+        let refused = |what: String| format!("winsmux installer: readback_refused {site} {}:{} {what}", first.handle.name(), first.win32);
+        report_readback(match (again, second) {
+            (Ok(true), _) => format!("winsmux installer: readback_recovered {site} {}:{}", first.handle.name(), first.win32),
+            (_, Some(r)) => refused(format!("{}:{}", r.handle.name(), r.win32)),
+            (Ok(false), None) => refused("mismatch".into()),
+            (Err(error), None) => refused(refusal_text(error)),
+        });
+        match (again, readback) {
+            (Err(Error::Path(_)), Some(origin)) => Err(Error::Path(origin as u16)),
+            (unchanged, _) => unchanged,
         }
-        let confirmed = readback_origin(confirmed, origins.map(|o| o.2));
-        if let (Err(error @ Error::Path(code)), Some(first)) = (confirmed, first) {
-            let again = second.map_or_else(|| refusal_text(error), |r| format!("{}:{}", r.handle.name(), r.win32));
-            let site = origins.map_or(code, |o| o.2 as u16);
-            report(format!("winsmux installer: readback_refused {site} {}:{} {again}", first.handle.name(), first.win32));
-        }
-        confirmed
     }
     /// The second readback: each parent opened again by name and matched to the held one, and `to`
     /// opened by name for its attributes only. The bytes still come from the held handle, which must be
     /// the file the name leads to.
-    fn reconfirm_by_name(source: &mut Observed, parent: &Dirs, (from, to): (&Path, &Path), row: &Member, origins: Option<MoveOrigins>, refusal: &mut Option<NameRefusal>) -> Result<bool> {
+    fn reconfirm_by_name(source: &mut Observed, parent: &Dirs, (from, to): (&Path, &Path), row: &Member, refusal: &mut Option<NameRefusal>) -> Result<bool> {
         flush_handle(source.file.as_raw_handle() as HANDLE)?;
         let parents = [
-            (ReadbackHandle::FromParent, &source._parents, from.parent().ok_or(Error::Path(117))?, origins.map(|o| o.0)),
-            (ReadbackHandle::ToParent, parent, to.parent().ok_or(Error::Path(134))?, origins.map(|o| o.1)),
+            (ReadbackHandle::FromParent, &source._parents, from.parent().ok_or(Error::Path(117))?),
+            (ReadbackHandle::ToParent, parent, to.parent().ok_or(Error::Path(134))?),
         ];
-        for (handle, held, path, origin) in parents {
+        for (handle, held, path) in parents {
             let same = readback_step(handle, refusal, || {
-                let named = derived_origin(Dirs::open(path), origin)?;
+                let named = Dirs::open(path)?;
                 if named.id != held.id || !same_path(&named.path, &held.path) {
                     return Ok(false);
                 }
@@ -2449,13 +2483,20 @@ mod native {
     }
     /// One restore line, printed after the final classification; NSIS prints every line to the details view.
     fn report(line: String) {
+        report_to(&RESTORE_LINES, line);
+    }
+    /// One readback line, printed after the restore lines, after a success too.
+    fn report_readback(line: String) {
+        report_to(&READBACK_LINES, line);
+    }
+    fn report_to(lines: &'static std::thread::LocalKey<std::cell::RefCell<Vec<String>>>, line: String) {
         #[cfg(test)]
         hooks::MOCK.with(|m| {
             if let Some(m) = m.borrow_mut().as_mut() {
                 m.reports.push(line.clone());
             }
         });
-        RESTORE_LINES.with_borrow_mut(|lines| lines.push(line));
+        lines.with_borrow_mut(|lines| lines.push(line));
     }
     fn refusal_text(error: Error) -> String {
         match error {
@@ -2494,9 +2535,9 @@ mod native {
         domain: String,
         path: String,
     }
-    /// Row lines past this many are counted in one restore_incomplete_more line. With the classification,
-    /// a readback_refused line and the four link lines before them, three rows of common path lengths
-    /// stay inside the 1024 characters ExecToStack keeps.
+    /// Row lines past this many are counted in one restore_incomplete_more line. With the classification
+    /// and the four link lines before them, three rows of common path lengths stay inside the 1024
+    /// characters ExecToStack keeps; the readback lines come after them.
     const REPORTED_ROWS: usize = 3;
     fn report_restore_incomplete(p: &Pending, root: &Dirs, error: Error, rows: &[RestoreIncomplete]) {
         // Where a Desktop or Start menu link stands is said only as far as the files show it. These short
@@ -5722,8 +5763,7 @@ mod native {
         /// The stderr lines run prints for the last run, which ended with `error` or succeeded, and
         /// forgets them.
         fn printed(error: Option<Error>) -> Vec<String> {
-            let restore = RESTORE_LINES.take();
-            error.map_or_else(Vec::new, |error| failure_lines(error, restore))
+            printed_lines(error)
         }
         /// What ExecToStack keeps of `lines`: the first 1023 characters.
         fn kept(lines: &[String]) -> String {
@@ -6696,10 +6736,10 @@ mod native {
             let row = held.member.clone();
             let parent = Dirs::open(&f.root.path).unwrap();
             let mut refusal = None;
-            assert_eq!(reconfirm_by_name(&mut held, &parent, (&gone, &renamed), &row, None, &mut refusal), Ok(true), "the held file under its new name");
-            assert_ne!(reconfirm_by_name(&mut held, &parent, (&gone, &other), &row, None, &mut refusal), Ok(true), "another file with the same bytes");
+            assert_eq!(reconfirm_by_name(&mut held, &parent, (&gone, &renamed), &row, &mut refusal), Ok(true), "the held file under its new name");
+            assert_ne!(reconfirm_by_name(&mut held, &parent, (&gone, &other), &row, &mut refusal), Ok(true), "another file with the same bytes");
             fs::hard_link(&renamed, f.root.path.join("second-link")).unwrap();
-            assert_ne!(reconfirm_by_name(&mut held, &parent, (&gone, &renamed), &row, None, &mut refusal), Ok(true), "the held file with a second link");
+            assert_ne!(reconfirm_by_name(&mut held, &parent, (&gone, &renamed), &row, &mut refusal), Ok(true), "the held file with a second link");
             assert!(refusal.is_none(), "no final name was refused");
         }
         /// The handle opened by name answers for the path it resolves to: the held file's own handle,
