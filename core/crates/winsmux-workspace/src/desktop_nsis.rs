@@ -6474,6 +6474,56 @@ mod native {
             assert!(execute(&f).unwrap().durable_commit);
             assert_foreign_parked(&f, &known, &foreign);
         }
+        /// Refuses the next final-name query once, right after the rename of the first move made
+        /// while the journal shows `phase` and `class`.
+        fn refuse_final_name_after_rename_once(phase: &'static str, class: &'static str) {
+            let mut fired = false;
+            set_barrier(move |label| {
+                if fired || label != "move_after" {
+                    return;
+                }
+                hooks::MOCK.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let m = m.as_mut().unwrap();
+                    if m.proof_key.starts_with(phase) && m.proof_key.contains(class) {
+                        m.final_name_refusal = true;
+                        fired = true;
+                    }
+                });
+            });
+        }
+        /// TASK-881 realmachine-65d64351: the product Desktop link is renamed onto the Desktop and the
+        /// final-name readback after the rename refuses once (helper exit 167). The rename is done and a
+        /// second readback can prove the link is the planned one, so the install must finish.
+        #[test]
+        fn task881_publish_shortcut_readback_refusal_after_the_rename_still_installs() {
+            let (f, known, foreign) = task881_layout_fixture();
+            refuse_final_name_after_rename_once("Registering|", "new:desktop:MoveIntent");
+            let result = execute(&f);
+            disarm_restore_faults();
+            assert_eq!(result.as_ref().err(), None, "one final-name refusal after the rename aborted the install");
+            assert!(result.unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            assert!(!exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap());
+        }
+        /// TASK-881 realmachine-65d64351, second half: the rollback renames the parked Desktop link back
+        /// and its final-name readback refuses once (restore_incomplete path_refused:171). The link is
+        /// back, so the restore must confirm it and report nothing, as a rollback without the refusal does.
+        #[test]
+        fn task881_restore_preserved_readback_refusal_after_the_rename_still_restores() {
+            let (f, known, foreign) = task881_layout_fixture();
+            refuse_final_name_after_rename_once("Restoring|", "preserved:desktop:RestoreIntent");
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
+            let result = execute(&f);
+            let lines = reports();
+            disarm_restore_faults();
+            assert_eq!(result.err(), Some(Error::Startup));
+            assert_eq!(lines, Vec::<String>::new(), "the restore reported a link it had put back");
+            assert_foreign_live(&f, &known, &foreign);
+            assert_eq!(recover_if_readable(&f), Ok(()));
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+        }
         #[test]
         fn task881_rerun_from_the_interrupted_journal_returns_the_parked_link_and_installs() {
             let (f, known, foreign) = task881_layout_fixture();
