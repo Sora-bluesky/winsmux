@@ -24,7 +24,7 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', 'c54f74847197f7fdf47d40be292986db9545e5614615026a981213862e24d30a'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', '7cc1c36806489667a1feae9fb213c508c9e83eed16af465c9e4d74f5ea22513f'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
     ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'bbc1e106fce5d78e2f7d8823f98e7b13a3c56b0307154a26c0fddb798f1a235c'],
   ]);
@@ -85,7 +85,8 @@ test('every helper refusal the installer names gets an install and an uninstall 
   // Every helper line reaches the details view and the last non-empty line is the classification. The
   // restore lines the helper prints choose the restore message and its notices (the next test runs the
   // macro on those lines).
-  assert.ok(macro.includes('        DetailPrint "winsmux installer helper: $6"\n        StrCpy $3 $6\n'), 'each helper line is printed and the last one is classified');
+  assert.ok(macro.includes('        DetailPrint "winsmux installer helper: $6"\n        StrCpy $4 $6 27\n        ${If} $4 S!= "winsmux installer: readback"\n          StrCpy $3 $6\n'),
+    'each helper line is printed and the last one outside the readback lines is classified');
   for (const line of ['restore_incomplete {refusal} {} {} {}', 'restore_shortcut_parked {kind}', 'restore_shortcut_unconfirmed {kind}',
     'readback_refused {site} {}:{} {again}']) {
     assert.ok(helper.includes(`"winsmux installer: ${line}"`), `the helper prints the ${line} line the installer looks for`);

@@ -6512,12 +6512,12 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($reports.Count -eq 1) 'Desktop NSIS helper failure report must be unique.'
     $reportBody = $reports[0].Groups['body'].Value
     $reportSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($reportBody))).ToLowerInvariant()
-    Assert-Condition ($reportSha256 -ceq 'e8421f6f57b5adaa87de9690c6b07ccb75479d2b0d34382f8242ed139c73a89a') 'Desktop NSIS helper failure report differs.'
+    Assert-Condition ($reportSha256 -ceq 'bca7ee25c27defbb324d59161cba26c377437c6c6de171cdd4fe811fd20826c6') 'Desktop NSIS helper failure report differs.'
     Assert-Condition ([regex]::Matches($reportBody, '(?m)^  Abort \$4$').Count -eq 1) 'Desktop NSIS helper failure report must abort.'
-    # Every helper line is printed and the last one is classified. Each restore line the helper prints sets its
-    # own flag by its fixed prefix, a restore_incomplete line replaces the class message, and the parked and
-    # unconfirmed shortcut notices follow only their own lines.
-    Assert-Condition ([regex]::Matches($reportBody, '(?m)^        DetailPrint "winsmux installer helper: \$6"\n        StrCpy \$3 \$6$').Count -eq 1) 'Desktop NSIS helper failure report must print each helper line and classify the last.'
+    # Every helper line is printed and the last one outside the readback lines is classified. Each restore line the
+    # helper prints sets its own flag by its fixed prefix, a restore_incomplete line replaces the class message, and
+    # the parked and unconfirmed shortcut notices follow only their own lines.
+    Assert-Condition ([regex]::Matches($reportBody, '(?m)^        DetailPrint "winsmux installer helper: \$6"\n        StrCpy \$4 \$6 27\n        \$\{If\} \$4 S!= "winsmux installer: readback"\n          StrCpy \$3 \$6\n        \$\{EndIf\}$').Count -eq 1) 'Desktop NSIS helper failure report must print each helper line and classify the last one outside the readback lines.'
     foreach ($flag in @(@(37, 'restore_incomplete', 1), @(42, 'restore_shortcut_parked', 2), @(47, 'restore_shortcut_unconfirmed', 4))) {
         Assert-Condition (('winsmux installer: ' + $flag[1]).Length -eq $flag[0]) 'Desktop NSIS helper failure report prefix length differs.'
         $flagPattern = '(?m)^        StrCpy \$6 \$3 ' + $flag[0] + '\n        \$\{If\} \$6 S== "winsmux installer: ' + $flag[1] + '"\n          IntOp \$5 \$5 \| ' + $flag[2] + '\n        \$\{EndIf\}$'

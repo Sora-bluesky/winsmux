@@ -42,12 +42,13 @@ ManifestDPIAwareness PerMonitorV2
 ; "winsmux installer: restore_shortcut_unconfirmed <kind>" line adds what the helper saw of the
 ; Desktop and Start menu links. The helper prints these restore lines after its classification, the
 ; link lines before the row lines, because ExecToStack keeps only the first NSIS_MAX_STRLEN
-; characters of the output; a cut drops row lines first. A "winsmux installer: readback_refused ..."
-; line, a move's readback that still refused after its rename, comes after a path_refused
-; classification or with a restore_incomplete line, so it never changes the message.
+; characters of the output; a cut drops row lines first. The readback lines
+; ("winsmux installer: readback_..."), what each move's final-name readback after its rename met,
+; come last and are only printed: they never change the message.
 ; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
-; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flags:
-; 1 a restore stopped short, 2 a link is parked, 4 a link's place is unconfirmed.
+; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line that is not a readback
+; line, $5 as the restore flags: 1 a restore stopped short, 2 a link is parked, 4 a link's place is
+; unconfirmed.
 !macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX
   DetailPrint "winsmux installer root: $INSTDIR"
   DetailPrint "winsmux installer helper exit: $0"
@@ -62,7 +63,10 @@ ManifestDPIAwareness PerMonitorV2
       ${${UN}TrimNewLines} $6 $6
       ${If} $6 != ""
         DetailPrint "winsmux installer helper: $6"
-        StrCpy $3 $6
+        StrCpy $4 $6 27
+        ${If} $4 S!= "winsmux installer: readback"
+          StrCpy $3 $6
+        ${EndIf}
         StrCpy $6 $3 37
         ${If} $6 S== "winsmux installer: restore_incomplete"
           IntOp $5 $5 | 1
@@ -114,6 +118,31 @@ ManifestDPIAwareness PerMonitorV2
   ${EndIf}
   DetailPrint $4
   Abort $4
+!macroend
+
+; A helper run that succeeded prints its readback lines ("winsmux installer: readback_...") before
+; its receipt: a move whose final-name readback refused after its rename and was proved again by
+; name. Only those lines go to the details view, so a run that went through still leaves the
+; refusing handle and its Win32 error behind.
+; UN is "" or "un.". $0/$1 stay the plugin return/output; $5-$8 are scratch.
+!macro WINSMUX_PRINT_HELPER_READBACK UN
+  StrCpy $6 ""
+  StrCpy $7 0
+  ${Do}
+    StrCpy $8 $1 1 $7
+    ${If} $8 == "$\n"
+    ${OrIf} $8 == ""
+      StrCpy $5 $6 27
+      ${If} $5 S== "winsmux installer: readback"
+        ${${UN}TrimNewLines} $6 $6
+        DetailPrint "winsmux installer helper: $6"
+      ${EndIf}
+      StrCpy $6 ""
+    ${Else}
+      StrCpy $6 "$6$8"
+    ${EndIf}
+    IntOp $7 $7 + 1
+  ${LoopUntil} $8 == ""
 !macroend
 
 ; Diagnostic-only finite observation. Remove with the exact four-file overlay.
@@ -1090,6 +1119,7 @@ Section Install
     SetErrorLevel $2
     !insertmacro WINSMUX_REPORT_HELPER_FAILURE "" ""
   ${EndIf}
+  !insertmacro WINSMUX_PRINT_HELPER_READBACK ""
   StrCpy $WinsmuxCommitted 1
   ${If} $PassiveMode = 1
     SetAutoClose true
@@ -1148,6 +1178,7 @@ Section Uninstall
     SetErrorLevel $2
     !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." "UN_"
   ${EndIf}
+  !insertmacro WINSMUX_PRINT_HELPER_READBACK "un."
   ${If} $PassiveMode = 1
     SetAutoClose true
   ${EndIf}
