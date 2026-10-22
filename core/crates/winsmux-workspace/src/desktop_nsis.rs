@@ -6447,6 +6447,101 @@ mod native {
             // PublishPreservedMoveDestination origin.
             assert_eq!(err, Some(Error::Path(162)));
         }
+        /// Fails, once, the final-name readback of the first restore move made while `class` is
+        /// journaled (for example "new:root:RestoreIntent"). The rename itself has already happened.
+        fn arm_restore_readback_refusal(class: &'static str) {
+            let mut fired = false;
+            hooks::MOCK.with(|m| {
+                m.borrow_mut().as_mut().unwrap().barrier = Some(Box::new(move |label| {
+                    if fired || label != "move_after" {
+                        return;
+                    }
+                    fired = hooks::MOCK.with(|m| {
+                        let mut m = m.borrow_mut();
+                        let m = m.as_mut().unwrap();
+                        let armed = m.proof_key.starts_with("Restoring|") && m.proof_key.contains(class);
+                        m.final_name_refusal |= armed;
+                        armed
+                    });
+                }));
+            });
+        }
+        fn disarm_restore_faults() {
+            hooks::MOCK.with(|m| {
+                let mut m = m.borrow_mut();
+                let m = m.as_mut().unwrap();
+                m.barrier = None;
+                m.startup_fail = false;
+            });
+            reset_steps(None, false);
+        }
+        /// The 1-based cut that comes first after every journaled class in `classes` holds.
+        fn first_cut_after(trace: &[(String, String)], classes: &[&str]) -> usize {
+            trace.iter().position(|(_, key)| classes.iter().all(|c| key.contains(c))).unwrap() + 1
+        }
+        /// A managed update rolls back. The new root file's move back to the private area is renamed,
+        /// then its readback refuses, and the old file returns to the same live path. The next run finds
+        /// the new file in the private area and the old one live, and finishes the restore.
+        #[test]
+        fn task881_reentry_finishes_a_new_root_row_whose_live_path_the_old_row_took_back() {
+            let f = mode_fixture("managed");
+            let (state, _) = old(&f).unwrap();
+            arm_restore_readback_refusal("new:root:RestoreIntent");
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
+            assert_eq!(execute(&f).err(), Some(Error::Startup));
+            disarm_restore_faults();
+            assert_eq!(recover_if_readable(&f), Ok(()));
+            assert!(!exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap());
+            assert_previous(&f, &state);
+            assert!(execute(&f).unwrap().durable_commit);
+        }
+        /// A first install over two foreign links rolls back after publishing its own links. The product
+        /// Desktop link's move back to the private area is renamed, then its readback refuses, and the
+        /// foreign link returns to the same Desktop path. The next run finishes the restore, and the
+        /// install after it parks the foreign links again.
+        #[test]
+        fn task881_reentry_finishes_a_new_link_row_whose_live_path_the_preserved_link_took_back() {
+            let (good, _, _) = task881_layout_fixture();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, foreign) = task881_layout_fixture();
+            reset_steps(Some(at), false);
+            arm_restore_readback_refusal("new:desktop:RestoreIntent");
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            disarm_restore_faults();
+            assert_foreign_live(&f, &known, &foreign);
+            assert_eq!(recover_if_readable(&f), Ok(()));
+            assert_foreign_live(&f, &known, &foreign);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            assert_task881_root_entries_intact(&f);
+        }
+        /// An uninstall that put the foreign links back rolls back. The foreign Desktop link's move back
+        /// to its parked path is renamed, then its readback refuses, and the product link returns to the
+        /// Desktop path the foreign link left. The next run finishes the restore, and the uninstall after
+        /// it returns the foreign links.
+        #[test]
+        fn task881_reentry_finishes_a_preserved_row_whose_other_endpoint_the_old_link_took_back() {
+            let (mut good, _, _) = foreign_shortcut_fixture();
+            assert!(execute(&good).unwrap().durable_commit);
+            good.ctx.action = Action::Uninstall;
+            reset_steps(None, false);
+            assert!(execute(&good).unwrap().durable_commit);
+            let proof = hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().proof_trace.clone());
+            let at = first_cut_after(&proof, &["preserved:desktop:MovedConfirmed", "preserved:start_menu:MovedConfirmed"]);
+            let (mut f, known, foreign) = foreign_shortcut_fixture();
+            assert!(execute(&f).unwrap().durable_commit);
+            f.ctx.action = Action::Uninstall;
+            reset_steps(Some(at), false);
+            arm_restore_readback_refusal("preserved:desktop:RestoreIntent");
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            disarm_restore_faults();
+            assert_eq!(recover_if_readable(&f), Ok(()));
+            assert_foreign_parked(&f, &known, &foreign);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_live(&f, &known, &foreign);
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+        }
         #[test]
         fn every_install_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
             let (good, _, _) = foreign_shortcut_fixture();
