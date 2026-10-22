@@ -6000,7 +6000,11 @@ mod native {
             // Fresh install writes a different P/D; an external X after write is never overwritten by restore.
             let f = fixture();
             hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().foreign_write = true);
-            assert_eq!(execute(&f).err(), Some(Error::Pending));
+            let earlier = reports().len();
+            // The registration refusal that started the restore is the verdict; the restore that could
+            // not put the slot back is the extra line.
+            assert_eq!(execute(&f).err(), Some(Error::Registration));
+            assert_eq!(reports()[earlier..], ["winsmux installer: restore_incomplete pending_unconfirmed".to_string()]);
             assert_eq!(
                 read_slot(0).unwrap(),
                 Some(RawValue {
