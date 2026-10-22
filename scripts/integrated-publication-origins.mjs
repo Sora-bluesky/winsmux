@@ -57,27 +57,27 @@ export function readOriginFile(row) {
     return { bytes, identity: identity(after) };
   } finally { fs.closeSync(fd); }
 }
-const fixedBase = '9be98eb53433e021315d851ca27bacc9ca44d7f7';
-const fixedTree = '92b559597878265f1a465a2e500311118a231a86';
+const fixedBase = 'ce0c39ba0d4852195df95c5b99666a1a3441c887';
+const fixedTree = '4dcec20aafed921f62ce29ebbe148545d39b01c3';
 // Core/npm keep their true original producer coordinates; signed Desktop uses final source S.
 const producerCoordinates = freeze({
   "core": {
     "kind": "private-core-assembly",
-    "source_commit": "9be98eb53433e021315d851ca27bacc9ca44d7f7",
-    "source_tree": "92b559597878265f1a465a2e500311118a231a86",
-    "run": "local-assembly-27be8c1a-12a0-44df-a8a0-feaffe29e5eb",
+    "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
+    "source_tree": "4dcec20aafed921f62ce29ebbe148545d39b01c3",
+    "run": "local-assembly-905a634a-6d13-4468-b7fa-991acd432aaa",
     "inner_origins": [
       {
         "kind": "windows-x64",
-        "source_commit": "9be98eb53433e021315d851ca27bacc9ca44d7f7",
-        "run": "local-5fc7da43-6ab4-4931-8e0a-aa6763793f53",
-        "receipt_sha256": "01bd1c650d462e5b0f1906cf4ac0e8b7fdead8b74caa423e7c520eb4c59add02"
+        "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
+        "run": "local-5d51bbdb-9074-44ad-82a4-6863974d84d2",
+        "receipt_sha256": "415ee98ca13d883c2a4e23f52a727c79e179253008a00f0cfbf38c036fe9de31"
       },
       {
         "kind": "windows-arm64",
-        "source_commit": "9be98eb53433e021315d851ca27bacc9ca44d7f7",
-        "run": "local-5fc7da43-6ab4-4931-8e0a-aa6763793f53",
-        "receipt_sha256": "7a3780434852fca997000cce4959d8a779b267a6b4b2ec1dc296857930ed4920"
+        "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
+        "run": "local-5d51bbdb-9074-44ad-82a4-6863974d84d2",
+        "receipt_sha256": "523623f6bae475340ede9cd003e243826b66a8e68e375ec67b1e0f5585766308"
       },
       {
         "kind": "linux-helper",
@@ -88,7 +88,7 @@ const producerCoordinates = freeze({
     ],
     "original_receipt": {
       "bytes": 16931,
-      "sha256": "b116290d4309ff394791d6123c03ce5a96a8fddc715a9baee3c4d9b57f624443"
+      "sha256": "0dbad12313af588855e60792bb0321ed8a5f66232e37234c9247c1a9bc5418c8"
     },
     "asset_paths": [
       "core/SHA256SUMS",
@@ -101,20 +101,20 @@ const producerCoordinates = freeze({
   },
   "npm": {
     "kind": "local-npm-producer",
-    "source_commit": "9be98eb53433e021315d851ca27bacc9ca44d7f7",
-    "source_tree": "92b559597878265f1a465a2e500311118a231a86",
-    "run": "local-npm-9be98eb5",
+    "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
+    "source_tree": "4dcec20aafed921f62ce29ebbe148545d39b01c3",
+    "run": "local-npm-ce0c39ba",
     "inner_origins": [
       {
         "kind": "local-npm-pack-and-windows-help-version",
-        "source_commit": "9be98eb53433e021315d851ca27bacc9ca44d7f7",
-        "run": "local-npm-9be98eb5",
-        "receipt_sha256": "00e1839f23a2f8d0ebddc3a65f5ea8f43b9954dd8a6f46f249abeeae5cfe8a71"
+        "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
+        "run": "local-npm-ce0c39ba",
+        "receipt_sha256": "8c9ef6d8b93100416e9175783a954cecee3f3992481e310f6f3fb5dab120ae1c"
       }
     ],
     "original_receipt": {
       "bytes": 1596,
-      "sha256": "00e1839f23a2f8d0ebddc3a65f5ea8f43b9954dd8a6f46f249abeeae5cfe8a71"
+      "sha256": "8c9ef6d8b93100416e9175783a954cecee3f3992481e310f6f3fb5dab120ae1c"
     },
     "asset_paths": [
       "npm/winsmux-0.38.0.tgz"
@@ -130,15 +130,11 @@ const desktopAssetPaths = Object.freeze([
   "desktop/winsmux_0.38.0_x64_en-US.msi"
 ]);
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
-// so only the 9be98eb5 before bytes are pinned here; the host observes the after digests.
+// so only the ce0c39ba before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
-  'scripts/integrated-publication-origins.mjs': '618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77',
-  'scripts/test-public-release.ps1': 'ca93ce3f783306e6e479b5222e469697ac37060e818bcc06756a21ad568707b0',
-  'tests/VersionSurface.Tests.ps1': '55abd3292db35072a68fbeed49ced2d679cf62374ee757239ee77f716dd59c66',
-  'tests/workspace-gate-map/gate-map.json': '5146e8888a1099c82fd48ac0fd462c5b16a393e7c9e1396474dc08c74189a435',
-  'tests/workspace-package/prepare-integrated-publication.test.mjs': 'd3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff',
-  'tests/workspace-package/publication-native-v2.test.ps1': 'ccc9e1d775171aba2b11f625e4eacfc4ebd0f15e9821234b22440da7587024af',
-  'tests/workspace-package/publication-npm-native.test.ps1': 'fdd8c8c2e7f51ff526d456d6c9c1387ff828bdfcf27ca7c33975ee4f7d41883d',
+  'scripts/integrated-publication-origins.mjs': '4337633cf8d7611465845f34650298fdbc630539168e9d5ebd20e6389721b8fd',
+  'tests/workspace-gate-map/gate-map.json': 'cbc47843a2907f55f3f4bc870d77d270e384f283f5d7891fa1d4c005c3e5405f',
+  'tests/workspace-package/prepare-integrated-publication.test.mjs': '6eacf4582a9c5b27a267e69b1077fbb5f0d230f2a69913c651c46db5b271229e',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);
