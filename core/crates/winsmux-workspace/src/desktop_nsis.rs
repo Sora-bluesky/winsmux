@@ -2378,10 +2378,13 @@ mod native {
         let RowKind::Moved(set) = row.kind else {
             return false;
         };
+        let parked_with_its_folder_empty = |kept: &Move| {
+            preserved_row_parked(root, kept) && matches!(live_path(&root.path, kept).and_then(|live| exists(&live)), Ok(false))
+        };
         restore_endpoints(p, root, set, row.index)
             .and_then(|(away, back, _)| row_back(p, root, set, row.index, (away.as_path(), back.as_path())))
             .unwrap_or(false)
-            || (set == MoveSet::Preserved && preserved_row_parked(root, &p.preserved[row.index]))
+            || (set == MoveSet::Preserved && parked_with_its_folder_empty(&p.preserved[row.index]))
     }
     fn startup(request: crate::desktop_install::StartupVerifyRequest) -> Result<StartupReceipt> {
         #[cfg(test)]
@@ -3394,12 +3397,9 @@ mod native {
         j.save(p)?;
         Ok(true)
     }
-    /// The preserved link sits at its parked path and its known folder is empty.
+    /// The preserved link sits at its parked path.
     fn preserved_row_parked(root: &Dirs, row: &Move) -> bool {
-        match (preserved_path(&root.path, &row.domain), live_path(&root.path, row)) {
-            (Ok(parked), Ok(live)) => exact(&parked, &row.member, false).is_ok() && matches!(exists(&live), Ok(false)),
-            _ => false,
-        }
+        preserved_path(&root.path, &row.domain).is_ok_and(|parked| exact(&parked, &row.member, false).is_ok())
     }
     fn restore(p: &mut Pending, j: &mut Journal, root: &Dirs, incomplete: &mut Vec<RestoreIncomplete>) -> Result<()> {
         p.phase = Phase::Restoring;
