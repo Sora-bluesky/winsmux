@@ -88,7 +88,7 @@ test('every helper refusal the installer names gets an install and an uninstall 
   assert.ok(macro.includes('        DetailPrint "winsmux installer helper: $6"\n        StrCpy $4 $6 27\n        ${If} $4 S!= "winsmux installer: readback"\n          StrCpy $3 $6\n'),
     'each helper line is printed and the last one outside the readback lines is classified');
   for (const line of ['restore_incomplete {refusal} {} {} {}', 'restore_shortcut_parked {kind}', 'restore_shortcut_unconfirmed {kind}',
-    'readback_refused {site} {}:{} {again}']) {
+    'readback_refused {site} {}:{} {what}', 'readback_recovered {site} {}:{}', 'readback_more {more}']) {
     assert.ok(helper.includes(`"winsmux installer: ${line}"`), `the helper prints the ${line} line the installer looks for`);
   }
   assert.equal((macro.match(/\$\{PREFIX\}/gu) ?? []).length, new Set(mapped.values()).size + 4, 'every string selection, the default and the restore strings included, goes through the prefix');
