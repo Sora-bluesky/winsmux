@@ -2301,20 +2301,25 @@ mod native {
             other => other.classification().into(),
         }
     }
+    /// The three journal lists of rows whose member a restore moves back.
     #[derive(Clone, Copy, PartialEq, Eq)]
-    enum RowKind {
-        Slot,
+    enum MoveSet {
         New,
         Preserved,
         Old,
+    }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RowKind {
+        Slot,
+        Moved(MoveSet),
     }
     impl RowKind {
         fn name(self) -> &'static str {
             match self {
                 RowKind::Slot => "slot",
-                RowKind::New => "new",
-                RowKind::Preserved => "preserved",
-                RowKind::Old => "old",
+                RowKind::Moved(MoveSet::New) => "new",
+                RowKind::Moved(MoveSet::Preserved) => "preserved",
+                RowKind::Moved(MoveSet::Old) => "old",
             }
         }
     }
@@ -2338,7 +2343,7 @@ mod native {
         // Where a Desktop or Start menu link stands is said only as far as the files show it.
         for kind in ["desktop", "start_menu"] {
             let left: Vec<&RestoreIncomplete> = rows.iter().filter(|row| row.domain == kind).collect();
-            if left.iter().any(|row| row.kind == RowKind::Preserved && preserved_row_parked(root, &p.preserved[row.index])) {
+            if left.iter().any(|row| row.kind == RowKind::Moved(MoveSet::Preserved) && preserved_row_parked(root, &p.preserved[row.index])) {
                 report(format!("winsmux installer: restore_shortcut_parked {kind}"));
             }
             if left.iter().any(|row| !row_placed(p, root, row)) {
@@ -2349,15 +2354,13 @@ mod native {
     /// The files show where a left row's member is: where the restore puts it back, or, for a
     /// preserved link, parked with its known folder empty.
     fn row_placed(p: &Pending, root: &Dirs, row: &RestoreIncomplete) -> bool {
-        match row.kind {
-            RowKind::New => new_row_set_aside(p, root, &p.new[row.index]).unwrap_or(false),
-            RowKind::Preserved => {
-                let kept = &p.preserved[row.index];
-                preserved_row_back(p, root, kept).unwrap_or(false) || preserved_row_parked(root, kept)
-            }
-            RowKind::Old => old_row_back(p, root, &p.old[row.index]).unwrap_or(false),
-            RowKind::Slot => false,
-        }
+        let RowKind::Moved(set) = row.kind else {
+            return false;
+        };
+        restore_endpoints(p, root, set, row.index)
+            .and_then(|(away, back, _)| row_back(p, root, set, row.index, (away.as_path(), back.as_path())))
+            .unwrap_or(false)
+            || (set == MoveSet::Preserved && preserved_row_parked(root, &p.preserved[row.index]))
     }
     fn startup(request: crate::desktop_install::StartupVerifyRequest) -> Result<StartupReceipt> {
         #[cfg(test)]
@@ -3294,31 +3297,81 @@ mod native {
         *uncertain = true;
         incomplete.push(RestoreIncomplete { error, kind, index, domain: domain.into(), path });
     }
-    /// The new member sits in the private area, and its live path is empty or holds the old or
-    /// preserved member the restore put back there. A move whose readback refused leaves this state.
-    fn new_row_set_aside(p: &Pending, root: &Dirs, row: &Move) -> Result<bool> {
-        let live = live_path(&root.path, row)?;
-        let new = private_path(&root.path, &p.operation_id, "new", row);
-        Ok(exists(&new)?
-            && exact(&new, &row.member, true).is_ok()
-            && (!exists(&live)?
-                || row_holds(&p.old, &live, |old| live_path(&root.path, old), true)
-                || row_holds(&p.preserved, &live, |kept| preserved_endpoints(&root.path, p.action, kept).map(|(from, _)| from), true)))
+    fn moved(p: &Pending, set: MoveSet) -> &Vec<Move> {
+        match set {
+            MoveSet::New => &p.new,
+            MoveSet::Preserved => &p.preserved,
+            MoveSet::Old => &p.old,
+        }
     }
-    /// The preserved member sits at its forward source, and the forward destination is empty or holds
-    /// the old member the restore put back there.
-    fn preserved_row_back(p: &Pending, root: &Dirs, row: &Move) -> Result<bool> {
-        let (from, to) = preserved_endpoints(&root.path, p.action, row)?;
-        Ok(exists(&from)?
-            && exact(&from, &row.member, true).is_ok()
-            && (!exists(&to)? || row_holds(&p.old, &to, |old| live_path(&root.path, old), true)))
+    fn moved_mut(p: &mut Pending, set: MoveSet) -> &mut Vec<Move> {
+        match set {
+            MoveSet::New => &mut p.new,
+            MoveSet::Preserved => &mut p.preserved,
+            MoveSet::Old => &mut p.old,
+        }
     }
-    /// The old member is back at its live path and nothing of it is left in the private area.
-    fn old_row_back(p: &Pending, root: &Dirs, row: &Move) -> Result<bool> {
-        let live = live_path(&root.path, row)?;
-        Ok(exists(&live)?
-            && exact(&live, &row.member, true).is_ok()
-            && !exists(&private_path(&root.path, &p.operation_id, "old", row))?)
+    /// A moved row's `away`, where the forward run left its member, its `back`, where the restore puts
+    /// it, and the path its report names.
+    fn restore_endpoints(p: &Pending, root: &Dirs, set: MoveSet, i: usize) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let row = &moved(p, set)[i];
+        Ok(match set {
+            MoveSet::New => {
+                let live = live_path(&root.path, row)?;
+                (live.clone(), private_path(&root.path, &p.operation_id, "new", row), live)
+            }
+            MoveSet::Preserved => {
+                let (from, to) = preserved_endpoints(&root.path, p.action, row)?;
+                (to, from.clone(), from)
+            }
+            MoveSet::Old => {
+                let live = live_path(&root.path, row)?;
+                (private_path(&root.path, &p.operation_id, "old", row), live.clone(), live)
+            }
+        })
+    }
+    fn restore_origins(set: MoveSet) -> MoveOrigins {
+        match set {
+            MoveSet::New => (DerivedOrigin::RestoreNewMoveSource, DerivedOrigin::RestoreNewMoveDestination, DerivedOrigin::RestoreNewMoveReadback),
+            MoveSet::Preserved => (DerivedOrigin::RestorePreservedMoveSource, DerivedOrigin::RestorePreservedMoveDestination, DerivedOrigin::RestorePreservedMoveReadback),
+            MoveSet::Old => (DerivedOrigin::RestoreOldMoveSource, DerivedOrigin::RestoreOldMoveDestination, DerivedOrigin::RestoreOldMoveReadback),
+        }
+    }
+    /// The member sits at `back`, and `away` is empty or holds a member the restore put back there: an old
+    /// or preserved link at a new row's live path, or an old link at a preserved row's forward destination.
+    /// A move whose readback refused after its rename leaves this state.
+    fn row_back(p: &Pending, root: &Dirs, set: MoveSet, i: usize, (away, back): (&Path, &Path)) -> Result<bool> {
+        let retaken = |away: &Path| {
+            let old = row_holds(&p.old, away, |old| live_path(&root.path, old), true);
+            match set {
+                MoveSet::New => old || row_holds(&p.preserved, away, |kept| preserved_endpoints(&root.path, p.action, kept).map(|(from, _)| from), true),
+                MoveSet::Preserved => old,
+                MoveSet::Old => false,
+            }
+        };
+        Ok(exists(back)? && exact(back, &moved(p, set)[i].member, true).is_ok() && (!exists(away)? || retaken(away)))
+    }
+    /// Puts one moved row back. A member already back needs no move. Ok(false): the files show neither
+    /// state, and the row is left for the next run.
+    fn restore_move(p: &mut Pending, j: &mut Journal, root: &Dirs, set: MoveSet, i: usize, (away, back): (&Path, &Path)) -> Result<bool> {
+        let member = moved(p, set)[i].member.clone();
+        if exists(back)? {
+            if !row_back(p, root, set, i, (away, back))? {
+                return Ok(false);
+            }
+        } else if exists(away)? {
+            if exact(away, &member, true).is_err() {
+                return Ok(false);
+            }
+            moved_mut(p, set)[i].phase = MovePhase::RestoreIntent;
+            j.save(p)?;
+            move_exact_with_origins(away, back, &member, root, Some(restore_origins(set)))?;
+        } else {
+            return Ok(false);
+        }
+        moved_mut(p, set)[i].phase = MovePhase::Restored;
+        j.save(p)?;
+        Ok(true)
     }
     /// The preserved link sits at its parked path and its known folder is empty.
     fn preserved_row_parked(root: &Dirs, row: &Move) -> bool {
@@ -3326,9 +3379,6 @@ mod native {
             (Ok(parked), Ok(live)) => exact(&parked, &row.member, false).is_ok() && matches!(exists(&live), Ok(false)),
             _ => false,
         }
-    }
-    fn row_report_path(path: Result<PathBuf>, row: &Move) -> String {
-        path.ok().and_then(|p| path_text(&p).ok()).unwrap_or_else(|| row.member.path.clone())
     }
     fn restore(p: &mut Pending, j: &mut Journal, root: &Dirs, incomplete: &mut Vec<RestoreIncomplete>) -> Result<()> {
         p.phase = Phase::Restoring;
@@ -3362,83 +3412,22 @@ mod native {
             })();
             restore_row(outcome, (RowKind::Slot, i), "registration", format!("slot:{}", p.slots[i].id), &mut uncertain, incomplete);
         }
-        for i in (0..p.new.len()).rev() {
-            let row = p.new[i].clone();
-            if matches!(row.phase, MovePhase::Prepared | MovePhase::Restored) {
-                continue;
+        // Preserved links go back before old shortcut rows reclaim the same known-folder path. A new or
+        // preserved row that never moved or is already back is skipped; every old row is looked at.
+        for set in [MoveSet::New, MoveSet::Preserved, MoveSet::Old] {
+            for i in (0..moved(p, set).len()).rev() {
+                let row = moved(p, set)[i].clone();
+                if set != MoveSet::Old && matches!(row.phase, MovePhase::Prepared | MovePhase::Restored) {
+                    continue;
+                }
+                let endpoints = restore_endpoints(p, root, set, i);
+                let outcome = match &endpoints {
+                    Ok((away, back, _)) => restore_move(p, j, root, set, i, (away.as_path(), back.as_path())),
+                    Err(error) => Err(*error),
+                };
+                let path = endpoints.ok().and_then(|(_, _, shown)| path_text(&shown).ok()).unwrap_or_else(|| row.member.path.clone());
+                restore_row(outcome, (RowKind::Moved(set), i), &row.domain, path, &mut uncertain, incomplete);
             }
-            let outcome = (|| -> Result<bool> {
-                let live = live_path(&root.path, &row)?;
-                let new = private_path(&root.path, &p.operation_id, "new", &row);
-                if exists(&live)? && exact(&live, &row.member, true).is_ok() {
-                    if exists(&new)? {
-                        return Ok(false);
-                    }
-                    p.new[i].phase = MovePhase::RestoreIntent;
-                    j.save(p)?;
-                    move_exact_with_origins(&live, &new, &row.member, root, Some((DerivedOrigin::RestoreNewMoveSource, DerivedOrigin::RestoreNewMoveDestination, DerivedOrigin::RestoreNewMoveReadback)))?;
-                } else if !new_row_set_aside(p, root, &row)? {
-                    return Ok(false);
-                }
-                p.new[i].phase = MovePhase::Restored;
-                j.save(p)?;
-                Ok(true)
-            })();
-            restore_row(outcome, (RowKind::New, i), &row.domain, row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
-        }
-        // Preserved links go back before old shortcut rows reclaim the same known-folder path.
-        for i in (0..p.preserved.len()).rev() {
-            let row = p.preserved[i].clone();
-            if matches!(row.phase, MovePhase::Prepared | MovePhase::Restored) {
-                continue;
-            }
-            let outcome = (|| -> Result<bool> {
-                let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
-                if exists(&from)? {
-                    if !preserved_row_back(p, root, &row)? {
-                        return Ok(false);
-                    }
-                } else if exists(&to)? {
-                    if exact(&to, &row.member, true).is_err() {
-                        return Ok(false);
-                    }
-                    p.preserved[i].phase = MovePhase::RestoreIntent;
-                    j.save(p)?;
-                    move_exact_with_origins(&to, &from, &row.member, root, Some((DerivedOrigin::RestorePreservedMoveSource, DerivedOrigin::RestorePreservedMoveDestination, DerivedOrigin::RestorePreservedMoveReadback)))?;
-                } else {
-                    return Ok(false);
-                }
-                p.preserved[i].phase = MovePhase::Restored;
-                j.save(p)?;
-                Ok(true)
-            })();
-            let from = preserved_endpoints(&root.path, p.action, &row).map(|pair| pair.0);
-            restore_row(outcome, (RowKind::Preserved, i), &row.domain, row_report_path(from, &row), &mut uncertain, incomplete);
-        }
-        for i in (0..p.old.len()).rev() {
-            let row = p.old[i].clone();
-            let outcome = (|| -> Result<bool> {
-                let live = live_path(&root.path, &row)?;
-                let old = private_path(&root.path, &p.operation_id, "old", &row);
-                if exists(&live)? {
-                    if exact(&live, &row.member, true).is_err() || exists(&old)? {
-                        return Ok(false);
-                    }
-                } else if exists(&old)? {
-                    if exact(&old, &row.member, true).is_err() {
-                        return Ok(false);
-                    }
-                    p.old[i].phase = MovePhase::RestoreIntent;
-                    j.save(p)?;
-                    move_exact_with_origins(&old, &live, &row.member, root, Some((DerivedOrigin::RestoreOldMoveSource, DerivedOrigin::RestoreOldMoveDestination, DerivedOrigin::RestoreOldMoveReadback)))?;
-                } else {
-                    return Ok(false);
-                }
-                p.old[i].phase = MovePhase::Restored;
-                j.save(p)?;
-                Ok(true)
-            })();
-            restore_row(outcome, (RowKind::Old, i), &row.domain, row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
         }
         for s in &p.slots {
             if read_slot(s.id)? != s.prior {
