@@ -33,13 +33,16 @@ ManifestDPIAwareness PerMonitorV2
 !macroend
 
 ; Every helper output line and the root it judged go to the details view, and the abort text names
-; what the helper's classification, its last line, means for the user. The text is printed to the
-; details view before the abort because the status line truncates it and /P and /S runs do not show
-; it at all. Any "winsmux installer: restore_incomplete" line means a restore stopped short and kept
-; its recovery data, so the abort text says that in place of the class message, which can say that
-; nothing was changed. A "winsmux installer: restore_shortcut_parked <kind>" or
+; what the helper's classification, its last line when no restore line follows it, means for the
+; user. The text is printed to the details view before the abort because the status line truncates
+; it and /P and /S runs do not show it at all. Any "winsmux installer: restore_incomplete" line means
+; a restore stopped short and kept its recovery data, so the abort text says that in place of the
+; class message, which can say that nothing was changed. A
+; "winsmux installer: restore_shortcut_parked <kind>" or
 ; "winsmux installer: restore_shortcut_unconfirmed <kind>" line adds what the helper saw of the
-; Desktop and Start menu links.
+; Desktop and Start menu links. The helper prints these restore lines after its classification, the
+; link lines before the row lines, because ExecToStack keeps only the first NSIS_MAX_STRLEN
+; characters of the output; a cut drops row lines first.
 ; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
 ; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flags:
 ; 1 a restore stopped short, 2 a link is parked, 4 a link's place is unconfirmed.
@@ -119,8 +122,9 @@ ManifestDPIAwareness PerMonitorV2
   !if "${STAGE}" == "context-write"
     StrCpy $2 52
   !else if "${STAGE}" == "helper"
-    ; The restore lines ("winsmux installer: restore_...") come before the classification and do not
-    ; change it, so $3 is the output without them.
+    ; The restore lines ("winsmux installer: restore_...") come after the classification and do not
+    ; change it, so $3 is the output without them. ExecToStack can cut the output anywhere, and the
+    ; helper ends every line with a newline, so a last piece without one is left out too.
     StrCpy $3 ""
     StrCpy $6 ""
     StrCpy $7 0
@@ -128,7 +132,6 @@ ManifestDPIAwareness PerMonitorV2
       StrCpy $8 $1 1 $7
       StrCpy $6 "$6$8"
       ${If} $8 == "$\n"
-      ${OrIf} $8 == ""
         StrCpy $5 $6 27
         ${If} $5 S!= "winsmux installer: restore_"
           StrCpy $3 "$3$6"

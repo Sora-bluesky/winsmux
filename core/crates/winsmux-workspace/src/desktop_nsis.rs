@@ -994,6 +994,17 @@ fn desired_slots(root: &str, language: u32, total: u64) -> Result<Vec<Option<Raw
     Ok(vals.into_iter().map(Some).collect())
 }
 
+thread_local! {
+    // The restore lines this run reports. run prints them after the classification.
+    static RESTORE_LINES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// What a failed run prints. The installer reads it through ExecToStack, which keeps only the first
+/// NSIS_MAX_STRLEN characters, so the classification goes before the restore lines.
+fn failure_lines(error: Error, restore: Vec<String>) -> Vec<String> {
+    std::iter::once(format!("winsmux installer: {}", error.classification())).chain(restore).collect()
+}
+
 pub fn run(args: &[String]) -> i32 {
     let result = parse_arguments(args).and_then(|(action, path)| {
         #[cfg(windows)]
@@ -1018,7 +1029,9 @@ pub fn run(args: &[String]) -> i32 {
             }
         },
         Err(error) => {
-            eprintln!("winsmux installer: {}", error.classification());
+            for line in failure_lines(error, RESTORE_LINES.take()) {
+                eprintln!("{line}");
+            }
             match error {
                 Error::Path(code @ (100..=172 | 200..=368)) => i32::from(code),
                 Error::Pending => 3,
@@ -2285,15 +2298,15 @@ mod native {
         }
         Ok(())
     }
-    /// One stderr line beside the final classification; NSIS prints every line to the details view.
+    /// One restore line, printed after the final classification; NSIS prints every line to the details view.
     fn report(line: String) {
-        eprintln!("{line}");
         #[cfg(test)]
         hooks::MOCK.with(|m| {
             if let Some(m) = m.borrow_mut().as_mut() {
-                m.reports.push(line);
+                m.reports.push(line.clone());
             }
         });
+        RESTORE_LINES.with_borrow_mut(|lines| lines.push(line));
     }
     fn refusal_text(error: Error) -> String {
         match error {
@@ -2332,15 +2345,13 @@ mod native {
         domain: String,
         path: String,
     }
+    /// Row lines past this many are counted in one restore_incomplete_more line. With the classification
+    /// and the four link lines before them, three rows of common path lengths stay inside the 1024
+    /// characters ExecToStack keeps.
+    const REPORTED_ROWS: usize = 3;
     fn report_restore_incomplete(p: &Pending, root: &Dirs, error: Error, rows: &[RestoreIncomplete]) {
-        if rows.is_empty() {
-            report(format!("winsmux installer: restore_incomplete {}", refusal_text(error)));
-        }
-        for row in rows {
-            let refusal = row.error.map_or_else(|| "uncertain".into(), refusal_text);
-            report(format!("winsmux installer: restore_incomplete {refusal} {} {} {}", row.kind.name(), row.domain, row.path));
-        }
-        // Where a Desktop or Start menu link stands is said only as far as the files show it.
+        // Where a Desktop or Start menu link stands is said only as far as the files show it. These short
+        // lines go first, so a cut in the row lines never drops them.
         for kind in ["desktop", "start_menu"] {
             let left: Vec<&RestoreIncomplete> = rows.iter().filter(|row| row.domain == kind).collect();
             if left.iter().any(|row| row.kind == RowKind::Moved(MoveSet::Preserved) && preserved_row_parked(root, &p.preserved[row.index])) {
@@ -2349,6 +2360,16 @@ mod native {
             if left.iter().any(|row| !row_placed(p, root, row)) {
                 report(format!("winsmux installer: restore_shortcut_unconfirmed {kind}"));
             }
+        }
+        if rows.is_empty() {
+            report(format!("winsmux installer: restore_incomplete {}", refusal_text(error)));
+        }
+        for row in rows.iter().take(REPORTED_ROWS) {
+            let refusal = row.error.map_or_else(|| "uncertain".into(), refusal_text);
+            report(format!("winsmux installer: restore_incomplete {refusal} {} {} {}", row.kind.name(), row.domain, row.path));
+        }
+        if rows.len() > REPORTED_ROWS {
+            report(format!("winsmux installer: restore_incomplete_more {}", rows.len() - REPORTED_ROWS));
         }
     }
     /// The files show where a left row's member is: where the restore puts it back, or, for a
@@ -6723,6 +6744,13 @@ mod native {
                     "winsmux installer: restore_incomplete_more 7".to_string(),
                 ]
             );
+            // What the installer reads: the first 1023 characters ExecToStack keeps of the helper's output.
+            let output: String = failure_lines(Error::Io, lines.clone()).iter().map(|line| format!("{line}\n")).collect();
+            let kept: String = output.chars().take(1023).collect();
+            assert!(kept.starts_with("winsmux installer: io_unconfirmed\n"), "{kept}");
+            for line in &lines[..2] {
+                assert!(kept.contains(&format!("\n{line}\n")), "{line} is in {kept}");
+            }
         }
         #[test]
         fn every_install_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
