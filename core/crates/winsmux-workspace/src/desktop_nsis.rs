@@ -1174,6 +1174,10 @@ mod native {
         }
     }
     fn final_name(h: HANDLE, flags: u32) -> Result<String> {
+        #[cfg(test)]
+        if hooks::take_final_name_refusal() {
+            return Err(Error::Path(106));
+        }
         let n = unsafe { GetFinalPathNameByHandleW(h, null_mut(), 0, flags) };
         if n == 0 {
             return Err(Error::Path(106));
@@ -2136,8 +2140,13 @@ mod native {
             pub shortcut_root: Option<PathBuf>,
             pub proof_key: String,
             pub proof_trace: Vec<(String, String)>,
+            pub final_name_refusal: bool,
+            pub reports: Vec<String>,
         }
         thread_local! {pub(super) static MOCK:RefCell<Option<Mock>>=const{RefCell::new(None)};}
+        pub(super) fn take_final_name_refusal() -> bool {
+            MOCK.with(|m| m.borrow_mut().as_mut().is_some_and(|m| std::mem::take(&mut m.final_name_refusal)))
+        }
         pub(super) fn cut(label: &str) -> Result<()> {
             let barrier = MOCK.with(|m| m.borrow_mut().as_mut().and_then(|m| m.barrier.take()));
             if let Some(mut barrier) = barrier {
@@ -5362,7 +5371,12 @@ mod native {
                 m.trace.clear();
                 m.proof_trace.clear();
                 m.proof_key.clear();
+                m.final_name_refusal = false;
+                m.reports.clear();
             });
+        }
+        fn reports() -> Vec<String> {
+            hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().reports.clone())
         }
         fn assert_previous(f: &Fixture, state: &Installed) {
             for m in &state.members {
@@ -6157,6 +6171,170 @@ mod native {
             assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
             assert!(execute(&f).unwrap().durable_commit);
             assert_foreign_parked(&f, &known, &foreign);
+        }
+        // TASK-881 realmachine-aa97da9d: a used root (three directories and one file, no
+        // installed.json) and both known folders holding a link of another winsmux install.
+        fn task881_layout_fixture() -> (Fixture, PathBuf, Vec<(String, Vec<u8>)>) {
+            let (f, known, foreign) = foreign_shortcut_fixture();
+            for dir in ["artifact-snapshots", "ui-attach", "workspace"] {
+                fs::create_dir(f.root.path.join(dir)).unwrap();
+            }
+            fs::write(f.root.path.join("planning-root.txt"), b"user planning root").unwrap();
+            (f, known, foreign)
+        }
+        fn assert_task881_root_entries_intact(f: &Fixture) {
+            for dir in ["artifact-snapshots", "ui-attach", "workspace"] {
+                assert!(fs::symlink_metadata(f.root.path.join(dir)).unwrap().is_dir(), "{dir}");
+            }
+            assert_eq!(fs::read(f.root.path.join("planning-root.txt")).unwrap(), b"user planning root");
+        }
+        /// The forward run fails after both foreign links are parked and the root rows are
+        /// published. During the restore, the preserved `kind` link's move back fails right after
+        /// its rename (the TASK-881 journal: desktop restore_intent, start_menu moved_confirmed).
+        /// `readback` fails the renamed file's final-name readback (the real machine's 106);
+        /// otherwise the next cut, the journal write after the move, refuses with Io.
+        fn fail_restore_of_preserved(f: &Fixture, kind: &'static str) -> Result<Receipt> {
+            fail_restore_of_preserved_at(f, kind, false)
+        }
+        fn fail_restore_of_preserved_at(f: &Fixture, kind: &'static str, readback: bool) -> Result<Receipt> {
+            hooks::MOCK.with(|m| {
+                let mut m = m.borrow_mut();
+                let m = m.as_mut().unwrap();
+                m.startup_fail = true;
+                m.barrier = Some(Box::new(move |label| {
+                    hooks::MOCK.with(|m| {
+                        let mut m = m.borrow_mut();
+                        let m = m.as_mut().unwrap();
+                        if label == "move_after"
+                            && m.proof_key.starts_with("Restoring|")
+                            && m.proof_key.contains(&format!("preserved:{kind}:RestoreIntent"))
+                        {
+                            if readback {
+                                m.final_name_refusal = true;
+                            } else {
+                                m.fail = Some(m.steps + 1);
+                            }
+                        }
+                    });
+                }));
+            });
+            let result = execute(f);
+            hooks::MOCK.with(|m| {
+                let mut m = m.borrow_mut();
+                let m = m.as_mut().unwrap();
+                m.barrier = None;
+                m.startup_fail = false;
+            });
+            let kept = reports();
+            reset_steps(None, false);
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().reports = kept);
+            result
+        }
+        #[test]
+        fn task881_layout_is_admitted_as_a_first_install() {
+            let (f, known, foreign) = task881_layout_fixture();
+            let result = execute(&f);
+            assert_eq!(result.as_ref().err(), None, "a used root without installed.json plus two foreign links is a first install");
+            assert!(result.unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            assert_task881_root_entries_intact(&f);
+        }
+        #[test]
+        fn task881_rollback_returns_every_preserved_link_when_one_restore_move_fails() {
+            let (f, known, foreign) = task881_layout_fixture();
+            let _ = fail_restore_of_preserved(&f, "desktop");
+            // The desktop link was renamed back before the cut. The start menu link must not stay
+            // parked because a later row's readback failed.
+            assert_foreign_live(&f, &known, &foreign);
+            assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+            assert_task881_root_entries_intact(&f);
+        }
+        #[test]
+        fn task881_rollback_failure_reports_the_refusal_that_started_it() {
+            let (f, known, _) = task881_layout_fixture();
+            assert_eq!(fail_restore_of_preserved(&f, "desktop").err(), Some(Error::Startup));
+            let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
+            assert_eq!(reports(), vec![format!("winsmux installer: restore_incomplete io_unconfirmed desktop {live}")]);
+        }
+        /// The real machine's shape: the desktop link is renamed back, then its final-name readback
+        /// refuses. The start menu link still goes back, the refusal names the restore move's readback,
+        /// and the run still ends with the refusal that started the restore.
+        #[test]
+        fn task881_rollback_readback_refusal_names_the_restore_move_and_returns_the_other_link() {
+            let (f, known, foreign) = task881_layout_fixture();
+            assert_eq!(fail_restore_of_preserved_at(&f, "desktop", true).err(), Some(Error::Startup));
+            assert_foreign_live(&f, &known, &foreign);
+            let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
+            assert_eq!(reports(), vec![format!("winsmux installer: restore_incomplete path_refused:171 desktop {live}")]);
+            let journal = f.root.path.join(CONTROL).join("pending.json");
+            assert!(exists(&journal).unwrap(), "the journal stays for re-entry");
+            recover_if_readable(&f).unwrap();
+            assert_foreign_live(&f, &known, &foreign);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            assert!(!exists(&journal).unwrap());
+            assert_task881_root_entries_intact(&f);
+        }
+        #[test]
+        fn task881_preserved_link_readback_refusal_names_the_publish_move() {
+            let (f, known, foreign) = task881_layout_fixture();
+            hooks::MOCK.with(|m| {
+                m.borrow_mut().as_mut().unwrap().barrier = Some(Box::new(|label| {
+                    hooks::MOCK.with(|m| {
+                        let mut m = m.borrow_mut();
+                        let m = m.as_mut().unwrap();
+                        if label == "move_after" && m.proof_key.starts_with("BackingUp|") && m.proof_key.contains("preserved:desktop:MoveIntent") {
+                            m.final_name_refusal = true;
+                        }
+                    });
+                }))
+            });
+            let err = execute(&f).err();
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().barrier = None);
+            reset_steps(None, false);
+            assert_eq!(err, Some(Error::Path(169)));
+            // The restore found the parked link and put it back without a refusal of its own.
+            assert_foreign_live(&f, &known, &foreign);
+            assert_eq!(reports(), Vec::<String>::new());
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+        }
+        #[test]
+        fn task881_rerun_from_the_interrupted_journal_returns_the_parked_link_and_installs() {
+            let (f, known, foreign) = task881_layout_fixture();
+            let _ = fail_restore_of_preserved(&f, "desktop");
+            let journal = f.root.path.join(CONTROL).join("pending.json");
+            assert!(exists(&journal).unwrap(), "the journal stays for re-entry");
+            recover_if_readable(&f).unwrap();
+            assert_foreign_live(&f, &known, &foreign);
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_foreign_parked(&f, &known, &foreign);
+            assert!(!exists(&journal).unwrap());
+            assert_task881_root_entries_intact(&f);
+        }
+        #[test]
+        fn task881_preserved_link_move_refusals_name_their_move() {
+            let (f, _, _) = task881_layout_fixture();
+            let parked = parked_link(&f, "start_menu");
+            hooks::MOCK.with(|m| {
+                m.borrow_mut().as_mut().unwrap().barrier = Some(Box::new(move |label| {
+                    let armed = hooks::MOCK.with(|m| {
+                        let m = m.borrow();
+                        let m = m.as_ref().unwrap();
+                        m.proof_key.starts_with("BackingUp|") && m.proof_key.contains("preserved:start_menu:MoveIntent")
+                    });
+                    if label == "journal_after" && armed && !parked.exists() {
+                        fs::write(&parked, b"foreign file at the parked path").unwrap();
+                    }
+                }))
+            });
+            let err = execute(&f).err();
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().barrier = None);
+            reset_steps(None, false);
+            // 135 is every move's "destination occupied or wrong volume" and 3 (pending_unconfirmed)
+            // is the restore's verdict. Neither names the move that refused. 162 is the
+            // PublishPreservedMoveDestination origin.
+            assert_eq!(err, Some(Error::Path(162)));
         }
         #[test]
         fn every_install_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
