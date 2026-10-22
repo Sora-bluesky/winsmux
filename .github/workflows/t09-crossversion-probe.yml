@@ -8,19 +8,19 @@ permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: 'a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3'
-  SOURCE_TREE: '8014b3a17e55b3c484ee8306b1db2a6cba25f139'
+  SOURCE_COMMIT: '9be98eb53433e021315d851ca27bacc9ca44d7f7'
+  SOURCE_TREE: '92b559597878265f1a465a2e500311118a231a86'
   # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
-  SOURCE_INVENTORY: '7812546279d9f816b8ef9646f757c5166c140b311f5c16249747fe092a7cdb12'
-  # Unpublished draft release 418005697 (codex-task879-core-a1ce1975, target a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3): id, bytes, sha256, name.
+  SOURCE_INVENTORY: '8c36dd44b17f160bbdafa75a8e35a9dcc45baccf15b0458e8f5229258967268d'
+  # Unpublished draft release 420215931 (codex-task879-core-9be98eb5, target 9be98eb53433e021315d851ca27bacc9ca44d7f7): id, bytes, sha256, name.
   # Ids stay placeholders, which the manifest check refuses, until
   # .github/task879/fill-draft-asset-ids.py fills them from a GET of that draft.
   TASK879_ASSETS: |
-    658284550 18357248 8c9b1a90bf2628c786bab6e619eb78707ba2e0679b195a222f0fea54b653e882 winsmux-x64.exe
-    658284621 6724597 c2e8e0dda2bdcb69be53c68dd7969e2c993759637db6e09de00e9bb1dd9c2a3e winsmux-x64.exe.licenses.zip
-    658284489 177 9b153ce59680b4e75d72ddb4cc44c8a4cd062af2cb250a0658d5a5f52cff7ed0 SHA256SUMS
-    658284470 1785 b798f8b278e9bc5102d0917432eac58d6193061038275c1478c2a350bc00698d core-candidate.json
-    658284507 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
+    664318832 18411008 87088958aef5db4a44ebf7eca1fcce40610b5df0ad8f4be7aef26c68b7b70ced winsmux-x64.exe
+    664318833 6724597 93979ea43e4e01f6bd38ff42785c731bed01e3c310f022bc1cdecad293163980 winsmux-x64.exe.licenses.zip
+    664318835 177 b45439e410b1bf1fd5a16503125e28343369e64065b344ec50438f3e4d777eef SHA256SUMS
+    664318840 1785 01bd1c650d462e5b0f1906cf4ac0e8b7fdead8b74caa423e7c520eb4c59add02 core-candidate.json
+    664318834 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
 
 jobs:
   fetch:
@@ -452,13 +452,13 @@ jobs:
       OLD_MSI_SHA256: '2a55c4838714386fe8493ffc85fd23927a64d62dc8c1a3be6e49b66510c135a2'
       # Only a completed, successful release-desktop.yml dispatch on the final candidate commit
       # is accepted as the signed MSI source.
-      MSI_SOURCE_RUN_ID: '39369869828'
-      MSI_SOURCE_SHA: '15f02fc0e4f440f54aaf5396f77820ef2e92ecce'
+      MSI_SOURCE_RUN_ID: '39693830123'
+      MSI_SOURCE_SHA: 'aa97da9d01a45b50b1e26ef7272f2e7c583e9230'
       MSI_ARTIFACT: 'winsmux-desktop-bundles'
       MSI_CANDIDATE_NAME: 'winsmux_0.38.0_x64_en-US.msi'
       # 64 hex pins the file; 'unpinned' accepts the run-bound file and records its sha256.
-      MSI_CANDIDATE_SHA256: 'a7d7c1ce845ccc8a93e980340dfd13bc603c7c18dd4c7e4df4ce1784741eb05d'
-      MSI_CANDIDATE_BYTES: '34807808'
+      MSI_CANDIDATE_SHA256: '617104922f91addce1decf01a5b3cef2b68cbad4778adf723a712a032cae9d88'
+      MSI_CANDIDATE_BYTES: '34881536'
     steps:
       - name: Check out the MSI probe from the calling commit
         uses: actions/checkout@v6
