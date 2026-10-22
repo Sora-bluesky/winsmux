@@ -6633,9 +6633,9 @@ mod native {
             assert_eq!(
                 lines,
                 vec![
+                    "winsmux installer: restore_shortcut_unconfirmed start_menu".to_string(),
                     format!("winsmux installer: restore_incomplete path_refused:170 new desktop {}", link("desktop")),
                     format!("winsmux installer: restore_incomplete uncertain preserved start_menu {}", link("start_menu")),
-                    "winsmux installer: restore_shortcut_unconfirmed start_menu".to_string(),
                 ]
             );
         }
@@ -6653,8 +6653,8 @@ mod native {
             assert_eq!(
                 lines,
                 vec![
-                    format!("winsmux installer: restore_incomplete io_unconfirmed preserved desktop {live}"),
                     "winsmux installer: restore_shortcut_parked desktop".to_string(),
+                    format!("winsmux installer: restore_incomplete io_unconfirmed preserved desktop {live}"),
                 ]
             );
             assert_eq!(fs::read(parked_link(&f, "desktop")).unwrap(), foreign[0].1);
@@ -6687,8 +6687,40 @@ mod native {
             assert_eq!(
                 lines,
                 vec![
-                    format!("winsmux installer: restore_incomplete io_unconfirmed new desktop {live}"),
                     "winsmux installer: restore_shortcut_unconfirmed desktop".to_string(),
+                    format!("winsmux installer: restore_incomplete io_unconfirmed new desktop {live}"),
+                ]
+            );
+        }
+        /// A first install over two foreign links rolls back after publishing its own links, and every
+        /// restore move refuses before its rename. The restore leaves more rows than the installer can
+        /// read: ExecToStack keeps only the first NSIS_MAX_STRLEN characters of the helper's output.
+        /// So the lines on where the links stand come first, and the row lines stop after three with
+        /// a count of the rest.
+        #[test]
+        fn task881_restore_says_where_the_links_stand_before_its_rows_and_counts_the_rows_past_three() {
+            let (good, _, _) = foreign_shortcut_fixture();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, _) = foreign_shortcut_fixture();
+            reset_steps(Some(at), false);
+            set_barrier(|label| {
+                restore_fault_at(label, ":RestoreIntent", RestoreFault::BeforeRename);
+            });
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            let lines = reports();
+            disarm_restore_faults();
+            let link = |kind: &str| path_text(&known.join(kind).join("winsmux.lnk")).unwrap();
+            // The restore left ten rows: three are reported and the other seven counted.
+            assert_eq!(
+                lines,
+                vec![
+                    "winsmux installer: restore_shortcut_unconfirmed desktop".to_string(),
+                    "winsmux installer: restore_shortcut_unconfirmed start_menu".to_string(),
+                    format!("winsmux installer: restore_incomplete io_unconfirmed new desktop {}", link("desktop")),
+                    format!("winsmux installer: restore_incomplete io_unconfirmed new start_menu {}", link("start_menu")),
+                    format!("winsmux installer: restore_incomplete io_unconfirmed new root {}", path_text(&f.root.path.join("uninstall.exe")).unwrap()),
+                    "winsmux installer: restore_incomplete_more 7".to_string(),
                 ]
             );
         }

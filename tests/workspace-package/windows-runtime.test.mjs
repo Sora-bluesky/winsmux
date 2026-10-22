@@ -150,8 +150,12 @@ function nsisStatements(body, params) {
   for (const [name, value] of Object.entries(params)) text = text.replaceAll(name, value);
   return text.split('\n').map(s => s.trim()).filter(s => s && !s.startsWith(';'));
 }
+const nsisArgsSeen = new Map();
 function nsisArgs(s) {
-  return [...s.matchAll(/"((?:\$\\.|\$[^\\]|[^"$])*)"|(\S+)/gu)].map(m => (m[1] === undefined ? { bare: m[2] } : { quoted: m[1] }));
+  if (!nsisArgsSeen.has(s)) {
+    nsisArgsSeen.set(s, [...s.matchAll(/"((?:\$\\.|\$[^\\]|[^"$])*)"|(\S+)/gu)].map(m => (m[1] === undefined ? { bare: m[2] } : { quoted: m[1] })));
+  }
+  return nsisArgsSeen.get(s);
 }
 function nsisParse(statements) {
   let i = 0;
@@ -246,12 +250,13 @@ function nsisMacroBody(template, header) {
   assert.ok(start >= 0, `${header} is in the template`);
   return template.slice(start + header.length + 1, template.indexOf('!macroend', start));
 }
-// The report macro run on one helper exit and output, with one prefix's strings in one language.
-function helperFailureAbort(template, hooks, { prefix, language, lines, exit = '2' }) {
+// The report macro run on one helper exit and output (its lines, or the raw text ExecToStack kept), with one
+// prefix's strings in one language.
+function helperFailureAbort(template, hooks, { prefix, language, lines, output = lines.map(line => `${line}\n`).join(''), exit = '2' }) {
   const body = nsisMacroBody(template, '!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX');
   const strings = new Map([...hooks.matchAll(/^LangString (\w+) (1033|1041) "(.*)"$/gmu)].filter(m => m[2] === language).map(m => [m[1], m[3]]));
   const reg = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`$${n}`, '']));
-  Object.assign(reg, { $0: exit, $1: lines.map(line => `${line}\n`).join(''), $INSTDIR: 'C:\\Users\\u\\AppData\\Local\\winsmux' });
+  Object.assign(reg, { $0: exit, $1: output, $INSTDIR: 'C:\\Users\\u\\AppData\\Local\\winsmux' });
   const details = [];
   const abort = nsisRun(nsisParse(nsisStatements(body, { '${PREFIX}': prefix, '${${UN}': prefix ? '${un.' : '${' })), reg, strings, details);
   assert.equal(typeof abort, 'string', 'the report aborts');
@@ -265,22 +270,23 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
   const hook = (name, language) => hooks.match(new RegExp(`^LangString ${name} ${language} "(.*)"$`, 'mu'))?.[1];
   const desktop = 'C:\\Users\\u\\Desktop\\winsmux.lnk';
   const programs = 'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\winsmux.lnk';
-  // The helper lines desktop_nsis.rs pins for these runs: a slot the restore found holding an external
-  // value (crash_reentry_and_external_registration_are_preserved), a foreign link back in its folder after
-  // its readback refused (task881_rollback_readback_refusal_names_the_restore_move_and_returns_the_other_link),
-  // a product link that could not leave the Desktop (task881_restore_never_calls_a_product_link_parked), a
-  // foreign link left parked (task881_restore_reports_a_link_it_left_parked), and two rows left with a
-  // link the files do not place (task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place).
+  // The helper output for these runs: the classification, then the restore lines desktop_nsis.rs pins. A
+  // slot the restore found holding an external value (crash_reentry_and_external_registration_are_preserved),
+  // a foreign link back in its folder after its readback refused
+  // (task881_rollback_readback_refusal_names_the_restore_move_and_returns_the_other_link), a product link that
+  // could not leave the Desktop (task881_restore_never_calls_a_product_link_parked), a foreign link left
+  // parked (task881_restore_reports_a_link_it_left_parked), and two rows left with a link the files do not
+  // place (task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place).
   const cases = {
-    slot_left_external: ['winsmux installer: restore_incomplete uncertain slot registration slot:0', 'winsmux installer: registration_conflict'],
-    link_back_after_readback: [`winsmux installer: restore_incomplete path_refused:171 preserved desktop ${desktop}`, 'winsmux installer: startup_unconfirmed'],
-    product_link_stayed: [`winsmux installer: restore_incomplete io_unconfirmed new desktop ${desktop}`,
-      'winsmux installer: restore_shortcut_unconfirmed desktop', 'winsmux installer: io_unconfirmed'],
-    link_left_parked: [`winsmux installer: restore_incomplete io_unconfirmed preserved desktop ${desktop}`,
-      'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: startup_unconfirmed'],
-    link_not_placed: [`winsmux installer: restore_incomplete path_refused:170 new desktop ${desktop}`,
-      `winsmux installer: restore_incomplete uncertain preserved start_menu ${programs}`,
-      'winsmux installer: restore_shortcut_unconfirmed start_menu', 'winsmux installer: io_unconfirmed'],
+    slot_left_external: ['winsmux installer: registration_conflict', 'winsmux installer: restore_incomplete uncertain slot registration slot:0'],
+    link_back_after_readback: ['winsmux installer: startup_unconfirmed', `winsmux installer: restore_incomplete path_refused:171 preserved desktop ${desktop}`],
+    product_link_stayed: ['winsmux installer: io_unconfirmed', 'winsmux installer: restore_shortcut_unconfirmed desktop',
+      `winsmux installer: restore_incomplete io_unconfirmed new desktop ${desktop}`],
+    link_left_parked: ['winsmux installer: startup_unconfirmed', 'winsmux installer: restore_shortcut_parked desktop',
+      `winsmux installer: restore_incomplete io_unconfirmed preserved desktop ${desktop}`],
+    link_not_placed: ['winsmux installer: io_unconfirmed', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
+      `winsmux installer: restore_incomplete path_refused:170 new desktop ${desktop}`,
+      `winsmux installer: restore_incomplete uncertain preserved start_menu ${programs}`],
   };
   for (const [prefix, language] of [['', '1041'], ['', '1033'], ['UN_', '1041'], ['UN_', '1033']]) {
     const said = name => hook(`WINSMUX_${prefix}${name}`, language);
@@ -300,32 +306,65 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
   }
 });
 
-test('the T-only exit code names the helper classification even after the restore lines the helper prints before it', () => {
-  const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
+// The T-only observer's helper branch run on one helper exit and output; returns the exit code it sets.
+function helperObservedExit(template, exit, output) {
   const body = nsisMacroBody(template, '!macro WINSMUX_OBSERVE_FAILURE STAGE');
   const branch = '  !else if "${STAGE}" == "helper"\n';
   assert.ok(body.startsWith('  StrCpy $2 59\n') && body.includes(branch) && body.includes('\n  !else\n'), 'the helper stage branch is found');
   const statements = ['StrCpy $2 59', ...nsisStatements(body.slice(body.indexOf(branch) + branch.length, body.indexOf('\n  !else\n')), {})];
-  const observe = (exit, lines, eol) => {
-    const reg = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`$${n}`, '']));
-    Object.assign(reg, { $0: exit, $1: lines.map(line => `${line}${eol}`).join('') });
-    nsisRun(nsisParse(statements), reg, new Map(), []);
-    return reg.$2;
-  };
-  // The restore lines desktop_nsis.rs pins: a row left, and where a Desktop or Start menu link stands.
-  const restore = ['winsmux installer: restore_incomplete uncertain slot registration slot:0',
-    'winsmux installer: restore_incomplete path_refused:171 preserved desktop C:\\Users\\u\\Desktop\\winsmux.lnk',
-    'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu'];
+  const reg = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`$${n}`, '']));
+  Object.assign(reg, { $0: exit, $1: output });
+  nsisRun(nsisParse(statements), reg, new Map(), []);
+  return reg.$2;
+}
+
+test('the T-only exit code names the helper classification even with the restore lines the helper prints after it', () => {
+  const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
+  const observe = (exit, lines, eol) => helperObservedExit(template, exit, lines.map(line => `${line}${eol}`).join(''));
+  // The restore lines desktop_nsis.rs pins: where a Desktop or Start menu link stands, then a row left.
+  const restore = ['winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
+    'winsmux installer: restore_incomplete uncertain slot registration slot:0',
+    'winsmux installer: restore_incomplete path_refused:171 preserved desktop C:\\Users\\u\\Desktop\\winsmux.lnk'];
   for (const eol of ['\n', '\r\n']) {
     for (const [exit, cls, code] of [['2', 'registration_conflict', '66'], ['3', 'pending_unconfirmed', '69'], ['2', 'io_unconfirmed', '70'],
       ['2', 'startup_unconfirmed', '71'], ['2', 'member_unconfirmed', '65'], ['171', 'path_refused', '171']]) {
       assert.equal(observe(exit, [`winsmux installer: ${cls}`], eol), code, `${cls} alone`);
-      assert.equal(observe(exit, [...restore, `winsmux installer: ${cls}`], eol), code, `${cls} after the restore lines`);
+      assert.equal(observe(exit, [`winsmux installer: ${cls}`, ...restore], eol), code, `${cls} before the restore lines`);
     }
     const timeout = ['winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening', 'winsmux installer: nsis_startup_timeout'];
     assert.equal(observe('2', timeout, eol), '390', 'the two-line startup timeout');
-    assert.equal(observe('2', [timeout[0], ...restore, timeout[1]], eol), '390', 'the two-line startup timeout around the restore lines');
-    assert.equal(observe('2', ['winsmux installer: rollback_incomplete x', 'winsmux installer: registration_conflict'], eol), '59', 'a line outside the restore prefix still leaves the output unmatched');
+    assert.equal(observe('2', [...timeout, ...restore], eol), '390', 'the two-line startup timeout before the restore lines');
+    assert.equal(observe('2', ['winsmux installer: registration_conflict', 'winsmux installer: rollback_incomplete x'], eol), '59', 'a line outside the restore prefix still leaves the output unmatched');
+  }
+});
+
+test('the abort notices and the T-only exit code survive wherever ExecToStack cuts a long helper output', () => {
+  const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8').replaceAll('\r\n', '\n');
+  const template = read('winsmux-app/src-tauri/nsis/installer.nsi');
+  const hooks = read('winsmux-app/src-tauri/nsis-installer-hooks.nsh');
+  const hook = (name, language) => hooks.match(new RegExp(`^LangString ${name} ${language} "(.*)"$`, 'mu'))?.[1];
+  // ExecToStack keeps only the first NSIS_MAX_STRLEN (1024 in the pinned NSIS 3.11) characters of the output.
+  // The helper prints its classification, then where the links stand, then at most three row lines and a count
+  // of the rest (task881_restore_says_where_the_links_stand_before_its_rows_and_counts_the_rows_past_three).
+  const deep = `C:\\Users\\u\\AppData\\Local\\winsmux\\${'nested-folder\\'.repeat(20)}`;
+  const lines = ['winsmux installer: io_unconfirmed',
+    'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed desktop',
+    'winsmux installer: restore_shortcut_parked start_menu', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
+    ...['uninstall.exe', 'winsmux.exe', 'winsmux-app.exe'].map(name => `winsmux installer: restore_incomplete io_unconfirmed new root ${deep}${name}`),
+    'winsmux installer: restore_incomplete_more 7'];
+  const output = lines.map(line => `${line}\n`).join('');
+  assert.ok(output.length > 1024, 'the output is longer than ExecToStack carries');
+  const firstRow = output.indexOf('winsmux installer: restore_incomplete ');
+  for (let cut = lines[0].length + 1; cut <= output.length; cut++) {
+    assert.equal(helperObservedExit(template, '2', output.slice(0, cut)), '70', `the class exit code with the output cut at ${cut}`);
+  }
+  for (const [prefix, language] of [['', '1041'], ['UN_', '1033']]) {
+    const said = name => hook(`WINSMUX_${prefix}${name}`, language);
+    for (let cut = firstRow + 'winsmux installer: restore_incomplete'.length; cut <= output.length; cut++) {
+      const { abort, details } = helperFailureAbort(template, hooks, { prefix, language, output: output.slice(0, cut) });
+      assert.equal(abort, [said('RESTORE_INCOMPLETE'), said('RESTORE_PARKED'), said('RESTORE_SHORTCUT_UNCONFIRMED')].join(' '), `${prefix}${language}: cut at ${cut}`);
+      assert.ok(details.includes(`winsmux installer helper: ${lines[0]}`), `${prefix}${language}: the classification reaches the details view with the output cut at ${cut}`);
+    }
   }
 });
 
