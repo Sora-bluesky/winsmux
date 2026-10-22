@@ -300,6 +300,35 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
   }
 });
 
+test('the T-only exit code names the helper classification even after the restore lines the helper prints before it', () => {
+  const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
+  const body = nsisMacroBody(template, '!macro WINSMUX_OBSERVE_FAILURE STAGE');
+  const branch = '  !else if "${STAGE}" == "helper"\n';
+  assert.ok(body.startsWith('  StrCpy $2 59\n') && body.includes(branch) && body.includes('\n  !else\n'), 'the helper stage branch is found');
+  const statements = ['StrCpy $2 59', ...nsisStatements(body.slice(body.indexOf(branch) + branch.length, body.indexOf('\n  !else\n')), {})];
+  const observe = (exit, lines, eol) => {
+    const reg = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`$${n}`, '']));
+    Object.assign(reg, { $0: exit, $1: lines.map(line => `${line}${eol}`).join('') });
+    nsisRun(nsisParse(statements), reg, new Map(), []);
+    return reg.$2;
+  };
+  // The restore lines desktop_nsis.rs pins: a row left, and where a Desktop or Start menu link stands.
+  const restore = ['winsmux installer: restore_incomplete uncertain slot registration slot:0',
+    'winsmux installer: restore_incomplete path_refused:171 preserved desktop C:\\Users\\u\\Desktop\\winsmux.lnk',
+    'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu'];
+  for (const eol of ['\n', '\r\n']) {
+    for (const [exit, cls, code] of [['2', 'registration_conflict', '66'], ['3', 'pending_unconfirmed', '69'], ['2', 'io_unconfirmed', '70'],
+      ['2', 'startup_unconfirmed', '71'], ['2', 'member_unconfirmed', '65'], ['171', 'path_refused', '171']]) {
+      assert.equal(observe(exit, [`winsmux installer: ${cls}`], eol), code, `${cls} alone`);
+      assert.equal(observe(exit, [...restore, `winsmux installer: ${cls}`], eol), code, `${cls} after the restore lines`);
+    }
+    const timeout = ['winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening', 'winsmux installer: nsis_startup_timeout'];
+    assert.equal(observe('2', timeout, eol), '390', 'the two-line startup timeout');
+    assert.equal(observe('2', [timeout[0], ...restore, timeout[1]], eol), '390', 'the two-line startup timeout around the restore lines');
+    assert.equal(observe('2', ['winsmux installer: rollback_incomplete x', 'winsmux installer: registration_conflict'], eol), '59', 'a line outside the restore prefix still leaves the output unmatched');
+  }
+});
+
 test('compiler identity refuses unsuccessful observations and malformed captured bytes', () => {
   assert.deepEqual(readRustcIdentity(compilerResult()), { host: target, rustcCommit: measuredCommit });
   for (const change of [{ error: new Error('spawn failed') }, { status: 1 }, { status: null },
