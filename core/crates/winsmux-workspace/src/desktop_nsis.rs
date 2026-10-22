@@ -6549,9 +6549,6 @@ mod native {
             let mut fired = false;
             set_barrier(move |label| fired = fired || restore_fault_at(label, class, fault));
         }
-        fn arm_restore_readback_refusal(class: &'static str) {
-            arm_restore_fault(class, RestoreFault::Readback);
-        }
         fn disarm_restore_faults() {
             hooks::MOCK.with(|m| {
                 let mut m = m.borrow_mut();
@@ -6572,7 +6569,7 @@ mod native {
         fn task881_reentry_finishes_a_new_root_row_whose_live_path_the_old_row_took_back() {
             let f = mode_fixture("managed");
             let (state, _) = old(&f).unwrap();
-            arm_restore_readback_refusal("new:root:RestoreIntent");
+            arm_restore_fault("new:root:RestoreIntent", RestoreFault::Readback);
             hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
             assert_eq!(execute(&f).err(), Some(Error::Startup));
             disarm_restore_faults();
@@ -6592,7 +6589,7 @@ mod native {
             let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
             let (f, known, foreign) = task881_layout_fixture();
             reset_steps(Some(at), false);
-            arm_restore_readback_refusal("new:desktop:RestoreIntent");
+            arm_restore_fault("new:desktop:RestoreIntent", RestoreFault::Readback);
             assert_eq!(execute(&f).err(), Some(Error::Io));
             disarm_restore_faults();
             assert_foreign_live(&f, &known, &foreign);
@@ -6619,7 +6616,7 @@ mod native {
             assert!(execute(&f).unwrap().durable_commit);
             f.ctx.action = Action::Uninstall;
             reset_steps(Some(at), false);
-            arm_restore_readback_refusal("preserved:desktop:RestoreIntent");
+            arm_restore_fault("preserved:desktop:RestoreIntent", RestoreFault::Readback);
             assert_eq!(execute(&f).err(), Some(Error::Io));
             disarm_restore_faults();
             assert_eq!(recover_if_readable(&f), Ok(()));
