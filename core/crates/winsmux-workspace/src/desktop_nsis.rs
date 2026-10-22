@@ -2301,22 +2301,63 @@ mod native {
             other => other.classification().into(),
         }
     }
-    // The first row a restore could not finish. Its journaled phase stays for the next run.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RowKind {
+        Slot,
+        New,
+        Preserved,
+        Old,
+    }
+    impl RowKind {
+        fn name(self) -> &'static str {
+            match self {
+                RowKind::Slot => "slot",
+                RowKind::New => "new",
+                RowKind::Preserved => "preserved",
+                RowKind::Old => "old",
+            }
+        }
+    }
+    // A row a restore left. Its journaled phase stays for the next run. No error means the restore
+    // found the row neither restored nor safe to move.
     struct RestoreIncomplete {
-        error: Error,
+        error: Option<Error>,
+        kind: RowKind,
+        index: usize,
         domain: String,
         path: String,
     }
-    fn report_restore_incomplete(error: Error, incomplete: Option<&RestoreIncomplete>) {
-        report(match incomplete {
-            Some(row) => format!(
-                "winsmux installer: restore_incomplete {} {} {}",
-                refusal_text(row.error),
-                row.domain,
-                row.path
-            ),
-            None => format!("winsmux installer: restore_incomplete {}", refusal_text(error)),
-        });
+    fn report_restore_incomplete(p: &Pending, root: &Dirs, error: Error, rows: &[RestoreIncomplete]) {
+        if rows.is_empty() {
+            report(format!("winsmux installer: restore_incomplete {}", refusal_text(error)));
+        }
+        for row in rows {
+            let refusal = row.error.map_or_else(|| "uncertain".into(), refusal_text);
+            report(format!("winsmux installer: restore_incomplete {refusal} {} {} {}", row.kind.name(), row.domain, row.path));
+        }
+        // Where a Desktop or Start menu link stands is said only as far as the files show it.
+        for kind in ["desktop", "start_menu"] {
+            let left: Vec<&RestoreIncomplete> = rows.iter().filter(|row| row.domain == kind).collect();
+            if left.iter().any(|row| row.kind == RowKind::Preserved && preserved_row_parked(root, &p.preserved[row.index])) {
+                report(format!("winsmux installer: restore_shortcut_parked {kind}"));
+            }
+            if left.iter().any(|row| !row_placed(p, root, row)) {
+                report(format!("winsmux installer: restore_shortcut_unconfirmed {kind}"));
+            }
+        }
+    }
+    /// The files show where a left row's member is: where the restore puts it back, or, for a
+    /// preserved link, parked with its known folder empty.
+    fn row_placed(p: &Pending, root: &Dirs, row: &RestoreIncomplete) -> bool {
+        match row.kind {
+            RowKind::New => new_row_set_aside(p, root, &p.new[row.index]).unwrap_or(false),
+            RowKind::Preserved => {
+                let kept = &p.preserved[row.index];
+                preserved_row_back(p, root, kept).unwrap_or(false) || preserved_row_parked(root, kept)
+            }
+            RowKind::Old => old_row_back(p, root, &p.old[row.index]).unwrap_or(false),
+            RowKind::Slot => false,
+        }
     }
     fn startup(request: crate::desktop_install::StartupVerifyRequest) -> Result<StartupReceipt> {
         #[cfg(test)]
@@ -3239,21 +3280,19 @@ mod native {
     // Ok(true) restored the row, Ok(false) left it uncertain, Err refused it. The restore goes on either way.
     fn restore_row(
         outcome: Result<bool>,
+        (kind, index): (RowKind, usize),
         domain: &str,
-        path: &str,
+        path: String,
         uncertain: &mut bool,
-        incomplete: &mut Option<RestoreIncomplete>,
+        incomplete: &mut Vec<RestoreIncomplete>,
     ) {
-        match outcome {
-            Ok(true) => {}
-            Ok(false) => *uncertain = true,
-            Err(error) => {
-                *uncertain = true;
-                if incomplete.is_none() {
-                    *incomplete = Some(RestoreIncomplete { error, domain: domain.into(), path: path.into() });
-                }
-            }
-        }
+        let error = match outcome {
+            Ok(true) => return,
+            Ok(false) => None,
+            Err(error) => Some(error),
+        };
+        *uncertain = true;
+        incomplete.push(RestoreIncomplete { error, kind, index, domain: domain.into(), path });
     }
     /// The new member sits in the private area, and its live path is empty or holds the old or
     /// preserved member the restore put back there. A move whose readback refused leaves this state.
@@ -3274,10 +3313,24 @@ mod native {
             && exact(&from, &row.member, true).is_ok()
             && (!exists(&to)? || row_holds(&p.old, &to, |old| live_path(&root.path, old), true)))
     }
+    /// The old member is back at its live path and nothing of it is left in the private area.
+    fn old_row_back(p: &Pending, root: &Dirs, row: &Move) -> Result<bool> {
+        let live = live_path(&root.path, row)?;
+        Ok(exists(&live)?
+            && exact(&live, &row.member, true).is_ok()
+            && !exists(&private_path(&root.path, &p.operation_id, "old", row))?)
+    }
+    /// The preserved link sits at its parked path and its known folder is empty.
+    fn preserved_row_parked(root: &Dirs, row: &Move) -> bool {
+        match (preserved_path(&root.path, &row.domain), live_path(&root.path, row)) {
+            (Ok(parked), Ok(live)) => exact(&parked, &row.member, false).is_ok() && matches!(exists(&live), Ok(false)),
+            _ => false,
+        }
+    }
     fn row_report_path(path: Result<PathBuf>, row: &Move) -> String {
         path.ok().and_then(|p| path_text(&p).ok()).unwrap_or_else(|| row.member.path.clone())
     }
-    fn restore(p: &mut Pending, j: &mut Journal, root: &Dirs, incomplete: &mut Option<RestoreIncomplete>) -> Result<()> {
+    fn restore(p: &mut Pending, j: &mut Journal, root: &Dirs, incomplete: &mut Vec<RestoreIncomplete>) -> Result<()> {
         p.phase = Phase::Restoring;
         j.save(p)?;
         // Registration first, then files: never point an external X at guessed files.
@@ -3307,7 +3360,7 @@ mod native {
                     _ => Ok(false),
                 }
             })();
-            restore_row(outcome, "registration", &format!("slot:{}", p.slots[i].id), &mut uncertain, incomplete);
+            restore_row(outcome, (RowKind::Slot, i), "registration", format!("slot:{}", p.slots[i].id), &mut uncertain, incomplete);
         }
         for i in (0..p.new.len()).rev() {
             let row = p.new[i].clone();
@@ -3331,7 +3384,7 @@ mod native {
                 j.save(p)?;
                 Ok(true)
             })();
-            restore_row(outcome, &row.domain, &row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
+            restore_row(outcome, (RowKind::New, i), &row.domain, row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
         }
         // Preserved links go back before old shortcut rows reclaim the same known-folder path.
         for i in (0..p.preserved.len()).rev() {
@@ -3360,7 +3413,7 @@ mod native {
                 Ok(true)
             })();
             let from = preserved_endpoints(&root.path, p.action, &row).map(|pair| pair.0);
-            restore_row(outcome, &row.domain, &row_report_path(from, &row), &mut uncertain, incomplete);
+            restore_row(outcome, (RowKind::Preserved, i), &row.domain, row_report_path(from, &row), &mut uncertain, incomplete);
         }
         for i in (0..p.old.len()).rev() {
             let row = p.old[i].clone();
@@ -3385,7 +3438,7 @@ mod native {
                 j.save(p)?;
                 Ok(true)
             })();
-            restore_row(outcome, &row.domain, &row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
+            restore_row(outcome, (RowKind::Old, i), &row.domain, row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
         }
         for s in &p.slots {
             if read_slot(s.id)? != s.prior {
@@ -3652,7 +3705,7 @@ mod native {
             .transpose()?;
         Ok(prior.as_ref().is_none_or(|old| old.generation == "legacy"))
     }
-    fn complete_pending(p: &mut Pending, journal: &mut Journal, root: &Dirs, incomplete: &mut Option<RestoreIncomplete>) -> Result<bool> {
+    fn complete_pending(p: &mut Pending, journal: &mut Journal, root: &Dirs, incomplete: &mut Vec<RestoreIncomplete>) -> Result<bool> {
         if matches!(
             p.phase,
             Phase::Restored | Phase::Restoring | Phase::PendingUnconfirmed
@@ -3695,10 +3748,10 @@ mod native {
             let mut journal = Journal::open(&pending, false)?;
             let mut p = journal.load()?;
             validate_pending(&p, root, sid)?;
-            let mut incomplete = None;
+            let mut incomplete = Vec::new();
             let completed = complete_pending(&mut p, &mut journal, root, &mut incomplete);
             if let Err(error) = completed {
-                report_restore_incomplete(error, incomplete.as_ref());
+                report_restore_incomplete(&p, root, error, &incomplete);
             }
             if completed? {
                 absence = true;
@@ -4384,12 +4437,12 @@ mod native {
         drop(_volumes);
         import_guard.hold.take();
         if let Err(error) = result {
-            let mut incomplete = None;
+            let mut incomplete = Vec::new();
             let absent = match complete_pending(&mut p, &mut journal, root, &mut incomplete) {
                 Ok(absent) => absent,
                 // The journal stays for the next run; the refusal that started the restore is the verdict.
                 Err(restore_error) => {
-                    report_restore_incomplete(restore_error, incomplete.as_ref());
+                    report_restore_incomplete(&p, root, restore_error, &incomplete);
                     return Err(error);
                 }
             };

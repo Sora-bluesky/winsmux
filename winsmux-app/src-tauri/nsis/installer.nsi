@@ -35,11 +35,14 @@ ManifestDPIAwareness PerMonitorV2
 ; Every helper output line and the root it judged go to the details view, and the abort text names
 ; what the helper's classification, its last line, means for the user. The text is printed to the
 ; details view before the abort because the status line truncates it and /P and /S runs do not show
-; it at all. A "winsmux installer: restore_incomplete <refusal> <domain> <path>" line whose domain is
-; desktop or start_menu means a rollback left that shortcut parked, so the abort text also says that
-; the next run puts it back. Any other restore_incomplete line adds nothing to the abort text.
+; it at all. Any "winsmux installer: restore_incomplete" line means a restore stopped short and kept
+; its recovery data, so the abort text says that in place of the class message, which can say that
+; nothing was changed. A "winsmux installer: restore_shortcut_parked <kind>" or
+; "winsmux installer: restore_shortcut_unconfirmed <kind>" line adds what the helper saw of the
+; Desktop and Start menu links.
 ; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
-; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flag.
+; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flags:
+; 1 a restore stopped short, 2 a link is parked, 4 a link's place is unconfirmed.
 !macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX
   DetailPrint "winsmux installer root: $INSTDIR"
   DetailPrint "winsmux installer helper exit: $0"
@@ -55,13 +58,17 @@ ManifestDPIAwareness PerMonitorV2
       ${If} $6 != ""
         DetailPrint "winsmux installer helper: $6"
         StrCpy $3 $6
-        StrCpy $6 $6 37
-        ${If} $6 == "winsmux installer: restore_incomplete"
-          ${${UN}WordFind} $3 " " "+5" $6
-          ${If} $6 S== "desktop"
-          ${OrIf} $6 S== "start_menu"
-            StrCpy $5 1
-          ${EndIf}
+        StrCpy $6 $3 37
+        ${If} $6 S== "winsmux installer: restore_incomplete"
+          IntOp $5 $5 | 1
+        ${EndIf}
+        StrCpy $6 $3 42
+        ${If} $6 S== "winsmux installer: restore_shortcut_parked"
+          IntOp $5 $5 | 2
+        ${EndIf}
+        StrCpy $6 $3 47
+        ${If} $6 S== "winsmux installer: restore_shortcut_unconfirmed"
+          IntOp $5 $5 | 4
         ${EndIf}
       ${EndIf}
       StrCpy $6 ""
@@ -88,8 +95,17 @@ ManifestDPIAwareness PerMonitorV2
   ${ElseIf} $3 S== "winsmux installer: pending_unconfirmed"
     StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_PENDING)"
   ${EndIf}
-  ${If} $5 = 1
-    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"
+  IntOp $7 $5 & 1
+  ${If} $7 <> 0
+    StrCpy $4 "$(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"
+  ${EndIf}
+  IntOp $7 $5 & 2
+  ${If} $7 <> 0
+    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_PARKED)"
+  ${EndIf}
+  IntOp $7 $5 & 4
+  ${If} $7 <> 0
+    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_SHORTCUT_UNCONFIRMED)"
   ${EndIf}
   DetailPrint $4
   Abort $4
