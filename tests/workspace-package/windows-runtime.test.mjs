@@ -315,6 +315,55 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
   }
 });
 
+test('the readback lines the helper prints last reach the details view and never take the place of the classification', () => {
+  const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8').replaceAll('\r\n', '\n');
+  const template = read('winsmux-app/src-tauri/nsis/installer.nsi');
+  const hooks = read('winsmux-app/src-tauri/nsis-installer-hooks.nsh');
+  const hook = (name, language) => hooks.match(new RegExp(`^LangString ${name} ${language} "(.*)"$`, 'mu'))?.[1];
+  // A move whose readback refused and was proved again by name, before a later refusal, and a move whose
+  // second readback found another parent (task881_second_readback_mismatch_still_reports_the_first_refusal).
+  const cases = [
+    [['winsmux installer: registration_conflict', 'winsmux installer: readback_recovered 167 file:6'], 'FAILED_REGISTRATION'],
+    [['winsmux installer: pending_unconfirmed', 'winsmux installer: readback_refused 167 file:6 mismatch',
+      'winsmux installer: readback_recovered 166 file:6', 'winsmux installer: readback_more 1'], 'FAILED_PENDING'],
+  ];
+  for (const [prefix, language] of [['', '1041'], ['', '1033'], ['UN_', '1041'], ['UN_', '1033']]) {
+    for (const [lines, message] of cases) {
+      const { abort, details } = helperFailureAbort(template, hooks, { prefix, language, lines });
+      assert.equal(abort, hook(`WINSMUX_${prefix}${message}`, language), `${prefix}${language}: ${lines[0]} keeps its message`);
+      for (const line of lines) assert.ok(details.includes(`winsmux installer helper: ${line}`), `${prefix}${language}: ${line} reaches the details view`);
+    }
+  }
+});
+
+// The success branch run on one helper output; returns what it printed to the details view.
+function helperSuccessDetails(template, un, output) {
+  const body = nsisMacroBody(template, '!macro WINSMUX_PRINT_HELPER_READBACK UN');
+  const reg = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`$${n}`, '']));
+  Object.assign(reg, { $0: '0', $1: output });
+  const details = [];
+  assert.equal(nsisRun(nsisParse(nsisStatements(body, { '${${UN}': `\${${un}` })), reg, new Map(), details), undefined, 'a success never aborts');
+  return details;
+}
+
+test('a helper run that succeeded prints its readback lines to the details view and nothing else', () => {
+  const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
+  // A run that installed after two readbacks refused and were proved again by name, past the two lines it
+  // prints (task881_publish_shortcut_readback_refusal_after_the_rename_still_installs), then its receipt.
+  const readback = ['winsmux installer: readback_recovered 167 file:6', 'winsmux installer: readback_recovered 167 file:6',
+    'winsmux installer: readback_more 1'];
+  const receipt = '{"schema":"winsmux-desktop-nsis-transaction-receipt/v1","durable_commit":true}';
+  for (const un of ['', 'un.']) {
+    for (const eol of ['\n', '\r\n']) {
+      const output = [...readback, receipt].map(line => `${line}${eol}`).join('');
+      assert.deepEqual(helperSuccessDetails(template, un, output), readback.map(line => `winsmux installer helper: ${line}`), `${un}${JSON.stringify(eol)}`);
+      assert.deepEqual(helperSuccessDetails(template, un, `${receipt}${eol}`), [], `${un}${JSON.stringify(eol)}: a receipt alone prints nothing`);
+    }
+  }
+  assert.ok(/Section Install\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "" ""\n  \$\{EndIf\}\n  !insertmacro WINSMUX_PRINT_HELPER_READBACK ""\n[\s\S]*?SectionEnd/u.test(template));
+  assert.ok(/Section Uninstall\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "un\." "UN_"\n  \$\{EndIf\}\n  !insertmacro WINSMUX_PRINT_HELPER_READBACK "un\."\n[\s\S]*?SectionEnd/u.test(template));
+});
+
 // The T-only observer's helper branch run on one helper exit and output; returns the exit code it sets.
 function helperObservedExit(template, exit, output) {
   const body = nsisMacroBody(template, '!macro WINSMUX_OBSERVE_FAILURE STAGE');
@@ -330,12 +379,13 @@ function helperObservedExit(template, exit, output) {
 test('the T-only exit code names the helper classification even with the restore lines the helper prints after it', () => {
   const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
   const observe = (exit, lines, eol) => helperObservedExit(template, exit, lines.map(line => `${line}${eol}`).join(''));
-  // The lines desktop_nsis.rs pins after the classification: a readback that still refused after its rename,
-  // where a Desktop or Start menu link stands, then a row left.
-  const restore = ['winsmux installer: readback_refused 171 file:6 reopen:5',
-    'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
+  // The lines desktop_nsis.rs pins after the classification: where a Desktop or Start menu link stands, the
+  // rows left, then the readback lines.
+  const restore = ['winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
     'winsmux installer: restore_incomplete uncertain slot registration slot:0',
-    'winsmux installer: restore_incomplete path_refused:171 preserved desktop C:\\Users\\u\\Desktop\\winsmux.lnk'];
+    'winsmux installer: restore_incomplete path_refused:171 preserved desktop C:\\Users\\u\\Desktop\\winsmux.lnk',
+    'winsmux installer: readback_refused 171 file:6 reopen:5', 'winsmux installer: readback_recovered 170 file:6',
+    'winsmux installer: readback_more 4'];
   for (const eol of ['\n', '\r\n']) {
     for (const [exit, cls, code] of [['2', 'registration_conflict', '66'], ['3', 'pending_unconfirmed', '69'], ['2', 'io_unconfirmed', '70'],
       ['2', 'startup_unconfirmed', '71'], ['2', 'member_unconfirmed', '65'], ['171', 'path_refused', '171']]) {
