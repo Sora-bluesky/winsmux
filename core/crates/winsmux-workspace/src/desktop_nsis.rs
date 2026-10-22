@@ -431,10 +431,32 @@ enum DerivedOrigin {
     PublishShortcutMoveDestination = 366,
     CommitStateMoveSource = 367,
     CommitStateMoveDestination = 368,
+    // 161-172: the preserved-link moves and, per move site, the final-name readback after the rename.
+    PublishPreservedMoveSource = 161,
+    PublishPreservedMoveDestination = 162,
+    RestorePreservedMoveSource = 163,
+    RestorePreservedMoveDestination = 164,
+    BackupOldMoveReadback = 165,
+    PublishRootMoveReadback = 166,
+    PublishShortcutMoveReadback = 167,
+    CommitStateMoveReadback = 168,
+    PublishPreservedMoveReadback = 169,
+    RestoreNewMoveReadback = 170,
+    RestorePreservedMoveReadback = 171,
+    RestoreOldMoveReadback = 172,
 }
+// Source parent, destination parent, and the readback of the renamed file, for one move site.
+type MoveOrigins = (DerivedOrigin, DerivedOrigin, DerivedOrigin);
 fn derived_origin<T>(result: Result<T>, origin: Option<DerivedOrigin>) -> Result<T> {
     match (result, origin) {
         (Err(Error::Path(276)), Some(origin)) => Err(Error::Path(origin as u16)),
+        (unchanged, _) => unchanged,
+    }
+}
+// T-only: a final-name refusal (106-108) while confirming a move whose rename already happened.
+fn readback_origin<T>(result: Result<T>, origin: Option<DerivedOrigin>) -> Result<T> {
+    match (result, origin) {
+        (Err(Error::Path(106..=108)), Some(origin)) => Err(Error::Path(origin as u16)),
         (unchanged, _) => unchanged,
     }
 }
@@ -998,7 +1020,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(error) => {
             eprintln!("winsmux installer: {}", error.classification());
             match error {
-                Error::Path(code @ (100..=160 | 200..=368)) => i32::from(code),
+                Error::Path(code @ (100..=172 | 200..=368)) => i32::from(code),
                 Error::Pending => 3,
                 _ => 2,
             }
@@ -1501,13 +1523,14 @@ mod native {
     fn move_exact(from: &Path, to: &Path, row: &Member, root: &Dirs) -> Result<()> {
         move_exact_with_origins(from, to, row, root, None)
     }
-    fn move_exact_with_origins(from: &Path, to: &Path, row: &Member, root: &Dirs, origins: Option<(DerivedOrigin, DerivedOrigin)>) -> Result<()> {
-        let mut source = derived_origin(exact(from, row, true), origins.map(|pair| pair.0))?;
-        let parent = derived_origin(Dirs::open(to.parent().ok_or(Error::Path(134))?), origins.map(|pair| pair.1))?;
-        if exists(to)?
-            || parent.id.volume != row.identity.volume
-            || root.id.volume != row.identity.volume
-        {
+    fn move_exact_with_origins(from: &Path, to: &Path, row: &Member, root: &Dirs, origins: Option<MoveOrigins>) -> Result<()> {
+        let mut source = derived_origin(exact(from, row, true), origins.map(|o| o.0))?;
+        let parent = derived_origin(Dirs::open(to.parent().ok_or(Error::Path(134))?), origins.map(|o| o.1))?;
+        // An occupied destination is this move's destination refusal when the move names one.
+        if exists(to)? {
+            return Err(origins.map_or(Error::Path(135), |o| Error::Path(o.1 as u16)));
+        }
+        if parent.id.volume != row.identity.volume || root.id.volume != row.identity.volume {
             return Err(Error::Path(135));
         }
         root.reobserve()?;
@@ -1543,10 +1566,15 @@ mod native {
             return Err(Error::Pending);
         }
         cut("move_after")?;
-        flush_handle(source.file.as_raw_handle() as HANDLE)?;
-        source._parents.flush()?;
-        parent.flush()?;
-        if file_member(&mut source.file, to, &row.path)? != *row || exists(from)? {
+        // The rename is done. A final-name refusal from here on is the move's readback refusal, whether
+        // it comes from re-identifying either parent or from reading the renamed file back.
+        let confirmed = (|| -> Result<bool> {
+            flush_handle(source.file.as_raw_handle() as HANDLE)?;
+            source._parents.flush()?;
+            parent.flush()?;
+            Ok(file_member(&mut source.file, to, &row.path)? == *row && !exists(from)?)
+        })();
+        if !readback_origin(confirmed, origins.map(|o| o.2))? {
             return Err(Error::Pending);
         }
         Ok(())
@@ -2256,6 +2284,39 @@ mod native {
             let _ = label;
         }
         Ok(())
+    }
+    /// One stderr line beside the final classification; NSIS prints every line to the details view.
+    fn report(line: String) {
+        eprintln!("{line}");
+        #[cfg(test)]
+        hooks::MOCK.with(|m| {
+            if let Some(m) = m.borrow_mut().as_mut() {
+                m.reports.push(line);
+            }
+        });
+    }
+    fn refusal_text(error: Error) -> String {
+        match error {
+            Error::Path(code) => format!("path_refused:{code}"),
+            other => other.classification().into(),
+        }
+    }
+    // The first row a restore could not finish. Its journaled phase stays for the next run.
+    struct RestoreIncomplete {
+        error: Error,
+        domain: String,
+        path: String,
+    }
+    fn report_restore_incomplete(error: Error, incomplete: Option<&RestoreIncomplete>) {
+        report(match incomplete {
+            Some(row) => format!(
+                "winsmux installer: restore_incomplete {} {} {}",
+                refusal_text(row.error),
+                row.domain,
+                row.path
+            ),
+            None => format!("winsmux installer: restore_incomplete {}", refusal_text(error)),
+        });
     }
     fn startup(request: crate::desktop_install::StartupVerifyRequest) -> Result<StartupReceipt> {
         #[cfg(test)]
@@ -3175,53 +3236,83 @@ mod native {
         }
         Ok(())
     }
-    fn restore(p: &mut Pending, j: &mut Journal, root: &Dirs) -> Result<()> {
+    // Ok(true) restored the row, Ok(false) left it uncertain, Err refused it. The restore goes on either way.
+    fn restore_row(
+        outcome: Result<bool>,
+        domain: &str,
+        path: &str,
+        uncertain: &mut bool,
+        incomplete: &mut Option<RestoreIncomplete>,
+    ) {
+        match outcome {
+            Ok(true) => {}
+            Ok(false) => *uncertain = true,
+            Err(error) => {
+                *uncertain = true;
+                if incomplete.is_none() {
+                    *incomplete = Some(RestoreIncomplete { error, domain: domain.into(), path: path.into() });
+                }
+            }
+        }
+    }
+    fn row_report_path(path: Result<PathBuf>, row: &Move) -> String {
+        path.ok().and_then(|p| path_text(&p).ok()).unwrap_or_else(|| row.member.path.clone())
+    }
+    fn restore(p: &mut Pending, j: &mut Journal, root: &Dirs, incomplete: &mut Option<RestoreIncomplete>) -> Result<()> {
         p.phase = Phase::Restoring;
         j.save(p)?;
         // Registration first, then files: never point an external X at guessed files.
+        // Every row is attempted. A row that refuses keeps its journaled phase, the other rows still go
+        // back, and the run ends PendingUnconfirmed so the next run finishes the rest.
         let mut uncertain = false;
         for i in (0..p.slots.len()).rev() {
-            let current = read_slot(p.slots[i].id)?;
-            match slot_restore(&p.slots[i], &current) {
-                SlotDecision::Keep => {
-                    p.slots[i].phase = SlotPhase::Restored;
-                    j.save(p)?;
-                }
-                SlotDecision::WritePrior => {
-                    p.slots[i].phase = SlotPhase::RestoreIntent;
-                    j.save(p)?;
-                    if read_slot(p.slots[i].id)? != p.slots[i].desired {
-                        uncertain = true;
-                        continue;
+            let outcome = (|| -> Result<bool> {
+                let current = read_slot(p.slots[i].id)?;
+                match slot_restore(&p.slots[i], &current) {
+                    SlotDecision::Keep => {
+                        p.slots[i].phase = SlotPhase::Restored;
+                        j.save(p)?;
+                        Ok(true)
                     }
-                    write_slot(p.slots[i].id, &p.slots[i].prior)?;
-                    p.slots[i].phase = SlotPhase::Restored;
-                    j.save(p)?;
+                    SlotDecision::WritePrior => {
+                        p.slots[i].phase = SlotPhase::RestoreIntent;
+                        j.save(p)?;
+                        if read_slot(p.slots[i].id)? != p.slots[i].desired {
+                            return Ok(false);
+                        }
+                        write_slot(p.slots[i].id, &p.slots[i].prior)?;
+                        p.slots[i].phase = SlotPhase::Restored;
+                        j.save(p)?;
+                        Ok(true)
+                    }
+                    _ => Ok(false),
                 }
-                _ => uncertain = true,
-            }
+            })();
+            restore_row(outcome, "registration", &format!("slot:{}", p.slots[i].id), &mut uncertain, incomplete);
         }
         for i in (0..p.new.len()).rev() {
             let row = p.new[i].clone();
-            let live = live_path(&root.path, &row)?;
-            let new = private_path(&root.path, &p.operation_id, "new", &row);
             if matches!(row.phase, MovePhase::Prepared | MovePhase::Restored) {
                 continue;
             }
-            if exists(&live)? {
-                if exact(&live, &row.member, true).is_err() || exists(&new)? {
-                    uncertain = true;
-                    continue;
+            let outcome = (|| -> Result<bool> {
+                let live = live_path(&root.path, &row)?;
+                let new = private_path(&root.path, &p.operation_id, "new", &row);
+                if exists(&live)? {
+                    if exact(&live, &row.member, true).is_err() || exists(&new)? {
+                        return Ok(false);
+                    }
+                    p.new[i].phase = MovePhase::RestoreIntent;
+                    j.save(p)?;
+                    move_exact_with_origins(&live, &new, &row.member, root, Some((DerivedOrigin::RestoreNewMoveSource, DerivedOrigin::RestoreNewMoveDestination, DerivedOrigin::RestoreNewMoveReadback)))?;
+                } else if !exists(&new)? || exact(&new, &row.member, true).is_err() {
+                    return Ok(false);
                 }
-                p.new[i].phase = MovePhase::RestoreIntent;
+                p.new[i].phase = MovePhase::Restored;
                 j.save(p)?;
-                move_exact_with_origins(&live, &new, &row.member, root, Some((DerivedOrigin::RestoreNewMoveSource, DerivedOrigin::RestoreNewMoveDestination)))?;
-            } else if !exists(&new)? || exact(&new, &row.member, true).is_err() {
-                uncertain = true;
-                continue;
-            }
-            p.new[i].phase = MovePhase::Restored;
-            j.save(p)?;
+                Ok(true)
+            })();
+            restore_row(outcome, &row.domain, &row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
         }
         // Preserved links go back before old shortcut rows reclaim the same known-folder path.
         for i in (0..p.preserved.len()).rev() {
@@ -3229,50 +3320,53 @@ mod native {
             if matches!(row.phase, MovePhase::Prepared | MovePhase::Restored) {
                 continue;
             }
-            let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
-            if exists(&from)? {
-                if exact(&from, &row.member, true).is_err() || exists(&to)? {
-                    uncertain = true;
-                    continue;
+            let outcome = (|| -> Result<bool> {
+                let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
+                if exists(&from)? {
+                    if exact(&from, &row.member, true).is_err() || exists(&to)? {
+                        return Ok(false);
+                    }
+                } else if exists(&to)? {
+                    if exact(&to, &row.member, true).is_err() {
+                        return Ok(false);
+                    }
+                    p.preserved[i].phase = MovePhase::RestoreIntent;
+                    j.save(p)?;
+                    move_exact_with_origins(&to, &from, &row.member, root, Some((DerivedOrigin::RestorePreservedMoveSource, DerivedOrigin::RestorePreservedMoveDestination, DerivedOrigin::RestorePreservedMoveReadback)))?;
+                } else {
+                    return Ok(false);
                 }
-            } else if exists(&to)? {
-                if exact(&to, &row.member, true).is_err() {
-                    uncertain = true;
-                    continue;
-                }
-                p.preserved[i].phase = MovePhase::RestoreIntent;
+                p.preserved[i].phase = MovePhase::Restored;
                 j.save(p)?;
-                move_exact_with_origins(&to, &from, &row.member, root, None)?;
-            } else {
-                uncertain = true;
-                continue;
-            }
-            p.preserved[i].phase = MovePhase::Restored;
-            j.save(p)?;
+                Ok(true)
+            })();
+            let from = preserved_endpoints(&root.path, p.action, &row).map(|pair| pair.0);
+            restore_row(outcome, &row.domain, &row_report_path(from, &row), &mut uncertain, incomplete);
         }
         for i in (0..p.old.len()).rev() {
             let row = p.old[i].clone();
-            let live = live_path(&root.path, &row)?;
-            let old = private_path(&root.path, &p.operation_id, "old", &row);
-            if exists(&live)? {
-                if exact(&live, &row.member, true).is_err() || exists(&old)? {
-                    uncertain = true;
-                    continue;
+            let outcome = (|| -> Result<bool> {
+                let live = live_path(&root.path, &row)?;
+                let old = private_path(&root.path, &p.operation_id, "old", &row);
+                if exists(&live)? {
+                    if exact(&live, &row.member, true).is_err() || exists(&old)? {
+                        return Ok(false);
+                    }
+                } else if exists(&old)? {
+                    if exact(&old, &row.member, true).is_err() {
+                        return Ok(false);
+                    }
+                    p.old[i].phase = MovePhase::RestoreIntent;
+                    j.save(p)?;
+                    move_exact_with_origins(&old, &live, &row.member, root, Some((DerivedOrigin::RestoreOldMoveSource, DerivedOrigin::RestoreOldMoveDestination, DerivedOrigin::RestoreOldMoveReadback)))?;
+                } else {
+                    return Ok(false);
                 }
-            } else if exists(&old)? {
-                if exact(&old, &row.member, true).is_err() {
-                    uncertain = true;
-                    continue;
-                }
-                p.old[i].phase = MovePhase::RestoreIntent;
+                p.old[i].phase = MovePhase::Restored;
                 j.save(p)?;
-                move_exact_with_origins(&old, &live, &row.member, root, Some((DerivedOrigin::RestoreOldMoveSource, DerivedOrigin::RestoreOldMoveDestination)))?;
-            } else {
-                uncertain = true;
-                continue;
-            }
-            p.old[i].phase = MovePhase::Restored;
-            j.save(p)?;
+                Ok(true)
+            })();
+            restore_row(outcome, &row.domain, &row_report_path(live_path(&root.path, &row), &row), &mut uncertain, incomplete);
         }
         for s in &p.slots {
             if read_slot(s.id)? != s.prior {
@@ -3539,12 +3633,12 @@ mod native {
             .transpose()?;
         Ok(prior.as_ref().is_none_or(|old| old.generation == "legacy"))
     }
-    fn complete_pending(p: &mut Pending, journal: &mut Journal, root: &Dirs) -> Result<bool> {
+    fn complete_pending(p: &mut Pending, journal: &mut Journal, root: &Dirs, incomplete: &mut Option<RestoreIncomplete>) -> Result<bool> {
         if matches!(
             p.phase,
             Phase::Restored | Phase::Restoring | Phase::PendingUnconfirmed
         ) {
-            restore(p, journal, root)?;
+            restore(p, journal, root, incomplete)?;
         } else if committed_layout(p, root)? {
             if p.action == Action::Install {
                 let row = p
@@ -3558,7 +3652,7 @@ mod native {
             journal.save(p)?;
             verify_committed(p, root)?;
         } else {
-            restore(p, journal, root)?;
+            restore(p, journal, root, incomplete)?;
         }
         cleanup_owned(p, root)?;
         if p.phase == Phase::Restored {
@@ -3582,7 +3676,12 @@ mod native {
             let mut journal = Journal::open(&pending, false)?;
             let mut p = journal.load()?;
             validate_pending(&p, root, sid)?;
-            if complete_pending(&mut p, &mut journal, root)? {
+            let mut incomplete = None;
+            let completed = complete_pending(&mut p, &mut journal, root, &mut incomplete);
+            if let Err(error) = completed {
+                report_restore_incomplete(error, incomplete.as_ref());
+            }
+            if completed? {
                 absence = true;
                 if p.phase == Phase::Restored {
                     terminal_prior = p
@@ -4142,7 +4241,7 @@ mod native {
                     &private_path(&root.path, &id, "old", &row),
                     &row.member,
                     root,
-                    Some((DerivedOrigin::BackupOldMoveSource, DerivedOrigin::BackupOldMoveDestination)),
+                    Some((DerivedOrigin::BackupOldMoveSource, DerivedOrigin::BackupOldMoveDestination, DerivedOrigin::BackupOldMoveReadback)),
                 )?;
                 p.old[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
@@ -4164,7 +4263,7 @@ mod native {
                     &live_path(&root.path, &row)?,
                     &row.member,
                     root,
-                    Some((DerivedOrigin::PublishRootMoveSource, DerivedOrigin::PublishRootMoveDestination)),
+                    Some((DerivedOrigin::PublishRootMoveSource, DerivedOrigin::PublishRootMoveDestination, DerivedOrigin::PublishRootMoveReadback)),
                 )?;
                 p.new[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
@@ -4198,7 +4297,7 @@ mod native {
                     &live_path(&root.path, &row)?,
                     &row.member,
                     root,
-                    Some((DerivedOrigin::PublishShortcutMoveSource, DerivedOrigin::PublishShortcutMoveDestination)),
+                    Some((DerivedOrigin::PublishShortcutMoveSource, DerivedOrigin::PublishShortcutMoveDestination, DerivedOrigin::PublishShortcutMoveReadback)),
                 )?;
                 p.new[i].phase = MovePhase::MovedConfirmed;
                 journal.save(&p)?;
@@ -4252,7 +4351,7 @@ mod native {
                     &live_path(&root.path, &row)?,
                     &row.member,
                     root,
-                    Some((DerivedOrigin::CommitStateMoveSource, DerivedOrigin::CommitStateMoveDestination)),
+                    Some((DerivedOrigin::CommitStateMoveSource, DerivedOrigin::CommitStateMoveDestination, DerivedOrigin::CommitStateMoveReadback)),
                 )?;
                 cut("commit_after")?;
                 p.new[index].phase = MovePhase::MovedConfirmed;
@@ -4266,7 +4365,15 @@ mod native {
         drop(_volumes);
         import_guard.hold.take();
         if let Err(error) = result {
-            let absent = complete_pending(&mut p, &mut journal, root)?;
+            let mut incomplete = None;
+            let absent = match complete_pending(&mut p, &mut journal, root, &mut incomplete) {
+                Ok(absent) => absent,
+                // The journal stays for the next run; the refusal that started the restore is the verdict.
+                Err(restore_error) => {
+                    report_restore_incomplete(restore_error, incomplete.as_ref());
+                    return Err(error);
+                }
+            };
             if p.phase != Phase::Committed {
                 if !absent {
                     cut("journal_finish_before")?;
@@ -4304,7 +4411,7 @@ mod native {
             let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
             p.preserved[i].phase = MovePhase::MoveIntent;
             journal.save(p)?;
-            move_exact_with_origins(&from, &to, &row.member, root, None)?;
+            move_exact_with_origins(&from, &to, &row.member, root, Some((DerivedOrigin::PublishPreservedMoveSource, DerivedOrigin::PublishPreservedMoveDestination, DerivedOrigin::PublishPreservedMoveReadback)))?;
             p.preserved[i].phase = MovePhase::MovedConfirmed;
             journal.save(p)?;
         }
