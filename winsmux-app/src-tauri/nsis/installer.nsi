@@ -32,15 +32,39 @@ ManifestDPIAwareness PerMonitorV2
   ClearErrors
 !macroend
 
-; The helper's one-line classification and the root it judged go to the details view, and the
-; abort text names what that class means for the user. The text is printed to the details view
-; before the abort because the status line truncates it and /P and /S runs do not show it at all.
+; Every helper output line and the root it judged go to the details view, and the abort text names
+; what the helper's classification, its last line, means for the user. The text is printed to the
+; details view before the abort because the status line truncates it and /P and /S runs do not show
+; it at all. A "winsmux installer: restore_incomplete" line before the classification means a
+; rollback left shortcuts parked, so the abort text also says that the next run puts them back.
 ; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
-; $0/$1 stay the plugin return/output.
+; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flag.
 !macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX
-  ${${UN}TrimNewLines} $1 $3
   DetailPrint "winsmux installer root: $INSTDIR"
-  DetailPrint "winsmux installer helper exit $0: $3"
+  DetailPrint "winsmux installer helper exit: $0"
+  StrCpy $3 ""
+  StrCpy $5 0
+  StrCpy $6 ""
+  StrCpy $7 0
+  ${Do}
+    StrCpy $8 $1 1 $7
+    ${If} $8 == "$\n"
+    ${OrIf} $8 == ""
+      ${${UN}TrimNewLines} $6 $6
+      ${If} $6 != ""
+        DetailPrint "winsmux installer helper: $6"
+        StrCpy $3 $6
+        StrCpy $6 $6 37
+        ${If} $6 == "winsmux installer: restore_incomplete"
+          StrCpy $5 1
+        ${EndIf}
+      ${EndIf}
+      StrCpy $6 ""
+    ${Else}
+      StrCpy $6 "$6$8"
+    ${EndIf}
+    IntOp $7 $7 + 1
+  ${LoopUntil} $8 == ""
   StrCpy $4 "$(WINSMUX_${PREFIX}TRANSACTION_FAILED)"
   ${If} $3 S== "winsmux installer: member_unconfirmed"
     StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_MEMBER)"
@@ -58,6 +82,9 @@ ManifestDPIAwareness PerMonitorV2
     StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_RUNNING)"
   ${ElseIf} $3 S== "winsmux installer: pending_unconfirmed"
     StrCpy $4 "$(WINSMUX_${PREFIX}FAILED_PENDING)"
+  ${EndIf}
+  ${If} $5 = 1
+    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"
   ${EndIf}
   DetailPrint $4
   Abort $4
@@ -439,6 +466,18 @@ ManifestDPIAwareness PerMonitorV2
         ${OrIf} $0 S== "158"
         ${OrIf} $0 S== "159"
         ${OrIf} $0 S== "160"
+        ${OrIf} $0 S== "161"
+        ${OrIf} $0 S== "162"
+        ${OrIf} $0 S== "163"
+        ${OrIf} $0 S== "164"
+        ${OrIf} $0 S== "165"
+        ${OrIf} $0 S== "166"
+        ${OrIf} $0 S== "167"
+        ${OrIf} $0 S== "168"
+        ${OrIf} $0 S== "169"
+        ${OrIf} $0 S== "170"
+        ${OrIf} $0 S== "171"
+        ${OrIf} $0 S== "172"
         ${OrIf} $0 S== "200"
         ${OrIf} $0 S== "201"
         ${OrIf} $0 S== "202"

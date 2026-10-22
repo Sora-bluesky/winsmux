@@ -6505,18 +6505,22 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($observers.Count -eq 1) 'Desktop NSIS failure observer must be unique.'
     $observerBytes = [Text.Encoding]::UTF8.GetBytes($observers[0].Groups['body'].Value)
     $observerSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observerBytes)).ToLowerInvariant()
-    Assert-Condition ($observerSha256 -ceq '44c242822cb5ff7ceeebb40879346c747f6e2291f0ec41a6ea337867f5dc5395') 'Desktop NSIS finite nonzero failure observer differs.'
+    Assert-Condition ($observerSha256 -ceq 'e6acbd13c0218384ced1a47ab446a9f0605108958e005ff9d2594c08850e9b71') 'Desktop NSIS finite nonzero failure observer differs.'
     # The per-class failure report prints the helper classification and the judged root to the details view
     # and aborts with the install or uninstall string the PREFIX selects. Its body is pinned the same way.
     $reports = [regex]::Matches($template, '(?ms)^!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n(?<body>.*?)^!macroend$')
     Assert-Condition ($reports.Count -eq 1) 'Desktop NSIS helper failure report must be unique.'
     $reportBody = $reports[0].Groups['body'].Value
     $reportSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($reportBody))).ToLowerInvariant()
-    Assert-Condition ($reportSha256 -ceq '41ed7fc689d8ba838475c4a95c08eaa8b2120753add23c101ed2dd5b672f24fb') 'Desktop NSIS helper failure report differs.'
+    Assert-Condition ($reportSha256 -ceq 'bad61a46207fc67a6c93bb1d48da87a575de8e9c7a263965ce6bd7c20b0fb0b3') 'Desktop NSIS helper failure report differs.'
     Assert-Condition ([regex]::Matches($reportBody, '(?m)^  Abort \$4$').Count -eq 1) 'Desktop NSIS helper failure report must abort.'
+    # Every helper line is printed, the last one is classified, and a restore_incomplete line appends the parked-shortcut notice.
+    Assert-Condition ([regex]::Matches($reportBody, '(?m)^        DetailPrint "winsmux installer helper: \$6"\n        StrCpy \$3 \$6$').Count -eq 1) 'Desktop NSIS helper failure report must print each helper line and classify the last.'
+    Assert-Condition ([regex]::Matches($reportBody, '(?m)^        \$\{If\} \$6 == "winsmux installer: restore_incomplete"\n          StrCpy \$5 1$').Count -eq 1) 'Desktop NSIS helper failure report must detect restore_incomplete.'
+    Assert-Condition ([regex]::Matches($reportBody, '(?m)^  \$\{If\} \$5 = 1\n    StrCpy \$4 "\$4 \$\(WINSMUX_\$\{PREFIX\}RESTORE_INCOMPLETE\)"\n  \$\{EndIf\}\n  DetailPrint \$4$').Count -eq 1) 'Desktop NSIS helper failure report must append the parked-shortcut notice.'
     # Every string the report selects must exist in the hook for both prefixes and both installer languages.
     $reportStrings = @([regex]::Matches($reportBody, '\$\(WINSMUX_\$\{PREFIX\}(?<name>[A-Z_]+)\)') | ForEach-Object { $_.Groups['name'].Value } | Sort-Object -Unique)
-    Assert-Condition (($reportStrings -join ',') -ceq 'FAILED_FOLDER_MOVED,FAILED_LEGACY_CAPTURE,FAILED_MEMBER,FAILED_OCCUPIED,FAILED_PENDING,FAILED_REGISTRATION,FAILED_RUNNING,TRANSACTION_FAILED') 'Desktop NSIS helper failure report strings differ.'
+    Assert-Condition (($reportStrings -join ',') -ceq 'FAILED_FOLDER_MOVED,FAILED_LEGACY_CAPTURE,FAILED_MEMBER,FAILED_OCCUPIED,FAILED_PENDING,FAILED_REGISTRATION,FAILED_RUNNING,RESTORE_INCOMPLETE,TRANSACTION_FAILED') 'Desktop NSIS helper failure report strings differ.'
     foreach ($prefix in @('', 'UN_')) {
         foreach ($name in $reportStrings) {
             foreach ($language in @('1033', '1041')) {
@@ -6851,6 +6855,8 @@ function Invoke-SelfTest {
             $hookMutations = [ordered]@{
                 missing_uninstall_japanese_string = $nsisHookSource -creplace '(?m)^LangString WINSMUX_UN_FAILED_PENDING 1041 "[^"\r\n]+"', '; uninstall pending string missing'
                 duplicate_install_english_string = $nsisHookSource -creplace '(?m)^(LangString WINSMUX_FAILED_MEMBER 1033 "[^"\r\n]+")', ('$1' + [char]10 + '$1')
+                missing_install_restore_japanese_string = $nsisHookSource -creplace '(?m)^LangString WINSMUX_RESTORE_INCOMPLETE 1041 "[^"\r\n]+"', '; install restore notice missing'
+                missing_uninstall_restore_english_string = $nsisHookSource -creplace '(?m)^LangString WINSMUX_UN_RESTORE_INCOMPLETE 1033 "[^"\r\n]+"', '; uninstall restore notice missing'
             }
             foreach ($mutation in $hookMutations.GetEnumerator()) {
                 Assert-Condition ($mutation.Value -cne $nsisHookSource) 'Desktop NSIS hook negative fixture was unchanged.'
@@ -6869,6 +6875,9 @@ function Invoke-SelfTest {
                 install_strings_on_uninstall = $nsisTemplateSource.Replace($uninstallSource, $uninstallSource.Replace('    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." "UN_"', '    !insertmacro WINSMUX_REPORT_HELPER_FAILURE "un." ""'))
                 missing_failure_report_definition = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, '')
                 failure_report_without_abort = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('  Abort $4', '  DetailPrint $4'))
+                failure_report_without_helper_lines = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('        DetailPrint "winsmux installer helper: $6"' + [char]10, ''))
+                failure_report_without_restore_notice = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"', '    StrCpy $4 "$4"'))
+                failure_report_restore_notice_on_wrong_prefix = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('"winsmux installer: restore_incomplete"', '"winsmux installer: restore_incomplet"'))
                 missing_failure_observer_definition = $nsisTemplateSource.Replace($nativeFailureObservers[0].Value, '')
                 duplicate_failure_observer_definition = $nsisTemplateSource + [char]10 + $nativeFailureObservers[0].Value
                 failure_observer_default_zero = $nsisTemplateSource.Replace('  StrCpy $2 59', '  StrCpy $2 0')

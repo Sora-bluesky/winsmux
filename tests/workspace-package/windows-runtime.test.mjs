@@ -24,7 +24,7 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', '6f65d71b28c15d6242f2a2d8c9c90f4e9669afc66d969ff8d246e8f641a9fe50'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', 'b6c7ac3d09cc3656cb774bc3c12221f7b25d261080771633f80e9571ddb8f0fb'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
     ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'bbc1e106fce5d78e2f7d8823f98e7b13a3c56b0307154a26c0fddb798f1a235c'],
   ]);
@@ -82,7 +82,14 @@ test('every helper refusal the installer names gets an install and an uninstall 
     'work_running_or_locked']);
   for (const cls of mapped.keys()) assert.ok(emitted.has(cls), `${cls} is not a classification the helper emits`);
   assert.ok(macro.includes('  DetailPrint $4\n  Abort $4\n'), 'the message is printed to the details view before the abort');
-  assert.equal((macro.match(/\$\{PREFIX\}/gu) ?? []).length, new Set(mapped.values()).size + 1, 'every string selection, the default included, goes through the prefix');
+  // Every helper line reaches the details view, the last non-empty line is the classification, and a
+  // restore_incomplete line before it appends the parked-shortcut notice to whichever message was chosen.
+  assert.ok(macro.includes('        DetailPrint "winsmux installer helper: $6"\n        StrCpy $3 $6\n'), 'each helper line is printed and the last one is classified');
+  assert.ok(macro.includes('        ${If} $6 == "winsmux installer: restore_incomplete"\n          StrCpy $5 1\n'), 'the restore_incomplete line is detected by its fixed prefix');
+  assert.equal('winsmux installer: restore_incomplete'.length, 37);
+  assert.ok(macro.includes('  ${If} $5 = 1\n    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"\n  ${EndIf}\n  DetailPrint $4\n'), 'the parked-shortcut notice follows the class message');
+  assert.ok(helper.includes('"winsmux installer: restore_incomplete {} {} {}"'), 'the helper prints the restore_incomplete line the installer looks for');
+  assert.equal((macro.match(/\$\{PREFIX\}/gu) ?? []).length, new Set(mapped.values()).size + 2, 'every string selection, the default and the restore notice included, goes through the prefix');
   assert.ok(/Section Install\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "" ""\n[\s\S]*?SectionEnd/u.test(template));
   assert.ok(/Section Uninstall\n[\s\S]*?!insertmacro WINSMUX_REPORT_HELPER_FAILURE "un\." "UN_"\n[\s\S]*?SectionEnd/u.test(template));
   // What each class guarantees, in the words the helper's Error enum documents: a Member is unconfirmed
@@ -98,6 +105,8 @@ test('every helper refusal the installer names gets an install and an uninstall 
     FAILED_RUNNING: { 1033: [/still running or its folder is locked/u], 1041: [/起動中か、フォルダーがロック/u] },
     FAILED_PENDING: { 1033: [/did not finish and its recovery data is kept/u, /preserved/u], 1041: [/完了しておらず、復旧データを残して/u, /保全/u] },
     TRANSACTION_FAILED: { 1033: [/could not be confirmed/u, /preserved/u], 1041: [/確認できませんでした/u, /保全/u] },
+    RESTORE_INCOMPLETE: { 1033: [/Desktop or Start menu shortcuts .* still preserved/u, /Run the (?:un)?installer again to put them back/u],
+      1041: [/スタートメニューやデスクトップのショートカットは退避中/u, /もう一度(?:アン)?インストーラを実行すると元に戻ります/u] },
   };
   const outcome = {
     '': { 1033: [/nothing was changed|preserved/iu, /^(?!.*uninstaller)/u], 1041: [/何も変更していません|保全/u, /^(?!.*アンインストールしてください)/u] },
@@ -114,7 +123,7 @@ test('every helper refusal the installer names gets an install and an uninstall 
       }
     }
   }
-  for (const suffix of new Set(mapped.values())) assert.ok(Object.hasOwn(expectations, suffix), `${suffix} has no expectation row`);
+  for (const suffix of [...new Set(mapped.values()), 'RESTORE_INCOMPLETE']) assert.ok(Object.hasOwn(expectations, suffix), `${suffix} has no expectation row`);
   assert.ok(!hooks.includes('LEGACY_ROOT') && !template.includes('legacy_root_mismatch'));
 });
 
