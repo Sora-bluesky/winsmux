@@ -27,14 +27,14 @@
     "After a restore_incomplete line, abort with the restore-incomplete message instead of the class message, and add the parked or unconfirmed shortcut notice only after a restore_shortcut_parked or restore_shortcut_unconfirmed line",
     "T-only diagnostic: classify the helper output without its restore lines, so a run that also printed restore lines keeps its class exit code",
     "T-only diagnostic: leave out a last piece without a newline, so a restore line that ExecToStack cut at NSIS_MAX_STRLEN keeps the class exit code",
-    "T-only diagnostic: classify the helper output without its readback_refused lines too, so a run that reported a post-rename readback refusal keeps its class exit code",
+    "T-only diagnostic: classify the helper output without its readback lines too (readback_refused, readback_recovered and readback_more), so a run that reported a post-rename readback keeps its class exit code",
     "Choose the abort message by the last helper line that is not a readback line, and after a helper run that succeeded print its readback lines to the details view"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 48282,
-      "sha256": "7cc1c36806489667a1feae9fb213c508c9e83eed16af465c9e4d74f5ea22513f"
+      "bytes": 48338,
+      "sha256": "a74f6be49dbc25cdd0af7816e0440d19392438d89d4f4c730761cb702cb0833d"
     },
     {
       "path": "winsmux-utils.nsh",

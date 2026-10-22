@@ -154,9 +154,10 @@ ManifestDPIAwareness PerMonitorV2
     StrCpy $2 52
   !else if "${STAGE}" == "helper"
     ; The restore lines ("winsmux installer: restore_...") and the readback lines ("winsmux installer:
-    ; readback_refused ...") come after the classification and do not change it, so $3 is the output
-    ; without them. ExecToStack can cut the output anywhere, and the helper ends every line with a
-    ; newline, so a last piece without one is left out too.
+    ; readback_refused ...", "readback_recovered ..." and "readback_more ...") come after the
+    ; classification and do not change it, so $3 is the output without them. ExecToStack can cut the
+    ; output anywhere, and the helper ends every line with a newline, so a last piece without one is
+    ; left out too.
     StrCpy $3 ""
     StrCpy $6 ""
     StrCpy $7 0
