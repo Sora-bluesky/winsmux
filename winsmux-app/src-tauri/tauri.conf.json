@@ -67,6 +67,8 @@
       "nsis": {
         "template": "nsis/installer.nsi",
         "installerHooks": "nsis-installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "languages": [
           "English",
           "Japanese"
