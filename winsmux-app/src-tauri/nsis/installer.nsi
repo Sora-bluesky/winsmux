@@ -112,320 +112,339 @@ ManifestDPIAwareness PerMonitorV2
 !macroend
 
 ; Diagnostic-only finite observation. Remove with the exact four-file overlay.
-; $0/$1 remain the existing plugin return/combined output; only $2 is diagnostic.
+; $0/$1 remain the existing plugin return/combined output; only $2 is diagnostic. $3 and $5-$8 are
+; scratch that the report macro sets again.
 !macro WINSMUX_OBSERVE_FAILURE STAGE
   StrCpy $2 59
   !if "${STAGE}" == "context-write"
     StrCpy $2 52
   !else if "${STAGE}" == "helper"
+    ; The restore lines ("winsmux installer: restore_...") come before the classification and do not
+    ; change it, so $3 is the output without them.
+    StrCpy $3 ""
+    StrCpy $6 ""
+    StrCpy $7 0
+    ${Do}
+      StrCpy $8 $1 1 $7
+      StrCpy $6 "$6$8"
+      ${If} $8 == "$\n"
+      ${OrIf} $8 == ""
+        StrCpy $5 $6 27
+        ${If} $5 S!= "winsmux installer: restore_"
+          StrCpy $3 "$3$6"
+        ${EndIf}
+        StrCpy $6 ""
+      ${EndIf}
+      IntOp $7 $7 + 1
+    ${LoopUntil} $8 == ""
     ${If} $0 S== "error"
       StrCpy $2 50
     ${ElseIf} $0 S== "timeout"
       StrCpy $2 51
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: usage$\n"
+    ${AndIf} $3 S== "winsmux installer: usage$\n"
       StrCpy $2 60
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: usage$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: usage$\r$\n"
       StrCpy $2 60
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: context_refused$\n"
+    ${AndIf} $3 S== "winsmux installer: context_refused$\n"
       StrCpy $2 61
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: context_refused$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: context_refused$\r$\n"
       StrCpy $2 61
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: plan_refused$\n"
+    ${AndIf} $3 S== "winsmux installer: plan_refused$\n"
       StrCpy $2 62
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: plan_refused$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: plan_refused$\r$\n"
       StrCpy $2 62
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: actor_refused$\n"
+    ${AndIf} $3 S== "winsmux installer: actor_refused$\n"
       StrCpy $2 63
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: actor_refused$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: actor_refused$\r$\n"
       StrCpy $2 63
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: path_refused$\n"
+    ${AndIf} $3 S== "winsmux installer: path_refused$\n"
       StrCpy $2 64
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: path_refused$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: path_refused$\r$\n"
       StrCpy $2 64
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: member_unconfirmed$\n"
+    ${AndIf} $3 S== "winsmux installer: member_unconfirmed$\n"
       StrCpy $2 65
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: member_unconfirmed$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: member_unconfirmed$\r$\n"
       StrCpy $2 65
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: registration_conflict$\n"
+    ${AndIf} $3 S== "winsmux installer: registration_conflict$\n"
       StrCpy $2 66
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: registration_conflict$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: registration_conflict$\r$\n"
       StrCpy $2 66
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_inventory_incomplete$\n"
+    ${AndIf} $3 S== "winsmux installer: legacy_inventory_incomplete$\n"
       StrCpy $2 67
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_inventory_incomplete$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: legacy_inventory_incomplete$\r$\n"
       StrCpy $2 67
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_receipt_missing$\n"
+    ${AndIf} $3 S== "winsmux installer: legacy_receipt_missing$\n"
       StrCpy $2 72
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_receipt_missing$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: legacy_receipt_missing$\r$\n"
       StrCpy $2 72
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_profile_incomplete$\n"
+    ${AndIf} $3 S== "winsmux installer: legacy_profile_incomplete$\n"
       StrCpy $2 73
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: legacy_profile_incomplete$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: legacy_profile_incomplete$\r$\n"
       StrCpy $2 73
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: destination_occupied$\n"
+    ${AndIf} $3 S== "winsmux installer: destination_occupied$\n"
       StrCpy $2 75
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: destination_occupied$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: destination_occupied$\r$\n"
       StrCpy $2 75
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: shortcut_folder_moved$\n"
+    ${AndIf} $3 S== "winsmux installer: shortcut_folder_moved$\n"
       StrCpy $2 76
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: shortcut_folder_moved$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: shortcut_folder_moved$\r$\n"
       StrCpy $2 76
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\n"
+    ${AndIf} $3 S== "winsmux installer: work_running_or_locked$\n"
       StrCpy $2 68
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: work_running_or_locked$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: work_running_or_locked$\r$\n"
       StrCpy $2 68
     ${ElseIf} $0 S== "3"
-    ${AndIf} $1 S== "winsmux installer: pending_unconfirmed$\n"
+    ${AndIf} $3 S== "winsmux installer: pending_unconfirmed$\n"
       StrCpy $2 69
     ${ElseIf} $0 S== "3"
-    ${AndIf} $1 S== "winsmux installer: pending_unconfirmed$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: pending_unconfirmed$\r$\n"
       StrCpy $2 69
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: io_unconfirmed$\n"
+    ${AndIf} $3 S== "winsmux installer: io_unconfirmed$\n"
       StrCpy $2 70
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: io_unconfirmed$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: io_unconfirmed$\r$\n"
       StrCpy $2 70
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_unconfirmed$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_unconfirmed$\n"
       StrCpy $2 71
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_unconfirmed$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_unconfirmed$\r$\n"
       StrCpy $2 71
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_usage$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_usage$\n"
       StrCpy $2 380
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_usage$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_usage$\r$\n"
       StrCpy $2 380
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_plan$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_plan$\n"
       StrCpy $2 381
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_plan$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_plan$\r$\n"
       StrCpy $2 381
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_path$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_path$\n"
       StrCpy $2 382
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_path$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_path$\r$\n"
       StrCpy $2 382
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_member$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_member$\n"
       StrCpy $2 383
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_member$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_member$\r$\n"
       StrCpy $2 383
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_actor$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_actor$\n"
       StrCpy $2 384
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_actor$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_actor$\r$\n"
       StrCpy $2 384
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_isolation$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_isolation$\n"
       StrCpy $2 385
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_isolation$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_isolation$\r$\n"
       StrCpy $2 385
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_launch$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_launch$\n"
       StrCpy $2 386
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_launch$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_launch$\r$\n"
       StrCpy $2 386
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_receipt$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_receipt$\n"
       StrCpy $2 387
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_receipt$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_receipt$\r$\n"
       StrCpy $2 387
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 388
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 388
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_cleanup$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_cleanup$\n"
       StrCpy $2 389
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: nsis_startup_cleanup$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: nsis_startup_cleanup$\r$\n"
       StrCpy $2 389
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 390
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 390
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 390
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 390
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 391
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 391
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 391
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 391
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 392
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 392
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 392
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 392
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 393
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 393
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 393
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=timeout phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 393
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 394
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 394
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 394
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 394
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 395
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 395
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 395
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 395
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 396
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 396
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 396
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 396
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 397
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 397
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 397
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=failed phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 397
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 398
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 398
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 398
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_listening$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 398
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 399
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 399
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 399
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=awaiting_pipe_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 399
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 400
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 400
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 400
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_zero$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 400
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 401
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 401
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\n"
       StrCpy $2 401
     ${ElseIf} $0 S== "2"
-    ${AndIf} $1 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
+    ${AndIf} $3 S== "winsmux installer: startup_timeout_phase root_wait=other phase=verified_peer_read_no_data$\r$\nwinsmux installer: nsis_startup_timeout$\r$\n"
       StrCpy $2 401
     ${EndIf}
     ${If} $2 == 59
-      ${If} $1 S== "winsmux installer: path_refused$\n"
-      ${OrIf} $1 S== "winsmux installer: path_refused$\r$\n"
+      ${If} $3 S== "winsmux installer: path_refused$\n"
+      ${OrIf} $3 S== "winsmux installer: path_refused$\r$\n"
         ${If} $0 S== "100"
         ${OrIf} $0 S== "101"
         ${OrIf} $0 S== "102"

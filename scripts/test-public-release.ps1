@@ -6505,7 +6505,7 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($observers.Count -eq 1) 'Desktop NSIS failure observer must be unique.'
     $observerBytes = [Text.Encoding]::UTF8.GetBytes($observers[0].Groups['body'].Value)
     $observerSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($observerBytes)).ToLowerInvariant()
-    Assert-Condition ($observerSha256 -ceq 'e6acbd13c0218384ced1a47ab446a9f0605108958e005ff9d2594c08850e9b71') 'Desktop NSIS finite nonzero failure observer differs.'
+    Assert-Condition ($observerSha256 -ceq '1fcfa7dc4ded07b07d81779791bb2182ae0a39ddb591e68f811ea20d52419330') 'Desktop NSIS finite nonzero failure observer differs.'
     # The per-class failure report prints the helper classification and the judged root to the details view
     # and aborts with the install or uninstall string the PREFIX selects. Its body is pinned the same way.
     $reports = [regex]::Matches($template, '(?ms)^!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n(?<body>.*?)^!macroend$')
