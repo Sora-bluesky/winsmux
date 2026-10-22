@@ -3255,6 +3255,25 @@ mod native {
             }
         }
     }
+    /// The new member sits in the private area, and its live path is empty or holds the old or
+    /// preserved member the restore put back there. A move whose readback refused leaves this state.
+    fn new_row_set_aside(p: &Pending, root: &Dirs, row: &Move) -> Result<bool> {
+        let live = live_path(&root.path, row)?;
+        let new = private_path(&root.path, &p.operation_id, "new", row);
+        Ok(exists(&new)?
+            && exact(&new, &row.member, true).is_ok()
+            && (!exists(&live)?
+                || row_holds(&p.old, &live, |old| live_path(&root.path, old), true)
+                || row_holds(&p.preserved, &live, |kept| preserved_endpoints(&root.path, p.action, kept).map(|(from, _)| from), true)))
+    }
+    /// The preserved member sits at its forward source, and the forward destination is empty or holds
+    /// the old member the restore put back there.
+    fn preserved_row_back(p: &Pending, root: &Dirs, row: &Move) -> Result<bool> {
+        let (from, to) = preserved_endpoints(&root.path, p.action, row)?;
+        Ok(exists(&from)?
+            && exact(&from, &row.member, true).is_ok()
+            && (!exists(&to)? || row_holds(&p.old, &to, |old| live_path(&root.path, old), true)))
+    }
     fn row_report_path(path: Result<PathBuf>, row: &Move) -> String {
         path.ok().and_then(|p| path_text(&p).ok()).unwrap_or_else(|| row.member.path.clone())
     }
@@ -3298,14 +3317,14 @@ mod native {
             let outcome = (|| -> Result<bool> {
                 let live = live_path(&root.path, &row)?;
                 let new = private_path(&root.path, &p.operation_id, "new", &row);
-                if exists(&live)? {
-                    if exact(&live, &row.member, true).is_err() || exists(&new)? {
+                if exists(&live)? && exact(&live, &row.member, true).is_ok() {
+                    if exists(&new)? {
                         return Ok(false);
                     }
                     p.new[i].phase = MovePhase::RestoreIntent;
                     j.save(p)?;
                     move_exact_with_origins(&live, &new, &row.member, root, Some((DerivedOrigin::RestoreNewMoveSource, DerivedOrigin::RestoreNewMoveDestination, DerivedOrigin::RestoreNewMoveReadback)))?;
-                } else if !exists(&new)? || exact(&new, &row.member, true).is_err() {
+                } else if !new_row_set_aside(p, root, &row)? {
                     return Ok(false);
                 }
                 p.new[i].phase = MovePhase::Restored;
@@ -3323,7 +3342,7 @@ mod native {
             let outcome = (|| -> Result<bool> {
                 let (from, to) = preserved_endpoints(&root.path, p.action, &row)?;
                 if exists(&from)? {
-                    if exact(&from, &row.member, true).is_err() || exists(&to)? {
+                    if !preserved_row_back(p, root, &row)? {
                         return Ok(false);
                     }
                 } else if exists(&to)? {
