@@ -6838,7 +6838,22 @@ function Invoke-SelfTest {
                 }
             }) 'PriorInstallerPath was accepted without PriorVersion.'
 
-            $nsisHookPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis-installer-hooks.nsh'
+            $nsisPlanSha = 'a' * 64
+            $nsisReceipt = [ordered]@{ schema = 'winsmux-desktop-nsis-transaction-receipt/v1'; operation_id = '0f0e0d0c-0b0a-4908-8706-050403020100'; action = 'uninstall'; version = '0.38.0'; plan_sha256 = $nsisPlanSha; startup_receipt = $null; owned_registration_verified = $true; durable_commit = $true; outcome = 'committed' } | ConvertTo-Json -Compress
+            $nsisSuccess = { param([string]$Stderr) Assert-DesktopNativeNsisResult -Result ([pscustomobject]@{ exit_code = 0; stdout = $nsisReceipt; stderr = $Stderr; stdout_metadata = [pscustomobject]@{ truncated = $false } }) -Command uninstall -PlanSha256 $nsisPlanSha -GuiSha256 ('b' * 64) }
+            $recoveredLines = "winsmux installer: readback_recovered 167 file:6`nwinsmux installer: readback_recovered 171 from_parent:6`nwinsmux installer: readback_more 1`n"
+            Assert-Condition ((& $nsisSuccess '').outcome -ceq 'committed') 'A helper success without stderr was refused.'
+            Assert-Condition ((& $nsisSuccess $recoveredLines).outcome -ceq 'committed') 'A helper success that printed only recovered readback lines was refused.'
+            Assert-Condition ((& $nsisSuccess $recoveredLines.Replace("`n", "`r`n")).outcome -ceq 'committed') 'A helper success that printed only recovered readback lines with CRLF was refused.'
+            foreach ($extra in @('winsmux installer: readback_refused 167 file:6 mismatch', 'winsmux installer: readback_recovered 167 file:6 reopen:5', 'winsmux installer: readback_recovered 167 parent:6', 'winsmux installer: readback_more 0', 'winsmux installer: io_unconfirmed', ' winsmux installer: readback_recovered 167 file:6')) {
+                Assert-Condition (Test-Throws { & $nsisSuccess ($recoveredLines + $extra + "`n") }) ('A helper success with the stderr line "' + $extra + '" was accepted.')
+            }
+            $caseIds.Add('desktop_native_nsis_success_readback_lines')
+            Assert-Condition ((Get-DesktopNativeNsisClassText ("winsmux installer: io_unconfirmed`n" + $recoveredLines)) -match '^winsmux installer: io_unconfirmed\s*$') 'Recovered readback lines changed the class of a failed helper run.'
+            Assert-Condition (-not ((Get-DesktopNativeNsisClassText ("winsmux installer: io_unconfirmed`nwinsmux installer: readback_refused 171 file:6 reopen:5`n" + $recoveredLines)) -match '^winsmux installer: io_unconfirmed\s*$')) 'A refused readback line was dropped from a failed helper run.'
+            $caseIds.Add('desktop_native_nsis_failure_readback_lines')
+
+            $nsisHookPath =Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis-installer-hooks.nsh'
             $nsisTemplatePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-app\src-tauri\nsis\installer.nsi'
             Assert-Condition (Test-Path -LiteralPath $nsisHookPath -PathType Leaf) 'Desktop NSIS installer hook source was not found.'
             Assert-Condition (Test-Path -LiteralPath $nsisTemplatePath -PathType Leaf) 'Desktop NSIS native template source was not found.'
