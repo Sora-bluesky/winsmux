@@ -35,8 +35,9 @@ ManifestDPIAwareness PerMonitorV2
 ; Every helper output line and the root it judged go to the details view, and the abort text names
 ; what the helper's classification, its last line, means for the user. The text is printed to the
 ; details view before the abort because the status line truncates it and /P and /S runs do not show
-; it at all. A "winsmux installer: restore_incomplete" line before the classification means a
-; rollback left shortcuts parked, so the abort text also says that the next run puts them back.
+; it at all. A "winsmux installer: restore_incomplete <refusal> <domain> <path>" line whose domain is
+; desktop or start_menu means a rollback left that shortcut parked, so the abort text also says that
+; the next run puts it back. Any other restore_incomplete line adds nothing to the abort text.
 ; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
 ; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flag.
 !macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX
@@ -56,7 +57,11 @@ ManifestDPIAwareness PerMonitorV2
         StrCpy $3 $6
         StrCpy $6 $6 37
         ${If} $6 == "winsmux installer: restore_incomplete"
-          StrCpy $5 1
+          ${${UN}WordFind} $3 " " "+5" $6
+          ${If} $6 S== "desktop"
+          ${OrIf} $6 S== "start_menu"
+            StrCpy $5 1
+          ${EndIf}
         ${EndIf}
       ${EndIf}
       StrCpy $6 ""

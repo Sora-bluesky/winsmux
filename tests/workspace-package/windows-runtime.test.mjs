@@ -24,7 +24,7 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', 'b6c7ac3d09cc3656cb774bc3c12221f7b25d261080771633f80e9571ddb8f0fb'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', '79ad0386636b9bcdaa27e7418185490b5cb32bede9e46041c8b66b3a913c30c1'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
     ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'bbc1e106fce5d78e2f7d8823f98e7b13a3c56b0307154a26c0fddb798f1a235c'],
   ]);
@@ -83,9 +83,10 @@ test('every helper refusal the installer names gets an install and an uninstall 
   for (const cls of mapped.keys()) assert.ok(emitted.has(cls), `${cls} is not a classification the helper emits`);
   assert.ok(macro.includes('  DetailPrint $4\n  Abort $4\n'), 'the message is printed to the details view before the abort');
   // Every helper line reaches the details view, the last non-empty line is the classification, and a
-  // restore_incomplete line before it appends the parked-shortcut notice to whichever message was chosen.
+  // restore_incomplete line before it that names a Desktop or Start menu row appends the parked-shortcut
+  // notice to whichever message was chosen (the next test runs those statements).
   assert.ok(macro.includes('        DetailPrint "winsmux installer helper: $6"\n        StrCpy $3 $6\n'), 'each helper line is printed and the last one is classified');
-  assert.ok(macro.includes('        ${If} $6 == "winsmux installer: restore_incomplete"\n          StrCpy $5 1\n'), 'the restore_incomplete line is detected by its fixed prefix');
+  assert.ok(macro.includes('        ${If} $6 == "winsmux installer: restore_incomplete"\n'), 'the restore_incomplete line is detected by its fixed prefix');
   assert.equal('winsmux installer: restore_incomplete'.length, 37);
   assert.ok(macro.includes('  ${If} $5 = 1\n    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"\n  ${EndIf}\n  DetailPrint $4\n'), 'the parked-shortcut notice follows the class message');
   assert.ok(helper.includes('"winsmux installer: restore_incomplete {} {} {}"'), 'the helper prints the restore_incomplete line the installer looks for');

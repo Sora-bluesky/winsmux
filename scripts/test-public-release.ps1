@@ -6512,11 +6512,12 @@ function Assert-DesktopNativeNsisUninstallAdapterSource {
     Assert-Condition ($reports.Count -eq 1) 'Desktop NSIS helper failure report must be unique.'
     $reportBody = $reports[0].Groups['body'].Value
     $reportSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($reportBody))).ToLowerInvariant()
-    Assert-Condition ($reportSha256 -ceq 'bad61a46207fc67a6c93bb1d48da87a575de8e9c7a263965ce6bd7c20b0fb0b3') 'Desktop NSIS helper failure report differs.'
+    Assert-Condition ($reportSha256 -ceq 'fdd15d4d31fb6c0175ff7aae4f4d9e20b0eefc020c1c08e06f2cc601b3bc8230') 'Desktop NSIS helper failure report differs.'
     Assert-Condition ([regex]::Matches($reportBody, '(?m)^  Abort \$4$').Count -eq 1) 'Desktop NSIS helper failure report must abort.'
-    # Every helper line is printed, the last one is classified, and a restore_incomplete line appends the parked-shortcut notice.
+    # Every helper line is printed, the last one is classified, and a restore_incomplete line whose row domain
+    # (the fifth word) is desktop or start_menu appends the parked-shortcut notice.
     Assert-Condition ([regex]::Matches($reportBody, '(?m)^        DetailPrint "winsmux installer helper: \$6"\n        StrCpy \$3 \$6$').Count -eq 1) 'Desktop NSIS helper failure report must print each helper line and classify the last.'
-    Assert-Condition ([regex]::Matches($reportBody, '(?m)^        \$\{If\} \$6 == "winsmux installer: restore_incomplete"\n          StrCpy \$5 1$').Count -eq 1) 'Desktop NSIS helper failure report must detect restore_incomplete.'
+    Assert-Condition ([regex]::Matches($reportBody, '(?m)^        \$\{If\} \$6 == "winsmux installer: restore_incomplete"\n          \$\{\$\{UN\}WordFind\} \$3 " " "\+5" \$6\n          \$\{If\} \$6 S== "desktop"\n          \$\{OrIf\} \$6 S== "start_menu"\n            StrCpy \$5 1$').Count -eq 1) 'Desktop NSIS helper failure report must give the parked-shortcut notice only for a desktop or start_menu restore_incomplete row.'
     Assert-Condition ([regex]::Matches($reportBody, '(?m)^  \$\{If\} \$5 = 1\n    StrCpy \$4 "\$4 \$\(WINSMUX_\$\{PREFIX\}RESTORE_INCOMPLETE\)"\n  \$\{EndIf\}\n  DetailPrint \$4$').Count -eq 1) 'Desktop NSIS helper failure report must append the parked-shortcut notice.'
     # Every string the report selects must exist in the hook for both prefixes and both installer languages.
     $reportStrings = @([regex]::Matches($reportBody, '\$\(WINSMUX_\$\{PREFIX\}(?<name>[A-Z_]+)\)') | ForEach-Object { $_.Groups['name'].Value } | Sort-Object -Unique)
@@ -6878,6 +6879,7 @@ function Invoke-SelfTest {
                 failure_report_without_helper_lines = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('        DetailPrint "winsmux installer helper: $6"' + [char]10, ''))
                 failure_report_without_restore_notice = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('    StrCpy $4 "$4 $(WINSMUX_${PREFIX}RESTORE_INCOMPLETE)"', '    StrCpy $4 "$4"'))
                 failure_report_restore_notice_on_wrong_prefix = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace('"winsmux installer: restore_incomplete"', '"winsmux installer: restore_incomplet"'))
+                failure_report_restore_notice_for_any_row = $nsisTemplateSource.Replace($nativeFailureReports[0].Value, $nativeFailureReports[0].Value.Replace(('          ${${UN}WordFind} $3 " " "+5" $6' + [char]10 + '          ${If} $6 S== "desktop"' + [char]10 + '          ${OrIf} $6 S== "start_menu"' + [char]10 + '            StrCpy $5 1' + [char]10 + '          ${EndIf}'), '          StrCpy $5 1'))
                 missing_failure_observer_definition = $nsisTemplateSource.Replace($nativeFailureObservers[0].Value, '')
                 duplicate_failure_observer_definition = $nsisTemplateSource + [char]10 + $nativeFailureObservers[0].Value
                 failure_observer_default_zero = $nsisTemplateSource.Replace('  StrCpy $2 59', '  StrCpy $2 0')

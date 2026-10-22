@@ -23,13 +23,14 @@
     "Print the per-class message to the details view before the abort and select install or uninstall strings by macro prefix",
     "Bind the license page per language: English shows the rendered license, Japanese shows the hook-anchored reference translation",
     "Abort shortcut_folder_moved with its own per-class message; T-only diagnostic: map it to exit 76",
-    "Print every helper output line to the details view, classify by the last line, and append the parked-shortcut notice when a restore_incomplete line precedes it; T-only diagnostic: pass exits 161-172 through (the preserved-link moves and each move's post-rename readback)"
+    "Print every helper output line to the details view, classify by the last line, and append the parked-shortcut notice when a restore_incomplete line precedes it; T-only diagnostic: pass exits 161-172 through (the preserved-link moves and each move's post-rename readback)",
+    "Append the parked-shortcut notice only when the restore_incomplete line names a desktop or start_menu row"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 45161,
-      "sha256": "b6c7ac3d09cc3656cb774bc3c12221f7b25d261080771633f80e9571ddb8f0fb"
+      "bytes": 45403,
+      "sha256": "79ad0386636b9bcdaa27e7418185490b5cb32bede9e46041c8b66b3a913c30c1"
     },
     {
       "path": "winsmux-utils.nsh",
