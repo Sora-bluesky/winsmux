@@ -127,6 +127,56 @@ test('every helper refusal the installer names gets an install and an uninstall 
   assert.ok(!hooks.includes('LEGACY_ROOT') && !template.includes('legacy_root_mismatch'));
 });
 
+// Runs the statements the report macro executes for each helper line and returns its restore flag ($5),
+// so the notice is judged by what the macro does with the helper's lines, not by how it is spelled.
+function parkedShortcutNotice(template, lines) {
+  const macroStart = template.indexOf('!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n');
+  const macro = template.slice(macroStart, template.indexOf('!macroend', macroStart));
+  const from = macro.indexOf('        StrCpy $3 $6\n');
+  const to = macro.indexOf('      ${EndIf}\n      StrCpy $6 ""\n');
+  assert.ok(macroStart >= 0 && from >= 0 && to > from, 'the per-line statements of the report macro are found');
+  const statements = macro.slice(from, to).trimEnd().split('\n').map(s => s.trim());
+  const reg = { $5: '0' };
+  for (const line of lines) {
+    reg.$6 = line;
+    const branches = [];
+    for (const s of statements) {
+      let m;
+      if ((m = s.match(/^\$\{(If|OrIf)\} (\$\d) (S?==) "([^"\\$]*)"$/u))) {
+        const hit = m[3] === 'S==' ? reg[m[2]] === m[4] : reg[m[2]].toLowerCase() === m[4].toLowerCase();
+        if (m[1] === 'If') branches.push(hit); else branches[branches.length - 1] ||= hit;
+      } else if (s === '${EndIf}') branches.pop();
+      else if (!branches.every(Boolean)) continue;
+      else if ((m = s.match(/^StrCpy (\$\d) (\$\d) (\d+)$/u))) reg[m[1]] = reg[m[2]].slice(0, Number(m[3]));
+      else if ((m = s.match(/^StrCpy (\$\d) (\$\d|\d+)$/u))) reg[m[1]] = m[2].startsWith('$') ? reg[m[2]] : m[2];
+      else if ((m = s.match(/^\$\{\$\{UN\}WordFind\} (\$\d) " " "\+(\d+)" (\$\d)$/u))) reg[m[3]] = reg[m[1]].split(' ')[m[2] - 1] ?? reg[m[1]];
+      else assert.fail(`this test does not model the report statement: ${s}`);
+    }
+    assert.equal(branches.length, 0, 'every If in the per-line statements is closed');
+  }
+  return reg.$5 === '1';
+}
+
+test('the parked-shortcut notice follows only a restore_incomplete line that names a Desktop or Start menu row', () => {
+  const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
+  // Lines in the shapes desktop_nsis.rs asserts the helper prints: "restore_incomplete <refusal> <domain> <path>"
+  // for the first row a restore could not put back, "restore_incomplete <refusal>" when no row refused.
+  const desktop = 'C:\\Users\\u\\Desktop\\winsmux.lnk';
+  const programs = 'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\winsmux.lnk';
+  const parked = {
+    desktop: [`winsmux installer: restore_incomplete io_unconfirmed desktop ${desktop}`, 'winsmux installer: startup_unconfirmed'],
+    start_menu: [`winsmux installer: restore_incomplete path_refused:171 start_menu ${programs}`, 'winsmux installer: pending_unconfirmed'],
+  };
+  const notParked = {
+    registration_unconfirmed: ['winsmux installer: restore_incomplete pending_unconfirmed', 'winsmux installer: registration_conflict'],
+    registration_slot: ['winsmux installer: restore_incomplete io_unconfirmed registration slot:0', 'winsmux installer: registration_conflict'],
+    root_file: ['winsmux installer: restore_incomplete io_unconfirmed root C:\\Users\\u\\desktop start_menu\\winsmux-app.exe', 'winsmux installer: pending_unconfirmed'],
+    no_restore_line: ['winsmux installer: member_unconfirmed'],
+  };
+  for (const [name, lines] of Object.entries(parked)) assert.equal(parkedShortcutNotice(template, lines), true, `${name}: a parked shortcut gets the notice`);
+  for (const [name, lines] of Object.entries(notParked)) assert.equal(parkedShortcutNotice(template, lines), false, `${name}: nothing says shortcuts are parked`);
+});
+
 test('compiler identity refuses unsuccessful observations and malformed captured bytes', () => {
   assert.deepEqual(readRustcIdentity(compilerResult()), { host: target, rustcCommit: measuredCommit });
   for (const change of [{ error: new Error('spawn failed') }, { status: 1 }, { status: null },
