@@ -42,7 +42,9 @@ ManifestDPIAwareness PerMonitorV2
 ; "winsmux installer: restore_shortcut_unconfirmed <kind>" line adds what the helper saw of the
 ; Desktop and Start menu links. The helper prints these restore lines after its classification, the
 ; link lines before the row lines, because ExecToStack keeps only the first NSIS_MAX_STRLEN
-; characters of the output; a cut drops row lines first.
+; characters of the output; a cut drops row lines first. A "winsmux installer: readback_refused ..."
+; line, a move's readback that still refused after its rename, comes after a path_refused
+; classification or with a restore_incomplete line, so it never changes the message.
 ; UN is "" or "un."; PREFIX is "" or "UN_" and selects the install or uninstall strings.
 ; $0/$1 stay the plugin return/output. $3 ends as the last non-empty line, $5 as the restore flags:
 ; 1 a restore stopped short, 2 a link is parked, 4 a link's place is unconfirmed.
@@ -122,9 +124,10 @@ ManifestDPIAwareness PerMonitorV2
   !if "${STAGE}" == "context-write"
     StrCpy $2 52
   !else if "${STAGE}" == "helper"
-    ; The restore lines ("winsmux installer: restore_...") come after the classification and do not
-    ; change it, so $3 is the output without them. ExecToStack can cut the output anywhere, and the
-    ; helper ends every line with a newline, so a last piece without one is left out too.
+    ; The restore lines ("winsmux installer: restore_...") and the readback lines ("winsmux installer:
+    ; readback_refused ...") come after the classification and do not change it, so $3 is the output
+    ; without them. ExecToStack can cut the output anywhere, and the helper ends every line with a
+    ; newline, so a last piece without one is left out too.
     StrCpy $3 ""
     StrCpy $6 ""
     StrCpy $7 0
@@ -134,6 +137,7 @@ ManifestDPIAwareness PerMonitorV2
       ${If} $8 == "$\n"
         StrCpy $5 $6 27
         ${If} $5 S!= "winsmux installer: restore_"
+        ${AndIf} $5 S!= "winsmux installer: readback"
           StrCpy $3 "$3$6"
         ${EndIf}
         StrCpy $6 ""

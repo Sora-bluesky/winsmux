@@ -24,7 +24,7 @@ test('Git checkout preserves the pinned NSIS input bytes even with autocrlf enab
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-checkout-'));
   t.after(() => fs.rmSync(root, { recursive: true }));
   const files = new Map([
-    ['winsmux-app/src-tauri/nsis/installer.nsi', 'b176bcd087d54f7ed0d08062014e91168bc195b4e4a07582f89e9c476a04c329'],
+    ['winsmux-app/src-tauri/nsis/installer.nsi', 'c54f74847197f7fdf47d40be292986db9545e5614615026a981213862e24d30a'],
     ['winsmux-app/src-tauri/nsis/winsmux-utils.nsh', '923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad'],
     ['distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt', 'bbc1e106fce5d78e2f7d8823f98e7b13a3c56b0307154a26c0fddb798f1a235c'],
   ]);
@@ -86,7 +86,8 @@ test('every helper refusal the installer names gets an install and an uninstall 
   // restore lines the helper prints choose the restore message and its notices (the next test runs the
   // macro on those lines).
   assert.ok(macro.includes('        DetailPrint "winsmux installer helper: $6"\n        StrCpy $3 $6\n'), 'each helper line is printed and the last one is classified');
-  for (const line of ['restore_incomplete {refusal} {} {} {}', 'restore_shortcut_parked {kind}', 'restore_shortcut_unconfirmed {kind}']) {
+  for (const line of ['restore_incomplete {refusal} {} {} {}', 'restore_shortcut_parked {kind}', 'restore_shortcut_unconfirmed {kind}',
+    'readback_refused {site} {}:{} {again}']) {
     assert.ok(helper.includes(`"winsmux installer: ${line}"`), `the helper prints the ${line} line the installer looks for`);
   }
   assert.equal((macro.match(/\$\{PREFIX\}/gu) ?? []).length, new Set(mapped.values()).size + 4, 'every string selection, the default and the restore strings included, goes through the prefix');
@@ -279,12 +280,14 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
   // place (task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place).
   const cases = {
     slot_left_external: ['winsmux installer: registration_conflict', 'winsmux installer: restore_incomplete uncertain slot registration slot:0'],
-    link_back_after_readback: ['winsmux installer: startup_unconfirmed', `winsmux installer: restore_incomplete path_refused:171 preserved desktop ${desktop}`],
+    link_back_after_readback: ['winsmux installer: startup_unconfirmed', 'winsmux installer: readback_refused 171 file:6 reopen:5',
+      `winsmux installer: restore_incomplete path_refused:171 preserved desktop ${desktop}`],
     product_link_stayed: ['winsmux installer: io_unconfirmed', 'winsmux installer: restore_shortcut_unconfirmed desktop',
       `winsmux installer: restore_incomplete io_unconfirmed new desktop ${desktop}`],
     link_left_parked: ['winsmux installer: startup_unconfirmed', 'winsmux installer: restore_shortcut_parked desktop',
       `winsmux installer: restore_incomplete io_unconfirmed preserved desktop ${desktop}`],
-    link_not_placed: ['winsmux installer: io_unconfirmed', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
+    link_not_placed: ['winsmux installer: io_unconfirmed', 'winsmux installer: readback_refused 170 file:6 reopen:5',
+      'winsmux installer: restore_shortcut_unconfirmed start_menu',
       `winsmux installer: restore_incomplete path_refused:170 new desktop ${desktop}`,
       `winsmux installer: restore_incomplete uncertain preserved start_menu ${programs}`],
   };
@@ -303,6 +306,12 @@ test('a restore the helper left unfinished reads as kept recovery data, and a sh
     }
     assert.equal(helperFailureAbort(template, hooks, { prefix, language, lines: ['winsmux installer: member_unconfirmed'] }).abort,
       said('FAILED_MEMBER'), `${prefix}${language}: without a restore line the class message stands`);
+    // A readback that still refused after the rename (task881_preserved_link_readback_refusal_names_the_publish_move)
+    // prints its line after the class and before any restore line, and the message is the class message.
+    const refused = ['winsmux installer: path_refused', 'winsmux installer: readback_refused 169 file:6 reopen:5'];
+    const { abort, details } = helperFailureAbort(template, hooks, { prefix, language, lines: refused, exit: '169' });
+    assert.equal(abort, said('TRANSACTION_FAILED'), `${prefix}${language}: a readback line keeps the class message`);
+    assert.ok(details.includes(`winsmux installer helper: ${refused[1]}`), `${prefix}${language}: the readback line reaches the details view`);
   }
 });
 
@@ -321,8 +330,10 @@ function helperObservedExit(template, exit, output) {
 test('the T-only exit code names the helper classification even with the restore lines the helper prints after it', () => {
   const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
   const observe = (exit, lines, eol) => helperObservedExit(template, exit, lines.map(line => `${line}${eol}`).join(''));
-  // The restore lines desktop_nsis.rs pins: where a Desktop or Start menu link stands, then a row left.
-  const restore = ['winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
+  // The lines desktop_nsis.rs pins after the classification: a readback that still refused after its rename,
+  // where a Desktop or Start menu link stands, then a row left.
+  const restore = ['winsmux installer: readback_refused 171 file:6 reopen:5',
+    'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: restore_shortcut_unconfirmed start_menu',
     'winsmux installer: restore_incomplete uncertain slot registration slot:0',
     'winsmux installer: restore_incomplete path_refused:171 preserved desktop C:\\Users\\u\\Desktop\\winsmux.lnk'];
   for (const eol of ['\n', '\r\n']) {
