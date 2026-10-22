@@ -6736,7 +6736,9 @@ mod native {
             assert_eq!(
                 lines,
                 vec![
+                    "winsmux installer: restore_shortcut_parked desktop".to_string(),
                     "winsmux installer: restore_shortcut_unconfirmed desktop".to_string(),
+                    "winsmux installer: restore_shortcut_parked start_menu".to_string(),
                     "winsmux installer: restore_shortcut_unconfirmed start_menu".to_string(),
                     format!("winsmux installer: restore_incomplete io_unconfirmed new desktop {}", link("desktop")),
                     format!("winsmux installer: restore_incomplete io_unconfirmed new start_menu {}", link("start_menu")),
@@ -6748,9 +6750,38 @@ mod native {
             let output: String = failure_lines(Error::Io, lines.clone()).iter().map(|line| format!("{line}\n")).collect();
             let kept: String = output.chars().take(1023).collect();
             assert!(kept.starts_with("winsmux installer: io_unconfirmed\n"), "{kept}");
-            for line in &lines[..2] {
+            for line in &lines[..4] {
                 assert!(kept.contains(&format!("\n{line}\n")), "{line} is in {kept}");
             }
+        }
+        /// A first install over two foreign links rolls back after publishing its own links, and the
+        /// product Desktop link's move back refuses before its rename, so it keeps the Desktop path.
+        /// The foreign Desktop link is still parked. The restore says both: the link set aside is
+        /// preserved, and the Desktop link's place is unconfirmed.
+        #[test]
+        fn task881_restore_calls_a_parked_link_parked_while_the_product_link_holds_its_place() {
+            let (good, _, _) = foreign_shortcut_fixture();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, foreign) = foreign_shortcut_fixture();
+            reset_steps(Some(at), false);
+            arm_restore_fault("new:desktop:RestoreIntent", RestoreFault::BeforeRename);
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            let lines = reports();
+            disarm_restore_faults();
+            let live = known.join("desktop").join("winsmux.lnk");
+            let text = path_text(&live).unwrap();
+            assert_eq!(
+                lines,
+                vec![
+                    "winsmux installer: restore_shortcut_parked desktop".to_string(),
+                    "winsmux installer: restore_shortcut_unconfirmed desktop".to_string(),
+                    format!("winsmux installer: restore_incomplete io_unconfirmed new desktop {text}"),
+                    format!("winsmux installer: restore_incomplete uncertain preserved desktop {text}"),
+                ]
+            );
+            assert_eq!(fs::read(parked_link(&f, "desktop")).unwrap(), foreign[0].1, "the foreign link is preserved where the notice says");
+            verify_link(&live, &f.root.path.join("winsmux-app.exe")).unwrap();
         }
         #[test]
         fn every_install_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
