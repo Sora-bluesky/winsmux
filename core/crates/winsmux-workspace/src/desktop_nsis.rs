@@ -6658,6 +6658,37 @@ mod native {
             assert_foreign_parked(&f, &known, &foreign);
             assert!(!exists(&f.root.path.join(CONTROL).join("pending.json")).unwrap());
         }
+        /// The second readback confirms only the held file under its new name. Another file with the
+        /// same bytes there is refused, and so is the held file once a second link names it.
+        #[test]
+        fn task881_second_readback_refuses_another_file_or_a_second_link() {
+            let f = fixture();
+            let (renamed, other, gone) = (f.root.path.join("renamed"), f.root.path.join("other"), f.root.path.join("gone"));
+            fs::write(&renamed, b"same bytes").unwrap();
+            fs::write(&other, b"same bytes").unwrap();
+            let mut held = observe(&renamed, "renamed", true).unwrap();
+            let row = held.member.clone();
+            let parent = Dirs::open(&f.root.path).unwrap();
+            let mut refusal = None;
+            assert_eq!(reconfirm_by_name(&mut held, &parent, (&gone, &renamed), &row, None, &mut refusal), Ok(true), "the held file under its new name");
+            assert_ne!(reconfirm_by_name(&mut held, &parent, (&gone, &other), &row, None, &mut refusal), Ok(true), "another file with the same bytes");
+            fs::hard_link(&renamed, f.root.path.join("second-link")).unwrap();
+            assert_ne!(reconfirm_by_name(&mut held, &parent, (&gone, &renamed), &row, None, &mut refusal), Ok(true), "the held file with a second link");
+            assert!(refusal.is_none(), "no final name was refused");
+        }
+        /// The handle opened by name answers for the path it resolves to: the held file's own handle,
+        /// checked against a path the file is not at, is refused.
+        #[test]
+        fn task881_second_readback_refuses_a_path_the_file_is_not_at() {
+            let f = fixture();
+            let (renamed, other) = (f.root.path.join("renamed"), f.root.path.join("other"));
+            fs::write(&renamed, b"same bytes").unwrap();
+            fs::write(&other, b"same bytes").unwrap();
+            let mut held = observe(&renamed, "renamed", true).unwrap();
+            let named = open_attributes(&renamed).unwrap();
+            assert_eq!(member_named(&mut held.file, named.0, &renamed, "renamed"), Ok(held.member.clone()));
+            assert_eq!(member_named(&mut held.file, named.0, &other, "renamed"), Err(Error::Path(116)));
+        }
         /// TASK-881 realmachine-65d64351, second half: the rollback renames the parked Desktop link back
         /// and its final-name readback refuses once (restore_incomplete path_refused:171). The link is
         /// back, so the restore must confirm it and report nothing, as a rollback without the refusal does.
