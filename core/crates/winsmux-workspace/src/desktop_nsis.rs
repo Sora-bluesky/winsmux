@@ -6322,41 +6322,22 @@ mod native {
         /// published. During the restore, the preserved `kind` link's move back fails right after
         /// its rename (the TASK-881 journal: desktop restore_intent, start_menu moved_confirmed).
         /// `readback` fails the renamed file's final-name readback (the real machine's 106);
-        /// otherwise the next cut, the journal write after the move, refuses with Io.
+        /// otherwise the move's cut after the rename refuses with Io. Either fault fires once, so a
+        /// later restore move made while this row is still restore_intent goes through.
         fn fail_restore_of_preserved(f: &Fixture, kind: &'static str) -> Result<Receipt> {
             fail_restore_of_preserved_at(f, kind, false)
         }
         fn fail_restore_of_preserved_at(f: &Fixture, kind: &'static str, readback: bool) -> Result<Receipt> {
-            hooks::MOCK.with(|m| {
-                let mut m = m.borrow_mut();
-                let m = m.as_mut().unwrap();
-                m.startup_fail = true;
-                m.barrier = Some(Box::new(move |label| {
-                    hooks::MOCK.with(|m| {
-                        let mut m = m.borrow_mut();
-                        let m = m.as_mut().unwrap();
-                        if label == "move_after"
-                            && m.proof_key.starts_with("Restoring|")
-                            && m.proof_key.contains(&format!("preserved:{kind}:RestoreIntent"))
-                        {
-                            if readback {
-                                m.final_name_refusal = true;
-                            } else {
-                                m.fail = Some(m.steps + 1);
-                            }
-                        }
-                    });
-                }));
-            });
+            let class = match kind {
+                "desktop" => "preserved:desktop:RestoreIntent",
+                "start_menu" => "preserved:start_menu:RestoreIntent",
+                _ => panic!("unknown shortcut kind"),
+            };
+            arm_restore_fault(class, if readback { RestoreFault::Readback } else { RestoreFault::AfterRename });
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
             let result = execute(f);
-            hooks::MOCK.with(|m| {
-                let mut m = m.borrow_mut();
-                let m = m.as_mut().unwrap();
-                m.barrier = None;
-                m.startup_fail = false;
-            });
             let kept = reports();
-            reset_steps(None, false);
+            disarm_restore_faults();
             hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().reports = kept);
             result
         }
@@ -6471,6 +6452,8 @@ mod native {
         enum RestoreFault {
             /// The move refuses before its rename; the file stays where it was.
             BeforeRename,
+            /// The move's cut after the rename refuses; the file has moved.
+            AfterRename,
             /// The final-name readback after the rename refuses; the file has moved.
             Readback,
         }
@@ -6479,7 +6462,7 @@ mod native {
         fn restore_fault_at(label: &str, class: &str, fault: RestoreFault) -> bool {
             let at = match fault {
                 RestoreFault::BeforeRename => "move_before",
-                RestoreFault::Readback => "move_after",
+                RestoreFault::AfterRename | RestoreFault::Readback => "move_after",
             };
             label == at
                 && hooks::MOCK.with(|m| {
@@ -6488,7 +6471,7 @@ mod native {
                     let armed = m.proof_key.starts_with("Restoring|") && m.proof_key.contains(class);
                     if armed {
                         match fault {
-                            RestoreFault::BeforeRename => m.fail = Some(m.steps + 1),
+                            RestoreFault::BeforeRename | RestoreFault::AfterRename => m.fail = Some(m.steps + 1),
                             RestoreFault::Readback => m.final_name_refusal = true,
                         }
                     }
