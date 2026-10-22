@@ -4613,6 +4613,14 @@ function New-DesktopNativeNsisContextText {
     )) + $end
 }
 
+function Get-DesktopNativeNsisClassText {
+    # The helper prints the moves whose second readback recovered, and a count of the readback lines past
+    # two, after a success too. A refused readback stays: the helper prints it before any recovered one.
+    param([AllowNull()][AllowEmptyString()][string]$Stderr)
+    $kept = @(([string]$Stderr) -split '\r?\n' | Where-Object { $_ -cnotmatch '^winsmux installer: (readback_recovered [0-9]+ (from_parent|to_parent|file|reopen):[0-9]+|readback_more [1-9][0-9]*)$' })
+    return ($kept -join "`n")
+}
+
 function Assert-DesktopNativeNsisResult {
     param(
         [Parameter(Mandatory)]$Result,
@@ -4620,7 +4628,7 @@ function Assert-DesktopNativeNsisResult {
         [Parameter(Mandatory)][string]$PlanSha256,
         [Parameter(Mandatory)][string]$GuiSha256
     )
-    Assert-Condition ($Result.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$Result.stderr) -and -not $Result.stdout_metadata.truncated) 'desktop_native_action_failed'
+    Assert-Condition ($Result.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace((Get-DesktopNativeNsisClassText $Result.stderr)) -and -not $Result.stdout_metadata.truncated) 'desktop_native_action_failed'
     $receipt = ConvertFrom-DesktopStrictJsonText ([string]$Result.stdout)
     Assert-DesktopInventoryShape $receipt @('schema', 'operation_id', 'action', 'version', 'plan_sha256', 'startup_receipt', 'owned_registration_verified', 'durable_commit', 'outcome')
     Assert-Condition ($receipt.schema -ceq 'winsmux-desktop-nsis-transaction-receipt/v1' -and $receipt.action -ceq $Command -and $receipt.version -ceq '0.38.0' -and $receipt.plan_sha256 -ceq $PlanSha256 -and $receipt.operation_id -cmatch '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$' -and $receipt.durable_commit -eq $true -and $receipt.owned_registration_verified -eq $true -and $receipt.outcome -ceq 'committed') 'desktop_native_action_receipt_refused'
@@ -5365,7 +5373,7 @@ function Invoke-DesktopNativeNsisJourney {
     foreach ($kind in @('hash', 'missing')) {
         $source = New-DesktopNativeFaultSource -Root $legacyRoot -Plan $script:DesktopNativePlan -Kind $kind
         $failed = Invoke-DesktopNativeNsisAction -Command install -Root $legacyRoot -Source $source -Case ('nsis-' + $kind) -PlanSha256 $planSha
-        Assert-Condition ($failed.exit_code -ne 0 -and [string]::IsNullOrWhiteSpace($failed.stdout) -and $failed.stderr -match '^winsmux installer: (plan_refused|member_unconfirmed|io_unconfirmed)\s*$') 'desktop_native_payload_fault_not_reached'
+        Assert-Condition ($failed.exit_code -ne 0 -and [string]::IsNullOrWhiteSpace($failed.stdout) -and (Get-DesktopNativeNsisClassText $failed.stderr) -match '^winsmux installer: (plan_refused|member_unconfirmed|io_unconfirmed)\s*$') 'desktop_native_payload_fault_not_reached'
         $restored = Get-DesktopNativeWitness -Root $legacyRoot -Sentinel $Sentinel
         Assert-DesktopNativeWitnessEqual $prior $restored
         Write-DesktopNativeEvidence ('nsis-' + $kind + '-preserved.json') $restored
@@ -5671,7 +5679,7 @@ function Invoke-DesktopNativeNsisCrashFault {
         [void](Assert-DesktopNativeInstalledPayload -Root $Root -Plan $script:DesktopNativePlan -PlanSha256 $PlanSha256 -Managed)
         Assert-Condition ($current.user_sentinel['identity'] -ceq $prior.user_sentinel['identity'] -and $current.user_sentinel['sha256'] -ceq $prior.user_sentinel['sha256']) 'desktop_native_crash_user_data_changed'
         $outcome = 'full-q'
-    } elseif ($reentry.exit_code -eq 3 -and $reentry.stderr -match '^winsmux installer: pending_unconfirmed\s*$') {
+    } elseif ($reentry.exit_code -eq 3 -and (Get-DesktopNativeNsisClassText $reentry.stderr) -match '^winsmux installer: pending_unconfirmed\s*$') {
         $outcome = 'truthful-pending'
     } else { Assert-DesktopNativeWitnessEqual $prior $current; $outcome = 'exact-p' }
     Write-DesktopNativeEvidence 'nsis-crash-reentry-state.json' ([ordered]@{ outcome = $outcome; witness = $current })
@@ -6233,7 +6241,7 @@ function Invoke-DesktopNativeCapacityStage {
             $result.before = Get-DesktopNativeWitness -Root $request.root -Sentinel $sentinel
             $process = Invoke-DesktopOwnedNativeProcess -FilePath $cli -ArgumentList @('--winsmux-internal-desktop-installer', 'nsis-install', '--context', $request.context.path) -Environment @{} -TimeoutSeconds 180
             $result.process = $process
-            Assert-Condition ($process.exit_code -ne 0 -and [string]::IsNullOrWhiteSpace($process.stdout) -and $process.stderr -match '^winsmux installer: io_unconfirmed\s*$') 'desktop_native_capacity_failure_class_unmet'
+            Assert-Condition ($process.exit_code -ne 0 -and [string]::IsNullOrWhiteSpace($process.stdout) -and (Get-DesktopNativeNsisClassText $process.stderr) -match '^winsmux installer: io_unconfirmed\s*$') 'desktop_native_capacity_failure_class_unmet'
             $result.after = Get-DesktopNativeWitness -Root $request.root -Sentinel $sentinel
             Assert-DesktopNativeWitnessEqual $result.before $result.after
             Assert-Condition ([WinsmuxDesktopNativeActor]::NativeFile($request.context.path)['identity'] -ceq $ctx['identity'] -and [WinsmuxDesktopNativeActor]::NativeFile($request.context.path)['sha256'] -ceq $ctx['sha256']) 'desktop_native_capacity_context_changed'
