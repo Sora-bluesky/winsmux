@@ -128,54 +128,163 @@ test('every helper refusal the installer names gets an install and an uninstall 
   assert.ok(!hooks.includes('LEGACY_ROOT') && !template.includes('legacy_root_mismatch'));
 });
 
-// Runs the statements the report macro executes for each helper line and returns its restore flag ($5),
-// so the notice is judged by what the macro does with the helper's lines, not by how it is spelled.
-function parkedShortcutNotice(template, lines) {
-  const macroStart = template.indexOf('!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX\n');
-  const macro = template.slice(macroStart, template.indexOf('!macroend', macroStart));
-  const from = macro.indexOf('        StrCpy $3 $6\n');
-  const to = macro.indexOf('      ${EndIf}\n      StrCpy $6 ""\n');
-  assert.ok(macroStart >= 0 && from >= 0 && to > from, 'the per-line statements of the report macro are found');
-  const statements = macro.slice(from, to).trimEnd().split('\n').map(s => s.trim());
-  const reg = { $5: '0' };
-  for (const line of lines) {
-    reg.$6 = line;
-    const branches = [];
-    for (const s of statements) {
-      let m;
-      if ((m = s.match(/^\$\{(If|OrIf)\} (\$\d) (S?==) "([^"\\$]*)"$/u))) {
-        const hit = m[3] === 'S==' ? reg[m[2]] === m[4] : reg[m[2]].toLowerCase() === m[4].toLowerCase();
-        if (m[1] === 'If') branches.push(hit); else branches[branches.length - 1] ||= hit;
-      } else if (s === '${EndIf}') branches.pop();
-      else if (!branches.every(Boolean)) continue;
-      else if ((m = s.match(/^StrCpy (\$\d) (\$\d) (\d+)$/u))) reg[m[1]] = reg[m[2]].slice(0, Number(m[3]));
-      else if ((m = s.match(/^StrCpy (\$\d) (\$\d|\d+)$/u))) reg[m[1]] = m[2].startsWith('$') ? reg[m[2]] : m[2];
-      else if ((m = s.match(/^\$\{\$\{UN\}WordFind\} (\$\d) " " "\+(\d+)" (\$\d)$/u))) reg[m[3]] = reg[m[1]].split(' ')[m[2] - 1] ?? reg[m[1]];
-      else assert.fail(`this test does not model the report statement: ${s}`);
+// A small interpreter for the LogicLib statements the installer's failure macros use, so a test judges
+// what a macro does with the helper's output, not how its source is spelled.
+function nsisStatements(body, params) {
+  let text = body;
+  for (const [name, value] of Object.entries(params)) text = text.replaceAll(name, value);
+  return text.split('\n').map(s => s.trim()).filter(s => s && !s.startsWith(';'));
+}
+function nsisArgs(s) {
+  return [...s.matchAll(/"((?:\$\\.|\$[^\\]|[^"$])*)"|(\S+)/gu)].map(m => (m[1] === undefined ? { bare: m[2] } : { quoted: m[1] }));
+}
+function nsisParse(statements) {
+  let i = 0;
+  const condition = s => s.replace(/^\$\{(?:If|ElseIf|OrIf|AndIf|LoopUntil)\} /u, '');
+  const block = stops => {
+    const out = [];
+    while (i < statements.length && !stops.some(stop => statements[i].startsWith(stop))) {
+      const s = statements[i++];
+      if (s.startsWith('${If} ')) {
+        const node = { kind: 'if', arms: [], otherwise: [] };
+        for (let head = s; ;) {
+          const conditions = [['', condition(head)]];
+          while (/^\$\{(?:OrIf|AndIf)\} /u.test(statements[i] ?? '')) {
+            const next = statements[i++];
+            conditions.push([next.startsWith('${OrIf}') ? 'or' : 'and', condition(next)]);
+          }
+          node.arms.push({ conditions, body: block(['${ElseIf} ', '${Else}', '${EndIf}']) });
+          const next = statements[i++];
+          if (next?.startsWith('${ElseIf} ')) { head = next; continue; }
+          if (next === '${Else}') { node.otherwise = block(['${EndIf}']); i++; }
+          else assert.equal(next, '${EndIf}', 'every If is closed');
+          break;
+        }
+        out.push(node);
+      } else if (s === '${Do}') {
+        const body = block(['${LoopUntil} ']);
+        out.push({ kind: 'do', body, until: condition(statements[i++]) });
+      } else out.push({ kind: 'statement', s });
     }
-    assert.equal(branches.length, 0, 'every If in the per-line statements is closed');
+    return out;
+  };
+  const tree = block([]);
+  assert.equal(i, statements.length, 'every statement is parsed');
+  return tree;
+}
+function nsisRun(tree, reg, strings, details) {
+  const value = token => {
+    if (token.bare !== undefined) return token.bare.startsWith('$') ? reg[token.bare] : token.bare;
+    return token.quoted.replace(/\$\\n|\$\\r|\$\(([A-Z_]+)\)|\$(\d|INSTDIR)/gu, (m, name, r) => {
+      if (m === '$\\n') return '\n';
+      if (m === '$\\r') return '\r';
+      if (name) {
+        assert.ok(strings.has(name), `${name} is not a hook string`);
+        return strings.get(name);
+      }
+      return reg[`$${r}`];
+    });
+  };
+  const test = text => {
+    const [a, op, b] = nsisArgs(text);
+    const x = value(a), y = value(b);
+    if (op.bare === '==') return x.toLowerCase() === y.toLowerCase();
+    if (op.bare === '!=') return x.toLowerCase() !== y.toLowerCase();
+    if (op.bare === 'S==') return x === y;
+    if (op.bare === 'S!=') return x !== y;
+    if (op.bare === '=') return Number(x) === Number(y);
+    if (op.bare === '<>') return Number(x) !== Number(y);
+    return assert.fail(`this test does not model the condition: ${text}`);
+  };
+  const holds = conditions => conditions.reduce((acc, [join, c]) => (join === 'or' ? acc || test(c) : join === 'and' ? acc && test(c) : test(c)), false);
+  for (const node of tree) {
+    let result;
+    if (node.kind === 'if') {
+      const arm = node.arms.find(a => holds(a.conditions));
+      result = nsisRun(arm ? arm.body : node.otherwise, reg, strings, details);
+    } else if (node.kind === 'do') {
+      for (let n = 0; result === undefined; n++) {
+        assert.ok(n < 100000, 'the loop ends');
+        result = nsisRun(node.body, reg, strings, details);
+        if (test(node.until)) break;
+      }
+    } else {
+      const [op, ...a] = nsisArgs(node.s);
+      if (op.bare === 'DetailPrint') details.push(value(a[0]));
+      else if (op.bare === 'Abort') result = value(a[0]);
+      else if (op.bare === 'StrCpy') {
+        const text = value(a[1]), from = a[3] ? Number(value(a[3])) : 0;
+        reg[a[0].bare] = a[2] ? text.slice(from, from + Number(value(a[2]))) : text;
+      } else if (op.bare === 'IntOp') {
+        const x = Number(value(a[1])), y = Number(value(a[3])), ops = { '+': x + y, '|': x | y, '&': x & y };
+        assert.ok(Object.hasOwn(ops, a[2].bare), `this test does not model IntOp ${a[2].bare}`);
+        reg[a[0].bare] = String(ops[a[2].bare]);
+      } else if (/^\$\{(?:un\.)?TrimNewLines\}$/u.test(op.bare)) reg[a[1].bare] = value(a[0]).replace(/[\r\n]+$/u, '');
+      else if (/^\$\{(?:un\.)?WordFind\}$/u.test(op.bare)) {
+        const words = value(a[0]).split(value(a[1])), n = Number(value(a[2]).slice(1));
+        reg[a[3].bare] = words[n - 1] ?? value(a[0]);
+      } else assert.fail(`this test does not model the statement: ${node.s}`);
+    }
+    if (result !== undefined) return result;
   }
-  return reg.$5 === '1';
+  return undefined;
+}
+function nsisMacroBody(template, header) {
+  const start = template.indexOf(`${header}\n`);
+  assert.ok(start >= 0, `${header} is in the template`);
+  return template.slice(start + header.length + 1, template.indexOf('!macroend', start));
+}
+// The report macro run on one helper exit and output, with one prefix's strings in one language.
+function helperFailureAbort(template, hooks, { prefix, language, lines, exit = '2' }) {
+  const body = nsisMacroBody(template, '!macro WINSMUX_REPORT_HELPER_FAILURE UN PREFIX');
+  const strings = new Map([...hooks.matchAll(/^LangString (\w+) (1033|1041) "(.*)"$/gmu)].filter(m => m[2] === language).map(m => [m[1], m[3]]));
+  const reg = Object.fromEntries(Array.from({ length: 10 }, (_, n) => [`$${n}`, '']));
+  Object.assign(reg, { $0: exit, $1: lines.map(line => `${line}\n`).join(''), $INSTDIR: 'C:\\Users\\u\\AppData\\Local\\winsmux' });
+  const details = [];
+  const abort = nsisRun(nsisParse(nsisStatements(body, { '${PREFIX}': prefix, '${${UN}': prefix ? '${un.' : '${' })), reg, strings, details);
+  assert.equal(typeof abort, 'string', 'the report aborts');
+  return { abort, details };
 }
 
-test('the parked-shortcut notice follows only a restore_incomplete line that names a Desktop or Start menu row', () => {
-  const template = fs.readFileSync(path.join(repoRoot, 'winsmux-app/src-tauri/nsis/installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
-  // Lines in the shapes desktop_nsis.rs asserts the helper prints: "restore_incomplete <refusal> <domain> <path>"
-  // for the first row a restore could not put back, "restore_incomplete <refusal>" when no row refused.
+test('a restore the helper left unfinished reads as kept recovery data, and a shortcut as parked only when the helper saw it there', () => {
+  const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8').replaceAll('\r\n', '\n');
+  const template = read('winsmux-app/src-tauri/nsis/installer.nsi');
+  const hooks = read('winsmux-app/src-tauri/nsis-installer-hooks.nsh');
+  const hook = (name, language) => hooks.match(new RegExp(`^LangString ${name} ${language} "(.*)"$`, 'mu'))?.[1];
   const desktop = 'C:\\Users\\u\\Desktop\\winsmux.lnk';
   const programs = 'C:\\Users\\u\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\winsmux.lnk';
-  const parked = {
-    desktop: [`winsmux installer: restore_incomplete io_unconfirmed desktop ${desktop}`, 'winsmux installer: startup_unconfirmed'],
-    start_menu: [`winsmux installer: restore_incomplete path_refused:171 start_menu ${programs}`, 'winsmux installer: pending_unconfirmed'],
+  // The helper lines desktop_nsis.rs pins for these runs: a slot the restore found holding an external
+  // value (crash_reentry_and_external_registration_are_preserved), a foreign link back in its folder after
+  // its readback refused (task881_rollback_readback_refusal_names_the_restore_move_and_returns_the_other_link),
+  // a product link that could not leave the Desktop (task881_restore_never_calls_a_product_link_parked), a
+  // foreign link left parked (task881_restore_reports_a_link_it_left_parked), and two rows left with a
+  // link the files do not place (task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place).
+  const cases = {
+    slot_left_external: ['winsmux installer: restore_incomplete pending_unconfirmed', 'winsmux installer: registration_conflict'],
+    link_back_after_readback: [`winsmux installer: restore_incomplete path_refused:171 desktop ${desktop}`, 'winsmux installer: startup_unconfirmed'],
+    product_link_stayed: [`winsmux installer: restore_incomplete io_unconfirmed desktop ${desktop}`, 'winsmux installer: io_unconfirmed'],
+    link_left_parked: [`winsmux installer: restore_incomplete io_unconfirmed preserved desktop ${desktop}`,
+      'winsmux installer: restore_shortcut_parked desktop', 'winsmux installer: startup_unconfirmed'],
+    link_not_placed: [`winsmux installer: restore_incomplete path_refused:170 new desktop ${desktop}`,
+      `winsmux installer: restore_incomplete uncertain preserved start_menu ${programs}`,
+      'winsmux installer: restore_shortcut_unconfirmed start_menu', 'winsmux installer: io_unconfirmed'],
   };
-  const notParked = {
-    registration_unconfirmed: ['winsmux installer: restore_incomplete pending_unconfirmed', 'winsmux installer: registration_conflict'],
-    registration_slot: ['winsmux installer: restore_incomplete io_unconfirmed registration slot:0', 'winsmux installer: registration_conflict'],
-    root_file: ['winsmux installer: restore_incomplete io_unconfirmed root C:\\Users\\u\\desktop start_menu\\winsmux-app.exe', 'winsmux installer: pending_unconfirmed'],
-    no_restore_line: ['winsmux installer: member_unconfirmed'],
-  };
-  for (const [name, lines] of Object.entries(parked)) assert.equal(parkedShortcutNotice(template, lines), true, `${name}: a parked shortcut gets the notice`);
-  for (const [name, lines] of Object.entries(notParked)) assert.equal(parkedShortcutNotice(template, lines), false, `${name}: nothing says shortcuts are parked`);
+  for (const [prefix, language] of [['', '1041'], ['', '1033'], ['UN_', '1041'], ['UN_', '1033']]) {
+    const said = name => hook(`WINSMUX_${prefix}${name}`, language);
+    for (const [name, lines] of Object.entries(cases)) {
+      const where = `${name} ${prefix}${language}`;
+      const { abort, details } = helperFailureAbort(template, hooks, { prefix, language, lines });
+      for (const line of lines) assert.ok(details.includes(`winsmux installer helper: ${line}`), `${where}: ${line} reaches the details view`);
+      assert.doesNotMatch(abort, /何も変更していません|何も削除していません|nothing was (?:changed|removed)/iu, `${where}: the unfinished restore is not reported as no change`);
+      const parked = lines.some(line => line.startsWith('winsmux installer: restore_shortcut_parked '));
+      const unplaced = lines.some(line => line.startsWith('winsmux installer: restore_shortcut_unconfirmed '));
+      if (!parked) assert.doesNotMatch(abort, /退避中|set aside/u, `${where}: no shortcut was seen parked`);
+      assert.equal(abort, [said('RESTORE_INCOMPLETE'), ...(parked ? [said('RESTORE_PARKED')] : []),
+        ...(unplaced ? [said('RESTORE_SHORTCUT_UNCONFIRMED')] : [])].join(' '), where);
+    }
+    assert.equal(helperFailureAbort(template, hooks, { prefix, language, lines: ['winsmux installer: member_unconfirmed'] }).abort,
+      said('FAILED_MEMBER'), `${prefix}${language}: without a restore line the class message stands`);
+  }
 });
 
 test('compiler identity refuses unsuccessful observations and malformed captured bytes', () => {

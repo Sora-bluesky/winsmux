@@ -6020,10 +6020,10 @@ mod native {
             let f = fixture();
             hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().foreign_write = true);
             let earlier = reports().len();
-            // The registration refusal that started the restore is the verdict; the restore that could
-            // not put the slot back is the extra line.
+            // The registration refusal that started the restore is the verdict; the slot the restore
+            // found holding a value it did not write is the extra line.
             assert_eq!(execute(&f).err(), Some(Error::Registration));
-            assert_eq!(reports()[earlier..], ["winsmux installer: restore_incomplete pending_unconfirmed".to_string()]);
+            assert_eq!(reports()[earlier..], ["winsmux installer: restore_incomplete uncertain slot registration slot:0".to_string()]);
             assert_eq!(
                 read_slot(0).unwrap(),
                 Some(RawValue {
@@ -6384,7 +6384,7 @@ mod native {
             let (f, known, _) = task881_layout_fixture();
             assert_eq!(fail_restore_of_preserved(&f, "desktop").err(), Some(Error::Startup));
             let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
-            assert_eq!(reports(), vec![format!("winsmux installer: restore_incomplete io_unconfirmed desktop {live}")]);
+            assert_eq!(reports(), vec![format!("winsmux installer: restore_incomplete io_unconfirmed preserved desktop {live}")]);
         }
         /// The real machine's shape: the desktop link is renamed back, then its final-name readback
         /// refuses. The start menu link still goes back, the refusal names the restore move's readback,
@@ -6395,7 +6395,8 @@ mod native {
             assert_eq!(fail_restore_of_preserved_at(&f, "desktop", true).err(), Some(Error::Startup));
             assert_foreign_live(&f, &known, &foreign);
             let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
-            assert_eq!(reports(), vec![format!("winsmux installer: restore_incomplete path_refused:171 desktop {live}")]);
+            // The link is back at its known folder, so nothing is said about where it is.
+            assert_eq!(reports(), vec![format!("winsmux installer: restore_incomplete path_refused:171 preserved desktop {live}")]);
             let journal = f.root.path.join(CONTROL).join("pending.json");
             assert!(exists(&journal).unwrap(), "the journal stays for re-entry");
             recover_if_readable(&f).unwrap();
@@ -6466,24 +6467,44 @@ mod native {
             // PublishPreservedMoveDestination origin.
             assert_eq!(err, Some(Error::Path(162)));
         }
-        /// Fails, once, the final-name readback of the first restore move made while `class` is
-        /// journaled (for example "new:root:RestoreIntent"). The rename itself has already happened.
-        fn arm_restore_readback_refusal(class: &'static str) {
-            let mut fired = false;
-            hooks::MOCK.with(|m| {
-                m.borrow_mut().as_mut().unwrap().barrier = Some(Box::new(move |label| {
-                    if fired || label != "move_after" {
-                        return;
+        #[derive(Clone, Copy)]
+        enum RestoreFault {
+            /// The move refuses before its rename; the file stays where it was.
+            BeforeRename,
+            /// The final-name readback after the rename refuses; the file has moved.
+            Readback,
+        }
+        /// Applies `fault` to the restore move made while `class` (for example
+        /// "new:root:RestoreIntent") is journaled, when `label` is that move's cut.
+        fn restore_fault_at(label: &str, class: &str, fault: RestoreFault) -> bool {
+            let at = match fault {
+                RestoreFault::BeforeRename => "move_before",
+                RestoreFault::Readback => "move_after",
+            };
+            label == at
+                && hooks::MOCK.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let m = m.as_mut().unwrap();
+                    let armed = m.proof_key.starts_with("Restoring|") && m.proof_key.contains(class);
+                    if armed {
+                        match fault {
+                            RestoreFault::BeforeRename => m.fail = Some(m.steps + 1),
+                            RestoreFault::Readback => m.final_name_refusal = true,
+                        }
                     }
-                    fired = hooks::MOCK.with(|m| {
-                        let mut m = m.borrow_mut();
-                        let m = m.as_mut().unwrap();
-                        let armed = m.proof_key.starts_with("Restoring|") && m.proof_key.contains(class);
-                        m.final_name_refusal |= armed;
-                        armed
-                    });
-                }));
-            });
+                    armed
+                })
+        }
+        fn set_barrier(barrier: impl FnMut(&str) + 'static) {
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().barrier = Some(Box::new(barrier)));
+        }
+        /// Applies `fault` once, to the first restore move made while `class` is journaled.
+        fn arm_restore_fault(class: &'static str, fault: RestoreFault) {
+            let mut fired = false;
+            set_barrier(move |label| fired = fired || restore_fault_at(label, class, fault));
+        }
+        fn arm_restore_readback_refusal(class: &'static str) {
+            arm_restore_fault(class, RestoreFault::Readback);
         }
         fn disarm_restore_faults() {
             hooks::MOCK.with(|m| {
@@ -6560,6 +6581,91 @@ mod native {
             assert!(execute(&f).unwrap().durable_commit);
             assert_foreign_live(&f, &known, &foreign);
             assert!(!exists(&f.root.path.join(CONTROL).join("installed.json")).unwrap());
+        }
+        /// Every row the restore leaves is reported with its kind, an uncertain one included, and a link
+        /// whose place the files do not show is reported unconfirmed. The product Desktop link's readback
+        /// refuses after it left the Desktop, and the parked Start menu link was edited, so the restore
+        /// cannot tell it is the link it parked.
+        #[test]
+        fn task881_restore_reports_all_rows_it_left_and_each_link_it_cannot_place() {
+            let (good, _, _) = task881_layout_fixture();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known, _) = task881_layout_fixture();
+            let edited = parked_link(&f, "start_menu");
+            reset_steps(Some(at), false);
+            let mut fired = false;
+            set_barrier(move |label| {
+                if label == "commit_before" {
+                    fs::write(&edited, b"edited while parked").unwrap();
+                }
+                fired = fired || restore_fault_at(label, "new:desktop:RestoreIntent", RestoreFault::Readback);
+            });
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            let lines = reports();
+            disarm_restore_faults();
+            let link = |kind: &str| path_text(&known.join(kind).join("winsmux.lnk")).unwrap();
+            assert_eq!(
+                lines,
+                vec![
+                    format!("winsmux installer: restore_incomplete path_refused:170 new desktop {}", link("desktop")),
+                    format!("winsmux installer: restore_incomplete uncertain preserved start_menu {}", link("start_menu")),
+                    "winsmux installer: restore_shortcut_unconfirmed start_menu".to_string(),
+                ]
+            );
+        }
+        /// A preserved link whose move back refuses before its rename stays parked. The restore says so
+        /// because the parked path holds that link and its known folder is empty.
+        #[test]
+        fn task881_restore_reports_a_link_it_left_parked() {
+            let (f, known, foreign) = task881_layout_fixture();
+            arm_restore_fault("preserved:desktop:RestoreIntent", RestoreFault::BeforeRename);
+            hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().startup_fail = true);
+            assert_eq!(execute(&f).err(), Some(Error::Startup));
+            let lines = reports();
+            disarm_restore_faults();
+            let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
+            assert_eq!(
+                lines,
+                vec![
+                    format!("winsmux installer: restore_incomplete io_unconfirmed preserved desktop {live}"),
+                    "winsmux installer: restore_shortcut_parked desktop".to_string(),
+                ]
+            );
+            assert_eq!(fs::read(parked_link(&f, "desktop")).unwrap(), foreign[0].1);
+            assert_eq!(recover_if_readable(&f), Ok(()));
+            assert_foreign_live(&f, &known, &foreign);
+        }
+        /// A first install with no other link at its Desktop path: when the product link cannot leave
+        /// the Desktop during the restore, its place is reported unconfirmed and no link is called parked.
+        #[test]
+        fn task881_restore_never_calls_a_product_link_parked() {
+            let desktop_install = || {
+                let mut f = fixture();
+                let known = f.base.join("synthetic-known-folders");
+                hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().shortcut_root = Some(known.clone()));
+                fs::create_dir_all(known.join("desktop")).unwrap();
+                enable_shortcut_source(&mut f, "desktop");
+                reset_steps(None, false);
+                (f, known)
+            };
+            let (good, _) = desktop_install();
+            let trace = operation_trace(&good);
+            let at = trace.iter().position(|l| l == "commit_before").unwrap() + 1;
+            let (f, known) = desktop_install();
+            reset_steps(Some(at), false);
+            arm_restore_fault("new:desktop:RestoreIntent", RestoreFault::BeforeRename);
+            assert_eq!(execute(&f).err(), Some(Error::Io));
+            let lines = reports();
+            disarm_restore_faults();
+            let live = path_text(&known.join("desktop").join("winsmux.lnk")).unwrap();
+            assert_eq!(
+                lines,
+                vec![
+                    format!("winsmux installer: restore_incomplete io_unconfirmed new desktop {live}"),
+                    "winsmux installer: restore_shortcut_unconfirmed desktop".to_string(),
+                ]
+            );
         }
         #[test]
         fn every_install_cut_class_keeps_the_foreign_shortcut_bytes_in_exactly_one_place() {
