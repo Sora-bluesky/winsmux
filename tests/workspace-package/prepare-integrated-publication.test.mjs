@@ -12,11 +12,11 @@ const fixture = publicationFixture(path.resolve(process.argv[2]));
 const { contract, root, bundle, manifest } = fixture;
 const npmTrialFile = path.resolve(process.argv[3]);
 const npmResultBytes=fs.readFileSync(npmTrialFile);
-assert.equal(sha(npmResultBytes),'8c9ef6d8b93100416e9175783a954cecee3f3992481e310f6f3fb5dab120ae1c');
+assert.equal(sha(npmResultBytes),'99696c23086e98b4307b1528641dd0798e09dc1044d39d29090fd19acfbc80fa');
 const npmResult=JSON.parse(npmResultBytes);
 const receiptFile=path.join(path.dirname(npmResult.artifact),'npm-candidate.json');
 const receiptBytes=fs.readFileSync(receiptFile);
-assert.equal(sha(receiptBytes),'d0b1690f30c64de5b220242f75228f323d4ff7299d021f8478a102b78f663d67');
+assert.equal(sha(receiptBytes),'b409e270a09a3ff6f7584605b665bbd69a0ae54b45c37cbf00050057de8ff5fe');
 const npmCandidate=JSON.parse(receiptBytes);
 const npmTrial={source:npmCandidate.windows.extracted_directory};
 const npmProof={passed:npmResult.pack_verified&&npmResult.windows_help_version_verified,native_exit_code:0,
@@ -31,18 +31,19 @@ const input = { namespaceRoot, sourceCommit: manifest.source_commit, sourceTree:
     source_file: path.join(npmTrial.source, name), observed_sha256: npmCandidate.preparation.source_sha256[name] })) };
 // Executable fixture observers are test code, not serialized producer authority.
 // All non-npm payloads are synthetic; no authenticated operation is created.
-const base='ce0c39ba0d4852195df95c5b99666a1a3441c887', tree='4dcec20aafed921f62ce29ebbe148545d39b01c3';
-const npmHead='ce0c39ba0d4852195df95c5b99666a1a3441c887';
-// Retired b048b00b/c36c0265, c43aed07/9fba0d77, a1ce1975/8014b3a1 and 9be98eb5/92b55959 coordinates: the module must refuse the superseded producers.
+const base='9f1a3fe133f248a11500bb24a387b21464191ff4', tree='5fcccd2c67aec1ab11665dd610383aa33c5462e7';
+const npmHead='9f1a3fe133f248a11500bb24a387b21464191ff4';
+// Retired b048b00b/c36c0265, c43aed07/9fba0d77, a1ce1975/8014b3a1, 9be98eb5/92b55959 and ce0c39ba/4dcec20a coordinates: the module must refuse the superseded producers.
 const retiredNpmHead='b048b00b9291e346c247f2799d96283e21cb471e', retiredNpmTree='c36c02659c7de29251af25d1ae58fdfd45a6bd26';
 const retiredBase='c43aed076c076726f616e8a6bf489c8709246f17', retiredTree='9fba0d77cad1d2294e4b6158d1a3f74fdd2410c7', retiredAssemblyRun='local-assembly-c827d952-2d96-4128-adb3-83ce48fbc67b';
 const retiredA1ceBase='a1ce1975ceaa6f6dfa9feb2fa2113fb98d65f4e3', retiredA1ceTree='8014b3a17e55b3c484ee8306b1db2a6cba25f139', retiredA1ceAssemblyRun='local-assembly-405ecdc6-c70e-4dda-9416-fa627e4fd9cd';
 const retired9be9Base='9be98eb53433e021315d851ca27bacc9ca44d7f7', retired9be9Tree='92b559597878265f1a465a2e500311118a231a86', retired9be9AssemblyRun='local-assembly-27be8c1a-12a0-44df-a8a0-feaffe29e5eb';
-// The S rows: ce0c39ba before bytes are real pins, after digests are synthetic.
+const retiredCe0cBase='ce0c39ba0d4852195df95c5b99666a1a3441c887', retiredCe0cTree='4dcec20aafed921f62ce29ebbe148545d39b01c3', retiredCe0cAssemblyRun='local-assembly-905a634a-6d13-4468-b7fa-991acd432aaa';
+// The S rows: 9f1a3fe1 before bytes are real pins, after digests are synthetic.
 const s5Changes = Object.freeze([
-  { path: 'scripts/integrated-publication-origins.mjs', before_sha256: '4337633cf8d7611465845f34650298fdbc630539168e9d5ebd20e6389721b8fd', after_sha256: 'd'.repeat(64) },
-  { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: '6eacf4582a9c5b27a267e69b1077fbb5f0d230f2a69913c651c46db5b271229e', after_sha256: 'e'.repeat(64) },
-  { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: 'cbc47843a2907f55f3f4bc870d77d270e384f283f5d7891fa1d4c005c3e5405f', after_sha256: 'f'.repeat(64) },
+  { path: 'scripts/integrated-publication-origins.mjs', before_sha256: 'c7634d32ad08aeef487da93b5de9a51e3f45782f6df05faaf5083d509667aa29', after_sha256: 'd'.repeat(64) },
+  { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: 'f0f78947cd4ded2a7edebfefbe7932c2dc035ca0b00fdfe4f68b13f7ea481864', after_sha256: 'e'.repeat(64) },
+  { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: '147fd573443a3632d862850299fc56fca266d56b97259045d0a63391d28555ba', after_sha256: 'f'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -50,27 +51,27 @@ const rows=input.sources.map(row=>({path:row.path,source_file:row.source_file,by
 const repositoryRoot=path.resolve(path.dirname(npmTrialFile),'../../..');
 const finalSource='a'.repeat(40), finalTree='b'.repeat(40);
 const originalReceipt=(file,expected)=>{const bytes=fs.readFileSync(file);assert.equal(sha(bytes),expected);return {path:file,bytes:bytes.length,sha256:expected};};
-const coreReceipt=originalReceipt(path.join(repositoryRoot,'.evidence/v0380-core-fixed-assembly-ce0c39ba/905a634a-6d13-4468-b7fa-991acd432aaa/assembly-proof.json'),'0dbad12313af588855e60792bb0321ed8a5f66232e37234c9247c1a9bc5418c8');
-const npmReceipt=originalReceipt(npmTrialFile,'8c9ef6d8b93100416e9175783a954cecee3f3992481e310f6f3fb5dab120ae1c');
+const coreReceipt=originalReceipt(path.join(repositoryRoot,'.evidence/v0380-core-fixed-assembly-9f1a3fe1/8995c8b2-8393-4ec4-a255-4a2b31b757f1/assembly-proof.json'),'8e9ceeed0bb709dcb1125e380db7a2673879f13384b2220d76badf8abf85e4de');
+const npmReceipt=originalReceipt(npmTrialFile,'99696c23086e98b4307b1528641dd0798e09dc1044d39d29090fd19acfbc80fa');
 // Coordinates are original evidence facts; payloads and signed preparation below are synthetic.
 const producerFixtures = {
   "core": {
     "kind": "private-core-assembly",
-    "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
-    "source_tree": "4dcec20aafed921f62ce29ebbe148545d39b01c3",
-    "run": "local-assembly-905a634a-6d13-4468-b7fa-991acd432aaa",
+    "source_commit": "9f1a3fe133f248a11500bb24a387b21464191ff4",
+    "source_tree": "5fcccd2c67aec1ab11665dd610383aa33c5462e7",
+    "run": "local-assembly-8995c8b2-8393-4ec4-a255-4a2b31b757f1",
     "inner_origins": [
       {
         "kind": "windows-x64",
-        "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
-        "run": "local-5d51bbdb-9074-44ad-82a4-6863974d84d2",
-        "receipt_sha256": "415ee98ca13d883c2a4e23f52a727c79e179253008a00f0cfbf38c036fe9de31"
+        "source_commit": "9f1a3fe133f248a11500bb24a387b21464191ff4",
+        "run": "local-6bb0f9ba-8ecf-4c00-a684-643fd49ece1a",
+        "receipt_sha256": "18070d538e02da49ef1faa6d1e73f92d973624f45a02d2ff80f3cbc6ba9fd6ee"
       },
       {
         "kind": "windows-arm64",
-        "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
-        "run": "local-5d51bbdb-9074-44ad-82a4-6863974d84d2",
-        "receipt_sha256": "523623f6bae475340ede9cd003e243826b66a8e68e375ec67b1e0f5585766308"
+        "source_commit": "9f1a3fe133f248a11500bb24a387b21464191ff4",
+        "run": "local-6bb0f9ba-8ecf-4c00-a684-643fd49ece1a",
+        "receipt_sha256": "02bb7a776a2f714cabbad76a60d4ae528b28aea933851d304d9a441f451a33d0"
       },
       {
         "kind": "linux-helper",
@@ -81,7 +82,7 @@ const producerFixtures = {
     ],
     "original_receipt": {
       "bytes": 16931,
-      "sha256": "0dbad12313af588855e60792bb0321ed8a5f66232e37234c9247c1a9bc5418c8"
+      "sha256": "8e9ceeed0bb709dcb1125e380db7a2673879f13384b2220d76badf8abf85e4de"
     },
     "asset_paths": [
       "core/SHA256SUMS",
@@ -94,20 +95,20 @@ const producerFixtures = {
   },
   "npm": {
     "kind": "local-npm-producer",
-    "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
-    "source_tree": "4dcec20aafed921f62ce29ebbe148545d39b01c3",
-    "run": "local-npm-ce0c39ba",
+    "source_commit": "9f1a3fe133f248a11500bb24a387b21464191ff4",
+    "source_tree": "5fcccd2c67aec1ab11665dd610383aa33c5462e7",
+    "run": "local-npm-9f1a3fe1",
     "inner_origins": [
       {
         "kind": "local-npm-pack-and-windows-help-version",
-        "source_commit": "ce0c39ba0d4852195df95c5b99666a1a3441c887",
-        "run": "local-npm-ce0c39ba",
-        "receipt_sha256": "8c9ef6d8b93100416e9175783a954cecee3f3992481e310f6f3fb5dab120ae1c"
+        "source_commit": "9f1a3fe133f248a11500bb24a387b21464191ff4",
+        "run": "local-npm-9f1a3fe1",
+        "receipt_sha256": "99696c23086e98b4307b1528641dd0798e09dc1044d39d29090fd19acfbc80fa"
       }
     ],
     "original_receipt": {
       "bytes": 1596,
-      "sha256": "8c9ef6d8b93100416e9175783a954cecee3f3992481e310f6f3fb5dab120ae1c"
+      "sha256": "99696c23086e98b4307b1528641dd0798e09dc1044d39d29090fd19acfbc80fa"
     },
     "asset_paths": [
       "npm/winsmux-0.38.0.tgz"
@@ -134,16 +135,16 @@ const reject = (action, pattern) => check(() => assert.throws(action, pattern));
 const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
-// Final-source applicability is exactly the S rows with their ce0c39ba before bytes, independent of producer coordinates.
+// Final-source applicability is exactly the S rows with their 9f1a3fe1 before bytes, independent of producer coordinates.
 check(() => { assert.equal(publicationCutoverPaths.length,38); assert.equal(new Set(publicationCutoverPaths).size,38); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },
-  value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='618f8afc8d1030a5133225562cfc5a891cad6e9153f69d65c361630ef2a0eb77'; },
-  value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256='d3700003b8ecde5536f7e76ca483cf6a6e8891fb46762c209da9949ba2fbdcff'; },
-  value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'a794c642a43899a86d168c1259ca2eace7bf718a5e681a3ab17ffd7ab6a250a5',after_sha256:'1'.repeat(64)}); },
-  value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'799fa6e501308d68156cf5ebff850d637947d609f667d1daa1323a04290fbe19',after_sha256:'1'.repeat(64)}); },
+  value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='4337633cf8d7611465845f34650298fdbc630539168e9d5ebd20e6389721b8fd'; },
+  value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256='6eacf4582a9c5b27a267e69b1077fbb5f0d230f2a69913c651c46db5b271229e'; },
+  value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'163ae789ef9c6d0d4138cebd82c2f2beaabd0df6f8b6a5eb1b7404b7fbdad48a',after_sha256:'1'.repeat(64)}); },
+  value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'a112bfbaf9f139af412623f9042ac5fd17090af327b039f66281eb81846ec7ed',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/workspace-package/publication-native-v2.test.ps1',before_sha256:'df5f9aa5d28eb22a2729194c762c9940245da6bd804d3100908768fd4ca03b36',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/workspace-package/publication-npm-native.test.ps1',before_sha256:'c188e7fffba1f89128c5a767d5dee9859e32ac2dd25f76eec808f2417929444b',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },
@@ -177,6 +178,9 @@ for (const change of [
   value => { value.npm.source_commit=retired9be9Base; },
   value => { value.core.source_commit=retired9be9Base; },
   value => { value.source.base_commit=retired9be9Base; value.source.base_tree=retired9be9Tree; },
+  value => { value.npm.source_commit=retiredCe0cBase; },
+  value => { value.core.source_commit=retiredCe0cBase; },
+  value => { value.source.base_commit=retiredCe0cBase; value.source.base_tree=retiredCe0cTree; },
   value => { value.core.inner_origins=value.core.inner_origins.filter(row=>row.source_commit!==npmHead); },
   value => { value.desktop.assets.pop(); },
 ]) {
@@ -207,6 +211,8 @@ for(const change of [
   value=>{value.core.run=retiredA1ceAssemblyRun;},
   value=>{value.npm.source_tree=retired9be9Tree;},
   value=>{value.core.run=retired9be9AssemblyRun;},
+  value=>{value.npm.source_tree=retiredCe0cTree;},
+  value=>{value.core.run=retiredCe0cAssemblyRun;},
   value=>{value.npm.run='22.1';},
   value=>{value.npm.inner_origins[0].run='22.1';},
   value=>{value.desktop.assets=value.desktop.assets.filter(row=>row.path.endsWith('.exe')||row.path.endsWith('.msi'));},
