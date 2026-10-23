@@ -39,6 +39,8 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',
   'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',
   'docs/provider-and-model-support.md', 'docs/provider-and-model-support.ja.md',
+  'README.md', 'README.ja.md', 'docs/installation.md', 'docs/installation.ja.md',
+  'docs/quickstart.md', 'docs/quickstart.ja.md', 'docs/TROUBLESHOOTING.md', 'docs/TROUBLESHOOTING.ja.md',
   'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',
   'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',
   'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',

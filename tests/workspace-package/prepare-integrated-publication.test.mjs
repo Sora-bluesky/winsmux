@@ -136,7 +136,7 @@ const cloned = () => ({...structuredClone(input),origins});
 const prepare = value => prepareIntegratedPublicationBundle(contract, value ?? input);
 
 // Final-source applicability is exactly the S rows with their 9f1a3fe1 before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,38); assert.equal(new Set(publicationCutoverPaths).size,38); });
+check(() => { assert.equal(publicationCutoverPaths.length,46); assert.equal(new Set(publicationCutoverPaths).size,46); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [
