@@ -54,6 +54,45 @@ test('Japanese installer license is a marked reference translation followed by t
   assert.equal(japanese.toString('utf8', 3, japanese.length - english.length).endsWith('\n英語の原文（English original）\n\n'), true);
 });
 
+const makensis = [process.env.WINSMUX_MAKENSIS, process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'tauri/NSIS/makensis.exe'),
+  'C:\\Program Files (x86)\\NSIS\\makensis.exe'].find(file => file && fs.existsSync(file));
+test('the Desktop and Start menu links the installer writes start in the install folder, not in its temporary source folder', {
+  skip: process.platform !== 'win32' || !makensis ? 'needs Windows and makensis' : false,
+}, t => {
+  const nsis = path.join(repoRoot, 'winsmux-app/src-tauri/nsis');
+  const template = fs.readFileSync(path.join(nsis, 'installer.nsi'), 'utf8').replaceAll('\r\n', '\n');
+  const section = template.match(/^Section Install\n([\s\S]*?)^SectionEnd$/mu)[1].split('\n');
+  const uninstaller = section.indexOf('  WriteUninstaller "$WinsmuxSource\\uninstall.exe"');
+  const dispatch = section.indexOf('  Call WinsmuxWriteInstallContext');
+  assert.ok(uninstaller > 0 && dispatch > uninstaller, 'the links are written between the uninstaller and the helper dispatch');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'winsmux-nsis-links-'));
+  t.after(() => fs.rmSync(root, { recursive: true }));
+  const [workspace, source, install] = ['workspace', 'source', 'install'].map(name => path.join(root, name));
+  const script = [
+    'Unicode true', '!include LogicLib.nsh', '!include "' + path.join(nsis, 'winsmux-utils.nsh') + '"', '!include "Win\\COM.nsh"',
+    '!include "Win\\Propkey.nsh"', '!define BUNDLEID "io.github.sora-bluesky.winsmux"', '!define MAINBINARYNAME "winsmux-app"',
+    'Name "links"', 'OutFile "' + path.join(root, 'links.exe') + '"', 'RequestExecutionLevel user', 'SilentInstall silent',
+    'Var WinsmuxWorkspace', 'Var WinsmuxSource', 'Var WinsmuxStartMenu', 'Var WinsmuxDesktop', 'Section',
+    '  StrCpy $WinsmuxWorkspace "' + workspace + '"', '  StrCpy $WinsmuxSource "' + source + '"', '  StrCpy $INSTDIR "' + install + '"',
+    '  StrCpy $WinsmuxStartMenu 1', '  StrCpy $WinsmuxDesktop 1',
+    ...section.slice(0, uninstaller).filter(line => line.startsWith('  SetOutPath ')),
+    ...section.slice(uninstaller + 1, dispatch),
+    '  FileOpen $9 "' + path.join(root, 'outdir.txt') + '" w', '  FileWrite $9 "$OUTDIR"', '  FileClose $9', 'SectionEnd', '',
+  ].join('\r\n');
+  fs.writeFileSync(path.join(root, 'links.nsi'), '\ufeff' + script);
+  const compiled = spawnSync(makensis, ['/V2', path.join(root, 'links.nsi')], { encoding: 'utf8', windowsHide: true });
+  assert.equal(compiled.status, 0, compiled.stdout + compiled.stderr);
+  const ran = spawnSync(path.join(root, 'links.exe'), [], { windowsHide: true });
+  assert.equal(ran.status, 0, 'the link script ran');
+  const read = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+    '$s = New-Object -ComObject WScript.Shell; @("start_menu", "desktop") | ForEach-Object { $l = $s.CreateShortcut((Join-Path $env:LINKS ($_ + ".lnk"))); [ordered]@{ kind = $_; target = $l.TargetPath; start_in = $l.WorkingDirectory } } | ConvertTo-Json -Compress'],
+  { encoding: 'utf8', windowsHide: true, env: { ...process.env, LINKS: path.join(source, 'shortcuts') } });
+  assert.equal(read.status, 0, read.stderr);
+  assert.deepEqual(JSON.parse(read.stdout), ['start_menu', 'desktop'].map(kind => ({ kind, target: path.join(install, 'winsmux-app.exe'), start_in: install })));
+  assert.equal(fs.readFileSync(path.join(root, 'outdir.txt'), 'utf8'), source, 'the helper dispatch keeps the output folder it had');
+  assert.equal(fs.existsSync(install), false, 'the install folder is left for the helper to create');
+});
+
 test('every helper refusal the installer names gets an install and an uninstall message that says what that class guarantees', () => {
   const read = file => fs.readFileSync(path.join(repoRoot, file), 'utf8').replaceAll('\r\n', '\n');
   const hooks = read('winsmux-app/src-tauri/nsis-installer-hooks.nsh');
