@@ -28,13 +28,14 @@
     "T-only diagnostic: classify the helper output without its restore lines, so a run that also printed restore lines keeps its class exit code",
     "T-only diagnostic: leave out a last piece without a newline, so a restore line that ExecToStack cut at NSIS_MAX_STRLEN keeps the class exit code",
     "T-only diagnostic: classify the helper output without its readback lines too (readback_refused, readback_recovered and readback_more), so a run that reported a post-rename readback keeps its class exit code",
-    "Choose the abort message by the last helper line that is not a readback line, and after a helper run that succeeded print its readback lines to the details view"
+    "Choose the abort message by the last helper line that is not a readback line, and after a helper run that succeeded print its readback lines to the details view",
+    "Write the Desktop and Start menu links with the install folder as their Start in folder, not the temporary source folder"
   ],
   "outputs": [
     {
       "path": "installer.nsi",
-      "bytes": 48338,
-      "sha256": "a74f6be49dbc25cdd0af7816e0440d19392438d89d4f4c730761cb702cb0833d"
+      "bytes": 48544,
+      "sha256": "83f450719e2cfdf28faadb06c34b44450832ac8fa14774707bb55e912399dae7"
     },
     {
       "path": "winsmux-utils.nsh",

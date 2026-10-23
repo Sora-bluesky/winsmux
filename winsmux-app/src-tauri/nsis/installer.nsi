@@ -1101,6 +1101,9 @@ Section Install
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
   WriteUninstaller "$WinsmuxSource\uninstall.exe"
+  ; CreateShortcut stores $OUTDIR as the link's Start in folder. StrCpy, unlike SetOutPath, does not
+  ; create $INSTDIR, which the helper creates.
+  StrCpy $OUTDIR $INSTDIR
   ${If} $WinsmuxStartMenu = 1
     CreateDirectory "$WinsmuxSource\shortcuts"
     CreateShortcut "$WinsmuxSource\shortcuts\start_menu.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
@@ -1111,6 +1114,7 @@ Section Install
     CreateShortcut "$WinsmuxSource\shortcuts\desktop.lnk" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
     !insertmacro SetLnkAppUserModelId "$WinsmuxSource\shortcuts\desktop.lnk"
   ${EndIf}
+  StrCpy $OUTDIR $WinsmuxSource
   Call WinsmuxWriteInstallContext
   nsExec::ExecToStack $WinsmuxCommand
   Pop $0
