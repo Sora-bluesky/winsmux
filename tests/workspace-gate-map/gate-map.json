@@ -5596,31 +5596,31 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 42,
+   "line": 44,
    "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',",
    "invokes": "tests/workspace-gate-map/check-map.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 43,
+   "line": 45,
    "text": "'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 44,
+   "line": 46,
    "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/build-map.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 44,
+   "line": 46,
    "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 137,
+   "line": 139,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': 'f0f78947cd4ded2a7edebfefbe7932c2dc035ca0b00fdfe4f68b13f7ea481864',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
@@ -9610,7 +9610,7 @@
   },
   {
    "source": "tests/workspace-package/windows-runtime.test.mjs",
-   "line": 512,
+   "line": 551,
    "text": "const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts/assert-windows-distribution-toolchain.mjs')],",
    "invokes": "scripts/assert-windows-distribution-toolchain.mjs"
   },
