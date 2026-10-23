@@ -26,10 +26,12 @@ Installing or using the Microsoft component after the opportunity to review thes
 
 Read the same terms before silent/passive MSI or NSIS installation, PowerShell/npm installation, or direct binary use. Silent/passive installation does not display an interactive license page.
 
+The Japanese installer shows the [Japanese reference translation](distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt) of the supplement, followed by the English original. Where they differ, the English original prevails.
+
 ## Start with the desktop app
 
 1. Choose the release for the version you intend to use from [Releases](https://github.com/Sora-bluesky/winsmux/releases).
-2. Select the Windows installer for your architecture and verify it using that release's verification information.
+2. Select the Windows installer for your architecture and verify it using that release's verification information. The installer has a self-signed signature, and Installed apps shows its publisher as `github`, which does not mean GitHub signed it. See [Check the installer signature](docs/installation.md#check-the-installer-signature).
 3. Install and open winsmux, then use **プロジェクトを開く** (Open project) to select a folder.
 4. Check the selected project, create a pane and choose the official CLI you want to run.
 

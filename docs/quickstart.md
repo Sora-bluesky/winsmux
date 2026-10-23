@@ -16,9 +16,9 @@ For normal use, start with the desktop app. If you want a CLI-first, headless, o
 ## 2. Install the desktop app
 
 1. Choose the version you intend to install from [Releases](https://github.com/Sora-bluesky/winsmux/releases).
-2. Download the Windows setup asset for your architecture and verify it using that release's verification information.
-3. Run the installer.
-4. After installation, open `winsmux` from Windows Search or the Start menu.
+2. Download the Windows setup asset for your architecture and verify it using that release's verification information. The installer has a self-signed signature. Check it as described in [Check the installer signature](installation.md#check-the-installer-signature).
+3. Run the installer. Accept the license agreement, and keep or change the install location (by default `%LOCALAPPDATA%\winsmux`). The pages are listed in [Installer pages](installation.md#installer-pages).
+4. On the finish page, the option to run winsmux is selected by default and starts winsmux when you close the installer. Later, open `winsmux` from Windows Search or the Start menu.
 
 Windows Search or the Start menu does not need to show the app version. What matters is that `winsmux` appears as a normal Windows app and opens.
 
@@ -46,7 +46,7 @@ Use **操作検索** (Operation search) to find controls. App shortcuts are Ctrl
 2. Check the detected official CLI and working directory. After updating a CLI, use **導入状況を再確認** (Recheck installation).
 3. Optionally specify the model and reasoning setting. Empty fields use the official CLI's defaults.
 4. Select **起動内容を確認** (Review launch), check the target, directory and settings, then **確認した内容で起動** (Launch reviewed settings).
-5. Use **ターミナルへ戻る** (Return to terminal) to enter instructions. Follow the official CLI's prompts if sign-in is required.
+5. Use **ターミナルへ戻る** (Return to terminal) to enter instructions. When it starts, the official CLI may ask its own questions before it accepts instructions, for example whether to trust the folder, whether to update, or to sign in. Answer them in the terminal by following the CLI's prompts.
 
 A running process and completed AI work are separate states. When a state is **未確認** (Unverified), inspect the terminal result, the displayed evidence and observation time before treating it as success or failure. Use **現在の実行を中断** (Interrupt current run) to interrupt, and check that termination is observed.
 

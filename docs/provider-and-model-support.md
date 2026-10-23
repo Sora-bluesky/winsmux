@@ -38,6 +38,19 @@ The recorded machine was Windows 11 Pro build 26300, x64, with PowerShell
 155.0.4283.45. These results belong to the tested GUI candidate, not a published
 v0.38.0 installer.
 
+On 2026-10-23, the same task ran from the GUI of a later v0.38.0 candidate that
+had been installed with its NSIS installer:
+
+| CLI | Version | Explicit model | Reasoning setting | Observed task result |
+| --- | --- | --- | --- | --- |
+| Codex | 0.163.0 | gpt-6.1-sol | high | Expected file bytes matched; CLI exit code 0. |
+| Claude Code | 2.1.309 | None (CLI default, and the session reported claude-opus-5-5) | None (CLI default) | Expected file bytes matched; CLI exit code 0. |
+
+The machine was the same Windows 11 Pro build 26300, x64, with PowerShell 7.6.5.
+The WebView2 runtime was 155.0.4283.62. Before Codex accepted the task, it asked
+whether to trust the folder. This candidate is not a published v0.38.0
+installer either.
+
 The complete journey checks did not pass: process accounting and observation
 checks remain unresolved. The task results above do not establish that every
 launch, interruption, update, recovery, or installation workflow passed. They

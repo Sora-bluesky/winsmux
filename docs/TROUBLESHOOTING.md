@@ -10,7 +10,7 @@ For a connection error, blank screen, or a black PowerShell, Windows Terminal, o
 
 Compare the installed version with its release assets. The [latest release](https://github.com/Sora-bluesky/winsmux/releases/latest) may be a different version; do not substitute it without checking. An x64 installer is named `winsmux_..._x64-setup.exe`; select the actual asset for your version and CPU. Open the installed app from the Start menu or desktop shortcut. Before reinstalling, confirm normal exit and preserve the saved layout and project files; a refused close is not a completed exit.
 
-1. Check the app version and install location. Starting a development web server is not a recovery procedure for the installed app.
+1. Check the app version and install location. The desktop installer's default location is `%LOCALAPPDATA%\winsmux`. Starting a development web server is not a recovery procedure for the installed app.
 2. If the UI responds, use **状態を読み直す** (Reread state) and **導入状況を確認** (Check installation).
 3. To exit, inspect running panes, save required files, and use the normal close action. A refused or unverified close is not a confirmed exit.
 4. Record the version, the action that triggered the problem, and the fixed error classification shown. Inspect screenshots for private paths, input and output before sharing them.
@@ -48,6 +48,7 @@ Use **導入状況を再確認** (Recheck installation) to refresh the detected 
 
 - If the executable is missing, check the install location of the official CLI you intend to use.
 - If authentication is needed, follow that CLI's own instructions. Do not copy credentials from another CLI.
+- If the CLI started but does not take your instructions, check whether it is waiting at one of its own startup questions, such as whether to trust the folder or whether to update. Answer it in the terminal.
 - If a setting is rejected, inspect the reason and the official CLI's supported settings. Do not assume another AI was selected automatically.
 - For an approval requested by an official CLI, inspect its configuration and the requested action. This is separate from winsmux connection authorization. This guide does not prescribe disabling safety controls to reduce prompts.
 
@@ -80,5 +81,9 @@ Do not attach raw terminal transcripts, CLI arguments or environment variables, 
 ## Older versions, updates and uninstall
 
 Do not manually convert an older version's configuration into the v0.38.0 saved layout. Preserve ongoing work and configuration in the old version; select the folder and create a layout in the new UI. Retain the original distribution and configuration needed for recovery.
+
+If the Desktop or Start menu shortcut now opens v0.38.0 instead of the older version, the desktop installer replaced it and kept the old shortcut in `.winsmux-desktop\preserved` in the install folder. Start the older version from its executable. See [Existing winsmux shortcuts](installation.md#existing-winsmux-shortcuts).
+
+If the installer stops with a message, follow the message and [If the installer stops](installation.md#if-the-installer-stops). When it says that recovery data is kept, running the same installer again resumes the unfinished install or uninstall.
 
 Choose update or uninstall actions for the actual installation method and version. npm package maintenance and desktop app maintenance are separate. See [Installation](installation.md) and the release information for your version.
