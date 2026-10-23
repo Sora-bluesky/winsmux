@@ -97,7 +97,7 @@ winsmux install --profile core
 
 実行前にプレースホルダーを置き換えます。npmの入口が扱うのはinstall・update・uninstall・version・helpで、ネイティブのworkspace要求クライアントではありません。workspace操作の前に、シェルが解決する実行ファイルを確認してください。
 
-デスクトップのインストーラーはPATHにwinsmuxを追加しません。デスクトップ版のCLIはインストール先の `winsmux.exe` で、既定では `%LOCALAPPDATA%\winsmux\winsmux.exe` です。スクリプトとnpmのインストーラーは `%USERPROFILE%\.winsmux\bin` に `winsmux.cmd` を置きます。シェルから見つかるものは `Get-Command winsmux -All` で一覧できます。デスクトップ版のCLIを使う場合は、フルパスで実行してください。
+デスクトップのインストーラーはPATHにwinsmuxを追加しません。デスクトップ版のCLIはインストール先の `winsmux.exe` で、既定では `%LOCALAPPDATA%\winsmux\winsmux.exe` です。スクリプトとnpmのインストーラーは、デスクトップ版とは別の `winsmux.exe` を `%USERPROFILE%\.local\bin` に置き、そのフォルダーをユーザーのPATHに追加します。シェルから見つかるものは `Get-Command winsmux -All` で一覧できます。デスクトップ版のCLIを使う場合は、フルパスで実行してください。
 
 ネイティブランタイムの公開入口は次のとおりです。
 

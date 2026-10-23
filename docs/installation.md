@@ -97,7 +97,7 @@ winsmux install --profile core
 
 Replace the placeholder before running the command. The npm entry point supports install, update, uninstall, version and help. It is not the native workspace request client. Check which executable your shell resolves before using workspace operations.
 
-The desktop installer does not add winsmux to PATH. Its CLI is `winsmux.exe` in the install folder, by default `%LOCALAPPDATA%\winsmux\winsmux.exe`. The script and npm installers put a `winsmux.cmd` wrapper in `%USERPROFILE%\.winsmux\bin`. `Get-Command winsmux -All` lists the ones your shell can find. To use the desktop's CLI, run it by its full path.
+The desktop installer does not add winsmux to PATH. Its CLI is `winsmux.exe` in the install folder, by default `%LOCALAPPDATA%\winsmux\winsmux.exe`. The script and npm installers put their own `winsmux.exe` in `%USERPROFILE%\.local\bin` and add that folder to the user PATH. `Get-Command winsmux -All` lists the ones your shell can find. To use the desktop's CLI, run it by its full path.
 
 The native runtime's public entry points are:
 
