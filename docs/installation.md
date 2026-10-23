@@ -58,7 +58,7 @@ $signature.SignerCertificate.Subject
 $signature.SignerCertificate.Thumbprint
 ```
 
-The hash must match the release's checksum, the subject must be `CN=winsmux release signing`, and the thumbprint must match the one given in the release information. If the status is `NotSigned` or `HashMismatch`, or the subject or thumbprint differs, the file is not the one the release describes. Do not run it.
+The hash must match the release's checksum, the subject must be `CN=winsmux release signing`, and the thumbprint must be `2D4D1904E09B510BF9CD8994A2CD49C36BB0C4BA`. If the status is `NotSigned` or `HashMismatch`, or the subject or thumbprint differs, the file is not the one the release describes. Do not run it.
 
 After installation, Installed apps shows the publisher as `github`. GitHub did not sign or publish winsmux, and that name says nothing about who built the file. Use the signer check above to identify the file.
 
@@ -67,12 +67,12 @@ After installation, Installed apps shows the publisher as `github`. GitHub did n
 The installer shows these pages: installer language, welcome, license agreement, install location, installation, and a finish page.
 
 - You must accept the license agreement to continue.
-- The install location defaults to `%LOCALAPPDATA%\winsmux`. The same page has a desktop shortcut option, selected by default. A Start menu shortcut is always created. Both shortcuts start `winsmux-app.exe` in the install folder.
+- The install location defaults to `%LOCALAPPDATA%\winsmux`. The same page has a desktop shortcut option, selected by default. A Start menu shortcut is always created. A new shortcut that the installer creates starts `winsmux-app.exe` with the install folder as its working folder (**Start in** in the shortcut's properties). When you install again or update and the Desktop or Start menu still has the shortcut that the winsmux installer created earlier, the installer keeps that shortcut as it is, including its Start in folder.
 - The finish page has an option to run winsmux, selected by default. Leave it selected to start winsmux when you close the installer.
 
 The installer also adds **Open with winsmux** to the right-click menu of folders and folder backgrounds in File Explorer. It does not add winsmux to PATH.
 
-winsmux keeps its own data in the install folder too, for example the `workspace` and `artifact-snapshots` folders. The installer leaves those entries as they are.
+winsmux keeps its own data, such as saved layouts, in `%LOCALAPPDATA%\winsmux\workspace\v1`. That location stays the same when you choose another install folder. With the default install folder it is inside the install folder, and the installer leaves it as it is. The install folder also has a `.winsmux-desktop` folder, where the installer keeps its install record, its recovery data and the shortcuts it set aside.
 
 ### Existing winsmux shortcuts
 
@@ -80,9 +80,22 @@ If the Desktop or Start menu already has a `winsmux.lnk` that this installer did
 
 ### If the installer stops
 
-Read the installer's message before doing anything else. Each message says what the installer left as it was and what to do before running it again: close winsmux, move away a file with a winsmux name that the installer did not create, move a Desktop or Start menu folder that OneDrive moved back to where it was, or uninstall the earlier winsmux first.
+Read the installer's message before doing anything else. The uninstaller shows the same kinds of messages. The table lists every message and what to do before you run the installer or uninstaller again.
 
-When the message says that recovery data is kept, run the same installer again. It resumes the install or uninstall that did not finish. The recovery data is in `.winsmux-desktop` in the install folder. Do not delete it.
+| The message says | What to do |
+|---|---|
+| winsmux is still running or its folder is locked. | Close winsmux and any window open in that folder. |
+| A folder has a file with a winsmux name that this installer or uninstaller did not create and cannot set aside. | Move that file away. The installer also lets you choose another install folder. |
+| It could not confirm the files and shortcuts that winsmux created or set aside. | Put back any winsmux file that was moved or edited, or move away anything winsmux did not create. |
+| The Desktop or Start menu folder that holds the winsmux shortcut has moved since winsmux was installed. | Move that folder back to where it was. OneDrive can move it when it backs up the folder. |
+| The record of the earlier winsmux install is incomplete. | In the installer, uninstall the earlier winsmux first or choose another folder. The uninstaller gives no next step, so record the details as in the last row. |
+| The winsmux registry entries do not match. | In the installer, uninstall the earlier winsmux first. The uninstaller gives no next step, so record the details as in the last row. |
+| An earlier install or uninstall did not finish, or could not be finished, and its recovery data is kept. | Run the program that showed the message again, as described after the table. |
+| Installation or uninstallation could not be confirmed. | The message gives no next step. Select **Show details** and record what it shows, checking it for private paths before you share it. Leave the install folder as it is. |
+
+A message can end with a note about the Desktop and Start menu shortcuts. When it says that the set-aside shortcuts are preserved in the winsmux folder, they are in `.winsmux-desktop\preserved` in the install folder. When it says that winsmux could not confirm that the shortcuts were put back, check the Desktop and the Start menu.
+
+When the message says that recovery data is kept, run the program that showed it again, either the installer or the uninstaller. It first reads the recovery data in `.winsmux-desktop` in the install folder and deals with the install or uninstall that stopped, as recorded there. If that operation had already reached its final state, it completes it. Otherwise it puts back what that operation changed. Then it does the operation you started it for. The installer installs winsmux, and the uninstaller removes it. The message calls this resuming. After an uninstall that stopped, running the installer therefore leaves winsmux installed. To remove winsmux, run the uninstaller again. Do not delete `.winsmux-desktop`.
 
 ## CLI package install
 
@@ -97,7 +110,7 @@ winsmux install --profile core
 
 Replace the placeholder before running the command. The npm entry point supports install, update, uninstall, version and help. It is not the native workspace request client. Check which executable your shell resolves before using workspace operations.
 
-The desktop installer does not add winsmux to PATH. Its CLI is `winsmux.exe` in the install folder, by default `%LOCALAPPDATA%\winsmux\winsmux.exe`. The script and npm installers put their own `winsmux.exe` in `%USERPROFILE%\.local\bin` and add that folder to the user PATH. `Get-Command winsmux -All` lists the ones your shell can find. To use the desktop's CLI, run it by its full path.
+The desktop installer does not add winsmux to PATH. Its CLI is `winsmux.exe` in the install folder, by default `%LOCALAPPDATA%\winsmux\winsmux.exe`. The script and npm installers put their own `winsmux.exe` in `%USERPROFILE%\.local\bin` and add that folder to the user PATH. They also add a line to your PowerShell profile that puts `%USERPROFILE%\.winsmux\bin` at the front of PATH. In a PowerShell session that loads your profile, `winsmux` therefore runs `%USERPROFILE%\.winsmux\bin\winsmux.cmd`, not the `winsmux.exe` in `.local\bin`. `Get-Command winsmux -All` lists the ones your shell can find. To use the desktop's CLI, run it by its full path.
 
 The native runtime's public entry points are:
 
@@ -136,7 +149,7 @@ After updating, check the app and companion versions, project selection, officia
 
 Use Windows Settings or the desktop package's deployment mechanism. For script/npm installations, use that installation's uninstall action. Check the target when multiple installations exist.
 
-Keep repositories, saved work and official CLI authentication storage outside manual cleanup. Do not recursively delete a profile directory as an uninstall workaround. The same goes for the desktop install folder, which also holds winsmux's own data and recovery data.
+Keep repositories, saved work and official CLI authentication storage outside manual cleanup. Do not recursively delete a profile directory as an uninstall workaround. Do not delete the desktop install folder by hand either. Its `.winsmux-desktop` folder holds the install record and recovery data, and with the default install folder, winsmux's own data in `%LOCALAPPDATA%\winsmux\workspace\v1` is inside it too.
 
 ## Verify
 

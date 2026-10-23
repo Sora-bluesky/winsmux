@@ -84,6 +84,6 @@ Do not manually convert an older version's configuration into the v0.38.0 saved 
 
 If the Desktop or Start menu shortcut now opens v0.38.0 instead of the older version, the desktop installer replaced it and kept the old shortcut in `.winsmux-desktop\preserved` in the install folder. Start the older version from its executable. See [Existing winsmux shortcuts](installation.md#existing-winsmux-shortcuts).
 
-If the installer stops with a message, follow the message and [If the installer stops](installation.md#if-the-installer-stops). When it says that recovery data is kept, running the same installer again resumes the unfinished install or uninstall.
+If the installer or uninstaller stops with a message, follow the message and [If the installer stops](installation.md#if-the-installer-stops). When it says that recovery data is kept, run the program that showed it again. It first completes or puts back the install or uninstall that stopped, then does the operation you started it for (install or uninstall). After an uninstall that stopped, running the installer leaves winsmux installed.
 
 Choose update or uninstall actions for the actual installation method and version. npm package maintenance and desktop app maintenance are separate. See [Installation](installation.md) and the release information for your version.
