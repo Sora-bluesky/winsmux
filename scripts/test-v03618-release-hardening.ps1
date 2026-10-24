@@ -40,7 +40,6 @@ function Add-Check {
 
 $checks = [System.Collections.Generic.List[object]]::new()
 
-$contract = Get-RepoContent 'docs/project/v03618-release-hardening.md'
 $core = Get-RepoContent 'scripts/winsmux-core.ps1'
 $teamPipeline = Get-RepoContent 'winsmux-core/scripts/team-pipeline.ps1'
 $orchestraStart = Get-RepoContent 'winsmux-core/scripts/orchestra-start.ps1'
@@ -52,15 +51,6 @@ $workflow = Get-RepoContent '.github/workflows/test.yml'
 $desktopBuildWorkflow = Get-RepoContent '.github/workflows/build-desktop.yml'
 $versionSurfaceTests = Get-RepoContent 'tests/VersionSurface.Tests.ps1'
 $contextMenuE2e = Get-RepoContent 'winsmux-app/scripts/windows-context-menu-e2e.ps1'
-$v1ReleaseGate = Get-RepoContent 'docs/project/v1-release-gate.md'
-
-Add-Check 'contract document exists' (-not [string]::IsNullOrWhiteSpace($contract)) 'docs/project/v03618-release-hardening.md'
-foreach ($token in @('TASK-596', 'TASK-597', 'TASK-578', 'TASK-616', 'TASK-579', 'claim_level', 'scope_circuit_breaker', 'two-strike retry limit', 'process_contract', 'subagents', 'browser instances', 'temp files')) {
-    Add-Check "contract includes $token" ($contract -match [regex]::Escape($token))
-}
-foreach ($token in @('Medium/Low Finding Disposition', 'fixed and verified', 'defer to v0.36.19', 'defer to v0.36.22', 'Baseline Tauri Installer Smoke', 'winsmux_${VERSION}_x64-setup.exe', 'Release Polish And CI Hygiene', 'least-privilege read permissions', 'post-release smoke', 'branch cleanup')) {
-    Add-Check "contract includes release polish requirement $token" ($contract -match [regex]::Escape($token))
-}
 
 foreach ($token in @('function Get-RunClaimLevel', 'claim_level', 'loop_control', 'two_strike_limit', 'one_hypothesis_one_change_required', 'scope_circuit_breaker', 'two_strike_retry_limit_reached')) {
     Add-Check "run packet exposes $token" ($core -match [regex]::Escape($token)) 'scripts/winsmux-core.ps1'
@@ -212,9 +202,6 @@ foreach ($token in @('derives desktop installer E2E artifact names from VERSION'
 }
 foreach ($token in @('winsmux_$($script:ProductVersion)_x64-setup.exe', '/S', '/D=$installPath', 'uninstall.exe', 'Open with winsmux', 'winsmuxで開く', 'Remove-TestDirectory', 'Restore-DesktopShortcut')) {
     Add-Check "context menu E2E covers installer smoke: $token" ($contextMenuE2e -match [regex]::Escape($token)) 'winsmux-app/scripts/windows-context-menu-e2e.ps1'
-}
-foreach ($token in @('winsmux_<version>_x64-setup.exe', 'SHA256SUMS-desktop', 'English and Japanese installer UI', 'desktop update path', 'worker-pane child processes', 'Post-release smoke')) {
-    Add-Check "release gate documents desktop baseline: $token" ($v1ReleaseGate -match [regex]::Escape($token)) 'docs/project/v1-release-gate.md'
 }
 
 $failed = @($checks | Where-Object { -not $_.pass })

@@ -490,7 +490,11 @@ manual flow
     }
 
     It 'does not treat native microphone metering as composer dictation' {
-        $desktopMain = Get-Content -LiteralPath $script:DesktopMainPath -Raw -Encoding UTF8
+        $legacyMainSpec = '2e46363ddf11143c0840db5d6816591a02772471:winsmux-app/src/main.ts'
+        $desktopMain = (& git -C $script:RepoRoot show $legacyMainSpec) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($desktopMain)) {
+            throw 'Fixed v0.36.38 Desktop source is unavailable.'
+        }
         $tauriLib = Get-Content -LiteralPath $script:TauriLibPath -Raw -Encoding UTF8
 
         $desktopMain | Should -Match 'const supported = browserSupported;'

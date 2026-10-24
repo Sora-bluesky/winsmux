@@ -15,6 +15,17 @@
   "entries": [
     {
       "class": "intentional-shim",
+      "owner": "Windows distribution notices",
+      "surface": "copies of the documented legacy compatibility notice",
+      "reason": "These source notice files reproduce the classified THIRD_PARTY_NOTICES.md explanation of retained compatibility code and removed binary aliases; they do not restore an executable alias.",
+      "target": "keep these source notices while their classified source notice is included in the distribution",
+      "paths": [
+        "distribution/windows-licenses/texts/a964fdbc37fc916ad295db204b58c558e0b608cd36c0b6ebea492bfa72bf00c8",
+        "distribution/windows-licenses/texts/cfb5cdc302385038de1ac3f4cb8c68932aca7325f2489fbf3a7670bfacb7aa8f"
+      ]
+    },
+    {
+      "class": "intentional-shim",
       "owner": "operator startup safety",
       "surface": "legacy probe denial rules and tests",
       "reason": "These references block old psmux startup probes and keep operators on winsmux startup checks.",
@@ -131,8 +142,7 @@
         "core/tests/*.ps1",
         "core/tests/*.py",
         "core/tests/*.sh",
-        "docs/project/pester-suite-inventory.json",
-        "docs/project/pester-suite-reduction-plan.md"
+        "docs/project/pester-suite-inventory.json"
       ]
     },
     {
@@ -153,19 +163,16 @@
       "target": "keep while the repository still contains classified compatibility references",
       "paths": [
         "docs/project/legacy-compat-surface-inventory.json",
-        "docs/project/legacy-compat-surface-inventory.md",
-        "docs/project/powershell-adapter-inventory.md",
         "scripts/validate-legacy-compat-inventory.ps1"
       ]
     },
     {
       "class": "intentional-shim",
       "owner": "v0.36.23 session readiness gate",
-      "surface": "detached session readiness incident evidence and verification script",
-      "reason": "The incident record and readiness script intentionally reference tmux-compatible command behavior while proving detached session startup remains observable before benchmark work starts.",
-      "target": "keep until the v0.36.23 benchmark readiness gate no longer depends on this evidence packet",
+      "surface": "detached session readiness verification script",
+      "reason": "The readiness script intentionally references tmux-compatible command behavior while proving detached session startup remains observable before benchmark work starts.",
+      "target": "keep while the session readiness script verifies observable startup",
       "paths": [
-        "docs/incidents/v03623-session-readiness/00-incident-record.md",
         "scripts/test-v03623-session-readiness.ps1"
       ]
     },
@@ -178,16 +185,6 @@
       "paths": [
         "winsmux-app/scripts/bakeoff-runner-lib.mjs",
         "winsmux-app/scripts/run-cli-bakeoff.mjs"
-      ]
-    },
-    {
-      "class": "intentional-shim",
-      "owner": "design-debt component map",
-      "surface": "architecture map psmux/tmux references",
-      "reason": "The TASK-628 component map documents core's tmux-compatible runtime and the psmux-server-session vs in-process Tauri PTY distinction (the #1128 capture boundary); the legacy terms appear only as architectural description, not as a runtime alias surface.",
-      "target": "keep while the component map documents the runtime and capture boundary",
-      "paths": [
-        "docs/project/component-map.md"
       ]
     }
   ]

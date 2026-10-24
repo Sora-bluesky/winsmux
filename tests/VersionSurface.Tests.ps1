@@ -1,6 +1,90 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+Describe 'Desktop companion signature boundary' {
+    BeforeAll {
+        $script:SigningRoot = (& git rev-parse --show-toplevel).Trim()
+        $script:SigningHelper = Join-Path $script:SigningRoot 'winsmux-app/src-tauri/scripts/sign-windows-bundle.ps1'
+    }
+    BeforeEach {
+        $script:SigningEnvironment = @{}
+        foreach ($key in @('WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH','WINDOWS_SIGNING_CERTIFICATE_PASSWORD','WINSMUX_SIGNTOOL_EXE','SIGNING_TEST_CALLS','SIGNING_TEST_STATUS','SIGNING_TEST_OTHER_CERT')) {
+            $script:SigningEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
+        }
+        $env:SIGNING_TEST_STATUS = 'Valid'; $env:SIGNING_TEST_OTHER_CERT = 'false'
+        $script:SigningAsset = Join-Path $TestDrive ([Guid]::NewGuid().ToString('N') + '.exe')
+        [IO.File]::WriteAllBytes($script:SigningAsset, [byte[]](8,9,10))
+        $env:WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH = Join-Path $TestDrive 'mock-only.pfx'
+        $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = 'fixture-value'
+        $env:SIGNING_TEST_CALLS = $script:SigningAsset + '.calls.txt'
+        $env:WINSMUX_SIGNTOOL_EXE = Join-Path $TestDrive 'synthetic-signtool.ps1'
+        [IO.File]::WriteAllText($env:WINSMUX_SIGNTOOL_EXE, @'
+[IO.File]::AppendAllText($env:SIGNING_TEST_CALLS, ([string]$args[0]) + "`n")
+if ($args[0] -ceq 'sign') { [IO.File]::AppendAllText([string]$args[-1], 'synthetic-signature') }
+$global:LASTEXITCODE = 0
+'@)
+        Mock Get-PfxCertificate { [pscustomobject]@{RawData=[byte[]](1,2,3)} }
+        Mock Get-AuthenticodeSignature {
+            [pscustomobject]@{Status=$env:SIGNING_TEST_STATUS; SignerCertificate=[pscustomobject]@{
+                RawData=[byte[]]$(if ($env:SIGNING_TEST_OTHER_CERT -ceq 'true') {4,5,6} else {1,2,3})}}
+        }
+    }
+    AfterEach {
+        foreach ($key in $script:SigningEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key,$script:SigningEnvironment[$key]) }
+    }
+    It 'verifies without signing or changing the file' {
+        $before = (Get-FileHash $script:SigningAsset).Hash
+        & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly
+        (Get-FileHash $script:SigningAsset).Hash | Should -BeExactly $before
+        @(Get-Content $env:SIGNING_TEST_CALLS) | Should -Be @('verify')
+    }
+    It 'checks the signed bytes with the expected certificate and native policy' {
+        & $script:SigningHelper -AssetPath $script:SigningAsset
+        @(Get-Content $env:SIGNING_TEST_CALLS) | Should -Be @('sign','verify')
+        [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($script:SigningAsset)) | Should -Match 'synthetic-signature$'
+    }
+    It 'refuses an invalid existing signature without modifying it' {
+        $env:SIGNING_TEST_STATUS = 'HashMismatch'; $before = (Get-FileHash $script:SigningAsset).Hash
+        { & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly } | Should -Throw '*signature or expected signer differs*'
+        (Get-FileHash $script:SigningAsset).Hash | Should -BeExactly $before
+        Test-Path $env:SIGNING_TEST_CALLS | Should -BeFalse
+    }
+    It 'refuses a valid signature from a different certificate' {
+        $env:SIGNING_TEST_OTHER_CERT = 'true'
+        { & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly } | Should -Throw '*signature or expected signer differs*'
+        Test-Path $env:SIGNING_TEST_CALLS | Should -BeFalse
+    }
+    It 'requires credentials even on the read-only signed route' {
+        $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD = $null
+        { & $script:SigningHelper -AssetPath $script:SigningAsset -VerifyOnly } | Should -Throw '*PASSWORD is required*'
+        Test-Path $env:SIGNING_TEST_CALLS | Should -BeFalse
+    }
+    It 'selects signing before GUI compilation and checks direct bundling' {
+        $config = Get-Content (Join-Path $script:SigningRoot 'winsmux-app/src-tauri/tauri.ci.conf.json') -Raw | ConvertFrom-Json
+        $config.build.beforeBuildCommand | Should -BeExactly 'node ./src-tauri/scripts/prepare-companion-cli.mjs --release --sign-companions && npm run build'
+        $config.build.beforeBundleCommand | Should -BeExactly 'node ./src-tauri/scripts/check-bundled-distribution.mjs --signed-companions'
+        $config.bundle.windows.signCommand | Should -Not -Match 'SKIP|no-sign'
+    }
+    It 'rejects signing without release, unknown, empty, reversed or repeated preparation options before starting a child' {
+        $wrapper = Join-Path $script:SigningRoot 'winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs'
+        foreach ($arguments in @(@('--sign-companions'),@('--unknown'),@(''),@('--sign-companions','--release'),@('--release','--release'),@('--release','--sign-companions','--sign-companions'))) {
+            $start = [Diagnostics.ProcessStartInfo]::new((Get-Command node -CommandType Application | Select-Object -First 1).Source)
+            $start.ArgumentList.Add($wrapper)
+            foreach ($argument in $arguments) { $start.ArgumentList.Add($argument) }
+            $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+            $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+            $process=[Diagnostics.Process]::Start($start)
+            try {
+                $output=$process.StandardOutput.ReadToEndAsync(); $errorOutput=$process.StandardError.ReadToEndAsync()
+                $process.WaitForExit()
+                $process.ExitCode | Should -Not -Be 0
+                $output.GetAwaiter().GetResult() | Should -BeExactly ''
+                $errorOutput.GetAwaiter().GetResult() | Should -Match 'Companion preparation accepts'
+            } finally { $process.Dispose() }
+        }
+    }
+}
+
 Describe 'winsmux version surface' {
     BeforeAll {
         $script:RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
@@ -9,6 +93,179 @@ Describe 'winsmux version surface' {
         }
 
         $script:ProductVersion = (Get-Content -LiteralPath (Join-Path $script:RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()
+
+        # Inventory the jobs that actually produce measured Windows distributions.
+        # Every Tauri build runs beforeBuildCommand, including --no-bundle.
+        function Get-MeasuredWindowsProducerJobs {
+            param([hashtable] $Workflows)
+            foreach ($file in @($Workflows.Keys | Sort-Object)) {
+                $body = [regex]::Match($Workflows[$file], '(?ms)^jobs:[ \t]*\r?\n(?<body>.*)$')
+                if (-not $body.Success) { throw "Workflow jobs are absent: $file" }
+                $jobs = [regex]::Matches($body.Groups['body'].Value,
+                    '(?ms)^  (?<id>[A-Za-z0-9_-]+):[ \t]*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:[ \t]*\r?$|\z)')
+                foreach ($job in $jobs) {
+                    $text = $job.Groups['body'].Value
+                    $commands = [regex]::Matches($text,
+                        '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run tauri -- build(?<args>[^\r\n]*)')
+                    $signedRunner = [regex]::Escape('${{ (github.ref_name == ''v0.38.0'' || inputs.release_tag == ''v0.38.0'') && ''windows-2025'' || ''windows-latest'' }}')
+                    $windows = $text -match "(?m)^    runs-on:[ \t]*(?:windows-|$signedRunner[ \t]*\r?$)"
+                    $core = $windows -and $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?node scripts/build-core-candidate\.mjs(?:\s|$)'
+                    $companion = $text -match '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?npm run prepare:companion-cli(?::release)?(?:\s|$)'
+                    if ($commands.Count -gt 0 -or $core -or $companion) {
+                        [pscustomobject]@{ id="${file}::$($job.Groups['id'].Value)"; windows=$windows; text=$text }
+                    }
+                }
+            }
+        }
+        function Test-MeasuredWindowsProducerToolchains {
+            param([hashtable] $Workflows)
+            $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $Workflows)
+            if ($producers.Count -eq 0) { return $false }
+            foreach ($producer in $producers) {
+                $text = $producer.text
+                $actions = [regex]::Matches($text, '(?m)^[ \t]*(?:-[ \t]*)?uses:[ \t]*\./\.github/actions/setup-windows-distribution-toolchain[ \t]*\r?$')
+                $nodes = [regex]::Matches($text, '(?m)^[ \t]*(?:-[ \t]*)?uses:[ \t]*actions/setup-node@[^\s#]+')
+                $firstCommand = [regex]::Match($text, '(?m)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?(?:cargo\s|npm run (?:tauri -- build|prepare:companion-cli(?::release)?)|node scripts/build-core-candidate\.mjs)')
+                if (-not $producer.windows -or $actions.Count -ne 1 -or $nodes.Count -ne 1 -or
+                    -not $firstCommand.Success -or $nodes[0].Index -ge $actions[0].Index -or
+                    $actions[0].Index -ge $firstCommand.Index -or
+                    $text -match '(?im)^[ \t]*(?:-[ \t]*)?uses:[ \t]*[^\r\n]*rust-toolchain@' -or
+                    $text -match '(?im)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?(?:cargo|rustc)\s+\+' -or
+                    $text -match '(?im)^[ \t]*(?:-[ \t]*)?(?:run:[ \t]*)?rustup\s+(?:default|override|toolchain)' -or
+                    $text -match '(?i)\bRUSTUP_TOOLCHAIN\b') { return $false }
+            }
+            return $true
+        }
+        function Test-MeasuredWindowsToolchainAction {
+            param([string] $Text)
+            $selections = [regex]::Matches($Text, '(?m)^    - uses: dtolnay/rust-toolchain@(?<ref>[^\s#]+)')
+            $verifiers = [regex]::Matches($Text, '(?m)^        node scripts/assert-windows-distribution-toolchain\.mjs\s*\r?$')
+            return $selections.Count -eq 1 -and $selections[0].Groups['ref'].Value -ceq '1.96.0' -and
+                $verifiers.Count -eq 1 -and $selections[0].Index -lt $verifiers[0].Index -and
+                $Text -match 'if \(\$LASTEXITCODE -ne 0\) \{ throw' -and
+                $Text -match ([regex]::Escape('targets: ${{ inputs.targets }}')) -and
+                $Text -notmatch '(?i)\bRUSTUP_TOOLCHAIN\b'
+        }
+        $script:DistributionWorkflows = @{}
+        foreach ($file in Get-ChildItem -LiteralPath (Join-Path $script:RepoRoot '.github/workflows') -File |
+                Where-Object { $_.Extension -in @('.yml', '.yaml') }) {
+            $script:DistributionWorkflows[$file.Name] = [IO.File]::ReadAllText($file.FullName)
+        }
+    }
+
+    It 'keeps every Windows distribution producer on the measured compiler' {
+        $binding = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'distribution/windows-licenses/binding.json') -Raw |
+            ConvertFrom-Json
+        # This is the measured 1.96.0 commit, not an inferred grant or a moving channel.
+        $binding.rustc_commit | Should -BeExactly 'ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96'
+        $producers = @(Get-MeasuredWindowsProducerJobs -Workflows $script:DistributionWorkflows)
+        @($producers.id | Sort-Object) -join ',' | Should -BeExactly (
+            'build-desktop.yml::build,desktop-candidate-cdp-gate.yml::desktop-candidate-cdp-gate,desktop-candidate-cdp-gate.yml::desktop-native-lifecycle,release-core.yml::build,release-desktop.yml::build,test.yml::desktop-build-test,test.yml::desktop-release-process,test.yml::fresh-install-candidate')
+        Test-MeasuredWindowsProducerToolchains -Workflows $script:DistributionWorkflows | Should -BeTrue
+        $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
+        Test-MeasuredWindowsToolchainAction $action | Should -BeTrue
+        @([regex]::Matches($action, 'uses: dtolnay/rust-toolchain@1\.96\.0\s')).Count | Should -Be 1
+        $action | Should -Match ([regex]::Escape('targets: ${{ inputs.targets }}'))
+        $action | Should -Match 'node scripts/assert-windows-distribution-toolchain\.mjs'
+        $action | Should -Match 'if \(\$LASTEXITCODE -ne 0\) \{ throw'
+        $script:DistributionWorkflows['release-core.yml'] | Should -Match ([regex]::Escape('targets: ${{ matrix.target }}'))
+        $tauri = [IO.File]::ReadAllText((Join-Path $script:RepoRoot 'winsmux-app/src-tauri/tauri.conf.json')) | ConvertFrom-Json
+        $tauri.build.beforeBuildCommand | Should -Match 'prepare:companion-cli:release'
+    }
+
+    It 'rejects stale missing and newly introduced unbound producer toolchains' {
+        $actionLine = '      - uses: ./.github/actions/setup-windows-distribution-toolchain'
+        $nodeLine = '      - uses: actions/setup-node@v6'
+        foreach ($producer in @(Get-MeasuredWindowsProducerJobs $script:DistributionWorkflows)) {
+            $file, $job = $producer.id.Split('::', [StringSplitOptions]::None)
+            foreach ($replacement in @('', '      - uses: dtolnay/rust-toolchain@stable',
+                "$actionLine`n$actionLine", "$actionLine`n      - run: cargo +stable build",
+                "$actionLine`n      - run: rustup default stable", "$actionLine`n      - run: rustc +stable -vV",
+                "$actionLine`n      - run: `$env:RUSTUP_TOOLCHAIN = 'stable'",
+                "$actionLine`n        env:`n          RUSTUP_TOOLCHAIN: stable",
+                "      - run: cargo build`n$actionLine")) {
+                $changed = $script:DistributionWorkflows.Clone()
+                $jobText = $producer.text.Replace($actionLine, $replacement)
+                $changed[$file] = $changed[$file].Replace($producer.text, $jobText)
+                Test-MeasuredWindowsProducerToolchains $changed | Should -BeFalse -Because $producer.id
+            }
+            $changed = $script:DistributionWorkflows.Clone()
+            $changed[$file] = $changed[$file].Replace($producer.text, ($producer.text -replace 'uses: actions/setup-node@v6', 'uses: example/no-node@v1'))
+            Test-MeasuredWindowsProducerToolchains $changed | Should -BeFalse -Because $producer.id
+        }
+        $changed = $script:DistributionWorkflows.Clone()
+        $changed['release-desktop.yml'] = $changed['release-desktop.yml'].Replace("&& 'windows-2025' || 'windows-latest' }}", "&& 'windows-2025' || 'ubuntu-latest' }}")
+        $changed['release-desktop.yml'] | Should -Not -BeExactly $script:DistributionWorkflows['release-desktop.yml']
+        Test-MeasuredWindowsProducerToolchains $changed | Should -BeFalse
+        $action = [IO.File]::ReadAllText((Join-Path $script:RepoRoot '.github/actions/setup-windows-distribution-toolchain/action.yml'))
+        foreach ($broken in @($action.Replace('@1.96.0', '@stable'),
+            $action.Replace('node scripts/assert-windows-distribution-toolchain.mjs', 'node example.mjs'),
+            $action.Replace('if ($LASTEXITCODE -ne 0)', 'if ($false)'),
+            ($action + "`n    - uses: dtolnay/rust-toolchain@stable`n"),
+            ($action + "`n        env:`n          RUSTUP_TOOLCHAIN: stable`n"))) {
+            Test-MeasuredWindowsToolchainAction $broken | Should -BeFalse
+        }
+        $additional = $script:DistributionWorkflows.Clone()
+        foreach ($command in @('npm run tauri -- build', 'npm run tauri -- build --no-bundle',
+            'npm run prepare:companion-cli', 'npm run prepare:companion-cli:release', 'node scripts/build-core-candidate.mjs')) {
+            $additional['new-producer.yml'] = "jobs:`n  producer:`n    runs-on: windows-latest`n    steps:`n$nodeLine`n      - uses: dtolnay/rust-toolchain@stable`n      - run: $command`n"
+            Test-MeasuredWindowsProducerToolchains $additional | Should -BeFalse
+            $additional['new-producer.yml'] = $additional['new-producer.yml'].Replace('      - uses: dtolnay/rust-toolchain@stable', $actionLine)
+            Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
+        }
+        $additional['new-producer.yml'] = "jobs:`n  ordinary:`n    runs-on: windows-latest`n    steps:`n      - uses: dtolnay/rust-toolchain@stable`n      - run: cargo test`n      - run: npm run test`n      - run: npm pack`n"
+        Test-MeasuredWindowsProducerToolchains $additional | Should -BeTrue
+    }
+
+    It 'keeps debug backend verification in the canonical Tests job' {
+        foreach ($producer in @(
+            @{ File = 'test.yml'; Job = 'desktop-build-test' }
+        )) {
+            $job = [regex]::Match($script:DistributionWorkflows[$producer.File],
+                ('(?ms)^  {0}:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)' -f [regex]::Escape($producer.Job)))
+            $job.Success | Should -BeTrue
+            $preparation = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: npm run prepare:companion-cli\s*\r?$')
+            $backend = [regex]::Matches($job.Groups['body'].Value, '(?m)^        run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml\s*\r?$')
+            $preparation.Count | Should -Be 1
+            $backend.Count | Should -Be 1
+            $preparation[0].Index | Should -BeLessThan $backend[0].Index
+            $job.Groups['body'].Value | Should -Not -Match '(?m)^        run: npm run prepare:companion-cli:release\s*\r?$'
+        }
+        $build = $script:DistributionWorkflows['build-desktop.yml']
+        $build | Should -Not -Match 'run: cargo test|prepare-legacy-cli.ps1'
+        $build | Should -Match 'run: npm run tauri -- build --no-bundle'
+    }
+
+    It 'keeps the release app process proof independent of the debug backend job and required by Merge Gate' {
+        $workflow = $script:DistributionWorkflows['test.yml']
+        $jobs = @{}
+        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'native-lifecycle-source', 'merge-gate')) {
+            $match = [regex]::Match($workflow,
+                ('(?ms)^  {0}:\s*\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\s*\r?$|\z)' -f [regex]::Escape($id)))
+            $match.Success | Should -BeTrue -Because $id
+            $jobs[$id] = $match.Groups['body'].Value
+        }
+        $backend = $jobs['desktop-build-test']
+        $release = $jobs['desktop-release-process']
+        $backend | Should -Match 'run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml'
+        $backend | Should -Not -Match 'build --no-bundle|Run V03630 desktop debug process gate|test-results-desktop-debug-v03630.xml'
+        foreach ($body in @($backend, $release)) { $body | Should -Match '(?m)^    timeout-minutes: 35\s*\r?$' }
+        $release | Should -Not -Match '(?m)^    needs:'
+        $release | Should -Not -Match 'run: cargo test|run: npm run prepare:companion-cli\s*\r?$|prepare-legacy-cli.ps1'
+        $release | Should -Match 'run: npm run tauri -- build --no-bundle'
+        $release | Should -Match ([regex]::Escape("'target/release/winsmux-app.exe'"))
+        $release | Should -Match 'Run V03630 desktop debug process gate'
+        $release | Should -Match ([regex]::Escape("`$shardId = 'desktop-debug-process'"))
+        $release | Should -Match 'Upload V03630 desktop debug process results'
+        $release | Should -Match 'path: test-results-desktop-debug-v03630.xml'
+        foreach ($id in @('desktop-build-test', 'desktop-release-process', 'native-lifecycle-source')) {
+            $jobs['merge-gate'] | Should -Match ('(?m)^      - {0}\s*\r?$' -f [regex]::Escape($id))
+            $jobs['merge-gate'] | Should -Match ([regex]::Escape('needs.' + $id + '.result'))
+        }
+        $jobs['native-lifecycle-source'] | Should -Match 'run: cargo build --release --manifest-path core/Cargo\.toml --bin winsmux'
+        $jobs['native-lifecycle-source'] | Should -Match 'scripts/test-native-bridge-resolution\.ps1 -CandidateBinary target/release/winsmux\.exe'
+        $jobs['native-lifecycle-source'] | Should -Match '(?m)^    needs: public-surface\s*$'
+        # Installed MSI/NSIS lifecycle evidence is required separately; this job proves source selection only.
     }
 
     It 'keeps release-critical product versions aligned' {
@@ -29,14 +286,20 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'releases/latest'
         $installScript | Should -Match 'releases/tags/\$escapedTag'
         $installScript | Should -Match 'version = \$ResolvedVersion'
-        $installScript | Should -Match '\$ResolvedVersion \| Set-Content \$VERSION_FILE'
+        $installScript | Should -Match '\[IO\.File\]::WriteAllText\(\(Join-Path \$WINSMUX_DIR ''version''\), \$ResolvedVersion \+ "`n", \[Text\.UTF8Encoding\]::new\(\$false\)\)'
         $installScript | Should -Match 'function Get-WinsmuxCommandVersion'
-        $installScript | Should -Match 'does not match release version'
-        $installScript | Should -Match 'Reinstalling release binary'
-        $installScript | Should -Match 'SHA256SUMS asset not found in release'
-        $installScript | Should -Match 'Cannot verify release asset'
+        $installScript | Should -Match 'Installed executable version does not match the selected release'
+        $installScript | Should -Match '\$state\.Detected\.Version -ceq \$script:ResolvedVersion'
+        $installScript | Should -Match ([regex]::Escape("`$state.Snapshots.exe.Files[''] -ceq `$checksums[`$assetName]"))
+        $installScript | Should -Match ([regex]::Escape("Get-UniqueWinsmuxReleaseAsset `$release 'SHA256SUMS'"))
+        $installScript | Should -Match 'Missing or ambiguous paired release asset'
+        $installScript | Should -Match ([regex]::Escape('Read-WinsmuxReleaseChecksums $checksumsPath @($assetName, $sidecarName)'))
+        $installScript | Should -Match 'Executable staging checksum mismatch'
+        $installScript | Should -Match 'Release checksum is missing the exact paired asset'
         $installScript | Should -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$downloadPath -ErrorAction Stop'
-        $installScript | Should -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
+        $installScript | Should -Match ([regex]::Escape('Install-VerifiedWinsmuxGeneration $lease $state $downloadPath $sidecar $lifecycle'))
+        $installScript | Should -Match ([regex]::Escape('Assert-WinsmuxInstalledGeneration $stage $Sidecar'))
+        $installScript | Should -Not -Match 'Move-Item -LiteralPath \$downloadPath -Destination \$winsmuxExe -Force'
         $installScript | Should -Not -Match 'Invoke-RestMethod -Uri \$asset\.browser_download_url -Headers \$headers -OutFile \$winsmuxExe'
         $installScript | Should -Not -Match 'Skipping checksum verification'
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
@@ -84,7 +347,9 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match '\$UseLatestRelease\s*=\s*\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\) -and \(\$releaseAction -eq ''install'' -or \$releaseAction -eq ''update''\)'
         $installScript | Should -Not -Match '\$UseLatestRelease\s*=.*\$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
         $installScript | Should -Match '\$RELEASE_API_URL = "https://api\.github\.com/repos/Sora-bluesky/winsmux/releases/latest"'
-        $installScript | Should -Match '\$script:ResolvedReleaseTag = \[string\]\$release\.tag_name'
+        $installScript | Should -Match ([regex]::Escape("Assert-WinsmuxLicenseObjectKeys `$release @{ tag_name='string'; assets='array' } -AllowExtra"))
+        $installScript | Should -Match 'Assert-WinsmuxReleaseTag \$release\.tag_name'
+        $installScript | Should -Match '\$script:ResolvedReleaseTag = \$release\.tag_name'
         $installScript | Should -Match '\$script:ResolvedVersion = Get-WinsmuxBinaryVersionFromReleaseTag -ReleaseTag \$script:ResolvedReleaseTag'
         $installScript | Should -Match '\$keepPipedMainScripts = \$script:releaseAction -eq ''install'' -and \$script:isPipedInstaller -and \[string\]::IsNullOrWhiteSpace\(\$script:requestedReleaseTag\)'
         $installScript | Should -Match '\$script:BASE_URL = if \(\[string\]::IsNullOrWhiteSpace\(\$script:installSourceRef\) -and -not \$keepPipedMainScripts\)'
@@ -138,8 +403,30 @@ Describe 'winsmux version surface' {
         $sourcePackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'packages\winsmux\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $sourcePackage.version | Should -Be '0.0.0-development'
 
-        & node $stageScript --version $script:ProductVersion --out $outputRoot
-        $LASTEXITCODE | Should -Be 0
+        # The staging gate requires preparation TEMP to be a sibling of protected outputs.
+        # Configure only this child; the runner and user's environment stay unchanged.
+        $childTemp = Join-Path $TestDrive 'npm-preparation-temp'
+        New-Item -ItemType Directory -Path $childTemp -ErrorAction Stop | Out-Null
+        $start = [Diagnostics.ProcessStartInfo]::new()
+        $start.FileName = (Get-Command node -CommandType Application | Select-Object -First 1).Source
+        $start.WorkingDirectory = $script:RepoRoot
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in @($stageScript, '--version', $script:ProductVersion, '--out', $outputRoot)) {
+            $start.ArgumentList.Add($argument)
+        }
+        $start.Environment['TEMP'] = $childTemp
+        $start.Environment['TMP'] = $childTemp
+        $child = [Diagnostics.Process]::Start($start)
+        try {
+            $stdout = $child.StandardOutput.ReadToEndAsync()
+            $stderr = $child.StandardError.ReadToEndAsync()
+            $child.WaitForExit()
+            $child.ExitCode | Should -Be 0 -Because $stderr.GetAwaiter().GetResult()
+            $stdout.GetAwaiter().GetResult() | Should -Match 'staged'
+        } finally { $child.Dispose() }
 
         $stagedPackage = Get-Content -LiteralPath (Join-Path $outputRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
         $stagedInstaller = Get-Content -LiteralPath (Join-Path $outputRoot 'install.ps1') -Raw -Encoding UTF8
@@ -250,7 +537,11 @@ Describe 'winsmux version surface' {
         $releaseWorkflow | Should -Match '(?ms)^  build-helper:\r?\n    runs-on: ubuntu-24\.04\s'
         $releaseWorkflow | Should -Match '(?m)^    needs: \[build, build-helper\]\s*$'
         $releaseWorkflow | Should -Match 'winsmux-remote-helper-linux-x64'
-        $releaseWorkflow | Should -Match 'sha256sum winsmux-arm64\.exe winsmux-remote-helper-linux-x64 winsmux-x64\.exe > SHA256SUMS'
+        $releaseWorkflow | Should -Match 'node scripts/collect-core-candidates\.mjs collect'
+        $collector = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\collect-core-candidates.mjs') -Raw -Encoding UTF8
+        $collector | Should -Match ([regex]::Escape("const expected = [asset, asset + '.licenses.zip', 'SHA256SUMS']"))
+        $collector | Should -Match ([regex]::Escape("files.set('SHA256SUMS', Buffer.from(checksums))"))
+        $collector | Should -Match 'requireCore\(own\.get\(''SHA256SUMS''\)\.equals'
         $preCommitWhitelist | Should -Match "(?m)^    'scripts/package-remote-helper\.sh',\r?$"
         $preCommitWhitelist | Should -Match "(?m)^    'scripts/test-public-remote-helper\.sh',\r?$"
     }
@@ -395,7 +686,7 @@ Describe 'winsmux version surface' {
         $smokeIndex | Should -BeGreaterThan $publishIndex
         $smokeJob = $workflow.Substring($smokeIndex)
         $smokeJob | Should -Match '(?m)^\s+needs:\s+build\s*$'
-        $smokeJob | Should -Match '(?m)^\s+if:\s+github\.event_name == ''push''\s*$'
+        $smokeJob | Should -Match '(?m)^\s+if:\s+github\.event_name == ''push'' && github\.ref_name != ''v0\.38\.0''\s*$'
         $smokeJob | Should -Match '(?m)^\s+runs-on:\s+windows-latest\s*$'
         $smokeJob | Should -Match '(?ms)^\s+permissions:\s*\r?\n\s+contents:\s+read\s*$'
         $smokeJob | Should -Match 'test-public-release\.ps1[^\r\n]*-Surface Desktop'
@@ -407,7 +698,7 @@ Describe 'winsmux version surface' {
         $selfTest = ($selfTestOutput -join "`n") | ConvertFrom-Json -Depth 20
         $selfTest.ok | Should -BeTrue
         $selfTest.surface | Should -Be 'Desktop'
-        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_requires_owned_state_present,desktop_uninstall_rejects_owned_state_residue,desktop_residue_cleanup_only_removes_uninstaller_and_empty_root,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis,legacy_env_port_and_marker,legacy_env_marker_only,desktop_probe_diag_success_emission,desktop_probe_diag_failure_emission'
+        (@($selfTest.case_ids) -join ',') | Should -Be 'packaging_hotfix_coordinates,coordinate_mismatch,ordinary_prerelease_coordinates,desktop_native_nsis_success_readback_lines,desktop_native_nsis_failure_readback_lines,desktop_native_uninstall_adapter,desktop_native_uninstall_adapter_crlf,desktop_native_hook_missing_uninstall_japanese_string,desktop_native_hook_duplicate_install_english_string,desktop_native_hook_missing_install_restore_japanese_string,desktop_native_hook_missing_uninstall_restore_english_string,desktop_native_hook_missing_install_parked_japanese_string,desktop_native_hook_missing_uninstall_unconfirmed_english_string,desktop_native_uninstall_missing_dispatch,desktop_native_uninstall_wrong_action,desktop_native_uninstall_missing_failure_guard,desktop_native_uninstall_missing_failure_observer,desktop_native_uninstall_wrong_failure_observer_stage,desktop_native_uninstall_failure_exit_zero,desktop_native_uninstall_legacy_fixed_failure_exit,desktop_native_uninstall_missing_failure_abort,desktop_native_uninstall_install_strings_on_uninstall,desktop_native_uninstall_missing_failure_report_definition,desktop_native_uninstall_failure_report_without_abort,desktop_native_uninstall_failure_report_without_helper_lines,desktop_native_uninstall_failure_report_without_restore_notice,desktop_native_uninstall_failure_report_restore_notice_on_wrong_prefix,desktop_native_uninstall_failure_report_parked_notice_for_any_restore_line,desktop_native_uninstall_failure_report_without_unconfirmed_notice,desktop_native_uninstall_missing_failure_observer_definition,desktop_native_uninstall_duplicate_failure_observer_definition,desktop_native_uninstall_failure_observer_default_zero,desktop_native_uninstall_failure_observer_known_code_zero,desktop_native_uninstall_failure_observer_path_passthrough_broadened,desktop_native_uninstall_direct_registry_delete,desktop_native_journal_installed_state,desktop_native_journal_state_shortcut_folder_array,desktop_native_journal_state_preserved_folder_array,desktop_native_journal_state_preserved_not_list,desktop_native_journal_state_preserved_without_link,desktop_native_journal_updated_state,desktop_native_journal_updated_preserved_dropped,desktop_native_journal_uninstall,desktop_native_journal_uninstall_restores_preserved,desktop_native_journal_old_folder_missing,desktop_native_journal_old_root_folder_added,desktop_native_journal_old_folder_moved,desktop_native_journal_preserved_empty_serialized,desktop_native_journal_preserved_not_list,desktop_native_journal_preserved_phase_prepared,desktop_native_journal_preserved_phase_unknown,desktop_native_journal_preserved_prior_mismatch,desktop_native_journal_prior_preserved_kind_array,desktop_native_journal_preserved_lost,desktop_native_journal_preserved_wrong_link,desktop_native_journal_link_residue,product_version_exact,product_version_suffix_rejected,product_version_padding_rejected,desktop_namespace_false_absent,desktop_namespace_false_empty_existing_key,desktop_namespace_false_default_empty_string_value,desktop_namespace_false_zero_byte_value,desktop_namespace_false_unknown_empty_child,desktop_namespace_false_empty_command_child,desktop_namespace_false_command_value,desktop_namespace_false_unknown_command_child,desktop_namespace_false_api_or_link_unconfirmed,desktop_namespace_false_contradictory_absence,desktop_namespace_false_changed_child_enumeration,desktop_namespace_false_negative_count,desktop_namespace_true_absent,desktop_namespace_true_empty_existing_key,desktop_namespace_true_default_empty_string_value,desktop_namespace_true_zero_byte_value,desktop_namespace_true_unknown_empty_child,desktop_namespace_true_empty_command_child,desktop_namespace_true_command_value,desktop_namespace_true_unknown_command_child,desktop_namespace_true_api_or_link_unconfirmed,desktop_namespace_true_contradictory_absence,desktop_namespace_true_changed_child_enumeration,desktop_namespace_true_negative_count,desktop_namespace_folder_context_absent_accepted,desktop_namespace_folder_context_empty_accepted,desktop_namespace_folder_context_occupied_rejected,desktop_namespace_folder_context_unconfirmed_rejected,desktop_namespace_folder_context_existence_mismatch_rejected,desktop_namespace_background_context_absent_accepted,desktop_namespace_background_context_empty_accepted,desktop_namespace_background_context_occupied_rejected,desktop_namespace_background_context_unconfirmed_rejected,desktop_namespace_background_context_existence_mismatch_rejected,desktop_namespace_product_state_absent_accepted,desktop_namespace_product_state_empty_accepted,desktop_namespace_product_state_occupied_rejected,desktop_namespace_product_state_unconfirmed_rejected,desktop_namespace_product_state_existence_mismatch_rejected,desktop_namespace_uninstall_registration_absent_accepted,desktop_namespace_uninstall_registration_empty_accepted,desktop_namespace_uninstall_registration_occupied_rejected,desktop_namespace_uninstall_registration_unconfirmed_rejected,desktop_namespace_uninstall_registration_existence_mismatch_rejected,desktop_namespace_registry32_rejected,desktop_namespace_missing_confirmation_rejected,preexisting_folder_context,preexisting_background_context,preexisting_product_state,owned_product_state_cleanup,preexisting_uninstall_registration,desktop_install_location_unquoted,desktop_install_location_outer_quoted,desktop_install_location_malformed,desktop_install_location_foreign,uninstall_registration_residue,preexisting_desktop_shortcut,preexisting_start_menu_shortcut,preexisting_process,preexisting_install_root,desktop_uninstall_argv_order,desktop_uninstall_requires_owned_state_present,desktop_uninstall_rejects_owned_state_residue,desktop_residue_cleanup_only_removes_uninstaller_and_empty_root,desktop_uninstall_foreign_path,desktop_lifecycle_ownership_reject_preserves_state,desktop_lifecycle_stop_failure_preserves_state,desktop_lifecycle_uninstall_failure_preserves_state,desktop_lifecycle_registration_remains_preserves_state,desktop_lifecycle_success_orders_cleanup,desktop_lifecycle_residue_failure_blocks_root_cleanup,process_diagnostics_metadata_only,desktop_observer_states,desktop_observation_cleanup_aggregate,install_root_residue,production_page_url,checksum_mismatch,nonproduction_url,desktop_fixed_port_injection,desktop_cdp_probe_taxonomy,desktop_typed_observation_authority,desktop_fixed_port_listener_authority,desktop_typed_observation_fail_closed,desktop_ws_path_authority,desktop_owned_capture_bounded,desktop_unexpected_probe_failure,desktop_teardown_diagnosis_keys,desktop_teardown_diagnosis_budget,desktop_teardown_diagnosis_privacy,desktop_debug_arg_diagnosis,legacy_env_port_and_marker,legacy_env_marker_only,desktop_probe_diag_success_emission,desktop_probe_diag_failure_emission'
     }
 
     It 'T668-SMOKE-NPM binds the public npm smoke after registry publish' {
@@ -788,10 +1079,37 @@ Describe 'winsmux version surface' {
             $node -is [Management.Automation.Language.CommandAst] -and
             $node.GetCommandName() -ceq 'Invoke-PublicChildProcess'
         }, $true))
+        $nsisCalls = @($ast.FindAll({
+            param($node)
+            $node -is [Management.Automation.Language.CommandAst] -and
+            $node.GetCommandName() -ceq 'Invoke-DesktopNsisProcess'
+        }, $true))
         $nativeCalls.Count | Should -Be 2
-        $publicCalls.Count | Should -Be 4
-        $publicProcessOwner[0].Extent.Text | Should -Match "Data\['process_result'\]"
-        $publicProcessOwner[0].Extent.Text | Should -Match "-State 'timed_out'"
+        (@($publicCalls) + @($nsisCalls)).Count | Should -Be 4
+        foreach ($route in @(
+            @{ owner='Invoke-CoreSmoke'; entry='Invoke-PublicChildProcess'; operation="'core_version'" },
+            @{ owner='Invoke-NpmProcessOperation'; entry='Invoke-PublicChildProcess'; operation='$Operation' },
+            @{ owner='Invoke-DesktopSmoke'; entry='Invoke-DesktopNsisProcess'; operation="'desktop_installer'" },
+            @{ owner='Invoke-VerifiedDesktopUninstaller'; entry='Invoke-DesktopNsisProcess'; operation="'desktop_uninstaller'" }
+        )) {
+            $routeOwner = @($functions | Where-Object Name -CEQ $route.owner)
+            $routeOwner.Count | Should -Be 1
+            $routeCalls = @($routeOwner[0].FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -ceq $route.entry
+            }, $true))
+            $routeCalls.Count | Should -Be 1
+            $routeCalls[0].Extent.Text | Should -Match ([regex]::Escape('-Operation ' + $route.operation))
+        }
+        $nsisProcessOwner = @($functions | Where-Object Name -CEQ 'Invoke-DesktopNsisProcess')
+        $nsisProcessOwner.Count | Should -Be 1
+        foreach ($owner in @($publicProcessOwner[0], $nsisProcessOwner[0])) {
+            $owner.Extent.Text | Should -Match "Data\['process_result'\]"
+            $owner.Extent.Text | Should -Match "Format-PublicChildProcessDiagnostic -Operation \`$Operation -State 'timed_out' -Result \`$result"
+            $owner.Extent.Text | Should -Match 'foreach \(\$key in \$_\.Exception\.Data\.Keys\)'
+        }
+        $nsisProcessOwner[0].Extent.Text | Should -Match 'Wait-DesktopOwnedNativeProcess -Owned \$owned -TimeoutSeconds 180'
         $desktopOwnerText = $desktopLifecycleOwner[0].Extent.Text
         $cleanupIndex = $desktopOwnerText.IndexOf('Invoke-DesktopCleanup', [StringComparison]::Ordinal)
         $captureIndex = $desktopOwnerText.IndexOf('Set-DesktopObservationCaptureMetadata', [StringComparison]::Ordinal)
@@ -947,7 +1265,11 @@ Describe 'winsmux version surface' {
         $helper | Should -Match 'function Invoke-VerifiedDesktopUninstaller'
         $helper | Should -Match 'function Invoke-DesktopCleanup'
         $helper | Should -Match ([regex]::Escape('desktop_uninstall_argv_order'))
-        $helper | Should -Match ([regex]::Escape('_?=$installRoot'))
+        $helper | Should -Match 'function Invoke-DesktopNsisProcess'
+        $helper | Should -Match 'DesktopProcessOwner\]::StartNsisInstaller'
+        $helper | Should -Match 'DesktopProcessOwner\]::StartNsisUninstaller'
+        $helper | Should -Match 'Invoke-DesktopNsisProcess -Operation ''desktop_installer'' -FilePath \(\[string\]\$stage.path\) -Context \$stage.context'
+        $helper | Should -Match 'Invoke-DesktopNsisProcess -Operation ''desktop_uninstaller'' -FilePath \$expectedUninstaller -Context \$Context'
         $helper | Should -Match 'Invoke-VerifiedDesktopUninstaller -Context \$Context -Environment \$Environment'
         $helper | Should -Not -Match 'DesktopCleanupAuthorized|-AfterFailure'
         $selfTestOutput = @(& pwsh -NoProfile -File $helperPath -Surface Desktop -Version $script:ProductVersion -ReleaseTag "v$($script:ProductVersion)" -Repository 'Sora-bluesky/winsmux' -SelfTest -Json 2>&1)
@@ -967,10 +1289,17 @@ Describe 'winsmux version surface' {
     It 'T615-DESKTOP-CANDIDATE-01 binds the checked-out candidate identity and derives the installer from VERSION without publication' {
         $workflow = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.github\workflows\desktop-candidate-cdp-gate.yml') -Raw -Encoding UTF8
 
-        $workflow | Should -Match '(?ms)^on:\s*\r?\n\s+workflow_dispatch:'
+        $triggers = [regex]::Match($workflow, '(?ms)^on:\s*\r?\n(?<body>.*?)(?=^permissions:)')
+        $triggers.Success | Should -BeTrue
+        @([regex]::Matches($triggers.Groups['body'].Value, '(?m)^  workflow_dispatch:\s*$')).Count | Should -Be 1
+        @([regex]::Matches($triggers.Groups['body'].Value, '(?m)^  workflow_call:\s*$')).Count | Should -Be 1
         $workflow | Should -Not -Match '(?m)^\s+(push|pull_request|schedule):'
         $workflow | Should -Match '(?ms)^permissions:\s*\r?\n\s+contents:\s+read\s*$'
-        $workflow | Should -Not -Match '(?i)secrets\.|npm publish|softprops/action-gh-release|git (push|tag)|actions/upload-artifact'
+        $workflow | Should -Not -Match '(?i)secrets\.|npm publish|softprops/action-gh-release|git (push|tag)'
+        $candidate = [regex]::Match($workflow, '(?ms)^  desktop-candidate-cdp-gate:.*?(?=^  desktop-native-lifecycle:)')
+        $candidate.Success | Should -BeTrue
+        $candidate.Value | Should -Not -Match 'actions/upload-artifact'
+        # Only the separate native job may upload the bounded local proof artifacts.
         $workflow | Should -Match 'ref:\s+\$\{\{ inputs\.candidate_ref \}\}'
         $workflow | Should -Match 'persist-credentials:\s+false'
         $workflow | Should -Match ('(?m)^\s+default:\s+v{0}\s*$' -f [regex]::Escape($script:ProductVersion))
@@ -1409,7 +1738,7 @@ switch (`$args[0]) {
         $readmeJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.ja.md') -Raw -Encoding UTF8
         $compatibility = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\docs\compatibility.md') -Raw -Encoding UTF8
         $thirdPartyNotices = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'THIRD_PARTY_NOTICES.md') -Raw -Encoding UTF8
-        $inventory = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\powershell-adapter-inventory.md') -Raw -Encoding UTF8
+        $inventory = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\legacy-compat-surface-inventory.json') -Raw -Encoding UTF8
 
         foreach ($content in @($readme, $readmeJa, $compatibility, $thirdPartyNotices)) {
             $content | Should -Match 'psmux'
@@ -1419,8 +1748,11 @@ switch (`$args[0]) {
             $content | Should -Match 'no longer ship|no longer shipped|配布しません'
         }
 
-        $inventory | Should -Match 'TASK-296'
-        $inventory | Should -Match 'legacy alias sunset'
+        $inventoryContract = $inventory | ConvertFrom-Json -Depth 32
+        $inventoryContract.task | Should -Be 'TASK-408'
+        foreach ($term in @('psmux', 'pmux', 'tmux')) {
+            $inventoryContract.terms | Should -Contain $term
+        }
         $compatibility | Should -Match 'does not remove tmux-compatible configuration support'
         $thirdPartyNotices | Should -Match 'no longer ships the legacy binary aliases'
     }
@@ -1833,7 +2165,7 @@ Resolve-DesktopWebSocketPathAuthority `
         $branchText | Should -Match 'Assert-FileChecksum'
     }
 
-    It 'T857-DESKTOP-ROUTER-COMPAT-01 requires router inventory only for candidates and releases at or after 0.36.38' {
+    It 'T857-DESKTOP-ROUTER-COMPAT-01 preserves the known router release and requires the explicit workspace generation for the current release' {
         $helperPath = Join-Path $script:RepoRoot 'scripts\test-public-release.ps1'
         $tokens = $null
         $parseErrors = $null
@@ -1848,14 +2180,14 @@ Resolve-DesktopWebSocketPathAuthority `
         $policyFunctions.Count | Should -Be 1
 
         $policyHarness = [scriptblock]::Create($policyFunctions[0].Extent.Text)
+        function Assert-Condition([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
         . $policyHarness
         $cases = @(
-            @{ name = 'candidate_old'; version = '0.36.30'; tag = 'v0.36.30.1'; candidate = 'candidate.exe'; required = $true; treeish = 'HEAD' },
-            @{ name = 'candidate_current'; version = '0.36.38'; tag = 'v0.36.38'; candidate = 'candidate.exe'; required = $true; treeish = 'HEAD' },
+            @{ name = 'candidate_current'; version = '0.38.0'; tag = 'v0.38.0'; candidate = 'candidate.exe'; required = $false; treeish = $null; generation = 'workspace' },
+            @{ name = 'public_current'; version = '0.38.0'; tag = 'v0.38.0'; candidate = ''; required = $false; treeish = $null; generation = 'workspace' },
             @{ name = 'public_recovery'; version = '0.36.30'; tag = 'v0.36.30.1'; candidate = ''; required = $false; treeish = $null },
             @{ name = 'public_before_cutover'; version = '0.36.37'; tag = 'v0.36.37'; candidate = ''; required = $false; treeish = $null },
-            @{ name = 'public_at_cutover'; version = '0.36.38'; tag = 'v0.36.38'; candidate = ''; required = $true; treeish = 'v0.36.38' },
-            @{ name = 'public_future'; version = '0.37.0'; tag = 'v0.37.0'; candidate = ''; required = $true; treeish = 'v0.37.0' }
+            @{ name = 'public_at_cutover'; version = '0.36.38'; tag = 'v0.36.38'; candidate = ''; required = $true; treeish = 'v0.36.38' }
         )
         foreach ($case in $cases) {
             $policy = Resolve-DesktopRouterInventoryPolicy `
@@ -1864,7 +2196,10 @@ Resolve-DesktopWebSocketPathAuthority `
                 -CandidateInstallerPath ([string]$case.candidate)
             $policy.required | Should -Be ([bool]$case.required) -Because ([string]$case.name)
             $policy.treeish | Should -Be $case.treeish -Because ([string]$case.name)
+            if ($case.ContainsKey('generation')) { $policy.generation | Should -Be $case.generation }
         }
+        { Resolve-DesktopRouterInventoryPolicy -Version '0.37.0' -ReleaseTag 'v0.37.0' -CandidateInstallerPath '' } | Should -Throw '*generation_unknown*'
+        { Resolve-DesktopRouterInventoryPolicy -Version '0.36.38' -ReleaseTag 'v0.36.38' -CandidateInstallerPath 'candidate.exe' } | Should -Throw '*legacy_candidate_unsupported*'
 
         $desktopSmoke = @($ast.FindAll({
             param($node)

@@ -1311,10 +1311,7 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
     let matched_files = compatibility_surface_files(project_dir, &tracked_files, &terms);
     let private_reference_files = legacy_compat_private_reference_files(
         project_dir,
-        &[
-            inventory_relative_path,
-            "docs/project/legacy-compat-surface-inventory.md",
-        ],
+        &[inventory_relative_path],
     );
     let mut class_counts: BTreeMap<String, usize> = BTreeMap::new();
     for class in &allowed_classes {
@@ -9849,11 +9846,10 @@ fn guard_report_payload(project_dir: &Path) -> Value {
         guard_check(
             "pester_reduction_plan",
             "pwsh -NoProfile -File scripts/validate-pester-reduction-plan.ps1",
-            "docs/project/pester-suite-reduction-plan.md",
+            "scripts/validate-pester-reduction-plan.ps1",
             "TASK-407 Pester reduction plan covers tracked Pester files before release",
             file_exists(project_dir, "scripts/validate-pester-reduction-plan.ps1")
-                && file_exists(project_dir, "docs/project/pester-suite-inventory.json")
-                && file_exists(project_dir, "docs/project/pester-suite-reduction-plan.md"),
+                && file_exists(project_dir, "docs/project/pester-suite-inventory.json"),
         ),
         guard_check(
             "desktop_release_workflow",

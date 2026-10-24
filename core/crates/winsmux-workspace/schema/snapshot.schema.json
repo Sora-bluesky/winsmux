@@ -1,0 +1,299 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "Axis": {
+      "enum": [
+        "horizontal",
+        "vertical"
+      ],
+      "type": "string"
+    },
+    "Hex16": {
+      "pattern": "(?:^[0-9a-f]{16}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "Hex32": {
+      "pattern": "(?:^[0-9a-f]{32}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "Node": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "leaf"
+              ],
+              "type": "string"
+            },
+            "pane_id": {
+              "$ref": "#/definitions/PaneId"
+            }
+          },
+          "required": [
+            "kind",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "axis": {
+              "$ref": "#/definitions/Axis"
+            },
+            "first": {
+              "$ref": "#/definitions/Node"
+            },
+            "kind": {
+              "enum": [
+                "split"
+              ],
+              "type": "string"
+            },
+            "ratio": {
+              "$ref": "#/definitions/Ratio"
+            },
+            "second": {
+              "$ref": "#/definitions/Node"
+            }
+          },
+          "required": [
+            "axis",
+            "first",
+            "kind",
+            "ratio",
+            "second"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "NonEmpty": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "PaneId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "ProjectId": {
+      "pattern": "(?:^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)(?![\\s\\S])",
+      "type": "string"
+    },
+    "Provider": {
+      "enum": [
+        "codex",
+        "claude"
+      ],
+      "type": "string"
+    },
+    "ProviderProfile": {
+      "additionalProperties": false,
+      "properties": {
+        "effort": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "model": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NonEmpty"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "$ref": "#/definitions/Provider"
+        }
+      },
+      "required": [
+        "effort",
+        "model",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "Ratio": {
+      "exclusiveMaximum": 1.0,
+      "exclusiveMinimum": 0.0,
+      "type": "number"
+    },
+    "RootIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "file_id": {
+          "$ref": "#/definitions/Hex32"
+        },
+        "volume_serial": {
+          "$ref": "#/definitions/Hex16"
+        }
+      },
+      "required": [
+        "file_id",
+        "volume_serial"
+      ],
+      "type": "object"
+    },
+    "SavedLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Node"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "project_id",
+        "root"
+      ],
+      "type": "object"
+    },
+    "SavedPane": {
+      "additionalProperties": false,
+      "properties": {
+        "pane_id": {
+          "$ref": "#/definitions/PaneId"
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "provider_profile": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProviderProfile"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shell_profile_id": {
+          "$ref": "#/definitions/NonEmpty"
+        }
+      },
+      "required": [
+        "pane_id",
+        "project_id",
+        "provider_profile",
+        "shell_profile_id"
+      ],
+      "type": "object"
+    },
+    "SavedProject": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/definitions/NonEmpty"
+        },
+        "project_id": {
+          "$ref": "#/definitions/ProjectId"
+        },
+        "root_identity": {
+          "$ref": "#/definitions/RootIdentity"
+        }
+      },
+      "required": [
+        "display_name",
+        "path",
+        "project_id",
+        "root_identity"
+      ],
+      "type": "object"
+    },
+    "U": {
+      "maximum": 9007199254740991.0,
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "Version": {
+      "maximum": 1.0,
+      "minimum": 1.0,
+      "type": "integer"
+    }
+  },
+  "description": "Structural projection of the Rust contract. Raw-byte validation additionally enforces duplicate keys, integer lexemes, byte/container-depth limits, cross-references, request correlation and runtime authorization/state. No runtime effects are implemented here.",
+  "properties": {
+    "generation": {
+      "$ref": "#/definitions/U"
+    },
+    "layouts": {
+      "items": {
+        "$ref": "#/definitions/SavedLayout"
+      },
+      "type": "array"
+    },
+    "panes": {
+      "items": {
+        "$ref": "#/definitions/SavedPane"
+      },
+      "type": "array"
+    },
+    "projects": {
+      "items": {
+        "$ref": "#/definitions/SavedProject"
+      },
+      "type": "array"
+    },
+    "schema_version": {
+      "$ref": "#/definitions/Version"
+    },
+    "selected_pane_id": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PaneId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "selected_project_id": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ProjectId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "topology_revision": {
+      "$ref": "#/definitions/U"
+    }
+  },
+  "required": [
+    "generation",
+    "layouts",
+    "panes",
+    "projects",
+    "schema_version",
+    "selected_pane_id",
+    "selected_project_id",
+    "topology_revision"
+  ],
+  "title": "Snapshot",
+  "type": "object"
+}

@@ -1,0 +1,21 @@
+MICROSOFT COMPONENT SUPPLEMENT FOR WINSMUX WINDOWS BINARIES
+
+These supplemental conditions are provided by the winsmux distributor. They are not a Microsoft-issued license agreement or a statement of Microsoft endorsement.
+
+SCOPE
+These conditions apply only to Microsoft Visual C++ runtime object code embedded in the distributed Windows binaries. They do not change the Apache-2.0 license of winsmux source code or the separate licenses of other components. Microsoft and its suppliers retain their rights in their code. The developer distribution authority is separate and remains subject to the applicable Visual Studio distribution terms.
+
+AGREEMENT
+Read these conditions before installing or using the Microsoft component as part of winsmux. Installing or using that component after the opportunity to review these conditions signifies your agreement. If you do not agree, do not install or use that component. Distributors must pass on these conditions and require their distributors and external end users to agree to protective conditions no less protective than these conditions and the applicable developer distribution terms.
+
+USE AND PROTECTION OF THE MICROSOFT COMPONENT
+The Microsoft component may be installed and used as part of winsmux. No right to extract, distribute, rent, lease, sublicense or offer that component separately is granted. Distribution as part of an application must preserve its original notices and the recipient protections described above.
+Do not work around technical limitations of the Microsoft component, remove or alter its notices, or reverse engineer, decompile, disassemble or attempt to derive its source, except where applicable law gives you greater rights, or only to the extent required by the third-party licensing terms governing an applicable open-source component. Do not use the component unlawfully or suggest Microsoft endorses winsmux. Comply with applicable export laws.
+
+WARRANTY, LIABILITY AND MANDATORY RIGHTS
+The Microsoft component is provided as is without express warranties. To the extent permitted by applicable law, Microsoft and its suppliers disclaim implied warranties of merchantability, fitness and non-infringement. Any recovery from Microsoft and its suppliers is limited to direct damages up to US$5. Consequential, lost-profit, special, indirect and incidental damages are excluded, including where Microsoft knew or should have known of their possibility. These limitations apply to matters related to the component and claims in contract, warranty, guarantee, strict liability, negligence or other tort to the extent permitted by applicable law. Mandatory consumer rights and mandatory local-law exceptions take precedence.
+
+The original Microsoft developer-license text is retained separately in the bundled license catalog for provenance and its applicable distribution requirements. This supplement does not grant a standalone redistribution right for Microsoft development tools, static-library archives, debug runtimes or the runtime-only package.
+
+winsmux source license: https://github.com/Sora-bluesky/winsmux/blob/v0.38.0/LICENSE
+Microsoft developer-license directory: https://visualstudio.microsoft.com/license-terms/

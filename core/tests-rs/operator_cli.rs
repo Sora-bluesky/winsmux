@@ -4457,11 +4457,6 @@ fn operator_cli_legacy_compat_gate_rejects_private_inventory_reference() {
 "#,
     )
     .expect("test should write inventory");
-    fs::write(
-        project_dir.join("docs/project/legacy-compat-surface-inventory.md"),
-        "# Legacy Compatibility Surface Inventory\n",
-    )
-    .expect("test should write inventory docs");
 
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .args(["legacy-compat-gate", "--json"])
@@ -4508,11 +4503,6 @@ fn operator_cli_legacy_compat_gate_rejects_unclassified_reference() {
 "#,
     )
     .expect("test should write inventory");
-    fs::write(
-        project_dir.join("docs/project/legacy-compat-surface-inventory.md"),
-        "# Legacy Compatibility Surface Inventory\n",
-    )
-    .expect("test should write inventory docs");
     fs::write(project_dir.join("untracked.txt"), "new psmux reference\n")
         .expect("test should write untracked compatibility reference");
 
@@ -4528,6 +4518,25 @@ fn operator_cli_legacy_compat_gate_rejects_unclassified_reference() {
     assert_eq!(json["summary"]["passed"], false);
     assert_eq!(json["summary"]["unclassified_count"], 1);
     assert_eq!(json["unclassified_files"][0], "untracked.txt");
+}
+
+#[test]
+fn operator_cli_legacy_compat_gate_rejects_missing_or_malformed_inventory() {
+    for inventory in [None, Some("{"), Some("{}"), Some("[]")] {
+        let project_dir = make_temp_project_dir("legacy-compat-invalid-inventory");
+        run_git(&project_dir, &["init"]);
+        fs::create_dir_all(project_dir.join("docs/project")).unwrap();
+        if let Some(raw) = inventory {
+            fs::write(project_dir.join("docs/project/legacy-compat-surface-inventory.json"), raw).unwrap();
+        }
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["legacy-compat-gate", "--json"])
+            .current_dir(&project_dir)
+            .output()
+            .expect("winsmux command should run");
+        assert!(!output.status.success());
+        assert!(!output.stderr.is_empty());
+    }
 }
 
 #[test]
@@ -4601,14 +4610,6 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     .expect("test should write Pester reduction inventory");
     fs::write(
         project_dir
-            .join("docs")
-            .join("project")
-            .join("pester-suite-reduction-plan.md"),
-        "# Pester suite reduction plan\n",
-    )
-    .expect("test should write Pester reduction plan");
-    fs::write(
-        project_dir
             .join("scripts")
             .join("validate-pester-reduction-plan.ps1"),
         "",
@@ -4625,6 +4626,7 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     )
     .expect("test should write desktop release workflow");
 
+    assert!(!project_dir.join("docs/project/pester-suite-reduction-plan.md").exists());
     let json = run_json(&project_dir, &["guard", "--json"]);
 
     assert_eq!(json["command"], "guard");
@@ -4653,7 +4655,7 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     assert_eq!(json["required_checks"][7]["id"], "pester_reduction_plan");
     assert_eq!(
         json["required_checks"][7]["source"],
-        "docs/project/pester-suite-reduction-plan.md"
+        "scripts/validate-pester-reduction-plan.ps1"
     );
     assert_eq!(json["required_checks"][8]["id"], "desktop_release_workflow");
     assert_eq!(json["parent_tracking"]["task_id"], "TASK-390");
@@ -4681,76 +4683,28 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
 
 #[test]
 fn operator_cli_guard_requires_pester_reduction_plan_document() {
-    let project_dir = make_temp_project_dir("guard-pester-plan-required");
-
-    fs::create_dir_all(project_dir.join("scripts")).expect("test should create scripts dir");
-    fs::write(project_dir.join("scripts").join("git-guard.ps1"), "")
-        .expect("test should write git guard");
-    fs::write(
-        project_dir.join("scripts").join("audit-public-surface.ps1"),
-        "",
-    )
-    .expect("test should write public surface audit");
-    fs::write(project_dir.join("scripts").join("gitleaks-history.ps1"), "")
-        .expect("test should write gitleaks history");
-    fs::write(
-        project_dir
-            .join("scripts")
-            .join("gitleaks-history-baseline.txt"),
-        "abc123\n",
-    )
-    .expect("test should write gitleaks baseline");
-    fs::write(
-        project_dir
-            .join("scripts")
-            .join("generate-release-notes.ps1"),
-        "",
-    )
-    .expect("test should write release notes script");
-    fs::write(
-        project_dir
-            .join("scripts")
-            .join("validate-pester-reduction-plan.ps1"),
-        "",
-    )
-    .expect("test should write Pester reduction validator");
-
-    fs::create_dir_all(project_dir.join("docs").join("project"))
-        .expect("test should create docs project dir");
-    fs::write(
-        project_dir
-            .join("docs")
-            .join("project")
-            .join("legacy-compat-surface-inventory.json"),
-        "{}\n",
-    )
-    .expect("test should write legacy compat inventory");
-    fs::write(
-        project_dir
-            .join("docs")
-            .join("project")
-            .join("pester-suite-inventory.json"),
-        "{}\n",
-    )
-    .expect("test should write Pester reduction inventory");
-
-    fs::create_dir_all(project_dir.join(".github").join("workflows"))
-        .expect("test should create workflows dir");
-    fs::write(
-        project_dir
-            .join(".github")
-            .join("workflows")
-            .join("release-desktop.yml"),
-        "name: Release Desktop App\n",
-    )
-    .expect("test should write desktop release workflow");
-
-    let json = run_json(&project_dir, &["guard", "--json"]);
-
-    assert_eq!(json["summary"]["required_check_count"], 9);
-    assert_eq!(json["summary"]["available_check_count"], 8);
-    assert_eq!(json["required_checks"][7]["id"], "pester_reduction_plan");
-    assert_eq!(json["required_checks"][7]["available"], false);
+    // Availability belongs to the validator and its machine inventory.
+    // Historical explanatory Markdown cannot substitute for either input.
+    for (has_script, has_inventory) in [(true, false), (false, true), (false, false)] {
+        let project_dir = make_temp_project_dir("guard-pester-plan-required");
+        fs::create_dir_all(project_dir.join("scripts")).unwrap();
+        fs::create_dir_all(project_dir.join("docs/project")).unwrap();
+        if has_script {
+            fs::write(project_dir.join("scripts/validate-pester-reduction-plan.ps1"), "").unwrap();
+        }
+        if has_inventory {
+            fs::write(project_dir.join("docs/project/pester-suite-inventory.json"), "{}\n").unwrap();
+        }
+        fs::write(
+            project_dir.join("docs/project/pester-suite-reduction-plan.md"),
+            "# Historical explanation\n",
+        ).unwrap();
+        let json = run_json(&project_dir, &["guard", "--json"]);
+        assert_eq!(json["summary"]["required_check_count"], 9);
+        assert_eq!(json["required_checks"][7]["id"], "pester_reduction_plan");
+        assert_eq!(json["required_checks"][7]["source"], "scripts/validate-pester-reduction-plan.ps1");
+        assert_eq!(json["required_checks"][7]["available"], false);
+    }
 }
 
 #[test]

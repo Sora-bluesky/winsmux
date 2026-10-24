@@ -1,0 +1,47 @@
+{
+  "schema": "winsmux-nsis-source/v1",
+  "tauri_cli": "2.11.1",
+  "upstream_commit": "e5ae5b93cdd310045191cc0526f253140ad64b87",
+  "upstream_sha256": {
+    "installer.nsi": "ee84148e405adc4d736a46456dd8345a644751bd1f28a335dd7fd833a32d7c3e",
+    "utils.nsh": "b27b407f886cca738e44e774f15e6b556b43ce52557a7c8891ee4eca7dd8013d"
+  },
+  "changes": [
+    "Move the existing installer hook include before utils",
+    "Require the hook-defined generation path",
+    "Include generation-owned utils and plugin directory",
+    "Replace exactly three template and seven utils plugin namespaces",
+    "Replace the inherited lifecycle operations with the generation-bound native NSIS install, rollback and uninstall adapter",
+    "Expand only the NSIS-owned transaction workspace to its long DOS spelling and share bounded helper, source and context paths across install and uninstall",
+    "T-only diagnostic: preserve finite native handle refusal origin and Win32 class through 90 exact exit literals; all project to prior path site 102",
+    "T-only diagnostic: annotate only propagated DerivedPath NotFound 276 at 53 fixed responsibility origins; no retry or filesystem observation",
+    "T-only diagnostic: preserve all ten DesktopInstallError startup classes through exact stderr labels and NSIS exit codes 380-389; retain generic startup 71",
+    "T-only diagnostic: at original startup timeout preserve last existing root wait and receiver phase in one fixed stderr line; map 12 finite two-line classes to 390-401, retaining single-line 388",
+    "T-only diagnostic: distinguish the two legacy admission refusals legacy_receipt_missing and legacy_profile_incomplete as exit codes 72-73 beside 67; 74 stays retired with the unreachable legacy_root_mismatch so no diagnostic number changes meaning",
+    "Print the helper classification and the judged root to the details view and abort with a per-class user message from the installer hook",
+    "T-only diagnostic: map destination_occupied to exit 75",
+    "Print the per-class message to the details view before the abort and select install or uninstall strings by macro prefix",
+    "Bind the license page per language: English shows the rendered license, Japanese shows the hook-anchored reference translation",
+    "Abort shortcut_folder_moved with its own per-class message; T-only diagnostic: map it to exit 76",
+    "Print every helper output line to the details view and classify by the last line; T-only diagnostic: pass exits 161-172 through (the preserved-link moves and each move's post-rename readback)",
+    "After a restore_incomplete line, abort with the restore-incomplete message instead of the class message, and add the parked or unconfirmed shortcut notice only after a restore_shortcut_parked or restore_shortcut_unconfirmed line",
+    "T-only diagnostic: classify the helper output without its restore lines, so a run that also printed restore lines keeps its class exit code",
+    "T-only diagnostic: leave out a last piece without a newline, so a restore line that ExecToStack cut at NSIS_MAX_STRLEN keeps the class exit code",
+    "T-only diagnostic: classify the helper output without its readback lines too (readback_refused, readback_recovered and readback_more), so a run that reported a post-rename readback keeps its class exit code",
+    "Choose the abort message by the last helper line that is not a readback line, and after a helper run that succeeded print its readback lines to the details view",
+    "Write the Desktop and Start menu links with the install folder as their Start in folder, not the temporary source folder"
+  ],
+  "outputs": [
+    {
+      "path": "installer.nsi",
+      "bytes": 48544,
+      "sha256": "83f450719e2cfdf28faadb06c34b44450832ac8fa14774707bb55e912399dae7"
+    },
+    {
+      "path": "winsmux-utils.nsh",
+      "bytes": 1714,
+      "sha256": "923281c0324b9c1650df9ab0859803adfaaa489a0eb08aa826d2bfdb55c6c8ad"
+    }
+  ],
+  "scope": "compiler-source-provenance"
+}

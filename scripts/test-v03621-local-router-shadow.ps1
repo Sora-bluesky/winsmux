@@ -40,8 +40,6 @@ $shadow = Get-RepoContent 'winsmux-core/scripts/local-router-shadow.ps1'
 $manifestText = Get-RepoContent 'winsmux-core/router/local-small-router-v03621.manifest.json'
 $weightsText = Get-RepoContent 'winsmux-core/router/local-small-router-v03621.weights.json'
 $tests = Get-RepoContent 'tests/V03621LocalRouterShadow.Tests.ps1'
-$doc = Get-RepoContent 'docs/project/v03621-local-router-shadow.md'
-$profileDoc = Get-RepoContent 'docs/project/v03621-local-router-shadow-profile.md'
 $appMain = Get-RepoContent 'winsmux-app/src/main.ts'
 $appStyles = Get-RepoContent 'winsmux-app/src/styles.css'
 $workflow = Get-RepoContent '.github/workflows/test.yml'
@@ -51,8 +49,6 @@ Add-Check 'local router shadow script exists' (-not [string]::IsNullOrWhiteSpace
 Add-Check 'local router manifest exists' (-not [string]::IsNullOrWhiteSpace($manifestText)) 'winsmux-core/router/local-small-router-v03621.manifest.json'
 Add-Check 'local router weights exist' (-not [string]::IsNullOrWhiteSpace($weightsText)) 'winsmux-core/router/local-small-router-v03621.weights.json'
 Add-Check 'v0.36.21 Pester tests exist' (-not [string]::IsNullOrWhiteSpace($tests)) 'tests/V03621LocalRouterShadow.Tests.ps1'
-Add-Check 'local router design document exists' (-not [string]::IsNullOrWhiteSpace($doc)) 'docs/project/v03621-local-router-shadow.md'
-Add-Check 'local router resource profile document exists' (-not [string]::IsNullOrWhiteSpace($profileDoc)) 'docs/project/v03621-local-router-shadow-profile.md'
 
 foreach ($functionName in @(
     'Resolve-WinsmuxLocalRouterArtifact',
@@ -108,34 +104,7 @@ foreach ($forbidden in @(
     'ANTHROPIC_API_KEY',
     'provider_request_id'
 )) {
-    Add-Check "shadow path does not call or store $forbidden" (($shadow + $manifestText + $weightsText + $doc + $profileDoc) -notmatch [regex]::Escape($forbidden)) 'winsmux-core/scripts/local-router-shadow.ps1'
-}
-
-foreach ($taskId in @('TASK-603', 'TASK-604', 'TASK-605', 'TASK-606', 'TASK-607', 'TASK-608', 'TASK-609')) {
-    Add-Check "design document maps $taskId" ($doc -match [regex]::Escape($taskId)) 'docs/project/v03621-local-router-shadow.md'
-}
-
-foreach ($token in @(
-    'Shadow Mode only',
-    'manual dispatch remains the user-facing path',
-    'artifact hash',
-    'availability mask',
-    'confidence',
-    'deterministic fallback',
-    'no provider calls',
-    'no raw prompt storage'
-)) {
-    Add-Check "design document records $token" ($doc -match [regex]::Escape($token)) 'docs/project/v03621-local-router-shadow.md'
-}
-
-foreach ($token in @(
-    'provider calls',
-    'GPU required',
-    'raw prompt stored',
-    'workspace writes',
-    'privacy boundary'
-)) {
-    Add-Check "resource profile records $token" ($profileDoc -match [regex]::Escape($token)) 'docs/project/v03621-local-router-shadow-profile.md'
+    Add-Check "shadow path does not call or store $forbidden" (($shadow + $manifestText + $weightsText) -notmatch [regex]::Escape($forbidden)) 'winsmux-core/scripts/local-router-shadow.ps1'
 }
 
 foreach ($token in @(
@@ -154,7 +123,6 @@ Add-Check 'CI runs v0.36.21 router shadow tests' ($workflow -match 'V03621LocalR
 Add-Check 'pre-commit whitelist allows v0.36.21 gate script' ($whitelist -match [regex]::Escape('scripts/test-v03621-local-router-shadow.ps1')) '.githooks/pre-commit-whitelist.ps1'
 Add-Check 'pre-commit whitelist allows v0.36.21 tests' ($whitelist -match [regex]::Escape('tests/V03621LocalRouterShadow.Tests.ps1')) '.githooks/pre-commit-whitelist.ps1'
 Add-Check 'pre-commit whitelist allows local router artifact directory' ($whitelist -match [regex]::Escape('winsmux-core/router/**')) '.githooks/pre-commit-whitelist.ps1'
-Add-Check 'pre-commit whitelist allows v0.36.21 documents' ($whitelist -match [regex]::Escape('docs/project/v03621-local-router-shadow.md')) '.githooks/pre-commit-whitelist.ps1'
 
 $failed = @($checks | Where-Object { -not $_.pass })
 $result = [ordered]@{

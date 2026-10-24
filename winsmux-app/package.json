@@ -1,7 +1,7 @@
 {
   "name": "winsmux-app",
   "private": true,
-  "version": "0.36.38",
+  "version": "0.38.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -50,9 +50,9 @@
     "test:windows-context-menu": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/windows-context-menu-e2e.ps1",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
     "preview": "vite preview",
-    "prepare:companion-cli": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/prepare-companion-cli.ps1",
-    "prepare:companion-cli:release": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./src-tauri/scripts/prepare-companion-cli.ps1 -Release",
-    "tauri": "tauri"
+    "prepare:companion-cli": "node ./src-tauri/scripts/prepare-companion-cli.mjs",
+    "prepare:companion-cli:release": "node ./src-tauri/scripts/prepare-companion-cli.mjs --release",
+    "tauri": "node ./scripts/tauri-cli.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",

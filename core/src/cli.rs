@@ -134,6 +134,7 @@ OPERATOR COMMANDS:
     desktop-summary         Print desktop summary projection JSON or counts
     dogfood                 Record and summarize private dogfooding metrics
     meta-plan               Draft a read-only multi-role planning packet
+    workspace               Run or connect to the workspace JSON service, including artifact review
     workspace-plan          Validate and print a declarative workspace plan
     workspace-migrate       List, preview, apply, or roll back shipped workspace presets as JSON
     workflow-gate           Aggregate workflow and Team Profile pre-release sub-gates as JSON
@@ -460,6 +461,7 @@ fn commands_text() -> &'static str {
   dogfood                   - Record and summarize private dogfooding metrics
   machine-contract          - Print the hook and agent machine contract JSON
   meta-plan                 - Draft a read-only multi-role planning packet
+  workspace                 - Run or connect to the workspace JSON service, including artifact review
   workspace-plan            - Validate and print a declarative workspace plan
   workspace-migrate         - List, preview, apply, or roll back shipped workspace presets as JSON
   workflow-gate             - Aggregate workflow and Team Profile pre-release sub-gates as JSON

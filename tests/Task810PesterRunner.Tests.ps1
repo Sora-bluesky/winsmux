@@ -526,7 +526,7 @@ exit $task810ExitCode
                 }
                 [pscustomobject]@{
                     Name = 'Desktop'
-                    Pattern = '(?ms)^  desktop-build-test:.*?^\s{10}if \(\[bool\]\$decision\.install\) \{\r?\n(?<install>.*?)^\s{10}\$task810ExitCode = \[int\]\$decision\.exit'
+                    Pattern = '(?ms)^  desktop-release-process:.*?^\s{10}if \(\[bool\]\$decision\.install\) \{\r?\n(?<install>.*?)^\s{10}\$task810ExitCode = \[int\]\$decision\.exit'
                 }
                 [pscustomobject]@{
                     Name = 'TASK811'

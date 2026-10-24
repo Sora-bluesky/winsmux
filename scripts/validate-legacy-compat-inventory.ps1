@@ -131,8 +131,7 @@ $forbiddenPatterns = @(
 )
 
 foreach ($relativePath in @(
-    'docs/project/legacy-compat-surface-inventory.json',
-    'docs/project/legacy-compat-surface-inventory.md'
+    'docs/project/legacy-compat-surface-inventory.json'
 )) {
     $content = Get-Content -LiteralPath (Join-Path $repoRoot $relativePath) -Raw -Encoding UTF8
     foreach ($pattern in $forbiddenPatterns) {

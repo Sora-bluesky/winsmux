@@ -14,7 +14,6 @@ Describe 'Public surface policy' {
         $docsIndexJa = Get-Content (Join-Path $repoRoot 'docs/README.ja.md') -Raw
         $operatorModel = Get-Content (Join-Path $repoRoot 'docs/operator-model.md') -Raw
         $surfacePolicy = Get-Content (Join-Path $repoRoot 'docs/repo-surface-policy.md') -Raw
-        $designFreezeGate = Get-Content (Join-Path $repoRoot 'docs/project/design-freeze-gate.md') -Raw
         $gitignore = Get-Content (Join-Path $repoRoot '.gitignore') -Raw
         $claudeContract = Get-Content (Join-Path $repoRoot '.claude/CLAUDE.md') -Raw
         $thirdPartyNotices = Get-Content (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') -Raw
@@ -94,9 +93,13 @@ Describe 'Public surface policy' {
         $docsIndex | Should -Match 'quickstart\.md'
         $docsIndexJa | Should -Match 'quickstart\.ja\.md'
 
+        $readme | Should -Match 'winsmux workspace'
+        $readmeJa | Should -Match 'winsmux workspace'
+        $readme | Should -Match 'older.*winsmux init.*winsmux launch'
+        $readmeJa | Should -Match '旧版の.*winsmux init.*winsmux launch'
+        $readme | Should -Match 'Start with the desktop app'
+        $readmeJa | Should -Match 'デスクトップアプリから始める'
         foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux launcher presets', 'winsmux compare')) {
-            $readme | Should -Match ([Regex]::Escape($entrypoint))
-            $readmeJa | Should -Match ([Regex]::Escape($entrypoint))
             $operatorModel | Should -Match ([Regex]::Escape($entrypoint))
         }
     }
@@ -198,7 +201,15 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux launch'
         $installer | Should -Not -Match "WINSMUX_AGENT_NAME = 'claude'"
         $installerSingleLine | Should -Match '"orchestra".*"vault"'
-        $installer | Should -Match 'Test-InstallProfileContent -Profile \$resolvedInstallProfile -Content "orchestration_scripts"'
+        $supportStage = [regex]::Match($installer, '(?ms)^function New-WinsmuxSupportStage \{.*?(?=^function |\z)')
+        $supportStage.Success | Should -BeTrue
+        $supportStage.Value | Should -Match 'if \(Test-InstallProfileContent \$Profile ''orchestration_scripts''\) \{ Install-OrchestraSupportScripts \}'
+        $lifecycle = [regex]::Match($installer, '(?ms)^function Invoke-WinsmuxInstallLifecycle \{.*?(?=^function |\z)')
+        $lifecycle.Success | Should -BeTrue
+        $installIndex = $lifecycle.Value.IndexOf('Install-WinsmuxBinary', [StringComparison]::Ordinal)
+        $nextIndex = $lifecycle.Value.IndexOf('Next: run winsmux init', [StringComparison]::Ordinal)
+        $installIndex | Should -BeGreaterThan -1
+        $nextIndex | Should -BeGreaterThan $installIndex
         $installer | Should -Match 'Install-CoreSupportScripts'
         $installer | Should -Match 'winsmux-core/scripts/public-first-run\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/control-plane-commands\.ps1'
@@ -246,20 +257,12 @@ Describe 'Public surface policy' {
         $readme | Should -Match 'npm install -g winsmux'
         $readmeJa | Should -Match 'npm install -g winsmux'
 
-        $readme | Should -Match 'Claude Code \| Pro / Max OAuth \| This PC only, interactive use'
-        $readme | Should -Match 'Antigravity CLI \| Official Antigravity CLI sign-in \| This PC only, interactive use'
-        $readme | Should -Match 'Gemini \| Google OAuth \| Legacy / tier-limited, this PC only'
-        $readme | Should -Match '2026-06-18'
-        $readme | Should -Match 'Google AI Pro'
-        $readme | Should -Match 'Google AI Ultra'
-        $readme | Should -Match 'Google AI Standard and Enterprise'
-        $readmeJa | Should -Match 'Claude Code \| Pro / Max OAuth \| 当該 PC での対話利用のみ'
-        $readmeJa | Should -Match 'Antigravity CLI \| 公式 Antigravity CLI のサインイン \| 当該 PC での対話利用のみ'
-        $readmeJa | Should -Match 'Gemini \| Google OAuth \| 互換目的 / tier 制限あり、この PC のみ'
-        $readmeJa | Should -Match '2026-06-18'
-        $readmeJa | Should -Match 'Google AI Pro'
-        $readmeJa | Should -Match 'Google AI Ultra'
-        $readmeJa | Should -Match 'Google AI Standard と Enterprise'
+        $readme | Should -Match 'docs/authentication-support\.md'
+        $readmeJa | Should -Match 'docs/authentication-support\.ja\.md'
+        $readme | Should -Match "does not extract another CLI's tokens or sign in on its behalf"
+        $readmeJa | Should -Match '別CLIのトークンを取り出したり、代理ログインしたりすることはありません'
+        $readme | Should -Match 'does not establish authentication or support for a requested model setting'
+        $readmeJa | Should -Match 'CLIの検出だけでは認証や指定モデルの対応は確認できない'
 
         $authSupport | Should -Match 'claude-pro-max-oauth.*interactive use on that same PC'
         $authSupport | Should -Match 'antigravity-official-cli.*interactive use on that same PC'
@@ -446,53 +449,6 @@ Describe 'Public surface policy' {
         @($unsafeAssignments).Count | Should -Be 0
     }
 
-    It 'keeps the v0.36.24 design-freeze gate anchored to required surfaces' {
-        foreach ($source in @(
-                'docs/project/component-map.md',
-                'docs/project/contract-source-of-truth-inventory.md',
-                'docs/project/metrics-baseline.md',
-                'docs/project/compatibility-deprecation-policy.md'
-            )) {
-            $designFreezeGate | Should -Match ([Regex]::Escape($source))
-        }
-
-        foreach ($heading in @(
-                '## Frozen module boundaries',
-                '## Contract freeze',
-                '## Size and coupling budget',
-                '## No-go conditions',
-                '## Release blockers',
-                '## Verification',
-                '## TASK-723 handoff'
-            )) {
-            $designFreezeGate | Should -Match ([Regex]::Escape($heading))
-        }
-
-        foreach ($surface in @(
-                'scripts/winsmux-core.ps1',
-                'winsmux-app/src/main.ts',
-                'core/src/operator_cli.rs',
-                'winsmux-app/src-tauri/src/desktop_backend.rs',
-                'Agent Vault provider vocabulary',
-                'Route role taxonomy',
-                'Concrete worker-backend',
-                'Mailbox envelope'
-            )) {
-            $designFreezeGate | Should -Match ([Regex]::Escape($surface))
-        }
-
-        $designFreezeGate | Should -Match 'scripts/audit-public-surface\.ps1'
-        $designFreezeGate | Should -Match 'tests/PublicSurfacePolicy\.Tests\.ps1'
-        $designFreezeGate | Should -Match '\.githooks/pre-commit-whitelist\.ps1'
-        $designFreezeGate | Should -Match 'rg -n "([^"]+)" docs/project/design-freeze-gate\.md'
-        $legacyLiteralPattern = [regex]::Match($designFreezeGate, 'rg -n "([^"]+)" docs/project/design-freeze-gate\.md').Groups[1].Value
-        foreach ($legacyLiteral in @('ps' + 'mux', 'pm' + 'ux', 't' + 'mux')) {
-            $legacyLiteral | Should -Match $legacyLiteralPattern
-        }
-        foreach ($nonLegacyLiteral in @('psux', 'pmmux')) {
-            $nonLegacyLiteral | Should -Not -Match $legacyLiteralPattern
-        }
-    }
 
     It 'keeps desktop E2E control-pipe calls authenticated' {
         $desktopPaneE2E | Should -Match 'const CONTROL_PIPE_TOKEN'
@@ -552,7 +508,10 @@ Describe 'Public surface policy' {
         $health.Value | Should -Match 'pester'
         $health.Value | Should -Match 'core-build-test'
         $health.Value | Should -Match 'desktop-build-test'
-        $health.Value | Should -Match 'desktop-nsis-lifecycle'
+        # The closed legacy upload class is retained even when that retired job is absent.
+        $health.Value | Should -Match 'JOB_NSIS = "Desktop NSIS Fresh and Upgrade Lifecycle"'
+        $health.Value | Should -Match 'nsis_jobs = \[job for job in jobs if job\.get\("name"\) == JOB_NSIS\]'
+        $health.Value | Should -Match 'if nsis_jobs:'
         $health.Value | Should -Not -Match 'github-script'
         $health.Value | Should -Not -Match 'gh pr comment'
         $health.Value | Should -Not -Match 'flake-free'
@@ -570,39 +529,29 @@ Describe 'Public surface policy' {
         $gate.Value | Should -Match 'needs\.task811-receipt-bind\.result'
     }
 
-    It 'restores DNS and proves GitHub reachability before publishing NSIS evidence' {
-        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
-        $job = [regex]::Match($workflow, '(?ms)^  desktop-nsis-lifecycle:.*?(?=^  task811-operator-infra:)')
-        $restore = [regex]::Match($job.Value, '(?ms)^      - name: Restore runner outbound networking.*?(?=^      - name: Publish non-sensitive lifecycle evidence)')
-        $publish = [regex]::Match($job.Value, '(?ms)^      - name: Publish non-sensitive lifecycle evidence.*?uses: actions/upload-artifact@v7')
-        $restoreEvidence = [regex]::Match($restore.Value, '(?ms)\$evidence\.stages\.network_restore\s*=\s*\[ordered\]@\{(?<body>.*?)^\s*\}')
-
+    It 'keeps native lifecycle candidate identity and evidence publication within the declared boundary' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/desktop-candidate-cdp-gate.yml') -Raw
+        $job = [regex]::Match($workflow, '(?ms)^  desktop-native-lifecycle:.*\z')
         $job.Success | Should -BeTrue
-        $restore.Success | Should -BeTrue
-        $publish.Success | Should -BeTrue
-        $restore.Value | Should -Match 'if:\s+always\(\)'
-        $publish.Value | Should -Match 'if:\s+always\(\)'
-
-        $removeIndex = $restore.Value.IndexOf('Remove-NetFirewallRule', [StringComparison]::Ordinal)
-        $ruleAbsentIndex = $restore.Value.IndexOf('if (-not $ruleAbsent)', [StringComparison]::Ordinal)
-        $dnsRecoveryIndex = $restore.Value.IndexOf('Clear-DnsClientCache', [StringComparison]::Ordinal)
-        $controlIndex = $restore.Value.IndexOf("'https://github.com/'", [StringComparison]::Ordinal)
-        $controlSuccessIndex = $restore.Value.IndexOf('if (-not $controlRestored)', [StringComparison]::Ordinal)
-        $uploadIndex = $job.Value.IndexOf('uses: actions/upload-artifact@v7', [StringComparison]::Ordinal)
-
-        $removeIndex | Should -BeGreaterThan -1
-        $ruleAbsentIndex | Should -BeGreaterThan $removeIndex
-        $dnsRecoveryIndex | Should -BeGreaterThan $ruleAbsentIndex
-        $controlIndex | Should -BeGreaterThan $dnsRecoveryIndex
-        $controlSuccessIndex | Should -BeGreaterThan $controlIndex
-        $uploadIndex | Should -BeGreaterThan $controlSuccessIndex
-
-        $restoreEvidence.Success | Should -BeTrue
-        $restoreEvidence.Groups['body'].Value | Should -Match 'rule_absent\s*=\s*\$ruleAbsent'
-        $restoreEvidence.Groups['body'].Value | Should -Match 'dns_cache_cleared\s*=\s*\$dnsCacheCleared'
-        $restoreEvidence.Groups['body'].Value | Should -Match 'positive_control_exit_code\s*=\s*\[int\]\$control\.ExitCode'
-        $restoreEvidence.Groups['body'].Value | Should -Match 'positive_control_reachable\s*=\s*\$controlRestored'
-        $restoreEvidence.Groups['body'].Value | Should -Not -Match 'https?://|github\.com|token'
+        $job.Value | Should -Match 'runs-on:\s+windows-2025'
+        $job.Value | Should -Match 'contents:\s+read'
+        $job.Value | Should -Match '\$source -cne \$env:GITHUB_SHA'
+        $job.Value | Should -Match ([Regex]::Escape("`$env:BASELINE_ARTIFACT -cne ('desktop-baseline-ja-root-' + `$source)"))
+        $job.Value | Should -Not -Match 'New-NetFirewallRule|Set-DnsClientServerAddress|Clear-DnsClientCache'
+        $freeze = $job.Value.IndexOf('Freeze and verify the same-job native candidate transport', [StringComparison]::Ordinal)
+        $execute = $job.Value.IndexOf('Execute the finite native lifecycle', [StringComparison]::Ordinal)
+        $publish = $job.Value.IndexOf('Preserve bounded native lifecycle evidence', [StringComparison]::Ordinal)
+        $freeze | Should -BeGreaterThan -1
+        $execute | Should -BeGreaterThan $freeze
+        $publish | Should -BeGreaterThan $execute
+        $job.Value | Should -Match '-DesktopNativeSourceCommit \$env:GITHUB_SHA'
+        $job.Value | Should -Match '-DesktopNativeCandidateDirectory \(Join-Path \$env:WINSMUX_NATIVE_INPUT_ROOT ''candidate''\)'
+        $job.Value | Should -Match '-DesktopNativeBaselineDirectory \(Join-Path \$env:WINSMUX_NATIVE_INPUT_ROOT ''baseline''\)'
+        $job.Value | Should -Match 'if \(\$LASTEXITCODE -ne 0\) \{ throw ''Native lifecycle failed or has an unmet class\.'' \}'
+        $publication = $job.Value.Substring($publish)
+        $publication | Should -Match 'if:\s+always\(\)'
+        $publication | Should -Match 'uses: actions/upload-artifact@v7'
+        $publication | Should -Match 'if-no-files-found:\s+error'
     }
 
     It 'keeps the Pester integration shard on a 30-minute outer budget' {
@@ -624,10 +573,29 @@ Describe 'Public surface policy' {
         $pinFixture = "`$version -cne '$version'"
 
         $version | Should -Match '^\d+\.\d+\.\d+'
-        $workflow | Should -Match ([Regex]::Escape("Get-Content -LiteralPath 'VERSION'"))
-        $workflow | Should -Match ([Regex]::Escape("priorVersion = '0.36.33'"))
+        $workflow | Should -Match '\$version\s*=\s*\(Get-Content\s+-LiteralPath\s+(?:''VERSION''|VERSION)\s+-Raw\)\.Trim\(\)'
+        $workflow | Should -Match 'node scripts/build-core-candidate\.mjs x86_64-pc-windows-msvc "\$env:GITHUB_SHA" "v\$version"'
         $pinFixture | Should -Match $candidatePinClass
         $workflow | Should -Not -Match $candidatePinClass
         $workflow | Should -Not -Match ('\$version\s+-cne\s+[''"]' + [Regex]::Escape($version) + '[''"]')
+    }
+}
+
+# Kept outside the block above so it runs without that block's core.hooksPath setup.
+Describe 'Retired internal design records' {
+    It 'keeps the v0.36.24 design-freeze gate record out of the tracked public surface' {
+        $repoRoot = (& git -C $PSScriptRoot rev-parse --show-toplevel 2>$null | Out-String).Trim()
+        $LASTEXITCODE | Should -Be 0
+        $record = 'docs/project/design-freeze-gate.md'
+        $tracked = @(
+            & git -C $repoRoot ls-files -- $record 2>$null |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        $LASTEXITCODE | Should -Be 0
+
+        @($tracked).Count | Should -Be 0
+        Get-Content (Join-Path $repoRoot '.gitignore') -Raw | Should -Not -Match ([Regex]::Escape("!$record"))
+        Get-Content (Join-Path $repoRoot '.githooks/pre-commit-whitelist.ps1') -Raw | Should -Not -Match ([Regex]::Escape("'$record'"))
     }
 }

@@ -1,5 +1,70 @@
 # Provider and Model Support
 
+## v0.38.0 workspace
+
+The workspace AI launcher offers **Codex** and **Claude Code**. Select the
+provider, confirm the detected CLI and project folder, then launch it in a
+pane. See [Quickstart](quickstart.md#5-choose-and-start-an-ai) for the screen flow.
+Each official CLI owns its sign-in, account access, and available models.
+
+| Setting | Workspace behavior |
+| --- | --- |
+| CLI version | Detects the installed executable and reads its version. After updating the CLI, use **導入状況を再確認** (Recheck installation) before a new launch. Detection is not proof that every workflow works with that version. |
+| Model and reasoning settings left blank | Uses the selected official CLI's defaults. |
+| Explicit model or reasoning setting | Passes the setting to the selected CLI. Availability and accepted values depend on that CLI and account; winsmux does not supply a fixed catalog of all usable models. |
+| Missing or changed executable | Recheck installation and the detected executable before launching. An old detection result does not authorize a replacement executable. |
+| Unavailable provider or model | Check the selected CLI's error and authentication state. No other provider is selected automatically. |
+
+CLI releases continue to change. A recorded successful version is evidence for
+that tested combination, not a guarantee for future versions or a requirement
+to remain on that exact version. Compatibility evidence must identify the
+winsmux build, Windows build and architecture, shell, WebView2, and official
+CLI versions used for the actual journey. Untested combinations remain
+unverified. Use [Troubleshooting](TROUBLESHOOTING.md) when detection or launch
+fails after an update.
+
+### Observed CLI versions in the v0.38.0 candidate
+
+On 2026-10-16, the v0.38.0 GUI candidate was used to launch the following
+installed CLIs and run the same fixed file-writing task:
+
+| CLI | Version | Explicit model | Reasoning setting | Observed task result |
+| --- | --- | --- | --- | --- |
+| Codex | 0.163.0 | gpt-6.1-sol | high | Expected file bytes matched; CLI exit code 0. |
+| Claude Code | 2.1.301 | claude-opus-5-5 | medium | Expected file bytes matched; CLI exit code 0. |
+
+The recorded machine was Windows 11 Pro build 26300, x64, with PowerShell
+7.6.5. The Claude Code journey also recorded the actual WebView2 runtime as
+155.0.4283.45. These results belong to the tested GUI candidate, not a published
+v0.38.0 installer.
+
+On 2026-10-23, the same task ran from the GUI of a later v0.38.0 candidate that
+had been installed with its NSIS installer:
+
+| CLI | Version | Explicit model | Reasoning setting | Observed task result |
+| --- | --- | --- | --- | --- |
+| Codex | 0.163.0 | gpt-6.1-sol | high | Expected file bytes matched; CLI exit code 0. |
+| Claude Code | 2.1.309 | None (CLI default, and the session reported claude-opus-5-5) | None (CLI default) | Expected file bytes matched; CLI exit code 0. |
+
+The machine was the same Windows 11 Pro build 26300, x64, with PowerShell 7.6.5.
+The WebView2 runtime was 155.0.4283.62. Before Codex accepted the task, it asked
+whether to trust the folder. This candidate is not a published v0.38.0
+installer either.
+
+The complete journey checks did not pass: process accounting and observation
+checks remain unresolved. The task results above do not establish that every
+launch, interruption, update, recovery, or installation workflow passed. They
+also do not establish support for ARM64, Windows Server, other Windows builds,
+or future CLI versions. The model and reasoning settings identify these
+observations; choose settings available to your own CLI and account.
+
+## Earlier worker and adapter paths
+
+The remaining sections describe earlier worker-slot and adapter paths. Their
+backend names and configuration examples do not add choices to the v0.38.0
+workspace AI launcher. For an older installation, use the documentation shipped
+with that release.
+
 This page describes how winsmux treats AI providers, model names, hosted model
 workers, and future local LLM runtimes.
 
@@ -219,7 +284,7 @@ The artifact has 12 route-state features. Its weighted slot heads and role heads
 which `local-router-shadow.ps1` converts to probabilities with softmax. It runs in
 `PowerShell 7` with `shadow_only` execution. The shadow result is a proposal; deterministic
 routing remains the execution authority. See the
-[Local Router Shadow Mode operations](operator-playbook.md#v03638-local-router-shadow-mode-operations)
+[Local Router Shadow Mode operations](operator-playbook.md#local-router-shadow-mode)
 for the distribution and reliability evidence required by operators.
 
 | Claim class | Boundary |

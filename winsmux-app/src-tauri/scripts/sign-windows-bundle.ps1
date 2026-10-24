@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true, Position = 0)]
-    [string]$AssetPath
+    [string]$AssetPath,
+    [switch]$VerifyOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,7 +29,28 @@ if (-not (Test-Path -LiteralPath $AssetPath -PathType Leaf)) {
     throw "Windows signing asset was not found: $AssetPath"
 }
 
-& $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $env:WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $AssetPath
-if ($LASTEXITCODE -ne 0) {
-    throw "signtool failed for $AssetPath"
+$before = (Get-FileHash -LiteralPath $AssetPath -Algorithm SHA256).Hash
+if (-not $VerifyOnly) {
+    & $signtool sign /fd SHA256 /td SHA256 /tr http://timestamp.digicert.com /f $env:WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH /p $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD $AssetPath
+    if ($LASTEXITCODE -ne 0) { throw 'Windows asset signing failed.' }
+}
+$signedHash = (Get-FileHash -LiteralPath $AssetPath -Algorithm SHA256).Hash
+$password = ConvertTo-SecureString -String $env:WINDOWS_SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+$expected = Get-PfxCertificate -LiteralPath $env:WINSMUX_WINDOWS_SIGNING_CERTIFICATE_PATH -Password $password -NoPromptForPassword
+try {
+    $signature = Get-AuthenticodeSignature -LiteralPath $AssetPath
+    if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $null -eq $expected -or
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($signature.SignerCertificate.RawData)) -cne
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($expected.RawData))) {
+        throw 'Windows asset signature or expected signer differs.'
+    }
+    & $signtool verify /pa $AssetPath
+    if ($LASTEXITCODE -ne 0) { throw 'Windows signature policy verification failed.' }
+    $after = (Get-FileHash -LiteralPath $AssetPath -Algorithm SHA256).Hash
+    if ($after -cne $signedHash -or ($VerifyOnly -and $after -cne $before)) {
+        throw 'Windows asset changed during signature verification.'
+    }
+} finally {
+    if ($expected -is [IDisposable]) { $expected.Dispose() }
+    $password.Dispose()
 }

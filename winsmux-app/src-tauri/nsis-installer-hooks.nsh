@@ -1,40 +1,49 @@
+; Compile-time inputs are anchored to this source file, never the compiler CWD.
+!define WINSMUX_NSIS_INPUTS "${__FILEDIR__}\binaries\nsis"
+!define WINSMUX_LICENSE_JAPANESE "${__FILEDIR__}\..\..\distribution\windows-licenses\MICROSOFT-COMPONENT-TERMS.ja.txt"
 LangString WINSMUX_OPEN_WITH_LABEL 1033 "Open with winsmux"
 LangString WINSMUX_OPEN_WITH_LABEL 1041 "winsmuxで開く"
-
-!macro WINSMUX_WRITE_EXPLORER_CONTEXT_MENU ENTRY_KEY TARGET_ARG
-  WriteRegStr SHCTX "Software\Classes\${ENTRY_KEY}" "" "$(WINSMUX_OPEN_WITH_LABEL)"
-  WriteRegStr SHCTX "Software\Classes\${ENTRY_KEY}" "MUIVerb" "$(WINSMUX_OPEN_WITH_LABEL)"
-  WriteRegStr SHCTX "Software\Classes\${ENTRY_KEY}" "Icon" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\",0"
-  WriteRegStr SHCTX "Software\Classes\${ENTRY_KEY}" "Position" "Top"
-  WriteRegStr SHCTX "Software\Classes\${ENTRY_KEY}\command" "" "$\"$INSTDIR\${MAINBINARYNAME}.exe$\" $\"${TARGET_ARG}$\""
-!macroend
-
-!macro WINSMUX_DELETE_EXPLORER_CONTEXT_MENU ENTRY_KEY
-  DeleteRegKey SHCTX "Software\Classes\${ENTRY_KEY}"
-!macroend
-
-!macro WINSMUX_REFRESH_SHORTCUT_ICON SHORTCUT_PATH
-  ${If} ${FileExists} "${SHORTCUT_PATH}"
-    CreateShortcut "${SHORTCUT_PATH}" "$INSTDIR\${MAINBINARYNAME}.exe" "" "$INSTDIR\${MAINBINARYNAME}.exe" 0
-    !insertmacro SetLnkAppUserModelId "${SHORTCUT_PATH}"
-  ${EndIf}
-!macroend
-
-!macro NSIS_HOOK_POSTINSTALL
-  !insertmacro WINSMUX_WRITE_EXPLORER_CONTEXT_MENU "Directory\shell\winsmux" "%1"
-  !insertmacro WINSMUX_WRITE_EXPLORER_CONTEXT_MENU "Directory\Background\shell\winsmux" "%V"
-  !insertmacro WINSMUX_REFRESH_SHORTCUT_ICON "$DESKTOP\${PRODUCTNAME}.lnk"
-  !if "${STARTMENUFOLDER}" != ""
-    !insertmacro WINSMUX_REFRESH_SHORTCUT_ICON "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk"
-  !else
-    !insertmacro WINSMUX_REFRESH_SHORTCUT_ICON "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-  !endif
-!macroend
-
-!macro NSIS_HOOK_POSTUNINSTALL
-  !insertmacro WINSMUX_DELETE_EXPLORER_CONTEXT_MENU "Directory\shell\winsmux"
-  !insertmacro WINSMUX_DELETE_EXPLORER_CONTEXT_MENU "Directory\Background\shell\winsmux"
-  ${If} ${Silent}
-    DeleteRegKey HKCU "Software\github\winsmux"
-  ${EndIf}
-!macroend
+LangString WINSMUX_TRANSACTION_FAILED 1033 "Installation could not be confirmed. Existing work and recovery data were preserved."
+LangString WINSMUX_TRANSACTION_FAILED 1041 "インストールを確認できませんでした。既存の作業と復旧データを保全しました。"
+LangString WINSMUX_FAILED_MEMBER 1033 "This installer could not confirm the presence, content and ownership of the files and shortcuts that winsmux created or set aside here. Nothing was changed. Put back anything of winsmux's that was moved or edited, or move away anything winsmux did not create, then run the installer again."
+LangString WINSMUX_FAILED_MEMBER 1041 "winsmux が作成または退避したファイルやショートカットの存在・内容・所有を確認できないため、何も変更していません。移動や編集をした winsmux のファイルを元に戻すか、winsmux 以外が置いたものを移してから、もう一度実行してください。"
+LangString WINSMUX_FAILED_OCCUPIED 1033 "The install folder or a shortcut folder already holds a file with a winsmux name that this installer did not create and cannot set aside. Nothing was changed. Move that file away or choose another folder, then run the installer again."
+LangString WINSMUX_FAILED_OCCUPIED 1041 "インストール先かショートカットのフォルダーに、この installer が作っておらず退避もできない winsmux と同名のファイルがあります。何も変更していません。そのファイルを移すか別のフォルダーを選んで、もう一度実行してください。"
+LangString WINSMUX_FAILED_FOLDER_MOVED 1033 "The Desktop or Start menu folder that holds the winsmux shortcut has moved since winsmux was installed, so nothing was changed. OneDrive can move it when it backs up that folder. Move the folder back to where it was, then run the installer again."
+LangString WINSMUX_FAILED_FOLDER_MOVED 1041 "winsmux のショートカットを置いたデスクトップかスタートメニューのフォルダーが、インストールしたときの場所から移動しているため、何も変更していません。OneDrive がそのフォルダーをバックアップすると移動することがあります。フォルダーを元の場所に戻してから、もう一度実行してください。"
+LangString WINSMUX_FAILED_LEGACY_CAPTURE 1033 "This installer's record of the earlier winsmux install is incomplete, so the folder cannot be taken over. Nothing was changed. Uninstall the earlier winsmux first, or choose another folder."
+LangString WINSMUX_FAILED_LEGACY_CAPTURE 1041 "以前の winsmux に関する installer 側の記録が不完全なため、このフォルダーを引き継げません。何も変更していません。先に以前の winsmux をアンインストールするか、別のフォルダーを選んでください。"
+LangString WINSMUX_FAILED_REGISTRATION 1033 "The winsmux registry entries do not match what this installer expected, so nothing was changed. Uninstall the earlier winsmux first, then run the installer again."
+LangString WINSMUX_FAILED_REGISTRATION 1041 "winsmux のレジストリ項目が installer の想定と一致しないため、何も変更していません。先に以前の winsmux をアンインストールしてから、もう一度実行してください。"
+LangString WINSMUX_FAILED_RUNNING 1033 "winsmux is still running or its folder is locked. Nothing was changed. Close winsmux and any window inside that folder, then run the installer again."
+LangString WINSMUX_FAILED_RUNNING 1041 "winsmux が起動中か、フォルダーがロックされています。何も変更していません。winsmux とそのフォルダーを開いている窓を閉じて、もう一度実行してください。"
+LangString WINSMUX_FAILED_PENDING 1033 "An earlier winsmux install or uninstall did not finish and its recovery data is kept. Run the installer again to resume it. Existing work was preserved."
+LangString WINSMUX_FAILED_PENDING 1041 "前回のインストールまたはアンインストールが完了しておらず、復旧データを残しています。もう一度実行すると再開します。既存の作業は保全しました。"
+LangString WINSMUX_RESTORE_INCOMPLETE 1033 "An install or uninstall that stopped partway could not be finished, and its recovery data is kept. Run the installer again to resume it. Existing work was preserved."
+LangString WINSMUX_RESTORE_INCOMPLETE 1041 "途中で止まったインストールまたはアンインストールを最後まで終えられず、復旧データを残しています。もう一度実行すると再開します。既存の作業は保全しました。"
+LangString WINSMUX_RESTORE_PARKED 1033 "The Desktop or Start menu shortcuts that were set aside are preserved in the winsmux folder."
+LangString WINSMUX_RESTORE_PARKED 1041 "スタートメニューやデスクトップのショートカットは退避中です（winsmux のフォルダーに保全されています）。"
+LangString WINSMUX_RESTORE_SHORTCUT_UNCONFIRMED 1033 "winsmux could not confirm that the Desktop or Start menu shortcuts were put back."
+LangString WINSMUX_RESTORE_SHORTCUT_UNCONFIRMED 1041 "スタートメニューやデスクトップのショートカットの復旧を確認できません。"
+LangString WINSMUX_UN_TRANSACTION_FAILED 1033 "Uninstallation could not be confirmed. Existing work and recovery data were preserved."
+LangString WINSMUX_UN_TRANSACTION_FAILED 1041 "アンインストールを確認できませんでした。既存の作業と復旧データを保全しました。"
+LangString WINSMUX_UN_FAILED_MEMBER 1033 "This uninstaller could not confirm the presence, content and ownership of the files and shortcuts that winsmux created or set aside here. Nothing was removed. Put back anything of winsmux's that was moved or edited, or move away anything winsmux did not create, then run the uninstaller again."
+LangString WINSMUX_UN_FAILED_MEMBER 1041 "winsmux が作成または退避したファイルやショートカットの存在・内容・所有を確認できないため、何も削除していません。移動や編集をした winsmux のファイルを元に戻すか、winsmux 以外が置いたものを移してから、もう一度アンインストールしてください。"
+LangString WINSMUX_UN_FAILED_OCCUPIED 1033 "A shortcut folder holds a file with a winsmux name that this uninstaller did not create and cannot set aside. Nothing was removed. Move that file away, then run the uninstaller again."
+LangString WINSMUX_UN_FAILED_OCCUPIED 1041 "ショートカットのフォルダーに、この uninstaller が作っておらず退避もできない winsmux と同名のファイルがあります。何も削除していません。そのファイルを移してから、もう一度アンインストールしてください。"
+LangString WINSMUX_UN_FAILED_FOLDER_MOVED 1033 "The Desktop or Start menu folder that holds the winsmux shortcut has moved since winsmux was installed, so nothing was removed. OneDrive can move it when it backs up that folder. Move the folder back to where it was, then run the uninstaller again."
+LangString WINSMUX_UN_FAILED_FOLDER_MOVED 1041 "winsmux のショートカットを置いたデスクトップかスタートメニューのフォルダーが、インストールしたときの場所から移動しているため、何も削除していません。OneDrive がそのフォルダーをバックアップすると移動することがあります。フォルダーを元の場所に戻してから、もう一度アンインストールしてください。"
+LangString WINSMUX_UN_FAILED_LEGACY_CAPTURE 1033 "This uninstaller's record of the earlier winsmux install is incomplete, so it cannot remove this folder. Nothing was removed."
+LangString WINSMUX_UN_FAILED_LEGACY_CAPTURE 1041 "以前の winsmux に関する uninstaller 側の記録が不完全なため、このフォルダーを削除できません。何も削除していません。"
+LangString WINSMUX_UN_FAILED_REGISTRATION 1033 "The winsmux registry entries do not match what this install recorded, so nothing was removed."
+LangString WINSMUX_UN_FAILED_REGISTRATION 1041 "winsmux のレジストリ項目が導入時の記録と一致しないため、何も削除していません。"
+LangString WINSMUX_UN_FAILED_RUNNING 1033 "winsmux is still running or its folder is locked. Nothing was removed. Close winsmux and any window inside that folder, then run the uninstaller again."
+LangString WINSMUX_UN_FAILED_RUNNING 1041 "winsmux が起動中か、フォルダーがロックされています。何も削除していません。winsmux とそのフォルダーを開いている窓を閉じて、もう一度アンインストールしてください。"
+LangString WINSMUX_UN_FAILED_PENDING 1033 "An earlier winsmux install or uninstall did not finish and its recovery data is kept. Run the uninstaller again to resume it. Existing work was preserved."
+LangString WINSMUX_UN_FAILED_PENDING 1041 "前回のインストールまたはアンインストールが完了しておらず、復旧データを残しています。もう一度アンインストールを実行すると再開します。既存の作業は保全しました。"
+LangString WINSMUX_UN_RESTORE_INCOMPLETE 1033 "An install or uninstall that stopped partway could not be finished, and its recovery data is kept. Run the uninstaller again to resume it. Existing work was preserved."
+LangString WINSMUX_UN_RESTORE_INCOMPLETE 1041 "途中で止まったインストールまたはアンインストールを最後まで終えられず、復旧データを残しています。もう一度アンインストールを実行すると再開します。既存の作業は保全しました。"
+LangString WINSMUX_UN_RESTORE_PARKED 1033 "The Desktop or Start menu shortcuts that were set aside are preserved in the winsmux folder."
+LangString WINSMUX_UN_RESTORE_PARKED 1041 "スタートメニューやデスクトップのショートカットは退避中です（winsmux のフォルダーに保全されています）。"
+LangString WINSMUX_UN_RESTORE_SHORTCUT_UNCONFIRMED 1033 "winsmux could not confirm that the Desktop or Start menu shortcuts were put back."
+LangString WINSMUX_UN_RESTORE_SHORTCUT_UNCONFIRMED 1041 "スタートメニューやデスクトップのショートカットの復旧を確認できません。"

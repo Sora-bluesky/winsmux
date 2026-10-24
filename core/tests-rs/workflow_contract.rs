@@ -13,7 +13,7 @@ const VALID_RECIPE: &str = include_str!("../../tests/fixtures/workspace-recipes/
 const VALID_PROVIDER_CAPABILITIES: &str =
     include_str!("../../tests/fixtures/workspace-recipes/valid-v1.provider-capabilities.json");
 const ARCHITECTURE_DOC: &str =
-    include_str!("../../docs/project/v03629-declarative-workspace-architecture.md");
+    include_str!("../docs/workflow-gate-examples.md");
 const RUNNABLE_WORKFLOW_V1_START: &str = "<!-- TASK659-RUNNABLE-WORKFLOW-V1:START -->";
 const RUNNABLE_WORKFLOW_V1_END: &str = "<!-- TASK659-RUNNABLE-WORKFLOW-V1:END -->";
 

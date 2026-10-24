@@ -1,12 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "winsmux",
-  "version": "0.36.38",
+  "version": "0.38.0",
   "identifier": "io.github.sora-bluesky.winsmux",
   "build": {
     "beforeDevCommand": "npm run prepare:companion-cli && npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run prepare:companion-cli:release && npm run build",
+    "beforeBundleCommand": "node ./src-tauri/scripts/check-bundled-distribution.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -28,13 +29,13 @@
   },
   "bundle": {
     "active": true,
+    "licenseFile": "../../distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt",
     "externalBin": [
-      "binaries/winsmux"
+      "binaries/winsmux",
+      "binaries/winsmux-workspace-mcp"
     ],
     "resources": {
-      "../../scripts/winsmux-core.ps1": "scripts/winsmux-core.ps1",
-      "../../winsmux-core/scripts/*": "winsmux-core/scripts",
-      "../../winsmux-core/router/*": "winsmux-core/router"
+      "binaries/licenses": "licenses"
     },
     "targets": "all",
     "icon": [
@@ -46,6 +47,7 @@
     ],
     "windows": {
       "wix": {
+        "template": "wix/installer.wxs",
         "language": {
           "en-US": {
             "localePath": "wix-en-US.wxl"
@@ -63,12 +65,24 @@
         ]
       },
       "nsis": {
+        "template": "nsis/installer.nsi",
         "installerHooks": "nsis-installer-hooks.nsh",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
         "languages": [
           "English",
           "Japanese"
         ],
         "displayLanguageSelector": true
+      },
+      "signCommand": {
+        "cmd": "node",
+        "args": [
+          "../../scripts/stage-desktop-msi-plan.mjs",
+          "--sign-asset",
+          "%1",
+          "--unsigned"
+        ]
       }
     }
   }

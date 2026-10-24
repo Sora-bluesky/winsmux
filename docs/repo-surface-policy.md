@@ -57,7 +57,7 @@ Examples:
 - `.agents/README.md`
 - `scripts/audit-public-surface.ps1`
 - `scripts/git-guard.ps1`
-- contributor-only maintenance docs
+- executable validation inputs, schemas, and fixtures
 
 Rules:
 
@@ -81,10 +81,12 @@ Examples:
 - live roadmap title overrides
 - local planning notes
 - maintainer-only checklists
+- development history, internal plans, research screenshots, and original archives
 
 Rules:
 
 - never tracked
+- development records must not be bundled as product documentation
 - stored in ignored local paths or the external planning root
 - may contain active branch names, live PR state, local planning roots, and temporary operational guidance
 

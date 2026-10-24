@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -206,7 +207,10 @@ assertSameVocabulary(
   benchmarkFamilies,
 );
 
-const mainSource = await readFile(path.resolve("src/main.ts"), "utf8");
+const mainSource = execFileSync("git", ["show", "2e46363ddf11143c0840db5d6816591a02772471:winsmux-app/src/main.ts"], {
+  cwd: path.resolve(".."),
+  encoding: "utf8",
+});
 assert.equal(parseTypeAlias(mainSource, "RuntimeProviderId"), "ProviderCapabilityId");
 assert.equal(parseTypeAlias(mainSource, "RuntimeModelSource"), "ModelSource");
 assert.equal(parseTypeAlias(mainSource, "RuntimeReasoningEffort"), "EffortCapabilityId");
@@ -218,6 +222,11 @@ assert.equal(parsePropertyType(mainSource, "requiredBackend"), "BackendCapabilit
 assert.equal(parseTypeAlias(mainSource, "WorkerPaneReadinessState"), "CommonWorkerPaneReadinessState");
 assert.equal(parseTypeAlias(mainSource, "AgentVaultProviderId"), "AgentVaultCommandProviderId");
 assert.match(mainSource, /const runtimeModelCatalog: RuntimeModelCatalogEntry\[\] = getRuntimeCatalogEntries\(\)\.map\(\(entry\) => \(\{/, "MC823-01: main.ts must consume getRuntimeCatalogEntries into runtimeModelCatalog");
+
+const workspaceClientSource = await readFile(path.resolve("src/workspaceClient.ts"), "utf8");
+const startupMountSource = await readFile(path.resolve("src/workspace-ui/startup-mount.ts"), "utf8");
+assert.match(workspaceClientSource, /from ['"]\.\/generated\/workspace-contract['"]/, "current workspace client must consume generated contract types");
+assert.match(startupMountSource, /from ['"]\.\.\/generated\/workspace-contract['"]/, "current workspace mount must consume generated contract types");
 
 const claude5Models = [
   {

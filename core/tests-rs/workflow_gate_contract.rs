@@ -6,7 +6,7 @@ fn bin() -> Command {
 }
 
 fn architecture_combined_yaml() -> String {
-    let doc = include_str!("../../docs/project/v03629-declarative-workspace-architecture.md");
+    let doc = include_str!("../docs/workflow-gate-examples.md");
     extract(doc, "TASK659-RUNNABLE-WORKFLOW-V1") + "\n" + &extract(doc, "TASK660-RUNNABLE-CONTEXT-PACK-V1")
 }
 
