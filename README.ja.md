@@ -51,10 +51,10 @@ npmパッケージはインストール用の入口で、workspace要求を扱�
 
 ```powershell
 npm install -g winsmux@<published-version>
-winsmux install --profile core
+winsmux install --profile full
 ```
 
-スクリプトのインストーラーでは、全支援コンポーネントを含む `winsmux install --profile full` も選べます。任意の支援コンポーネントは[旧操作方式のカスタマイズガイド](docs/customization.ja.md)を参照してください。v0.38.0のデスクトップworkspaceの操作には、この版のクイックスタートを使います。
+`full` プロファイルには、すべての支援コンポーネントが含まれます。任意の支援コンポーネントは[旧操作方式のカスタマイズガイド](docs/customization.ja.md)を参照してください。v0.38.0のデスクトップworkspaceの操作には、この版のクイックスタートを使います。
 
 旧実行ファイル名 `psmux`・`pmux`・`tmux` は配布しません。`winsmux` を使用してください。残るtmux互換設定の対応範囲は[ランタイム互換性](core/docs/compatibility.md)を参照してください。
 

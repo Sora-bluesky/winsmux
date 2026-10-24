@@ -51,10 +51,10 @@ To use this installation route, select a published package version matching your
 
 ```powershell
 npm install -g winsmux@<published-version>
-winsmux install --profile core
+winsmux install --profile full
 ```
 
-The script installer also accepts `winsmux install --profile full` to include all support components. The [customization guide for the older workflow](docs/customization.md) describes those optional components; use the v0.38.0 quickstart for the desktop workspace.
+The `full` profile includes all support components. The [customization guide for the older workflow](docs/customization.md) describes those optional components; use the v0.38.0 quickstart for the desktop workspace.
 
 The legacy binary aliases `psmux`, `pmux`, and `tmux` are no longer shipped. Use `winsmux`; [runtime compatibility](core/docs/compatibility.md) describes the remaining tmux-compatible configuration support.
 

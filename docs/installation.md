@@ -67,12 +67,12 @@ After installation, Installed apps shows the publisher as `github`. GitHub did n
 The installer shows these pages: installer language, welcome, license agreement, install location, installation, and a finish page.
 
 - You must accept the license agreement to continue.
-- The install location defaults to `%LOCALAPPDATA%\winsmux`. The same page has a desktop shortcut option, selected by default. A Start menu shortcut is always created. A new shortcut that the installer creates starts `winsmux-app.exe` with the install folder as its working folder (**Start in** in the shortcut's properties). When you install again or update, a shortcut that this installer created earlier and recorded in its install record (`.winsmux-desktop\installed.json`) stays as it is, including its Start in folder, if it is still on the Desktop or Start menu. Do not edit that Start in folder by hand. The shortcut then no longer matches the record, and the next update or uninstall stops. To give such a shortcut the install folder as its Start in folder, delete the shortcut and run the installer again.
+- The install location defaults to `%LOCALAPPDATA%\winsmux`. The same page has a desktop shortcut option, selected by default. A Start menu shortcut is always created. A new shortcut that the installer creates starts `winsmux-app.exe` with the install folder as its working folder (**Start in** in the shortcut's properties). The installer lists the shortcuts it created in its install record (`.winsmux-desktop\installed.json`). Do not edit such a shortcut, including its Start in folder. The shortcut then no longer matches the record, and the next update or uninstall stops. To replace such a shortcut, delete it and run the installer again, which creates a new one.
 - The finish page has an option to run winsmux, selected by default. Leave it selected to start winsmux when you close the installer.
 
 The installer also adds **Open with winsmux** to the right-click menu of folders and folder backgrounds in File Explorer. It does not add winsmux to PATH.
 
-winsmux keeps its own data, such as saved layouts, in `%LOCALAPPDATA%\winsmux\workspace\v1`. That location stays the same when you choose another install folder. With the default install folder it is inside the install folder, and the installer leaves it as it is. The install folder also has a `.winsmux-desktop` folder, where the installer keeps its install record, its recovery data and the shortcuts it set aside.
+winsmux keeps its own data, such as saved layouts, in `%LOCALAPPDATA%\winsmux\workspace\v1`. With the default install folder it is inside the install folder, and the installer leaves it as it is. The install folder also has a `.winsmux-desktop` folder, where the installer keeps its install record, its recovery data and the shortcuts it set aside.
 
 ### Existing winsmux shortcuts
 
@@ -96,7 +96,7 @@ Read the installer's message before doing anything else. The uninstaller shows t
 
 A message can end with a note about the Desktop and Start menu shortcuts. When it says that the set-aside shortcuts are preserved in the winsmux folder, they are in `.winsmux-desktop\preserved` in the install folder. When it says that winsmux could not confirm that the shortcuts were put back, check the Desktop and the Start menu.
 
-When the message says that recovery data is kept, run the program that showed it again, either the installer or the uninstaller. If you run the installer, choose the same install folder as the install or uninstall that stopped. The install location page does not always show that folder. For example, after a first install into a folder other than the default stops, the page can show the default `%LOCALAPPDATA%\winsmux`. If you continue with another folder, the installer installs winsmux there and leaves the recovery data in the folder where it stopped. The program first reads the recovery data in `.winsmux-desktop` in the install folder and deals with the install or uninstall that stopped, as recorded there. If that operation had already reached its final state, it completes it. Otherwise it puts back what that operation changed. Then it does the operation you started it for. The installer installs winsmux, and the uninstaller removes it. The message calls this resuming. After an uninstall that stopped, running the installer therefore leaves winsmux installed. To remove winsmux, run the uninstaller again. Do not delete `.winsmux-desktop`.
+When the message says that recovery data is kept, run the program that showed it again, either the installer or the uninstaller. If you run the installer, choose the same install folder as the install or uninstall that stopped. The program first reads the recovery data in `.winsmux-desktop` in the install folder and deals with the install or uninstall that stopped, as recorded there. If that operation had already reached its final state, it completes it. Otherwise it puts back what that operation changed. Then it does the operation you started it for. The installer installs winsmux, and the uninstaller removes it. The message calls this resuming. After an uninstall that stopped, running the installer therefore leaves winsmux installed. To remove winsmux, run the uninstaller again. Do not delete `.winsmux-desktop`.
 
 ## CLI package install
 
@@ -106,7 +106,7 @@ Select a published package version matching the desired release:
 
 ```powershell
 npm install -g winsmux@<published-version>
-winsmux install --profile core
+winsmux install --profile full
 ```
 
 Replace the placeholder before running the command. The npm entry point supports install, update, uninstall, version and help. It is not the native workspace request client. Check which executable your shell resolves before using workspace operations.
@@ -134,15 +134,15 @@ Retain the original distribution and configuration before transition. Save ongoi
 
 Select the existing project folder in v0.38.0 and create the desired pane layout. Do not manually convert old configuration into the saved-layout schema. Removing a registration keeps the project files; restoring a layout does not automatically execute previous shells or agents.
 
-To return to the old version, use its retained executable, configuration and guide. Do not overwrite the old configuration with the new layout file.
+Do not overwrite the old configuration with the new layout file.
 
-The desktop installer replaces a Desktop or Start menu `winsmux.lnk` that opened the old version (see [Existing winsmux shortcuts](#existing-winsmux-shortcuts)). To start the old version after that, run its executable directly.
+The desktop installer replaces a Desktop or Start menu `winsmux.lnk` that opened the old version (see [Existing winsmux shortcuts](#existing-winsmux-shortcuts)). Uninstalling v0.38.0 puts that shortcut back.
 
 ## Update
 
 For the desktop app, obtain and verify the newer installer using that release's instructions. Save work and normally close the workspace before replacing the app. If closing is refused or unverified, inspect the run state first.
 
-For npm, select the matching published package and its update action. Desktop maintenance and maintenance of another CLI installation are separate. The script installer retains its recorded profile when no new profile is specified.
+For npm, select the matching published package and its update action. Desktop maintenance and maintenance of another CLI installation are separate.
 
 After updating, check the app and companion versions, project selection, official CLI detection and fresh external connection information. If installation fails, preserve the error and the retained old distribution, and follow [If the installer stops](#if-the-installer-stops). Do not delete project data or authentication storage to make an update succeed.
 
