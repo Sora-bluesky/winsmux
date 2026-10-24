@@ -6172,43 +6172,43 @@
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 4074,
+   "line": 4072,
    "text": "const { physicalPath }=await import(pathToFileURL(path.join(repo,'scripts/distribution-prelaunch.mjs')));",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 4075,
+   "line": 4073,
    "text": "const { parseStrictJson }=await import(pathToFileURL(path.join(repo,'scripts/assert-license-inputs.mjs')));",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 4076,
+   "line": 4074,
    "text": "const { assertCanonicalBundledDistribution }=await import(pathToFileURL(path.join(repo,'scripts/stage-bundled-distribution.mjs')));",
    "invokes": "scripts/stage-bundled-distribution.mjs"
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 4077,
+   "line": 4075,
    "text": "const { assertDesktopBundleNamespace, readCompletedSignedBuild }=await import(pathToFileURL(path.join(repo,'scripts/stage-desktop-msi-plan.mjs')));",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 4078,
+   "line": 4076,
    "text": "const { assertWindowsRuntime }=await import(pathToFileURL(path.join(repo,'scripts/assert-windows-runtime.mjs')));",
    "invokes": "scripts/assert-windows-runtime.mjs"
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 4121,
+   "line": 4119,
    "text": "const { selectTransportLicenseRows }=await import(pathToFileURL(path.join(repo,'scripts/desktop-native-nsis-observer.mjs')));",
    "invokes": "scripts/desktop-native-nsis-observer.mjs"
   },
   {
    "source": "scripts/test-public-release.ps1",
-   "line": 5052,
+   "line": 5050,
    "text": "$capture = Join-Path $baseSource 'scripts/capture-desktop-baseline.ps1'",
    "invokes": "scripts/capture-desktop-baseline.ps1"
   },

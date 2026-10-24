@@ -1106,9 +1106,8 @@ mod native {
         },
         System::Registry::{
             RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegFlushKey, RegOpenKeyExW,
-            RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
-            KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY,
-            REG_OPTION_NON_VOLATILE, REG_OPTION_OPEN_LINK,
+            RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+            KEY_SET_VALUE, KEY_WOW64_64KEY, REG_OPTION_NON_VOLATILE,
         },
         System::Threading::{
             CreateMutexW, GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken,
@@ -1166,7 +1165,6 @@ mod native {
             ea: *const c_void,
             ea_length: u32,
         ) -> i32;
-        fn NtDeleteKey(key: HKEY) -> i32;
     }
     fn flush_handle(handle: HANDLE) -> Result<()> {
         let mut status = IoStatus {
@@ -2323,78 +2321,6 @@ mod native {
         }
         Ok(())
     }
-    /// Run after an uninstall commits, when every registration value winsmux recorded is gone. Writing
-    /// those values created their keys, and deleting the values left the keys. A key that now holds no
-    /// value and no subkey is that empty key, and it goes. A key holding anything else, or one that
-    /// cannot be read, stays. A `command` key goes before the shell key that holds it. The shared Run
-    /// key is not a registration key.
-    fn remove_empty_registration_keys() {
-        let mut keys = Vec::new();
-        for id in 0..22 {
-            if let Ok((key, _)) = slot_key(id) {
-                if !keys.contains(&key) {
-                    keys.push(key);
-                }
-            }
-        }
-        keys.sort_by_key(|key| std::cmp::Reverse(key.matches('\\').count()));
-        for key in keys {
-            // The removal is committed already, and a key left in place is what an uninstall left before.
-            let _ = remove_key_if_empty(key);
-        }
-    }
-    fn remove_key_if_empty(path: &str) -> Result<()> {
-        #[cfg(test)]
-        if let Some(result) = hooks::remove_key_if_empty(path) {
-            return result;
-        }
-        let name = wide(OsStr::new(path))?;
-        let mut out = null_mut();
-        // The key itself, not a link target, is the one checked and deleted. A link holds a value.
-        let result = unsafe {
-            RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                name.as_ptr(),
-                REG_OPTION_OPEN_LINK,
-                KEY_WOW64_64KEY | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | DELETE_ACCESS,
-                &mut out,
-            )
-        };
-        if matches!(result, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) {
-            return Ok(());
-        }
-        if result != 0 {
-            return Err(Error::Registration);
-        }
-        let key = Key(out);
-        let (mut subkeys, mut values) = (0, 0);
-        if unsafe {
-            RegQueryInfoKeyW(
-                key.0,
-                null_mut(),
-                null_mut(),
-                null(),
-                &mut subkeys,
-                null_mut(),
-                null_mut(),
-                &mut values,
-                null_mut(),
-                null_mut(),
-                null_mut(),
-                null_mut(),
-            )
-        } != 0
-        {
-            return Err(Error::Registration);
-        }
-        if subkeys != 0 || values != 0 {
-            return Ok(());
-        }
-        if unsafe { NtDeleteKey(key.0) } < 0 {
-            return Err(Error::Registration);
-        }
-        Ok(())
-    }
 
     #[cfg(test)]
     mod hooks {
@@ -2420,11 +2346,6 @@ mod native {
             // first final-name query so.
             pub readback_refusals: std::collections::VecDeque<(ReadbackHandle, FinalName)>,
             pub reports: Vec<String>,
-            // The HKCU keys that exist. Writing a value creates its key, as RegCreateKeyExW does, and
-            // deleting a value leaves the key.
-            pub keys: std::collections::BTreeSet<String>,
-            // Keys that hold a value winsmux does not own.
-            pub foreign_values: std::collections::BTreeSet<String>,
         }
         /// A synthetic final-name answer: a refusal with its Win32 error, or a name.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2506,30 +2427,11 @@ mod native {
                     .map(|m| Ok(m.slots[id as usize].clone()))
             })
         }
-        pub(super) fn remove_key_if_empty(path: &str) -> Option<Result<()>> {
-            MOCK.with(|m| {
-                let mut m = m.borrow_mut();
-                let m = m.as_mut()?;
-                let values = m.foreign_values.contains(path)
-                    || (0..22).any(|id| slot_key(id).is_ok_and(|(key, _)| key == path) && m.slots[id as usize].is_some());
-                let child = format!("{path}\\");
-                if !values && !m.keys.iter().any(|key| key.starts_with(&child)) {
-                    m.keys.remove(path);
-                }
-                Some(Ok(()))
-            })
-        }
         pub(super) fn write(id: u32, value: &Option<RawValue>) -> Option<Result<()>> {
             MOCK.with(|m| {
                 let mut m = m.borrow_mut();
                 let m = m.as_mut()?;
                 m.slots[id as usize] = value.clone();
-                if let (Some(_), Ok((key, _)), true) = (value, slot_key(id), id < 22) {
-                    m.keys.insert(key.into());
-                    if let Some(parent) = key.strip_suffix("\\command") {
-                        m.keys.insert(parent.into());
-                    }
-                }
                 if m.foreign_write {
                     m.foreign_write = false;
                     m.slots[id as usize] = Some(RawValue {
@@ -4765,9 +4667,6 @@ mod native {
                 journal.finish()?;
             }
         }
-        if ctx.action == Action::Uninstall {
-            remove_empty_registration_keys();
-        }
         Ok(Receipt {
             schema: "winsmux-desktop-nsis-transaction-receipt/v1",
             operation_id: id,
@@ -6232,40 +6131,6 @@ mod native {
             for id in 0..22 {
                 assert_eq!(read_slot(id).unwrap(), None);
             }
-        }
-        #[test]
-        fn uninstall_deletes_the_registration_keys_it_emptied_and_keeps_a_key_holding_anything_else() {
-            let keys = || hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().keys.clone());
-            let set = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<std::collections::BTreeSet<_>>();
-            let product = "Software\\github\\winsmux";
-            let uninstall = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\winsmux";
-            let folder = "Software\\Classes\\Directory\\shell\\winsmux";
-            let folder_command = "Software\\Classes\\Directory\\shell\\winsmux\\command";
-            let background = "Software\\Classes\\Directory\\Background\\shell\\winsmux";
-            let background_command = "Software\\Classes\\Directory\\Background\\shell\\winsmux\\command";
-            let mut f = fixture();
-            execute(&f).unwrap();
-            assert_eq!(keys(), set(&[product, uninstall, folder, folder_command, background, background_command]));
-            f.ctx.action = Action::Uninstall;
-            assert!(execute(&f).unwrap().durable_commit);
-            assert_eq!(keys(), set(&[]), "the uninstall left its emptied registration keys");
-
-            let mut g = fixture();
-            execute(&g).unwrap();
-            let user_child = format!("{folder}\\user");
-            hooks::MOCK.with(|m| {
-                let mut m = m.borrow_mut();
-                let m = m.as_mut().unwrap();
-                m.foreign_values.insert(product.into());
-                m.foreign_values.insert(background_command.into());
-                m.keys.insert(user_child.clone());
-            });
-            g.ctx.action = Action::Uninstall;
-            assert!(execute(&g).unwrap().durable_commit);
-            for id in 0..22 {
-                assert_eq!(read_slot(id).unwrap(), None);
-            }
-            assert_eq!(keys(), set(&[product, folder, &user_child, background, background_command]));
         }
         #[test]
         fn every_update_mutation_cut_is_restored_or_truthfully_pending() {
