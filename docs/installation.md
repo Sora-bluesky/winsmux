@@ -96,7 +96,7 @@ Read the installer's message before doing anything else. The uninstaller shows t
 
 A message can end with a note about the Desktop and Start menu shortcuts. When it says that the set-aside shortcuts are preserved in the winsmux folder, they are in `.winsmux-desktop\preserved` in the install folder. When it says that winsmux could not confirm that the shortcuts were put back, check the Desktop and the Start menu.
 
-When the message says that recovery data is kept, run the program that showed it again, either the installer or the uninstaller. If you run the installer, choose the same install folder as the install or uninstall that stopped. The program first reads the recovery data in `.winsmux-desktop` in the install folder and deals with the install or uninstall that stopped, as recorded there. If that operation had already reached its final state, it completes it. Otherwise it puts back what that operation changed. Then it does the operation you started it for. The installer installs winsmux, and the uninstaller removes it. The message calls this resuming. After an uninstall that stopped, running the installer therefore leaves winsmux installed. To remove winsmux, run the uninstaller again. Do not delete `.winsmux-desktop`.
+When the message says that recovery data is kept, run the program that showed it again, either the installer or the uninstaller. If you run the installer, choose the same install folder as the install or uninstall that stopped. Before you continue, check that the install location page shows that folder. The program first reads the recovery data in `.winsmux-desktop` in the install folder and deals with the install or uninstall that stopped, as recorded there. If that operation had already reached its final state, it completes it. Otherwise it puts back what that operation changed. Then it does the operation you started it for. The installer installs winsmux, and the uninstaller removes it. The message calls this resuming. After an uninstall that stopped, running the installer therefore leaves winsmux installed. To remove winsmux, run the uninstaller again. Do not delete `.winsmux-desktop`.
 
 ## CLI package install
 
@@ -150,13 +150,15 @@ After updating, check the app and companion versions, project selection, officia
 
 Use Windows Settings or the desktop package's deployment mechanism. For script/npm installations, use that installation's uninstall action. Check the target when multiple installations exist.
 
-The desktop uninstaller removes the files, shortcuts and registry entries that the installer created, including **Open with winsmux** in the right-click menu, and puts back the shortcuts it set aside (see [Existing winsmux shortcuts](#existing-winsmux-shortcuts)). These stay after it finishes:
+When winsmux was installed with the setup asset (`winsmux_..._x64-setup.exe`), its uninstaller removes the files and shortcuts that the installer created and puts back the shortcuts it set aside (see [Existing winsmux shortcuts](#existing-winsmux-shortcuts)). It also removes the values that the installer wrote to the registry, but not the keys that held them. After such an uninstall, these were left:
 
 - winsmux's own data in `%LOCALAPPDATA%\winsmux\workspace\v1`
 - the install folder, with any files and folders that the installer did not create
 - the `licenses` folder in the install folder, with its `sources` and `texts` folders empty
 - `.winsmux-desktop\pending.json` in the install folder, the record of the uninstall. The next install into that folder reads it.
-- a winsmux registry key that also holds a value winsmux did not write
+- the right-click menu keys `HKCU\Software\Classes\Directory\shell\winsmux` and `HKCU\Software\Classes\Directory\Background\shell\winsmux`, each with its `command` subkey, without values
+- the product state key `HKCU\Software\github\winsmux`, without values, and `HKCU\Software\github`, which holds it
+- the uninstall registration key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux`, without values
 - a copy of the uninstaller and an empty folder in `%TEMP%`
 
 Keep repositories, saved work and official CLI authentication storage outside manual cleanup. Do not recursively delete a profile directory as an uninstall workaround. Do not delete the desktop install folder by hand either. Its `.winsmux-desktop` folder holds the install record and recovery data, and with the default install folder, winsmux's own data in `%LOCALAPPDATA%\winsmux\workspace\v1` is inside it too.
