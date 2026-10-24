@@ -1106,8 +1106,9 @@ mod native {
         },
         System::Registry::{
             RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegFlushKey, RegOpenKeyExW,
-            RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
-            KEY_SET_VALUE, KEY_WOW64_64KEY, REG_OPTION_NON_VOLATILE,
+            RegQueryInfoKeyW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER,
+            KEY_ENUMERATE_SUB_KEYS, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_WOW64_64KEY,
+            REG_OPTION_NON_VOLATILE, REG_OPTION_OPEN_LINK,
         },
         System::Threading::{
             CreateMutexW, GetCurrentProcess, GetCurrentThread, OpenProcess, OpenProcessToken,
@@ -1165,6 +1166,7 @@ mod native {
             ea: *const c_void,
             ea_length: u32,
         ) -> i32;
+        fn NtDeleteKey(key: HKEY) -> i32;
     }
     fn flush_handle(handle: HANDLE) -> Result<()> {
         let mut status = IoStatus {
@@ -2321,6 +2323,78 @@ mod native {
         }
         Ok(())
     }
+    /// Run after an uninstall commits, when every registration value winsmux recorded is gone. Writing
+    /// those values created their keys, and deleting the values left the keys. A key that now holds no
+    /// value and no subkey is that empty key, and it goes. A key holding anything else, or one that
+    /// cannot be read, stays. A `command` key goes before the shell key that holds it. The shared Run
+    /// key is not a registration key.
+    fn remove_empty_registration_keys() {
+        let mut keys = Vec::new();
+        for id in 0..22 {
+            if let Ok((key, _)) = slot_key(id) {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys.sort_by_key(|key| std::cmp::Reverse(key.matches('\\').count()));
+        for key in keys {
+            // The removal is committed already, and a key left in place is what an uninstall left before.
+            let _ = remove_key_if_empty(key);
+        }
+    }
+    fn remove_key_if_empty(path: &str) -> Result<()> {
+        #[cfg(test)]
+        if let Some(result) = hooks::remove_key_if_empty(path) {
+            return result;
+        }
+        let name = wide(OsStr::new(path))?;
+        let mut out = null_mut();
+        // The key itself, not a link target, is the one checked and deleted. A link holds a value.
+        let result = unsafe {
+            RegOpenKeyExW(
+                HKEY_CURRENT_USER,
+                name.as_ptr(),
+                REG_OPTION_OPEN_LINK,
+                KEY_WOW64_64KEY | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | DELETE_ACCESS,
+                &mut out,
+            )
+        };
+        if matches!(result, ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND) {
+            return Ok(());
+        }
+        if result != 0 {
+            return Err(Error::Registration);
+        }
+        let key = Key(out);
+        let (mut subkeys, mut values) = (0, 0);
+        if unsafe {
+            RegQueryInfoKeyW(
+                key.0,
+                null_mut(),
+                null_mut(),
+                null(),
+                &mut subkeys,
+                null_mut(),
+                null_mut(),
+                &mut values,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        } != 0
+        {
+            return Err(Error::Registration);
+        }
+        if subkeys != 0 || values != 0 {
+            return Ok(());
+        }
+        if unsafe { NtDeleteKey(key.0) } < 0 {
+            return Err(Error::Registration);
+        }
+        Ok(())
+    }
 
     #[cfg(test)]
     mod hooks {
@@ -2430,6 +2504,19 @@ mod native {
                 m.borrow()
                     .as_ref()
                     .map(|m| Ok(m.slots[id as usize].clone()))
+            })
+        }
+        pub(super) fn remove_key_if_empty(path: &str) -> Option<Result<()>> {
+            MOCK.with(|m| {
+                let mut m = m.borrow_mut();
+                let m = m.as_mut()?;
+                let values = m.foreign_values.contains(path)
+                    || (0..22).any(|id| slot_key(id).is_ok_and(|(key, _)| key == path) && m.slots[id as usize].is_some());
+                let child = format!("{path}\\");
+                if !values && !m.keys.iter().any(|key| key.starts_with(&child)) {
+                    m.keys.remove(path);
+                }
+                Some(Ok(()))
             })
         }
         pub(super) fn write(id: u32, value: &Option<RawValue>) -> Option<Result<()>> {
@@ -4677,6 +4764,9 @@ mod native {
                 cut("journal_finish_before")?;
                 journal.finish()?;
             }
+        }
+        if ctx.action == Action::Uninstall {
+            remove_empty_registration_keys();
         }
         Ok(Receipt {
             schema: "winsmux-desktop-nsis-transaction-receipt/v1",
