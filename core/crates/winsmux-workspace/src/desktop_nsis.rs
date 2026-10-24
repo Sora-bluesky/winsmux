@@ -2346,6 +2346,11 @@ mod native {
             // first final-name query so.
             pub readback_refusals: std::collections::VecDeque<(ReadbackHandle, FinalName)>,
             pub reports: Vec<String>,
+            // The HKCU keys that exist. Writing a value creates its key, as RegCreateKeyExW does, and
+            // deleting a value leaves the key.
+            pub keys: std::collections::BTreeSet<String>,
+            // Keys that hold a value winsmux does not own.
+            pub foreign_values: std::collections::BTreeSet<String>,
         }
         /// A synthetic final-name answer: a refusal with its Win32 error, or a name.
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2432,6 +2437,12 @@ mod native {
                 let mut m = m.borrow_mut();
                 let m = m.as_mut()?;
                 m.slots[id as usize] = value.clone();
+                if let (Some(_), Ok((key, _)), true) = (value, slot_key(id), id < 22) {
+                    m.keys.insert(key.into());
+                    if let Some(parent) = key.strip_suffix("\\command") {
+                        m.keys.insert(parent.into());
+                    }
+                }
                 if m.foreign_write {
                     m.foreign_write = false;
                     m.slots[id as usize] = Some(RawValue {
@@ -6131,6 +6142,40 @@ mod native {
             for id in 0..22 {
                 assert_eq!(read_slot(id).unwrap(), None);
             }
+        }
+        #[test]
+        fn uninstall_deletes_the_registration_keys_it_emptied_and_keeps_a_key_holding_anything_else() {
+            let keys = || hooks::MOCK.with(|m| m.borrow().as_ref().unwrap().keys.clone());
+            let set = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<std::collections::BTreeSet<_>>();
+            let product = "Software\\github\\winsmux";
+            let uninstall = "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\winsmux";
+            let folder = "Software\\Classes\\Directory\\shell\\winsmux";
+            let folder_command = "Software\\Classes\\Directory\\shell\\winsmux\\command";
+            let background = "Software\\Classes\\Directory\\Background\\shell\\winsmux";
+            let background_command = "Software\\Classes\\Directory\\Background\\shell\\winsmux\\command";
+            let mut f = fixture();
+            execute(&f).unwrap();
+            assert_eq!(keys(), set(&[product, uninstall, folder, folder_command, background, background_command]));
+            f.ctx.action = Action::Uninstall;
+            assert!(execute(&f).unwrap().durable_commit);
+            assert_eq!(keys(), set(&[]), "the uninstall left its emptied registration keys");
+
+            let mut g = fixture();
+            execute(&g).unwrap();
+            let user_child = format!("{folder}\\user");
+            hooks::MOCK.with(|m| {
+                let mut m = m.borrow_mut();
+                let m = m.as_mut().unwrap();
+                m.foreign_values.insert(product.into());
+                m.foreign_values.insert(background_command.into());
+                m.keys.insert(user_child.clone());
+            });
+            g.ctx.action = Action::Uninstall;
+            assert!(execute(&g).unwrap().durable_commit);
+            for id in 0..22 {
+                assert_eq!(read_slot(id).unwrap(), None);
+            }
+            assert_eq!(keys(), set(&[product, folder, &user_child, background, background_command]));
         }
         #[test]
         fn every_update_mutation_cut_is_restored_or_truthfully_pending() {
