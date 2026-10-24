@@ -1801,7 +1801,7 @@ function Save-DesktopRegistryNamespaceObservation {
 
 function Assert-DesktopRegistryNamespaceState {
     param([Parameter(Mandatory)]$State, [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][string]$Message, [switch]$RequireOccupied)
+        [Parameter(Mandatory)][string]$Message, [switch]$RequireOccupied, [switch]$RequireAbsent)
     $property = $State.PSObject.Properties[$Name + '_namespace']
     $row = if ($null -ne $property) { $property.Value } else { $null }
     $class = if ($row -is [Collections.IDictionary]) { Get-DesktopRegistryNamespaceClass -Observation $row -OptionalCommand ($Name -in @('folder_context', 'background_context')) } else { 'unconfirmed' }
@@ -1811,6 +1811,7 @@ function Assert-DesktopRegistryNamespaceState {
     Assert-Condition ($null -ne $property -and $row -is [Collections.IDictionary]) $detail
     Assert-Condition ($State.($Name + '_exists') -is [bool] -and $State.($Name + '_exists') -eq $row.key_exists) $detail
     if ($RequireOccupied) { Assert-Condition ($class -ceq 'occupied') $detail }
+    elseif ($RequireAbsent) { Assert-Condition ($class -ceq 'absent') $detail }
     else { Assert-Condition ($class -in @('absent', 'empty_canonical')) $detail }
 }
 
@@ -1865,12 +1866,13 @@ function Assert-DesktopPreUninstallOwnedState {
 }
 
 function Assert-DesktopPostUninstallOwnedState {
-    param([Parameter(Mandatory)]$State)
+    param([Parameter(Mandatory)]$State, [switch]$AllowEmptyKeys)
 
-    Assert-DesktopRegistryNamespaceState -State $State -Name folder_context -Message 'Desktop folder-context registration remained immediately after the normal uninstaller.'
-    Assert-DesktopRegistryNamespaceState -State $State -Name background_context -Message 'Desktop background-context registration remained immediately after the normal uninstaller.'
-    Assert-DesktopRegistryNamespaceState -State $State -Name product_state -Message 'Desktop product state remained immediately after the normal uninstaller.'
-    Assert-DesktopRegistryNamespaceState -State $State -Name uninstall_registration -Message 'Desktop uninstall registration remained immediately after the normal uninstaller.'
+    $requireAbsent = -not $AllowEmptyKeys
+    Assert-DesktopRegistryNamespaceState -State $State -Name folder_context -RequireAbsent:$requireAbsent -Message 'Desktop folder-context registration remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name background_context -RequireAbsent:$requireAbsent -Message 'Desktop background-context registration remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name product_state -RequireAbsent:$requireAbsent -Message 'Desktop product state remained immediately after the normal uninstaller.'
+    Assert-DesktopRegistryNamespaceState -State $State -Name uninstall_registration -RequireAbsent:$requireAbsent -Message 'Desktop uninstall registration remained immediately after the normal uninstaller.'
     Assert-Condition (-not $State.desktop_shortcut_exists) 'Desktop shortcut remained immediately after the normal uninstaller.'
     Assert-Condition (-not $State.start_menu_shortcut_exists) 'Start Menu shortcut remained immediately after the normal uninstaller.'
     Assert-Condition (-not $State.app_payload_exists) 'winsmux-app.exe remained immediately after the normal uninstaller.'
@@ -5394,7 +5396,7 @@ function Invoke-DesktopNativeNsisJourney {
     $legacyPostState = Get-DesktopProtectedState -InstallRoot $legacyRoot
     Save-DesktopRegistryNamespaceObservation -State $legacyPostState -Phase native-nsis-legacy-post-uninstall -RequireSink
     foreach ($name in @('folder_context', 'background_context', 'product_state', 'uninstall_registration')) {
-        Assert-DesktopRegistryNamespaceState -State $legacyPostState -Name $name -Message 'Native NSIS legacy post-uninstall namespace remained occupied or unconfirmed.'
+        Assert-DesktopRegistryNamespaceState -State $legacyPostState -Name $name -RequireAbsent -Message 'Native NSIS legacy post-uninstall namespace remained.'
     }
     Write-DesktopNativeEvidence 'legacy-managed-uninstall-after.json' $after
     return [ordered]@{ legacy_update = 'passed'; hash_failure = 'passed'; missing_failure = 'passed'; same_version_ja = 'passed'; managed_uninstall = 'passed' }
@@ -5434,7 +5436,9 @@ function Invoke-DesktopNativeMsiJourney {
     Assert-Condition (@($after.files).Count -eq 0 -and @($after.shortcuts | Where-Object { $null -ne $_ }).Count -eq 0 -and $after.user_sentinel['sha256'] -ceq $before.user_sentinel['sha256']) 'desktop_native_msi_uninstall_preservation_failed'
     $postUninstallState = Get-DesktopProtectedState -InstallRoot $Root
     Save-DesktopRegistryNamespaceObservation -State $postUninstallState -Phase native-msi-post-uninstall -RequireSink
-    Assert-DesktopPostUninstallOwnedState -State $postUninstallState
+    # Windows Installer, not the NSIS helper that deletes emptied keys, removes the MSI's registration, and no run
+    # has recorded whether it leaves empty keys behind.
+    Assert-DesktopPostUninstallOwnedState -State $postUninstallState -AllowEmptyKeys
     Write-DesktopNativeEvidence 'msi-uninstall-after.json' $after
     return [ordered]@{ english_install = 'passed'; japanese_same_version_update = 'passed'; nsis_conflict = $conflict; startup_failure = $startup; uninstall = 'passed' }
 }
@@ -6418,6 +6422,7 @@ function Test-DesktopRegistryNamespaceContract {
             $state.($name + '_exists') = $canonicalEmpty
             $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $canonicalEmpty
             Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace clean preflight'
+            Assert-DesktopPostUninstallOwnedState -State $state -AllowEmptyKeys
             if ($canonicalEmpty) {
                 Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state }) 'An empty winsmux key reached desktop post-uninstall.'
             } else {
@@ -6431,6 +6436,7 @@ function Test-DesktopRegistryNamespaceContract {
             $state.($name + '_exists') = $true
             $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -CommandExists $true
             Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace empty command preflight'
+            Assert-DesktopPostUninstallOwnedState -State $state -AllowEmptyKeys
             Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state }) 'An empty winsmux shell key with an empty command key reached desktop post-uninstall.'
             $cases.Add('desktop_namespace_' + $name + '_empty_command_post_uninstall_rejected')
         }
@@ -6440,8 +6446,15 @@ function Test-DesktopRegistryNamespaceContract {
             $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $true -ValueCount 1 -Confirmed (-not $unconfirmed)
             Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace rejected preflight' }) 'An occupied or unconfirmed namespace reached desktop preflight.'
             Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state }) 'An occupied or unconfirmed namespace reached desktop post-uninstall.'
+            Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state -AllowEmptyKeys }) 'An occupied or unconfirmed namespace reached MSI post-uninstall.'
             $cases.Add('desktop_namespace_' + $name + '_' + $(if ($unconfirmed) { 'unconfirmed_rejected' } else { 'occupied_rejected' }))
         }
+        $child = New-EmptyDesktopProtectedState
+        $child.($name + '_exists') = $true
+        $child.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -UnknownChildCount 1
+        Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $child }) 'A winsmux key holding another key reached desktop post-uninstall.'
+        Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $child -AllowEmptyKeys }) 'A winsmux key holding another key reached MSI post-uninstall.'
+        $cases.Add('desktop_namespace_' + $name + '_child_key_rejected')
         $mismatch = New-EmptyDesktopProtectedState
         $mismatch.($name + '_exists') = $true
         Assert-Condition (Test-Throws { Assert-NoDesktopProtectedState -State $mismatch -Phase 'self-test namespace fact mismatch' }) 'A namespace classification hid a contradictory key-existence fact.'
