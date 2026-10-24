@@ -45,6 +45,8 @@ const s5Changes = Object.freeze([
   { path: 'scripts/integrated-publication-origins.mjs', before_sha256: 'bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090', after_sha256: 'd'.repeat(64) },
   { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: 'c98f9601cd8273b4daa1c63baea9b8748874fdf630fcc634333b941c53ef230e', after_sha256: 'e'.repeat(64) },
   { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: '25e5bec48448f3ff0035a486fe248a2daefbfbb7f2b752dcdb256d6f3b4e4036', after_sha256: 'f'.repeat(64) },
+  { path: 'docs/installation.md', before_sha256: 'f54092371b2784b8ec3467fc143cd838033f6be1ef3fbbaf52595d6304a934d4', after_sha256: 'a'.repeat(64) },
+  { path: 'docs/installation.ja.md', before_sha256: '548abe5398b961c1ab6e90bdb415427518909fb46e5b10448faf0a0f055586a0', after_sha256: 'b'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -144,6 +146,8 @@ for (const change of [
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },
   value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='c7634d32ad08aeef487da93b5de9a51e3f45782f6df05faaf5083d509667aa29'; },
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256='f0f78947cd4ded2a7edebfefbe7932c2dc035ca0b00fdfe4f68b13f7ea481864'; },
+  value => { rowOf(value,'docs/installation.md').before_sha256='15a3a5f32bc2ca66fb6a001d4082172f8ef4274fcf0afdd76caed9db2ea53992'; },
+  value => { value.source.changes=value.source.changes.filter(row=>row.path!=='docs/installation.ja.md'); },
   value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'163ae789ef9c6d0d4138cebd82c2f2beaabd0df6f8b6a5eb1b7404b7fbdad48a',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'a112bfbaf9f139af412623f9042ac5fd17090af327b039f66281eb81846ec7ed',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/workspace-package/publication-native-v2.test.ps1',before_sha256:'df5f9aa5d28eb22a2729194c762c9940245da6bd804d3100908768fd4ca03b36',after_sha256:'1'.repeat(64)}); },

@@ -134,6 +134,8 @@ const desktopAssetPaths = Object.freeze([
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
 // so only the c7b62eb4 before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
+  'docs/installation.ja.md': '548abe5398b961c1ab6e90bdb415427518909fb46e5b10448faf0a0f055586a0',
+  'docs/installation.md': 'f54092371b2784b8ec3467fc143cd838033f6be1ef3fbbaf52595d6304a934d4',
   'scripts/integrated-publication-origins.mjs': 'bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090',
   'tests/workspace-gate-map/gate-map.json': '25e5bec48448f3ff0035a486fe248a2daefbfbb7f2b752dcdb256d6f3b4e4036',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': 'c98f9601cd8273b4daa1c63baea9b8748874fdf630fcc634333b941c53ef230e',
