@@ -6418,8 +6418,21 @@ function Test-DesktopRegistryNamespaceContract {
             $state.($name + '_exists') = $canonicalEmpty
             $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $canonicalEmpty
             Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace clean preflight'
-            Assert-DesktopPostUninstallOwnedState -State $state
+            if ($canonicalEmpty) {
+                Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state }) 'An empty winsmux key reached desktop post-uninstall.'
+            } else {
+                Assert-DesktopPostUninstallOwnedState -State $state
+            }
             $cases.Add('desktop_namespace_' + $name + '_' + $(if ($canonicalEmpty) { 'empty_accepted' } else { 'absent_accepted' }))
+            if ($canonicalEmpty) { $cases.Add('desktop_namespace_' + $name + '_empty_post_uninstall_rejected') }
+        }
+        if ($name -in @('folder_context', 'background_context')) {
+            $state = New-EmptyDesktopProtectedState
+            $state.($name + '_exists') = $true
+            $state.($name + '_namespace') = New-DesktopRegistryNamespaceObservation -Exists $true -ChildCount 1 -CommandExists $true
+            Assert-NoDesktopProtectedState -State $state -Phase 'self-test namespace empty command preflight'
+            Assert-Condition (Test-Throws { Assert-DesktopPostUninstallOwnedState -State $state }) 'An empty winsmux shell key with an empty command key reached desktop post-uninstall.'
+            $cases.Add('desktop_namespace_' + $name + '_empty_command_post_uninstall_rejected')
         }
         foreach ($unconfirmed in @($false, $true)) {
             $state = New-EmptyDesktopProtectedState
