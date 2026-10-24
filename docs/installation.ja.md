@@ -48,11 +48,11 @@ Windowsの設定の「インストールされているアプリ」とインス�
 
 ### インストーラーの署名を確認する
 
-v0.38.0のインストーラーは、サブジェクトが `CN=winsmux release signing` の自己署名証明書で署名しています。Windowsはこの証明書を信頼しないため、通常のWindowsでは `Get-AuthenticodeSignature` の状態が `UnknownError` になります。ダウンロードしたファイルを次の手順で確認してください。
+v0.38.0のインストーラーは、サブジェクトが `CN=winsmux release signing` の自己署名証明書で署名しています。Windowsはこの証明書を信頼しないため、通常のWindowsでは `Get-AuthenticodeSignature` の状態が `UnknownError` になります。ダウンロードしたファイルを次の手順で確認してください。`...` は、そのファイル名にある版に置き換えます。
 
 ```powershell
-Get-FileHash .\winsmux_0.38.0_x64-setup.exe -Algorithm SHA256
-$signature = Get-AuthenticodeSignature .\winsmux_0.38.0_x64-setup.exe
+Get-FileHash .\winsmux_..._x64-setup.exe -Algorithm SHA256
+$signature = Get-AuthenticodeSignature .\winsmux_..._x64-setup.exe
 $signature.Status
 $signature.SignerCertificate.Subject
 $signature.SignerCertificate.Thumbprint
@@ -111,7 +111,7 @@ winsmux install --profile core
 
 実行前にプレースホルダーを置き換えます。npmの入口が扱うのはinstall・update・uninstall・version・helpで、ネイティブのworkspace要求クライアントではありません。workspace操作の前に、シェルが解決する実行ファイルを確認してください。
 
-デスクトップのインストーラーはPATHにwinsmuxを追加しません。デスクトップ版のCLIはインストール先の `winsmux.exe` で、既定では `%LOCALAPPDATA%\winsmux\winsmux.exe` です。スクリプトとnpmのインストーラーは、デスクトップ版とは別の `winsmux.exe` を `%USERPROFILE%\.local\bin` に置き、そのフォルダーをユーザーのPATHに追加します。さらにPowerShellのプロファイルに、`%USERPROFILE%\.winsmux\bin` をPATHの先頭に足す行を加えます。そのため、プロファイルを読み込んだPowerShellで `winsmux` を実行すると、`.local\bin` の `winsmux.exe` ではなく `%USERPROFILE%\.winsmux\bin\winsmux.cmd` が動きます。シェルから見つかるものは `Get-Command winsmux -All` で一覧できます。デスクトップ版のCLIを使う場合は、フルパスで実行してください。
+デスクトップのインストーラーはPATHにwinsmuxを追加しません。デスクトップ版のCLIはインストール先の `winsmux.exe` で、既定では `%LOCALAPPDATA%\winsmux\winsmux.exe` です。スクリプトとnpmのインストーラーは、デスクトップ版とは別の `winsmux.exe` を置いたフォルダーをユーザーのPATHに追加します。さらにPowerShellのプロファイルに、`%USERPROFILE%\.winsmux\bin` をPATHの先頭に足す行を加えます。このフォルダーには `winsmux.cmd` があるので、プロファイルを読み込んだPowerShellで `winsmux` を実行すると、PATHにあるほかのwinsmuxではなくこの `winsmux.cmd` が動きます。シェルから見つかるものは `Get-Command winsmux -All` で一覧できます。デスクトップ版のCLIを使う場合は、フルパスで実行してください。
 
 ネイティブランタイムの公開入口は次のとおりです。
 

@@ -48,11 +48,11 @@ Check Windows Settings > Apps > Installed apps and the installation location to 
 
 ### Check the installer signature
 
-The v0.38.0 installer is signed with a self-signed certificate whose subject is `CN=winsmux release signing`. Windows does not trust that certificate, so `Get-AuthenticodeSignature` reports the status `UnknownError` on a normal Windows installation. Check the file you downloaded:
+The v0.38.0 installer is signed with a self-signed certificate whose subject is `CN=winsmux release signing`. Windows does not trust that certificate, so `Get-AuthenticodeSignature` reports the status `UnknownError` on a normal Windows installation. Check the file you downloaded, replacing `...` with the version in its file name:
 
 ```powershell
-Get-FileHash .\winsmux_0.38.0_x64-setup.exe -Algorithm SHA256
-$signature = Get-AuthenticodeSignature .\winsmux_0.38.0_x64-setup.exe
+Get-FileHash .\winsmux_..._x64-setup.exe -Algorithm SHA256
+$signature = Get-AuthenticodeSignature .\winsmux_..._x64-setup.exe
 $signature.Status
 $signature.SignerCertificate.Subject
 $signature.SignerCertificate.Thumbprint
@@ -111,7 +111,7 @@ winsmux install --profile core
 
 Replace the placeholder before running the command. The npm entry point supports install, update, uninstall, version and help. It is not the native workspace request client. Check which executable your shell resolves before using workspace operations.
 
-The desktop installer does not add winsmux to PATH. Its CLI is `winsmux.exe` in the install folder, by default `%LOCALAPPDATA%\winsmux\winsmux.exe`. The script and npm installers put their own `winsmux.exe` in `%USERPROFILE%\.local\bin` and add that folder to the user PATH. They also add a line to your PowerShell profile that puts `%USERPROFILE%\.winsmux\bin` at the front of PATH. In a PowerShell session that loads your profile, `winsmux` therefore runs `%USERPROFILE%\.winsmux\bin\winsmux.cmd`, not the `winsmux.exe` in `.local\bin`. `Get-Command winsmux -All` lists the ones your shell can find. To use the desktop's CLI, run it by its full path.
+The desktop installer does not add winsmux to PATH. Its CLI is `winsmux.exe` in the install folder, by default `%LOCALAPPDATA%\winsmux\winsmux.exe`. The script and npm installers add the folder that holds their own `winsmux.exe` to the user PATH. They also add a line to your PowerShell profile that puts `%USERPROFILE%\.winsmux\bin` at the front of PATH. That folder holds `winsmux.cmd`, so in a PowerShell session that loads your profile, `winsmux` runs that `winsmux.cmd` instead of any other winsmux on PATH. `Get-Command winsmux -All` lists the ones your shell can find. To use the desktop's CLI, run it by its full path.
 
 The native runtime's public entry points are:
 
