@@ -47,6 +47,12 @@ const s5Changes = Object.freeze([
   { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: '25e5bec48448f3ff0035a486fe248a2daefbfbb7f2b752dcdb256d6f3b4e4036', after_sha256: 'f'.repeat(64) },
   { path: 'docs/installation.md', before_sha256: 'f54092371b2784b8ec3467fc143cd838033f6be1ef3fbbaf52595d6304a934d4', after_sha256: 'a'.repeat(64) },
   { path: 'docs/installation.ja.md', before_sha256: '548abe5398b961c1ab6e90bdb415427518909fb46e5b10448faf0a0f055586a0', after_sha256: 'b'.repeat(64) },
+  { path: 'README.md', before_sha256: '9b625d7f6405205d0db45713dbfd7512bc1dad483b1fcf4e3d1b5e3350746e21', after_sha256: 'c'.repeat(64) },
+  { path: 'README.ja.md', before_sha256: 'aea26cea75fcad5b162c81af11afe388a83c46bc670896becb6c55cdf646c3cb', after_sha256: '1'.repeat(64) },
+  { path: 'docs/quickstart.md', before_sha256: 'be124636baa0d1860f9ca99552ee74a7252b893a14afe0a705128eef43a0f2f5', after_sha256: '2'.repeat(64) },
+  { path: 'docs/quickstart.ja.md', before_sha256: '2973a6955424be00c53a4504301f4092daba8847f81ef2f61e156d25f22405d5', after_sha256: '3'.repeat(64) },
+  { path: 'docs/TROUBLESHOOTING.md', before_sha256: '4af431aa9cbdd0a0e6dbac38df2c05b2d0ffc3d53e62c6b29a4c0f24041ad4e9', after_sha256: '4'.repeat(64) },
+  { path: 'docs/TROUBLESHOOTING.ja.md', before_sha256: '6f65e5f435c304aa7971f2201d8b37948ddb0db5e0ea587d52ca54b313321be8', after_sha256: '5'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -148,6 +154,8 @@ for (const change of [
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256='f0f78947cd4ded2a7edebfefbe7932c2dc035ca0b00fdfe4f68b13f7ea481864'; },
   value => { rowOf(value,'docs/installation.md').before_sha256='15a3a5f32bc2ca66fb6a001d4082172f8ef4274fcf0afdd76caed9db2ea53992'; },
   value => { value.source.changes=value.source.changes.filter(row=>row.path!=='docs/installation.ja.md'); },
+  value => { rowOf(value,'docs/quickstart.md').before_sha256='405bd316a4d047c88d0e0d5aa6c9c0918aeaa56f3b8f44c7546296006c186434'; },
+  value => { value.source.changes=value.source.changes.filter(row=>row.path!=='README.ja.md'); },
   value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'163ae789ef9c6d0d4138cebd82c2f2beaabd0df6f8b6a5eb1b7404b7fbdad48a',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'a112bfbaf9f139af412623f9042ac5fd17090af327b039f66281eb81846ec7ed',after_sha256:'1'.repeat(64)}); },
   value => { value.source.changes.push({path:'tests/workspace-package/publication-native-v2.test.ps1',before_sha256:'df5f9aa5d28eb22a2729194c762c9940245da6bd804d3100908768fd4ca03b36',after_sha256:'1'.repeat(64)}); },

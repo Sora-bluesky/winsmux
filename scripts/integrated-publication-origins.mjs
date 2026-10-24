@@ -134,8 +134,14 @@ const desktopAssetPaths = Object.freeze([
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
 // so only the c7b62eb4 before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
+  'README.ja.md': 'aea26cea75fcad5b162c81af11afe388a83c46bc670896becb6c55cdf646c3cb',
+  'README.md': '9b625d7f6405205d0db45713dbfd7512bc1dad483b1fcf4e3d1b5e3350746e21',
+  'docs/TROUBLESHOOTING.ja.md': '6f65e5f435c304aa7971f2201d8b37948ddb0db5e0ea587d52ca54b313321be8',
+  'docs/TROUBLESHOOTING.md': '4af431aa9cbdd0a0e6dbac38df2c05b2d0ffc3d53e62c6b29a4c0f24041ad4e9',
   'docs/installation.ja.md': '548abe5398b961c1ab6e90bdb415427518909fb46e5b10448faf0a0f055586a0',
   'docs/installation.md': 'f54092371b2784b8ec3467fc143cd838033f6be1ef3fbbaf52595d6304a934d4',
+  'docs/quickstart.ja.md': '2973a6955424be00c53a4504301f4092daba8847f81ef2f61e156d25f22405d5',
+  'docs/quickstart.md': 'be124636baa0d1860f9ca99552ee74a7252b893a14afe0a705128eef43a0f2f5',
   'scripts/integrated-publication-origins.mjs': 'bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090',
   'tests/workspace-gate-map/gate-map.json': '25e5bec48448f3ff0035a486fe248a2daefbfbb7f2b752dcdb256d6f3b4e4036',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': 'c98f9601cd8273b4daa1c63baea9b8748874fdf630fcc634333b941c53ef230e',
