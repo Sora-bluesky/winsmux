@@ -452,13 +452,13 @@ jobs:
       OLD_MSI_SHA256: '2a55c4838714386fe8493ffc85fd23927a64d62dc8c1a3be6e49b66510c135a2'
       # Only a completed, successful release-desktop.yml dispatch on the final candidate commit
       # is accepted as the signed MSI source.
-      MSI_SOURCE_RUN_ID: '39986420134'
-      MSI_SOURCE_SHA: '1bbccfa35290aaf5ca634b8d31617cf2fa2d68b9'
+      MSI_SOURCE_RUN_ID: '40051724729'
+      MSI_SOURCE_SHA: '6ceae20833bbee095219bfdb021488510584b4c7'
       MSI_ARTIFACT: 'winsmux-desktop-bundles'
       MSI_CANDIDATE_NAME: 'winsmux_0.38.0_x64_en-US.msi'
       # 64 hex pins the file; 'unpinned' accepts the run-bound file and records its sha256.
-      MSI_CANDIDATE_SHA256: '4fd73027defc388b07ee09d8673809633b7dbb93590ebe5f9581ff7c102c9920'
-      MSI_CANDIDATE_BYTES: '34942976'
+      MSI_CANDIDATE_SHA256: '9d6e8eeba7bf5db3aa2588e6287ea11a132fb07e32d7741a666967b26ce102c1'
+      MSI_CANDIDATE_BYTES: '34938880'
     steps:
       - name: Check out the MSI probe from the calling commit
         uses: actions/checkout@v6
