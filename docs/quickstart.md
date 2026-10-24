@@ -45,7 +45,7 @@ Use **操作検索** (Operation search) to find controls. App shortcuts are Ctrl
 1. Select the target project and pane, then choose Codex or Claude Code.
 2. Check the detected official CLI and working directory. After updating a CLI, use **導入状況を再確認** (Recheck installation).
 3. Optionally specify the model and reasoning setting. Empty fields use the official CLI's defaults.
-4. Select **起動内容を確認** (Review launch), check the target, directory and settings, then **確認した内容で起動** (Launch reviewed settings).
+4. Select **起動内容を確認** (Review launch), check the target, directory and settings, then select the launch button in the same dialog. A new pane already runs its default shell, so the button is **現在の実行を中断してAIを起動** (Interrupt current run and launch AI). It interrupts that shell, waits until the shell has ended, and then starts the AI in the pane. When nothing runs in the pane, for example after you exit an earlier AI, the button is **確認した内容で起動** (Launch reviewed settings).
 5. Use **ターミナルへ戻る** (Return to terminal) to enter instructions. When it starts, the official CLI may ask its own questions before it accepts instructions, for example whether to trust the folder, whether to update, or to sign in. Answer them in the terminal by following the CLI's prompts.
 
 A running process and completed AI work are separate states. When a state is **未確認** (Unverified), inspect the terminal result, the displayed evidence and observation time before treating it as success or failure. Use **現在の実行を中断** (Interrupt current run) to interrupt, and check that termination is observed.

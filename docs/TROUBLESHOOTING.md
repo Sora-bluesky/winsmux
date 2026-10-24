@@ -49,6 +49,7 @@ Use **導入状況を再確認** (Recheck installation) to refresh the detected 
 - If the executable is missing, check the install location of the official CLI you intend to use.
 - If authentication is needed, follow that CLI's own instructions. Do not copy credentials from another CLI.
 - If the CLI started but does not take your instructions, check whether it is waiting at one of its own startup questions, such as whether to trust the folder or whether to update. Answer it in the terminal.
+- If Claude Code asks whether to trust the folder but shows no options, change **行数** (Rows) under **端末サイズ** (Terminal size) above the pane's terminal and select **端末サイズを適用** (Apply terminal size). The terminal redraws and the options appear. **No, exit** is selected at first. The screen after an arrow key can be only partly redrawn, so after you move to **Yes, I trust this folder**, apply the terminal size again and check the selection before you press Enter.
 - If a setting is rejected, inspect the reason and the official CLI's supported settings. Do not assume another AI was selected automatically.
 - For an approval requested by an official CLI, inspect its configuration and the requested action. This is separate from winsmux connection authorization. This guide does not prescribe disabling safety controls to reduce prompts.
 

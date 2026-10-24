@@ -150,6 +150,15 @@ After updating, check the app and companion versions, project selection, officia
 
 Use Windows Settings or the desktop package's deployment mechanism. For script/npm installations, use that installation's uninstall action. Check the target when multiple installations exist.
 
+The desktop uninstaller removes the files, shortcuts and registry entries that the installer created, including **Open with winsmux** in the right-click menu, and puts back the shortcuts it set aside (see [Existing winsmux shortcuts](#existing-winsmux-shortcuts)). These stay after it finishes:
+
+- winsmux's own data in `%LOCALAPPDATA%\winsmux\workspace\v1`
+- the install folder, with any files and folders that the installer did not create
+- the `licenses` folder in the install folder, with its `sources` and `texts` folders empty
+- `.winsmux-desktop\pending.json` in the install folder, the record of the uninstall. The next install into that folder reads it.
+- a winsmux registry key that also holds a value winsmux did not write
+- a copy of the uninstaller and an empty folder in `%TEMP%`
+
 Keep repositories, saved work and official CLI authentication storage outside manual cleanup. Do not recursively delete a profile directory as an uninstall workaround. Do not delete the desktop install folder by hand either. Its `.winsmux-desktop` folder holds the install record and recovery data, and with the default install folder, winsmux's own data in `%LOCALAPPDATA%\winsmux\workspace\v1` is inside it too.
 
 ## Verify
