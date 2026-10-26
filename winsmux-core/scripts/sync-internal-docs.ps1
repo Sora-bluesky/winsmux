@@ -485,7 +485,7 @@ if ([string]::IsNullOrWhiteSpace($ManualChecklistPath)) {
     $ManualChecklistPath = Join-Path $repoRoot 'docs\internal\winsmux-manual-checklist-by-version.md'
 }
 if ([string]::IsNullOrWhiteSpace($MetaPath)) {
-    $MetaPath = Join-Path $PSScriptRoot 'internal-docs-meta.psd1'
+    $MetaPath = Join-Path $repoRoot '.winsmux/local/internal-docs-meta.psd1'
 }
 
 $resolvedBacklogPath = Resolve-WorkspacePath -Path $BacklogPath

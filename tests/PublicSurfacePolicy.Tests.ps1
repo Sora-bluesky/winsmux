@@ -1,5 +1,92 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+Describe 'Local planning public boundary' {
+    BeforeAll {
+        $script:LocalPlanningRepo = Split-Path -Parent $PSScriptRoot
+        $script:LocalPlanningPwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+        $script:RetiredPlanningPaths = @('winsmux-core/scripts/internal-docs-meta.psd1', 'tasks/README.md')
+
+        function Invoke-LocalPlanningWhitelistFixture {
+            param([AllowEmptyString()][string]$StagedPath)
+            $fixture = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            [void][IO.Directory]::CreateDirectory($fixture)
+            $wrapper = Join-Path $fixture 'invoke-whitelist.ps1'
+            [IO.File]::WriteAllText($wrapper, @'
+function global:git {
+    if ($args[0] -eq 'rev-parse') { return $env:LD1_FIXTURE_ROOT }
+    if ($args[0] -eq 'diff') {
+        if ($args -notcontains '--diff-filter=A') { throw 'Expected additions-only whitelist query.' }
+        if ($env:LD1_STAGED_PATH) { return $env:LD1_STAGED_PATH }
+        return
+    }
+    throw 'Unexpected Git command in whitelist fixture.'
+}
+& $env:LD1_WHITELIST_SCRIPT
+exit $LASTEXITCODE
+'@)
+            $start = [Diagnostics.ProcessStartInfo]::new($script:LocalPlanningPwsh)
+            foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $wrapper)) { $start.ArgumentList.Add($argument) }
+            $start.Environment['LD1_FIXTURE_ROOT'] = $fixture
+            $start.Environment['LD1_STAGED_PATH'] = $StagedPath
+            $start.Environment['LD1_WHITELIST_SCRIPT'] = Join-Path $script:LocalPlanningRepo '.githooks/pre-commit-whitelist.ps1'
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            $process = [Diagnostics.Process]::Start($start)
+            try {
+                $stdout = $process.StandardOutput.ReadToEndAsync()
+                $stderr = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(90000)) {
+                    $process.Kill($true)
+                    throw 'Planning whitelist fixture exceeded 90 seconds.'
+                }
+                [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult() }
+            } finally { $process.Dispose() }
+        }
+    }
+
+    It 'removes live planning metadata and its private README from the public paths' {
+        foreach ($relative in $script:RetiredPlanningPaths) {
+            Test-Path -LiteralPath (Join-Path $script:LocalPlanningRepo $relative) | Should -BeFalse -Because $relative
+        }
+    }
+
+    It 'ignores retired planning paths and the local metadata default' {
+        foreach ($relative in $script:RetiredPlanningPaths + @('.winsmux/local/internal-docs-meta.psd1')) {
+            & git -C $script:LocalPlanningRepo check-ignore --quiet --no-index -- $relative
+            $LASTEXITCODE | Should -Be 0 -Because $relative
+        }
+    }
+
+    It 'refuses re-adding private planning input <Path>' -TestCases @(
+        @{ Path = 'winsmux-core/scripts/internal-docs-meta.psd1' }
+        @{ Path = 'WINSMUX-CORE/SCRIPTS/INTERNAL-DOCS-META.PSD1' }
+        @{ Path = '.\winsmux-core\scripts\internal-docs-meta.psd1' }
+        @{ Path = 'tasks/README.md' }
+        @{ Path = '.winsmux/local/internal-docs-meta.psd1' }
+    ) {
+        param($Path)
+        $result = Invoke-LocalPlanningWhitelistFixture -StagedPath $Path
+        $result.ExitCode | Should -Be 1 -Because $result.Output
+        $result.Output | Should -Match 'not in the pre-commit whitelist'
+    }
+
+    It 'continues allowing contributor tools and tests at the planning boundary' -TestCases @(
+        @{ Path = 'winsmux-core/scripts/sync-internal-docs.ps1' }
+        @{ Path = 'tests/PublicSurfacePolicy.Tests.ps1' }
+    ) {
+        param($Path)
+        $result = Invoke-LocalPlanningWhitelistFixture -StagedPath $Path
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+    }
+
+    It 'allows deletions without treating them as new private files' {
+        $result = Invoke-LocalPlanningWhitelistFixture -StagedPath ''
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+    }
+}
 
 Describe 'Public surface policy' {
     BeforeAll {

@@ -764,6 +764,18 @@ if ($stagedNewFiles.Count -eq 0) {
     exit 0
 }
 
+# These retired planning inputs stay private even under the broad legacy allowance.
+$localPlanningOnlyPaths = @('winsmux-core/scripts/internal-docs-meta.psd1', 'tasks/README.md')
+$privatePlanningNewFiles = @($stagedNewFiles | Where-Object {
+    ($_.Replace('\', '/') -replace '^\./', '') -in $localPlanningOnlyPaths
+})
+if ($privatePlanningNewFiles.Count -gt 0) {
+    foreach ($file in $privatePlanningNewFiles) {
+        Write-Warning "Private planning input is not in the pre-commit whitelist: $file"
+    }
+    exit 1
+}
+
 $nonWhitelistedFiles = @(
     $stagedNewFiles |
         Where-Object { -not (Test-IsWhitelistedPath -Path $_ -WhitelistRegexes $whitelistRegexes) }

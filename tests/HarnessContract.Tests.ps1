@@ -1,4 +1,145 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
+
+Describe 'Local internal docs metadata' {
+    BeforeAll {
+        $script:InternalDocsSourceRoot = Split-Path -Parent $PSScriptRoot
+        $script:InternalDocsPwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
+
+        function New-InternalDocsFixture {
+            $root = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+            foreach ($relative in @('winsmux-core/scripts', '.winsmux/local')) {
+                [void][IO.Directory]::CreateDirectory((Join-Path $root $relative))
+            }
+            foreach ($name in @('sync-internal-docs.ps1', 'planning-paths.ps1')) {
+                Copy-Item -LiteralPath (Join-Path $script:InternalDocsSourceRoot "winsmux-core/scripts/$name") -Destination (Join-Path $root "winsmux-core/scripts/$name")
+            }
+            [IO.File]::WriteAllText((Join-Path $root 'backlog.yaml'), @'
+tasks:
+  - id: TASK-FIXTURE
+    title: Synthetic task
+    status: active
+    target_version: v9.0.0
+'@)
+            [IO.File]::WriteAllText((Join-Path $root 'titles.psd1'), '@{ VersionTitles = @{}; TaskTitles = @{} }')
+            [IO.File]::WriteAllText((Join-Path $root 'features.md'), @'
+# Fixture feature inventory
+
+## 進行中（未公開）
+
+old active
+
+## 今後実装予定
+
+old planned
+
+## 付録
+
+fixture appendix
+'@)
+            [IO.File]::WriteAllText((Join-Path $root 'checklist.md'), @'
+# Fixture checklist
+
+## 進行中・今後予定の確認表
+
+old checklist
+
+## 総合確認の進め方
+
+fixture instructions
+'@)
+            return $root
+        }
+
+        function Write-InternalDocsFixtureMetadata {
+            param([string]$Path, [string]$Label)
+            $content = @'
+@{
+    FeatureInventoryEntries = @(
+        @{
+            Order = 10; Category = 'fixture'; Title = 'fixture feature'
+            UserValue = 'fixture value'; UseCase = 'fixture use'
+            ImplementationVersion = 'v9.0.0'; TaskIds = @('TASK-FIXTURE')
+            AppendixName = 'fixture appendix'; TestFocus = 'fixture focus'
+        }
+    )
+    ManualChecklistEntries = @(
+        @{ Order = 20; Version = 'v9.1.0'; TaskIds = @('TASK-FIXTURE'); Focus = '__LABEL__ later'; Example = 'later example'; Memo = 'later memo' }
+        @{ Order = 10; Version = 'v9.0.0'; TaskIds = @('TASK-FIXTURE'); Focus = '__LABEL__ first'; Example = 'first example'; Memo = 'first memo' }
+    )
+}
+'@
+            [IO.File]::WriteAllText($Path, $content.Replace('__LABEL__', $Label))
+        }
+
+        function Invoke-InternalDocsFixture {
+            param([string]$Root, [string[]]$ExtraArguments = @())
+            $start = [Diagnostics.ProcessStartInfo]::new($script:InternalDocsPwsh)
+            $start.WorkingDirectory = $Root
+            foreach ($argument in @('-NoProfile', '-File', (Join-Path $Root 'winsmux-core/scripts/sync-internal-docs.ps1'),
+                '-BacklogPath', 'backlog.yaml', '-RoadmapTitleJaPath', 'titles.psd1',
+                '-FeatureInventoryPath', 'features.md', '-ManualChecklistPath', 'checklist.md') + $ExtraArguments) {
+                $start.ArgumentList.Add($argument)
+            }
+            $start.UseShellExecute = $false
+            $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true
+            $start.RedirectStandardError = $true
+            $process = [Diagnostics.Process]::Start($start)
+            try {
+                $stdout = $process.StandardOutput.ReadToEndAsync()
+                $stderr = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(90000)) {
+                    $process.Kill($true)
+                    throw 'Internal docs fixture exceeded 90 seconds.'
+                }
+                [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult() }
+            } finally { $process.Dispose() }
+        }
+    }
+
+    It 'renders sorted checklist fields from ignored local metadata instead of the old path' {
+        $root = New-InternalDocsFixture
+        Write-InternalDocsFixtureMetadata -Path (Join-Path $root '.winsmux/local/internal-docs-meta.psd1') -Label 'local'
+        Write-InternalDocsFixtureMetadata -Path (Join-Path $root 'winsmux-core/scripts/internal-docs-meta.psd1') -Label 'old'
+        $result = Invoke-InternalDocsFixture -Root $root
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        $checklist = Get-Content -Raw -LiteralPath (Join-Path $root 'checklist.md')
+        $checklist | Should -Match 'local first \| first example \| \[ \] 未 \| \[ \] \| first memo'
+        $checklist | Should -Match 'local later \| later example \| \[ \] 未 \| \[ \] \| later memo'
+        $checklist | Should -Not -Match 'old (first|later)'
+        $checklist.IndexOf('local first') | Should -BeLessThan $checklist.IndexOf('local later')
+        Get-Content -Raw -LiteralPath (Join-Path $root 'features.md') | Should -Match 'fixture feature'
+    }
+
+    It 'fails without local metadata before changing documents even when the old path exists' {
+        $root = New-InternalDocsFixture
+        Write-InternalDocsFixtureMetadata -Path (Join-Path $root 'winsmux-core/scripts/internal-docs-meta.psd1') -Label 'old'
+        foreach ($name in @('features.md', 'checklist.md')) { [IO.File]::WriteAllText((Join-Path $root $name), 'unchanged') }
+        $result = Invoke-InternalDocsFixture -Root $root
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match 'internal-docs-meta\.psd1'
+        foreach ($name in @('features.md', 'checklist.md')) { [IO.File]::ReadAllText((Join-Path $root $name)) | Should -BeExactly 'unchanged' }
+    }
+
+    It 'honors an explicit absolute metadata path over the local default' {
+        $root = New-InternalDocsFixture
+        Write-InternalDocsFixtureMetadata -Path (Join-Path $root '.winsmux/local/internal-docs-meta.psd1') -Label 'local'
+        $explicit = Join-Path $root 'explicit.psd1'
+        Write-InternalDocsFixtureMetadata -Path $explicit -Label 'explicit'
+        $result = Invoke-InternalDocsFixture -Root $root -ExtraArguments @('-MetaPath', $explicit)
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        Get-Content -Raw -LiteralPath (Join-Path $root 'checklist.md') | Should -Match 'explicit first'
+        Get-Content -Raw -LiteralPath (Join-Path $root 'checklist.md') | Should -Not -Match 'local first'
+    }
+
+    It 'honors an explicit relative metadata path without local metadata' {
+        $root = New-InternalDocsFixture
+        Write-InternalDocsFixtureMetadata -Path (Join-Path $root 'explicit.psd1') -Label 'relative'
+        $result = Invoke-InternalDocsFixture -Root $root -ExtraArguments @('-MetaPath', 'explicit.psd1')
+        $result.ExitCode | Should -Be 0 -Because $result.Output
+        Get-Content -Raw -LiteralPath (Join-Path $root 'checklist.md') | Should -Match 'relative first'
+    }
+}
 
 Describe 'harness-check contract' {
     BeforeAll {
@@ -7,7 +148,6 @@ Describe 'harness-check contract' {
         $script:ShadowCutoverGatePath = Join-Path $script:RepoRoot 'winsmux-core\scripts\shadow-cutover-gate.ps1'
         $script:PowerShellDeescalationPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\powershell-deescalation.ps1'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
-        $script:InternalDocsMetaPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\internal-docs-meta.psd1'
         $script:SyncInternalDocsPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\sync-internal-docs.ps1'
         $script:DesktopMainPath = Join-Path $script:RepoRoot 'winsmux-app\src\main.ts'
         $script:TauriLibPath = Join-Path $script:RepoRoot 'winsmux-app\src-tauri\src\lib.rs'
@@ -324,39 +464,6 @@ Fixture summary for structured SessionStart contract coverage.
         $bridge | Should -Match "'manual-checklist'\s+\{"
         $bridge | Should -Match 'manual-checklist'
         $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
-    }
-
-    It 'keeps the generated v1 manual checklist aligned with desktop release evidence' {
-        $meta = Import-PowerShellDataFile -LiteralPath $script:InternalDocsMetaPath
-        $entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.0.0' })
-
-        $entry.Count | Should -BeGreaterOrEqual 2
-        @($entry[0].TaskIds) | Should -Contain 'TASK-416'
-        $entry[0].Focus | Should -Match 'デスクトップ'
-        $entry[0].Example | Should -Match 'インストーラー'
-        $entry[0].Example | Should -Match 'プロジェクト選択'
-        $entry[0].Example | Should -Match '画像貼り付け'
-        $entry[0].Memo | Should -Match 'TASK-416'
-        $voiceEntry = @($entry | Where-Object { @($_.TaskIds) -contains 'TASK-468' })
-        $voiceEntry.Count | Should -Be 1
-        @($voiceEntry[0].TaskIds).Count | Should -Be 1
-        @($voiceEntry[0].TaskIds)[0] | Should -Be 'TASK-468'
-        $voiceEntry[0].Focus | Should -Match '音声入力'
-        $voiceEntry[0].Example | Should -Match 'フォールバック'
-        $voiceEntry[0].Memo | Should -Match 'TASK-468'
-    }
-
-    It 'keeps future manual checklist metadata after earlier release lanes' {
-        $meta = Import-PowerShellDataFile -LiteralPath $script:InternalDocsMetaPath
-        $orders = @($meta.ManualChecklistEntries | ForEach-Object { $_.Order })
-        $uniqueOrders = @($orders | Select-Object -Unique)
-        $v160Entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.6.0' })
-        $v161Entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.6.1' })
-
-        $uniqueOrders.Count | Should -Be $orders.Count
-        $v160Entry.Count | Should -Be 1
-        $v161Entry.Count | Should -Be 1
-        $v161Entry[0].Order | Should -BeGreaterThan $v160Entry[0].Order
     }
 
     It 'keeps generated internal docs from marking partial task groups as published' {

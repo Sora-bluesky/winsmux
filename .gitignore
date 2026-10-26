@@ -35,6 +35,7 @@ docs/ci-checklist*.md
 docs/ROLE-DEFINITIONS.md
 docs/REQUIREMENTS.md
 .references/
+/winsmux-core/scripts/internal-docs-meta.psd1
 .playwright-mcp/
 .tmp-hook-*
 .review-*
@@ -42,7 +43,6 @@ docs/REQUIREMENTS.md
 tasks/
 !tasks/
 tasks/*
-!tasks/README.md
 !tasks/roadmap-title-ja.example.psd1
 !tasks/cli-bakeoff/
 tasks/cli-bakeoff/*
