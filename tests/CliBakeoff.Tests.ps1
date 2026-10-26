@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 Describe 'CLI bakeoff evidence harness' {
@@ -11,14 +11,14 @@ Describe 'CLI bakeoff evidence harness' {
         $script:SummaryScript = Join-Path $script:RepoRoot 'scripts\summarize-cli-bakeoff.ps1'
         $script:DesktopStartScript = Join-Path $script:RepoRoot 'scripts\start-cli-bakeoff-desktop.ps1'
         $script:SessionReadinessScript = Join-Path $script:RepoRoot 'scripts\test-v03623-session-readiness.ps1'
-        $script:PackPath = Join-Path $script:RepoRoot 'tasks\cli-bakeoff\v1\benchmark-pack.json'
+        $script:PackPath = & $script:PreflightScript -CreateSyntheticFixture (Join-Path $TestDrive 'synthetic-pack')
         $legacyMainSpec = '2e46363ddf11143c0840db5d6816591a02772471:winsmux-app/src/main.ts'
         $script:LegacyDesktopMain = (& git -C $script:RepoRoot show $legacyMainSpec) -join "`n"
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($script:LegacyDesktopMain)) {
             throw 'Fixed v0.36.38 Desktop source is unavailable.'
         }
 
-        function Copy-TrackedBakeoffPack {
+        function Copy-SyntheticBakeoffPack {
             Get-Content -LiteralPath $script:PackPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 80
         }
 
@@ -52,12 +52,20 @@ Describe 'CLI bakeoff evidence harness' {
         }
     }
 
-    It 'validates the tracked bakeoff task pack' {
+    It 'keeps research packets outside the public tree and uses synthetic gate inputs' {
+        $pack = Copy-SyntheticBakeoffPack
+        $pack.fixture_only | Should -BeTrue
+        @($pack.tasks).Count | Should -Be 27
+        $gate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-v03627-compat-performance-gate.ps1') -Raw
+        $gate | Should -Match 'CreateSyntheticFixture'
+    }
+
+    It 'validates the synthetic bakeoff task pack' {
         $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $script:PackPath -Json
         $LASTEXITCODE | Should -Be 0
         $result = $output | ConvertFrom-Json -Depth 20
         $result.all_pass | Should -BeTrue
-        $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
+        $result.pack_id | Should -Be 'synthetic-cli-comparison-v1'
         $result.check_count | Should -BeGreaterThan 20
         ($result.checks | Where-Object { $_.name -eq 'official Harness Bench task count is met' }).pass | Should -BeTrue
         ($result.checks | Where-Object { $_.name -eq 'default timeout is 3600 seconds' }).pass | Should -BeTrue
@@ -77,7 +85,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects a scored operator in the benchmark pack' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.operator.scored = $true
         $fixturePath = Write-PackFixture -Pack $pack -Name 'operator-scored-pack'
 
@@ -88,7 +96,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects per-worker task timeout and workspace overrides' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.default_workers[0] | Add-Member -NotePropertyName task_ids -NotePropertyValue @('WB-001') -Force
         $pack.default_workers[1] | Add-Member -NotePropertyName timeout_seconds -NotePropertyValue 1800 -Force
         $pack.default_workers[2] | Add-Member -NotePropertyName workspace_root -NotePropertyValue 'different-workspace' -Force
@@ -102,7 +110,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects per-worker worktree workspace overrides' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.default_workers[0] | Add-Member -NotePropertyName worktree -NotePropertyValue 'worker-a' -Force
         $pack.default_workers[1] | Add-Member -NotePropertyName worktree_path -NotePropertyValue 'C:\tmp\worker-b' -Force
         $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-worktree-override-pack'
@@ -113,7 +121,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects overrides on workers that omit scored and are scoreable by default' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.default_workers[0].PSObject.Properties.Remove('scored')
         $pack.default_workers[0] | Add-Member -NotePropertyName task_ids -NotePropertyValue @('WB-001') -Force
         $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-override-scored-default-pack'
@@ -124,7 +132,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects nonzero operator intervention in the benchmark governance policy' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.run_governance.operator_intervention_limit = 1
         $fixturePath = Write-PackFixture -Pack $pack -Name 'operator-intervention-pack'
 
@@ -134,7 +142,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects nonnumeric operator intervention limits in the benchmark governance policy' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.run_governance.operator_intervention_limit = $null
         $nullFixturePath = Write-PackFixture -Pack $pack -Name 'operator-intervention-null-pack'
 
@@ -142,7 +150,7 @@ Describe 'CLI bakeoff evidence harness' {
         $nullResult.ExitCode | Should -Be 1
         ($nullResult.Result.checks | Where-Object { $_.name -eq 'operator intervention limit is zero' }).pass | Should -BeFalse
 
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.run_governance.operator_intervention_limit = ''
         $blankFixturePath = Write-PackFixture -Pack $pack -Name 'operator-intervention-blank-pack'
 
@@ -152,7 +160,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects worker-to-worker messaging in the benchmark governance policy' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.run_governance.worker_to_worker_messaging = 'enabled'
         $fixturePath = Write-PackFixture -Pack $pack -Name 'worker-messaging-pack'
 
@@ -162,7 +170,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'reports missing governance policy fields as structured preflight failures' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.PSObject.Properties.Remove('run_governance')
         $missingPolicyPath = Write-PackFixture -Pack $pack -Name 'missing-governance-policy-pack'
 
@@ -171,7 +179,7 @@ Describe 'CLI bakeoff evidence harness' {
         $missingPolicyResult.Result.all_pass | Should -BeFalse
         ($missingPolicyResult.Result.checks | Where-Object { $_.name -eq 'run governance policy exists' }).pass | Should -BeFalse
 
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.run_governance.PSObject.Properties.Remove('same_task_set_for_all_workers')
         $pack.run_governance.PSObject.Properties.Remove('same_timeout_for_all_workers')
         $pack.run_governance.PSObject.Properties.Remove('same_workspace_for_all_workers')
@@ -186,7 +194,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'rejects non-boolean governance invariants in the benchmark policy' {
-        $pack = Copy-TrackedBakeoffPack
+        $pack = Copy-SyntheticBakeoffPack
         $pack.run_governance.same_task_set_for_all_workers = 'false'
         $pack.run_governance.same_timeout_for_all_workers = 'false'
         $pack.run_governance.same_workspace_for_all_workers = 'false'
@@ -358,12 +366,12 @@ Describe 'CLI bakeoff evidence harness' {
         ($result.Result.checks | Where-Object { $_.name -eq 'run execution surface is visible desktop worker panes' }).pass | Should -BeTrue
     }
 
-    It 'resolves the benchmark pack when given the repository root' {
-        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath $script:RepoRoot -Json
+    It 'resolves the benchmark pack when given a local pack root' {
+        $output = & pwsh -NoProfile -File $script:PreflightScript -PackPath (Split-Path $script:PackPath -Parent) -Json
         $LASTEXITCODE | Should -Be 0
         $result = $output | ConvertFrom-Json -Depth 20
         $result.all_pass | Should -BeTrue
-        $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
+        $result.pack_id | Should -Be 'synthetic-cli-comparison-v1'
         $result.pack_source | Should -Be 'directory'
         $result.pack_path | Should -Be '<local-path>'
         ($result.checks | Where-Object { $_.name -eq 'benchmark pack input resolves unambiguously' }).pass | Should -BeTrue
@@ -376,7 +384,7 @@ Describe 'CLI bakeoff evidence harness' {
         $LASTEXITCODE | Should -Be 0
         $result = $output | ConvertFrom-Json -Depth 20
         $result.all_pass | Should -BeTrue
-        $result.pack_id | Should -Be 'winsmux-cli-bakeoff-v1'
+        $result.pack_id | Should -Be 'synthetic-cli-comparison-v1'
         $result.pack_source | Should -Be 'directory'
         $result.task_root | Should -Be '<local-path>'
         ($result.checks | Where-Object { $_.name -eq 'benchmark pack input resolves unambiguously' }).pass | Should -BeTrue
@@ -384,7 +392,7 @@ Describe 'CLI bakeoff evidence harness' {
     }
 
     It 'keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22' {
-        $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\cli-comparison-bakeoff.md') -Raw -Encoding UTF8
+        $contractDoc = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\operator-model.md') -Raw -Encoding UTF8
         $contractDoc | Should -Not -Match 'publishing v0\.36\.22|Before publishing v0\.36\.22|official benchmark evidence.*v0\.36\.22'
         $contractDoc | Should -Match 'Official scoreable evidence must come from visible desktop worker panes'
         $contractDoc | Should -Match 'App-external batch results remain'

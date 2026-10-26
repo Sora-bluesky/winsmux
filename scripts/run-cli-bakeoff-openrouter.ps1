@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$PackPath = 'tasks/cli-bakeoff/v1/benchmark-pack.json',
+    [string]$PackPath = '',
     [string]$ProjectDir = '.winsmux/evidence/v03617-openrouter-harness-project',
     [string]$RunRoot = '.winsmux/evidence/cli-bakeoff',
     [string]$RunId = '',
@@ -87,6 +87,9 @@ function Test-JsonProperty {
     return $null -ne $InputObject.PSObject.Properties[$Name]
 }
 
+if ([string]::IsNullOrWhiteSpace($PackPath)) {
+    throw 'Supply a local comparison pack with -PackPath.'
+}
 $resolvedPackPath = Resolve-RepoPath $PackPath
 $resolvedProjectDir = Resolve-RepoPath $ProjectDir
 $resolvedRunRoot = Resolve-RepoPath $RunRoot
@@ -115,7 +118,7 @@ New-Item -ItemType Directory -Path $runDir -Force | Out-Null
 $commandsPath = Join-Path $runDir 'commands.jsonl'
 $scorecardPath = Join-Path $runDir 'scorecard.md'
 $taskRoot = Split-Path -Parent $resolvedPackPath
-$projectTaskRoot = Join-Path $resolvedProjectDir 'tasks/cli-bakeoff/v1'
+$projectTaskRoot = Join-Path $resolvedProjectDir '.winsmux/benchmark-input'
 New-Item -ItemType Directory -Path $projectTaskRoot -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $resolvedProjectDir '.winsmux') -Force | Out-Null
 
@@ -243,7 +246,7 @@ foreach ($task in $selectedTasks) {
     $packetText = Get-Content -LiteralPath $sourcePacket -Raw -Encoding UTF8
     $markers = Get-PacketMarkers -PacketText $packetText
     $packetSha = Get-FileSha256 -Path $sourcePacket
-    $relativePacket = 'tasks/cli-bakeoff/v1/' + $packetPath
+    $relativePacket = '.winsmux/benchmark-input/' + $packetPath
 
     foreach ($worker in $workers) {
         $slotNumber = if ([string]$worker.pane -match '(\d+)$') { $Matches[1] } else { ($workers.IndexOf($worker) + 1) }

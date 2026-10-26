@@ -119,7 +119,6 @@ $whitelistPatterns = @(
     'docs/meta-planning-layer-design.md',
     'docs/authentication-support.md',
     'docs/authentication-support.ja.md',
-    'docs/cli-comparison-bakeoff.md',
     'docs/provider-and-model-support.md',
     'docs/provider-and-model-support.ja.md',
     'docs/external-control-plane.md',
@@ -299,7 +298,6 @@ $whitelistPatterns = @(
     '.github/workflows/public-smoke-recovery.yml',
     '.github/workflows/test.yml',
     'tasks/roadmap-title-ja.example.psd1',
-    'tasks/cli-bakeoff/v1/**'
     # Exact v0.38 product inputs; generated local evidence remains excluded.
     'core/crates/winsmux-workspace/src/contract/capabilities.rs',
     'core/crates/winsmux-workspace/tests/diagnostics_e2e.rs',

@@ -2368,7 +2368,7 @@ async function closeAllWorkerPtys(page) {
 }
 
 async function writeMinimalHarnessBenchmarkPack(projectDir) {
-  const packDir = path.join(projectDir, "tasks", "cli-bakeoff", "v1");
+  const packDir = path.join(projectDir, ".winsmux", "benchmark-input");
   await fs.mkdir(packDir, { recursive: true });
   await fs.writeFile(
     path.join(packDir, "WB-001-desktop-worker-pane-launch-diagnosis.md"),

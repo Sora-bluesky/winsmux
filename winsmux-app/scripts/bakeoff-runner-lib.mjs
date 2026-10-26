@@ -107,7 +107,7 @@ export function collectReadyWorkers(headTexts) {
  * Map a benchmark-pack task id to the round-end marker string its packet
  * instructs the worker to print at completion. Task ids WB-001..WB-009 are
  * round A, WB-010..WB-018 are round B, and WB-019..WB-027 are round C, per
- * the `tasks/cli-bakeoff/v1/WB-*.md` packets (each packet's step 5 names its
+ * the local task packets (each packet's step 5 names its
  * round's END marker literally).
  *
  * @param {string} taskId
@@ -125,7 +125,7 @@ export function taskIdToEndMarker(taskId) {
  * Count the raw occurrences of a round-end marker anywhere in a captured
  * pane blob (plain substring count, regex-escaped marker).
  *
- * Every `tasks/cli-bakeoff/v1/WB-*.md` packet instructs the worker to
+ * Every local task packet instructs the worker to
  * "Return exactly this structure" -- a numbered list whose item 5 IS the
  * round END marker, e.g. `5. BAKEOFF_ROUND_A_END` (often with surrounding
  * digits/backticks, since the worker is following a numbered-list

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ProjectDir = '.winsmux/evidence/v03623-coordination-benchmark-project',
-    [string]$PackPath = 'tasks/cli-bakeoff/v1/benchmark-pack.json',
+    [string]$PackPath = '',
     [int]$DebugPort = 9237,
     [switch]$SkipBuild,
     [switch]$NoLaunch,
@@ -701,9 +701,12 @@ if ($SelfTestPathNormalization) {
 }
 
 $resolvedProjectDir = Resolve-RepoPath $ProjectDir
+if ([string]::IsNullOrWhiteSpace($PackPath)) {
+    throw 'Supply a local comparison pack with -PackPath.'
+}
 $resolvedPackPath = Resolve-RepoPath $PackPath
 $canonicalTaskDir = Split-Path $resolvedPackPath -Parent
-$projectTaskDir = Join-Path $resolvedProjectDir 'tasks\cli-bakeoff\v1'
+$projectTaskDir = Join-Path $resolvedProjectDir '.winsmux\benchmark-input'
 $releaseCli = Join-Path $RepoRoot 'target\release\winsmux.exe'
 $releaseApp = Join-Path $RepoRoot 'target\release\winsmux-app.exe'
 $version = (Get-Content -LiteralPath (Join-Path $RepoRoot 'VERSION') -Raw -Encoding UTF8).Trim()

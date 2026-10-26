@@ -16,7 +16,7 @@ Use this page as the public map for winsmux setup and operation.
 - [Provider and model support](provider-and-model-support.md) - hosted agent CLIs, future local LLM runtimes, and model-family metadata.
 - [External control plane API](external-control-plane.md) - local named-pipe JSON-RPC contract for external automation clients.
 - [Repository surface policy](repo-surface-policy.md) - which tracked files are public product surface, runtime contract surface, or contributor/test surface.
-- [v0.36.22 context continuity](project/v03622-context-continuity.md) - Context Capsule, mailbox, checkpoint, pressure, summary quality, and split-worthiness contracts.
+- [Context continuity](project/v03622-context-continuity.md) - Context Capsule, mailbox, checkpoint, pressure, summary quality, and split-worthiness contracts.
 
 ## Troubleshoot
 
