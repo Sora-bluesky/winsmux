@@ -11,6 +11,9 @@ Set-Location -LiteralPath $repoRoot
 
 # Keep routine public maintenance paths explicit so non-interactive commits fail closed.
 $whitelistPatterns = @(
+    'scripts/assert-core-local-paths.mjs',
+    'tests/workspace-package/core-local-paths.test.mjs',
+    'tests/BumpVersionReleaseBoundary.Tests.ps1',
     'scripts/desktop-native-nsis-observer.mjs',
     'tests/workspace-package/nsis-observer.test.mjs',
     'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt',
@@ -46,7 +49,6 @@ $whitelistPatterns = @(
     'Cargo.lock',
     'install.ps1',
     'core/Cargo.toml',
-    'core/Cargo.lock',
     'core/docs/workflow-gate-examples.md',
     'core/src/*.rs',
     'core/src/bin/*.rs',
@@ -90,7 +92,6 @@ $whitelistPatterns = @(
     'core/crates/winsmux-workspace/tests/workspace_resources.rs',
     'winsmux-app/src/generated/workspace-contract.ts',
     'winsmux-app/src/workspace-ui/workspace-copy-gate.ts',
-    'git-graph/**',
     '.github/workflows/test.yml',
     '.github/workflows/remote-helper-ubuntu-2204.yml',
     '.github/workflows/desktop-baseline-capture.yml',
@@ -510,7 +511,7 @@ $whitelistPatterns = @(
     'distribution/windows-licenses/texts/a576d4a7fc04fe6391064f7f2fe8a02bc2551fd5c399e94f2b9cda8fd72cb2c4',
     'distribution/windows-licenses/texts/a5d73ee76d6512d13265c64756039e4d02716160344abece41daefb4d85de741',
     'distribution/windows-licenses/texts/a678695449ec9be86bb7224eb27ddd3503cb0f40b75e67d9a36b12ffd1a92cc2',
-    'distribution/windows-licenses/texts/a964fdbc37fc916ad295db204b58c558e0b608cd36c0b6ebea492bfa72bf00c8',
+    'distribution/windows-licenses/texts/03b158d40fbb93900f2b085bca519381b1041bd124003f1b2e882b627c94a1cd',
     'distribution/windows-licenses/texts/aabbb2d9f2d64f1ad11da23ea8981b0fe3a63ac4106dd889bd68cbc97f0d9dac',
     'distribution/windows-licenses/texts/ab7818d0709df15bdf5e31a1f5f22db6897e090f715342696efc456882cbd548',
     'distribution/windows-licenses/texts/aba0392ffa1acdd1512c480d4e957a157231c1dad9252a67ff091d28b96a9fe0',
@@ -557,7 +558,7 @@ $whitelistPatterns = @(
     'distribution/windows-licenses/texts/cda2367b1e652a6325a82ec66377a2d2726c5c82ab3b62d12141da5202361fd7',
     'distribution/windows-licenses/texts/ce59cc13939e66f55554ecd9964cc28d44cd8021478c7505f4ceb90c0ac22740',
     'distribution/windows-licenses/texts/cf7d0bf1d9952f6ac3c087e0a83499c44d74b5a9aebd27cda473b38b8d3d9dcb',
-    'distribution/windows-licenses/texts/cfb5cdc302385038de1ac3f4cb8c68932aca7325f2489fbf3a7670bfacb7aa8f',
+    'distribution/windows-licenses/texts/f3b4bf19bfe2fc1393ae491e4a55a5a7cc39c127e9640b9fe1d604a8b8c7df6e',
     'distribution/windows-licenses/texts/cfc2741e1c3d695f65af1d83e50be29bd57cd2906e03de0b70d9284340558480',
     'distribution/windows-licenses/texts/cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30',
     'distribution/windows-licenses/texts/d09652951c86960024fa3f28ac1ec36b15152ea52b14de03be6cbadc89c18055',
@@ -759,6 +760,18 @@ $stagedNewFiles = @(
 
 if ($stagedNewFiles.Count -eq 0) {
     exit 0
+}
+
+# These retired planning inputs stay private even under the broad legacy allowance.
+$localPlanningOnlyPaths = @('winsmux-core/scripts/internal-docs-meta.psd1', 'tasks/README.md')
+$privatePlanningNewFiles = @($stagedNewFiles | Where-Object {
+    ($_.Replace('\', '/') -replace '^\./', '') -in $localPlanningOnlyPaths
+})
+if ($privatePlanningNewFiles.Count -gt 0) {
+    foreach ($file in $privatePlanningNewFiles) {
+        Write-Warning "Private planning input is not in the pre-commit whitelist: $file"
+    }
+    exit 1
 }
 
 $nonWhitelistedFiles = @(

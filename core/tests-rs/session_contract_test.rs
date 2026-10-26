@@ -5,17 +5,27 @@ mod windows_session_contract {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     struct Fixture {
+        _serial: MutexGuard<'static, ()>,
         exe: PathBuf,
         home: PathBuf,
         namespace: String,
+        extra_namespaces: Vec<String>,
     }
 
     impl Fixture {
         fn new() -> Self {
+            // Keep the shell baseline and pane startup measurements free from
+            // concurrent sessions created by this test target.
+            static SESSION_CONTRACT_SERIAL: Mutex<()> = Mutex::new(());
+            let serial = SESSION_CONTRACT_SERIAL
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let exe = PathBuf::from(
                 env::var("CARGO_BIN_EXE_winsmux")
                     .expect("cargo should expose CARGO_BIN_EXE_winsmux"),
@@ -23,27 +33,45 @@ mod windows_session_contract {
             let unique = unique_id("session-contract");
             let home = env::temp_dir().join(&unique);
             fs::create_dir_all(home.join(".psmux")).expect("fixture should create .psmux");
+            fs::write(
+                home.join("fixture.conf"),
+                "set -g default-shell cmd.exe\nset -g default-command 'cmd.exe /D /Q'\n",
+            )
+            .expect("fixture should select a shell without user profiles");
             Self {
+                _serial: serial,
                 exe,
                 home,
                 namespace: unique.replace('-', "_"),
+                extra_namespaces: Vec::new(),
             }
         }
 
         fn run(&self, args: &[&str]) -> Output {
+            self.run_with_env(args, &[])
+        }
+
+        fn run_with_env(&self, args: &[&str], overrides: &[(&str, &str)]) -> Output {
             let mut command = Command::new(&self.exe);
             command
                 .args(args)
+                .current_dir(&self.home)
                 .env("USERPROFILE", &self.home)
                 .env("HOME", &self.home)
-                .env("PSMUX_CONFIG_FILE", "NUL")
+                .env("XDG_CONFIG_HOME", self.home.join(".config"))
+                .env("LOCALAPPDATA", self.home.join("local"))
+                .env("APPDATA", self.home.join("roaming"))
+                .env("COMPUTERNAME", "winsmux-test-host")
+                .env("HOSTNAME", "winsmux-test-host")
+                .env("PSMUX_CONFIG_FILE", self.home.join("fixture.conf"))
                 .env("PSMUX_NO_WARM", "1")
                 .env("PSMUX_ALLOW_NESTING", "1")
                 .env_remove("PSMUX_TARGET_SESSION")
                 .env_remove("PSMUX_TARGET_FULL")
                 .env_remove("PSMUX_ACTIVE")
                 .env_remove("PSMUX_SESSION")
-                .env_remove("TMUX");
+                .env_remove("TMUX")
+                .envs(overrides.iter().copied());
             command.output().expect("winsmux command should run")
         }
 
@@ -68,7 +96,9 @@ mod windows_session_contract {
 
     impl Drop for Fixture {
         fn drop(&mut self) {
-            let _ = self.run(&["-L", &self.namespace, "kill-server"]);
+            for namespace in std::iter::once(&self.namespace).chain(&self.extra_namespaces) {
+                let _ = self.run(&["-L", namespace, "kill-server"]);
+            }
             thread::sleep(Duration::from_millis(150));
             let _ = fs::remove_dir_all(&self.home);
         }
@@ -221,11 +251,20 @@ mod windows_session_contract {
     }
 
     fn unique_id(prefix: &str) -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
         let millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis();
-        format!("{prefix}-{}-{millis}", std::process::id())
+        format!(
+            "{prefix}-{}-{millis}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        )
+    }
+
+    mod compatibility {
+        include!("legacy_cli_contract.rs");
     }
 }
 

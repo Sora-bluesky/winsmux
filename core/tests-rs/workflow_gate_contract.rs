@@ -61,8 +61,6 @@ fn workflow_gate_legacy_path_does_not_fail_closed_on_missing_recipes() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "stdout={stdout}");
     assert!(stdout.contains("legacy_no_lane_a") || stdout.contains("not_applicable"));
-    assert!(
-        !stdout.contains("\"combined_release\":{\"status\":\"pass\"")
-            && !stdout.contains("\"status\":\"pass\",\"reason\":\"TASK-718 Windows")
-    );
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["combined_release"]["status"], "blocked");
 }

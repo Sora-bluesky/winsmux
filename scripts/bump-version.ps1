@@ -1,4 +1,4 @@
-# bump-version.ps1 — Sync version across all winsmux files from VERSION (Single Source of Truth)
+﻿# bump-version.ps1 — Sync version across all winsmux files from VERSION (Single Source of Truth)
 # Usage:
 #   pwsh scripts/bump-version.ps1                            # Sync all files to VERSION file value
 #   pwsh scripts/bump-version.ps1 -Version 0.9.0             # Bump + commit + tag + push + GitHub Release (DEFAULT)
@@ -11,12 +11,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Version -eq '0.38.0' -and -not $SyncOnly) {
+    throw 'v0.38.0 releases require the integrated publication workflow. Use -SyncOnly to synchronize versions.'
+}
+
 $Root = Split-Path $PSScriptRoot -Parent
+$SyncRoadmapScript = Join-Path $Root "winsmux-core\scripts\sync-roadmap.ps1"
+if (-not (Test-Path -LiteralPath $SyncRoadmapScript -PathType Leaf)) {
+    throw "Required roadmap synchronizer is missing: $SyncRoadmapScript"
+}
 . (Join-Path $Root "winsmux-core\scripts\planning-paths.ps1")
 $VersionFile = Join-Path $Root "VERSION"
 $BacklogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $Root -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
 $RoadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $Root -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
-$SyncRoadmapScript = Join-Path $Root "winsmux-core\scripts\sync-roadmap.ps1"
 
 function ConvertFrom-QuotedYamlScalar {
     param(
@@ -229,16 +236,6 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
-        Path    = Join-Path $Root "core\Cargo.lock"
-        Pattern = '(?ms)(name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
-        Path    = Join-Path $Root "core\Cargo.lock"
-        Pattern = '(?ms)(name\s*=\s*"winsmux-remote-helper"\s*\r?\nversion\s*=\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
         Path    = Join-Path $Root "Cargo.lock"
         Pattern = '(?ms)(name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
@@ -266,16 +263,6 @@ $targets = @(
     @{
         Path    = Join-Path $Root "winsmux-app\src-tauri\tauri.conf.json"
         Pattern = '("version"\s*:\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
-        Path    = Join-Path $Root "winsmux-core\package.json"
-        Pattern = '("version"\s*:\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
-        Path    = Join-Path $Root "winsmux-core\mcp-server.js"
-        Pattern = '(const SERVER_VERSION\s*=\s*")[^"]*(";)'
         Replace = "`${1}$Version`${2}"
     },
     @{
@@ -395,14 +382,11 @@ try {
         "Cargo.toml",
         "Cargo.lock",
         "core/Cargo.toml",
-        "core/Cargo.lock",
         "core/crates/winsmux-remote-helper/Cargo.toml",
         "winsmux-app/package.json",
         "winsmux-app/package-lock.json",
         "winsmux-app/src-tauri/Cargo.toml",
         "winsmux-app/src-tauri/tauri.conf.json",
-        "winsmux-core/package.json",
-        "winsmux-core/mcp-server.js",
         ".github/workflows/desktop-candidate-cdp-gate.yml",
         ".github/workflows/public-smoke-recovery.yml",
         "skills/winsmux/SKILL.md",

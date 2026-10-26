@@ -440,7 +440,7 @@ agent-slots:
 
 ## 14. Workflow and Team Profile integration gate
 
-`winsmux workflow-gate --json` is the TASK-662 aggregate. It reports `pass`,
+`winsmux workflow-gate --json` aggregates workflow and team profile checks. It reports `pass`,
 `fail`, `blocked`, or `not_applicable` per sub-gate. `blocked` is never
 converted to `pass`. The in-repo merge-ready result can pass while the combined
 release stays blocked until Windows desktop E2E and `scripts/git-guard.ps1

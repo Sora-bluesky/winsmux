@@ -1920,65 +1920,57 @@ mod tests {
         }
     }
 
-    fn frozen_surface_matrix_cells() -> Vec<(&'static str, &'static str, &'static str, &'static str)>
+    fn frozen_surface_matrix_cells() -> Vec<(&'static str, &'static str, &'static str)>
     {
         vec![
             (
                 "desktop.control_plane.contract",
                 "yes",
                 "automation-contract",
-                "winsmux_automation_contract",
             ),
             (
                 "desktop.summary.snapshot",
                 "yes",
                 "control-rpc only",
-                "—",
             ),
-            ("desktop.run.explain", "yes", "control-rpc only", "—"),
-            ("desktop.run.compare", "yes", "control-rpc only", "—"),
-            ("desktop.run.promote", "yes", "control-rpc only", "—"),
+            ("desktop.run.explain", "yes", "control-rpc only"),
+            ("desktop.run.compare", "yes", "control-rpc only"),
+            ("desktop.run.promote", "yes", "control-rpc only"),
             (
                 "desktop.run.pick_winner",
                 "yes",
                 "control-rpc only",
-                "—",
             ),
             (
                 "desktop.voice.capture_status",
                 "yes",
                 "control-rpc only",
-                "—",
             ),
             (
                 "desktop.provider.capabilities",
                 "yes",
                 "control-rpc only",
-                "—",
             ),
-            ("pty.spawn", "yes", "control-rpc only", "—"),
-            ("pty.write", "yes", "control-rpc only", "—"),
-            ("pty.resize", "yes", "control-rpc only", "—"),
-            ("pty.capture", "yes", "control-rpc only", "—"),
-            ("pty.respawn", "yes", "control-rpc only", "—"),
-            ("pty.close", "yes", "control-rpc only", "—"),
+            ("pty.spawn", "yes", "control-rpc only"),
+            ("pty.write", "yes", "control-rpc only"),
+            ("pty.resize", "yes", "control-rpc only"),
+            ("pty.capture", "yes", "control-rpc only"),
+            ("pty.respawn", "yes", "control-rpc only"),
+            ("pty.close", "yes", "control-rpc only"),
             (
                 "desktop.operator.snapshot",
                 "yes",
                 "operator-snapshot (ps1)",
-                "—",
             ),
             (
                 "desktop.operator.submit",
                 "yes",
                 "operator-submit (ps1)",
-                "—",
             ),
             (
                 "desktop.pairing.confirm",
                 "yes",
                 "automation-pair",
-                "winsmux_automation_pair",
             ),
         ]
     }
@@ -1986,7 +1978,7 @@ mod tests {
     fn extract_surface_matrix_rows(
         markdown: &str,
         sentinel: &str,
-    ) -> Vec<(String, String, String, String)> {
+    ) -> Vec<(String, String, String)> {
         let occurrences = markdown.matches(sentinel).count();
         assert_eq!(
             occurrences, 1,
@@ -2025,7 +2017,6 @@ mod tests {
                 cells[0].to_string(),
                 cells[1].to_string(),
                 cells[2].to_string(),
-                cells[3].to_string(),
             ));
         }
         assert!(
@@ -2064,18 +2055,6 @@ mod tests {
             rust.contains("\"method\": \"desktop.pairing.confirm\""),
             "native pairing request must still name desktop.pairing.confirm"
         );
-
-        let mcp = fs::read_to_string(root.join("winsmux-core/mcp-server.js")).unwrap_or_else(|err| {
-            panic!("read mcp-server.js: {err}");
-        });
-        assert!(
-            mcp.contains("invokeNativeCli([\"automation-contract\"])"),
-            "MCP contract tool must still invoke native automation-contract"
-        );
-        assert!(
-            mcp.contains("invokeNativeCli([\"automation-pair\"])"),
-            "MCP pair tool must still invoke native automation-pair"
-        );
     }
 
     fn assert_doc_surface_matrix_matches_artifact(doc_name: &str) {
@@ -2091,7 +2070,7 @@ mod tests {
         let expected_methods = json_string_set(&artifact["methods"]);
         let frozen = frozen_surface_matrix_cells();
         let frozen_methods: std::collections::HashSet<String> =
-            frozen.iter().map(|(method, _, _, _)| (*method).to_string()).collect();
+            frozen.iter().map(|(method, _, _)| (*method).to_string()).collect();
         assert_eq!(
             frozen.len(),
             frozen_methods.len(),
@@ -2111,33 +2090,21 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let mcp_vocab: std::collections::HashSet<&str> = [
-            "winsmux_automation_contract",
-            "winsmux_automation_pair",
-            "—",
-        ]
-        .into_iter()
-        .collect();
-
-        let expected_rows: std::collections::HashMap<&str, (&str, &str, &str)> = frozen
+        let expected_rows: std::collections::HashMap<&str, (&str, &str)> = frozen
             .iter()
-            .map(|(method, pipe, cli, mcp)| (*method, (*pipe, *cli, *mcp)))
+            .map(|(method, pipe, cli)| (*method, (*pipe, *cli)))
             .collect();
-        for (method, pipe, cli, mcp) in &frozen {
+        for (method, pipe, cli) in &frozen {
             assert_eq!(*pipe, "yes", "{method} pipe cell must be constant yes");
             assert!(
                 cli_vocab.contains(cli),
                 "{method} CLI cell {cli:?} is outside the frozen vocabulary"
             );
-            assert!(
-                mcp_vocab.contains(mcp),
-                "{method} MCP cell {mcp:?} is outside the frozen vocabulary"
-            );
         }
 
         let rows = extract_surface_matrix_rows(&markdown, surface_matrix_sentinel(doc_name));
         let row_methods: std::collections::HashSet<String> =
-            rows.iter().map(|(method, _, _, _)| method.clone()).collect();
+            rows.iter().map(|(method, _, _)| method.clone()).collect();
         assert_eq!(
             row_methods.len(),
             rows.len(),
@@ -2149,13 +2116,12 @@ mod tests {
             &row_methods,
             &expected_methods,
         );
-        for (method, pipe, cli, mcp) in &rows {
+        for (method, pipe, cli) in &rows {
             let Some(expected) = expected_rows.get(method.as_str()) else {
                 panic!("{doc_name} surface matrix has unexpected method {method}");
             };
             assert_eq!(pipe, expected.0, "{doc_name} {method} pipe cell drifted");
             assert_eq!(cli, expected.1, "{doc_name} {method} CLI cell drifted");
-            assert_eq!(mcp, expected.2, "{doc_name} {method} MCP cell drifted");
         }
 
         assert_surface_matrix_first_source_pins();

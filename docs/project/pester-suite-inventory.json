@@ -1,6 +1,6 @@
 {
   "task": "TASK-407",
-  "version": 1,
+  "version": 2,
   "description": "Machine-readable classification for reducing tracked Pester coverage without deleting tests before replacement coverage exists.",
   "allowed_buckets": [
     "keep-smoke",
@@ -13,16 +13,6 @@
       "id": "407-a",
       "scope": "current tests/ Pester files",
       "expected_active_powershell_share": "about 60% of current active tests/ Pester files remain after equivalent Rust or typed fixture coverage lands"
-    },
-    {
-      "id": "407-b",
-      "scope": "legacy core/tests issue, feature, and PR reference cases",
-      "expected_active_powershell_share": "legacy reference coverage is moved out of routine release validation"
-    },
-    {
-      "id": "407-c",
-      "scope": "diagnostic, benchmark, stress, and batch runner scripts",
-      "expected_active_powershell_share": "routine release validation keeps only PowerShell smoke tests for PowerShell-owned contracts"
     }
   ],
   "entries": [
@@ -40,7 +30,8 @@
         "tests/HarnessContract.Tests.ps1",
         "tests/McpServerContract.Tests.ps1",
         "tests/BuilderWorktree.Tests.ps1",
-        "tests/codex-subagent-worktree-guard.Tests.ps1"
+        "tests/codex-subagent-worktree-guard.Tests.ps1",
+        "tests/BumpVersionReleaseBoundary.Tests.ps1"
       ]
     },
     {
@@ -60,106 +51,6 @@
       ],
       "globs": [
         "tests/bridge/*.Tests.ps1"
-      ]
-    },
-    {
-      "bucket": "migrate-rust",
-      "owner": "typed core runtime contracts",
-      "contract": "Legacy core runtime behavior that maps to CLI, config, session, pane, layout, compatibility, parity, or new-feature contracts.",
-      "target": "move assertions to Rust tests or typed fixtures before removing these scripts from routine runs",
-      "batch": "407-b",
-      "globs": [
-        "core/tests/test_cli_handlers.ps1",
-        "core/tests/test_config*.ps1",
-        "core/tests/test_session*.ps1",
-        "core/tests/test_newsession_flags.ps1",
-        "core/tests/test_pane*.ps1",
-        "core/tests/test_layout_engine.ps1",
-        "core/tests/test_tmux_compat.ps1",
-        "core/tests/test_parity.ps1",
-        "core/tests/test_named_session_parity.ps1",
-        "core/tests/test_new*_features.ps1"
-      ]
-    },
-    {
-      "bucket": "archive-reference",
-      "owner": "upstream compatibility reference",
-      "contract": "Historical issue, PR, feature, copy-mode, mouse, overlay, theme, key, cursor, shell, formatting, plugin, and WSL cases are useful references but should not all run in every release gate.",
-      "target": "preserve as fixtures or documented examples before removing from routine release validation",
-      "batch": "407-b",
-      "globs": [
-        "core/tests/test_issue*.ps1",
-        "core/tests/test_issues_*.ps1",
-        "core/tests/test_pr*.ps1",
-        "core/tests/test_features*.ps1",
-        "core/tests/test_copy_mode*.ps1",
-        "core/tests/test_mouse*.ps1",
-        "core/tests/test_overlay*.ps1",
-        "core/tests/test_theme*.ps1",
-        "core/tests/test_alt_key.ps1",
-        "core/tests/test_bind*.ps1",
-        "core/tests/test_capture_pane.ps1",
-        "core/tests/test_cjk_paste_split.ps1",
-        "core/tests/test_claude*.ps1",
-        "core/tests/test_conpty_mouse.ps1",
-        "core/tests/test_control_mode.ps1",
-        "core/tests/test_cross_shell_backslash.ps1",
-        "core/tests/test_cursor*.ps1",
-        "core/tests/test_default_*.ps1",
-        "core/tests/test_env_shim.ps1",
-        "core/tests/test_f_flag_config.ps1",
-        "core/tests/test_format*.ps1",
-        "core/tests/test_keybinding_options.ps1",
-        "core/tests/test_kill*.ps1",
-        "core/tests/test_nsis_installer.ps1",
-        "core/tests/test_osc7_pane_path.ps1",
-        "core/tests/test_plugins_themes.ps1",
-        "core/tests/test_real_plugins.ps1",
-        "core/tests/test_round9.ps1",
-        "core/tests/test_run_shell.ps1",
-        "core/tests/test_squelch_visibility.ps1",
-        "core/tests/test_split*.ps1",
-        "core/tests/test_tab_spacing.ps1",
-        "core/tests/test_target_focus_stability.ps1",
-        "core/tests/test_tui_exit_cleanup.ps1",
-        "core/tests/test_vim_nav_keys.ps1",
-        "core/tests/test_warm*.ps1",
-        "core/tests/test_window*.ps1",
-        "core/tests/test_wsl*.ps1",
-        "core/tests/test_zoom_resize.ps1"
-      ]
-    },
-    {
-      "bucket": "delete-after-coverage",
-      "owner": "legacy diagnostics and local runners",
-      "contract": "Batch runners, diagnostics, destructive checks, benchmarks, stress checks, broad aggregate tests, debug checks, and local performance probes need replacement evidence before deletion.",
-      "target": "delete only after an equivalent smoke check, fixture, or explicit no-longer-supported decision exists",
-      "batch": "407-c",
-      "globs": [
-        "core/tests/_run_batch3.ps1",
-        "core/tests/run_all_tests.ps1",
-        "core/tests/run_fmt_test.ps1",
-        "core/tests/battle_test.ps1",
-        "core/tests/bench*.ps1",
-        "core/tests/destructive_test.ps1",
-        "core/tests/diag*.ps1",
-        "core/tests/disable_processed_input.ps1",
-        "core/tests/mouse_diag.ps1",
-        "core/tests/test_advanced.ps1",
-        "core/tests/test_all.ps1",
-        "core/tests/test_bell_activity_silence.ps1",
-        "core/tests/test_bug*.ps1",
-        "core/tests/test_debug_focus.ps1",
-        "core/tests/test_e2e_latency.ps1",
-        "core/tests/test_extreme_perf.ps1",
-        "core/tests/test_github_issues*.ps1",
-        "core/tests/test_install_speed.ps1",
-        "core/tests/test_perf*.ps1",
-        "core/tests/test_pty_stability.ps1",
-        "core/tests/test_showw_sendkeys_p.ps1",
-        "core/tests/test_startup*_bench.ps1",
-        "core/tests/test_startup_perf.ps1",
-        "core/tests/test_stress*.ps1"
       ]
     },
     {
@@ -200,5 +91,333 @@
         "tests/planning-model.Tests.ps1"
       ]
     }
-  ]
+  ],
+  "retired_core_suites": {
+    "source_root": "core/tests",
+    "source_file_count": 168,
+    "decision": "Retire the standalone upstream-binary scripts after moving required CLI, configuration, session, pane, layout and compatibility assertions into executable Rust tests. Local reference scripts are no longer public test entrypoints.",
+    "command": "cargo test --locked -p winsmux --test session_contract_test",
+    "test_source": "core/tests-rs/legacy_cli_contract.rs",
+    "test_entrypoint": "core/tests-rs/session_contract_test.rs",
+    "retired_expectations": [
+      "Executable aliases psmux, pmux and tmux have completed their sunset; command aliases remain covered.",
+      "The CLI lock and locks commands now belong to operator file-lock operations, as documented by the bridge help and dispatch. The non-colliding lock-server, lock-client and lock-session commands remain covered.",
+      "Performance inputs are isolated shells without user profiles. The inherited baseline-plus-three-seconds window startup allowance and repeated pane readiness checks remain executable. Measurements of the maintainer's own profile are local diagnostics.",
+      "Unconditional success messages and tautological assertions in historical scripts are not counted as product coverage."
+    ],
+    "current_reference_suites": [
+      "core/tests-rs/test_commands.rs",
+      "core/tests-rs/test_commands_new.rs",
+      "core/tests-rs/test_commands_audit.rs",
+      "core/tests-rs/test_parity.rs",
+      "core/tests-rs/test_config_plugin_paths.rs",
+      "core/tests-rs/test_input.rs",
+      "core/tests-rs/test_layout.rs",
+      "core/tests-rs/test_format.rs",
+      "core/tests-rs/test_server.rs",
+      "core/tests-rs/test_client.rs"
+    ],
+    "scripts": [
+      {
+        "name": "test_cli_handlers.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_handlers_and_aliases_reach_the_session_server"
+        ]
+      },
+      {
+        "name": "test_config.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_options_and_source_file_preserve_config_roundtrips"
+        ]
+      },
+      {
+        "name": "test_config_plugin_loading.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_config_plugin_order_overrides_ppm_and_explicit_file",
+          "cli_config_run_shell_reaches_the_started_session",
+          "cli_config_follows_an_explicit_symlink"
+        ]
+      },
+      {
+        "name": "test_layout_engine.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_layouts_preserve_panes_and_roundtrip_through_serialized_layout"
+        ]
+      },
+      {
+        "name": "test_named_session_parity.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_namespaces_and_tmux_targets_remain_isolated",
+          "cli_print_formats_cover_session_window_and_pane_creation"
+        ]
+      },
+      {
+        "name": "test_new_features.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_session_lifecycle_preserves_names_and_negative_existence",
+          "cli_options_and_source_file_preserve_config_roundtrips"
+        ]
+      },
+      {
+        "name": "test_new_parity_features.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_layouts_preserve_panes_and_roundtrip_through_serialized_layout",
+          "cli_options_and_source_file_preserve_config_roundtrips",
+          "cli_print_formats_cover_session_window_and_pane_creation"
+        ]
+      },
+      {
+        "name": "test_newsession_flags.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_new_session_getopt_aliases_duplicates_and_auto_names"
+        ]
+      },
+      {
+        "name": "test_pane_mru.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_pane_mru_controls_directional_ties_and_kill_focus"
+        ]
+      },
+      {
+        "name": "test_pane_navigation.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_pane_navigation_reaches_asymmetric_two_through_six_pane_trees"
+        ]
+      },
+      {
+        "name": "test_pane_startup_perf.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_repeated_pane_creation_exposes_each_shell_output",
+          "cli_window_startup_stays_within_the_inherited_shell_overhead_budget",
+          "cli_persistent_control_connection_creates_ready_windows_and_panes"
+        ]
+      },
+      {
+        "name": "test_parity.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_session_lifecycle_preserves_names_and_negative_existence",
+          "cli_handlers_and_aliases_reach_the_session_server"
+        ]
+      },
+      {
+        "name": "test_session.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_session_lifecycle_preserves_names_and_negative_existence",
+          "cli_repeated_pane_creation_exposes_each_shell_output"
+        ]
+      },
+      {
+        "name": "test_session_mgmt.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_session_lifecycle_preserves_names_and_negative_existence"
+        ]
+      },
+      {
+        "name": "test_tmux_compat.ps1",
+        "former_bucket": "migrate-rust",
+        "disposition": "guarded",
+        "tests": [
+          "cli_print_formats_cover_session_window_and_pane_creation",
+          "cli_namespaces_and_tmux_targets_remain_isolated"
+        ]
+      }
+    ],
+    "retired_groups": [
+      {
+        "former_bucket": "archive-reference",
+        "disposition": "retired",
+        "reason": "Historical upstream issue, feature or manual reference driver for the retired binary entrypoints; retained Rust command, configuration, input, layout, format and terminal regression suites own supported runtime behavior.",
+        "names": [
+          "battle_test.py",
+          "test_all.sh",
+          "test_alt_key.ps1",
+          "test_bind_key.ps1",
+          "test_bind_pipe_key.ps1",
+          "test_capture_pane.ps1",
+          "test_cjk_paste_split.ps1",
+          "test_claude_agent_teams.ps1",
+          "test_claude_compat_fixes.ps1",
+          "test_claude_cursor_diag.ps1",
+          "test_claude_mouse.ps1",
+          "test_conpty_mouse.ps1",
+          "test_control_mode.ps1",
+          "test_copy_mode_advanced.ps1",
+          "test_copy_mode_bracket_paragraph.ps1",
+          "test_copy_mode_full.ps1",
+          "test_cross_shell_backslash.ps1",
+          "test_cursor_fallback.ps1",
+          "test_cursor_style.ps1",
+          "test_default_command_format.ps1",
+          "test_default_shell_cmd.ps1",
+          "test_default_shell_wsl.ps1",
+          "test_env_shim.ps1",
+          "test_f_flag_config.ps1",
+          "test_features.ps1",
+          "test_features2.ps1",
+          "test_features3.ps1",
+          "test_features4.ps1",
+          "test_features5.ps1",
+          "test_format_engine.ps1",
+          "test_format_vars.ps1",
+          "test_issue100_key_names.ps1",
+          "test_issue105_plugin_env_leak.ps1",
+          "test_issue108_ctrl_tab.ps1",
+          "test_issue110_popup_scroll.ps1",
+          "test_issue111_format_cwd.ps1",
+          "test_issue111_starship_compat.ps1",
+          "test_issue112_113.ps1",
+          "test_issue121_shift_enter.ps1",
+          "test_issue125_per_window_zoom.ps1",
+          "test_issue125_zoom_flag.ps1",
+          "test_issue126_client_prefix.ps1",
+          "test_issue133_hook_append.ps1",
+          "test_issue133_hook_duplicates.ps1",
+          "test_issue134_zoom_wrap_nav.ps1",
+          "test_issue136_auth_failed.ps1",
+          "test_issue137_default_terminal.ps1",
+          "test_issue140_kill_pane_focus_loss.ps1",
+          "test_issue146_list_commands.ps1",
+          "test_issue146_popup_via_command_prompt.ps1",
+          "test_issue151_strict_mode.ps1",
+          "test_issue154_popup_fixes.ps1",
+          "test_issue15_altgr.ps1",
+          "test_issue165_prediction_view_style.ps1",
+          "test_issue171_layout.ps1",
+          "test_issue19_config.ps1",
+          "test_issue25.ps1",
+          "test_issue33_remaining.ps1",
+          "test_issue36.ps1",
+          "test_issue41_btab.ps1",
+          "test_issue42_version.ps1",
+          "test_issue43_copy_pane_local.ps1",
+          "test_issue43_prefix_o_l.ps1",
+          "test_issue44_zoom_buffer.ps1",
+          "test_issue45_unzoom_cursor.ps1",
+          "test_issue46_zoom_nav_desync.ps1",
+          "test_issue47_bare_run.ps1",
+          "test_issue49_ctlseq.ps1",
+          "test_issue50_chinese_chars.ps1",
+          "test_issue52_claude.ps1",
+          "test_issue52_cursor.ps1",
+          "test_issue60_native_tui_mouse.ps1",
+          "test_issue63_status_off.ps1",
+          "test_issue70_mouse_mru_and_detached.ps1",
+          "test_issue70_mru_navigation.ps1",
+          "test_issue70_select_pane_mru.ps1",
+          "test_issue71_kill_pane_focus.ps1",
+          "test_issue74_paste.ps1",
+          "test_issue82_zoom_split_borders.ps1",
+          "test_issue91_ime_paste.ps1",
+          "test_issue94_split_percent.ps1",
+          "test_issue95_commands.ps1",
+          "test_issue98_bracketed_paste.ps1",
+          "test_issue99_default_shell_bash.ps1",
+          "test_issues_107_109_110.ps1",
+          "test_keybinding_options.ps1",
+          "test_kill_pane_by_id.ps1",
+          "test_kill_server.ps1",
+          "test_kill_tree.ps1",
+          "test_mouse_handling.ps1",
+          "test_mouse_hover.ps1",
+          "test_nsis_installer.ps1",
+          "test_osc7_pane_path.ps1",
+          "test_overlay_bugfixes.ps1",
+          "test_overlay_rendering.ps1",
+          "test_plugins_themes.ps1",
+          "test_pr118_bugs.ps1",
+          "test_pr27.ps1",
+          "test_real_plugins.ps1",
+          "test_round9.ps1",
+          "test_run_shell.ps1",
+          "test_split_limits.ps1",
+          "test_split_window_target_focus.ps1",
+          "test_squelch_visibility.ps1",
+          "test_tab_spacing.ps1",
+          "test_target_focus_stability.ps1",
+          "test_theme_rendering.ps1",
+          "test_tui_exit_cleanup.ps1",
+          "test_vim_nav_keys.ps1",
+          "test_warm_off.ps1",
+          "test_warm_pane.ps1",
+          "test_warm_session_claim.ps1",
+          "test_window_exit_statusbar.ps1",
+          "test_window_index_prompt.ps1",
+          "test_wsl_in_pwsh_latency.ps1",
+          "test_wsl_in_pwsh_latency2.ps1",
+          "test_wsl_latency.ps1",
+          "test_wsl_pwsh_latency3.ps1",
+          "test_wsl_pwsh_latency4.ps1",
+          "test_wsl_pwsh_latency5.ps1",
+          "test_zoom_resize.ps1"
+        ]
+      },
+      {
+        "former_bucket": "delete-after-coverage",
+        "disposition": "retired",
+        "reason": "Standalone diagnostic, benchmark, stress or aggregate runner for the retired binary entrypoints; isolated Rust CLI lifecycle, shell-readiness and persistent-connection tests retain the runtime smoke checks.",
+        "names": [
+          "_run_batch3.ps1",
+          "battle_test.ps1",
+          "bench_squelch_cwd.ps1",
+          "bench_startup_exit.ps1",
+          "destructive_test.ps1",
+          "diag_cursor_claude.ps1",
+          "diag_cursor_raw.ps1",
+          "disable_processed_input.ps1",
+          "mouse_diag.ps1",
+          "run_all_tests.ps1",
+          "run_fmt_test.ps1",
+          "test_advanced.ps1",
+          "test_all.ps1",
+          "test_bell_activity_silence.ps1",
+          "test_bug_detection.ps1",
+          "test_bugfixes.ps1",
+          "test_debug_focus.ps1",
+          "test_e2e_latency.ps1",
+          "test_extreme_perf.ps1",
+          "test_github_issues.ps1",
+          "test_github_issues_all.ps1",
+          "test_install_speed.ps1",
+          "test_perf.ps1",
+          "test_perf_vs_wt.ps1",
+          "test_pty_stability.ps1",
+          "test_showw_sendkeys_p.ps1",
+          "test_startup_exit_bench.ps1",
+          "test_startup_perf.ps1",
+          "test_stress.ps1",
+          "test_stress_50.ps1",
+          "test_stress_aggressive.ps1",
+          "test_stress_attached.ps1"
+        ]
+      }
+    ]
+  }
 }

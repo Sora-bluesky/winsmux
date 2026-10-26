@@ -243,7 +243,7 @@ The contract row is discoverable without a token. Every row is also reachable th
 
 | Method | Pipe | CLI | MCP |
 | --- | --- | --- | --- |
-| desktop.control_plane.contract | yes | automation-contract | winsmux_automation_contract |
+| desktop.control_plane.contract | yes | automation-contract | — |
 | desktop.summary.snapshot | yes | control-rpc only | — |
 | desktop.run.explain | yes | control-rpc only | — |
 | desktop.run.compare | yes | control-rpc only | — |
@@ -259,7 +259,7 @@ The contract row is discoverable without a token. Every row is also reachable th
 | pty.close | yes | control-rpc only | — |
 | desktop.operator.snapshot | yes | operator-snapshot (ps1) | — |
 | desktop.operator.submit | yes | operator-submit (ps1) | — |
-| desktop.pairing.confirm | yes | automation-pair | winsmux_automation_pair |
+| desktop.pairing.confirm | yes | automation-pair | — |
 
 ## Internal-Only Methods
 
@@ -302,19 +302,17 @@ missing or expired, a policy value is invalid, or the run boundary contains a
 reparse point. External bridges should surface those stop reasons instead of
 retrying with broader prompt instructions.
 
-## MCP Adapter Boundary
+## Rust workspace MCP boundary
 
-The bundled MCP server is a thin local adapter over the upstream MCP JSON-RPC
-shape and stdio transport. winsmux-specific code should stay limited to
-argument-array command invocation, input validation, and local safety policy.
-If an upstream protocol client or official transport behavior can handle a
-case, winsmux should prefer that path before adding local compatibility code.
+The bundled Rust `winsmux-workspace-mcp` server uses stdio and exposes one
+tool, `winsmux_workspace_request`, for the workspace request contract. It
+connects through the authenticated workspace client; it does not adapt the
+desktop control-pipe methods listed above.
 
-MCP clients reach that same named-pipe contract through
-`winsmux_automation_contract`, `winsmux_automation_discover`, and
-`winsmux_automation_pair`. Each tool runs the matching native subcommand
-(`winsmux automation-contract`, `automation-discover`, `automation-pair`)
-and returns the JSON. They do not go through PowerShell.
+For this desktop control pipe, use `winsmux automation-contract`,
+`winsmux automation-discover`, `winsmux automation-pair`, or the generic
+`winsmux control-rpc` helper. The MCP column is empty because these methods
+are not tools of the Rust workspace MCP server.
 
 ## Client Compatibility
 

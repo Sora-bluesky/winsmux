@@ -3,7 +3,6 @@ members = [
     "core",
     "core/crates/winsmux-workspace",
     "core/crates/winsmux-workspace-mcp",
-    "git-graph",
     "winsmux-app/src-tauri",
 ]
 resolver = "2"

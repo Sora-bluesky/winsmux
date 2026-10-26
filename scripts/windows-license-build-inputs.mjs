@@ -8,7 +8,7 @@ import { buildDistributionLicenses } from './stage-distribution-licenses.mjs';
 
 export const desktopCurrentLicenseSourcePath = 'core/crates/winsmux-workspace/src/desktop_current_licenses_v0380.json';
 
-export const windowsLicenseBindingIdentity = '09ab1b3e70f351394e20eed58139906630d682ae03b456b2dc5bfd2c0f903d05';
+export const windowsLicenseBindingIdentity = '657393576db1a503d75de3ba90480ea804b2d7c6dceb42c7f0a40a31ed5d1110';
 const bindingIdentity = windowsLicenseBindingIdentity;
 const hash = data => createHash('sha256').update(data).digest('hex');
 function requireValue(condition, reason) { if (!condition) throw new Error(reason); }

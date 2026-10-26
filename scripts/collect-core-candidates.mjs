@@ -9,6 +9,7 @@ import { assertWindowsRuntime } from './assert-windows-runtime.mjs';
 import { checkedWindowsLicenseBuildInputs } from './windows-license-build-inputs.mjs';
 import { buildDistributionLicenses } from './stage-distribution-licenses.mjs';
 import { renderCoreRelease } from './stage-core-release.mjs';
+import { assertCoreLocalPaths, coreLocalPathPrefixes } from './assert-core-local-paths.mjs';
 import { coreTargets, bytesHash, readCorePlain, exactCoreObject, requireCore, coreTargetMeasurementIdentity, coreSourceInventory, coreSourceInventoryIdentity } from './build-core-candidate.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -153,16 +154,17 @@ export function inspectCoreCandidates(request) {
     && helper.source_inventory_sha256 === sourceIdentity, 'Helper compiler or source differs.');
   const own = checkedFiles(helperRoot, helper.files, [helperName]);
   assertCoreHelperImage(own.get(helperName)); files.set(helperName, own.get(helperName));
+  const checksums = [...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+    .map(([name, raw]) => `${bytesHash(raw)}  ${name}\n`).join('');
+  files.set('SHA256SUMS', Buffer.from(checksums));
+  const localPathScan = assertCoreLocalPaths(files, coreLocalPathPrefixes(repo));
   // Complete the closed input inventory before any preparation child is launched.
   for (const parameters of sidecars) validateSidecar(...parameters);
   requireCore(JSON.stringify(before) === JSON.stringify(coreSourceInventory()), 'Collection sources changed during validation.');
   const finalCheckout = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8', windowsHide: true });
   requireCore(!finalCheckout.error && finalCheckout.status === 0 && finalCheckout.stdout.trim() === request.sourceCommit,
     'Collection checkout changed during validation.');
-  const checksums = [...files].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
-    .map(([name, raw]) => `${bytesHash(raw)}  ${name}\n`).join('');
-  files.set('SHA256SUMS', Buffer.from(checksums));
-  return { publication_admitted: false, files };
+  return { publication_admitted: false, files, local_path_scan: localPathScan };
 }
 
 export function collectCoreCandidates(request) {
@@ -178,7 +180,8 @@ export function collectCoreCandidates(request) {
   for (const [name, raw] of checked.files) requireCore(readCorePlain(path.join(output, name)).equals(raw), 'Completed Core collection bytes differ.');
   fs.unlinkSync(path.join(output, '.pending'));
   return { directory: output, publication_admitted: false,
-    files: [...checked.files].map(([name, raw]) => ({ path: name, bytes: raw.length, sha256: bytesHash(raw) })) };
+    files: [...checked.files].map(([name, raw]) => ({ path: name, bytes: raw.length, sha256: bytesHash(raw) })),
+    local_path_scan: checked.local_path_scan };
 }
 
 /** Owns packaging and the real helper check before writing its receipt. */

@@ -33,7 +33,55 @@ foreach ($entry in $entries) {
     }
 }
 
-$tracked = @(& git -C $repoRoot ls-files 'tests/*.Tests.ps1' 'core/tests/*.ps1' 2>$null)
+$retired = $inventory.retired_core_suites
+if ($inventory.version -ne 2 -or $retired.source_root -cne 'core/tests') {
+    throw 'Pester inventory must describe the completed core script migration.'
+}
+$retiredRoot = Join-Path $repoRoot $retired.source_root
+if (Test-Path -LiteralPath $retiredRoot) {
+    if (@(Get-ChildItem -LiteralPath $retiredRoot -Recurse -File).Count -gt 0) {
+        throw 'Retired core script entrypoints remain in the public tree.'
+    }
+}
+$retiredNames = @($retired.scripts | ForEach-Object { [string]$_.name }) +
+    @($retired.retired_groups | ForEach-Object { $_.names })
+if ($retiredNames.Count -ne $retired.source_file_count -or
+    @($retiredNames | Sort-Object -Unique).Count -ne $retiredNames.Count) {
+    throw 'Retired core script inventory must list every source file exactly once.'
+}
+$replacementPath = Join-Path $repoRoot $retired.test_source
+$replacement = Get-Content -LiteralPath $replacementPath -Raw -Encoding UTF8
+$entrypoint = Get-Content -LiteralPath (Join-Path $repoRoot $retired.test_entrypoint) -Raw -Encoding UTF8
+if (-not $entrypoint.Contains('include!("' + [IO.Path]::GetFileName($replacementPath) + '")')) {
+    throw 'Rust replacement assertions are not connected to the session contract test target.'
+}
+foreach ($script in $retired.scripts) {
+    if ($script.former_bucket -eq 'migrate-rust' -and $script.disposition -ne 'guarded') {
+        throw "Required runtime coverage cannot be retired without a Rust replacement: $($script.name)."
+    }
+    if ($script.disposition -eq 'guarded') {
+        if (@($script.tests).Count -eq 0) { throw "Missing Rust replacement for $($script.name)." }
+        foreach ($test in $script.tests) {
+            $pattern = '(?m)^\s*#\[test\]\s*fn\s+' + [regex]::Escape([string]$test) + '\s*\('
+            if ($replacement -notmatch $pattern) { throw "Missing Rust test $test for $($script.name)." }
+        }
+    } elseif ($script.disposition -ne 'retired' -or [string]::IsNullOrWhiteSpace([string]$script.reason)) {
+        throw "Missing retirement basis for $($script.name)."
+    }
+}
+foreach ($group in $retired.retired_groups) {
+    if ($group.disposition -ne 'retired' -or $group.former_bucket -notin @('archive-reference', 'delete-after-coverage') -or
+        [string]::IsNullOrWhiteSpace([string]$group.reason) -or @($group.names).Count -eq 0) {
+        throw 'Reference and diagnostic retirements require an explicit basis and file list.'
+    }
+}
+foreach ($path in $retired.current_reference_suites) {
+    if (-not (Test-Path -LiteralPath (Join-Path $repoRoot $path) -PathType Leaf)) {
+        throw "Missing current Rust reference suite: $path"
+    }
+}
+
+$tracked = @(& git -C $repoRoot ls-files --cached --others --exclude-standard 'tests/*.Tests.ps1' 2>$null)
 if ($LASTEXITCODE -ne 0 -or $tracked.Count -eq 0) {
     throw 'Failed to list tracked Pester files.'
 }

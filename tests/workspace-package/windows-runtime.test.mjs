@@ -563,6 +563,15 @@ test('CLI and companion plans explicitly load the target CRT policy from workspa
     assert.equal(plan.args[plan.args.indexOf('--target') + 1], target);
     assert.deepEqual(plan.packages, companions ? ['winsmux', 'winsmux-workspace-mcp'] : ['winsmux']);
     assert.deepEqual(plan.args.flatMap((value, index) => value === '--bin' ? [plan.args[index + 1]] : []), plan.packages);
+    const remapConfig = plan.args.find(value => value.startsWith(`target.${target}.rustflags=`));
+    assert.ok(remapConfig, 'The build plan must own the path-remapping flags.');
+    const rustflags = JSON.parse(remapConfig.slice(remapConfig.indexOf('=') + 1));
+    assert.deepEqual(rustflags.slice(0, 2), ['-C', 'target-feature=+crt-static']);
+    assert.ok(rustflags.includes(`--remap-path-prefix=${repoRoot.replaceAll('\\', '/')}=/winsmux/src`));
+    assert.ok(plan.args.includes('env.CC_SHELL_ESCAPED_FLAGS.value="1"'));
+    assert.ok(plan.args.some(value => value.startsWith('env.CFLAGS_x86_64_pc_windows_msvc.value=')));
+    const debug = windowsDistributionBuildPlan({ ...request, companions, release: false }, {});
+    assert.ok(!debug.args.some(value => value.startsWith(`target.${target}.rustflags=`) || value.startsWith('env.')));
   }
 });
 test('unsupported targets and flag/wrapper overrides refuse before Cargo', () => {
@@ -570,7 +579,7 @@ test('unsupported targets and flag/wrapper overrides refuse before Cargo', () =>
   for (const key of ['RUSTFLAGS', 'cargo_encoded_rustflags', 'CARGO_BUILD_RUSTFLAGS',
     'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER',
     'CARGO_BUILD_RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER', 'RUSTC', 'CARGO_BUILD_RUSTC',
-    'CC', 'HOST_CC', 'TARGET_CC', 'AR', 'CXX', 'CL', 'LINK', 'CFLAGS_x86_64_pc_windows_msvc']) {
+    'CC', 'HOST_CC', 'TARGET_CC', 'AR', 'CXX', 'CL', 'LINK', 'CFLAGS_x86_64_pc_windows_msvc', 'CC_SHELL_ESCAPED_FLAGS']) {
     for (const value of ['', '-Ctarget-feature=-crt-static']) {
       assert.throws(() => windowsDistributionBuildPlan(request, { [key]: value }), /override/u, key);
     }

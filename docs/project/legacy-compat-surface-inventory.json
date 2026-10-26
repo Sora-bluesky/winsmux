@@ -20,8 +20,8 @@
       "reason": "These source notice files reproduce the classified THIRD_PARTY_NOTICES.md explanation of retained compatibility code and removed binary aliases; they do not restore an executable alias.",
       "target": "keep these source notices while their classified source notice is included in the distribution",
       "paths": [
-        "distribution/windows-licenses/texts/a964fdbc37fc916ad295db204b58c558e0b608cd36c0b6ebea492bfa72bf00c8",
-        "distribution/windows-licenses/texts/cfb5cdc302385038de1ac3f4cb8c68932aca7325f2489fbf3a7670bfacb7aa8f"
+        "distribution/windows-licenses/texts/03b158d40fbb93900f2b085bca519381b1041bd124003f1b2e882b627c94a1cd",
+        "distribution/windows-licenses/texts/f3b4bf19bfe2fc1393ae491e4a55a5a7cc39c127e9640b9fe1d604a8b8c7df6e"
       ]
     },
     {
@@ -133,15 +133,12 @@
       ]
     },
     {
-      "class": "removal-candidate",
-      "owner": "legacy Pester reference cleanup",
-      "surface": "legacy upstream compatibility tests and diagnostics",
-      "reason": "TASK-407 keeps these as migration or reference material; they should not silently remain as active release blockers after replacement coverage exists.",
-      "target": "migrate, archive, or delete according to TASK-407 before v1.0.0",
-      "globs": [
-        "core/tests/*.ps1",
-        "core/tests/*.py",
-        "core/tests/*.sh",
+      "class": "intentional-shim",
+      "owner": "runtime coverage migration",
+      "surface": "retired script inventory and active Rust replacement selectors",
+      "reason": "The old standalone script entrypoints have been removed. Historical names explain the migration while the listed Rust tests retain supported command and runtime compatibility.",
+      "target": "keep the migration record and verify its active replacement tests",
+      "paths": [
         "docs/project/pester-suite-inventory.json"
       ]
     },

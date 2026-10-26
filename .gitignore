@@ -35,6 +35,7 @@ docs/ci-checklist*.md
 docs/ROLE-DEFINITIONS.md
 docs/REQUIREMENTS.md
 .references/
+/winsmux-core/scripts/internal-docs-meta.psd1
 .playwright-mcp/
 .tmp-hook-*
 .review-*
@@ -42,7 +43,6 @@ docs/REQUIREMENTS.md
 tasks/
 !tasks/
 tasks/*
-!tasks/README.md
 !tasks/roadmap-title-ja.example.psd1
 /skills/
 tests/
@@ -60,6 +60,7 @@ tests/workspace-efficiency/*
 !tests/workspace-package/
 tests/workspace-package/*
 !tests/workspace-package/windows-runtime.test.mjs
+!tests/workspace-package/core-local-paths.test.mjs
 !tests/workspace-package/bundled-distribution.test.mjs
 !tests/workspace-package/nsis-generation.test.mjs
 !tests/workspace-package/nsis-observer.test.mjs
@@ -161,6 +162,7 @@ tests/bridge/_helpers/*
 !tests/HarnessContract.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
+!tests/BumpVersionReleaseBoundary.Tests.ps1
 !tests/DesktopInstallReceipt.Tests.ps1
 !tests/V03618ReleaseHardening.Tests.ps1
 !tests/CliBakeoff.Tests.ps1

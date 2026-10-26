@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 Describe 'Desktop companion signature boundary' {
@@ -268,6 +268,17 @@ Describe 'winsmux version surface' {
         # Installed MSI/NSIS lifecycle evidence is required separately; this job proves source selection only.
     }
 
+    It 'uses only the workspace Cargo lockfile for version updates and staging' {
+        Test-Path -LiteralPath (Join-Path $script:RepoRoot 'core/Cargo.lock') | Should -BeFalse
+        $bump = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/bump-version.ps1') -Raw -Encoding UTF8
+        $bump | Should -Not -Match 'core[\\/]Cargo\.lock'
+        $bump | Should -Match 'Path\s*= Join-Path \$Root "Cargo\.lock"'
+        $bump | Should -Match '(?m)^\s*"Cargo\.lock",'
+        $whitelist = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.githooks/pre-commit-whitelist.ps1') -Raw
+        $whitelist | Should -Not -Match "'core/Cargo\.lock'"
+        $whitelist | Should -Match "'Cargo\.lock'"
+    }
+
     It 'keeps release-critical product versions aligned' {
         $script:ProductVersion | Should -Match '^\d+\.\d+\.\d+$'
 
@@ -275,7 +286,6 @@ Describe 'winsmux version surface' {
         $bridgeScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1') -Raw -Encoding UTF8
         $workspaceLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'Cargo.lock') -Raw -Encoding UTF8
         $coreManifest = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\Cargo.toml') -Raw -Encoding UTF8
-        $coreLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\Cargo.lock') -Raw -Encoding UTF8
         $helperManifest = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\crates\winsmux-remote-helper\Cargo.toml') -Raw -Encoding UTF8
 
         $installScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
@@ -307,10 +317,8 @@ Describe 'winsmux version surface' {
         $coreManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
         $coreManifest | Should -Match '(?m)^license\s*=\s*"Apache-2\.0 AND MIT"\r?$'
         $coreManifest | Should -Match '(?m)^repository\s*=\s*"https://github\.com/Sora-bluesky/winsmux"\r?$'
-        $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $helperManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
         $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-remote-helper"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
-        $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-remote-helper"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
     It 'keeps Windows PowerShell bridge script UTF-8 BOM encoded' {
@@ -333,11 +341,11 @@ Describe 'winsmux version surface' {
         $releaseScript | Should -Not -Match 'Set-Content -Path \$t\.Path'
     }
 
-    It 'syncs the remote helper manifest and both workspace lock entries' {
+    It 'syncs the remote helper manifest and the workspace lock entry' {
         $releaseScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\bump-version.ps1') -Raw -Encoding UTF8
 
         $releaseScript | Should -Match 'core\\crates\\winsmux-remote-helper\\Cargo\.toml'
-        ([regex]::Matches($releaseScript, 'name\\s\*=\\s\*"winsmux-remote-helper"')).Count | Should -Be 2
+        ([regex]::Matches($releaseScript, 'name\\s\*=\\s\*"winsmux-remote-helper"')).Count | Should -Be 1
     }
 
     It 'uses latest release resolution for tagless install and update actions' {
@@ -1699,17 +1707,6 @@ switch (`$args[0]) {
 
         (Get-Content -LiteralPath $gitArgsLog -Raw -Encoding UTF8) | Should -Match 'v0\.36\.10\.\.HEAD'
         (Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8) | Should -Match 'v0\.36\.10\.\.\.v0\.36\.15'
-    }
-
-    It 'keeps tracked package metadata aligned with the public product surface' {
-        $mcpPackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
-        $mcpServer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\mcp-server.js') -Raw -Encoding UTF8
-
-        $mcpPackage.name | Should -Be 'winsmux-mcp'
-        $mcpPackage.version | Should -Be $script:ProductVersion
-        $mcpPackage.private | Should -BeTrue
-        $mcpPackage.license | Should -Be 'Apache-2.0'
-        $mcpServer | Should -Match ('const SERVER_VERSION = "{0}";' -f [regex]::Escape($script:ProductVersion))
     }
 
     It 'documents the public license split for runtime compatibility notices' {
