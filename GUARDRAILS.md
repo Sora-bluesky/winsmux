@@ -1,14 +1,14 @@
 # GUARDRAILS.md — Signs
 
-> Recurring failures documented as Trigger → Instruction → Reason.
-> Each entry represents a real incident. Do not remove entries without team consensus.
+> Operational safeguards documented as Trigger → Instruction → Reason.
+> Keep the safeguards aligned with the active workflow and its verification gates.
 
 ## Signs
 
 ### 1. git rm without --cached
 - **Trigger**: Need to untrack a file from git
 - **Instruction**: Always use `git rm --cached`. Never bare `git rm`.
-- **Reason**: PR #79 and #101 — bare `git rm` deleted local files, causing data loss twice.
+- **Reason**: Bare `git rm` deletes working files as well as removing them from the index; untracking must preserve local bytes.
 
 ### 2. send-keys without -l flag
 - **Trigger**: Sending commands to winsmux panes via send-keys
@@ -23,22 +23,22 @@
 ### 4. Builder without worktree isolation
 - **Trigger**: Dispatching implementation tasks to Builder
 - **Instruction**: Always create a git worktree first. Never let Builder work in main repo.
-- **Reason**: 63-file overwrite incident when Builder ran without isolation (2026-04-02).
+- **Reason**: Worktree isolation prevents an implementation task from overwriting another task's files.
 
 ### 5. Merging without test verification
 - **Trigger**: Builder reports "done" or PR looks clean
 - **Instruction**: Run Pester tests + runtime verification before merge. done = test passed.
-- **Reason**: PR #110 merged without Pester — regression required revert.
+- **Reason**: A completion report alone does not prove that the changed behavior works or that regressions are absent.
 
 ### 6. Mocking database in integration tests
 - **Trigger**: Writing integration tests that touch external systems
 - **Instruction**: Use real connections, not mocks.
-- **Reason**: Mock/prod divergence masked a broken migration (Q1 2026 incident).
+- **Reason**: Mock behavior can diverge from the real integration and conceal migration failures.
 
 ### 7. ROADMAP.md committed to public repo
 - **Trigger**: Running git add on docs/ directory
 - **Instruction**: Planning files are external/local-only. Never commit backlog or ROADMAP; use sync-roadmap.ps1 against the external planning paths.
-- **Reason**: Internal development roadmap was accidentally published.
+- **Reason**: Development plans belong in local or external planning storage, outside the public repository.
 
 ### 8. API tokens in plaintext
 - **Trigger**: Need to pass credentials to Builder or pane
@@ -63,7 +63,7 @@
 ### 12. Issue created without labels
 - **Trigger**: Creating GitHub issues with `gh issue create`
 - **Instruction**: Always include `--label` flag. No exceptions.
-- **Reason**: Unlabeled issues are invisible in filtered views. User corrected this 3+ times.
+- **Reason**: Labels make issues discoverable in the team's filtered views.
 
 ### 13. Backlog update without ROADMAP sync
 - **Trigger**: Editing the planning backlog source of truth
@@ -83,7 +83,7 @@
 ### 16. Codex sandbox git operations
 - **Trigger**: Builder (Codex) needs to commit changes
 - **Instruction**: Builder edits only. Git operations delegated to Researcher (Sonnet) or Operator.
-- **Reason**: Codex --sandbox danger-full-access bypasses CLM; previously --full-auto blocked .git/worktrees/*/index.lock creation.
+- **Reason**: Git writes require an authorized execution route with access to the worktree's Git metadata; sandbox restrictions must remain enabled.
 
 ### 17. Git-Guard gate
 - **Trigger**: Preparing a commit, push, PR, merge, or release.

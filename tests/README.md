@@ -4,7 +4,7 @@ Requires `Pester` 5.0 or later.
 
 ## Run
 
-Prefer the canonical operator/CI runner (TASK-800 / TASK-810):
+Prefer the canonical operator/CI runner:
 
 ```powershell
 pwsh -NoProfile -NoLogo -NonInteractive -File scripts/run-tests.ps1
