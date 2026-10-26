@@ -1081,6 +1081,26 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    // PATH is process-wide, so these fixtures must not share a test process
+    // with each other or with runtime tests that spawn rustc and pwsh.
+    fn isolated_path_test() -> bool {
+        const CHILD: &str = "WINSMUX_ISOLATED_PROVIDER_PATH_TEST";
+        let current = std::thread::current();
+        let name = current.name().expect("named test thread");
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        use std::os::windows::process::CommandExt;
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, name)
+            .creation_flags(0x08000000)
+            .status()
+            .expect("isolated PATH test process");
+        assert!(status.success(), "isolated PATH test failed: {name}");
+        true
+    }
+
     struct TestPath(Option<std::ffi::OsString>);
     impl TestPath {
         fn only(path: &Path) -> Self {
@@ -1130,6 +1150,7 @@ fn main() {
 
     #[test]
     fn provider_updates_reuse_versions_release_handles_and_recover_installations() {
+        if isolated_path_test() { return; }
         let root=std::env::temp_dir().join(format!("winsmux-provider-update-{}",uuid::Uuid::new_v4()));
         let source=version_fixture(&root);
         fs::write(root.join("version.txt"),"0.999.1").unwrap();
@@ -1183,6 +1204,7 @@ fn main() {
 
     #[test]
     fn same_fingerprint_failed_probe_retries_only_with_explicit_refresh() {
+        if isolated_path_test() { return; }
         let root=std::env::temp_dir().join(format!("winsmux-provider-retry-{}",uuid::Uuid::new_v4()));
         let source=version_fixture(&root);
         fs::copy(&source,root.join("codex.exe")).unwrap();
@@ -1201,6 +1223,7 @@ fn main() {
 
     #[test]
     fn refresh_requests_coalesce_and_closing_rejects_pending_and_inflight_results() {
+        if isolated_path_test() { return; }
         let root=std::env::temp_dir().join(format!("winsmux-provider-close-{}",uuid::Uuid::new_v4()));
         let source=version_fixture(&root);
         fs::write(root.join("version.txt"),"3.999.1").unwrap();
@@ -1376,6 +1399,7 @@ fn main() {
 
     #[test]
     fn cancellation_owns_child_before_and_after_job_registration_and_reader_start() {
+        if isolated_path_test() { return; }
         for point in [
             ProbeCheckpoint::BeforeSpawn,
             ProbeCheckpoint::AfterSpawn,
