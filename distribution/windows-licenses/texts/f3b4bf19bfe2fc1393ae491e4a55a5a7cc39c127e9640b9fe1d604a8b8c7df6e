@@ -347,8 +347,6 @@ These upstream areas are the current reference set for public `openai/codex` TUI
 - `codex-rs/tui/styles.md`
 - `codex-rs/tui/src/bottom_pane/AGENTS.md`
 
-The contributor-facing snapshot contract is documented in `docs/project/upstream-snapshot-baseline.md`.
-That document defines the pinned commit, local reference checkout, overlay boundary, and update rule.
 
 ### Current winsmux adaptation scope
 
