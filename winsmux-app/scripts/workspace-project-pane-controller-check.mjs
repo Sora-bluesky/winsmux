@@ -63,7 +63,7 @@ try {
         case 'pane.select': selectedPane = req.params.pane_id; revision++; return response(req, { selected_project_id: selected, selected_pane_id: selectedPane });
         case 'pane.resize': return response(req, structuredClone(req.params));
         case 'run.interrupt': return response(req, { run_id: req.params.run_id, phase: 'accepted' });
-        case 'run.get': return response(req, { run: obs(req.params.run_id, B, process, process === 'exited' ? 'process_exit' : 'unavailable', current === req.params.run_id), ...(req.params.include_cleanup === true ? { cleanup_complete: cleanupComplete ?? process === 'exited' } : {}) });
+        case 'run.get': return response(req, { run: obs(req.params.run_id, B, process, process === 'exited' ? 'process_exit' : 'unavailable', current === req.params.run_id), ...(req.params.include_cleanup === true ? { cleanup_complete: cleanupComplete ?? process === 'exited', cleanup_pending: (cleanupComplete ?? process === 'exited') ? [] : ['process_handle'] } : {}) });
         case 'operation.get': return response(req, { operation: { operation_id: req.params.operation_id, phase: 'completed', outcome: 'succeeded', error_code: null } });
         case 'pane.close': assert.ok(Object.hasOwn(req.params, 'expected_current_run_id')); if (req.params.expected_current_run_id !== current) return error(req, 'target_not_found'); paneRows = paneRows.filter(row => row.pane_id !== req.params.pane_id); selectedPane = null; revision++; return response(req, { pane_id: req.params.pane_id, closed: true, selected_pane_id: null });
         case 'project.forget': rows = rows.filter(row => row.project_id !== req.params.project_id); if (selected === req.params.project_id) selected = null; revision++; return response(req, { project_id: req.params.project_id, removed: true });
@@ -83,7 +83,7 @@ try {
 
   for (const remaining of [false, true]) for (const cleanup of [false, true]) for (const fenced of [false, true]) await test(`shared historical exit separates completion from continuation remaining=${remaining}/cleanup=${cleanup}/fenced=${fenced}`, () => {
     const base = { kind: 'interrupt', remaining, fenced, knowledge: 'success', exitFact: 'running', targetFact: remaining ? 'awaiting' : 'not_required', dataComplete: true, contradiction: false, live: true, nextIssued: false, continuationCleanup: remaining ? 'awaiting' : 'not_required' };
-    const data = { run: obs(R, B, 'exited', 'process_exit', false), ...(cleanup ? { cleanup_complete: true } : {}) };
+    const data = { run: obs(R, B, 'exited', 'process_exit', false), ...(cleanup ? { cleanup_complete: true, cleanup_pending: [] } : {}) };
     const read = runReadData(data, R, cleanup); assert.ok(read);
     const next = foldRunReadiness(base, read, B);
     assert.equal(next.exitFact, 'exited_same'); assert.equal(next.fenced, true);
@@ -95,7 +95,7 @@ try {
     for (const knowledge of ['unknown', 'failure', 'unresolved', 'awaiting_record']) assert.deepEqual(foldRunReadiness({ ...base, knowledge }, read, B), { ...base, knowledge });
   });
   for (const includeCleanup of [false, true]) for (const corrupt of ['wrong_id', 'extra_data', 'extra_run', 'current_type', 'timestamp', 'work', ...(includeCleanup ? ['cleanup_missing', 'cleanup_type', 'cleanup_without_exit'] : [])]) await test(`shared decoder rejects malformed ${corrupt}/cleanup=${includeCleanup}`, () => {
-    const data = { run: obs(R, B, 'exited', 'process_exit', false), ...(includeCleanup ? { cleanup_complete: true } : {}) };
+    const data = { run: obs(R, B, 'exited', 'process_exit', false), ...(includeCleanup ? { cleanup_complete: true, cleanup_pending: [] } : {}) };
     if (corrupt === 'wrong_id') data.run.run_id = R2;
     if (corrupt === 'extra_data') data.extra = true;
     if (corrupt === 'extra_run') data.run.extra = true;
@@ -300,7 +300,7 @@ try {
           if (q.operation === 'project.list') return reply(q, { projects: [{ project_id: P, root_state: 'verified', display_name: '対象', path: 'C:/synthetic/project' }], selected_project_id: P });
           if (q.operation === 'pane.list') return reply(q, { project_id: P, panes: closed ? [] : [{ pane_id: B, project_id: P, display_name: '端末', path: 'C:/synthetic/project', current_run_id: R, observation: run() }], root: closed ? null : { kind: 'leaf', pane_id: B }, selected_pane_id: closed ? null : B });
           if (q.operation === 'run.interrupt') { if (lost) throw new Error('no Response'); return reply(q, { run_id: R, phase: 'accepted' }); }
-          if (q.operation === 'run.get') return reply(q, { run: run(), ...(q.params.include_cleanup === true ? { cleanup_complete: exited } : {}) });
+          if (q.operation === 'run.get') return reply(q, { run: run(), ...(q.params.include_cleanup === true ? { cleanup_complete: exited, cleanup_pending: exited ? [] : ['process_handle'] } : {}) });
           if (q.operation === 'operation.get') return reply(q, { operation: { operation_id: q.params.operation_id, phase: 'completed', outcome: 'succeeded', error_code: null } });
           if (q.operation === 'pane.close') { if (q.params.expected_current_run_id !== R) return { ...reply(q, null), accepted: false, result: null, error: errors.target_not_found }; closed = true; revision++; return reply(q, { pane_id: B, closed: true, selected_pane_id: null }); }
           throw new Error(q.operation);

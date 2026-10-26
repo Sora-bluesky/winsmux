@@ -282,7 +282,7 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
      case'capabilities.get':data={schema_version:1,operations:['capabilities.get','project.list','pane.list','run.get','run.interrupt','agent.launch','operation.get','events.wait','output.read','pane.resize','connection.list'],max_message_bytes:1048576,providers:structuredClone(state.providers),shell_profile_ids:['pwsh'],replay_capacity:{retained_bytes:134217728,active_bytes:268435456}};break;
      case'project.list':data={projects:[{project_id:P,path:f.root,display_name:'Fixture',root_state:'verified'}],selected_project_id:P};break;
      case'pane.list':data={project_id:P,selected_pane_id:N,root:{kind:'leaf',pane_id:N},panes:[{pane_id:N,project_id:P,path:f.root,display_name:'Terminal',current_run_id:R,observation:run()}]};break;
-     case'run.get':data={run:run(),...(q.params.include_cleanup?{cleanup_complete:state.process==='exited'}:{})};break;
+     case'run.get':data={run:run(),...(q.params.include_cleanup?{cleanup_complete:state.process==='exited',cleanup_pending:state.process==='exited'?[]:['process_handle']}:{})};break;
      case'events.wait':data={events:[],next_event_seq:state.seq,status:'no_change'};break;
      case'output.read':data={run_id:R,text:'',next_cursor:'fixture-cursor',gap:false,truncated:false};break;
      case'connection.list':data={connections:[]};break;
