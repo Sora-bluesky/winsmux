@@ -3252,17 +3252,48 @@ fn n_exit_callback_does_not_publish_twice() {
     let (_pane, run, _) = create_pwsh(&harness, &project_id, revision);
     assert_eq!(harness.authorization().testing_exit_latch_charge(), 0);
     stop_run(&harness, &run);
+    wait_run_cleanup(&harness, &run);
+    assert_eq!(harness.authorization().testing_exit_latch_charge(), 1);
+    assert_exit_callback_stable(&harness, &run);
+    let _ = folder;
+}
+
+fn assert_exit_callback_stable(harness: &Harness, run: &str) {
     let seq = harness.event_seq();
     let latch = harness.authorization().testing_exit_latch_charge();
     harness
         .authorization()
-        .testing_fire_exit_callback(&run_typed(&run));
+        .testing_fire_exit_callback(&run_typed(run));
     harness
         .authorization()
-        .testing_fire_exit_callback(&run_typed(&run));
+        .testing_fire_exit_callback(&run_typed(run));
     assert_eq!(harness.event_seq(), seq);
     assert_eq!(harness.authorization().testing_exit_latch_charge(), latch);
-    let _ = folder;
+    assert_eq!(harness.authorization().testing_outstanding_credits(), 0);
+}
+
+fn wait_run_cleanup(harness: &Harness, run: &str) {
+    // Process exit can precede the cleanup notification. Observe both before
+    // taking a stable event/latch baseline or checking for duplicate callbacks.
+    wait_until(
+        Instant::now() + Duration::from_secs(30),
+        || {
+            let response = owner(
+                harness,
+                "run.get",
+                None,
+                json!({"run_id": run, "include_cleanup": true}),
+            );
+            assert_accepted(&response, "run cleanup observation");
+            if response["result"]["data"]["cleanup_complete"] != json!(true) {
+                return false;
+            }
+            assert_eq!(response["result"]["data"]["cleanup_pending"], json!([]));
+            assert_eq!(response["result"]["data"]["run"]["process"], json!("exited"));
+            true
+        },
+        "run exit and cleanup completion",
+    );
 }
 
 #[test]
@@ -3295,22 +3326,23 @@ fn n_already_exited_spawn_uses_exact_event_credit_and_latch() {
         json!(create_before + 1),
         "T spawn response includes only its TopologyChanged"
     );
-    wait_until(
-        Instant::now() + Duration::from_secs(30),
-        || create.event_seq() == create_before + 2,
-        "already-exited create callback event",
-    );
+    wait_run_cleanup(&create, &create_run);
     let create_events = events_after(&create, create_before);
-    assert_eq!(create_events.len(), 2, "{create_events:?}");
+    assert_eq!(create.event_seq(), create_before + 3);
+    assert_eq!(create_events.len(), 3, "{create_events:?}");
     assert_eq!(create_events[0]["data"]["kind"], json!("topology_changed"));
-    assert_eq!(create_events[1]["data"]["kind"], json!("run_state_changed"));
-    assert_eq!(create_events[1]["data"]["run"]["run_id"], json!(create_run));
-    assert_eq!(create_events[1]["data"]["run"]["process"], json!("exited"));
+    for (index, event) in create_events.iter().enumerate().skip(1) {
+        assert_eq!(event["event_seq"], json!(create_before + index as u64 + 1));
+        assert_eq!(event["data"]["kind"], json!("run_state_changed"));
+        assert_eq!(event["data"]["run"]["run_id"], json!(create_run));
+        assert_eq!(event["data"]["run"]["process"], json!("exited"));
+        assert_eq!(event["data"]["run"]["evidence"], json!("process_exit"));
+    }
     assert_eq!(
         create.authorization().testing_exit_latch_charge(),
         create_latches + 1
     );
-    assert_eq!(create.authorization().testing_outstanding_credits(), 0);
+    assert_exit_callback_stable(&create, &create_run);
     assert_eq!(
         job_stop_stats(&create, &create_run).0,
         0,
@@ -3343,22 +3375,23 @@ fn n_already_exited_spawn_uses_exact_event_credit_and_latch() {
         .expect("split run")
         .to_owned();
     assert_eq!(split_response["event_seq"], json!(split_before + 1));
-    wait_until(
-        Instant::now() + Duration::from_secs(30),
-        || split.event_seq() == split_before + 2,
-        "already-exited split callback event",
-    );
+    wait_run_cleanup(&split, &split_run);
     let split_events = events_after(&split, split_before);
-    assert_eq!(split_events.len(), 2, "{split_events:?}");
+    assert_eq!(split.event_seq(), split_before + 3);
+    assert_eq!(split_events.len(), 3, "{split_events:?}");
     assert_eq!(split_events[0]["data"]["kind"], json!("topology_changed"));
-    assert_eq!(split_events[1]["data"]["kind"], json!("run_state_changed"));
-    assert_eq!(split_events[1]["data"]["run"]["run_id"], json!(split_run));
-    assert_eq!(split_events[1]["data"]["run"]["process"], json!("exited"));
+    for (index, event) in split_events.iter().enumerate().skip(1) {
+        assert_eq!(event["event_seq"], json!(split_before + index as u64 + 1));
+        assert_eq!(event["data"]["kind"], json!("run_state_changed"));
+        assert_eq!(event["data"]["run"]["run_id"], json!(split_run));
+        assert_eq!(event["data"]["run"]["process"], json!("exited"));
+        assert_eq!(event["data"]["run"]["evidence"], json!("process_exit"));
+    }
     assert_eq!(
         split.authorization().testing_exit_latch_charge(),
         split_latches + 1
     );
-    assert_eq!(split.authorization().testing_outstanding_credits(), 0);
+    assert_exit_callback_stable(&split, &split_run);
     assert_eq!(
         job_stop_stats(&split, &split_run).0,
         0,
@@ -3376,6 +3409,7 @@ fn n_already_exited_spawn_uses_exact_event_credit_and_latch() {
     let (launch_folder, launch_project, launch_revision) = open_project(&launch);
     let (launch_pane, previous_run, _) = create_pwsh(&launch, &launch_project, launch_revision);
     stop_run(&launch, &previous_run);
+    wait_run_cleanup(&launch, &previous_run);
     let launch_before = launch.event_seq();
     let launch_latches = launch.authorization().testing_exit_latch_charge();
     let launch_guard = launch.use_executable_for_next_spawn(executable);
@@ -3387,17 +3421,22 @@ fn n_already_exited_spawn_uses_exact_event_credit_and_latch() {
         .expect("launch run")
         .to_owned();
     assert_eq!(launched["event_seq"], json!(launch_before + 1));
-    assert_eq!(launch.event_seq(), launch_before + 1);
+    wait_run_cleanup(&launch, &launch_run);
+    assert_eq!(launch.event_seq(), launch_before + 2);
     let launch_events = events_after(&launch, launch_before);
-    assert_eq!(launch_events.len(), 1, "{launch_events:?}");
-    assert_eq!(launch_events[0]["data"]["kind"], json!("run_state_changed"));
-    assert_eq!(launch_events[0]["data"]["run"]["run_id"], json!(launch_run));
-    assert_eq!(launch_events[0]["data"]["run"]["process"], json!("exited"));
+    assert_eq!(launch_events.len(), 2, "{launch_events:?}");
+    for (index, event) in launch_events.iter().enumerate() {
+        assert_eq!(event["event_seq"], json!(launch_before + index as u64 + 1));
+        assert_eq!(event["data"]["kind"], json!("run_state_changed"));
+        assert_eq!(event["data"]["run"]["run_id"], json!(launch_run));
+        assert_eq!(event["data"]["run"]["process"], json!("exited"));
+        assert_eq!(event["data"]["run"]["evidence"], json!("process_exit"));
+    }
     assert_eq!(
         launch.authorization().testing_exit_latch_charge(),
         launch_latches + 1
     );
-    assert_eq!(launch.authorization().testing_outstanding_credits(), 0);
+    assert_exit_callback_stable(&launch, &launch_run);
     assert_eq!(
         job_stop_stats(&launch, &launch_run).0,
         0,
