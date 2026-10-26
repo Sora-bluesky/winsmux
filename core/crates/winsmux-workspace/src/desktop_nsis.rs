@@ -994,8 +994,9 @@ fn desired_slots(root: &str, language: u32, total: u64) -> Result<Vec<Option<Raw
     Ok(vals.into_iter().map(Some).collect())
 }
 
-// Historical owned state and interruption journals may contain the G9 publisher.
-// Admission accepts that exact profile; new publications still use desired_slots.
+// Saved owned state and interruption journals may contain the old Publisher value `github`.
+// Only that display value may differ; registry keys and the other registration slots stay fixed.
+// New publications still use desired_slots.
 fn published_slots_match(registration: &[Option<RawValue>], root: &str, language: u32, total: u64) -> Result<bool> {
     let mut expected = desired_slots(root, language, total)?;
     if registration.get(6) == Some(&Some(sz("github"))) {
@@ -6127,11 +6128,11 @@ mod native {
             assert_eq!(desired_slots("C:\\synthetic-winsmux", 1033, 1).unwrap()[6], Some(sz("winsmux")));
         }
         #[test]
-        fn publisher_github_install_can_update_and_uninstall() {
+        fn publisher_saved_state_with_github_display_value_allows_update_and_uninstall() {
             for update in [false, true] {
                 let mut f = fixture();
                 execute(&f).unwrap();
-                // Model an existing G9 install, including its persisted registration ownership.
+                // Use the current fixture; change only Publisher in saved ownership and live registration.
                 let mut state = old(&f).unwrap().0;
                 state.registration[6] = Some(sz("github"));
                 hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().slots[6] = Some(sz("github")));
@@ -6179,7 +6180,7 @@ mod native {
             }
         }
         #[test]
-        fn publisher_github_pending_recovers_then_publishes_current_profile() {
+        fn publisher_pending_state_with_github_display_value_recovers_then_publishes_current_profile() {
             let good = fixture();
             let trace = operation_trace(&good);
             for label in ["journal_after", "commit_before", "commit_after"] {
@@ -6193,6 +6194,7 @@ mod native {
                 let file = f.root.path.join(CONTROL).join("pending.json");
                 let mut journal = Journal::open(&file, false).unwrap();
                 let mut p = journal.load().unwrap();
+                // Use the current fixture journal; change only Publisher and synchronize its stored commit state below.
                 p.slots[6].desired = Some(sz("github"));
                 // Both values are valid profiles, but their persisted representations must agree.
                 assert!(validate_pending(&p, &f.root, "S-1-5-21-100").is_err());
