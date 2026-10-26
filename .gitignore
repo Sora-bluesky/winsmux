@@ -312,3 +312,19 @@ core/target/
 /verification-evidence/
 /winsmux-app/src-tauri/binaries/distribution-manifest.json
 /winsmux-app/src-tauri/binaries/nsis/
+
+# Workspace privacy and migration acceptance entrypoints
+!tests/workspace-privacy/
+!tests/workspace-migration/
+!tests/workspace-migration/fixtures/
+!tests/workspace-migration/fixtures/v03638/
+!tests/workspace-privacy/.gitignore
+!tests/workspace-privacy/Cargo.toml
+!tests/workspace-privacy/support.rs
+!tests/workspace-privacy/markers.rs
+!tests/workspace-privacy/gates.ps1
+!tests/workspace-privacy/run.ps1
+!tests/workspace-migration/golden.rs
+!tests/workspace-migration/run.ps1
+!tests/workspace-migration/fixtures/v03638/psmux.conf
+!tests/workspace-migration/fixtures/v03638/old-user-artifact.txt

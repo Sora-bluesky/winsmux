@@ -1,0 +1,20 @@
+[package]
+name = "winsmux-workspace-acceptance-fixtures"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+winsmux-workspace = { path = "../../core/crates/winsmux-workspace" }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4"] }
+
+[[test]]
+name = "privacy_markers"
+path = "markers.rs"
+
+[[test]]
+name = "migration_golden"
+path = "../workspace-migration/golden.rs"

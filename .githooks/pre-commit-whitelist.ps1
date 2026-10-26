@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
@@ -11,6 +11,16 @@ Set-Location -LiteralPath $repoRoot
 
 # Keep routine public maintenance paths explicit so non-interactive commits fail closed.
 $whitelistPatterns = @(
+    'tests/workspace-privacy/.gitignore',
+    'tests/workspace-privacy/Cargo.toml',
+    'tests/workspace-privacy/support.rs',
+    'tests/workspace-privacy/markers.rs',
+    'tests/workspace-privacy/gates.ps1',
+    'tests/workspace-privacy/run.ps1',
+    'tests/workspace-migration/golden.rs',
+    'tests/workspace-migration/run.ps1',
+    'tests/workspace-migration/fixtures/v03638/psmux.conf',
+    'tests/workspace-migration/fixtures/v03638/old-user-artifact.txt',
     'scripts/assert-core-local-paths.mjs',
     'tests/workspace-package/core-local-paths.test.mjs',
     'tests/BumpVersionReleaseBoundary.Tests.ps1',
