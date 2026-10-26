@@ -9,7 +9,7 @@ pub mod session;
 pub mod spawn;
 pub mod topology;
 
-use crate::contract::{ErrorCode, PaneId, Process, ProjectId, Provider, RunId, Work, MAX_MESSAGE_BYTES};
+use crate::contract::{CleanupPending, ErrorCode, PaneId, Process, ProjectId, Provider, RunCleanup, RunId, Work, MAX_MESSAGE_BYTES};
 use crate::provider::lifecycle::{ProbeRegistry, ReadyProvider};
 use crate::store::root_identity::ObservedRoot;
 use session::{
@@ -245,6 +245,11 @@ impl RuntimeService {
         Ok(Arc::clone(&session.shared))
     }
 
+    #[cfg(test)]
+    pub(crate) fn testing_shared_session(&self, run_id: &RunId) -> Arc<session::SessionShared> {
+        self.shared_of(run_id).unwrap()
+    }
+
     pub fn insert_preparing(
         &self,
         project_id: ProjectId,
@@ -387,6 +392,17 @@ impl RuntimeService {
                 .get(run_id.as_str())
                 .is_some_and(RunSession::session_clean)
         })
+    }
+
+    pub fn cleanup_observation(&self, run_id: &RunId, process: Process) -> Result<RunCleanup, ErrorCode> {
+        let inner = self.inner.lock().map_err(|_| ErrorCode::RuntimeFailed)?;
+        let session = inner.sessions.get(run_id.as_str()).ok_or(ErrorCode::TargetNotFound)?;
+        let mut pending = session.cleanup_pending();
+        // A stale running observation cannot confirm exit, even if cleanup just finished.
+        if process != Process::Exited && !pending.contains(&CleanupPending::ProcessHandle) {
+            pending.push(CleanupPending::ProcessHandle);
+        }
+        Ok(RunCleanup { complete: pending.is_empty(), pending })
     }
 
     pub fn any_unclean(&self, project: &ProjectId) -> bool {
@@ -1150,6 +1166,48 @@ mod cleanup_observer_retained_tests {
     }
 
     #[test]
+    fn cleanup_observer_natural_exit_notifies_after_cleanup() {
+        let runtime = Arc::new(RuntimeService::new());
+        let project = ProjectId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let pane = PaneId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let run = RunId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let (sent, received) = mpsc::channel();
+        let weak = Arc::downgrade(&runtime);
+        runtime.set_exit_callback(Arc::new(move |run| {
+            let runtime = weak.upgrade().unwrap();
+            let pending = runtime.cleanup_observation(&run, Process::Exited).unwrap().pending;
+            sent.send(pending).unwrap();
+        }));
+        runtime.insert_preparing(project, pane, run.clone()).unwrap();
+        let child = spawn::spawn_suspended(
+            std::env::temp_dir().to_str().unwrap(),
+            &spawn::search_pwsh().unwrap(),
+            &["-NoProfile", "-NonInteractive", "-Command", "[Console]::Write('cleanup-probe'); exit 0"],
+        ).unwrap();
+        runtime.attach_child(&run, child).unwrap();
+        let observer = runtime.testing_retain_cleanup(&run).unwrap();
+        runtime.resume_and_observe(&run).unwrap();
+        let start = Instant::now();
+        let mut previous = None;
+        loop {
+            let pending = runtime.cleanup_observation(&run, Process::Exited).unwrap().pending;
+            if previous.as_ref() != Some(&pending) {
+                let snapshot = observer.snapshot().unwrap();
+                eprintln!("cleanup_probe ms={} pending={pending:?} job={:?} io={:?}",
+                    start.elapsed().as_millis(), snapshot.job_active_processes, snapshot.io);
+                previous = Some(pending.clone());
+            }
+            if pending.is_empty() { break; }
+            assert!(start.elapsed() < Duration::from_secs(30), "native cleanup did not complete");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        wait_released(&observer);
+        let notifications: Vec<_> = received.try_iter().collect();
+        eprintln!("cleanup_probe notifications={notifications:?}");
+        assert!(notifications.iter().any(Vec::is_empty), "cleanup completion must wake observers after exit");
+    }
+
+    #[test]
     fn cleanup_observer_retains_exact_process_after_session_removal() {
         let (runtime, run) = prepared_runtime();
         let observer = runtime.testing_retain_cleanup(&run).unwrap();
@@ -1481,7 +1539,7 @@ impl RuntimeService {
 #[cfg(test)]
 mod complete_session_quiescence_tests {
     use super::{CompleteSessionQuiescence, RuntimeService, SessionPhase};
-    use crate::contract::{ErrorCode, NonEmpty, Nullable, PaneId, ProjectId, RunId};
+    use crate::contract::{CleanupPending, ErrorCode, NonEmpty, Nullable, PaneId, Process, ProjectId, RunCleanup, RunId};
     use crate::runtime::topology::{PaneRecord, ProjectPanes};
     use std::sync::atomic::Ordering;
 
@@ -1561,6 +1619,33 @@ mod complete_session_quiescence_tests {
             session.shared.pty_closed.store(true, Ordering::SeqCst);
         }
         assert!(runtime.session_clean(run), "clean history flags");
+    }
+
+    #[test]
+    fn cleanup_pending_observation_preserves_exit_evidence_and_missing_run_errors() {
+        let runtime = RuntimeService::new();
+        let run = RunId::new("50000000-0000-4000-8000-0000000086a0").unwrap();
+        assert_eq!(runtime.cleanup_observation(&run, Process::Exited), Err(ErrorCode::TargetNotFound));
+        mark_clean_history(
+            &runtime,
+            ProjectId::new("30000000-0000-4000-8000-0000000086a0").unwrap(),
+            PaneId::new("40000000-0000-4000-8000-0000000086a0").unwrap(),
+            &run,
+            true,
+        );
+        for process in [Process::Starting, Process::Running, Process::Unknown] {
+            assert_eq!(runtime.cleanup_observation(&run, process), Ok(RunCleanup {
+                complete: false, pending: vec![CleanupPending::ProcessHandle],
+            }));
+        }
+        assert_eq!(runtime.cleanup_observation(&run, Process::Exited), Ok(RunCleanup {
+            complete: true, pending: vec![],
+        }));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = runtime.inner.lock().unwrap();
+            panic!("poison cleanup observation");
+        }));
+        assert_eq!(runtime.cleanup_observation(&run, Process::Exited), Err(ErrorCode::RuntimeFailed));
     }
 
     #[test]

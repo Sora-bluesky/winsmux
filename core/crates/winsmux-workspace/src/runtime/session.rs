@@ -10,7 +10,7 @@ use super::spawn::{
     PinnedWrite, PreparedChild, RawHandle, ReadClass, WriteIdentity, WriteResult,
 };
 use crate::contract::{
-    ErrorCode, PaneId, Process, ProjectId, RunId, Timestamp, Work, MAX_MESSAGE_BYTES, P,
+    CleanupPending, ErrorCode, PaneId, Process, ProjectId, RunId, Timestamp, Work, MAX_MESSAGE_BYTES, P,
 };
 use crate::store::root_identity::ObservedRoot;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -3350,6 +3350,12 @@ pub struct SessionShared {
 }
 
 impl SessionShared {
+    #[cfg(test)]
+    pub(crate) fn testing_assign_job_member(&self, process: HANDLE) -> bool {
+        let state = self.job.state.lock().unwrap();
+        unsafe { windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(state.handle.0, process) != 0 }
+    }
+
     pub fn new(run_id: RunId) -> Arc<Self> {
         let owner = native_owner::RunBundle::new();
         Arc::new(Self {
@@ -3618,17 +3624,23 @@ impl RunSession {
     }
 
     pub fn session_clean(&self) -> bool {
+        self.cleanup_pending().is_empty()
+    }
+
+    pub fn cleanup_pending(&self) -> Vec<CleanupPending> {
         let force_killed = self.shared.force_killed.load(Ordering::SeqCst);
-        self.phase != SessionPhase::Preparing
-            && self.shared.handle_signaled.load(Ordering::SeqCst)
-            && self.job_empty()
-            && self.shared.drain_flag.load(Ordering::SeqCst)
-            && self.shared.reader_returned.load(Ordering::SeqCst)
-            && self.shared.waiter_returned.load(Ordering::SeqCst)
-            && self.shared.teardown_returned.load(Ordering::SeqCst)
-            && self.shared.pty_closed.load(Ordering::SeqCst)
-            && self.shared.job.clean_termination(force_killed)
-            && !self.shared.write_pending.load(Ordering::SeqCst)
+        [
+            (CleanupPending::Preparing, self.phase != SessionPhase::Preparing),
+            (CleanupPending::ProcessHandle, self.shared.handle_signaled.load(Ordering::SeqCst)),
+            (CleanupPending::JobProcesses, self.job_empty()),
+            (CleanupPending::OutputDrain, self.shared.drain_flag.load(Ordering::SeqCst)),
+            (CleanupPending::Reader, self.shared.reader_returned.load(Ordering::SeqCst)),
+            (CleanupPending::Waiter, self.shared.waiter_returned.load(Ordering::SeqCst)),
+            (CleanupPending::Teardown, self.shared.teardown_returned.load(Ordering::SeqCst)),
+            (CleanupPending::Pty, self.shared.pty_closed.load(Ordering::SeqCst)),
+            (CleanupPending::JobTermination, self.shared.job.clean_termination(force_killed)),
+            (CleanupPending::WritePending, !self.shared.write_pending.load(Ordering::SeqCst)),
+        ].into_iter().filter_map(|(reason, complete)| (!complete).then_some(reason)).collect()
     }
 
     pub fn job_empty(&self) -> bool {
@@ -3815,6 +3827,9 @@ fn teardown_idle(shared: Arc<SessionShared>, owner: Arc<native_owner::RunBundle>
     if !shared.write_pending.load(Ordering::SeqCst) {
         shared.teardown_returned.store(true, Ordering::SeqCst);
     }
+    // Exit can be published while the PTY and output reader are still closing.
+    // Re-observe after the final cleanup flags, outside every native/run lock.
+    shared.invoke_exit_callback();
 }
 
 pub fn write_ctrl_c_on(shared: &SessionShared) -> bool {
@@ -3911,6 +3926,98 @@ mod utf8_tests {
         assert!(truncated);
         assert!(!clamped.is_empty());
         assert!(json_string_len(&clamped) <= MAX_MESSAGE_BYTES);
+    }
+}
+
+#[cfg(test)]
+mod cleanup_pending_tests {
+    use super::*;
+
+    fn clean_session() -> RunSession {
+        let mut session = RunSession::new(
+            ProjectId::new("30000000-0000-4000-8000-0000000000a0").unwrap(),
+            PaneId::new("40000000-0000-4000-8000-0000000000a0").unwrap(),
+            RunId::new("50000000-0000-4000-8000-0000000000a0").unwrap(),
+        );
+        session.phase = SessionPhase::Failed;
+        for flag in [
+            &session.shared.handle_signaled, &session.shared.drain_flag,
+            &session.shared.reader_returned, &session.shared.waiter_returned,
+            &session.shared.teardown_returned, &session.shared.pty_closed,
+        ] {
+            flag.store(true, Ordering::SeqCst);
+        }
+        assert!(session.cleanup_pending().is_empty());
+        assert!(session.session_clean());
+        session
+    }
+
+    #[test]
+    fn cleanup_workers_notify_in_either_completion_order() {
+        for waiter_last in [false, true] {
+            let mut session = clean_session();
+            Arc::get_mut(&mut session.shared).unwrap().owner = native_owner::RunBundle::new_test(1);
+            let shared = &session.shared;
+            shared.pty_closed.store(false, Ordering::SeqCst);
+            shared.teardown_returned.store(false, Ordering::SeqCst);
+            shared.handle_signaled.store(!waiter_last, Ordering::SeqCst);
+            shared.waiter_returned.store(!waiter_last, Ordering::SeqCst);
+            let (sent, received) = std::sync::mpsc::channel();
+            let weak = Arc::downgrade(shared);
+            shared.set_exit_callback(Arc::new(move |_| {
+                let shared = weak.upgrade().unwrap();
+                assert_eq!(native_owner::run_held(), 0);
+                assert!(shared.cleanup_mu.try_lock().is_ok());
+                sent.send([
+                    shared.handle_signaled.load(Ordering::SeqCst),
+                    shared.waiter_returned.load(Ordering::SeqCst),
+                    shared.teardown_returned.load(Ordering::SeqCst),
+                    shared.pty_closed.load(Ordering::SeqCst),
+                ]).unwrap();
+            }));
+            if !waiter_last { shared.invoke_exit_callback(); }
+            shared.request_cleanup();
+            teardown_idle(Arc::clone(shared), Arc::clone(&shared.owner));
+            if waiter_last {
+                assert_eq!(session.cleanup_pending(), vec![CleanupPending::ProcessHandle, CleanupPending::Waiter]);
+                shared.handle_signaled.store(true, Ordering::SeqCst);
+                shared.waiter_returned.store(true, Ordering::SeqCst);
+                shared.invoke_exit_callback();
+            }
+            assert!(session.session_clean());
+            let notifications: Vec<_> = received.try_iter().collect();
+            assert_eq!(notifications.len(), 2, "waiter_last={waiter_last}");
+            assert_ne!(notifications[0], [true; 4]);
+            assert_eq!(notifications[1], [true; 4]);
+        }
+    }
+
+    #[test]
+    fn cleanup_pending_covers_every_session_condition_without_claiming_clean() {
+        for reason in CleanupPending::ALL {
+            let mut session = clean_session();
+            match reason {
+                CleanupPending::Preparing => session.phase = SessionPhase::Preparing,
+                CleanupPending::ProcessHandle => session.shared.handle_signaled.store(false, Ordering::SeqCst),
+                CleanupPending::JobProcesses => {
+                    // A valid non-job handle makes the native job query fail, not report empty.
+                    let handle = unsafe { windows_sys::Win32::System::Threading::CreateEventW(
+                        std::ptr::null(), 1, 0, std::ptr::null(),
+                    ) };
+                    assert!(!handle.is_null());
+                    session.shared.job.install(RawHandle(handle));
+                }
+                CleanupPending::OutputDrain => session.shared.drain_flag.store(false, Ordering::SeqCst),
+                CleanupPending::Reader => session.shared.reader_returned.store(false, Ordering::SeqCst),
+                CleanupPending::Waiter => session.shared.waiter_returned.store(false, Ordering::SeqCst),
+                CleanupPending::Teardown => session.shared.teardown_returned.store(false, Ordering::SeqCst),
+                CleanupPending::Pty => session.shared.pty_closed.store(false, Ordering::SeqCst),
+                CleanupPending::JobTermination => session.shared.force_killed.store(true, Ordering::SeqCst),
+                CleanupPending::WritePending => session.shared.write_pending.store(true, Ordering::SeqCst),
+            }
+            assert_eq!(session.cleanup_pending(), vec![*reason], "{reason:?}");
+            assert!(!session.session_clean(), "{reason:?}");
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-import type { ErrorCode, OperationName, Request, Response, RunObservation } from '../generated/workspace-contract';
+import type { CleanupPending, ErrorCode, OperationName, Request, Response, RunObservation } from '../generated/workspace-contract';
 import { decideStage, foldStage, foldRunReadiness, runReadData } from './project-pane-controller';
 import type { Evidence, OwnerKey, ProjectPanePort, RunRead, StageFacts } from './project-pane-controller';
 import { createRecoveryReadGate } from './recovery-read';
@@ -17,11 +17,15 @@ export type AgentCommandNotice = Readonly<{ kind: 'busy'; busy: boolean }> | Rea
 export interface AgentCommandOptions {
   instanceId: string; generation: string; ownerKey: OwnerKey; port: ProjectPanePort;
   operationId?(): string;
+  now?(): number;
+  schedule?(callback: () => void, delayMs: number): unknown;
+  cancel?(handle: unknown): void;
 }
 type Lease = { projectId: string; paneId: string; live: boolean; notify(notice: AgentCommandNotice): void };
 type Stage = { request: Request; facts: StageFacts; launchRunId: string | null; directAccepted: boolean; inspection: { token: ReadAttempt; promise: Promise<void> } | null; readHint: boolean; driving: boolean; dirty: boolean };
 type ReadAttempt = NonNullable<ReturnType<ReturnType<typeof createRecoveryReadGate>['begin']>>;
-type Pending = { intent: AgentCommandIntent; ticket: string; ownerKey: OwnerKey; lease: Lease; phase: 'preflight' | 'dispatched'; stage: Stage | null; fenced: boolean; waitingCleanup: boolean; preflightInspection: Promise<void> | null; preflightHint: boolean };
+type CleanupWait = { deadline: number; timer: unknown; poll: unknown; remaining: readonly CleanupPending[]; verified: boolean };
+type Pending = { intent: AgentCommandIntent; ticket: string; ownerKey: OwnerKey; lease: Lease; phase: 'preflight' | 'dispatched'; stage: Stage | null; fenced: boolean; waitingCleanup: boolean; cleanup: CleanupWait | null; preflightInspection: Promise<void> | null; preflightHint: boolean };
 type Obj = Record<string, unknown>;
 const object = (v: unknown): v is Obj => !!v && typeof v === 'object' && !Array.isArray(v);
 const uuid = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v);
@@ -31,6 +35,15 @@ const nullableText = (v: unknown) => v === null || nonempty(v);
 const codes: readonly ErrorCode[] = ['invalid_request', 'unsupported_version', 'permission_denied', 'target_not_found', 'stale_topology', 'operation_conflict', 'in_progress', 'not_running', 'already_running', 'unsupported_capability', 'output_gap', 'persistence_failed', 'runtime_failed', 'state_unknown', 'resource_exhausted', 'root_changed', 'unsupported_file', 'not_a_repository'];
 const codeKnown = (v: unknown): v is ErrorCode => typeof v === 'string' && codes.includes(v as ErrorCode);
 const actualExit = (run: RunObservation) => run.process === 'exited' && run.evidence === 'process_exit';
+// Natural-exit observations reached cleanup after 2.06–9.16 s. Reuse the
+// native cleanup observer's 30 s allowance; expiry cancels only unsent work.
+export const CLEANUP_WAIT_MS = 30_000;
+const CLEANUP_POLL_MS = 1_000;
+const cleanupLabels: Record<CleanupPending, string> = {
+  preparing: '起動準備', process_handle: 'プロセス終了の確認', job_processes: '子プロセスの終了',
+  output_drain: '端末出力の読み切り', reader: '出力読取の終了', waiter: '終了監視の完了',
+  teardown: '後処理の完了', pty: '仮想端末の解放', job_termination: '終了処理の確認', write_pending: '入力書込の完了',
+};
 
 /** Host lifetime owner. The port must return Rust-codec-validated responses;
  * this module checks correlation and the domain facts used to authorize stages.
@@ -48,6 +61,9 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
   const usedIds = new Set<string>();
   const tickets = new Set<string>();
   const readGate = createRecoveryReadGate();
+  const now = options.now ?? (() => performance.now());
+  const schedule = options.schedule ?? ((callback: () => void, delay: number) => setTimeout(callback, delay));
+  const cancel = options.cancel ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>));
   const live = (p: Pending, s?: Stage) => !retired && pending === p && (!s || p.stage === s);
   const projected = (p: Pending) => lease === p.lease && p.lease.live;
   function emit(to: Lease | null, notice: AgentCommandNotice) {
@@ -65,11 +81,14 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
   }
   function report(p: Pending, phase: 'awaiting' | 'unknown') {
     const cleanup = p.waitingCleanup || (p.stage?.facts.exitFact === 'exited_same' && p.stage.facts.continuationCleanup === 'awaiting');
-    const message = cleanup ? '実行の終了を確認しました。後処理の完了を確認中です。後続の起動はまだ送信していません。' : phase === 'awaiting' ? '要求の処理を確認中です。' : '元の要求を再確認してください。実行状態は未確認です。';
+    const message = p.cleanup ? `実行の終了を確認しました。後処理を待っています（あと${Math.max(0, Math.ceil((p.cleanup.deadline - now()) / 1_000))}秒）。${cleanupDetails(p.cleanup)} 後続の起動はまだ送信していません。`
+      : cleanup ? '実行の終了を確認しました。後処理の完了を確認中です。後続の起動はまだ送信していません。' : phase === 'awaiting' ? '要求の処理を確認中です。' : '元の要求を再確認してください。実行状態は未確認です。';
     if (live(p) && projected(p)) emit(p.lease, { kind: 'settlement', result: result(p, phase, 'pending', message) });
   }
   function finish(p: Pending, phase: 'completed' | 'refused', disposition: AgentCommandResult['disposition'], message: string) {
     if (!live(p)) return;
+    clearCleanup(p);
+    readGate.invalidate();
     const notice = result(p, phase, disposition, message);
     if (p.stage) p.stage.facts = foldStage(p.stage.facts, { kind: 'settlement_committed' });
     last = notice;
@@ -79,6 +98,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
   }
   function fence(p: Pending) {
     if (!live(p)) return;
+    clearCleanup(p);
     p.fenced = true;
     p.preflightHint = false;
     if (p.stage) p.stage.readHint = false;
@@ -158,10 +178,49 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
     const got = runReadData(data, i.runId, cleanup);
     return got?.run.pane_id === i.paneId ? got : null;
   }
+  function cleanupDetails(wait: CleanupWait): string {
+    const remaining = wait.remaining.length ? wait.remaining.map(reason => cleanupLabels[reason]).join('、') : 'なし（起動先を再確認中）';
+    return `最後に確認した残り項目: ${remaining}。${wait.verified ? '' : '現在の状態は未確認です。'}`;
+  }
+  function clearCleanup(p: Pending) {
+    if (!p.cleanup) return;
+    cancel(p.cleanup.timer); cancel(p.cleanup.poll); p.cleanup = null;
+  }
+  function expireCleanup(p: Pending): boolean {
+    if (!live(p) || !p.cleanup || now() < p.cleanup.deadline) return false;
+    const details = cleanupDetails(p.cleanup);
+    p.fenced = true;
+    finish(p, 'refused', p.phase === 'preflight' ? 'unsent_cancelled' : 'partial',
+      `後処理の待機期限（${CLEANUP_WAIT_MS / 1_000}秒）を過ぎました。${details} 後続の起動は送信していません。状態を確認してから、もう一度起動してください。`);
+    return true;
+  }
+  function trackCleanup(p: Pending, got: RunRead | null) {
+    if (!mayDispatch(p) || p.intent.kind !== 'launch-agent') return;
+    if (p.cleanup) p.cleanup.verified = got !== null;
+    if (!got || !got.run.current || !actualExit(got.run) || got.cleanupPending === null) return;
+    if (p.cleanup) { p.cleanup.remaining = got.cleanupPending; return; }
+    if (got.cleanupComplete !== false) return;
+    const wait: CleanupWait = { deadline: now() + CLEANUP_WAIT_MS, timer: null, poll: null, remaining: got.cleanupPending, verified: true };
+    p.cleanup = wait;
+    const deadline = () => {
+      if (!live(p) || p.cleanup !== wait) return;
+      if (!expireCleanup(p)) wait.timer = schedule(deadline, Math.max(0, wait.deadline - now()));
+    };
+    const poll = () => {
+      if (!mayDispatch(p) || p.cleanup !== wait || expireCleanup(p)) return;
+      wait.verified = false;
+      void observe();
+      report(p, 'awaiting');
+      if (live(p) && p.cleanup === wait) wait.poll = schedule(poll, CLEANUP_POLL_MS);
+    };
+    wait.timer = schedule(deadline, CLEANUP_WAIT_MS);
+    wait.poll = schedule(poll, CLEANUP_POLL_MS);
+  }
   function apply(p: Pending, s: Stage, evidence: Evidence) { if (live(p, s)) s.facts = foldStage(s.facts, evidence); }
   function mayDispatch(p: Pending) { return live(p) && !p.fenced && connected && projected(p); }
   function dispatch(p: Pending, operation: 'agent.launch' | 'run.interrupt') {
     if (!mayDispatch(p)) { fence(p); return; }
+    if (operation === 'agent.launch' && expireCleanup(p)) return;
     const i = p.intent;
     let req: Request;
     try {
@@ -178,6 +237,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
       continuationCleanup: interrupt && i.kind === 'launch-agent' ? 'awaiting' : 'not_required',
     } };
     // Save the immutable identity before invoking the port, with no await or UI callback.
+    if (operation === 'agent.launch') { if (expireCleanup(p)) return; clearCleanup(p); }
     p.stage = s; p.phase = 'dispatched';
     const dispatchedEpoch = readGate.epoch();
     void exchange(req).then(got => {
@@ -238,6 +298,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
         const cleanup = s.facts.remaining && !s.facts.fenced && s.facts.dataComplete;
         const got = await observed(p, cleanup);
         if (!currentRead()) return;
+        if (cleanup) trackCleanup(p, got);
         s.facts = foldRunReadiness(s.facts, got, p.intent.paneId);
         if (s.facts.fenced) { p.fenced = true; s.readHint = false; }
       }
@@ -255,7 +316,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
       readGate.end(token);
       const hinted = s.readHint;
       s.readHint = false;
-      // Consume only a received hint. This is not a timer or an automatic poll.
+      // Consume one received hint. The cleanup timer shares this same read gate.
       // The old stage cannot pass a hint to a new command or launch stage.
       if (hinted && mayObserve(p, s)) void inspect(p, s, false);
     });
@@ -273,6 +334,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
       const got = await observed(p, p.intent.kind === 'launch-agent');
       const run = got?.run;
       if (!live(p)) return;
+      trackCleanup(p, got);
       if (!run || !run.current) { finish(p, 'refused', 'refused', '対象の実行を確認できないため送信していません。'); return; }
       if (actualExit(run)) {
         if (p.intent.kind === 'launch-agent') {
@@ -335,7 +397,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
         submit(intent: AgentCommandIntent, ticket: string): boolean {
           if (retired || !connected || pending || lease !== to || !to.live || !validIntent(intent, to, ticket)) return false;
           tickets.add(ticket);
-          const p: Pending = { intent: Object.freeze({ ...intent }), ticket, ownerKey: options.ownerKey, lease: to, phase: 'preflight', stage: null, fenced: false, waitingCleanup: false, preflightInspection: null, preflightHint: false };
+          const p: Pending = { intent: Object.freeze({ ...intent }), ticket, ownerKey: options.ownerKey, lease: to, phase: 'preflight', stage: null, fenced: false, waitingCleanup: false, cleanup: null, preflightInspection: null, preflightHint: false };
           pending = p; busy();
           if (live(p)) { report(p, 'awaiting'); void preflight(p); }
           return true;
@@ -368,6 +430,7 @@ export function createAgentCommandSession(options: AgentCommandOptions) {
       busy();
     },
     retireHost() {
+      if (pending) clearCleanup(pending);
       retired = true; readGate.invalidate(); recoveryPort = null; retireProjection(); pending = null;
     },
     getState() {

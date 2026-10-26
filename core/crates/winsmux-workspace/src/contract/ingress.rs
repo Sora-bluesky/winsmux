@@ -2121,6 +2121,20 @@ mod tests {
     }
 
     #[test]
+    fn cleanup_pending_owned_response_matches_public_codec() {
+        let mut pending = Vec::with_capacity(16);
+        pending.push(CleanupPending::Reader);
+        pending.push(CleanupPending::Pty);
+        let pending_capacity = pending.capacity() * std::mem::size_of::<CleanupPending>();
+        let run = RunObservation::test_fixture();
+        let run_capacity = run.owned_capacity();
+        let data = RunGetData { run, cleanup_complete: Some(RunCleanup { complete: false, pending }) };
+        assert_eq!(data.owned_capacity(), run_capacity + pending_capacity);
+        assert_tagged_value_parity(&data);
+        assert_tagged_value_parity(&Success::RunGet(data));
+    }
+
+    #[test]
     fn tagged_response_subvariants_match_public_canonical_encoding() {
         let events = [
             EventData::TopologyChanged {

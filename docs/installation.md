@@ -156,6 +156,7 @@ When winsmux was installed with the setup asset (`winsmux_..._x64-setup.exe`), i
 - the install folder, with any files and folders that the installer did not create
 - the `licenses` folder in the install folder, with its `sources` and `texts` folders empty
 - `.winsmux-desktop\pending.json` in the install folder, the record of the uninstall. The next install into that folder reads it.
+- the empty `.winsmux-desktop\ops` and `.winsmux-desktop\preserved` folders in the install folder
 - the right-click menu keys `HKCU\Software\Classes\Directory\shell\winsmux` and `HKCU\Software\Classes\Directory\Background\shell\winsmux`, each with its `command` subkey, without values
 - the product state key `HKCU\Software\github\winsmux`, without values, and `HKCU\Software\github`, which holds it
 - the uninstall registration key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux`, without values

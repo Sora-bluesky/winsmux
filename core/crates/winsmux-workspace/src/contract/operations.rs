@@ -687,8 +687,136 @@ object!(InputKeyData {
     sent: True,
     written_bytes: OneByte
 });
-cleanup_read_shape!(RunGetData, RunGetDataShape, LegacyRunGetData, CleanupRunGetData,
-    run: RunObservation, cleanup_complete: bool);
+enumeration!(CleanupPending {
+    Preparing => "preparing",
+    ProcessHandle => "process_handle",
+    JobProcesses => "job_processes",
+    OutputDrain => "output_drain",
+    Reader => "reader",
+    Waiter => "waiter",
+    Teardown => "teardown",
+    Pty => "pty",
+    JobTermination => "job_termination",
+    WritePending => "write_pending",
+});
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunCleanup {
+    pub complete: bool,
+    pub pending: Vec<CleanupPending>,
+}
+
+object!(LegacyRunGetData { run: RunObservation });
+object!(CleanupRunGetData {
+    cleanup_complete: bool,
+    cleanup_pending: Vec<CleanupPending>,
+    run: RunObservation,
+});
+
+#[derive(JsonSchema)]
+#[serde(untagged)]
+enum RunGetDataShape {
+    Legacy(LegacyRunGetData),
+    Extended(CleanupRunGetData),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunGetData {
+    pub run: RunObservation,
+    // Keep legacy constructors as None; the opt-in wire fields are one snapshot.
+    pub cleanup_complete: Option<RunCleanup>,
+}
+
+impl Serialize for RunGetData {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(if self.cleanup_complete.is_some() { 3 } else { 1 }))?;
+        if let Some(cleanup) = &self.cleanup_complete {
+            map.serialize_entry("cleanup_complete", &cleanup.complete)?;
+            map.serialize_entry("cleanup_pending", &cleanup.pending)?;
+        }
+        map.serialize_entry("run", &self.run)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RunGetData {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = RunGetData;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { f.write_str("object") }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut run = None;
+                let mut complete = None;
+                let mut pending = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "run" => {
+                            if run.is_some() { return Err(serde::de::Error::duplicate_field("run")); }
+                            run = Some(map.next_value::<RunObservation>()?);
+                        }
+                        "cleanup_complete" => {
+                            if complete.is_some() { return Err(serde::de::Error::duplicate_field("cleanup_complete")); }
+                            complete = Some(map.next_value::<bool>()?);
+                        }
+                        "cleanup_pending" => {
+                            if pending.is_some() { return Err(serde::de::Error::duplicate_field("cleanup_pending")); }
+                            pending = Some(map.next_value::<Vec<CleanupPending>>()?);
+                        }
+                        _ => return Err(serde::de::Error::unknown_field(&key, &["run", "cleanup_complete", "cleanup_pending"])),
+                    }
+                }
+                let cleanup_complete = match (complete, pending) {
+                    (None, None) => None,
+                    (Some(complete), Some(pending)) => Some(RunCleanup { complete, pending }),
+                    (Some(_), None) => return Err(serde::de::Error::missing_field("cleanup_pending")),
+                    (None, Some(_)) => return Err(serde::de::Error::missing_field("cleanup_complete")),
+                };
+                Ok(RunGetData { run: run.ok_or_else(|| serde::de::Error::missing_field("run"))?, cleanup_complete })
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+impl JsonSchema for RunGetData {
+    fn schema_name() -> String { "RunGetData".into() }
+    fn json_schema(g: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        RunGetDataShape::json_schema(g)
+    }
+}
+
+impl OwnedCapacity for RunGetData {
+    fn owned_capacity(&self) -> usize {
+        self.run.owned_capacity().saturating_add(
+            self.cleanup_complete.as_ref().map_or(0, |cleanup| cleanup.pending.owned_capacity()),
+        )
+    }
+}
+
+impl super::ingress::CanonicalValue for RunGetData {
+    fn write_canonical(&self, sink: &mut impl super::ingress::Sink) -> Result<(), crate::host::admission::AllocationError> {
+        sink.bytes(b"{")?;
+        if let Some(cleanup) = &self.cleanup_complete {
+            sink.bytes(b"\"cleanup_complete\":")?;
+            cleanup.complete.write_canonical(sink)?;
+            sink.bytes(b",\"cleanup_pending\":")?;
+            cleanup.pending.write_canonical(sink)?;
+            sink.bytes(b",")?;
+        }
+        sink.bytes(b"\"run\":")?;
+        self.run.write_canonical(sink)?;
+        sink.bytes(b"}")
+    }
+}
+
+#[cfg(test)]
+impl super::ingress::TestFixture for RunGetData {
+    fn test_fixture() -> Self {
+        Self { run: <RunObservation as super::ingress::TestFixture>::test_fixture(), cleanup_complete: None }
+    }
+}
 object!(RunInterruptData {
     run_id: RunId,
     phase: AcceptedPhase

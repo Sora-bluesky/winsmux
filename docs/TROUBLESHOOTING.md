@@ -55,6 +55,14 @@ Use **導入状況を再確認** (Recheck installation) to refresh the detected 
 
 Use **現在の実行を中断** (Interrupt current run) and check whether termination of the target is observed. Sending an interruption or pressing the button alone is not proof of completion.
 
+### Waiting for cleanup after an AI exits
+
+When you start another AI in the same pane after Codex or Claude Code exits, the app may show **実行の終了を確認しました。後処理を待っています（あと…秒）。** (Exit confirmed; waiting for cleanup, with a countdown). It checks cleanup again every second, for up to 30 seconds from the first cleanup wait. **最後に確認した残り項目** (Last observed pending items) names what remains, such as child processes, terminal output draining or virtual terminal release. If **現在の状態は未確認です。** (Current state is unverified) appears, those items are from the last successful check.
+
+**後続の起動はまだ送信していません。** means that the next AI has not been launched. Once cleanup completes and the target is rechecked, the app sends that launch request. If **後処理の待機期限（30秒）を過ぎました。** appears, the wait has ended and **後続の起動は送信していません。** confirms that the next AI was not launched. A late cleanup completion does not automatically retry that launch.
+
+Use **状態を読み直す** and inspect the pending items and the processes belonging to that run. Save required work and exit any remaining child processes through their normal controls before trying the launch again. You can also create a new pane and start the AI there if the project has fewer than four panes. Do not delete saved layouts or stop unrelated processes to clear this message.
+
 ## CLI or MCP connection is refused
 
 Use **現在の接続情報をコピー** (Copy current connection information) in the GUI and explicitly pass the information for the current host. Do not reuse old connection information or grants after restarting the host.
@@ -83,8 +91,8 @@ Do not attach raw terminal transcripts, CLI arguments or environment variables, 
 
 Do not manually convert an older version's configuration into the v0.38.0 saved layout. Preserve ongoing work and configuration in the old version; select the folder and create a layout in the new UI. Retain the original distribution and configuration needed for recovery.
 
-If the Desktop or Start menu shortcut now opens v0.38.0 instead of the older version, the desktop installer replaced it and kept the old shortcut in `.winsmux-desktop\preserved` in the install folder. Start the older version from its executable. See [Existing winsmux shortcuts](installation.md#existing-winsmux-shortcuts).
+If the Desktop or Start menu shortcut now opens v0.38.0 instead of the older version, the desktop installer replaced it and kept the old shortcut in `.winsmux-desktop\preserved` in the install folder. See [Existing winsmux shortcuts](installation.md#existing-winsmux-shortcuts).
 
-If the installer or uninstaller stops with a message, follow the message and [If the installer stops](installation.md#if-the-installer-stops). When it says that recovery data is kept, run the program that showed it again. If you run the installer, choose the same install folder as the install or uninstall that stopped, because the install location page does not always show it. The program first completes or puts back the install or uninstall that stopped, then does the operation you started it for (install or uninstall). After an uninstall that stopped, running the installer leaves winsmux installed.
+If the installer or uninstaller stops with a message, follow the message and [If the installer stops](installation.md#if-the-installer-stops). When it says that recovery data is kept, run the program that showed it again. If you run the installer, check that the folder shown on the install location page is the same as the install or uninstall that stopped before proceeding. The program first completes or puts back the install or uninstall that stopped, then does the operation you started it for (install or uninstall). After an uninstall that stopped, running the installer leaves winsmux installed.
 
 Choose update or uninstall actions for the actual installation method and version. npm package maintenance and desktop app maintenance are separate. See [Installation](installation.md) and the release information for your version.

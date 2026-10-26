@@ -1,4 +1,4 @@
-import type { CapabilitiesData, ErrorCode, InstanceId, OperationName, PaneCloseParams, PaneListData, ProjectListData, Request, Response, RunObservation, U } from '../generated/workspace-contract';
+import type { CapabilitiesData, CleanupPending, ErrorCode, InstanceId, OperationName, PaneCloseParams, PaneListData, ProjectListData, Request, Response, RunObservation, U } from '../generated/workspace-contract';
 import type { ControlIntent, InspectionIntent, Settlement, ViewSnapshot } from './project-pane';
 
 /** The port owns raw-byte Rust validation and host lifetime. This layer additionally
@@ -113,12 +113,17 @@ function observation(v: unknown): v is RunObservation {
   if (v.evidence !== 'process_exit' || v.process !== 'exited') return false;
   return v.work === 'interrupted' || (v.work === 'unknown' && (v.exit_code === null || v.exit_code === 0)) || (v.work === 'succeeded' && v.exit_code === 0) || (v.work === 'failed' && v.exit_code !== null && v.exit_code !== 0);
 }
-export type RunRead = { run: RunObservation; cleanupComplete: boolean | null };
+const cleanupReasons: readonly CleanupPending[] = ['preparing', 'process_handle', 'job_processes', 'output_drain', 'reader', 'waiter', 'teardown', 'pty', 'job_termination', 'write_pending'];
+export type RunRead = { run: RunObservation; cleanupComplete: boolean | null; cleanupPending: readonly CleanupPending[] | null };
 /** Decode identity and exit evidence independently from successor authority. */
 export function runReadData(data: unknown, capturedRunId: string, includeCleanup: boolean): RunRead | null {
-  if (!object(data, includeCleanup ? ['run', 'cleanup_complete'] : ['run']) || !observation(data.run) || data.run.run_id !== capturedRunId) return null;
-  if (includeCleanup && (typeof data.cleanup_complete !== 'boolean' || (data.cleanup_complete && !(data.run.process === 'exited' && data.run.evidence === 'process_exit')))) return null;
-  return { run: data.run, cleanupComplete: includeCleanup ? data.cleanup_complete as boolean : null };
+  if (!object(data, includeCleanup ? ['run', 'cleanup_complete', 'cleanup_pending'] : ['run']) || !observation(data.run) || data.run.run_id !== capturedRunId) return null;
+  if (includeCleanup && (typeof data.cleanup_complete !== 'boolean'
+    || !unique(data.cleanup_pending, v => typeof v === 'string' && cleanupReasons.includes(v as CleanupPending))
+    || data.cleanup_complete !== (data.cleanup_pending.length === 0)
+    || (data.cleanup_complete && !(data.run.process === 'exited' && data.run.evidence === 'process_exit')))) return null;
+  return { run: data.run, cleanupComplete: includeCleanup ? data.cleanup_complete as boolean : null,
+    cleanupPending: includeCleanup ? [...data.cleanup_pending as CleanupPending[]] : null };
 }
 /** Both dispatched interrupt owners consume the same correlated predecessor facts.
  * History preserves exit evidence while permanently fencing continuation. */

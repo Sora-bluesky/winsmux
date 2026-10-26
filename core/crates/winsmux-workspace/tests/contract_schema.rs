@@ -1319,7 +1319,8 @@ fn positive_cases() -> Vec<Case> {
             name: format!("success_cleanup_run_get_{cleanup}_{current}"),
             kind: "response",
             request: Some(cleanup_request.clone()),
-            value: response("run.get", json!({"run":run,"cleanup_complete":cleanup})),
+            value: response("run.get", json!({"run":run,"cleanup_complete":cleanup,
+                "cleanup_pending":if cleanup { json!([]) } else { json!(CleanupPending::ALL) }})),
             expectation: Expectation::Accepted,
         });
     }
@@ -1798,7 +1799,10 @@ fn structural_expectation(c: &Case, path: &str, mutant: &Value) -> Expectation {
     let mut legacy = c.value.clone();
     let removed = legacy.pointer_mut(path)
         .and_then(Value::as_object_mut)
-        .and_then(|object| object.remove(field));
+        .and_then(|object| {
+            if field == "cleanup_complete" { object.remove("cleanup_pending"); }
+            object.remove(field)
+        });
     if removed.is_none() || mutant != &legacy {
         return Expectation::RejectedShape;
     }
@@ -1981,6 +1985,7 @@ seen_fields=set(); seen_null=set(); seen_enum=set()
 def collect(s,label,validator):
     if not isinstance(s,dict): return
     for field,p in s.get('properties',{}).items():
+        if p is False: continue # Forbidden keys have no positive fixture; closed-shape negatives cover them.
         name=label+'.'+field
         expected_fields.add(name)
         if field in s.get('required',[]) and validator.evolve(schema=p).is_valid(None): expected_null.add(name)
@@ -2656,6 +2661,71 @@ fn launch_guard_schema_and_strict_codec_agree() {
 }
 
 #[test]
+fn cleanup_pending_closed_reasons_and_completion_agree() {
+    let cleanup_request = parse_request(&bytes(&request(
+        "run.get", json!({"run_id":RUN,"include_cleanup":true}),
+    ))).unwrap();
+    let mut exited = observation();
+    exited["process"] = json!("exited");
+    exited["work"] = json!("succeeded");
+    exited["evidence"] = json!("process_exit");
+    exited["exit_code"] = json!(0);
+    let reasons = [
+        "preparing", "process_handle", "job_processes", "output_drain", "reader",
+        "waiter", "teardown", "pty", "job_termination", "write_pending",
+    ];
+    let mut samples = vec![(true, json!([]), true)];
+    samples.extend(reasons.map(|reason| (false, json!([reason]), true)));
+    samples.extend([
+        (true, json!(["reader"]), false),
+        (false, json!([]), false),
+        (false, json!(["unknown"]), false),
+        (false, json!(["reader", "reader"]), false),
+        (false, Value::Null, false),
+        (false, json!("reader"), false),
+        (false, json!([{"reader":true}]), false),
+    ]);
+    let mut cases = Vec::new();
+    for (complete, pending, valid) in samples {
+        let value = response("run.get", json!({
+            "run":exited,"cleanup_complete":complete,"cleanup_pending":pending,
+        }));
+        let parsed = parse_response(&cleanup_request, &bytes(&value));
+        assert_eq!(parsed.is_ok(), valid, "cleanup pair: {value}: {parsed:?}");
+        if let Ok(parsed) = parsed {
+            let encoded = serialize_response(&cleanup_request, &parsed).unwrap();
+            assert_eq!(parse_response(&cleanup_request, &encoded).unwrap(), parsed);
+            assert_eq!(serde_json::from_slice::<Value>(&encoded).unwrap(), value);
+        }
+        cases.push(json!({"name":format!("cleanup-pending-{}",cases.len()),"kind":"response","value":value,"valid":valid}));
+    }
+    for data in [
+        json!({"run":exited,"cleanup_complete":false}),
+        json!({"run":exited,"cleanup_pending":["reader"]}),
+        json!({"run":exited,"cleanup_complete":null,"cleanup_pending":[]}),
+        json!({"run":observation(),"cleanup_complete":true,"cleanup_pending":[]}),
+    ] {
+        let value = response("run.get", data);
+        assert!(parse_response(&cleanup_request, &bytes(&value)).is_err(), "{value}");
+        cases.push(json!({"name":format!("cleanup-pending-invalid-{}",cases.len()),"kind":"response","value":value,"valid":false}));
+    }
+    let valid = response("run.get", json!({"run":exited,"cleanup_complete":false,"cleanup_pending":["reader"]}));
+    let duplicate = String::from_utf8(bytes(&valid)).unwrap().replace(
+        "\"cleanup_pending\":[\"reader\"]", "\"cleanup_pending\":[\"reader\"],\"cleanup_pending\":[\"pty\"]",
+    );
+    assert!(parse_response(&cleanup_request, duplicate.as_bytes()).is_err());
+    let legacy_request = parse_request(&bytes(&request("run.get",json!({"run_id":RUN})))).unwrap();
+    assert!(parse_response(&legacy_request, &bytes(&valid)).is_err());
+    let legacy = response("run.get", json!({"run":exited}));
+    let parsed = parse_response(&legacy_request, &bytes(&legacy)).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&serialize_response(&legacy_request, &parsed).unwrap()).unwrap(), legacy);
+    assert!(parse_response(&cleanup_request, &bytes(&legacy)).is_err());
+    let result = python(SCHEMA_CHECK, &json!({"schemas":projection::schemas(),"cases":cases}));
+    assert_eq!(result["checked"], cases.len());
+    assert_eq!(result["failures"], json!([]), "{result}");
+}
+
+#[test]
 fn cleanup_read_closed_shapes_and_response_correlation() {
     let mut cases = Vec::new();
     for params in [json!({"run_id":RUN}), json!({"include_cleanup":true,"run_id":RUN})] {
@@ -2671,7 +2741,10 @@ fn cleanup_read_closed_shapes_and_response_correlation() {
                 run["work"] = json!("succeeded"); run["exit_code"] = json!(0);
             }
             let mut data = json!({"run":run});
-            if let Some(value) = cleanup { data["cleanup_complete"] = json!(value); }
+            if let Some(value) = cleanup {
+                data["cleanup_complete"] = json!(value);
+                data["cleanup_pending"] = if value { json!([]) } else { json!(["process_handle"]) };
+            }
             let value = response("run.get", data);
             let matches = wire["params"].get("include_cleanup").is_some() == cleanup.is_some();
             assert_eq!(parse_response(&typed, &bytes(&value)).is_ok(), matches, "shape correlation: {value}");
@@ -2685,14 +2758,14 @@ fn cleanup_read_closed_shapes_and_response_correlation() {
     }
     let new = parse_request(&bytes(&request("run.get",json!({"run_id":RUN,"include_cleanup":true})))).unwrap();
     for flag in [Value::Null,json!(0),json!("true"),json!([]),json!({}),json!(true)] {
-        let value = response("run.get",json!({"run":observation(),"cleanup_complete":flag}));
+        let value = response("run.get",json!({"run":observation(),"cleanup_complete":flag,"cleanup_pending":["process_handle"]}));
         assert!(parse_response(&new,&bytes(&value)).is_err());
         cases.push(json!({"name":format!("cleanup-invalid-response-{}",cases.len()),"kind":"response","value":value,"valid":false}));
     }
     let good = request("run.get",json!({"run_id":RUN,"include_cleanup":true}));
     let raw = String::from_utf8(bytes(&good)).unwrap().replace("\"include_cleanup\":true", "\"include_cleanup\":true,\"include_cleanup\":true");
     assert!(parse_request(raw.as_bytes()).is_err());
-    let good = response("run.get",json!({"run":observation(),"cleanup_complete":false}));
+    let good = response("run.get",json!({"run":observation(),"cleanup_complete":false,"cleanup_pending":["process_handle"]}));
     let raw = String::from_utf8(bytes(&good)).unwrap().replace("\"cleanup_complete\":false", "\"cleanup_complete\":false,\"cleanup_complete\":false");
     assert!(parse_response(&new,raw.as_bytes()).is_err());
     let mut foreign = good.clone(); foreign["result"]["data"]["run"]["run_id"] = json!(OTHER);

@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { resolve, dirname } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 
@@ -12,7 +12,7 @@ const evidence = resolve(arg('--evidence-dir', resolve(app, '../.evidence/TASK-8
 const baselinePath = arg('--baseline', null);
 const require = createRequire(resolve(dependencies, 'package.json'));
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const paths = ['src/workspace-ui/agent-commands.ts', 'scripts/workspace-agent-commands-check.mjs', 'src/workspace-ui/project-pane-controller.ts', 'src/generated/workspace-contract.ts'];
+const paths = ['src/workspace-ui/agent-commands.ts', 'scripts/workspace-agent-commands-check.mjs', 'src/workspace-ui/project-pane-controller.ts', 'src/generated/workspace-contract.ts', 'src/workspace-ui/agent-controls.ts'];
 const identity = () => paths.map(path => { const bytes = readFileSync(resolve(app, path)); return { path, bytes: bytes.length, sha256: hash(bytes) }; });
 const before = identity();
 const baseline = baselinePath ? JSON.parse(readFileSync(baselinePath, 'utf8')) : null;
@@ -42,12 +42,14 @@ try {
     check('real index before execution', protectedBefore.index_sha256, baseline.index_sha256);
     check('confirmed user layout before execution', protectedBefore.confirmed_layout_sha256, baseline.confirmed_layout_sha256);
   }
-  compile = spawnSync(process.execPath, [require.resolve('typescript/bin/tsc'), '--noEmit', '--target', 'ES2020', '--module', 'ESNext', '--lib', 'ES2020,DOM,DOM.Iterable', '--moduleResolution', 'bundler', '--strict', '--noUnusedLocals', '--noUnusedParameters', '--noFallthroughCasesInSwitch', '--isolatedModules', resolve(app, paths[0])], { encoding: 'utf8' });
+  const compiled = resolve(evidence, 'compiled');
+  // Use the same strict compiler for the executed artifact. Native bundlers walk
+  // unrelated parent directories, which are not readable in isolated Windows runs.
+  compile = spawnSync(process.execPath, [require.resolve('typescript/bin/tsc'), '--outDir', compiled, '--target', 'ES2020', '--module', 'CommonJS', '--lib', 'ES2020,DOM,DOM.Iterable', '--moduleResolution', 'node', '--strict', '--noUnusedLocals', '--noUnusedParameters', '--noFallthroughCasesInSwitch', '--isolatedModules', resolve(app, paths[0]), resolve(app, paths[4])], { encoding: 'utf8' });
   writeFileSync(resolve(evidence, 'typescript.txt'), compile.stdout + compile.stderr, 'utf8');
   check('strict TypeScript', compile.status, 0);
-  const { build } = require('esbuild');
-  await build({ entryPoints: [resolve(app, paths[0])], outfile: resolve(evidence, 'agent-commands.mjs'), bundle: true, format: 'esm', platform: 'node', target: 'es2020', logLevel: 'silent' });
-  const { createAgentCommandSession } = await import(pathToFileURL(resolve(evidence, 'agent-commands.mjs')).href);
+  writeFileSync(resolve(compiled, 'package.json'), '{"type":"commonjs"}\n', 'utf8');
+  const { createAgentCommandSession } = require(resolve(compiled, 'workspace-ui/agent-commands.js'));
   const I = '11111111-1111-4111-8111-111111111111';
   const P = '22222222-2222-4222-8222-222222222222';
   const Q = '33333333-3333-4333-8333-333333333333';
@@ -63,7 +65,7 @@ try {
     let ordinal = 0;
     const nextId = () => `77777777-7777-4777-8777-${(++ordinal).toString(16).padStart(12, '0')}`;
     const observation = () => ({ run_id: R, pane_id: Q, current: state.current, process: state.process, evidence: state.evidenceKind, work: state.work, exit_code: state.exitCode, observed_at: '2026-09-28T00:00:00Z' });
-    const state = { runId, process, evidenceKind, work, exitCode, cleanupComplete, current: true, project: P, pane: Q, root: 'verified', cwd, version: '1.2.3', providers: null, seq: 5, revision: 9, responseEdit: null, dataEdit: null, error: null, record: 'completed', recordOutcome: 'succeeded', recordError: null, hold: null, held: [] };
+    const state = { runId, process, evidenceKind, work, exitCode, cleanupComplete, cleanupPending: null, current: true, project: P, pane: Q, root: 'verified', cwd, version: '1.2.3', providers: null, seq: 5, revision: 9, responseEdit: null, dataEdit: null, error: null, record: 'completed', recordOutcome: 'succeeded', recordError: null, hold: null, held: [] };
     const ok = (req, data) => ({ schema_version: 1, instance_id: I, operation_id: req.operation_id, accepted: true, topology_revision: state.revision, event_seq: state.seq, result: { operation: req.operation, data }, error: null });
     const errors = {
       permission_denied: [false, 'Permission denied.'], unsupported_capability: [false, 'Capability is unavailable.'],
@@ -77,7 +79,11 @@ try {
         case 'capabilities.get': data = { schema_version: 1, max_message_bytes: 1048576, replay_capacity: { retained_bytes: 1048576, active_bytes: 1048576 }, operations: ['agent.launch', 'run.interrupt'], providers: state.providers ?? [{ provider: 'codex', version: state.version }, { provider: 'claude', version: state.version }], shell_profile_ids: ['powershell'] }; break;
         case 'project.list': data = { selected_project_id: state.project, projects: [{ project_id: P, path: state.cwd, root_state: state.root, display_name: '日本語' }] }; break;
         case 'pane.list': data = { project_id: P, selected_pane_id: state.pane, root: { kind: 'leaf', pane_id: Q }, panes: [{ pane_id: Q, project_id: P, current_run_id: state.runId, observation: state.runId ? observation() : null, path: cwd, display_name: '端末' }] }; break;
-        case 'run.get': data = { run: observation(), ...(req.params.include_cleanup === true ? { cleanup_complete: state.cleanupComplete ?? (state.process === 'exited' && state.evidenceKind === 'process_exit') } : {}) }; break;
+        case 'run.get': {
+          const complete = state.cleanupComplete ?? (state.process === 'exited' && state.evidenceKind === 'process_exit');
+          data = { run: observation(), ...(req.params.include_cleanup === true ? { cleanup_complete: complete,
+            cleanup_pending: state.cleanupPending ?? (complete ? [] : ['pty', 'teardown']) } : {}) }; break;
+        }
         case 'run.interrupt': data = { run_id: R, phase: 'accepted' }; break;
         case 'agent.launch': data = { pane_id: Q, run_id: N, phase: 'accepted' }; break;
         case 'operation.get': data = { operation: { operation_id: req.params.operation_id, phase: state.record, outcome: state.record === 'completed' ? state.recordOutcome : null, error_code: state.record === 'completed' ? state.recordError : null } }; break;
@@ -99,13 +105,31 @@ try {
       if (state.hold === `reject:${req.operation}`) return Promise.reject(new Error('transport failed'));
       return Promise.resolve(response(req));
     } };
-    const session = createAgentCommandSession({ instanceId: I, generation: 'g1', ownerKey, port, operationId: nextId });
+    let now = 0;
+    let timerId = 0;
+    const timers = new Map();
+    const session = createAgentCommandSession({ instanceId: I, generation: 'g1', ownerKey, port, operationId: nextId,
+      now: () => now,
+      schedule: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, at: now + delay }); return id; },
+      cancel: id => timers.delete(id),
+    });
     let notices = [];
     const notify = n => { notices.push(clone(n)); trace.notices.push(clone(n)); };
     let lease = session.bind(P, Q, notify);
     const intent = () => ({ instanceId: I, generation: 'g1', projectId: P, paneId: Q, runId, kind, ...(kind === 'launch-agent' ? { provider, detectedVersion: '1.2.3', cwd, model: ' model 日本語 ', effort: ' high ', interruptFirst } : {}) });
     const mutations = () => trace.requests.filter(r => ['agent.launch', 'run.interrupt'].includes(r.operation));
     return { state, trace, session, intent, mutations, notices: () => notices, nextId,
+      async advance(ms) {
+        const end = now + ms;
+        for (;;) {
+          const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+          if (!next) break;
+          now = Math.max(now, next[1].at); timers.delete(next[0]); next[1].callback(); await flush();
+        }
+        now = end; await flush();
+      },
+      timerCount: () => timers.size,
+      jump(ms) { now += ms; },
       submit(i = intent()) { return lease.submit(i, nextId()); },
       release() { const held = state.held.shift(); if (!held) throw new Error('missing held request'); held.resolve(response(held.req)); },
       bind(pane = Q) { lease = session.bind(P, pane, notify); return lease; },
@@ -117,6 +141,110 @@ try {
     const launched = f.mutations().find(r => r.operation === 'agent.launch');
     check('launch explicit nullable guard and unchanged parameters', launched.params, { pane_id: Q, provider: f.trace.provider, model: ' model 日本語 ', effort: ' high ', expected_current_run_id: expectedRun });
     check('all requests fixed schema/instance/revision and unique IDs', f.trace.requests.every(r => r.schema_version === 1 && r.instance_id === I && r.expected_topology_revision === null) && new Set(f.trace.requests.map(r => r.operation_id)).size === f.trace.requests.length);
+  }
+  {
+    // Text projection only: no native window, browser, provider or user profile.
+    const elements = [];
+    const doc = { defaultView: { crypto: globalThis.crypto }, createElement(tag) {
+      const element = { tag, ownerDocument: doc, dataset: {}, attributes: {}, children: [], value: '', textContent: '', open: false,
+        append(...children) { this.children.push(...children); }, setAttribute(key, value) { this.attributes[key] = value; },
+        showModal() { this.open = true; }, close() { this.open = false; }, focus() {}, remove() {},
+      }; elements.push(element); return element;
+    } };
+    const { createAgentControls } = require(resolve(compiled, 'workspace-ui/agent-controls.js'));
+    let submission;
+    const view = createAgentControls(doc.createElement('div'), {
+      instanceId: I, generation: 'g1', observationRevision: 1, availability: 'available', busy: false,
+      project: { project_id: P, root_state: 'verified', path: cwd, display_name: '作業' },
+      pane: { pane_id: Q, project_id: P, current_run_id: null, observation: null, path: cwd, display_name: '端末' },
+      capabilities: { state: 'known', providers: [{ provider: 'claude', version: '1.2.3' }] },
+    }, { submit(intent, ticket) { submission = { intent, ticket }; }, inspect() {}, restoreFocus() {} });
+    const select = elements.find(e => e.tag === 'select'); select.value = 'claude'; select.onchange();
+    elements.find(e => e.dataset.action === 'launch').onclick();
+    elements.find(e => e.dataset.action === 'confirm-launch').onclick();
+    const admission = elements.find(e => e.dataset.field === 'admission');
+    const message = '後処理を待っています（あと30秒）。最後に確認した残り項目: 仮想端末の解放。';
+    view.settle(submission.ticket, submission.intent, 'awaiting', message);
+    check('view displays cleanup details during the existing awaiting phase', admission.textContent.includes(message));
+    const updated = message.replace('30秒', '29秒').replace('仮想端末の解放', '入力書込の完了');
+    view.settle(submission.ticket, submission.intent, 'awaiting', updated);
+    check('same-phase cleanup progress updates the visible status', admission.textContent.includes(updated));
+    check('identical status projection stays inert', view.settle(submission.ticket, submission.intent, 'awaiting', updated), false);
+    view.settle(submission.ticket, submission.intent, 'refused', '待機期限を過ぎました。後続の起動は送信していません。');
+    check('view keeps the timeout explanation after release', admission.textContent.includes('後続の起動は送信していません'));
+    view.dispose();
+  }
+  for (const provider of ['codex', 'claude']) {
+    const f = fixture({ provider, runId: R, process: 'exited', evidenceKind: 'process_exit', cleanupComplete: false });
+    f.submit(); await flush();
+    check('cleanup wait starts without sending a successor', [f.session.getState().busy, f.mutations().length], [true, 0]);
+    check('cleanup notice names the remaining work and the deadline', f.notices().some(n => n.kind === 'settlement' && n.result.message.includes('30秒') && n.result.message.includes('仮想端末の解放') && n.result.message.includes('後処理の完了')));
+    await f.advance(30_000);
+    check('cleanup deadline settles even without an event', [f.session.getState().busy, f.session.getState().last?.phase, f.mutations().length], [false, 'refused', 0]);
+    f.state.cleanupComplete = true; await f.session.observe(); await f.advance(30_000);
+    check('cleanup after the deadline cannot launch', f.mutations().length, 0);
+    check('deadline releases every scheduled callback', f.timerCount(), 0);
+    check('deadline explains the unsent successor and last observed work', f.session.getState().last.message.includes('最後に確認した残り項目') && f.session.getState().last.message.includes('後続の起動は送信していません'));
+  }
+  for (const ended of [false, true]) {
+    const waiting = () => fixture({ runId: R, process: ended ? 'exited' : 'running', evidenceKind: ended ? 'process_exit' : 'unavailable', cleanupComplete: false });
+    const enterWait = async f => {
+      f.submit(); await flush();
+      f.state.process = 'exited'; f.state.evidenceKind = 'process_exit'; await f.session.observe(); await flush();
+    };
+    const normal = waiting(); await enterWait(normal);
+    normal.state.cleanupComplete = true;
+    await normal.advance(1_000);
+    check(`no-event cleanup read launches exactly once/ended=${ended}`, [normal.mutations().filter(r => r.operation === 'agent.launch').length, normal.session.getState().busy, normal.timerCount()], [1, false, 0]);
+    assertGuard(normal, R);
+
+    const blocked = waiting(); await enterWait(blocked);
+    blocked.state.hold = 'run.get'; const oldRead = blocked.session.observe(); await flush();
+    await blocked.advance(30_000);
+    check(`held read does not postpone the deadline/ended=${ended}`, [blocked.session.getState().busy, blocked.session.getState().last.phase, blocked.state.held.length], [false, 'refused', 1]);
+    check('unanswered read is displayed as unconfirmed', blocked.session.getState().last.message.includes('現在の状態は未確認'));
+    blocked.state.hold = null; blocked.state.process = 'running'; blocked.state.evidenceKind = 'unavailable';
+    check('new command is admitted while old read is unresolved', blocked.submit()); await flush();
+    blocked.state.process = 'exited'; blocked.state.evidenceKind = 'process_exit'; blocked.state.cleanupComplete = true;
+    await blocked.session.observe(); await flush();
+    check('new command can acquire the read gate and complete', [blocked.session.getState().busy, blocked.mutations().filter(r => r.operation === 'agent.launch').length], [false, 1]);
+    const settled = blocked.session.getState(); blocked.release(); await oldRead; await flush();
+    check('old cleanup response cannot change the new command', blocked.session.getState(), settled);
+
+    for (const hold of ['run.get', 'pane.list']) {
+      const edge = waiting(); await enterWait(edge); await edge.advance(29_000);
+      edge.state.cleanupComplete = true;
+      if (hold === 'run.get') edge.state.hold = hold;
+      else edge.state.dataEdit = (req, data) => { if (req.operation === 'run.get') edge.state.hold = hold; return data; };
+      const reading = edge.session.observe(); await flush();
+      check(`deadline boundary holds ${hold}/ended=${ended}`, edge.state.held.length, 1);
+      edge.jump(1_000); // No timer task: Promise continuations run first.
+      edge.state.hold = null; edge.state.dataEdit = null; edge.release(); await reading; await flush();
+      check(`dispatch checks the deadline before the timer task/${hold}/ended=${ended}`,
+        [edge.mutations().filter(r => r.operation === 'agent.launch').length, edge.session.getState().busy, edge.session.getState().last.phase], [0, false, 'refused']);
+      check('boundary settlement cancels both timers', edge.timerCount(), 0);
+    }
+    const progress = waiting(); await enterWait(progress);
+    progress.state.cleanupPending = ['output_drain']; await progress.advance(10_000);
+    progress.state.cleanupPending = ['write_pending']; await progress.advance(19_999);
+    check('changed cleanup work does not release early', progress.session.getState().busy);
+    await progress.advance(1);
+    check('progress never extends the original deadline', [progress.session.getState().busy, progress.session.getState().last.message.includes('入力書込の完了')], [false, true]);
+  }
+  for (const pending of [undefined, null, {}, ['unknown'], ['pty', 'pty'], [], ['pty', 1]]) {
+    const malformed = fixture({ runId: R, process: 'exited', evidenceKind: 'process_exit', cleanupComplete: false });
+    malformed.state.dataEdit = (req, data) => {
+      if (req.operation === 'run.get') { if (pending === undefined) delete data.cleanup_pending; else data.cleanup_pending = pending; }
+      return data;
+    };
+    malformed.submit(); await flush();
+    check('invalid pending reasons cannot authorize or retain a preflight', [malformed.mutations().length, malformed.session.getState().busy], [0, false]);
+  }
+  {
+    const unknown = fixture(); unknown.state.hold = 'agent.launch'; unknown.submit(); await flush();
+    await unknown.advance(60_000);
+    check('cleanup deadline never clears an unresolved mutation', [unknown.session.getState().busy, unknown.mutations().length, unknown.timerCount()], [true, 1, 0]);
+    unknown.session.retireHost(); unknown.release(); await flush();
   }
   // Normal delayed exit is a different entry point from explicit lost-response
   // recovery. Preserve the recovery tests below and prove the whole event family.
@@ -560,7 +688,7 @@ try {
     check(`inconsistent preflight ${field} blocks mutation`, f.mutations().length, 0);
   }
   // The successor needs cleanup as well as actual exit. These are separate
-  // observations; only an externally delivered observation drives the owner.
+  // observations; events and the bounded cleanup timer drive the same owner.
   for (const provider of ['codex', 'claude']) {
     for (const process of ['starting', 'running', 'exited']) {
       const ended = process === 'exited';
@@ -607,6 +735,7 @@ try {
         if (cancel === 'disconnect') f.session.setConnected(false);
         if (cancel === 'retire_host') f.session.retireHost();
         check(`${provider}/${cancel}/held=${held} cancels unsent cleanup immediately`, [f.session.getState().busy, f.mutations().length], [false, 0]);
+        check('cancellation releases both cleanup timers', f.timerCount(), 0);
         if (cancel !== 'retire_host') check('unsent preparation cancellation is explicit', f.session.getState().last.disposition, 'unsent_cancelled');
         f.state.cleanupComplete = true;
         if (held) { f.state.hold = null; f.release(); await reading; }
