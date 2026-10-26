@@ -1,4 +1,4 @@
-# bump-version.ps1 — Sync version across all winsmux files from VERSION (Single Source of Truth)
+﻿# bump-version.ps1 — Sync version across all winsmux files from VERSION (Single Source of Truth)
 # Usage:
 #   pwsh scripts/bump-version.ps1                            # Sync all files to VERSION file value
 #   pwsh scripts/bump-version.ps1 -Version 0.9.0             # Bump + commit + tag + push + GitHub Release (DEFAULT)
@@ -233,16 +233,6 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
-        Path    = Join-Path $Root "core\Cargo.lock"
-        Pattern = '(?ms)(name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
-        Path    = Join-Path $Root "core\Cargo.lock"
-        Pattern = '(?ms)(name\s*=\s*"winsmux-remote-helper"\s*\r?\nversion\s*=\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
         Path    = Join-Path $Root "Cargo.lock"
         Pattern = '(?ms)(name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
@@ -389,7 +379,6 @@ try {
         "Cargo.toml",
         "Cargo.lock",
         "core/Cargo.toml",
-        "core/Cargo.lock",
         "core/crates/winsmux-remote-helper/Cargo.toml",
         "winsmux-app/package.json",
         "winsmux-app/package-lock.json",

@@ -47,7 +47,6 @@ $whitelistPatterns = @(
     'Cargo.lock',
     'install.ps1',
     'core/Cargo.toml',
-    'core/Cargo.lock',
     'core/docs/workflow-gate-examples.md',
     'core/src/*.rs',
     'core/src/bin/*.rs',
