@@ -45,12 +45,13 @@ try {
    mounted.append(mounted.readTarget(),{run_id:uid(5),text:marker,next_cursor:'1',gap:false,truncated:false});
    globalThis.workspaceTerminalModeFixture={host,mounted,out,marker,dispose(){mounted.dispose();host.remove();}};
   });
-  await page.waitForFunction(()=>{const f=globalThis.workspaceTerminalModeFixture;return f.host.querySelector('.xterm-rows')?.textContent?.includes(f.marker);});
-  const modeChecks=await page.evaluate(forcedColors=>{
+  const modeChecksHandle=await page.waitForFunction(forcedColors=>{
    const f=globalThis.workspaceTerminalModeFixture;
    const passed=[],check=(name,value,detail)=>{if(!value)throw Error(name+' '+JSON.stringify(detail));passed.push(name+' '+forcedColors);};
-   const rows=f.host.querySelector('.xterm-rows'),row=[...rows.children].find(node=>node.textContent.includes(f.marker));
-   const span=[...row.querySelectorAll('span')].find(node=>node.textContent.includes(f.marker)),style=getComputedStyle(span),rect=span.getBoundingClientRect();
+   const rows=f.host.querySelector('.xterm-rows'),row=rows&&[...rows.children].find(node=>node.textContent.includes(f.marker));
+   const span=row&&[...row.querySelectorAll('span')].find(node=>node.textContent.includes(f.marker));
+   if(!span)return false;
+   const style=getComputedStyle(span),rect=span.getBoundingClientRect();
    check('production terminal has no screen reader layer',!f.host.querySelector('.xterm-accessibility, .xterm-accessibility-tree'));
    check('production terminal renders the written text',rows.textContent.includes(f.marker)&&rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility==='visible'&&style.opacity!=='0',{text:row.textContent,width:rect.width,height:rect.height});
    check('production terminal uses the requested color mode',matchMedia('(forced-colors: active)').matches===(forcedColors==='active'));
@@ -58,6 +59,7 @@ try {
    check('production terminal restores keyboard focus',f.mounted.focus()&&document.activeElement===f.host.querySelector('textarea'));
    return passed;
   },forcedColors);
+  const modeChecks=await modeChecksHandle.jsonValue();await modeChecksHandle.dispose();
   checks.push(...modeChecks);
   for(const key of ['a','Shift+KeyA','ArrowLeft','Enter','Control+c'])await page.keyboard.press(key);
   const inputChecks=await page.evaluate(forcedColors=>{
