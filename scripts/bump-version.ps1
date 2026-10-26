@@ -273,16 +273,6 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
-        Path    = Join-Path $Root "winsmux-core\package.json"
-        Pattern = '("version"\s*:\s*")[^"]*(")'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
-        Path    = Join-Path $Root "winsmux-core\mcp-server.js"
-        Pattern = '(const SERVER_VERSION\s*=\s*")[^"]*(";)'
-        Replace = "`${1}$Version`${2}"
-    },
-    @{
         Path    = Join-Path $Root ".github\workflows\desktop-candidate-cdp-gate.yml"
         Pattern = '(?m)^([ \t]+default:[ \t]+)(v?)\d+\.\d+\.\d+([ \t]*\r?)$'
         Replace = "`${1}`${2}$Version`${3}"
@@ -405,8 +395,6 @@ try {
         "winsmux-app/package-lock.json",
         "winsmux-app/src-tauri/Cargo.toml",
         "winsmux-app/src-tauri/tauri.conf.json",
-        "winsmux-core/package.json",
-        "winsmux-core/mcp-server.js",
         ".github/workflows/desktop-candidate-cdp-gate.yml",
         ".github/workflows/public-smoke-recovery.yml",
         "skills/winsmux/SKILL.md",

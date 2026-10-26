@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 Describe 'Desktop companion signature boundary' {
@@ -1699,17 +1699,6 @@ switch (`$args[0]) {
 
         (Get-Content -LiteralPath $gitArgsLog -Raw -Encoding UTF8) | Should -Match 'v0\.36\.10\.\.HEAD'
         (Get-Content -LiteralPath $generatedBody -Raw -Encoding UTF8) | Should -Match 'v0\.36\.10\.\.\.v0\.36\.15'
-    }
-
-    It 'keeps tracked package metadata aligned with the public product surface' {
-        $mcpPackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
-        $mcpServer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\mcp-server.js') -Raw -Encoding UTF8
-
-        $mcpPackage.name | Should -Be 'winsmux-mcp'
-        $mcpPackage.version | Should -Be $script:ProductVersion
-        $mcpPackage.private | Should -BeTrue
-        $mcpPackage.license | Should -Be 'Apache-2.0'
-        $mcpServer | Should -Match ('const SERVER_VERSION = "{0}";' -f [regex]::Escape($script:ProductVersion))
     }
 
     It 'documents the public license split for runtime compatibility notices' {
