@@ -131,8 +131,11 @@ test('transport extraction reaches the actual candidate PowerShell here-string w
   assert.ok(extracted.includes("'native_transport_caller_refused'"));
   assert.ok(extracted.includes("'native_transport_source_or_copy_changed'"));
   assert.ok(extracted.includes("schema:'winsmux-desktop-native-transport-check/v1'"));
-  assert.throws(()=>extractTransportModule(actual.replace(opening,()=>opening.replace("@'",()=>"$'"))));
-  assert.throws(()=>extractTransportModule(actual+'\n'+opening+expected+closing));
+  for (const source of [normalized, normalized.replaceAll('\n','\r\n')]) {
+    const lf=source.replaceAll('\r\n','\n');
+    assert.throws(()=>extractTransportModule(lf.replace(opening,()=>opening.replace("@'",()=>"$'"))));
+    assert.throws(()=>extractTransportModule(lf+'\n'+opening+expected+closing));
+  }
 });
 
 

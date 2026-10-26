@@ -439,7 +439,7 @@ try {
   // Exact old predicate preimage from b2f1465a; it rejects this legal completed state.
   const oldInventory = " const roles=[['gui','winsmux-app.exe','pe_gui_original'],['cli','winsmux.exe','pe_cli'],['mcp','winsmux-workspace-mcp.exe','pe_mcp']];if(flavor==='msi')roles.push(['app_lib','winsmux_app_lib.dll','pe_app_lib']);\n const expected=[...licenseRows,...roles.map(([role,name,sourceRole])=>({role,path:name,bytes:sources.get(sourceRole).length,sha256:role==='gui'?record.gui_sha256:digest(sources.get(sourceRole))}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);\n need(JSON.stringify(plan.files)===JSON.stringify(expected),'native_transport_plan_inventory_changed');";
   assert.equal(digest(Buffer.from(oldInventory)), '354e677058df4331689da23b6cb46ac2e0a698d4387b3331a8298abd748d9d10');
-  const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8'), transportLines=transportSource.split('\n');
+  const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8').replaceAll('\r\n','\n'), transportLines=transportSource.split('\n');
   const rowStart=transportLines.findIndex(line=>line.startsWith(" const roles=[['gui'"));
   assert.ok(rowStart>=0);
   const currentInventory=transportLines.slice(rowStart,rowStart+3).join('\n');
