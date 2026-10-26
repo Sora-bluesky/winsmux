@@ -11,6 +11,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($Version -eq '0.38.0' -and -not $SyncOnly) {
+    throw 'v0.38.0 releases require the integrated publication workflow. Use -SyncOnly to synchronize versions.'
+}
+
 $Root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $Root "winsmux-core\scripts\planning-paths.ps1")
 $VersionFile = Join-Path $Root "VERSION"

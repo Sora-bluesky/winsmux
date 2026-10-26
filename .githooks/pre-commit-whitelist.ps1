@@ -11,6 +11,7 @@ Set-Location -LiteralPath $repoRoot
 
 # Keep routine public maintenance paths explicit so non-interactive commits fail closed.
 $whitelistPatterns = @(
+    'tests/BumpVersionReleaseBoundary.Tests.ps1',
     'scripts/desktop-native-nsis-observer.mjs',
     'tests/workspace-package/nsis-observer.test.mjs',
     'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt',

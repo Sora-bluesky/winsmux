@@ -165,6 +165,7 @@ tests/bridge/_helpers/*
 !tests/HarnessContract.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
+!tests/BumpVersionReleaseBoundary.Tests.ps1
 !tests/DesktopInstallReceipt.Tests.ps1
 !tests/V03618ReleaseHardening.Tests.ps1
 !tests/CliBakeoff.Tests.ps1
