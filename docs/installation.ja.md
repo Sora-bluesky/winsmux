@@ -156,6 +156,7 @@ Windowsの設定またはデスクトップの配布形式に対応した削除�
 - インストール先のフォルダーと、その中にあるインストーラーが作っていないファイルやフォルダー
 - インストール先の `licenses` フォルダー（中の `sources` と `texts` は空）
 - インストール先の `.winsmux-desktop\pending.json`。アンインストールの記録で、次に同じフォルダーへインストールするときに読み込まれます。
+- インストール先の空のフォルダー `.winsmux-desktop\ops` と `.winsmux-desktop\preserved`
 - 右クリックメニューのキー `HKCU\Software\Classes\Directory\shell\winsmux` と `HKCU\Software\Classes\Directory\Background\shell\winsmux`、それぞれの `command` サブキー（どれも値はありません）
 - 製品の状態のキー `HKCU\Software\github\winsmux`（値はありません）と、それを含む `HKCU\Software\github`
 - アンインストールの登録のキー `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\winsmux`（値はありません）
