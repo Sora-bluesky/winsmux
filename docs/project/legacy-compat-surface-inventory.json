@@ -133,15 +133,12 @@
       ]
     },
     {
-      "class": "removal-candidate",
-      "owner": "legacy Pester reference cleanup",
-      "surface": "legacy upstream compatibility tests and diagnostics",
-      "reason": "TASK-407 keeps these as migration or reference material; they should not silently remain as active release blockers after replacement coverage exists.",
-      "target": "migrate, archive, or delete according to TASK-407 before v1.0.0",
-      "globs": [
-        "core/tests/*.ps1",
-        "core/tests/*.py",
-        "core/tests/*.sh",
+      "class": "intentional-shim",
+      "owner": "runtime coverage migration",
+      "surface": "retired script inventory and active Rust replacement selectors",
+      "reason": "The old standalone script entrypoints have been removed. Historical names explain the migration while the listed Rust tests retain supported command and runtime compatibility.",
+      "target": "keep the migration record and verify its active replacement tests",
+      "paths": [
         "docs/project/pester-suite-inventory.json"
       ]
     },
