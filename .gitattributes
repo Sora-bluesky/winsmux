@@ -19,7 +19,6 @@ tests/*.ps1 linguist-detectable=false
 winsmux-core/*.ps1 linguist-detectable=false
 winsmux-core/scripts/*.ps1 linguist-detectable=false
 core/scripts/*.ps1 linguist-detectable=false
-core/tests/*.ps1 linguist-detectable=false
 core/crates/winsmux-workspace/schema/request.schema.json text eol=lf
 core/crates/winsmux-workspace/schema/response.schema.json text eol=lf
 core/crates/winsmux-workspace/schema/snapshot.schema.json text eol=lf
