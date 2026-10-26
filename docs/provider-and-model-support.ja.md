@@ -280,7 +280,8 @@ run 証跡にモデル名とランタイム情報が出てくる場合、winsmux
 レビュー結果、変更ファイル、再現性、オペレーターの判断履歴をもとに行います。
 
 Claude Code、Codex、Antigravity CLI の worker 比較では、
-[CLI comparison bakeoff](cli-comparison-bakeoff.md) の task pack と preflight gate を使います。
+ローカルの task pack を `scripts/test-cli-bakeoff-preflight.ps1 -PackPath <pack>` に明示指定します。
+採点の条件は [比較証拠の契約](operator-model.md#2b-run-context-and-recovery-contracts) を参照してください。
 公開可能なデスクトップ録画証跡がない run は運用証跡として残しますが、
 既定の worker 割り当てを変える根拠にはしません。
 

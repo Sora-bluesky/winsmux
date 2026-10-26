@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$PackPath = 'tasks/cli-bakeoff/v1/benchmark-pack.json',
+    [string]$PackPath = '',
+    [string]$CreateSyntheticFixture = '',
     [string]$TaskRoot = '',
     [string]$RunDir = '',
     [switch]$RequireCandidateIdentity,
@@ -16,6 +17,84 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# Public gates exercise the comparison contract with generated, neutral inputs.
+# Real comparisons must supply their own local pack with -PackPath.
+if (-not [string]::IsNullOrWhiteSpace($CreateSyntheticFixture)) {
+    if (Test-Path -LiteralPath $CreateSyntheticFixture) {
+        throw 'Synthetic fixture destination must be a new directory.'
+    }
+    $fixtureRoot = New-Item -ItemType Directory -Path $CreateSyntheticFixture
+    $tasks = @(1..27 | ForEach-Object {
+        $id = 'WB-{0:000}' -f $_
+        $packet = "$id.md"
+        [IO.File]::WriteAllText((Join-Path $fixtureRoot.FullName $packet), "# Synthetic arithmetic fixture`n`nReturn the sum of $_ and 1 between these markers:`nBAKEOFF_FIXTURE_BEGIN`nBAKEOFF_FIXTURE_END`n", [Text.UTF8Encoding]::new($false))
+        [ordered]@{
+            task_id = $id
+            title = 'Synthetic arithmetic'
+            task_class = 'synthetic_contract'
+            packet_path = $packet
+            hidden_check_categories = @('integer sum and completion markers')
+            hidden_test = @{ result_schema = 'hidden_tests_passed/hidden_tests_total plus deterministic_score' }
+            timeout_seconds = 3600
+            sanitized_workspace_required = $true
+        }
+    })
+    # Fixed worker identities are validator scenarios, not model recommendations.
+    $workers = @(
+        @{ cli = 'Claude Code'; model = 'claude-opus-4-8'; effort = 'xhigh' },
+        @{ cli = 'Codex'; model = 'gpt-5.5'; effort = 'xhigh' },
+        @{ cli = 'Antigravity CLI'; model = 'fixture-model'; effort = 'provider-default' },
+        @{ cli = 'Grok Build'; model = 'fixture-model'; effort = 'provider-default' },
+        @{ cli = 'OpenRouter API'; model = 'sakana/fugu-ultra'; agent = 'openrouter'; worker_backend = 'api_llm'; required_env = 'OPENROUTER_API_KEY' },
+        @{ cli = 'OpenRouter API'; model = 'z-ai/glm-5.2'; agent = 'openrouter'; worker_backend = 'api_llm'; required_env = 'OPENROUTER_API_KEY' }
+    )
+    for ($i = 0; $i -lt $workers.Count; $i++) {
+        $workers[$i].pane = 'worker-' + ($i + 1)
+        $workers[$i].role = 'harness-bench-worker'
+        $workers[$i].scored = $true
+    }
+    $fixture = [ordered]@{
+        version = 1
+        pack_id = 'synthetic-cli-comparison-v1'
+        fixture_only = $true
+        minimum_task_count_for_directional_findings = 27
+        official_task_count_target = 27
+        default_timeout_seconds = 3600
+        scoring = @{ axes = @{ accuracy = 30; review_findings = 20; speed = 15; parallelism = 15; async_terminal = 10; evidence_quality = 10 } }
+        qc_gates = @(
+            'same_task_packet_sha256_for_all_workers', 'same_timeout_for_all_workers',
+            'same_workspace_for_all_workers', 'preflight_all_pass_before_recording',
+            'desktop_app_screen_recording_required', 'visible_worker_pane_required_for_every_scored_worker',
+            'operator_intervention_zero_required', 'worker_to_worker_messaging_disabled',
+            'run_governance_fields_required', 'non_completed_worker_results_excluded_from_scoring',
+            'antigravity_empty_stdout_excluded_from_machine_scoring', 'harness_bench_27_tasks_required',
+            'hidden_tests_required', 'sanitized_workspace_required', 'operator_rows_excluded_from_scoring',
+            'missing_key_timeout_crash_empty_stdout_invalid_output_excluded_from_scoring'
+        )
+        run_governance = @{
+            same_task_set_for_all_workers = $true
+            same_timeout_for_all_workers = $true
+            same_workspace_for_all_workers = $true
+            operator_intervention_limit = 0
+            worker_to_worker_messaging = 'disabled'
+            execution_surface = 'visible_desktop_worker_panes'
+            required_run_fields = @('messaging_state', 'operator_intervention_count', 'execution_surface')
+        }
+        workspace_policy = @{ sanitized_workspace_required = $true; same_workspace_conditions_for_all_workers = $true }
+        operator = @{ pane = 'operator'; role = 'run-control'; scored = $false }
+        default_workers = $workers
+        tasks = $tasks
+    }
+    $fixturePath = Join-Path $fixtureRoot.FullName 'benchmark-pack.json'
+    [IO.File]::WriteAllText($fixturePath, (($fixture | ConvertTo-Json -Depth 20) -replace "`r`n", "`n") + "`n", [Text.UTF8Encoding]::new($false))
+    Write-Output $fixturePath
+    return
+}
+
+if ([string]::IsNullOrWhiteSpace($PackPath)) {
+    throw 'Supply a local comparison pack with -PackPath.'
+}
 
 $RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
@@ -57,8 +136,6 @@ function Resolve-BenchmarkPackInput {
     if (Test-Path -LiteralPath $resolvedInput -PathType Container) {
         $candidateRelativePaths = @(
             'benchmark-pack.json',
-            'tasks\cli-bakeoff\v1\benchmark-pack.json',
-            'cli-bakeoff\v1\benchmark-pack.json',
             'v1\benchmark-pack.json'
         )
         $candidates = @(

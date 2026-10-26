@@ -64,7 +64,7 @@
 //
 // Usage:
 //   node scripts/run-cli-bakeoff.mjs [--port 9237] [--tasks WB-001,WB-002]
-//     [--timeout 3600] [--poll 25] [--project-dir <path>] [--dry-run]
+//     --pack-path <local-pack> [--timeout 3600] [--poll 25] [--project-dir <path>] [--dry-run]
 //     [--recording-status <status>] [--recording-publishable]
 //
 // --project-dir defaults to the same path
@@ -161,7 +161,6 @@ const ECHO_BASELINE_SETTLE_POLL_MS = 3000;
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
-const BENCHMARK_PACK_PATH = path.join(REPO_ROOT, "tasks", "cli-bakeoff", "v1", "benchmark-pack.json");
 // Must match the -ProjectDir default in scripts/start-cli-bakeoff-desktop.ps1.
 const DEFAULT_PROJECT_DIR = path.join(REPO_ROOT, ".winsmux", "evidence", "v03623-coordination-benchmark-project");
 const WORKER_LABELS = ["worker-1", "worker-2", "worker-3", "worker-4", "worker-5", "worker-6"];
@@ -180,6 +179,7 @@ function parseArgs(argv) {
     timeout: 3600,
     poll: 25,
     projectDir: DEFAULT_PROJECT_DIR,
+    packPath: undefined,
     dryRun: false,
     // Mirrors run-cli-bakeoff-openrouter.ps1's manifest defaults: a run is
     // "not_declared"/not publishable until an operator explicitly marks it,
@@ -199,6 +199,8 @@ function parseArgs(argv) {
       args.poll = Number(argv[++i]);
     } else if (arg === "--project-dir") {
       args.projectDir = path.resolve(REPO_ROOT, argv[++i]);
+    } else if (arg === "--pack-path") {
+      args.packPath = argv[++i];
     } else if (arg === "--dry-run") {
       args.dryRun = true;
     } else if (arg === "--recording-status") {
@@ -517,10 +519,15 @@ async function main() {
   }
 
   // 2. Load benchmark pack + manifest.
+  // An explicit local pack replaces the retired tracked research input.
+  if (!args.packPath || args.packPath.startsWith("--")) {
+    console.error("run-cli-bakeoff: supply a local comparison pack with --pack-path");
+    process.exit(EXIT_BAD_ARGS);
+  }
   let packText;
   let manifestText;
   try {
-    packText = await readFile(BENCHMARK_PACK_PATH, "utf8");
+    packText = await readFile(path.resolve(REPO_ROOT, args.packPath), "utf8");
   } catch (err) {
     console.log(JSON.stringify({ result: "desktop not up", reason: `cannot read benchmark pack: ${err.message}` }));
     process.exit(EXIT_DESKTOP_NOT_UP);
@@ -778,7 +785,7 @@ async function main() {
 
     // Packet text (and therefore round markers AND the hash-mirror
     // Instructions body) is read from THE PROJECT DIR
-    // (<project-dir>/tasks/cli-bakeoff/v1/...), not the repo root: that is
+    // (<project-dir>/.winsmux/benchmark-input/...), not the repo root: that is
     // what the running desktop app itself reads (getDesktopFullFile with
     // activeProjectDir in winsmux-app/src/main.ts). A repo-root copy can
     // drift from what the live desktop session actually has on disk (see
@@ -791,7 +798,7 @@ async function main() {
     if (taskEntry && typeof taskEntry.packet_path === "string") {
       try {
         packetText = await readFile(
-          path.join(args.projectDir, "tasks", "cli-bakeoff", "v1", taskEntry.packet_path),
+          path.join(args.projectDir, ".winsmux", "benchmark-input", taskEntry.packet_path),
           "utf8",
         );
         packetMarkers = getPacketMarkers(packetText);

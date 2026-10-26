@@ -5296,10 +5296,9 @@ mod tests {
             std::process::id()
         ));
         let target_file = temp_dir
-            .join("tasks")
-            .join("cli-bakeoff")
-            .join("v1")
-            .join("benchmark-pack.json");
+            .join("fixtures")
+            .join("benchmark")
+            .join("pack.json");
         let large_content = format!(
             "{{\"pack_id\":\"large\",\"payload\":\"{}\"}}\n",
             "x".repeat(40 * 1024)
@@ -5321,7 +5320,7 @@ mod tests {
                 id: serde_json::json!("req-preview"),
                 method: "desktop.editor.read".to_string(),
                 params: Some(serde_json::json!({
-                    "path": "tasks/cli-bakeoff/v1/benchmark-pack.json"
+                    "path": "fixtures/benchmark/pack.json"
                 })),
             },
             Some(temp_dir.to_string_lossy().to_string()),
@@ -5329,7 +5328,7 @@ mod tests {
 
         match preview_response {
             DesktopJsonRpcResponse::Success { result, .. } => {
-                assert_eq!(result["path"], "tasks/cli-bakeoff/v1/benchmark-pack.json");
+                assert_eq!(result["path"], "fixtures/benchmark/pack.json");
                 assert_eq!(result["truncated"], true);
                 assert!(result["content"].as_str().unwrap_or_default().len() < large_content.len());
             }
@@ -5345,7 +5344,7 @@ mod tests {
                 id: serde_json::json!("req-full"),
                 method: "desktop.file.read_full".to_string(),
                 params: Some(serde_json::json!({
-                    "path": "tasks/cli-bakeoff/v1/benchmark-pack.json"
+                    "path": "fixtures/benchmark/pack.json"
                 })),
             },
             Some(temp_dir.to_string_lossy().to_string()),
@@ -5354,7 +5353,7 @@ mod tests {
         match full_response {
             DesktopJsonRpcResponse::Success { id, result, .. } => {
                 assert_eq!(id, serde_json::json!("req-full"));
-                assert_eq!(result["path"], "tasks/cli-bakeoff/v1/benchmark-pack.json");
+                assert_eq!(result["path"], "fixtures/benchmark/pack.json");
                 assert_eq!(
                     result["byte_count"].as_u64(),
                     Some(large_content.as_bytes().len() as u64)

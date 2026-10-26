@@ -44,10 +44,6 @@ tasks/
 tasks/*
 !tasks/README.md
 !tasks/roadmap-title-ja.example.psd1
-!tasks/cli-bakeoff/
-tasks/cli-bakeoff/*
-!tasks/cli-bakeoff/v1/
-!tasks/cli-bakeoff/v1/*
 /skills/
 tests/
 !tests/

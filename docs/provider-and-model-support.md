@@ -317,9 +317,10 @@ Reference benchmarks are advisory. They do not directly change `winsmux
 compare-runs` winner selection, which is based on the local run evidence,
 review outcome, changed files, reproducibility, and operator decision trail.
 
-For Claude Code, Codex, and Antigravity CLI worker comparisons, use the
-tracked [CLI comparison bakeoff](cli-comparison-bakeoff.md) task pack and
-preflight gates. A run without publishable desktop recording evidence is useful
+For Claude Code, Codex, and Antigravity CLI worker comparisons, supply a local
+task pack explicitly to `scripts/test-cli-bakeoff-preflight.ps1 -PackPath <pack>`.
+See the [comparison evidence contract](operator-model.md#2b-run-context-and-recovery-contracts)
+for scoring requirements. A run without publishable desktop recording evidence is useful
 as operational evidence, but it must not change the default worker assignment.
 
 `Claude Fable 5` is treated as `selectable` again. Anthropic announced that

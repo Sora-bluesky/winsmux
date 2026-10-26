@@ -2,12 +2,16 @@
 param(
     [string]$RunRoot = '.winsmux/evidence/cli-bakeoff',
     [string]$OutputDir = '.winsmux/evidence/cli-bakeoff/summary',
-    [string]$PackPath = 'tasks/cli-bakeoff/v1/benchmark-pack.json',
+    [string]$PackPath = '',
     [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($PackPath)) {
+    throw 'Supply a local comparison pack with -PackPath.'
+}
 
 $RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {

@@ -217,7 +217,12 @@ $commonContractRust = Get-RepoContent 'core/tests-rs/common_contract.rs'
 $fixtureComparison = Get-RepoContent 'core/tests-rs/fixture_comparison.rs'
 $testParity = Get-RepoContent 'core/tests-rs/test_parity.rs'
 $bakeoffPreflight = Get-RepoContent 'scripts/test-cli-bakeoff-preflight.ps1'
-$benchmarkPackRaw = Get-RepoContent 'tasks/cli-bakeoff/v1/benchmark-pack.json'
+# Exercise governance with generated inputs; research packs stay local.
+$syntheticRoot = Join-Path ([IO.Path]::GetTempPath()) ('winsmux-benchmark-contract-' + [guid]::NewGuid().ToString('N'))
+try {
+$syntheticPackPath = & (Get-RepoPath 'scripts/test-cli-bakeoff-preflight.ps1') -CreateSyntheticFixture $syntheticRoot
+Add-Check 'synthetic benchmark pack exists' (Test-Path -LiteralPath $syntheticPackPath -PathType Leaf) 'generated synthetic comparison fixture'
+$benchmarkPackRaw = Get-Content -LiteralPath $syntheticPackPath -Raw -Encoding UTF8
 $bakeoffRunnerCheck = Get-RepoContent 'winsmux-app/scripts/bakeoff-runner-check.mjs'
 $automationPoolCheck = Get-RepoContent 'winsmux-app/scripts/automation-driver-pool-check.mjs'
 $desktopSplitGate = Get-RepoContent 'scripts/test-v03626-desktop-split-gate.ps1'
@@ -303,10 +308,10 @@ Add-Check 'benchmark pack default timeout remains 3600 seconds' (
 ) ("timeout={0}" -f (Get-JsonPropertyValue -InputObject $benchmarkPack -Name 'default_timeout_seconds' -Default 'missing'))
 
 $runGovernance = Get-JsonPropertyValue -InputObject $benchmarkPack -Name 'run_governance'
-Add-Check 'benchmark pack requires same task set' (Test-JsonBooleanTrue (Get-JsonPropertyValue -InputObject $runGovernance -Name 'same_task_set_for_all_workers')) 'tasks/cli-bakeoff/v1/benchmark-pack.json'
-Add-Check 'benchmark pack requires same timeout' (Test-JsonBooleanTrue (Get-JsonPropertyValue -InputObject $runGovernance -Name 'same_timeout_for_all_workers')) 'tasks/cli-bakeoff/v1/benchmark-pack.json'
-Add-Check 'benchmark pack requires same workspace' (Test-JsonBooleanTrue (Get-JsonPropertyValue -InputObject $runGovernance -Name 'same_workspace_for_all_workers')) 'tasks/cli-bakeoff/v1/benchmark-pack.json'
-Add-Check 'benchmark pack disables worker-to-worker messaging' ([string](Get-JsonPropertyValue -InputObject $runGovernance -Name 'worker_to_worker_messaging' -Default '') -eq 'disabled') 'tasks/cli-bakeoff/v1/benchmark-pack.json'
+Add-Check 'benchmark pack requires same task set' (Test-JsonBooleanTrue (Get-JsonPropertyValue -InputObject $runGovernance -Name 'same_task_set_for_all_workers')) 'generated synthetic comparison fixture'
+Add-Check 'benchmark pack requires same timeout' (Test-JsonBooleanTrue (Get-JsonPropertyValue -InputObject $runGovernance -Name 'same_timeout_for_all_workers')) 'generated synthetic comparison fixture'
+Add-Check 'benchmark pack requires same workspace' (Test-JsonBooleanTrue (Get-JsonPropertyValue -InputObject $runGovernance -Name 'same_workspace_for_all_workers')) 'generated synthetic comparison fixture'
+Add-Check 'benchmark pack disables worker-to-worker messaging' ([string](Get-JsonPropertyValue -InputObject $runGovernance -Name 'worker_to_worker_messaging' -Default '') -eq 'disabled') 'generated synthetic comparison fixture'
 
 Add-ContainsAllCheck 'benchmark runner check covers elapsed-time rounding and command rows' $bakeoffRunnerCheck @(
     'elapsedSeconds: 12\.3456',
@@ -340,8 +345,7 @@ Add-Check 'gitignore allows the v0.36.27 compat performance Pester wrapper' ($gi
 foreach ($path in @(
     'tests/fixtures/rust-parity/common-contract-package.json',
     'tests/fixtures/rust-parity/common-contract-package-v0.36.28.json',
-    'tests/fixtures/rust-parity/common-contract-backend-migration-v0.36.28.json',
-    'tasks/cli-bakeoff/v1/benchmark-pack.json'
+    'tests/fixtures/rust-parity/common-contract-backend-migration-v0.36.28.json'
 )) {
     Add-ExistingFileCheck $path
 }
@@ -369,7 +373,7 @@ if ($RequireEvidence) {
     $releaseCommandResults += , (Invoke-ReleaseInputCommand 'latency' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:bakeoff-runner') 'npm --prefix winsmux-app run test:bakeoff-runner')
     $releaseCommandResults += , (Invoke-ReleaseInputCommand 'latency' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:desktop-status-e2e') 'npm --prefix winsmux-app run test:desktop-status-e2e')
     $releaseCommandResults += , (Invoke-ReleaseInputCommand 'process-benchmark' 'npm.cmd' @('--prefix', 'winsmux-app', 'run', 'test:automation-driver-pool') 'npm --prefix winsmux-app run test:automation-driver-pool')
-    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'worker-benchmark' 'pwsh' @('-NoProfile', '-File', (Get-RepoPath 'scripts/test-cli-bakeoff-preflight.ps1'), '-PackPath', (Get-RepoPath 'tasks/cli-bakeoff/v1/benchmark-pack.json'), '-Json') 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath tasks/cli-bakeoff/v1/benchmark-pack.json -Json')
+    $releaseCommandResults += , (Invoke-ReleaseInputCommand 'worker-benchmark' 'pwsh' @('-NoProfile', '-File', (Get-RepoPath 'scripts/test-cli-bakeoff-preflight.ps1'), '-PackPath', $syntheticPackPath, '-Json') 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath <generated-synthetic-pack> -Json')
 
     foreach ($commandResult in $releaseCommandResults) {
         Add-Check "release input command passed: $($commandResult.command)" ([bool]$commandResult.passed) ("exit_code={0}" -f $commandResult.exit_code)
@@ -439,7 +443,7 @@ $releaseGateInputs = @(
     },
     [ordered]@{
         class                 = 'worker-benchmark'
-        command               = 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath tasks/cli-bakeoff/v1/benchmark-pack.json -Json'
+        command               = 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath <generated-synthetic-pack> -Json'
         evidence              = '27-task benchmark pack and same-condition governance preflight'
         required_for_release  = $true
         validated_in_this_run = (Test-ReleaseCommandClassPassed 'worker-benchmark')
@@ -484,4 +488,10 @@ if ($Json) {
 
 if ($failed.Count -gt 0 -or ($RequireEvidence -and -not $releaseReady)) {
     exit 1
+}
+
+} finally {
+    if (Test-Path -LiteralPath $syntheticRoot -PathType Container) {
+        Remove-Item -LiteralPath $syntheticRoot -Recurse -Force
+    }
 }
