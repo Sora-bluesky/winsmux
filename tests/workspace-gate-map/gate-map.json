@@ -15,6 +15,14 @@
  },
  "local_runners": [
   {
+   "path": "tests/workspace-privacy/run.ps1",
+   "invoked_by": "local privacy acceptance entrypoint; no native journey success claimed"
+  },
+  {
+   "path": "tests/workspace-migration/run.ps1",
+   "invoked_by": "local migration acceptance entrypoint; RM-G21 remains separate"
+  },
+  {
    "path": "tests/workspace-update/run.ps1",
    "invoked_by": "local evidence runner outside the public tree; named in the preservation basis document"
   }
@@ -258,6 +266,1850 @@
     {
      "path": ".github/workflows/test.yml",
      "contains": "      - gate-map"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "core/tests-rs/operator_cli.rs",
+   "metric": "rust_assert",
+   "old": 1283,
+   "new": 1281,
+   "bases": [
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 J4 removes dependence on internal development documents while retaining the manual-checklist JSON/text contract and asserting that diagnostic and binary output excludes development metadata.",
+   "selectors": [
+    {
+     "path": "core/tests-rs/operator_cli.rs",
+     "fn": "operator_cli_manual_checklist_does_not_depend_on_internal_document",
+     "body_sha256": "94ea5bb3489e927771882383a0bf4d54f45eaec6e3c4428b2579219d58e67d91"
+    },
+    {
+     "path": "core/tests-rs/operator_cli.rs",
+     "fn": "operator_cli_binary_excludes_development_task_ids",
+     "body_sha256": "4092c6ba88f1ac92c5740e32f2ea1cc7cfe5662dd2479dc0eb0dc6f7c863449f"
+    },
+    {
+     "path": "core/tests-rs/operator_cli.rs",
+     "fn": "operator_cli_diagnostics_exclude_development_metadata",
+     "body_sha256": "25b0aad106a043b39434b430220148a4d9ee3f98b70cb00019b04f41c677e101"
+    }
+   ]
+  },
+  {
+   "type": "deleted-gate",
+   "path": "git-graph/Cargo.toml",
+   "kind": "cargo_manifest",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/HarnessContract.Tests.ps1",
+   "metric": "pester_should",
+   "old": 274,
+   "new": 271,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 LD1 relocates private manual-checklist metadata outside the public tree. Deterministic fixtures retain sorted content, missing-input refusal without writes, and explicit absolute/relative input overrides.",
+   "selectors": [
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "renders sorted checklist fields from ignored local metadata instead of the old path",
+     "body_sha256": "c71d191fa73f06d963f230298abb01979ff692e075df2cd99ca1339ee17a856e"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "fails without local metadata before changing documents even when the old path exists",
+     "body_sha256": "2ab0c4691fc3d173bdcd952efea1bd951c543863706bb46172ed48ebd6fb64fb"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "honors an explicit absolute metadata path over the local default",
+     "body_sha256": "c8ebdd6d2b0f6550567bd82ecd748de1e67d6e85774197c7b375b6300bee1498"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "honors an explicit relative metadata path without local metadata",
+     "body_sha256": "3208c0e9a5aa4a023ded1cda965959b6d8c6128c944291e265d66940c18f5ee8"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "metric": "pester_it",
+   "old": 19,
+   "new": 4,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "components": [
+    {
+     "disposition": "retired",
+     "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+     "basis": [
+      {
+       "path": "sdk/README.md",
+       "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+      }
+     ],
+     "selectors": [
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+       "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+       "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+       "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the current bindings and named-pipe walkthrough",
+       "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+      }
+     ],
+     "deltas": [
+      {
+       "commit": "8c33ff09",
+       "delta": -19
+      }
+     ]
+    },
+    {
+     "disposition": "guarded",
+     "reason": "The current four SDK boundary checks guard generated bindings, a bounded public SDK file set, documentation and the separate Rust workspace MCP transport. They do not claim to exercise retired Node tools.",
+     "selectors": [
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+       "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+       "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+       "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the current bindings and named-pipe walkthrough",
+       "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+      }
+     ],
+     "deltas": [
+      {
+       "commit": "283d6cf4",
+       "delta": 4
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "metric": "pester_should",
+   "old": 110,
+   "new": 10,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "components": [
+    {
+     "disposition": "retired",
+     "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+     "basis": [
+      {
+       "path": "sdk/README.md",
+       "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+      }
+     ],
+     "selectors": [
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+       "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+       "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+       "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the current bindings and named-pipe walkthrough",
+       "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+      }
+     ],
+     "deltas": [
+      {
+       "commit": "8c33ff09",
+       "delta": -110
+      }
+     ]
+    },
+    {
+     "disposition": "guarded",
+     "reason": "The current four SDK boundary checks guard generated bindings, a bounded public SDK file set, documentation and the separate Rust workspace MCP transport. They do not claim to exercise retired Node tools.",
+     "selectors": [
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+       "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+       "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+       "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+      },
+      {
+       "path": "tests/McpServerContract.Tests.ps1",
+       "it": "documents the current bindings and named-pipe walkthrough",
+       "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+      }
+     ],
+     "deltas": [
+      {
+       "commit": "283d6cf4",
+       "delta": 10
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "deleted-gate",
+   "path": "git-graph/src/color.rs",
+   "kind": "rust_src",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "deleted-gate",
+   "path": "git-graph/src/commit.rs",
+   "kind": "rust_src",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "deleted-gate",
+   "path": "git-graph/src/lane.rs",
+   "kind": "rust_src",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "deleted-gate",
+   "path": "git-graph/src/layout.rs",
+   "kind": "rust_src",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "deleted-gate",
+   "path": "git-graph/src/render.rs",
+   "kind": "rust_src",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "metric-decrease",
+   "path": "winsmux-app/src-tauri/src/control_pipe.rs",
+   "metric": "rust_assert",
+   "old": 263,
+   "new": 258,
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes only the Node-adapter source pins and legacy MCP matrix column. Native control-pipe methods, pairing, CLI pins and both language matrices remain executable checks.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "winsmux-app/src-tauri/src/control_pipe.rs",
+     "fn": "external_control_plane_doc_surface_matrix_matches_contract_artifact",
+     "body_sha256": "80c5af9036b4838019f59a161242ca66d4e592875c3ade68576c7e981957afcd"
+    },
+    {
+     "path": "winsmux-app/src-tauri/src/control_pipe.rs",
+     "fn": "external_control_plane_ja_doc_surface_matrix_matches_contract_artifact",
+     "body_sha256": "b339ea39a67bdf704fdfd3c2edd298997fe4981e8d3aeb8f6e37e834619fce49"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "core/tests-rs/operator_cli.rs",
+   "name": "operator_cli_manual_checklist_json_reports_existing_internal_document",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 J4 removes dependence on internal development documents while retaining the manual-checklist JSON/text contract and asserting that diagnostic and binary output excludes development metadata.",
+   "selectors": [
+    {
+     "path": "core/tests-rs/operator_cli.rs",
+     "fn": "operator_cli_manual_checklist_does_not_depend_on_internal_document",
+     "body_sha256": "94ea5bb3489e927771882383a0bf4d54f45eaec6e3c4428b2579219d58e67d91"
+    },
+    {
+     "path": "core/tests-rs/operator_cli.rs",
+     "fn": "operator_cli_binary_excludes_development_task_ids",
+     "body_sha256": "4092c6ba88f1ac92c5740e32f2ea1cc7cfe5662dd2479dc0eb0dc6f7c863449f"
+    },
+    {
+     "path": "core/tests-rs/operator_cli.rs",
+     "fn": "operator_cli_diagnostics_exclude_development_metadata",
+     "body_sha256": "25b0aad106a043b39434b430220148a4d9ee3f98b70cb00019b04f41c677e101"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/color.rs",
+   "name": "color_mapping_is_deterministic",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/commit.rs",
+   "name": "parses_stdin_log_lines",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/commit.rs",
+   "name": "classifies_commit_kind",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/lane.rs",
+   "name": "linear_history",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/lane.rs",
+   "name": "simple_merge",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/lane.rs",
+   "name": "fast_forward_branch",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/lane.rs",
+   "name": "octopus_merge",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/lane.rs",
+   "name": "duplicate_expecting_panics",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/layout.rs",
+   "name": "lane_spans_persist_through_inactive_rows",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/layout.rs",
+   "name": "merge_markers_at_absorbed_branch",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/layout.rs",
+   "name": "octopus_merge_markers_use_each_absorbed_branch",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/layout.rs",
+   "name": "build_layout_keeps_rows_and_derived_shapes",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/render.rs",
+   "name": "renders_layers_in_order",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/render.rs",
+   "name": "escapes_xml_text",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/render.rs",
+   "name": "lane_shift_path_has_vertical_endcaps",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/render.rs",
+   "name": "straight_lane_shift_uses_only_line_command",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/render.rs",
+   "name": "head_circle_is_larger_than_normal",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "git-graph/src/render.rs",
+   "name": "compact_graph_width_stays_under_eighty_pixels_for_six_lanes",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J3 removes the unused standalone git-graph renderer, its Cargo workspace member and dependency graph. These color/layout/SVG tests belonged only to the removed renderer.",
+   "basis": [
+    {
+     "path": "Cargo.toml",
+     "contains": "\"core/crates/winsmux-workspace-mcp\","
+    },
+    {
+     "path": "Cargo.toml",
+     "contains": "\"winsmux-app/src-tauri\","
+    }
+   ],
+   "unguarded_reason": "No graph renderer or graph-output guarantee remains in the supported product. These renderer-only responsibilities ended with removal of the crate; saved source bytes are not claimed as executable coverage."
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/CliBakeoff.Tests.ps1",
+   "name": "validates the tracked bakeoff task pack",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 J5 replaces tracked research inputs and implicit repository-root lookup with generated synthetic fixtures and an explicit local pack root, retaining pack validation and benchmark governance.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "validates the synthetic bakeoff task pack",
+     "body_sha256": "d47a5d96d6e7bf03f863fc2a27f25cd3149f34b54929e4c776bdc7f456ce0751"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "resolves the benchmark pack when given a local pack root",
+     "body_sha256": "af886cda797fd8f706dd6dbda93b3f54aeae7cd05e66ebd34b491e6f9aa1d972"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "keeps research packets outside the public tree and uses synthetic gate inputs",
+     "body_sha256": "451b3eeddb1cf7c81f7b359cecf1455ab1bbb5c7a08e763da005e4d99fa15ccb"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/CliBakeoff.Tests.ps1",
+   "name": "resolves the benchmark pack when given the repository root",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 J5 replaces tracked research inputs and implicit repository-root lookup with generated synthetic fixtures and an explicit local pack root, retaining pack validation and benchmark governance.",
+   "selectors": [
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "validates the synthetic bakeoff task pack",
+     "body_sha256": "d47a5d96d6e7bf03f863fc2a27f25cd3149f34b54929e4c776bdc7f456ce0751"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "resolves the benchmark pack when given a local pack root",
+     "body_sha256": "af886cda797fd8f706dd6dbda93b3f54aeae7cd05e66ebd34b491e6f9aa1d972"
+    },
+    {
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "keeps research packets outside the public tree and uses synthetic gate inputs",
+     "body_sha256": "451b3eeddb1cf7c81f7b359cecf1455ab1bbb5c7a08e763da005e4d99fa15ccb"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/HarnessContract.Tests.ps1",
+   "name": "keeps the generated v1 manual checklist aligned with desktop release evidence",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 LD1 relocates private manual-checklist metadata outside the public tree. Deterministic fixtures retain sorted content, missing-input refusal without writes, and explicit absolute/relative input overrides.",
+   "selectors": [
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "renders sorted checklist fields from ignored local metadata instead of the old path",
+     "body_sha256": "c71d191fa73f06d963f230298abb01979ff692e075df2cd99ca1339ee17a856e"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "fails without local metadata before changing documents even when the old path exists",
+     "body_sha256": "2ab0c4691fc3d173bdcd952efea1bd951c543863706bb46172ed48ebd6fb64fb"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "honors an explicit absolute metadata path over the local default",
+     "body_sha256": "c8ebdd6d2b0f6550567bd82ecd748de1e67d6e85774197c7b375b6300bee1498"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "honors an explicit relative metadata path without local metadata",
+     "body_sha256": "3208c0e9a5aa4a023ded1cda965959b6d8c6128c944291e265d66940c18f5ee8"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/HarnessContract.Tests.ps1",
+   "name": "keeps future manual checklist metadata after earlier release lanes",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 LD1 relocates private manual-checklist metadata outside the public tree. Deterministic fixtures retain sorted content, missing-input refusal without writes, and explicit absolute/relative input overrides.",
+   "selectors": [
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "renders sorted checklist fields from ignored local metadata instead of the old path",
+     "body_sha256": "c71d191fa73f06d963f230298abb01979ff692e075df2cd99ca1339ee17a856e"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "fails without local metadata before changing documents even when the old path exists",
+     "body_sha256": "2ab0c4691fc3d173bdcd952efea1bd951c543863706bb46172ed48ebd6fb64fb"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "honors an explicit absolute metadata path over the local default",
+     "body_sha256": "c8ebdd6d2b0f6550567bd82ecd748de1e67d6e85774197c7b375b6300bee1498"
+    },
+    {
+     "path": "tests/HarnessContract.Tests.ps1",
+     "it": "honors an explicit relative metadata path without local metadata",
+     "body_sha256": "3208c0e9a5aa4a023ded1cda965959b6d8c6128c944291e265d66940c18f5ee8"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "uses argument-array execution for bridge calls and validates assign task ids",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "keeps winsmux_assign exposed through the MCP tool list",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "documents the upstream-first adapter boundary in initialize metadata",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "round-trips initialize and tools/list over stdio transport",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "resolves the Python SDK default server path to the tracked MCP server",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "resolves the TypeScript SDK default server path to the tracked MCP server",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "exposes winsmux_automation_contract through the MCP tool list",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation contract tool invokes the native winsmux CLI without pwsh",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation contract tool fails closed when the desktop pipe is absent",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation contract tool output matches the pipe contract when the desktop runs",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "exposes winsmux_automation_discover and winsmux_automation_pair through the MCP tool list",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation discover and pair tools invoke the native winsmux CLI without pwsh",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation discover tool fails closed when the desktop pipe is absent",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation pair tool fails closed when the desktop pipe is absent or no token exists",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation discover tool reports the live desktop document when the pipe answers",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation pair tool pairs against the running desktop",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "automation discover and pair tools never print token bytes",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "rejects an unknown tool name over real stdio",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/McpServerContract.Tests.ps1",
+   "name": "rejects an unknown JSON-RPC method with -32601",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "retired",
+   "reason": "G10 J2 removes the obsolete Node MCP adapter and its subprocess clients. Its legacy assignment, automation and pairing tool names are no longer a supported transport; the distinct native control pipe and Rust workspace MCP remain.",
+   "basis": [
+    {
+     "path": "sdk/README.md",
+     "contains": "They bind named-pipe method names, the contract version, and typed params/result declarations, not MCP tools."
+    }
+   ],
+   "selectors": [
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps the SDK limited to current contract bindings and the walkthrough",
+     "body_sha256": "5673c85eddf5f34c669f6e244b1f2f32d5d94bebf7fe29daa8b83f7d960d14c7"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
+     "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "keeps generated control-plane bindings aligned with the checked-in contract",
+     "body_sha256": "7a988241318653eb25ade7757d0adecff85a31bfcbe90cb9a8b283629f42a404"
+    },
+    {
+     "path": "tests/McpServerContract.Tests.ps1",
+     "it": "documents the current bindings and named-pipe walkthrough",
+     "body_sha256": "ece6317fbd6e14a1bb7ca5f94b000e94be32749e98f5e2e63ca8f7fe35387f94"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/VersionSurface.Tests.ps1",
+   "name": "syncs the remote helper manifest and both workspace lock entries",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 J2/J6 retire the Node adapter package and redundant core lockfile. Current product metadata uses the single workspace lockfile, while helper version synchronization and staged npm versions remain checked.",
+   "selectors": [
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "it": "uses only the workspace Cargo lockfile for version updates and staging",
+     "body_sha256": "b84daa3c5291a4698b48b3e771ef0055f22629d7afeefe46a3a86e7d9d037fdb"
+    },
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "it": "syncs the remote helper manifest and the workspace lock entry",
+     "body_sha256": "6a653d2c591eecdd4d539cf58ce74bb29e4df467ecf3f844ab9adf1935f4dc7e"
+    },
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "it": "keeps staged npm package versions aligned while leaving the source package templated",
+     "body_sha256": "6b7d2af787ca860b8c7f851c2bf2d2029003c168047e15c5fb59a6c6092fdd1c"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "pester",
+   "path": "tests/VersionSurface.Tests.ps1",
+   "name": "keeps tracked package metadata aligned with the public product surface",
+   "bases": [
+    "pre_rebuild_plan_base",
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "G10 J2/J6 retire the Node adapter package and redundant core lockfile. Current product metadata uses the single workspace lockfile, while helper version synchronization and staged npm versions remain checked.",
+   "selectors": [
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "it": "uses only the workspace Cargo lockfile for version updates and staging",
+     "body_sha256": "b84daa3c5291a4698b48b3e771ef0055f22629d7afeefe46a3a86e7d9d037fdb"
+    },
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "it": "syncs the remote helper manifest and the workspace lock entry",
+     "body_sha256": "6a653d2c591eecdd4d539cf58ce74bb29e4df467ecf3f844ab9adf1935f4dc7e"
+    },
+    {
+     "path": "tests/VersionSurface.Tests.ps1",
+     "it": "keeps staged npm package versions aligned while leaving the source package templated",
+     "body_sha256": "6b7d2af787ca860b8c7f851c2bf2d2029003c168047e15c5fb59a6c6092fdd1c"
     }
    ]
   },
@@ -732,7 +2584,7 @@
    "path": "tests/CliBakeoff.Tests.ps1",
    "metric": "pester_should",
    "old": 482,
-   "new": 446,
+   "new": 449,
    "bases": [
     "prior_task882_inventory_baseline"
    ],
@@ -922,11 +2774,11 @@
      "reason": "The v0.36.23 benchmark routing It read docs/cli-comparison-bakeoff.md and the v0.36.17 bench report; c34d6d9b removed the version-routing paragraphs and the report as development records. The contract that remains public is that official evidence comes from visible desktop worker panes. aa226344 asserts that public rule from the v0.36.22 case, so weakening the document fails a Should.",
      "basis": [
       {
-       "path": "docs/cli-comparison-bakeoff.md",
-       "contains": "Official scoreable evidence must come from visible desktop worker panes with"
+       "path": "docs/operator-model.md",
+       "contains": "Official scoreable evidence must come from visible desktop worker panes"
       },
       {
-       "path": "docs/cli-comparison-bakeoff.md",
+       "path": "docs/operator-model.md",
        "contains": "App-external batch results remain"
       }
      ],
@@ -961,7 +2813,7 @@
       {
        "path": "tests/CliBakeoff.Tests.ps1",
        "it": "keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22",
-       "body_sha256": "48f918a9e5eee4e49862702389b15d0c0fc08603b7035374403e222a991952fa"
+       "body_sha256": "b7dfcd430a60c1a5e279446efc03af044f7e7883860ab19e3bba555fb58c11fb"
       }
      ],
      "deltas": [
@@ -995,6 +2847,33 @@
       {
        "commit": "c34d6d9bfa1508718a30384460254fe525c744de",
        "delta": -38
+      }
+     ]
+    },
+    {
+     "disposition": "guarded",
+     "reason": "G10 J5 keeps the same benchmark governance on generated synthetic inputs and explicit local research packs; three additional assertions guard the cutover.",
+     "selectors": [
+      {
+       "path": "tests/CliBakeoff.Tests.ps1",
+       "it": "validates the synthetic bakeoff task pack",
+       "body_sha256": "d47a5d96d6e7bf03f863fc2a27f25cd3149f34b54929e4c776bdc7f456ce0751"
+      },
+      {
+       "path": "tests/CliBakeoff.Tests.ps1",
+       "it": "resolves the benchmark pack when given a local pack root",
+       "body_sha256": "af886cda797fd8f706dd6dbda93b3f54aeae7cd05e66ebd34b491e6f9aa1d972"
+      },
+      {
+       "path": "tests/CliBakeoff.Tests.ps1",
+       "it": "keeps research packets outside the public tree and uses synthetic gate inputs",
+       "body_sha256": "451b3eeddb1cf7c81f7b359cecf1455ab1bbb5c7a08e763da005e4d99fa15ccb"
+      }
+     ],
+     "deltas": [
+      {
+       "commit": "c1bee43f",
+       "delta": 3
       }
      ]
     }
@@ -1065,100 +2944,6 @@
    "pins": [
     "docs/project/enterprise-strategy-roadmap-alignment.md",
     "docs/project/README.md"
-   ]
-  },
-  {
-   "type": "metric-decrease",
-   "path": "tests/PublicSurfacePolicy.Tests.ps1",
-   "metric": "pester_should",
-   "old": 251,
-   "new": 248,
-   "bases": [
-    "pre_rebuild_plan_base",
-    "prior_task882_inventory_baseline"
-   ],
-   "components": [
-    {
-     "disposition": "guarded",
-     "reason": "7c105672 moved the README authentication table to docs/authentication-support.md; the four table assertions became link and wording checks.",
-     "selectors": [
-      {
-       "path": "tests/PublicSurfacePolicy.Tests.ps1",
-       "contains": "$readme | Should -Match 'docs/authentication-support\\.md'"
-      },
-      {
-       "path": "tests/PublicSurfacePolicy.Tests.ps1",
-       "contains": "$authSupport = Get-Content (Join-Path $repoRoot 'docs/authentication-support.md') -Raw"
-      }
-     ],
-     "deltas": [
-      {
-       "commit": "7c105672d8bf5e78c208ca68edb0cefae19791a7",
-       "delta": -4
-      }
-     ]
-    },
-    {
-     "disposition": "preserved",
-     "reason": "The design-freeze It read docs/project/design-freeze-gate.md, which c34d6d9b removed from the public tree. Preservation of the original bytes outside the public tree. This is not a guard on the candidate and does not count as restored protection.",
-     "basis": [
-      {
-       "path": "docs/repo-surface-policy.md",
-       "contains": "- development history, internal plans, research screenshots, and original archives"
-      },
-      {
-       "path": "docs/repo-surface-policy.md",
-       "contains": "- development records must not be bundled as product documentation"
-      },
-      {
-       "path": "docs/repo-surface-policy.md",
-       "contains": "- never tracked"
-      }
-     ],
-     "pins": [
-      "docs/project/design-freeze-gate.md"
-     ],
-     "deltas": [
-      {
-       "commit": "c34d6d9bfa1508718a30384460254fe525c744de",
-       "delta": -9
-      }
-     ]
-    },
-    {
-     "disposition": "guarded",
-     "reason": "e13999d0 added the native lifecycle boundary case.",
-     "selectors": [
-      {
-       "path": "tests/PublicSurfacePolicy.Tests.ps1",
-       "it": "keeps native lifecycle candidate identity and evidence publication within the declared boundary",
-       "body_sha256": "57d42a21882b54115ac2e4dbe458e570078e69a8752b2439a43a5ef6ef553ac0"
-      }
-     ],
-     "deltas": [
-      {
-       "commit": "e13999d065788a85cde0a9ad857e600124d3b282",
-       "delta": 5
-      }
-     ]
-    },
-    {
-     "disposition": "guarded",
-     "reason": "d3c059cb added the case that keeps the design-freeze record out of the tracked public surface.",
-     "selectors": [
-      {
-       "path": "tests/PublicSurfacePolicy.Tests.ps1",
-       "it": "keeps the v0.36.24 design-freeze gate record out of the tracked public surface",
-       "body_sha256": "3a43efe8ff4f76b23982875bff7576e870774a7959190723fbd0d48450707f6e"
-      }
-     ],
-     "deltas": [
-      {
-       "commit": "d3c059cb39c3b692bf17fcbf600d7930b5eecb5d",
-       "delta": 5
-      }
-     ]
-    }
    ]
   },
   {
@@ -1534,44 +3319,13 @@
     "pre_rebuild_plan_base",
     "prior_task882_inventory_baseline"
    ],
-   "components": [
+   "disposition": "guarded",
+   "reason": "G10 J5 moves the continuing visible-pane scoring and exclusion contract to operator-model.md. The old fixed-version comparison record is retired; current positive and negative assertions remain executable.",
+   "selectors": [
     {
-     "disposition": "retired",
-     "reason": "The positive v0.36.23 routing requirement was retired with the version-routing paragraphs and the v0.36.17 bench report that c34d6d9b removed as development records. aa226344 asserts that public rule from the v0.36.22 case.",
-     "basis": [
-      {
-       "path": "docs/cli-comparison-bakeoff.md",
-       "contains": "Official scoreable evidence must come from visible desktop worker panes with"
-      },
-      {
-       "path": "docs/cli-comparison-bakeoff.md",
-       "contains": "App-external batch results remain"
-      }
-     ],
-     "retired_by": [
-      "c34d6d9bfa1508718a30384460254fe525c744de"
-     ],
-     "selectors": [
-      {
-       "path": "tests/CliBakeoff.Tests.ps1",
-       "contains": "$contractDoc | Should -Match 'Official scoreable evidence must come from visible desktop worker panes'"
-      },
-      {
-       "path": "tests/CliBakeoff.Tests.ps1",
-       "contains": "$contractDoc | Should -Match 'App-external batch results remain'"
-      }
-     ]
-    },
-    {
-     "disposition": "guarded",
-     "reason": "The negative half, no routing of formal evidence to v0.36.22, is guarded by d3c059cb's It.",
-     "selectors": [
-      {
-       "path": "tests/CliBakeoff.Tests.ps1",
-       "it": "keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22",
-       "body_sha256": "48f918a9e5eee4e49862702389b15d0c0fc08603b7035374403e222a991952fa"
-      }
-     ]
+     "path": "tests/CliBakeoff.Tests.ps1",
+     "it": "keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22",
+     "body_sha256": "b7dfcd430a60c1a5e279446efc03af044f7e7883860ab19e3bba555fb58c11fb"
     }
    ]
   },
@@ -2573,7 +4327,7 @@
    "path": "tests/CliBakeoff.Tests.ps1",
    "metric": "pester_should",
    "old": 476,
-   "new": 446,
+   "new": 449,
    "bases": [
     "pre_rebuild_plan_base"
    ],
@@ -2800,11 +4554,11 @@
      "reason": "The v0.36.23 benchmark routing It read docs/cli-comparison-bakeoff.md and the v0.36.17 bench report; c34d6d9b removed the version-routing paragraphs and the report as development records. The contract that remains public is that official evidence comes from visible desktop worker panes. aa226344 asserts that public rule from the v0.36.22 case, so weakening the document fails a Should.",
      "basis": [
       {
-       "path": "docs/cli-comparison-bakeoff.md",
-       "contains": "Official scoreable evidence must come from visible desktop worker panes with"
+       "path": "docs/operator-model.md",
+       "contains": "Official scoreable evidence must come from visible desktop worker panes"
       },
       {
-       "path": "docs/cli-comparison-bakeoff.md",
+       "path": "docs/operator-model.md",
        "contains": "App-external batch results remain"
       }
      ],
@@ -2839,7 +4593,7 @@
       {
        "path": "tests/CliBakeoff.Tests.ps1",
        "it": "keeps the bakeoff contract from routing formal benchmark evidence to v0.36.22",
-       "body_sha256": "48f918a9e5eee4e49862702389b15d0c0fc08603b7035374403e222a991952fa"
+       "body_sha256": "b7dfcd430a60c1a5e279446efc03af044f7e7883860ab19e3bba555fb58c11fb"
       }
      ],
      "deltas": [
@@ -2875,50 +4629,33 @@
        "delta": -38
       }
      ]
-    }
-   ]
-  },
-  {
-   "type": "metric-decrease",
-   "path": "scripts/start-cli-bakeoff-desktop.ps1",
-   "metric": "ps_throw",
-   "old": 38,
-   "new": 37,
-   "bases": [
-    "pre_rebuild_plan_base"
-   ],
-   "disposition": "guarded",
-   "reason": "3a49ac92 moved the bakeoff desktop launcher from the retired operator surface to the workspace surface: twelve operator-surface throws were replaced by eleven workspace-surface guards (busy desktop and debug port, owned PID identity, canonical read confirmation, window size) and the script now exits 1 on a failed result.",
-   "selectors": [
-    {
-     "path": "scripts/start-cli-bakeoff-desktop.ps1",
-     "contains": "if ($existing.Count -gt 0) { throw 'Existing repo desktop app is busy. Close it normally before building or launching.' }"
     },
     {
-     "path": "scripts/start-cli-bakeoff-desktop.ps1",
-     "contains": "throw 'Desktop debug port is busy. Existing process is preserved.'"
-    },
-    {
-     "path": "scripts/start-cli-bakeoff-desktop.ps1",
-     "contains": "throw 'Owned PID identity changed. Process preserved.'"
-    },
-    {
-     "path": "scripts/start-cli-bakeoff-desktop.ps1",
-     "contains": "throw new Error('canonical read unconfirmed')"
-    },
-    {
-     "path": "scripts/start-cli-bakeoff-desktop.ps1",
-     "contains": "throw 'Desktop window is smaller than required.'"
-    },
-    {
-     "path": "scripts/start-cli-bakeoff-desktop.ps1",
-     "contains": "if (-not $result.ok) { exit 1 }"
-    }
-   ],
-   "deltas": [
-    {
-     "commit": "3a49ac92",
-     "delta": -1
+     "disposition": "guarded",
+     "reason": "G10 J5 keeps the same benchmark governance on generated synthetic inputs and explicit local research packs; three additional assertions guard the cutover.",
+     "selectors": [
+      {
+       "path": "tests/CliBakeoff.Tests.ps1",
+       "it": "validates the synthetic bakeoff task pack",
+       "body_sha256": "d47a5d96d6e7bf03f863fc2a27f25cd3149f34b54929e4c776bdc7f456ce0751"
+      },
+      {
+       "path": "tests/CliBakeoff.Tests.ps1",
+       "it": "resolves the benchmark pack when given a local pack root",
+       "body_sha256": "af886cda797fd8f706dd6dbda93b3f54aeae7cd05e66ebd34b491e6f9aa1d972"
+      },
+      {
+       "path": "tests/CliBakeoff.Tests.ps1",
+       "it": "keeps research packets outside the public tree and uses synthetic gate inputs",
+       "body_sha256": "451b3eeddb1cf7c81f7b359cecf1455ab1bbb5c7a08e763da005e4d99fa15ccb"
+      }
+     ],
+     "deltas": [
+      {
+       "commit": "c1bee43f",
+       "delta": 3
+      }
+     ]
     }
    ]
   },
@@ -3016,1105 +4753,1147 @@
  "entrypoints": [
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 14,
+   "line": 18,
+   "text": "'tests/workspace-privacy/gates.ps1',",
+   "invokes": "tests/workspace-privacy/gates.ps1"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 19,
+   "text": "'tests/workspace-privacy/run.ps1',",
+   "invokes": "tests/workspace-privacy/run.ps1"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 21,
+   "text": "'tests/workspace-migration/run.ps1',",
+   "invokes": "tests/workspace-migration/run.ps1"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 24,
+   "text": "'scripts/assert-core-local-paths.mjs',",
+   "invokes": "scripts/assert-core-local-paths.mjs"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 25,
+   "text": "'tests/workspace-package/core-local-paths.test.mjs',",
+   "invokes": "tests/workspace-package/core-local-paths.test.mjs"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 26,
+   "text": "'tests/BumpVersionReleaseBoundary.Tests.ps1',",
+   "invokes": "tests/BumpVersionReleaseBoundary.Tests.ps1"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 27,
    "text": "'scripts/desktop-native-nsis-observer.mjs',",
    "invokes": "scripts/desktop-native-nsis-observer.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 15,
+   "line": 28,
    "text": "'tests/workspace-package/nsis-observer.test.mjs',",
    "invokes": "tests/workspace-package/nsis-observer.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 26,
+   "line": 39,
    "text": "'scripts/stage-desktop-msi-plan.mjs',",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 27,
+   "line": 40,
    "text": "'scripts/stage-desktop-nsis-plan.mjs',",
    "invokes": "scripts/stage-desktop-nsis-plan.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 28,
+   "line": 41,
    "text": "'tests/workspace-package/desktop-msi-plan.test.mjs',",
    "invokes": "tests/workspace-package/desktop-msi-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 29,
+   "line": 42,
    "text": "'tests/workspace-package/desktop-build-entry.test.mjs',",
    "invokes": "tests/workspace-package/desktop-build-entry.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 30,
+   "line": 43,
    "text": "'tests/workspace-package/desktop-nsis-plan.test.mjs',",
    "invokes": "tests/workspace-package/desktop-nsis-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 31,
+   "line": 44,
+   "text": "'tests/workspace-package/desktop-publisher-contract.mjs',",
+   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 45,
    "text": "'tests/workspace-update/install-lifecycle.test.ps1',",
    "invokes": "tests/workspace-update/install-lifecycle.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 32,
+   "line": 46,
    "text": "'tests/workspace-update/run.ps1',",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 33,
+   "line": 47,
    "text": "'tests/workspace-gate-map/build-map.mjs',",
    "invokes": "tests/workspace-gate-map/build-map.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 34,
+   "line": 48,
    "text": "'tests/workspace-gate-map/check-map.mjs',",
    "invokes": "tests/workspace-gate-map/check-map.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 35,
+   "line": 49,
    "text": "'tests/workspace-gate-map/dispositions.mjs',",
    "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 37,
+   "line": 51,
    "text": "'tests/workspace-gate-map/run.ps1',",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 135,
+   "line": 146,
    "text": "'scripts/bootstrap-git-guard.ps1',",
    "invokes": "scripts/bootstrap-git-guard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 136,
+   "line": 147,
    "text": "'scripts/bump-version.ps1',",
    "invokes": "scripts/bump-version.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 137,
+   "line": 148,
    "text": "'scripts/git-guard.ps1',",
    "invokes": "scripts/git-guard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 138,
+   "line": 149,
    "text": "'scripts/gitleaks-history.ps1',",
    "invokes": "scripts/gitleaks-history.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 140,
+   "line": 151,
    "text": "'scripts/audit-public-surface.ps1',",
    "invokes": "scripts/audit-public-surface.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 141,
+   "line": 152,
    "text": "'scripts/assert-release-notes-quality.ps1',",
    "invokes": "scripts/assert-release-notes-quality.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 142,
+   "line": 153,
    "text": "'scripts/assert-pester-shard-coverage.ps1',",
    "invokes": "scripts/assert-pester-shard-coverage.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 143,
+   "line": 154,
    "text": "'scripts/run-pester-shard.ps1',",
    "invokes": "scripts/run-pester-shard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 144,
+   "line": 155,
    "text": "'scripts/operator-run-full-tests.ps1',",
    "invokes": "scripts/operator-run-full-tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 145,
+   "line": 156,
    "text": "'scripts/winsmux-core.ps1',",
    "invokes": "scripts/winsmux-core.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 146,
+   "line": 157,
    "text": "'scripts/run-tests.ps1',",
    "invokes": "scripts/run-tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 147,
+   "line": 158,
    "text": "'scripts/winsmux-pester.psm1',",
    "invokes": "scripts/winsmux-pester.psm1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 148,
+   "line": 159,
    "text": "'scripts/winsmux-task811-authority.ps1',",
    "invokes": "scripts/winsmux-task811-authority.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 149,
+   "line": 160,
    "text": "'scripts/assert-install-downloads-exist.ps1',",
    "invokes": "scripts/assert-install-downloads-exist.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 150,
+   "line": 161,
    "text": "'scripts/codex-subagent-worktree-guard.ps1',",
    "invokes": "scripts/codex-subagent-worktree-guard.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 151,
+   "line": 162,
    "text": "'scripts/run-cli-bakeoff-openrouter.ps1',",
    "invokes": "scripts/run-cli-bakeoff-openrouter.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 152,
+   "line": 163,
    "text": "'scripts/run-cli-bakeoff-local-workers.ps1',",
    "invokes": "scripts/run-cli-bakeoff-local-workers.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 153,
+   "line": 164,
    "text": "'scripts/start-cli-bakeoff-desktop.ps1',",
    "invokes": "scripts/start-cli-bakeoff-desktop.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 154,
+   "line": 165,
    "text": "'scripts/summarize-cli-bakeoff.ps1',",
    "invokes": "scripts/summarize-cli-bakeoff.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 155,
+   "line": 166,
    "text": "'scripts/test-cli-bakeoff-preflight.ps1',",
    "invokes": "scripts/test-cli-bakeoff-preflight.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 156,
+   "line": 167,
    "text": "'scripts/test-install-e2e.ps1',",
    "invokes": "scripts/test-install-e2e.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 157,
+   "line": 168,
    "text": "'scripts/test-native-bridge-resolution.ps1',",
    "invokes": "scripts/test-native-bridge-resolution.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 158,
+   "line": 169,
    "text": "'scripts/test-install-redirected.ps1',",
    "invokes": "scripts/test-install-redirected.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 159,
+   "line": 170,
    "text": "'scripts/package-remote-helper.sh',",
    "invokes": "scripts/package-remote-helper.sh"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 160,
+   "line": 171,
    "text": "'scripts/test-public-remote-helper.sh',",
    "invokes": "scripts/test-public-remote-helper.sh"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 161,
+   "line": 172,
    "text": "'scripts/test-public-release.ps1',",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 162,
+   "line": 173,
    "text": "'scripts/invoke-headless-startup-actor.ps1',",
    "invokes": "scripts/invoke-headless-startup-actor.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 163,
+   "line": 174,
    "text": "'scripts/desktop-install-inventory.ps1',",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 164,
+   "line": 175,
    "text": "'scripts/capture-desktop-baseline.ps1',",
    "invokes": "scripts/capture-desktop-baseline.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 166,
+   "line": 177,
    "text": "'scripts/test-v03617-reliability-gate.ps1',",
    "invokes": "scripts/test-v03617-reliability-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 167,
+   "line": 178,
    "text": "'scripts/test-v03618-release-hardening.ps1',",
    "invokes": "scripts/test-v03618-release-hardening.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 168,
+   "line": 179,
    "text": "'scripts/test-v03619-repo-audit.ps1',",
    "invokes": "scripts/test-v03619-repo-audit.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 169,
+   "line": 180,
    "text": "'scripts/test-v03620-coordinator-foundation.ps1',",
    "invokes": "scripts/test-v03620-coordinator-foundation.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 170,
+   "line": 181,
    "text": "'scripts/test-v03621-local-router-shadow.ps1',",
    "invokes": "scripts/test-v03621-local-router-shadow.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 171,
+   "line": 182,
    "text": "'scripts/test-v03623-session-readiness.ps1',",
    "invokes": "scripts/test-v03623-session-readiness.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 172,
+   "line": 183,
    "text": "'scripts/test-v03626-desktop-split-gate.ps1',",
    "invokes": "scripts/test-v03626-desktop-split-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 173,
+   "line": 184,
    "text": "'scripts/test-v03627-compat-performance-gate.ps1',",
    "invokes": "scripts/test-v03627-compat-performance-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 174,
+   "line": 185,
    "text": "'scripts/test-v03628-race-abnormal-soak.ps1',",
    "invokes": "scripts/test-v03628-race-abnormal-soak.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 175,
+   "line": 186,
    "text": "'scripts/test-v03628-runtime-reliability-gate.ps1',",
    "invokes": "scripts/test-v03628-runtime-reliability-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 176,
+   "line": 187,
    "text": "'scripts/test-v03628-packaged-restore-gate.ps1',",
    "invokes": "scripts/test-v03628-packaged-restore-gate.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 177,
+   "line": 188,
    "text": "'scripts/test-v03638-router-distribution.ps1',",
    "invokes": "scripts/test-v03638-router-distribution.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 178,
+   "line": 189,
    "text": "'scripts/test-v03638-router-reliability.ps1',",
    "invokes": "scripts/test-v03638-router-reliability.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 179,
+   "line": 190,
    "text": "'scripts/upstream-reevaluation.ps1',",
    "invokes": "scripts/upstream-reevaluation.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 180,
+   "line": 191,
    "text": "'scripts/validate-pester-reduction-plan.ps1',",
    "invokes": "scripts/validate-pester-reduction-plan.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 181,
+   "line": 192,
    "text": "'scripts/validate-legacy-compat-inventory.ps1',",
    "invokes": "scripts/validate-legacy-compat-inventory.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 182,
+   "line": 193,
    "text": "'scripts/stage-npm-release.mjs',",
    "invokes": "scripts/stage-npm-release.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 183,
+   "line": 194,
    "text": "'scripts/prepare-install-e2e-fixture.mjs',",
    "invokes": "scripts/prepare-install-e2e-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 184,
+   "line": 195,
    "text": "'tests/workspace-package/install-transport.test.mjs',",
    "invokes": "tests/workspace-package/install-transport.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 187,
+   "line": 198,
    "text": "'tests/PublicSurfacePolicy.Tests.ps1',",
    "invokes": "tests/PublicSurfacePolicy.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 188,
+   "line": 199,
    "text": "'tests/GitGuard.Tests.ps1',",
    "invokes": "tests/GitGuard.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 189,
+   "line": 200,
    "text": "'tests/GitHubWritePreflight.Tests.ps1',",
    "invokes": "tests/GitHubWritePreflight.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 190,
+   "line": 201,
    "text": "'tests/McpServerContract.Tests.ps1',",
    "invokes": "tests/McpServerContract.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 191,
+   "line": 202,
    "text": "'tests/codex-subagent-worktree-guard.Tests.ps1',",
    "invokes": "tests/codex-subagent-worktree-guard.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 192,
+   "line": 203,
    "text": "'tests/HarnessContract.Tests.ps1',",
    "invokes": "tests/HarnessContract.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 193,
+   "line": 204,
    "text": "'tests/DeclarativeWorkflow.Tests.ps1',",
    "invokes": "tests/DeclarativeWorkflow.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 194,
+   "line": 205,
    "text": "'tests/NpmReleasePackage.Tests.ps1',",
    "invokes": "tests/NpmReleasePackage.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 195,
+   "line": 206,
    "text": "'tests/VersionSurface.Tests.ps1',",
    "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 196,
+   "line": 207,
    "text": "'tests/DesktopInstallReceipt.Tests.ps1',",
    "invokes": "tests/DesktopInstallReceipt.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 197,
+   "line": 208,
    "text": "'tests/CliBakeoff.Tests.ps1',",
    "invokes": "tests/CliBakeoff.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 198,
+   "line": 209,
    "text": "'tests/ThreatModelContract.Tests.ps1',",
    "invokes": "tests/ThreatModelContract.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 199,
+   "line": 210,
    "text": "'tests/V03630DesktopDebugGate.Tests.ps1',",
    "invokes": "tests/V03630DesktopDebugGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 200,
+   "line": 211,
    "text": "'tests/V03630DesktopDebugGateProcess.Tests.ps1',",
    "invokes": "tests/V03630DesktopDebugGateProcess.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 201,
+   "line": 212,
    "text": "'tests/Integration.PluginHookLoader.Tests.ps1',",
    "invokes": "tests/Integration.PluginHookLoader.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 202,
+   "line": 213,
    "text": "'tests/UpstreamReevaluation.Tests.ps1',",
    "invokes": "tests/UpstreamReevaluation.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 203,
+   "line": 214,
    "text": "'tests/EnterpriseStrategyAlignment.Tests.ps1',",
    "invokes": "tests/EnterpriseStrategyAlignment.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 204,
+   "line": 215,
    "text": "'tests/ReviewLatencyHardening.Tests.ps1',",
    "invokes": "tests/ReviewLatencyHardening.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 205,
+   "line": 216,
    "text": "'tests/Task781RuntimeCompatibility.Tests.ps1',",
    "invokes": "tests/Task781RuntimeCompatibility.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 206,
+   "line": 217,
    "text": "'tests/Task839WorktreeReviewState.Tests.ps1',",
    "invokes": "tests/Task839WorktreeReviewState.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 207,
+   "line": 218,
    "text": "'tests/V03618ReleaseHardening.Tests.ps1',",
    "invokes": "tests/V03618ReleaseHardening.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 208,
+   "line": 219,
    "text": "'tests/V03619RepoAudit.Tests.ps1',",
    "invokes": "tests/V03619RepoAudit.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 209,
+   "line": 220,
    "text": "'tests/Task810PesterRunner.Tests.ps1',",
    "invokes": "tests/Task810PesterRunner.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 210,
+   "line": 221,
    "text": "'tests/planning-model.Tests.ps1',",
    "invokes": "tests/planning-model.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 211,
+   "line": 222,
    "text": "'tests/Task800OperatorShellBoundary.Tests.ps1',",
    "invokes": "tests/Task800OperatorShellBoundary.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 212,
+   "line": 223,
    "text": "'tests/PesterGitIsolation.Tests.ps1',",
    "invokes": "tests/PesterGitIsolation.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 213,
+   "line": 224,
    "text": "'tests/Task811OperatorInfraGate.Tests.ps1',",
    "invokes": "tests/Task811OperatorInfraGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 214,
+   "line": 225,
    "text": "'tests/Integration.WorktreeHook.Tests.ps1',",
    "invokes": "tests/Integration.WorktreeHook.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 216,
+   "line": 227,
    "text": "'tests/V03620CoordinatorFoundation.Tests.ps1',",
    "invokes": "tests/V03620CoordinatorFoundation.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 217,
+   "line": 228,
    "text": "'tests/V03621LocalRouterShadow.Tests.ps1',",
    "invokes": "tests/V03621LocalRouterShadow.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 218,
+   "line": 229,
    "text": "'tests/V03638RouterReliability.Tests.ps1',",
    "invokes": "tests/V03638RouterReliability.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 219,
+   "line": 230,
    "text": "'tests/V03626DesktopSplitGate.Tests.ps1',",
    "invokes": "tests/V03626DesktopSplitGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 220,
+   "line": 231,
    "text": "'tests/V03627CompatPerformanceGate.Tests.ps1',",
    "invokes": "tests/V03627CompatPerformanceGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 221,
+   "line": 232,
    "text": "'tests/V03628RaceAbnormalSoak.Tests.ps1',",
    "invokes": "tests/V03628RaceAbnormalSoak.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 222,
+   "line": 233,
    "text": "'tests/V03628RuntimeReliabilityGate.Tests.ps1',",
    "invokes": "tests/V03628RuntimeReliabilityGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 223,
+   "line": 234,
    "text": "'tests/V03628PackagedRestoreGate.Tests.ps1',",
    "invokes": "tests/V03628PackagedRestoreGate.Tests.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 225,
+   "line": 236,
    "text": "'tests/bridge/_helpers/BridgeTestCommon.ps1',",
    "invokes": "tests/bridge/_helpers/BridgeTestCommon.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 234,
+   "line": 245,
    "text": "'tests/workspace-efficiency/measure.py',",
    "invokes": "tests/workspace-efficiency/measure.py"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 235,
+   "line": 246,
    "text": "'tests/workspace-efficiency/run.ps1',",
    "invokes": "tests/workspace-efficiency/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 629,
+   "line": 639,
    "text": "'scripts/assert-core-publication-ready.mjs',",
    "invokes": "scripts/assert-core-publication-ready.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 630,
+   "line": 640,
    "text": "'scripts/assert-core-sidecar.ps1',",
    "invokes": "scripts/assert-core-sidecar.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 631,
+   "line": 641,
    "text": "'scripts/assert-distribution-version.ps1',",
    "invokes": "scripts/assert-distribution-version.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 632,
+   "line": 642,
    "text": "'scripts/assert-license-inputs.mjs',",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 633,
+   "line": 643,
    "text": "'scripts/assert-nsis-generation.mjs',",
    "invokes": "scripts/assert-nsis-generation.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 634,
+   "line": 644,
    "text": "'scripts/assert-windows-runtime.mjs',",
    "invokes": "scripts/assert-windows-runtime.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 635,
+   "line": 645,
    "text": "'scripts/bind-native-publication-operations.mjs',",
    "invokes": "scripts/bind-native-publication-operations.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 636,
+   "line": 646,
    "text": "'scripts/build-core-candidate.mjs',",
    "invokes": "scripts/build-core-candidate.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 637,
+   "line": 647,
    "text": "'scripts/check-parent-publication-prerequisites.mjs',",
    "invokes": "scripts/check-parent-publication-prerequisites.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 638,
+   "line": 648,
    "text": "'scripts/collect-core-candidates.mjs',",
    "invokes": "scripts/collect-core-candidates.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 639,
+   "line": 649,
    "text": "'scripts/distribution-prelaunch.mjs',",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 640,
+   "line": 650,
    "text": "'scripts/hold-publication-job.ps1',",
    "invokes": "scripts/hold-publication-job.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 641,
+   "line": 651,
    "text": "'scripts/integrated-publication-assets.mjs',",
    "invokes": "scripts/integrated-publication-assets.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 642,
+   "line": 652,
    "text": "'scripts/integrated-publication-attempt.mjs',",
    "invokes": "scripts/integrated-publication-attempt.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 643,
+   "line": 653,
    "text": "'scripts/integrated-publication-contract.mjs',",
    "invokes": "scripts/integrated-publication-contract.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 644,
+   "line": 654,
    "text": "'scripts/integrated-publication-origins.mjs',",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 645,
+   "line": 655,
    "text": "'tests/workspace-package/publication-native-v2.test.ps1',",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 646,
+   "line": 656,
    "text": "'scripts/integrated-publication-evidence.mjs',",
    "invokes": "scripts/integrated-publication-evidence.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 647,
+   "line": 657,
    "text": "'scripts/observe-github-candidate-artifacts.mjs',",
    "invokes": "scripts/observe-github-candidate-artifacts.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 648,
+   "line": 658,
    "text": "'scripts/observe-github-required-checks.mjs',",
    "invokes": "scripts/observe-github-required-checks.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 649,
+   "line": 659,
    "text": "'scripts/observe-publication-destinations.mjs',",
    "invokes": "scripts/observe-publication-destinations.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 650,
+   "line": 660,
    "text": "'scripts/observe-publication-runtime-sources.mjs',",
    "invokes": "scripts/observe-publication-runtime-sources.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 651,
+   "line": 661,
    "text": "'scripts/observe-publication-source-tree.mjs',",
    "invokes": "scripts/observe-publication-source-tree.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 652,
+   "line": 662,
    "text": "'scripts/observe-publication-tools.mjs',",
    "invokes": "scripts/observe-publication-tools.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 653,
+   "line": 663,
    "text": "'scripts/plan-integrated-publication.mjs',",
    "invokes": "scripts/plan-integrated-publication.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 654,
+   "line": 664,
    "text": "'scripts/prepare-core-release.mjs',",
    "invokes": "scripts/prepare-core-release.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 655,
+   "line": 665,
    "text": "'scripts/prepare-integrated-npm-tarball.mjs',",
    "invokes": "scripts/prepare-integrated-npm-tarball.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 656,
+   "line": 666,
    "text": "'scripts/prepare-integrated-publication.mjs',",
    "invokes": "scripts/prepare-integrated-publication.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 657,
+   "line": 667,
    "text": "'scripts/prepare-verified-npm-candidate.mjs',",
    "invokes": "scripts/prepare-verified-npm-candidate.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 658,
+   "line": 668,
    "text": "'scripts/publication-node-source-guard.mjs',",
    "invokes": "scripts/publication-node-source-guard.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 659,
+   "line": 669,
    "text": "'scripts/read-ci-artifact.py',",
    "invokes": "scripts/read-ci-artifact.py"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 660,
+   "line": 670,
    "text": "'scripts/read-required-ci-jobs.py',",
    "invokes": "scripts/read-required-ci-jobs.py"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 661,
+   "line": 671,
    "text": "'scripts/stage-bundled-distribution.mjs',",
    "invokes": "scripts/stage-bundled-distribution.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 662,
+   "line": 672,
    "text": "'scripts/stage-core-generation.mjs',",
    "invokes": "scripts/stage-core-generation.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 663,
+   "line": 673,
    "text": "'scripts/stage-core-release.mjs',",
    "invokes": "scripts/stage-core-release.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 664,
+   "line": 674,
    "text": "'scripts/stage-distribution-licenses.mjs',",
    "invokes": "scripts/stage-distribution-licenses.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 665,
+   "line": 675,
    "text": "'scripts/stage-integrated-ci-artifact.mjs',",
    "invokes": "scripts/stage-integrated-ci-artifact.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 666,
+   "line": 676,
    "text": "'scripts/windows-distribution-build.mjs',",
    "invokes": "scripts/windows-distribution-build.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 667,
+   "line": 677,
    "text": "'scripts/windows-license-build-inputs.mjs',",
    "invokes": "scripts/windows-license-build-inputs.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 668,
+   "line": 678,
    "text": "'scripts/assert-windows-distribution-toolchain.mjs',",
    "invokes": "scripts/assert-windows-distribution-toolchain.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 669,
+   "line": 679,
    "text": "'tests/workspace-package/barrier-fault.ps1',",
    "invokes": "tests/workspace-package/barrier-fault.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 670,
+   "line": 680,
    "text": "'tests/workspace-package/windows-runtime.test.mjs',",
    "invokes": "tests/workspace-package/windows-runtime.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 671,
+   "line": 681,
    "text": "'tests/workspace-package/bundled-distribution.test.mjs',",
    "invokes": "tests/workspace-package/bundled-distribution.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 672,
+   "line": 682,
    "text": "'tests/workspace-package/nsis-generation.test.mjs',",
    "invokes": "tests/workspace-package/nsis-generation.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 673,
+   "line": 683,
    "text": "'tests/workspace-package/fixture-pe.mjs',",
    "invokes": "tests/workspace-package/fixture-pe.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 674,
+   "line": 684,
    "text": "'tests/workspace-package/install-lifecycle-source.test.ps1',",
    "invokes": "tests/workspace-package/install-lifecycle-source.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 675,
+   "line": 685,
    "text": "'tests/workspace-package/install-generation.test.ps1',",
    "invokes": "tests/workspace-package/install-generation.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 676,
+   "line": 686,
    "text": "'tests/workspace-package/fixture-child.ps1',",
    "invokes": "tests/workspace-package/fixture-child.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 677,
+   "line": 687,
    "text": "'tests/workspace-package/github-candidate-artifacts.test.mjs',",
    "invokes": "tests/workspace-package/github-candidate-artifacts.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 678,
+   "line": 688,
    "text": "'tests/workspace-package/github-required-checks.test.mjs',",
    "invokes": "tests/workspace-package/github-required-checks.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 679,
+   "line": 689,
    "text": "'tests/workspace-package/integrated-npm-tarball.test.mjs',",
    "invokes": "tests/workspace-package/integrated-npm-tarball.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 680,
+   "line": 690,
    "text": "'tests/workspace-package/integrated-publication-assets.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-assets.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 681,
+   "line": 691,
    "text": "'tests/workspace-package/integrated-publication-attempt.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-attempt.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 682,
+   "line": 692,
    "text": "'tests/workspace-package/integrated-publication-contract.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-contract.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 683,
+   "line": 693,
    "text": "'tests/workspace-package/integrated-publication-evidence.test.mjs',",
    "invokes": "tests/workspace-package/integrated-publication-evidence.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 684,
+   "line": 694,
    "text": "'tests/workspace-package/npm-version.test.mjs',",
    "invokes": "tests/workspace-package/npm-version.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 685,
+   "line": 695,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 686,
+   "line": 696,
    "text": "'tests/workspace-package/prepare-publication-custody-fixture.mjs',",
    "invokes": "tests/workspace-package/prepare-publication-custody-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 687,
+   "line": 697,
    "text": "'tests/workspace-package/publication-authority-owner-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-authority-owner-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 688,
+   "line": 698,
    "text": "'tests/workspace-package/publication-authority-recovery-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-authority-recovery-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 689,
+   "line": 699,
    "text": "'tests/workspace-package/publication-authority.test.mjs',",
    "invokes": "tests/workspace-package/publication-authority.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 690,
+   "line": 700,
    "text": "'tests/workspace-package/publication-custody-child.mjs',",
    "invokes": "tests/workspace-package/publication-custody-child.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 691,
+   "line": 701,
    "text": "'tests/workspace-package/publication-destinations.test.mjs',",
    "invokes": "tests/workspace-package/publication-destinations.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 692,
+   "line": 702,
    "text": "'tests/workspace-package/publication-environment.test.ps1',",
    "invokes": "tests/workspace-package/publication-environment.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 693,
+   "line": 703,
    "text": "'tests/workspace-package/publication-fixture.mjs',",
    "invokes": "tests/workspace-package/publication-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 694,
+   "line": 704,
    "text": "'tests/workspace-package/publication-keeper-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-keeper-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 695,
+   "line": 705,
    "text": "'tests/workspace-package/publication-npm-guard.test.mjs',",
    "invokes": "tests/workspace-package/publication-npm-guard.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 696,
+   "line": 706,
    "text": "'tests/workspace-package/publication-npm-native.test.ps1',",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 697,
+   "line": 707,
    "text": "'tests/workspace-package/publication-output.test.ps1',",
    "invokes": "tests/workspace-package/publication-output.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 698,
+   "line": 708,
    "text": "'tests/workspace-package/publication-owner-death-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-owner-death-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 699,
+   "line": 709,
    "text": "'tests/workspace-package/publication-owner-freeze-fixture.mjs',",
    "invokes": "tests/workspace-package/publication-owner-freeze-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 700,
+   "line": 710,
    "text": "'tests/workspace-package/publication-plan.test.mjs',",
    "invokes": "tests/workspace-package/publication-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 701,
+   "line": 711,
    "text": "'tests/workspace-package/publication-source-guard.test.mjs',",
    "invokes": "tests/workspace-package/publication-source-guard.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 702,
+   "line": 712,
    "text": "'tests/workspace-package/publication-source-tree.test.mjs',",
    "invokes": "tests/workspace-package/publication-source-tree.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 703,
+   "line": 713,
    "text": "'tests/workspace-package/publication-tools.test.mjs',",
    "invokes": "tests/workspace-package/publication-tools.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 704,
+   "line": 714,
    "text": "'tests/workspace-package/run.ps1',",
    "invokes": "tests/workspace-package/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 705,
+   "line": 715,
    "text": "'tests/workspace-package/stage-ci-artifact.test.mjs',",
    "invokes": "tests/workspace-package/stage-ci-artifact.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 706,
+   "line": 716,
    "text": "'tests/workspace-package/verified-npm-candidate.test.mjs',",
    "invokes": "tests/workspace-package/verified-npm-candidate.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 707,
+   "line": 717,
    "text": "'tests/workspace-package/verify-publication-child-custody.ps1',",
    "invokes": "tests/workspace-package/verify-publication-child-custody.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 708,
+   "line": 718,
    "text": "'tests/workspace-package/verify-publication-custody.ps1',",
    "invokes": "tests/workspace-package/verify-publication-custody.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 709,
+   "line": 719,
    "text": "'tests/workspace-package/verify-publication-owner-recovery.ps1',",
    "invokes": "tests/workspace-package/verify-publication-owner-recovery.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 710,
+   "line": 720,
    "text": "'tests/workspace-package/version-contract.ps1',",
    "invokes": "tests/workspace-package/version-contract.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 718,
+   "line": 728,
    "text": "'winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs',",
    "invokes": "winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 719,
+   "line": 729,
    "text": "'winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs',",
    "invokes": "winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs"
   },
@@ -5176,13 +6955,13 @@
   },
   {
    "source": "scripts/bump-version.ps1",
-   "line": 394,
+   "line": 381,
    "text": "\"scripts/winsmux-core.ps1\",",
    "invokes": "scripts/winsmux-core.ps1"
   },
   {
    "source": "scripts/bump-version.ps1",
-   "line": 434,
+   "line": 418,
    "text": "$bridgeScript = Join-Path $PSScriptRoot \"winsmux-core.ps1\"",
    "invokes": "scripts/winsmux-core.ps1"
   },
@@ -5249,24 +7028,30 @@
   {
    "source": "scripts/collect-core-candidates.mjs",
    "line": 12,
+   "text": "import { assertCoreLocalPaths, coreLocalPathPrefixes } from './assert-core-local-paths.mjs';",
+   "invokes": "scripts/assert-core-local-paths.mjs"
+  },
+  {
+   "source": "scripts/collect-core-candidates.mjs",
+   "line": 13,
    "text": "import { coreTargets, bytesHash, readCorePlain, exactCoreObject, requireCore, coreTargetMeasurementIdentity, coreSourceInventory, coreSourceInventoryIdentity } from './build-core-candidate.mjs';",
    "invokes": "scripts/build-core-candidate.mjs"
   },
   {
    "source": "scripts/collect-core-candidates.mjs",
-   "line": 116,
+   "line": 117,
    "text": "const plan = bytesHash(readCorePlain(path.join(repo, 'scripts/windows-distribution-build.mjs')));",
    "invokes": "scripts/windows-distribution-build.mjs"
   },
   {
    "source": "scripts/collect-core-candidates.mjs",
-   "line": 205,
+   "line": 208,
    "text": "for (const [step, script] of [['package', 'package-remote-helper.sh'], ['test', 'test-public-remote-helper.sh']]) {",
    "invokes": "scripts/package-remote-helper.sh"
   },
   {
    "source": "scripts/collect-core-candidates.mjs",
-   "line": 205,
+   "line": 208,
    "text": "for (const [step, script] of [['package', 'package-remote-helper.sh'], ['test', 'test-public-remote-helper.sh']]) {",
    "invokes": "scripts/test-public-remote-helper.sh"
   },
@@ -5902,7 +7687,7 @@
   },
   {
    "source": "scripts/run-cli-bakeoff-openrouter.ps1",
-   "line": 264,
+   "line": 267,
    "text": "$raw = & pwsh -NoProfile -File (Join-Path $RepoRoot 'scripts/winsmux-core.ps1') workers exec $slot --script $relativePacket --task-id $taskId --run-id $singleRunId --json --project-dir $ProjectDir",
    "invokes": "scripts/winsmux-core.ps1"
   },
@@ -6508,80 +8293,86 @@
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 221,
+   "line": 223,
+   "text": "$syntheticPackPath = & (Get-RepoPath 'scripts/test-cli-bakeoff-preflight.ps1') -CreateSyntheticFixture $syntheticRoot",
+   "invokes": "scripts/test-cli-bakeoff-preflight.ps1"
+  },
+  {
+   "source": "scripts/test-v03627-compat-performance-gate.ps1",
+   "line": 226,
    "text": "$bakeoffRunnerCheck = Get-RepoContent 'winsmux-app/scripts/bakeoff-runner-check.mjs'",
    "invokes": "winsmux-app/scripts/bakeoff-runner-check.mjs"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 222,
+   "line": 227,
    "text": "$automationPoolCheck = Get-RepoContent 'winsmux-app/scripts/automation-driver-pool-check.mjs'",
    "invokes": "winsmux-app/scripts/automation-driver-pool-check.mjs"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 223,
+   "line": 228,
    "text": "$desktopSplitGate = Get-RepoContent 'scripts/test-v03626-desktop-split-gate.ps1'",
    "invokes": "scripts/test-v03626-desktop-split-gate.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 249,
+   "line": 254,
    "text": ") 'winsmux-app/scripts/common-contract-package-check.mjs'",
    "invokes": "winsmux-app/scripts/common-contract-package-check.mjs"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 280,
+   "line": 285,
    "text": ") 'scripts/test-cli-bakeoff-preflight.ps1'",
    "invokes": "scripts/test-cli-bakeoff-preflight.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 317,
+   "line": 322,
    "text": ") 'winsmux-app/scripts/bakeoff-runner-check.mjs'",
    "invokes": "winsmux-app/scripts/bakeoff-runner-check.mjs"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 326,
+   "line": 331,
    "text": ") 'winsmux-app/scripts/automation-driver-pool-check.mjs'",
    "invokes": "winsmux-app/scripts/automation-driver-pool-check.mjs"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 332,
+   "line": 337,
    "text": ") 'scripts/test-v03626-desktop-split-gate.ps1'",
    "invokes": "scripts/test-v03626-desktop-split-gate.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 334,
+   "line": 339,
    "text": "foreach ($path in @('scripts/test-v03627-compat-performance-gate.ps1', 'tests/V03627CompatPerformanceGate.Tests.ps1')) {",
    "invokes": "tests/V03627CompatPerformanceGate.Tests.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 335,
+   "line": 340,
    "text": "Add-Check \"pre-commit whitelist allows $path\" ($whitelist -match [regex]::Escape($path)) '.githooks/pre-commit-whitelist.ps1'",
    "invokes": ".githooks/pre-commit-whitelist.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 338,
+   "line": 343,
    "text": "Add-Check 'gitignore allows the v0.36.27 compat performance Pester wrapper' ($gitignore -match [regex]::Escape('!tests/V03627CompatPerformanceGate.Tests.ps1')) '.gitignore'",
    "invokes": "tests/V03627CompatPerformanceGate.Tests.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 372,
-   "text": "$releaseCommandResults += , (Invoke-ReleaseInputCommand 'worker-benchmark' 'pwsh' @('-NoProfile', '-File', (Get-RepoPath 'scripts/test-cli-bakeoff-preflight.ps1'), '-PackPath', (Get-RepoPath 'tasks/cli-bakeoff/v1/benchmark-pack.json'), '-Json') 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath tasks/cli-bakeoff/v1/benchmark-pack.json -Json')",
+   "line": 376,
+   "text": "$releaseCommandResults += , (Invoke-ReleaseInputCommand 'worker-benchmark' 'pwsh' @('-NoProfile', '-File', (Get-RepoPath 'scripts/test-cli-bakeoff-preflight.ps1'), '-PackPath', $syntheticPackPath, '-Json') 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath <generated-synthetic-pack> -Json')",
    "invokes": "scripts/test-cli-bakeoff-preflight.ps1"
   },
   {
    "source": "scripts/test-v03627-compat-performance-gate.ps1",
-   "line": 442,
-   "text": "command               = 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath tasks/cli-bakeoff/v1/benchmark-pack.json -Json'",
+   "line": 446,
+   "text": "command               = 'pwsh -NoProfile -File scripts/test-cli-bakeoff-preflight.ps1 -PackPath <generated-synthetic-pack> -Json'",
    "invokes": "scripts/test-cli-bakeoff-preflight.ps1"
   },
   {
@@ -6766,7 +8557,7 @@
   },
   {
    "source": "scripts/windows-distribution-build.mjs",
-   "line": 4,
+   "line": 5,
    "text": "import { physicalPath } from './distribution-prelaunch.mjs';",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
@@ -7215,6 +9006,36 @@
    "invokes": "scripts/test-public-release.ps1"
   },
   {
+   "source": "tests/BumpVersionReleaseBoundary.Tests.ps1",
+   "line": 6,
+   "text": "$script:BumpSource = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/bump-version.ps1'",
+   "invokes": "scripts/bump-version.ps1"
+  },
+  {
+   "source": "tests/BumpVersionReleaseBoundary.Tests.ps1",
+   "line": 15,
+   "text": "Copy-Item -LiteralPath $script:BumpSource -Destination (Join-Path $fixture 'scripts/bump-version.ps1')",
+   "invokes": "scripts/bump-version.ps1"
+  },
+  {
+   "source": "tests/BumpVersionReleaseBoundary.Tests.ps1",
+   "line": 27,
+   "text": "[IO.File]::WriteAllText((Join-Path $fixture 'scripts/winsmux-core.ps1'), 'exit 77')",
+   "invokes": "scripts/winsmux-core.ps1"
+  },
+  {
+   "source": "tests/BumpVersionReleaseBoundary.Tests.ps1",
+   "line": 40,
+   "text": "foreach ($argument in @('-NoProfile', '-File', (Join-Path $fixture 'scripts/bump-version.ps1')) + $BumpArguments) {",
+   "invokes": "scripts/bump-version.ps1"
+  },
+  {
+   "source": "tests/CliBakeoff.Tests.ps1",
+   "line": 59,
+   "text": "$gate = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/test-v03627-compat-performance-gate.ps1') -Raw",
+   "invokes": "scripts/test-v03627-compat-performance-gate.ps1"
+  },
+  {
    "source": "tests/DesktopInstallReceipt.Tests.ps1",
    "line": 3,
    "text": ". (Join-Path $script:RepoRoot 'scripts/desktop-install-inventory.ps1')",
@@ -7389,6 +9210,12 @@
    "invokes": "scripts/winsmux-core.ps1"
   },
   {
+   "source": "tests/McpServerContract.Tests.ps1",
+   "line": 30,
+   "text": "$generator = Join-Path $script:RepoRoot 'winsmux-app/scripts/generate-control-plane-bindings.mjs'",
+   "invokes": "winsmux-app/scripts/generate-control-plane-bindings.mjs"
+  },
+  {
    "source": "tests/NpmReleasePackage.Tests.ps1",
    "line": 187,
    "text": "foreach ($relative in @('scripts/stage-npm-release.mjs', 'scripts/assert-distribution-version.ps1', 'scripts/distribution-prelaunch.mjs',",
@@ -7516,49 +9343,55 @@
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 24,
+   "line": 32,
+   "text": "$start.Environment['LD1_WHITELIST_SCRIPT'] = Join-Path $script:LocalPlanningRepo '.githooks/pre-commit-whitelist.ps1'",
+   "invokes": ".githooks/pre-commit-whitelist.ps1"
+  },
+  {
+   "source": "tests/PublicSurfacePolicy.Tests.ps1",
+   "line": 111,
    "text": "$desktopPaneE2E = Get-Content (Join-Path $repoRoot 'winsmux-app/scripts/desktop-pane-e2e.mjs') -Raw",
    "invokes": "winsmux-app/scripts/desktop-pane-e2e.mjs"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 25,
+   "line": 112,
    "text": "$auditPublicSurface = Join-Path $repoRoot 'scripts/audit-public-surface.ps1'",
    "invokes": "scripts/audit-public-surface.ps1"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 399,
+   "line": 486,
    "text": "$gitGuard = Get-Content (Join-Path $repoRoot 'scripts/git-guard.ps1') -Raw",
    "invokes": "scripts/git-guard.ps1"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 400,
+   "line": 487,
    "text": "$publicAudit = Get-Content (Join-Path $repoRoot 'scripts/audit-public-surface.ps1') -Raw",
    "invokes": "scripts/audit-public-surface.ps1"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 416,
+   "line": 503,
    "text": "$gitGuard = Join-Path $repoRoot 'scripts/git-guard.ps1'",
    "invokes": "scripts/git-guard.ps1"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 472,
+   "line": 559,
    "text": "$gitleaksScript = Get-Content (Join-Path $repoRoot 'scripts/gitleaks-history.ps1') -Raw",
    "invokes": "scripts/gitleaks-history.ps1"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 559,
+   "line": 646,
    "text": "$registry = Get-Content (Join-Path $repoRoot 'scripts/winsmux-pester.psm1') -Raw",
    "invokes": "scripts/winsmux-pester.psm1"
   },
   {
    "source": "tests/PublicSurfacePolicy.Tests.ps1",
-   "line": 599,
+   "line": 686,
    "text": "Get-Content (Join-Path $repoRoot '.githooks/pre-commit-whitelist.ps1') -Raw | Should -Not -Match ([Regex]::Escape(\"'$record'\"))",
    "invokes": ".githooks/pre-commit-whitelist.ps1"
   },
@@ -7918,13 +9751,25 @@
   },
   {
    "source": "tests/VersionSurface.Tests.ps1",
-   "line": 1415,
+   "line": 273,
+   "text": "$bump = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts/bump-version.ps1') -Raw -Encoding UTF8",
+   "invokes": "scripts/bump-version.ps1"
+  },
+  {
+   "source": "tests/VersionSurface.Tests.ps1",
+   "line": 277,
+   "text": "$whitelist = Get-Content -LiteralPath (Join-Path $script:RepoRoot '.githooks/pre-commit-whitelist.ps1') -Raw",
+   "invokes": ".githooks/pre-commit-whitelist.ps1"
+  },
+  {
+   "source": "tests/VersionSurface.Tests.ps1",
+   "line": 1423,
    "text": "- `pwsh -NoProfile -File scripts/audit-public-surface.ps1`",
    "invokes": "scripts/audit-public-surface.ps1"
   },
   {
    "source": "tests/VersionSurface.Tests.ps1",
-   "line": 1416,
+   "line": 1424,
    "text": "- `pwsh -NoProfile -File scripts/git-guard.ps1 -Mode full`",
    "invokes": "scripts/git-guard.ps1"
   },
@@ -8447,6 +10292,18 @@
   {
    "source": "tests/workspace-gate-map/gate-map.json",
    "line": 0,
+   "text": "tests/workspace-migration/run.ps1",
+   "invokes": "tests/workspace-migration/run.ps1"
+  },
+  {
+   "source": "tests/workspace-gate-map/gate-map.json",
+   "line": 0,
+   "text": "tests/workspace-privacy/run.ps1",
+   "invokes": "tests/workspace-privacy/run.ps1"
+  },
+  {
+   "source": "tests/workspace-gate-map/gate-map.json",
+   "line": 0,
    "text": "tests/workspace-update/run.ps1",
    "invokes": "tests/workspace-update/run.ps1"
   },
@@ -8487,6 +10344,12 @@
    "invokes": "tests/workspace-journey/run.ps1"
   },
   {
+   "source": "tests/workspace-migration/run.ps1",
+   "line": 2,
+   "text": ". (Join-Path $PSScriptRoot '../workspace-privacy/gates.ps1')",
+   "invokes": "tests/workspace-privacy/gates.ps1"
+  },
+  {
    "source": "tests/workspace-package/bundled-distribution.test.mjs",
    "line": 5,
    "text": "import { stageBundledDistribution, assertCanonicalBundledDistribution } from '../../scripts/stage-bundled-distribution.mjs';",
@@ -8523,6 +10386,18 @@
    "invokes": "scripts/build-core-candidate.mjs"
   },
   {
+   "source": "tests/workspace-package/core-local-paths.test.mjs",
+   "line": 4,
+   "text": "import { scanCoreLocalPaths, assertCoreLocalPaths } from '../../scripts/assert-core-local-paths.mjs';",
+   "invokes": "scripts/assert-core-local-paths.mjs"
+  },
+  {
+   "source": "tests/workspace-package/core-local-paths.test.mjs",
+   "line": 5,
+   "text": "import * as buildPolicy from '../../scripts/windows-distribution-build.mjs';",
+   "invokes": "scripts/windows-distribution-build.mjs"
+  },
+  {
    "source": "tests/workspace-package/desktop-build-entry.test.mjs",
    "line": 8,
    "text": "import { desktopBuildArguments } from '../../winsmux-app/scripts/tauri-cli.mjs';",
@@ -8543,50 +10418,56 @@
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
    "line": 9,
-   "text": "import { beginDesktopBundle, readDesktopDistributionVersion, stageDesktopMsiPlan, signDesktopMsiAsset, readCompletedSignedBuild } from '../../scripts/stage-desktop-msi-plan.mjs';",
-   "invokes": "scripts/stage-desktop-msi-plan.mjs"
-  },
-  {
-   "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 10,
    "text": "import { fixturePe } from './fixture-pe.mjs';",
    "invokes": "tests/workspace-package/fixture-pe.mjs"
   },
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 247,
+   "line": 10,
+   "text": "import { assertDesktopPublisherContract } from './desktop-publisher-contract.mjs';",
+   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
+  },
+  {
+   "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
+   "line": 265,
    "text": "fs.writeFileSync(path.join(encodingRepo, 'scripts/assert-distribution-version.ps1'),",
    "invokes": "scripts/assert-distribution-version.ps1"
   },
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 296,
-   "text": "const mockNsisPath = path.join(repo, 'scripts/stage-desktop-nsis-plan.mjs');",
+   "line": 315,
+   "text": "const originalNsis = fs.readFileSync(path.join(repo, 'scripts/stage-desktop-nsis-plan.mjs'));",
    "invokes": "scripts/stage-desktop-nsis-plan.mjs"
   },
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 442,
-   "text": "const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8'), transportLines=transportSource.split('\\n');",
+   "line": 460,
+   "text": "const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8').replaceAll('\\r\\n','\\n'), transportLines=transportSource.split('\\n');",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 450,
+   "line": 468,
    "text": "const {selectTransportLicenseRows}=await import('../../scripts/desktop-native-nsis-observer.mjs');",
    "invokes": "scripts/desktop-native-nsis-observer.mjs"
   },
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 725,
+   "line": 743,
    "text": "const guardFile = path.join(fork, 'scripts/distribution-prelaunch.mjs');",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
-   "line": 732,
+   "line": 750,
    "text": "const forked = await import(pathToFileURL(path.join(fork, 'scripts/stage-desktop-msi-plan.mjs')).href);",
    "invokes": "scripts/stage-desktop-msi-plan.mjs"
+  },
+  {
+   "source": "tests/workspace-package/desktop-msi-plan.test.mjs",
+   "line": 831,
+   "text": "assert.deepEqual(fs.readFileSync(path.join(repo, 'scripts/stage-desktop-nsis-plan.mjs')), originalNsis);",
+   "invokes": "scripts/stage-desktop-nsis-plan.mjs"
   },
   {
    "source": "tests/workspace-package/desktop-nsis-plan.test.mjs",
@@ -8611,6 +10492,12 @@
    "line": 10,
    "text": "import { fixturePe } from './fixture-pe.mjs';",
    "invokes": "tests/workspace-package/fixture-pe.mjs"
+  },
+  {
+   "source": "tests/workspace-package/desktop-nsis-plan.test.mjs",
+   "line": 11,
+   "text": "import { assertDesktopPublisherContract } from './desktop-publisher-contract.mjs';",
+   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
   },
   {
    "source": "tests/workspace-package/fixture-child.ps1",
@@ -8825,48 +10712,54 @@
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
    "line": 36,
-   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\"]) {",
+   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\", \"scripts/windows-distribution-build.mjs\"]) {",
    "invokes": "scripts/assert-distribution-version.ps1"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
    "line": 36,
-   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\"]) {",
+   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\", \"scripts/windows-distribution-build.mjs\"]) {",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
    "line": 36,
-   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\"]) {",
+   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\", \"scripts/windows-distribution-build.mjs\"]) {",
    "invokes": "scripts/stage-npm-release.mjs"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
+   "line": 36,
+   "text": "for (const file of [\"scripts/stage-npm-release.mjs\", \"scripts/assert-distribution-version.ps1\", \"scripts/distribution-prelaunch.mjs\", \"scripts/windows-distribution-build.mjs\"]) {",
+   "invokes": "scripts/windows-distribution-build.mjs"
+  },
+  {
+   "source": "tests/workspace-package/npm-version.test.mjs",
    "line": 39,
-   "text": "write(root, \"child.ps1\", fs.readFileSync(path.join(repo,\"tests/workspace-package/fixture-child.ps1\")));",
+   "text": "const child=fs.readFileSync(path.join(repo,\"tests/workspace-package/fixture-child.ps1\"),'utf8');",
    "invokes": "tests/workspace-package/fixture-child.ps1"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
-   "line": 40,
+   "line": 44,
    "text": "write(root, \"winsmux-app/src-tauri/scripts/prepare-companion-cli.ps1\", fs.readFileSync(path.join(repo,\"winsmux-app/src-tauri/scripts/prepare-companion-cli.ps1\")));",
    "invokes": "winsmux-app/src-tauri/scripts/prepare-companion-cli.ps1"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
-   "line": 41,
+   "line": 45,
    "text": "write(root, \"winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs\", fs.readFileSync(path.join(repo,\"winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs\")));",
    "invokes": "winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
-   "line": 90,
+   "line": 94,
    "text": "const result = spawnSync(process.execPath, [...(fault ? [\"--import\", pathToFileURL(preload).href] : []), \"scripts/stage-npm-release.mjs\", ...args],",
    "invokes": "scripts/stage-npm-release.mjs"
   },
   {
    "source": "tests/workspace-package/npm-version.test.mjs",
-   "line": 107,
+   "line": 111,
    "text": "return spawnSync(\"pwsh\",[\"-NoLogo\",\"-NoProfile\",\"-File\",path.join(root,\"scripts/assert-distribution-version.ps1\"),\"-RepoRoot\",root],",
    "invokes": "scripts/assert-distribution-version.ps1"
   },
@@ -9088,37 +10981,37 @@
   },
   {
    "source": "tests/workspace-package/publication-destinations.test.mjs",
-   "line": 91,
+   "line": 93,
    "text": "const sourceNames=['scripts/observe-publication-destinations.mjs','tests/workspace-package/publication-destinations.test.mjs',",
    "invokes": "scripts/observe-publication-destinations.mjs"
   },
   {
    "source": "tests/workspace-package/publication-destinations.test.mjs",
-   "line": 92,
+   "line": 94,
    "text": "'scripts/integrated-publication-contract.mjs','scripts/integrated-publication-assets.mjs',",
    "invokes": "scripts/integrated-publication-assets.mjs"
   },
   {
    "source": "tests/workspace-package/publication-destinations.test.mjs",
-   "line": 92,
+   "line": 94,
    "text": "'scripts/integrated-publication-contract.mjs','scripts/integrated-publication-assets.mjs',",
    "invokes": "scripts/integrated-publication-contract.mjs"
   },
   {
    "source": "tests/workspace-package/publication-destinations.test.mjs",
-   "line": 93,
+   "line": 95,
    "text": "'scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','tests/workspace-package/publication-fixture.mjs'];",
    "invokes": "scripts/assert-license-inputs.mjs"
   },
   {
    "source": "tests/workspace-package/publication-destinations.test.mjs",
-   "line": 93,
+   "line": 95,
    "text": "'scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','tests/workspace-package/publication-fixture.mjs'];",
    "invokes": "scripts/distribution-prelaunch.mjs"
   },
   {
    "source": "tests/workspace-package/publication-destinations.test.mjs",
-   "line": 93,
+   "line": 95,
    "text": "'scripts/distribution-prelaunch.mjs','scripts/assert-license-inputs.mjs','tests/workspace-package/publication-fixture.mjs'];",
    "invokes": "tests/workspace-package/publication-fixture.mjs"
   },
@@ -9615,6 +11508,24 @@
    "invokes": "scripts/assert-windows-distribution-toolchain.mjs"
   },
   {
+   "source": "tests/workspace-privacy/run.ps1",
+   "line": 2,
+   "text": ". (Join-Path $PSScriptRoot 'gates.ps1')",
+   "invokes": "tests/workspace-privacy/gates.ps1"
+  },
+  {
+   "source": "tests/workspace-privacy/run.ps1",
+   "line": 18,
+   "text": "Invoke-RecordedGate -Name secret-source -File $pwsh -Arguments @('-NoProfile','-File','scripts/git-guard.ps1','-Mode','full')",
+   "invokes": "scripts/git-guard.ps1"
+  },
+  {
+   "source": "tests/workspace-privacy/run.ps1",
+   "line": 19,
+   "text": "Invoke-RecordedGate -Name public-surface -File $pwsh -Arguments @('-NoProfile','-File','scripts/audit-public-surface.ps1')",
+   "invokes": "scripts/audit-public-surface.ps1"
+  },
+  {
    "source": "tests/workspace-update/install-lifecycle.test.ps1",
    "line": 345,
    "text": "if($mode -ceq 'required-missing' -and $Relative -ceq 'scripts/winsmux-core.ps1'){throw 'Required support missing.'}",
@@ -9970,7 +11881,7 @@
   },
   {
    "source": "winsmux-app/scripts/run-cli-bakeoff.mjs",
-   "line": 165,
+   "line": 164,
    "text": "// Must match the -ProjectDir default in scripts/start-cli-bakeoff-desktop.ps1.",
    "invokes": "scripts/start-cli-bakeoff-desktop.ps1"
   },
@@ -11320,6 +13231,14 @@
    "plan_tasks": []
   },
   {
+   "path": "core/tests-rs/legacy_cli_contract.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
    "path": "core/tests-rs/machine_contract.rs",
    "kind": "rust_test_target",
    "q_ids": [
@@ -11680,48 +13599,8 @@
    "plan_tasks": []
   },
   {
-   "path": "git-graph/Cargo.toml",
-   "kind": "cargo_manifest",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "git-graph/src/color.rs",
-   "kind": "rust_src",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "git-graph/src/commit.rs",
-   "kind": "rust_src",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "git-graph/src/lane.rs",
-   "kind": "rust_src",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "git-graph/src/layout.rs",
-   "kind": "rust_src",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "git-graph/src/render.rs",
-   "kind": "rust_src",
+   "path": "scripts/assert-core-local-paths.mjs",
+   "kind": "ci_script",
    "q_ids": [
     "Q-GATES"
    ],
@@ -12496,6 +14375,14 @@
    "plan_tasks": []
   },
   {
+   "path": "tests/BumpVersionReleaseBoundary.Tests.ps1",
+   "kind": "pester",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
    "path": "tests/CliBakeoff.Tests.ps1",
    "kind": "pester",
    "q_ids": [
@@ -13056,6 +14943,22 @@
    "plan_tasks": []
   },
   {
+   "path": "tests/workspace-migration/golden.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-migration/run.ps1",
+   "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
    "path": "tests/workspace-package/barrier-fault.ps1",
    "kind": "ci_script",
    "q_ids": [
@@ -13076,6 +14979,14 @@
    "plan_tasks": [
     "TASK-879"
    ]
+  },
+  {
+   "path": "tests/workspace-package/core-local-paths.test.mjs",
+   "kind": "script_test",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
   },
   {
    "path": "tests/workspace-package/desktop-build-entry.test.mjs",
@@ -13118,6 +15029,14 @@
    "plan_tasks": [
     "TASK-879"
    ]
+  },
+  {
+   "path": "tests/workspace-package/desktop-publisher-contract.mjs",
+   "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
   },
   {
    "path": "tests/workspace-package/fixture-child.ps1",
@@ -13630,6 +15549,46 @@
    "plan_tasks": [
     "TASK-879"
    ]
+  },
+  {
+   "path": "tests/workspace-privacy/Cargo.toml",
+   "kind": "cargo_manifest",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-privacy/gates.ps1",
+   "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-privacy/markers.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-privacy/run.ps1",
+   "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-privacy/support.rs",
+   "kind": "rust_test_target",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
   },
   {
    "path": "tests/workspace-update/install-lifecycle.test.ps1",
