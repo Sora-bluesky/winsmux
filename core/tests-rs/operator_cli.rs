@@ -4057,7 +4057,7 @@ fn operator_cli_rust_canary_json_reports_default_cli_gate() {
     let json = run_json(&project_dir, &["rust-canary", "--json"]);
 
     assert_eq!(json["contract_version"], 1);
-    assert_eq!(json["task_id"], "TASK-283");
+    assert!(json.get("task_id").is_none());
     assert_eq!(json["target_version"], "v0.24.5");
     assert_eq!(json["phase"], "default-on-canary");
     assert_eq!(json["runtime"]["rust_cli_available"], true);
@@ -4066,6 +4066,64 @@ fn operator_cli_rust_canary_json_reports_default_cli_gate() {
     assert_eq!(json["runtime"]["tauri_backend_candidate"], false);
     assert_eq!(json["required_gates"][2], "shadow_cutover_gate");
     assert_eq!(json["blocking_conditions"][0], "invalid_WINSMUX_BACKEND");
+}
+
+#[test]
+fn operator_cli_binary_excludes_development_task_ids() {
+    let bytes = fs::read(env!("CARGO_BIN_EXE_winsmux")).expect("read the built CLI");
+    for pattern in [r"TASK-\d+", r"T\x00A\x00S\x00K\x00-\x00(?:[0-9]\x00)+"] {
+        let regex = regex::bytes::Regex::new(pattern).unwrap();
+        let matches: Vec<_> = regex
+            .find_iter(&bytes)
+            .map(|hit| hit.as_bytes())
+            .collect();
+        assert!(
+            matches.is_empty(),
+            "built CLI contains development task IDs: {matches:?}"
+        );
+    }
+}
+
+#[test]
+fn operator_cli_diagnostics_exclude_development_metadata() {
+    let project_dir = make_temp_project_dir("public-diagnostics");
+    let task_id = regex::Regex::new(r"TASK-\d+").unwrap();
+    for command in ["rust-canary", "manual-checklist", "guard"] {
+        let report = run_json(&project_dir, &[command, "--json"]);
+        let text = report.to_string();
+        assert!(
+            !task_id.is_match(&text),
+            "{command} includes a development task ID"
+        );
+        assert!(!text.contains("docs/internal/"));
+        assert!(!text.contains("sync-internal-docs.ps1"));
+    }
+}
+
+#[test]
+fn operator_cli_legacy_compat_gate_rejects_unsupported_inventory_version() {
+    let project_dir = make_temp_project_dir("legacy-compat-inventory-version");
+    let inventory_dir = project_dir.join("docs/project");
+    fs::create_dir_all(&inventory_dir).unwrap();
+    for version in [
+        serde_json::Value::Null,
+        serde_json::json!(2),
+        serde_json::json!("1"),
+    ] {
+        fs::write(
+            inventory_dir.join("legacy-compat-surface-inventory.json"),
+            serde_json::to_vec(&serde_json::json!({"version": version})).unwrap(),
+        )
+        .unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+            .args(["legacy-compat-gate", "--json"])
+            .current_dir(&project_dir)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("legacy compatibility inventory version must be 1"));
+    }
 }
 
 #[test]
@@ -4115,15 +4173,9 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
     let json = run_json(&project_dir, &["manual-checklist", "--json"]);
 
     assert_eq!(json["contract_version"], 1);
-    assert_eq!(json["task_id"], "TASK-416");
+    assert!(json.get("task_id").is_none());
     assert_eq!(json["target_version"], "v1.0.0");
-    assert_eq!(
-        json["document"]["path"],
-        "docs/internal/winsmux-manual-checklist-by-version.md"
-    );
-    assert_eq!(json["document"]["tracked"], false);
-    assert_eq!(json["document"]["exists"], false);
-    assert_eq!(json["document"]["storage_policy"], "internal_untracked");
+    assert!(json.get("document").is_none());
     assert_eq!(json["required_result_values"][0], "未");
     assert_eq!(json["required_result_values"][1], "合格");
     assert_eq!(json["required_result_values"][2], "不合格");
@@ -4298,10 +4350,7 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         json["desktop_manual_items"][7]["id"],
         "native_voice_dictation_or_fallback_contract"
     );
-    assert_eq!(
-        json["native_voice_fallback_contract"]["task_id"],
-        "TASK-468"
-    );
+    assert!(json["native_voice_fallback_contract"].get("task_id").is_none());
     assert_eq!(json["native_voice_fallback_contract"]["issue"], "#885");
     assert_eq!(
         json["native_voice_fallback_contract"]["release_gate"],
@@ -4355,12 +4404,13 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
     assert!(json["blocking_condition_note"]
         .as_str()
         .unwrap_or_default()
-        .contains("document.exists"));
+        .contains("recorded validation evidence"));
 }
 
 #[test]
-fn operator_cli_manual_checklist_json_reports_existing_internal_document() {
+fn operator_cli_manual_checklist_does_not_depend_on_internal_document() {
     let project_dir = make_temp_project_dir("manual-checklist-existing-document");
+    let before = run_json(&project_dir, &["manual-checklist", "--json"]);
     let document_dir = project_dir.join("docs").join("internal");
     fs::create_dir_all(&document_dir).expect("test should create manual checklist directory");
     fs::write(
@@ -4371,9 +4421,10 @@ fn operator_cli_manual_checklist_json_reports_existing_internal_document() {
 
     let json = run_json(&project_dir, &["manual-checklist", "--json"]);
 
-    assert_eq!(json["document"]["tracked"], false);
-    assert_eq!(json["document"]["exists"], true);
-    assert_eq!(json["document"]["storage_policy"], "internal_untracked");
+    assert!(json.get("document").is_none());
+    for field in ["release_gates", "desktop_manual_items", "blocking_conditions"] {
+        assert_eq!(json[field], before[field]);
+    }
 }
 
 #[test]
@@ -4393,7 +4444,7 @@ fn operator_cli_manual_checklist_text_reports_next_action() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Manual checklist: docs/internal/winsmux-manual-checklist-by-version.md")
+        stdout.contains("Manual checklist for v1.0.0")
     );
     assert!(stdout.contains("Record v1.0.0 desktop manual validation results"));
     assert!(!stdout.trim_start().starts_with('{'));
@@ -4409,7 +4460,7 @@ fn operator_cli_legacy_compat_gate_json_reports_inventory() {
     let json = run_json_with_cwd(&repo_root, &["legacy-compat-gate", "--json"]);
 
     assert_eq!(json["contract_version"], 1);
-    assert_eq!(json["task_id"], "TASK-408");
+    assert!(json.get("task_id").is_none());
     assert_eq!(json["target_version"], "v1.0.0");
     assert_eq!(
         json["inventory"]["path"],
@@ -4630,8 +4681,7 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     let json = run_json(&project_dir, &["guard", "--json"]);
 
     assert_eq!(json["command"], "guard");
-    assert_eq!(json["task_ids"][0], "TASK-390");
-    assert_eq!(json["task_ids"][3], "TASK-384");
+    assert!(json.get("task_ids").is_none());
     assert_eq!(json["issue_refs"][0], "#522");
     assert_eq!(json["issue_refs"][3], "#525");
     assert_eq!(json["issue_refs"][4], "#685");
@@ -4658,19 +4708,7 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
         "scripts/validate-pester-reduction-plan.ps1"
     );
     assert_eq!(json["required_checks"][8]["id"], "desktop_release_workflow");
-    assert_eq!(json["parent_tracking"]["task_id"], "TASK-390");
-    assert_eq!(
-        json["parent_tracking"]["scope"],
-        "coordination_and_acceptance_tracking"
-    );
-    assert_eq!(
-        json["parent_tracking"]["child_tasks"][0]["task_id"],
-        "TASK-382"
-    );
-    assert_eq!(
-        json["parent_tracking"]["child_tasks"][2]["issue_ref"],
-        "#525"
-    );
+    assert!(json.get("parent_tracking").is_none());
     assert_eq!(
         json["evidence_contract"]["security_contract"]["provider_token_broker_allowed"],
         false

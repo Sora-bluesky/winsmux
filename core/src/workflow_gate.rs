@@ -98,7 +98,7 @@ pub(crate) fn evaluate_workflow_gate(project_dir: &Path) -> JsonValue {
         "in_repo_merge_ready": in_repo,
         "combined_release": {
             "status": "blocked",
-            "reason": "TASK-718 Windows desktop E2E and git-guard.ps1 -Mode full are skipped on this host; blocked is not converted to pass. GitHub Release, npm, and post-smoke stay out of scope."
+            "reason": "Windows desktop E2E and git-guard.ps1 -Mode full are skipped on this host; blocked is not converted to pass. GitHub Release, npm, and post-smoke stay out of scope."
         },
         "publication": {
             "github_release": false,

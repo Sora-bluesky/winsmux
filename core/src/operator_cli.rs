@@ -887,7 +887,6 @@ pub fn run_rust_canary_command(args: &[&String]) -> io::Result<()> {
     let tauri_backend_candidate = backend_name == "tauri";
     let payload = json!({
         "contract_version": 1,
-        "task_id": "TASK-283",
         "target_version": "v0.24.5",
         "generated_at": generated_at(),
         "project_dir": project_dir_string(&options.project_dir),
@@ -915,7 +914,6 @@ pub fn run_rust_canary_command(args: &[&String]) -> io::Result<()> {
             "release_ci_failure",
             "public_surface_drift"
         ],
-        "depends_on": ["TASK-270", "TASK-272", "TASK-273", "TASK-274", "TASK-296"],
         "next_action": "Run canary validation with WINSMUX_BACKEND=tauri before v0.24.5 release.",
     });
 
@@ -939,26 +937,12 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
     }
 
     let options = parse_options("manual-checklist", args, 0)?;
-    let manual_checklist_document = options
-        .project_dir
-        .join("docs")
-        .join("internal")
-        .join("winsmux-manual-checklist-by-version.md");
-    let manual_checklist_document_exists = manual_checklist_document.is_file();
     let payload = json!({
         "contract_version": 1,
-        "task_id": "TASK-416",
         "target_version": "v1.0.0",
         "generated_at": generated_at(),
         "project_dir": project_dir_string(&options.project_dir),
         "product_version": VERSION,
-        "document": {
-            "path": "docs/internal/winsmux-manual-checklist-by-version.md",
-            "source": "winsmux-core/scripts/sync-internal-docs.ps1",
-            "tracked": false,
-            "exists": manual_checklist_document_exists,
-            "storage_policy": "internal_untracked",
-        },
         "required_result_values": ["未", "合格", "不合格", "保留"],
         "release_gates": [
             "version_by_version_results_recorded",
@@ -1045,7 +1029,6 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             }
         ],
         "native_voice_fallback_contract": {
-            "task_id": "TASK-468",
             "issue": "#885",
             "release_gate": "native_voice_dictation_or_fallback_contract_recorded",
             "status": "recorded_for_v1",
@@ -1074,7 +1057,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "public_surface_drift"
         ],
         "blocking_condition_scope": "release_blocker_classes",
-        "blocking_condition_note": "blocking_conditions lists release gate classes to evaluate; document.exists reports the current local document availability.",
+        "blocking_condition_note": "blocking_conditions lists release gate classes to evaluate against recorded validation evidence.",
         "next_action": "Record v1.0.0 desktop manual validation results before the v1.0.0 release and feed any failed or blocked item back into backlog."
     });
 
@@ -1083,8 +1066,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
     }
 
     println!(
-        "Manual checklist: {} for {}",
-        payload["document"]["path"].as_str().unwrap_or("unknown"),
+        "Manual checklist for {}",
         payload["target_version"].as_str().unwrap_or("unknown")
     );
     println!("{}", payload["next_action"].as_str().unwrap_or(""));
@@ -1178,14 +1160,10 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
         )
     })?;
 
-    let task = inventory
-        .get("task")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if task != "TASK-408" {
+    if inventory.get("version").and_then(Value::as_u64) != Some(1) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "legacy compatibility inventory task must be TASK-408",
+            "legacy compatibility inventory version must be 1",
         ));
     }
 
@@ -1338,7 +1316,6 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
     };
     Ok(json!({
         "contract_version": 1,
-        "task_id": "TASK-408",
         "target_version": inventory.get("target_version").cloned().unwrap_or_else(|| json!("v1.0.0")),
         "generated_at": generated_at(),
         "project_dir": project_dir_string(project_dir),
@@ -8895,7 +8872,6 @@ fn review_request_suffix(now: chrono::DateTime<Utc>) -> String {
 fn review_contract_record() -> Value {
     json!({
         "version": 1,
-        "source_task": "TASK-210",
         "issue_ref": "#315",
         "style": "utility_first",
         "required_scope": [
@@ -8911,7 +8887,6 @@ fn review_contract_record() -> Value {
             "pathspec completeness"
         ],
         "pathspec_policy": {
-            "source_task": "TASK-395",
             "issue_ref": "#593",
             "include_definition_hosts": true,
             "incomplete_scope_is_review_gap": true
@@ -9847,7 +9822,7 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             "pester_reduction_plan",
             "pwsh -NoProfile -File scripts/validate-pester-reduction-plan.ps1",
             "scripts/validate-pester-reduction-plan.ps1",
-            "TASK-407 Pester reduction plan covers tracked Pester files before release",
+            "Pester reduction plan covers tracked Pester files before release",
             file_exists(project_dir, "scripts/validate-pester-reduction-plan.ps1")
                 && file_exists(project_dir, "docs/project/pester-suite-inventory.json"),
         ),
@@ -9868,7 +9843,6 @@ fn guard_report_payload(project_dir: &Path) -> Value {
     json!({
         "contract_version": 1,
         "command": "guard",
-        "task_ids": ["TASK-390", "TASK-382", "TASK-383", "TASK-384"],
         "issue_refs": ["#522", "#523", "#524", "#525", "#685"],
         "target_version": "v1.0.0",
         "generated_at": generated_at(),
@@ -9889,32 +9863,6 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             "gitleaks_baseline_commit": baseline_commit
         },
         "required_checks": required_checks,
-        "parent_tracking": {
-            "task_id": "TASK-390",
-            "issue_ref": "#522",
-            "scope": "coordination_and_acceptance_tracking",
-            "child_tasks": [
-                {
-                    "task_id": "TASK-382",
-                    "issue_ref": "#524",
-                    "area": "architecture",
-                    "status": "done"
-                },
-                {
-                    "task_id": "TASK-383",
-                    "issue_ref": "#523",
-                    "area": "security",
-                    "status": "done"
-                },
-                {
-                    "task_id": "TASK-384",
-                    "issue_ref": "#525",
-                    "area": "release_gating",
-                    "status": "done"
-                }
-            ],
-            "acceptance_policy": "Do not close the parent by child implementation alone; confirm child status, then map any remaining scope to follow-up tasks or issues."
-        },
         "evidence_contract": {
             "run_surfaces": ["winsmux runs --json", "winsmux digest --json", "winsmux explain <run_id> --json"],
             "required_fields": [
