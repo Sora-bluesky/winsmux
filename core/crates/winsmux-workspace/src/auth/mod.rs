@@ -8296,6 +8296,17 @@ fn dispatch_runtime(
             }
             match state.runtime.observation(&params.run_id) {
                 Ok((process, work, code, current)) => {
+                    let cleanup_complete = if params.include_cleanup.is_some() {
+                        match state.runtime.cleanup_observation(&params.run_id, process) {
+                            Ok(cleanup) => Some(cleanup),
+                            Err(error) => {
+                                write_error(out, request, &auth.shared.instance_id, state.event_seq(), topology, error)?;
+                                return Some(owner_hold(hold));
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     write_success_data(
                         out,
                         request,
@@ -8303,9 +8314,7 @@ fn dispatch_runtime(
                         state.event_seq(),
                         topology,
                         crate::contract::Success::RunGet(crate::contract::RunGetData {
-                            cleanup_complete: params.include_cleanup.map(|_| run_service::cleanup_confirmed(
-                                process, state.runtime.session_clean(&params.run_id),
-                            )),
+                            cleanup_complete,
                             run: live_observation(
                                 params.run_id.clone(),
                                 pane_id,

@@ -59,11 +59,18 @@ fn refine(v: &mut Value) {
                 {"properties":{"phase":{"const":"completed"},"outcome":{"const":"failed"},"error_code":{"$ref":"#/definitions/ErrorCode"}}}
             ]);
         }
+        if let Some(s) = defs.get_mut("LegacyRunGetData") {
+            // Explicitly forbidden keys preserve the closed union in TypeScript too.
+            s["properties"]["cleanup_complete"] = json!(false);
+            s["properties"]["cleanup_pending"] = json!(false);
+        }
         if let Some(s) = defs.get_mut("CleanupRunGetData") {
-            s["if"] = json!({"properties":{"cleanup_complete":{"const":true}}});
-            s["then"] = json!({"properties":{"run":{"properties":{
-                "process":{"const":"exited"},"evidence":{"const":"process_exit"}
-            }}}});
+            s["properties"]["cleanup_pending"]["uniqueItems"] = json!(true);
+            s["oneOf"] = json!([
+                {"properties":{"cleanup_complete":{"const":true},"cleanup_pending":{"maxItems":0},
+                    "run":{"properties":{"process":{"const":"exited"},"evidence":{"const":"process_exit"}}}}},
+                {"properties":{"cleanup_complete":{"const":false},"cleanup_pending":{"minItems":1}}}
+            ]);
         }
         for name in ["ArtifactReadData", "ArtifactDiffData"] {
             if let Some(s) = defs.get_mut(name) {

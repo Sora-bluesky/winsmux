@@ -340,18 +340,65 @@
       ],
       "type": "object"
     },
+    "CleanupPending": {
+      "enum": [
+        "preparing",
+        "process_handle",
+        "job_processes",
+        "output_drain",
+        "reader",
+        "waiter",
+        "teardown",
+        "pty",
+        "job_termination",
+        "write_pending"
+      ],
+      "type": "string"
+    },
     "CleanupRunGetData": {
       "additionalProperties": false,
-      "if": {
-        "properties": {
-          "cleanup_complete": {
-            "const": true
+      "oneOf": [
+        {
+          "properties": {
+            "cleanup_complete": {
+              "const": true
+            },
+            "cleanup_pending": {
+              "maxItems": 0
+            },
+            "run": {
+              "properties": {
+                "evidence": {
+                  "const": "process_exit"
+                },
+                "process": {
+                  "const": "exited"
+                }
+              }
+            }
+          }
+        },
+        {
+          "properties": {
+            "cleanup_complete": {
+              "const": false
+            },
+            "cleanup_pending": {
+              "minItems": 1
+            }
           }
         }
-      },
+      ],
       "properties": {
         "cleanup_complete": {
           "type": "boolean"
+        },
+        "cleanup_pending": {
+          "items": {
+            "$ref": "#/definitions/CleanupPending"
+          },
+          "type": "array",
+          "uniqueItems": true
         },
         "run": {
           "$ref": "#/definitions/RunObservation"
@@ -359,22 +406,9 @@
       },
       "required": [
         "cleanup_complete",
+        "cleanup_pending",
         "run"
       ],
-      "then": {
-        "properties": {
-          "run": {
-            "properties": {
-              "evidence": {
-                "const": "process_exit"
-              },
-              "process": {
-                "const": "exited"
-              }
-            }
-          }
-        }
-      },
       "type": "object"
     },
     "ConnectionDecideData": {
@@ -1006,6 +1040,8 @@
     "LegacyRunGetData": {
       "additionalProperties": false,
       "properties": {
+        "cleanup_complete": false,
+        "cleanup_pending": false,
         "run": {
           "$ref": "#/definitions/RunObservation"
         }

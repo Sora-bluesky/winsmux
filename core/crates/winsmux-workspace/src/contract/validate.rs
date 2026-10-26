@@ -323,8 +323,13 @@ impl Success {
             }
             Self::RunGet(d) => {
                 d.run.validate()?;
-                invariant(d.cleanup_complete != Some(true)
-                    || (d.run.process == Process::Exited && d.run.evidence == Evidence::ProcessExit))
+                if let Some(cleanup) = &d.cleanup_complete {
+                    unique(&cleanup.pending)?;
+                    invariant(cleanup.complete == cleanup.pending.is_empty())?;
+                    invariant(!cleanup.complete
+                        || (d.run.process == Process::Exited && d.run.evidence == Evidence::ProcessExit))?;
+                }
+                Ok(())
             }
             Self::OperationGet(d) => d.operation.validate(),
             Self::EventsWait(d) => {
