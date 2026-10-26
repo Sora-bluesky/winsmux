@@ -245,6 +245,11 @@ impl RuntimeService {
         Ok(Arc::clone(&session.shared))
     }
 
+    #[cfg(test)]
+    pub(crate) fn testing_shared_session(&self, run_id: &RunId) -> Arc<session::SessionShared> {
+        self.shared_of(run_id).unwrap()
+    }
+
     pub fn insert_preparing(
         &self,
         project_id: ProjectId,
@@ -1158,6 +1163,48 @@ mod cleanup_observer_retained_tests {
 
     fn same_object(first: HANDLE, second: HANDLE) -> bool {
         unsafe { windows_sys::Win32::Foundation::CompareObjectHandles(first, second) != 0 }
+    }
+
+    #[test]
+    fn cleanup_observer_natural_exit_notifies_after_cleanup() {
+        let runtime = Arc::new(RuntimeService::new());
+        let project = ProjectId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let pane = PaneId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let run = RunId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let (sent, received) = mpsc::channel();
+        let weak = Arc::downgrade(&runtime);
+        runtime.set_exit_callback(Arc::new(move |run| {
+            let runtime = weak.upgrade().unwrap();
+            let pending = runtime.cleanup_observation(&run, Process::Exited).unwrap().pending;
+            sent.send(pending).unwrap();
+        }));
+        runtime.insert_preparing(project, pane, run.clone()).unwrap();
+        let child = spawn::spawn_suspended(
+            std::env::temp_dir().to_str().unwrap(),
+            &spawn::search_pwsh().unwrap(),
+            &["-NoProfile", "-NonInteractive", "-Command", "[Console]::Write('cleanup-probe'); exit 0"],
+        ).unwrap();
+        runtime.attach_child(&run, child).unwrap();
+        let observer = runtime.testing_retain_cleanup(&run).unwrap();
+        runtime.resume_and_observe(&run).unwrap();
+        let start = Instant::now();
+        let mut previous = None;
+        loop {
+            let pending = runtime.cleanup_observation(&run, Process::Exited).unwrap().pending;
+            if previous.as_ref() != Some(&pending) {
+                let snapshot = observer.snapshot().unwrap();
+                eprintln!("cleanup_probe ms={} pending={pending:?} job={:?} io={:?}",
+                    start.elapsed().as_millis(), snapshot.job_active_processes, snapshot.io);
+                previous = Some(pending.clone());
+            }
+            if pending.is_empty() { break; }
+            assert!(start.elapsed() < Duration::from_secs(30), "native cleanup did not complete");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        wait_released(&observer);
+        let notifications: Vec<_> = received.try_iter().collect();
+        eprintln!("cleanup_probe notifications={notifications:?}");
+        assert!(notifications.iter().any(Vec::is_empty), "cleanup completion must wake observers after exit");
     }
 
     #[test]

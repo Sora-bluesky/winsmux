@@ -3350,6 +3350,12 @@ pub struct SessionShared {
 }
 
 impl SessionShared {
+    #[cfg(test)]
+    pub(crate) fn testing_assign_job_member(&self, process: HANDLE) -> bool {
+        let state = self.job.state.lock().unwrap();
+        unsafe { windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(state.handle.0, process) != 0 }
+    }
+
     pub fn new(run_id: RunId) -> Arc<Self> {
         let owner = native_owner::RunBundle::new();
         Arc::new(Self {
@@ -3821,6 +3827,9 @@ fn teardown_idle(shared: Arc<SessionShared>, owner: Arc<native_owner::RunBundle>
     if !shared.write_pending.load(Ordering::SeqCst) {
         shared.teardown_returned.store(true, Ordering::SeqCst);
     }
+    // Exit can be published while the PTY and output reader are still closing.
+    // Re-observe after the final cleanup flags, outside every native/run lock.
+    shared.invoke_exit_callback();
 }
 
 pub fn write_ctrl_c_on(shared: &SessionShared) -> bool {
@@ -3941,6 +3950,46 @@ mod cleanup_pending_tests {
         assert!(session.cleanup_pending().is_empty());
         assert!(session.session_clean());
         session
+    }
+
+    #[test]
+    fn cleanup_workers_notify_in_either_completion_order() {
+        for waiter_last in [false, true] {
+            let mut session = clean_session();
+            Arc::get_mut(&mut session.shared).unwrap().owner = native_owner::RunBundle::new_test(1);
+            let shared = &session.shared;
+            shared.pty_closed.store(false, Ordering::SeqCst);
+            shared.teardown_returned.store(false, Ordering::SeqCst);
+            shared.handle_signaled.store(!waiter_last, Ordering::SeqCst);
+            shared.waiter_returned.store(!waiter_last, Ordering::SeqCst);
+            let (sent, received) = std::sync::mpsc::channel();
+            let weak = Arc::downgrade(shared);
+            shared.set_exit_callback(Arc::new(move |_| {
+                let shared = weak.upgrade().unwrap();
+                assert_eq!(native_owner::run_held(), 0);
+                assert!(shared.cleanup_mu.try_lock().is_ok());
+                sent.send([
+                    shared.handle_signaled.load(Ordering::SeqCst),
+                    shared.waiter_returned.load(Ordering::SeqCst),
+                    shared.teardown_returned.load(Ordering::SeqCst),
+                    shared.pty_closed.load(Ordering::SeqCst),
+                ]).unwrap();
+            }));
+            if !waiter_last { shared.invoke_exit_callback(); }
+            shared.request_cleanup();
+            teardown_idle(Arc::clone(shared), Arc::clone(&shared.owner));
+            if waiter_last {
+                assert_eq!(session.cleanup_pending(), vec![CleanupPending::ProcessHandle, CleanupPending::Waiter]);
+                shared.handle_signaled.store(true, Ordering::SeqCst);
+                shared.waiter_returned.store(true, Ordering::SeqCst);
+                shared.invoke_exit_callback();
+            }
+            assert!(session.session_clean());
+            let notifications: Vec<_> = received.try_iter().collect();
+            assert_eq!(notifications.len(), 2, "waiter_last={waiter_last}");
+            assert_ne!(notifications[0], [true; 4]);
+            assert_eq!(notifications[1], [true; 4]);
+        }
     }
 
     #[test]

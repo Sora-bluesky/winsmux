@@ -971,6 +971,7 @@ impl EventWaiter {
 struct ExitLatch {
     run_key: [u8; 36],
     published_seq: u64,
+    cleanup_complete: bool,
     _charge: Option<CapacityCharge>,
 }
 
@@ -1263,6 +1264,7 @@ impl EventAccounting {
             .try_push(ExitLatch {
                 run_key: validated_key(run_id.as_str()),
                 published_seq,
+                cleanup_complete: false,
                 _charge: Some(charge),
             })
             .map_err(|_| ErrorCode::ResourceExhausted)?;
@@ -1292,6 +1294,7 @@ impl EventAccounting {
         run_id: &crate::contract::RunId,
         published_seq: u64,
         charge: CapacityCharge,
+        cleanup_complete: bool,
     ) {
         if self.has_exit_latch(run_id) {
             drop(charge);
@@ -1301,6 +1304,7 @@ impl EventAccounting {
             .try_push(ExitLatch {
                 run_key: validated_key(run_id.as_str()),
                 published_seq,
+                cleanup_complete,
                 _charge: Some(charge),
             })
             .expect("exit latch slot was preclaimed");
@@ -1433,11 +1437,24 @@ fn try_publish_exit(
     state: &mut State,
     run_id: &crate::contract::RunId,
 ) -> Option<u64> {
-    if state.events.has_exit_latch(run_id) || !state.runtime.has_session(run_id) {
+    // Both the process waiter and the teardown worker report progress. A hint
+    // alone never establishes exit, and an exit latch must not hide later cleanup.
+    let (process, work, code, current) = state.runtime.observation(run_id).ok()?;
+    if process != crate::contract::Process::Exited {
         return None;
     }
     let pane_id = pane_id_for_run(state, run_id)?;
-    let latch_charge = state.events.preclaim_exit_latch(allocations, run_id).ok()?;
+    let cleanup_complete = state.runtime.session_clean(run_id);
+    let key = validated_key(run_id.as_str());
+    let existing = state.events.exit_latches.iter().position(|latch| latch.run_key == key);
+    if let Some(index) = existing {
+        if state.events.exit_latches[index].cleanup_complete || !cleanup_complete {
+            return None;
+        }
+    }
+    let latch_charge = if existing.is_none() {
+        Some(state.events.preclaim_exit_latch(allocations, run_id).ok()?)
+    } else { None };
     let credit = match state.events.try_reserve(allocations, 1) {
         Ok(credit) => credit,
         Err(_) => {
@@ -1445,12 +1462,6 @@ fn try_publish_exit(
             return None;
         }
     };
-    let (process, work, code, current) = state.runtime.observation(run_id).unwrap_or((
-        crate::contract::Process::Exited,
-        crate::contract::Work::Unknown,
-        None,
-        false,
-    ));
     let seq = state.events.publish(
         allocations,
         credit,
@@ -1459,9 +1470,11 @@ fn try_publish_exit(
         },
         now_or_epoch(),
     );
-    state
-        .events
-        .commit_preclaimed_latch(run_id, seq, latch_charge);
+    if let Some(index) = existing {
+        state.events.exit_latches[index].cleanup_complete = true;
+    } else {
+        state.events.commit_preclaimed_latch(run_id, seq, latch_charge.expect("new latch"), cleanup_complete);
+    }
     Some(seq)
 }
 
@@ -8307,6 +8320,12 @@ fn dispatch_runtime(
                     } else {
                         None
                     };
+                    if cleanup_complete.as_ref().is_some_and(|cleanup| cleanup.complete) {
+                        // A last job member can exit after both worker callbacks.
+                        // Publish that observed transition through the same latch;
+                        // event capacity never changes the valid read result.
+                        let _ = try_publish_exit(&auth.shared.allocations, &mut state, &params.run_id);
+                    }
                     write_success_data(
                         out,
                         request,
@@ -9530,9 +9549,8 @@ fn spawn_pane(
                         },
                         now_or_epoch(),
                     );
-                    state
-                        .events
-                        .commit_preclaimed_latch(&run_id, seq, latch_charge);
+                    let cleanup_complete = state.runtime.session_clean(&run_id);
+                    state.events.commit_preclaimed_latch(&run_id, seq, latch_charge, cleanup_complete);
                 } else {
                     let _ = state.events.publish(
                         &auth.shared.allocations,
@@ -10756,6 +10774,118 @@ mod event_accounting_authority_tests {
         assert_eq!(authorization.event_seq(), 0);
         assert_eq!(authorization.testing_exit_latch_charge(), 0);
         assert_eq!(authorization.testing_outstanding_credits(), 0);
+    }
+
+    fn cleanup_event_fixture() -> (testing::Harness, Arc<crate::runtime::RuntimeService>, crate::contract::RunId) {
+        let project = ProjectId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let pane = crate::contract::PaneId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let run = crate::contract::RunId::new(uuid::Uuid::new_v4().to_string()).unwrap();
+        let harness = testing::Harness::new(vec![project.clone()]);
+        let authorization = harness.authorization();
+        let runtime = {
+            let mut state = authorization.shared.inner.lock().unwrap();
+            state.workspace.add_pane(&project, pane.clone(), run.clone(), None,
+                crate::contract::Axis::Vertical, "pwsh").unwrap();
+            Arc::clone(&state.runtime)
+        };
+        // Explicit callbacks below make notification ordering deterministic.
+        runtime.set_exit_callback(Arc::new(|_| {}));
+        runtime.insert_preparing(project, pane, run.clone()).unwrap();
+        let child = crate::runtime::spawn::spawn_suspended(
+            std::env::temp_dir().to_str().unwrap(), &crate::runtime::spawn::search_pwsh().unwrap(),
+            &["-NoProfile", "-NonInteractive", "-Command", "exit 0"],
+        ).unwrap();
+        runtime.attach_child(&run, child).unwrap();
+        (harness, runtime, run)
+    }
+
+    #[test]
+    fn cleanup_exit_event_requires_process_exit() {
+        let (harness, runtime, run) = cleanup_event_fixture();
+        let authorization = harness.authorization();
+        authorization.testing_fire_exit_callback(&run);
+        let seq = authorization.event_seq();
+        let latches = authorization.testing_exit_latch_charge();
+        runtime.finalize_failure(&run, true);
+        assert_eq!((seq, latches), (0, 0), "a cleanup hint cannot prove process exit");
+    }
+
+    #[test]
+    fn cleanup_exit_event_progresses_once_after_late_teardown() {
+        let (harness, runtime, run) = cleanup_event_fixture();
+        let authorization = harness.authorization();
+        runtime.resume_and_observe(&run).unwrap();
+        let start = std::time::Instant::now();
+        while !runtime.session_clean(&run) {
+            assert!(start.elapsed() < Duration::from_secs(30), "native cleanup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let shared = runtime.testing_shared_session(&run);
+        shared.teardown_returned.store(false, std::sync::atomic::Ordering::SeqCst);
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 1);
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 1, "duplicate exit");
+        shared.teardown_returned.store(true, std::sync::atomic::Ordering::SeqCst);
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 2, "cleanup completion follows the existing exit event");
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 2, "duplicate cleanup");
+        assert_eq!(authorization.testing_exit_latch_charge(), 1);
+        assert_eq!(authorization.testing_outstanding_credits(), 0);
+    }
+
+    #[test]
+    fn cleanup_exit_event_read_recovers_late_completion() {
+        use std::os::windows::{io::AsRawHandle, process::CommandExt};
+        struct Member(std::process::Child, std::path::PathBuf);
+        impl Drop for Member {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+                let _ = std::fs::remove_dir_all(&self.1);
+            }
+        }
+        let (harness, runtime, run) = cleanup_event_fixture();
+        let authorization = harness.authorization();
+        let shared = runtime.testing_shared_session(&run);
+        let directory = std::env::temp_dir().join(format!("winsmux-late-job-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let child = std::process::Command::new(crate::runtime::spawn::search_pwsh().unwrap())
+            .args(["-NoProfile", "-NonInteractive", "-Command", "while (![IO.File]::Exists('finish')) { Start-Sleep -Milliseconds 10 }"])
+            .current_dir(&directory).creation_flags(0x0800_0000)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn().unwrap();
+        let mut member = Member(child, directory);
+        assert!(shared.testing_assign_job_member(member.0.as_raw_handle()));
+        runtime.resume_and_observe(&run).unwrap();
+        let start = std::time::Instant::now();
+        loop {
+            let pending = runtime.cleanup_observation(&run, crate::contract::Process::Exited).unwrap().pending;
+            if pending == vec![crate::contract::CleanupPending::JobProcesses] { break; }
+            assert!(start.elapsed() < Duration::from_secs(30), "native cleanup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        authorization.testing_fire_exit_callback(&run);
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 1, "both worker hints precede the last job exit");
+        std::fs::write(member.1.join("finish"), b"done").unwrap();
+        while !runtime.session_clean(&run) {
+            assert!(start.elapsed() < Duration::from_secs(30), "last job member");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(member.0.wait().unwrap().success());
+        let request = crate::contract::parse_request(&serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1, "instance_id": harness.instance_id(),
+            "operation_id": uuid::Uuid::new_v4().to_string(), "expected_topology_revision": null,
+            "operation": "run.get", "params": {"run_id": run, "include_cleanup": true}
+        })).unwrap()).unwrap();
+        let response = serde_json::to_value(harness.owner(&request)).unwrap();
+        assert_eq!(response["result"]["data"]["cleanup_complete"], true);
+        assert_eq!(response["result"]["data"]["cleanup_pending"], serde_json::json!([]));
+        assert_eq!(response["event_seq"], 2, "an observed final condition must not lose its wakeup");
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 2);
     }
 }
 
