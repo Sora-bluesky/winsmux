@@ -28,7 +28,7 @@ export interface AgentControlsCallbacks {
   inspect(intent: AgentInspection): void;
   restoreFocus(target: AgentTarget, origin: HTMLElement): void;
 }
-interface Pending { ticket: string; intent: AgentIntent; phase: 'awaiting' | 'unknown' }
+interface Pending { ticket: string; intent: AgentIntent; phase: 'awaiting' | 'unknown'; message: string }
 const processText = { starting: '起動を確認中', running: '稼働中', exited: '終了を観測', unknown: '未確認' };
 const workText = { unknown: '未確認', running: '作業中', awaiting_input: '入力待ち', succeeded: '完了', failed: '失敗', interrupted: '中断済み' };
 const evidenceText = { process_exit: 'プロセス終了', provider_event: 'CLIの状態通知', unavailable: '未確認' };
@@ -148,7 +148,8 @@ export function createAgentControls(container: HTMLElement, initial: AgentContro
     provider.disabled = model.disabled = effort.disabled = disposed || retired || !!pending || snapshot.busy;
     launch.disabled = !launchReady(); interrupt.disabled = !interruptReady();
     inspect.disabled = docs.disabled = disposed || retired; terminal.disabled = disposed || retired || !t;
-    admission.textContent = retired ? 'ホストの世代が変わりました。この画面から操作できません。' : pending ? `${pending.intent.kind === 'interrupt-run' ? pending.phase === 'unknown' ? '中断結果を確認できません' : '中断を確認中' : pending.phase === 'unknown' ? '起動結果を確認できません' : '起動を確認中'}。\n確認中の元対象: ${pending.intent.projectId} / ${pending.intent.paneId} / ${pending.intent.runId ?? '未起動'}。別の対象への再送は行いません。` : message;
+    const pendingStatus = pending?.message || (pending?.intent.kind === 'interrupt-run' ? pending.phase === 'unknown' ? '中断結果を確認できません。' : '中断を確認中。' : pending?.phase === 'unknown' ? '起動結果を確認できません。' : '起動を確認中。');
+    admission.textContent = retired ? 'ホストの世代が変わりました。この画面から操作できません。' : pending ? `${pendingStatus}\n確認中の元対象: ${pending.intent.projectId} / ${pending.intent.paneId} / ${pending.intent.runId ?? '未起動'}。別の対象への再送は行いません。` : message;
     const o = !retired && snapshot.availability === 'available' ? observation() : null;
     stateMessage.textContent = retired || snapshot.availability !== 'available' ? '現在の状態を確認できません。' : snapshot.pane?.current_run_id === null && snapshot.pane.observation === null ? '実行は未起動です。' : o ? `観測した実行: ${o.run_id}` : '実行と観測の対応を確認できません。';
     process.textContent = `プロセス: ${o ? processText[o.process] : '未確認'}`;
@@ -159,12 +160,12 @@ export function createAgentControls(container: HTMLElement, initial: AgentContro
   }
   function failed(ticket: string) {
     if (disposed || retired || pending?.ticket !== ticket) return;
-    pending.phase = 'unknown'; render();
+    pending.phase = 'unknown'; pending.message = ''; render();
   }
   function submit(intent: AgentIntent) {
     if (!baseReady() || pending) return;
     const ticket = uuid(doc.defaultView!.crypto);
-    pending = { ticket, intent: Object.freeze({ ...intent }), phase: 'awaiting' }; message = ''; render();
+    pending = { ticket, intent: Object.freeze({ ...intent }), phase: 'awaiting', message: '' }; message = ''; render();
     try {
       // Return values and fulfilled promises acknowledge delivery only.
       Promise.resolve(callbacks.submit(pending.intent, ticket)).catch(() => failed(ticket));
@@ -207,8 +208,8 @@ export function createAgentControls(container: HTMLElement, initial: AgentContro
     settle(ticket: string, original: AgentTarget, phase: AgentSettlementPhase, reason?: string): boolean {
       if (disposed || retired || !pending || pending.ticket !== ticket || !sameTarget(pending.intent, original)) return false;
       if (phase === 'awaiting' || phase === 'unknown') {
-        if (pending.phase === phase) return false;
-        pending.phase = phase; render(); return true;
+        if (pending.phase === phase && pending.message === (reason ?? '')) return false;
+        pending.phase = phase; pending.message = reason ?? ''; render(); return true;
       }
       if (phase !== 'completed' && phase !== 'refused') return false;
       pending = null; message = reason || (phase === 'completed' ? '要求の処理を確認しました。実行状態は観測の根拠で確認してください。' : '要求は拒否されました。対象と設定を再確認してください。'); render(); return true;
