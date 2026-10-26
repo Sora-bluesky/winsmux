@@ -5709,7 +5709,7 @@ function Get-DesktopNativeMsiProperties {
     }
     $after = [WinsmuxDesktopNativeActor]::NativeFile($Path)
     Assert-Condition ($after['identity'] -ceq $witness['identity'] -and $after['sha256'] -ceq $witness['sha256'] -and $values.Count -eq 6) 'desktop_native_msi_property_source_changed'
-    Assert-Condition ($values.ProductCode -cmatch '^\{[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\}$' -and $values.UpgradeCode -ceq '{5A7BA441-A5F4-5622-B257-7BF2575E6D74}' -and $values.ProductVersion -ceq '0.38.0' -and $values.ProductName -ceq 'winsmux' -and $values.Manufacturer -ceq 'github') 'desktop_native_msi_product_identity_refused'
+    Assert-Condition ($values.ProductCode -cmatch '^\{[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\}$' -and $values.UpgradeCode -ceq '{5A7BA441-A5F4-5622-B257-7BF2575E6D74}' -and $values.ProductVersion -ceq '0.38.0' -and $values.ProductName -ceq 'winsmux' -and $values.Manufacturer -ceq 'winsmux') 'desktop_native_msi_product_identity_refused'
     return [ordered]@{ properties = $values; file = $witness }
 }
 

@@ -7,6 +7,9 @@ import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { stageBundledDistribution } from '../../scripts/stage-bundled-distribution.mjs';
 import { fixturePe } from './fixture-pe.mjs';
+import { assertDesktopPublisherContract } from './desktop-publisher-contract.mjs';
+
+assertDesktopPublisherContract(process.cwd(), 'msi');
 
 const repo = process.cwd(), root = path.resolve('.evidence/workspace-package', 'desktop-msi-' + randomUUID());
 fs.mkdirSync(root, { recursive: true });
@@ -183,6 +186,15 @@ function cargoHandoffCases() {
     assert.ok(orphan); assert.equal(fs.readFileSync(path.join(partialWrite.output, orphan), 'utf8'), 'partial');
     pass('cargo-incomplete-owned-copy-preserved'); reject('cargo-incomplete-orphan-reentry-refused', partialWrite);
   } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+}
+if (process.argv.includes('--publisher-only')) {
+  const staged = stageDesktopMsiPlan(options), bytes = fs.readFileSync(planFile);
+  assert.equal(staged.plan_sha256, digest(bytes));
+  assert.equal(JSON.parse(bytes).flavor, 'msi');
+  assert.ok(fs.readFileSync(includeFile, 'utf8').includes(staged.plan_sha256));
+  console.log(JSON.stringify({ scope: 'publisher-and-plan-only', passed: 2, failed: 0,
+    registry_key: 'Software\\github\\winsmux', publisher: 'winsmux', plan_sha256: staged.plan_sha256 }));
+  process.exit(0);
 }
 cargoHandoffCases();
 if (process.argv.includes('--cargo-handoff-only')) {

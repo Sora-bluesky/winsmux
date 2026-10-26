@@ -29,6 +29,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "winsmux",
     "licenseFile": "../../distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.txt",
     "externalBin": [
       "binaries/winsmux",

@@ -777,7 +777,8 @@ ${StrLoc}
 !define WEBVIEW2INSTALLERPATH "{{webview2_installer_path}}"
 !define MINIMUMWEBVIEW2VERSION "{{minimum_webview2_version}}"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCTNAME}"
-!define MANUKEY "Software\${MANUFACTURER}"
+; Keep the existing install-location key independent of the display publisher.
+!define MANUKEY "Software\github"
 !define MANUPRODUCTKEY "${MANUKEY}\${PRODUCTNAME}"
 !define UNINSTALLERSIGNCOMMAND "{{uninstaller_sign_cmd}}"
 !define ESTIMATEDSIZE "{{estimated_size}}"
