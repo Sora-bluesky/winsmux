@@ -16,11 +16,14 @@ if ($Version -eq '0.38.0' -and -not $SyncOnly) {
 }
 
 $Root = Split-Path $PSScriptRoot -Parent
+$SyncRoadmapScript = Join-Path $Root "winsmux-core\scripts\sync-roadmap.ps1"
+if (-not (Test-Path -LiteralPath $SyncRoadmapScript -PathType Leaf)) {
+    throw "Required roadmap synchronizer is missing: $SyncRoadmapScript"
+}
 . (Join-Path $Root "winsmux-core\scripts\planning-paths.ps1")
 $VersionFile = Join-Path $Root "VERSION"
 $BacklogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $Root -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
 $RoadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $Root -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
-$SyncRoadmapScript = Join-Path $Root "winsmux-core\scripts\sync-roadmap.ps1"
 
 function ConvertFrom-QuotedYamlScalar {
     param(

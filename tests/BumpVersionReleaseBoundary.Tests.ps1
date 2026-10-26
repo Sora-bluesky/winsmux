@@ -7,7 +7,7 @@ Describe 'Integrated release boundary for version bumping' {
         $script:PwshPath = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 
         function Invoke-BumpFixture {
-            param([string[]]$BumpArguments)
+            param([string[]]$BumpArguments, [switch]$MissingSyncRoadmap)
             $fixture = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
             foreach ($directory in @('scripts', 'winsmux-core/scripts', 'bin')) {
                 [void][IO.Directory]::CreateDirectory((Join-Path $fixture $directory))
@@ -21,7 +21,9 @@ function Resolve-WinsmuxPlanningFilePath {
     Join-Path $RepoRoot $DefaultFileName
 }
 '@)
-            [IO.File]::WriteAllText((Join-Path $fixture 'winsmux-core/scripts/sync-roadmap.ps1'), 'exit 0')
+            if (-not $MissingSyncRoadmap) {
+                [IO.File]::WriteAllText((Join-Path $fixture 'winsmux-core/scripts/sync-roadmap.ps1'), 'exit 0')
+            }
             [IO.File]::WriteAllText((Join-Path $fixture 'scripts/winsmux-core.ps1'), 'exit 77')
             [IO.File]::WriteAllText((Join-Path $fixture 'bin/record.ps1'), @'
 param([string]$Program)
@@ -89,5 +91,18 @@ exit 0
         $result.Calls | Should -Contain 'git checkout -b release/v9.9.9'
         $result.Output | Should -Match 'verify failed'
         $result.Version | Should -BeExactly '9.9.9'
+    }
+
+    It 'refuses a missing roadmap synchronizer before changing versions or invoking Git' -TestCases @(
+        @{ Arguments = @('-Version', '0.38.0', '-SyncOnly') }
+        @{ Arguments = @() }
+        @{ Arguments = @('-Version', '9.9.9') }
+    ) {
+        param($Arguments)
+        $result = Invoke-BumpFixture -BumpArguments $Arguments -MissingSyncRoadmap
+        $result.ExitCode | Should -Not -Be 0
+        $result.Output | Should -Match 'Required roadmap synchronizer is missing'
+        $result.Calls | Should -BeNullOrEmpty
+        $result.Version | Should -BeExactly '0.37.0'
     }
 }
