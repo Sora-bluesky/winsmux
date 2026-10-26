@@ -203,7 +203,7 @@ worker ペインの指定は受け付けません。独自の named pipe クラ�
 
 | Method | Pipe | CLI | MCP |
 | --- | --- | --- | --- |
-| desktop.control_plane.contract | yes | automation-contract | winsmux_automation_contract |
+| desktop.control_plane.contract | yes | automation-contract | — |
 | desktop.summary.snapshot | yes | control-rpc only | — |
 | desktop.run.explain | yes | control-rpc only | — |
 | desktop.run.compare | yes | control-rpc only | — |
@@ -219,7 +219,7 @@ worker ペインの指定は受け付けません。独自の named pipe クラ�
 | pty.close | yes | control-rpc only | — |
 | desktop.operator.snapshot | yes | operator-snapshot (ps1) | — |
 | desktop.operator.submit | yes | operator-submit (ps1) | — |
-| desktop.pairing.confirm | yes | automation-pair | winsmux_automation_pair |
+| desktop.pairing.confirm | yes | automation-pair | — |
 
 ## 内部専用メソッド
 
@@ -246,11 +246,11 @@ Tauri アプリは、より広い内部 `desktop_json_rpc` 面を使います。
 
 このコマンドは実行前に安全側で失敗します。実行が `isolated-enterprise` ではない場合、ブローカー契約がない場合、ブローカートークンがない場合や期限切れの場合、不正なポリシー値を渡した場合、または実行境界の内側にリパースポイントがある場合は、ポリシーを書きません。外部ブリッジは、プロンプト指示を広げて再試行するのではなく、その停止理由を表示する必要があります。
 
-## MCP アダプター境界
+## Rust workspace MCP の範囲
 
-同梱の MCP サーバーは、上流の MCP JSON-RPC 形状と stdio 伝送に薄く重ねるローカルアダプターです。winsmux 固有のコードは、引数配列でのコマンド実行、入力検証、ローカル安全方針に限定します。上流プロトコルクライアントや公式伝送の動作で扱える場合は、ローカル互換コードを増やす前にそちらを優先します。
+同梱の Rust サーバー `winsmux-workspace-mcp` は stdio で通信し、workspace 要求契約用のツール `winsmux_workspace_request` を1つ公開します。認証済みの workspace クライアントを通じて接続し、上記のデスクトップ control pipe のメソッドは仲介しません。
 
-MCP クライアントは `winsmux_automation_contract`、`winsmux_automation_discover`、`winsmux_automation_pair` で同じ named-pipe 契約に届きます。各ツールは対応するネイティブサブコマンド（`winsmux automation-contract` / `automation-discover` / `automation-pair`）を実行し、JSON を返します。PowerShell は通しません。
+このデスクトップ control pipe には `winsmux automation-contract`、`winsmux automation-discover`、`winsmux automation-pair`、または汎用の `winsmux control-rpc` ヘルパーを使ってください。表の MCP 列が空なのは、これらのメソッドが Rust workspace MCP サーバーのツールではないためです。
 
 ## クライアント互換性
 

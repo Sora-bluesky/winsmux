@@ -3,15 +3,26 @@ BeforeAll {
 }
 
 Describe 'Current control-plane SDK boundary' {
-    It 'does not retain the retired Node adapter or subprocess clients' {
-        foreach ($relative in @(
-            'winsmux-core/mcp-server.js',
-            'winsmux-core/package.json',
-            'sdk/python/winsmux.py',
-            'sdk/typescript/winsmux.ts'
-        )) {
-            Test-Path -LiteralPath (Join-Path $script:RepoRoot $relative) |
-                Should -BeFalse -Because "$relative is outside the shipped control-plane surface"
+    It 'keeps the SDK limited to current contract bindings and the walkthrough' {
+        $sdkRoot = Join-Path $script:RepoRoot 'sdk'
+        $files = @(Get-ChildItem -LiteralPath $sdkRoot -Recurse -File |
+            Where-Object { $_.Extension -in @('.py', '.ts', '.md') } |
+            ForEach-Object { [IO.Path]::GetRelativePath($sdkRoot, $_.FullName).Replace('\', '/') } |
+            Sort-Object)
+        $files | Should -Be @('README.md', 'examples/adapter-walkthrough.py',
+            'python/control_plane_contract.py', 'typescript/control-plane-contract.ts' | Sort-Object)
+    }
+
+    It 'documents the separate control-pipe and Rust workspace MCP surfaces' {
+        $adapter = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core/crates/winsmux-workspace-mcp/src/lib.rs') -Raw
+        $adapter | Should -Match 'TOOL_NAME: &str = "winsmux_workspace_request"'
+        foreach ($relative in @('docs/external-control-plane.md', 'docs/external-control-plane.ja.md')) {
+            $doc = Get-Content -LiteralPath (Join-Path $script:RepoRoot $relative) -Raw -Encoding UTF8
+            $doc | Should -Match 'winsmux-workspace-mcp'
+            $doc | Should -Match 'winsmux_workspace_request'
+            $rows = @($doc -split "\r?\n" | Where-Object { $_ -match '^\| (desktop\.|pty\.)' })
+            $rows.Count | Should -BeGreaterThan 0
+            foreach ($row in $rows) { $row | Should -Match '\| — \|$' }
         }
     }
 
@@ -32,6 +43,5 @@ Describe 'Current control-plane SDK boundary' {
             Test-Path -LiteralPath (Join-Path $script:RepoRoot "sdk/$relative") | Should -BeTrue
             $readme | Should -Match ([regex]::Escape($relative))
         }
-        $readme | Should -Not -Match 'mcp-server\.js|WinsmuxClient'
     }
 }
