@@ -6,11 +6,11 @@
   "sources": [
     {
       "path": "Cargo.lock",
-      "sha256": "26d1bef4c5a4fc47330468a719d8ff59e0fb85e483aa84d0e0752bba99d85c30"
+      "sha256": "eddaa6019c6f13c0d56ebe0d2ae5d078f8ffe7d3c0364e54973a5bcba227485d"
     },
     {
       "path": "Cargo.toml",
-      "sha256": "3c50db3d0d7650d46dd3342eef78c678c1261a2b3f75dce6d79b1d648a30b5a3"
+      "sha256": "1291436d34f1e9712697eeac3d470baa8d73ff1d3af13537799b7da4af9df517"
     },
     {
       "path": "LICENSE",
@@ -45,10 +45,6 @@
       "sha256": "fa3a33439adb79a9c41d37cb73e41fbff5d2df9d6a7bae31f3d64472405df1d9"
     },
     {
-      "path": "git-graph/Cargo.toml",
-      "sha256": "b0a95ce9092da4af9a720d80dea5094b8d8053f230308bda9f5689d84879fa99"
-    },
-    {
       "path": "winsmux-app/package-lock.json",
       "sha256": "75c3b2d53f253a1598ad791dc986ccc7c43f377583fc5cac8358bb3fa2651368"
     },
@@ -65,9 +61,9 @@
       "sha256": "f9de4fed794bce2f8c5438e8abe6a3b8e5fb864c4df5278c174ece3f7536dfe2"
     }
   ],
-  "policy_sha256": "de38d6689d89a3b285ce1eb4f1dfd4c3cbbbe9a848c674d23600ab8c45fee4f3",
-  "input_sha256": "f02548cd0a814bafab541e60ba46301fcd6736dbab5c3f67d2dd9306d6d15531",
-  "catalog_sha256": "54528dec9f8066ee11824eadb799ca4dca9104df77544d32eb3875216e431f7f",
+  "policy_sha256": "747a0f64e59b81b1908559c3adc1c7c16ca0b8b1f9f2a34e8036de8696e08bc1",
+  "input_sha256": "fef0dfe3322dfc45db7be1c4de6c492075265e80b5414d60bef14a24fa10f471",
+  "catalog_sha256": "7b15a31bbaa0f5865be35c6d2c117f95c41d8a3acff8664e042cc8b5fbe879e4",
   "plugin": {
     "source_commit": "13d9edd27b69310e108d6fbd49f90992f8a05390",
     "rustc_commit": "ac68faa20c58cbccd01ee7208bf3b6e93a7d7f96",

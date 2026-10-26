@@ -264,10 +264,10 @@ pub(crate) fn current_license_inventory() -> Result<&'static [InstallMember], De
         let source: CurrentLicenseAuthority = serde_json::from_str(include_str!("desktop_current_licenses_v0380.json"))
             .map_err(|_| DesktopInstallError::Plan)?;
         if source.schema != "winsmux-desktop-current-licenses/v1" || source.version != "0.38.0" || source.host != HOST
-            || source.binding_sha256 != "09ab1b3e70f351394e20eed58139906630d682ae03b456b2dc5bfd2c0f903d05"
-            || source.policy_sha256 != "de38d6689d89a3b285ce1eb4f1dfd4c3cbbbe9a848c674d23600ab8c45fee4f3"
-            || source.input_sha256 != "f02548cd0a814bafab541e60ba46301fcd6736dbab5c3f67d2dd9306d6d15531"
-            || source.catalog_sha256 != "54528dec9f8066ee11824eadb799ca4dca9104df77544d32eb3875216e431f7f"
+            || source.binding_sha256 != "657393576db1a503d75de3ba90480ea804b2d7c6dceb42c7f0a40a31ed5d1110"
+            || source.policy_sha256 != "747a0f64e59b81b1908559c3adc1c7c16ca0b8b1f9f2a34e8036de8696e08bc1"
+            || source.input_sha256 != "fef0dfe3322dfc45db7be1c4de6c492075265e80b5414d60bef14a24fa10f471"
+            || source.catalog_sha256 != "7b15a31bbaa0f5865be35c6d2c117f95c41d8a3acff8664e042cc8b5fbe879e4"
             || source.files.is_empty()
         { return Err(DesktopInstallError::Plan); }
         let mut names = HashSet::new();

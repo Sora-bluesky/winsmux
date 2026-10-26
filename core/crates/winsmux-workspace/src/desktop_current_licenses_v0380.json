@@ -2,20 +2,20 @@
   "schema": "winsmux-desktop-current-licenses/v1",
   "version": "0.38.0",
   "host": "x86_64-pc-windows-msvc",
-  "binding_sha256": "09ab1b3e70f351394e20eed58139906630d682ae03b456b2dc5bfd2c0f903d05",
-  "policy_sha256": "de38d6689d89a3b285ce1eb4f1dfd4c3cbbbe9a848c674d23600ab8c45fee4f3",
-  "input_sha256": "f02548cd0a814bafab541e60ba46301fcd6736dbab5c3f67d2dd9306d6d15531",
-  "catalog_sha256": "54528dec9f8066ee11824eadb799ca4dca9104df77544d32eb3875216e431f7f",
+  "binding_sha256": "657393576db1a503d75de3ba90480ea804b2d7c6dceb42c7f0a40a31ed5d1110",
+  "policy_sha256": "747a0f64e59b81b1908559c3adc1c7c16ca0b8b1f9f2a34e8036de8696e08bc1",
+  "input_sha256": "fef0dfe3322dfc45db7be1c4de6c492075265e80b5414d60bef14a24fa10f471",
+  "catalog_sha256": "7b15a31bbaa0f5865be35c6d2c117f95c41d8a3acff8664e042cc8b5fbe879e4",
   "files": [
     {
       "path": "licenses/THIRD_PARTY_NOTICES.txt",
-      "bytes": 3083845,
-      "sha256": "963c63e4edf99e7fc1f28301a37fa0172aa11ab555d7f3f7e39dfdcd5c8135fb"
+      "bytes": 3083429,
+      "sha256": "ff4c1a6d7f8b4d81f175279c1570a20ecebd5abe072c888d03e5f459a820c444"
     },
     {
       "path": "licenses/manifest.json",
       "bytes": 367488,
-      "sha256": "31867f4164637edf9d52a3adb7a2027b75865351b9384d339f93a4092c35570d"
+      "sha256": "b7491f1be0643b0046be535fea58845126533540456225e2e7c94ba24cb44f67"
     },
     {
       "path": "licenses/sources/cssparser-0.36.0.crate",
@@ -61,6 +61,11 @@
       "path": "licenses/texts/0352320d9929e862c1f07b59caacc3cd1bbacfec0ad4136bf4c89d4ca8939781",
       "bytes": 1114,
       "sha256": "0352320d9929e862c1f07b59caacc3cd1bbacfec0ad4136bf4c89d4ca8939781"
+    },
+    {
+      "path": "licenses/texts/03b158d40fbb93900f2b085bca519381b1041bd124003f1b2e882b627c94a1cd",
+      "bytes": 18327,
+      "sha256": "03b158d40fbb93900f2b085bca519381b1041bd124003f1b2e882b627c94a1cd"
     },
     {
       "path": "licenses/texts/04d766d86b5a1b3e8cd9e97e97580945bd02adc1609cf89702266bc0d6c6e346",
@@ -1043,11 +1048,6 @@
       "sha256": "a678695449ec9be86bb7224eb27ddd3503cb0f40b75e67d9a36b12ffd1a92cc2"
     },
     {
-      "path": "licenses/texts/a964fdbc37fc916ad295db204b58c558e0b608cd36c0b6ebea492bfa72bf00c8",
-      "bytes": 18535,
-      "sha256": "a964fdbc37fc916ad295db204b58c558e0b608cd36c0b6ebea492bfa72bf00c8"
-    },
-    {
       "path": "licenses/texts/aabbb2d9f2d64f1ad11da23ea8981b0fe3a63ac4106dd889bd68cbc97f0d9dac",
       "bytes": 311,
       "sha256": "aabbb2d9f2d64f1ad11da23ea8981b0fe3a63ac4106dd889bd68cbc97f0d9dac"
@@ -1276,11 +1276,6 @@
       "path": "licenses/texts/cf7d0bf1d9952f6ac3c087e0a83499c44d74b5a9aebd27cda473b38b8d3d9dcb",
       "bytes": 2742,
       "sha256": "cf7d0bf1d9952f6ac3c087e0a83499c44d74b5a9aebd27cda473b38b8d3d9dcb"
-    },
-    {
-      "path": "licenses/texts/cfb5cdc302385038de1ac3f4cb8c68932aca7325f2489fbf3a7670bfacb7aa8f",
-      "bytes": 20918,
-      "sha256": "cfb5cdc302385038de1ac3f4cb8c68932aca7325f2489fbf3a7670bfacb7aa8f"
     },
     {
       "path": "licenses/texts/cfc2741e1c3d695f65af1d83e50be29bd57cd2906e03de0b70d9284340558480",
@@ -1526,6 +1521,11 @@
       "path": "licenses/texts/f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2",
       "bytes": 2195,
       "sha256": "f367c1b8e1aa262435251e442901da4607b4650e0e63a026f5044473ecfb90f2"
+    },
+    {
+      "path": "licenses/texts/f3b4bf19bfe2fc1393ae491e4a55a5a7cc39c127e9640b9fe1d604a8b8c7df6e",
+      "bytes": 20710,
+      "sha256": "f3b4bf19bfe2fc1393ae491e4a55a5a7cc39c127e9640b9fe1d604a8b8c7df6e"
     },
     {
       "path": "licenses/texts/f506bd97b26d69c08985b4075fdcb9e67c42e7851f67c340c72e5be5eabd922a",
