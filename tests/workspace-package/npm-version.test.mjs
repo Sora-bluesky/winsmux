@@ -33,10 +33,14 @@ function fixture(name, version = "0.38.0") {
   write(root, "packages/winsmux/package.json", JSON.stringify({name:"winsmux",version:"0.0.0-development",private:false}));
   write(root, "packages/winsmux/index.mjs", "// public package entry\n");
   write(root, "packages/winsmux/nested/README.md", "source canary\n");
-  for (const file of ["scripts/stage-npm-release.mjs", "scripts/assert-distribution-version.ps1", "scripts/distribution-prelaunch.mjs"]) {
+  for (const file of ["scripts/stage-npm-release.mjs", "scripts/assert-distribution-version.ps1", "scripts/distribution-prelaunch.mjs", "scripts/windows-distribution-build.mjs"]) {
     write(root, file, fs.readFileSync(path.join(repo, file)));
   }
-  write(root, "child.ps1", fs.readFileSync(path.join(repo,"tests/workspace-package/fixture-child.ps1")));
+  const child=fs.readFileSync(path.join(repo,"tests/workspace-package/fixture-child.ps1"),'utf8');
+  // Instrumentation belongs beside the protected source, never in its snapshot.
+  const metadataMarker="Join-Path $env:COMPANION_TEST_ROOT 'metadata-reached.txt'";
+  assert.ok(child.includes(metadataMarker));
+  write(root, "child.ps1", child.replace(metadataMarker,"Join-Path $PSScriptRoot '../metadata-reached.txt'"));
   write(root, "winsmux-app/src-tauri/scripts/prepare-companion-cli.ps1", fs.readFileSync(path.join(repo,"winsmux-app/src-tauri/scripts/prepare-companion-cli.ps1")));
   write(root, "winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs", fs.readFileSync(path.join(repo,"winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs")));
   return root;
