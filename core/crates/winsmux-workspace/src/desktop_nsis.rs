@@ -4765,6 +4765,27 @@ mod native {
             root: Dirs,
             ctx: Context,
             plan_bytes: Vec<u8>,
+            // Dropped after root and its directory handles.
+            _scratch: FixtureScratch,
+        }
+        struct FixtureScratch(PathBuf);
+        impl Drop for FixtureScratch {
+            fn drop(&mut self) {
+                hooks::MOCK.with(|m| *m.borrow_mut() = None);
+                if let Err(error) = fs::remove_dir_all(&self.0) {
+                    if error.kind() != std::io::ErrorKind::NotFound && !std::thread::panicking() {
+                        panic!("remove owned fixture scratch {}: {error}", self.0.display());
+                    }
+                }
+            }
+        }
+        #[test]
+        fn fixture_scratch_is_removed_after_drop() {
+            let f = fixture();
+            let base = f.base.clone();
+            assert!(base.is_dir());
+            drop(f);
+            assert!(!base.exists(), "fixture left synthetic-native scratch: {}", base.display());
         }
         #[derive(Clone, Copy)]
         enum FullLicenseProfile { Current, OldManaged }
@@ -5581,14 +5602,12 @@ mod native {
         }
 
         fn fixture() -> Fixture {
-            let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("synthetic-native")
-                .join(uuid::Uuid::new_v4().to_string());
+            let base = std::env::temp_dir()
+                .join(format!("winsmux-synthetic-native-{}", uuid::Uuid::new_v4()));
             fixture_at(base)
         }
         fn fixture_at(base: PathBuf) -> Fixture {
+            let scratch = FixtureScratch(base.clone());
             hooks::MOCK.with(|m| *m.borrow_mut() = None);
             fs::create_dir_all(base.join("source")).unwrap();
             fs::create_dir(base.join("installed")).unwrap();
@@ -5644,6 +5663,7 @@ mod native {
                 root,
                 ctx,
                 plan_bytes,
+                _scratch: scratch,
             }
         }
         fn legacy_fixture_setup(f: &Fixture) {
