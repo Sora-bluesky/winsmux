@@ -23,8 +23,10 @@ check(() => assert.equal(validatePublicReleaseInventory(bundle, release, bundle.
 check(() => assert.equal(validatePublicReleaseInventory(bundle, null, null, []).release_present, false));
 check(() => assert.equal(validatePublicReleaseInventory(bundle, release, bundle.identity.source_commit, assets.slice(0,4)).assets.length, 4));
 reject(() => validatePublicReleaseInventory(structuredClone(bundle), release, bundle.identity.source_commit, assets), /observed/);
-reject(() => validatePublicReleaseInventory(bundle, null, bundle.identity.source_commit, []), /inconsistent/);
-reject(() => validatePublicReleaseInventory(bundle, null, null, assets), /inconsistent/);
+check(() => assert.equal(validatePublicReleaseInventory(bundle, null, bundle.identity.source_commit, []).release_present, false));
+for (const target of ['0'.repeat(40), '', undefined])
+  reject(() => validatePublicReleaseInventory(bundle, null, target, []), /conflicting or unknown tag target/);
+reject(() => validatePublicReleaseInventory(bundle, null, null, assets), /conflicting or unknown tag target/);
 reject(() => validatePublicReleaseInventory(bundle, release, '0'.repeat(40), assets), /differs/);
 for (const change of [ value => { value.id=0; }, value => { value.url=api+'/releases/43'; },
   value => { value.html_url='https://github.com/other/winsmux/releases/tag/v0.38.0'; },
