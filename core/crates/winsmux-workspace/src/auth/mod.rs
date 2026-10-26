@@ -10811,6 +10811,27 @@ mod event_accounting_authority_tests {
     }
 
     #[test]
+    fn cleanup_exit_event_coalesces_after_completed_teardown() {
+        let (harness, runtime, run) = cleanup_event_fixture();
+        let authorization = harness.authorization();
+        runtime.resume_and_observe(&run).unwrap();
+        let start = std::time::Instant::now();
+        while !runtime.session_clean(&run) {
+            assert!(start.elapsed() < Duration::from_secs(30), "native cleanup");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // The fixture suppresses worker callbacks, so the first notification
+        // observes both process exit and completed teardown deterministically.
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 1, "exit and completed cleanup coalesce");
+        authorization.testing_fire_exit_callback(&run);
+        authorization.testing_fire_exit_callback(&run);
+        assert_eq!(authorization.event_seq(), 1, "duplicate completed cleanup");
+        assert_eq!(authorization.testing_exit_latch_charge(), 1);
+        assert_eq!(authorization.testing_outstanding_credits(), 0);
+    }
+
+    #[test]
     fn cleanup_exit_event_progresses_once_after_late_teardown() {
         let (harness, runtime, run) = cleanup_event_fixture();
         let authorization = harness.authorization();
