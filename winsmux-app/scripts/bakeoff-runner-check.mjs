@@ -291,14 +291,28 @@ assert.equal(
 );
 const desktopMainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const runnerSource = readFileSync(new URL("./run-cli-bakeoff.mjs", import.meta.url), "utf8");
-assert.ok(
-    desktopMainSource.includes("WINSMUX_BENCH_DISPATCH ${dispatchId}") &&
-    desktopMainSource.includes("const promptWithDispatchReceipt") &&
-    desktopMainSource.includes("const cliDispatchPromptSha = await sha256Hex") &&
-    desktopMainSource.includes('`${packet.prompt}\\n\\n${buildCliBenchmarkDispatchEchoMarker(probeId)}`') &&
-    desktopMainSource.includes('{ label: "dispatch_id", value: probeId }'),
-  "main.ts must emit the same receipt, publish dispatch_id, and hash the receipt-inclusive CLI prompt",
-);
+// 9561e9a288f167d0837b7074864f300d8181d902 removed the Desktop benchmark
+// submission and dispatch-receipt paths. Keep them absent; the runner's own
+// receipt helpers and completion checks below retain their existing contracts.
+for (const removedPath of [
+  "WINSMUX_BENCH_DISPATCH",
+  "promptWithDispatchReceipt",
+  "cliDispatchPromptSha",
+  "buildCliBenchmarkDispatchEchoMarker",
+  "dispatch_id",
+  "loadHarnessBenchmarkTaskPacket",
+  "writeWorkerBenchmarkSubmission",
+  "runBenchmarkReadyCheckFromOperatorCommand",
+  "dispatchBenchmarkTaskFromOperatorCommand",
+  "isOperatorBenchmarkReadyCheckCommand",
+  "isOperatorBenchmarkDispatchCommand",
+  "getOperatorBenchmarkDispatchTaskId",
+]) {
+  assert.ok(
+    !desktopMainSource.includes(removedPath),
+    `main.ts must keep ${removedPath} removed by 9561e9a2`,
+  );
+}
 assert.ok(
   runnerSource.includes("countCliMarkersAfterEchoReceipt") &&
     runnerSource.includes("beginObserved[w] = receiptMarkerCounts.beginCount > 0"),
