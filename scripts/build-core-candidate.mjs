@@ -165,7 +165,7 @@ export function coreSourceInventoryIdentity(rows) {
 }
 export function coreSourceInventory() {
   const files = new Set(['.gitattributes', 'VERSION', 'Cargo.toml', 'Cargo.lock', 'LICENSE', 'install.ps1', '.github/workflows/release-core.yml']);
-  for (const relative of ['core', 'git-graph', 'scripts', 'distribution/windows-licenses']) {
+  for (const relative of ['core', 'scripts', 'distribution/windows-licenses']) {
     const walk = directory => {
       for (const item of fs.readdirSync(physicalPath(directory), { withFileTypes: true })) {
         requireCore(!item.isSymbolicLink(), 'Linked Core build source is unsupported.');

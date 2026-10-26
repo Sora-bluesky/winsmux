@@ -90,7 +90,6 @@ $whitelistPatterns = @(
     'core/crates/winsmux-workspace/tests/workspace_resources.rs',
     'winsmux-app/src/generated/workspace-contract.ts',
     'winsmux-app/src/workspace-ui/workspace-copy-gate.ts',
-    'git-graph/**',
     '.github/workflows/test.yml',
     '.github/workflows/remote-helper-ubuntu-2204.yml',
     '.github/workflows/desktop-baseline-capture.yml',
