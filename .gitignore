@@ -64,6 +64,7 @@ tests/workspace-efficiency/*
 !tests/workspace-package/
 tests/workspace-package/*
 !tests/workspace-package/windows-runtime.test.mjs
+!tests/workspace-package/core-local-paths.test.mjs
 !tests/workspace-package/bundled-distribution.test.mjs
 !tests/workspace-package/nsis-generation.test.mjs
 !tests/workspace-package/nsis-observer.test.mjs

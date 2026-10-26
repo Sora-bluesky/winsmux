@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { physicalPath } from './distribution-prelaunch.mjs';
 
@@ -11,12 +12,43 @@ function requireValue(value, reason) { if (!value) throw new Error(reason); }
 // Aliases and cc's host/target/compiler spellings use this same admission gate.
 export function assertWindowsBuildEnvironment(env = process.env) {
   for (const key of Object.keys(env)) {
-    if (/^(?:RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|RUSTC|CARGO_BUILD_RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC_WRAPPER|CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER|CL|_CL_|LINK|_LINK_|CC|CXX|AR|CFLAGS|CXXFLAGS|CPPFLAGS|ARFLAGS|CROSS_COMPILE|RUSTC_LINKER|CRATE_CC_NO_DEFAULTS|CC_KNOWN_WRAPPER_CUSTOM)$/iu.test(key)
+    if (/^(?:RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|RUSTC|CARGO_BUILD_RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_BUILD_RUSTC_WRAPPER|CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER|CL|_CL_|LINK|_LINK_|CC|CXX|AR|CFLAGS|CXXFLAGS|CPPFLAGS|ARFLAGS|CROSS_COMPILE|RUSTC_LINKER|CRATE_CC_NO_DEFAULTS|CC_KNOWN_WRAPPER_CUSTOM|CC_SHELL_ESCAPED_FLAGS)$/iu.test(key)
       || /^CARGO_TARGET_.*_(?:RUSTFLAGS|LINKER)$/iu.test(key)
       || /^(?:(?:HOST|TARGET)_)?(?:CC|CXX|AR|CFLAGS|CXXFLAGS|CPPFLAGS|ARFLAGS)(?:_[a-z0-9_-]+)?$/iu.test(key)) {
       throw new Error(`Distribution build override is unsupported: ${key}`);
     }
   }
+}
+
+function distributionPathRemaps({ repoRoot, cargoHome, rustupHome }) {
+  const roots = [[repoRoot, '/winsmux/src'], [cargoHome, '/winsmux/cargo'], [rustupHome, '/winsmux/rustup']];
+  requireValue(roots.every(([root]) => typeof root === 'string' && path.isAbsolute(root)
+    && !/[\0\r\n]/u.test(root)), 'Build remapping requires absolute roots.');
+  // Rust uses the last matching prefix; nested Cargo homes must follow the repo.
+  return roots.map(([root, virtual]) => [path.resolve(root), virtual])
+    .sort(([left], [right]) => left.length - right.length)
+    .flatMap(([root, virtual]) => [...new Set([root.replaceAll('\\', '/'), root.replaceAll('/', '\\')])]
+      .map(source => [source, virtual]));
+}
+
+export function windowsDistributionRustflags(roots) {
+  return ['-C', 'target-feature=+crt-static',
+    ...distributionPathRemaps(roots).map(([source, virtual]) => `--remap-path-prefix=${source}=${virtual}`)];
+}
+
+/** Rust locations and native __FILE__ strings share one closed root inventory. */
+export function windowsDistributionPathConfig({ target, ...roots }) {
+  requireValue(targets.has(target), 'Unsupported Windows distribution target.');
+  const nativeFlags = distributionPathRemaps(roots).map(([source]) => {
+    const separator = source.includes('\\') ? '\\' : '/';
+    return JSON.stringify('/d1trimfile:' + source.replace(/[\\/]+$/u, '') + separator);
+  }).join(' ');
+  return [`target.${target}.rustflags=` + JSON.stringify(windowsDistributionRustflags(roots)),
+    'env.CC_SHELL_ESCAPED_FLAGS.value="1"', 'env.CC_SHELL_ESCAPED_FLAGS.force=true',
+    ...['CFLAGS', 'CXXFLAGS'].flatMap(name => {
+      const key = `env.${name}_${target.replaceAll('-', '_')}`;
+      return [key + '.value=' + JSON.stringify(nativeFlags), key + '.force=true'];
+    })];
 }
 
 /** One Cargo invocation policy for public CLI and Desktop companion processes.
@@ -40,9 +72,14 @@ export function windowsDistributionBuildPlan({ repoRoot, target, targetRoot, int
   const out = physicalPath(targetRoot), intermediate = physicalPath(intermediateRoot);
   requireValue(path.isAbsolute(targetRoot) && path.isAbsolute(intermediateRoot), 'Absolute validated build outputs required.');
   const toml = 'build.build-dir=' + JSON.stringify(intermediate.replaceAll('\\', '/'));
+  const profile = env.USERPROFILE || os.homedir();
+  const pathConfigs = release ? windowsDistributionPathConfig({ target, repoRoot: repo,
+    cargoHome: env.CARGO_HOME || path.join(profile, '.cargo'),
+    rustupHome: env.RUSTUP_HOME || path.join(profile, '.rustup') }) : [];
   const selected = companions ? [...packages] : ['winsmux'];
   const args = ['build', '--locked', '--manifest-path', path.join(repo, 'Cargo.toml'),
     '--target-dir', out, '--target', target, '--config', config, '--config', toml,
+    ...pathConfigs.flatMap(config => ['--config', config]),
     '--message-format', 'json-render-diagnostics'];
   for (const name of selected) args.push('-p', name, '--bin', name);
   if (release) args.push('--release');
