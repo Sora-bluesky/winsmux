@@ -17,7 +17,7 @@ for stream in (sys.stdout, sys.stderr):
 REQUIRED = (
     "secret-scan", "public-surface", "install-e2e", "native-lifecycle-source",
     "common-contract-drift", "pester", "core-build-test", "desktop-build-test",
-    "desktop-release-process", "desktop-nsis-lifecycle", "task811-receipt-bind", "helper-linux-negatives",
+    "desktop-release-process", "gate-map", "task811-receipt-bind", "helper-linux-negatives",
     "workspace-journey-native",
 )
 

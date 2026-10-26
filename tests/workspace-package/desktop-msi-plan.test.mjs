@@ -6,11 +6,20 @@ import { createHash, randomUUID } from 'node:crypto';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { stageBundledDistribution } from '../../scripts/stage-bundled-distribution.mjs';
-import { beginDesktopBundle, readDesktopDistributionVersion, stageDesktopMsiPlan, signDesktopMsiAsset, readCompletedSignedBuild } from '../../scripts/stage-desktop-msi-plan.mjs';
 import { fixturePe } from './fixture-pe.mjs';
+import { assertDesktopPublisherContract } from './desktop-publisher-contract.mjs';
+
+assertDesktopPublisherContract(process.cwd(), 'msi');
 
 const repo = process.cwd(), root = path.resolve('.evidence/workspace-package', 'desktop-msi-' + randomUUID());
 fs.mkdirSync(root, { recursive: true });
+// The dynamic NSIS import must resolve beside an isolated copy of the producer.
+// An interrupted test must never leave a mock in the tracked scripts directory.
+const modules = path.join(root, 'scripts'); fs.mkdirSync(modules);
+for (const name of fs.readdirSync(path.join(repo, 'scripts')).filter(name => name.endsWith('.mjs')))
+  fs.copyFileSync(path.join(repo, 'scripts', name), path.join(modules, name));
+const { beginDesktopBundle, readDesktopDistributionVersion, stageDesktopMsiPlan, signDesktopMsiAsset, readCompletedSignedBuild }
+  = await import(pathToFileURL(path.join(modules, 'stage-desktop-msi-plan.mjs')).href);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const binding = JSON.parse(fs.readFileSync('distribution/windows-licenses/binding.json'));
 const input = path.join(root, 'space 日本語 & fixture'), source = path.join(input, 'winsmux-app/src-tauri');
@@ -178,6 +187,15 @@ function cargoHandoffCases() {
     pass('cargo-incomplete-owned-copy-preserved'); reject('cargo-incomplete-orphan-reentry-refused', partialWrite);
   } finally { for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value; }
 }
+if (process.argv.includes('--publisher-only')) {
+  const staged = stageDesktopMsiPlan(options), bytes = fs.readFileSync(planFile);
+  assert.equal(staged.plan_sha256, digest(bytes));
+  assert.equal(JSON.parse(bytes).flavor, 'msi');
+  assert.ok(fs.readFileSync(includeFile, 'utf8').includes(staged.plan_sha256));
+  console.log(JSON.stringify({ scope: 'publisher-and-plan-only', passed: 2, failed: 0,
+    registry_key: 'Software\\github\\winsmux', publisher: 'winsmux', plan_sha256: staged.plan_sha256 }));
+  process.exit(0);
+}
 cargoHandoffCases();
 if (process.argv.includes('--cargo-handoff-only')) {
   console.log(JSON.stringify({ scope: 'cargo-handoff-only', passed: cases.length, failed: 0, cases,
@@ -293,8 +311,8 @@ function tool(f = active) {
   const file = path.join(f.options.projectOutput, 'wix/x64/wix/WixUtilExtension.dll');
   fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, 'synthetic copied tool'); return file;
 }
-const mockNsisPath = path.join(repo, 'scripts/stage-desktop-nsis-plan.mjs');
-const existingNsis = fs.existsSync(mockNsisPath) ? fs.readFileSync(mockNsisPath) : null;
+const mockNsisPath = path.join(modules, 'stage-desktop-nsis-plan.mjs');
+const originalNsis = fs.readFileSync(path.join(repo, 'scripts/stage-desktop-nsis-plan.mjs'));
 const mockNsis = [
   "import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';",
   "const hash=b=>createHash('sha256').update(b).digest('hex');",
@@ -439,7 +457,7 @@ try {
   // Exact old predicate preimage from b2f1465a; it rejects this legal completed state.
   const oldInventory = " const roles=[['gui','winsmux-app.exe','pe_gui_original'],['cli','winsmux.exe','pe_cli'],['mcp','winsmux-workspace-mcp.exe','pe_mcp']];if(flavor==='msi')roles.push(['app_lib','winsmux_app_lib.dll','pe_app_lib']);\n const expected=[...licenseRows,...roles.map(([role,name,sourceRole])=>({role,path:name,bytes:sources.get(sourceRole).length,sha256:role==='gui'?record.gui_sha256:digest(sources.get(sourceRole))}))].sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0);\n need(JSON.stringify(plan.files)===JSON.stringify(expected),'native_transport_plan_inventory_changed');";
   assert.equal(digest(Buffer.from(oldInventory)), '354e677058df4331689da23b6cb46ac2e0a698d4387b3331a8298abd748d9d10');
-  const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8'), transportLines=transportSource.split('\n');
+  const transportSource=fs.readFileSync(path.join(repo,'scripts/test-public-release.ps1'),'utf8').replaceAll('\r\n','\n'), transportLines=transportSource.split('\n');
   const rowStart=transportLines.findIndex(line=>line.startsWith(" const roles=[['gui'"));
   assert.ok(rowStart>=0);
   const currentInventory=transportLines.slice(rowStart,rowStart+3).join('\n');
@@ -810,7 +828,7 @@ try {
   childProcess.spawnSync = nativeSpawn; syncBuiltinESMExports();
   if (savedTemp === undefined) delete process.env.TEMP; else process.env.TEMP = savedTemp;
   if (savedTmp === undefined) delete process.env.TMP; else process.env.TMP = savedTmp;
-  if (existingNsis) fs.writeFileSync(mockNsisPath, existingNsis); else fs.unlinkSync(mockNsisPath);
+  assert.deepEqual(fs.readFileSync(path.join(repo, 'scripts/stage-desktop-nsis-plan.mjs')), originalNsis);
 }
 const template = fs.readFileSync('winsmux-app/src-tauri/wix/installer.wxs', 'utf8');
 assert.equal((template.match(/MajorUpgrade Schedule="afterInstallInitialize"/gu) ?? []).length, 2);

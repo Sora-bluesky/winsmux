@@ -8,9 +8,11 @@ import { stageBundledDistribution } from '../../scripts/stage-bundled-distributi
 import { stageDesktopNsisPlan } from '../../scripts/stage-desktop-nsis-plan.mjs';
 import { beginDesktopBundle, signDesktopMsiAsset } from '../../scripts/stage-desktop-msi-plan.mjs';
 import { fixturePe } from './fixture-pe.mjs';
+import { assertDesktopPublisherContract } from './desktop-publisher-contract.mjs';
 
 // Real producer and coordinator; only PE execution/signing/version subprocesses are synthetic.
 const repo = process.cwd();
+assertDesktopPublisherContract(repo, 'nsis');
 const root = path.resolve('.evidence/workspace-package', 'desktop-nsis-' + randomUUID());
 fs.mkdirSync(root, { recursive: true });
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -109,6 +111,11 @@ try {
   assert.equal(first.plan_sha256, hash(measured.bytes)); assert.equal(first.installation_complete, false);
   assert.equal(first.signed, false); assert.deepEqual(snapshot(input), canonicalBefore); assert.deepEqual(fs.readFileSync(f.gui), guiBefore);
   pass('real-NSS-three-PE-plan-full-canonical-licenses-helper-and-literal-paths');
+  if (process.argv.includes('--publisher-only')) {
+    console.log(JSON.stringify({ scope: 'publisher-and-plan-only', passed: cases.length + 1, failed: 0,
+      registry_key: 'Software\\github\\winsmux', publisher: 'winsmux', plan_sha256: first.plan_sha256 }));
+    process.exit(0);
+  }
   assert.throws(() => stageDesktopNsisPlan(f.options));
   assert.deepEqual(fs.readFileSync(pair(f)[0]), measured.bytes); assert.deepEqual(fs.readFileSync(pair(f)[1]), measured.include);
   pass('existing-active-pair-is-not-refreshed');

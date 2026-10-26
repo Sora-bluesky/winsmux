@@ -60,7 +60,7 @@ $signature.SignerCertificate.Thumbprint
 
 The hash must match the release's checksum, the subject must be `CN=winsmux release signing`, and the thumbprint must be `2D4D1904E09B510BF9CD8994A2CD49C36BB0C4BA`. If the status is `NotSigned` or `HashMismatch`, or the subject or thumbprint differs, the file is not the one the release describes. Do not run it.
 
-After installation, Installed apps shows the publisher as `github`. GitHub did not sign or publish winsmux, and that name says nothing about who built the file. Use the signer check above to identify the file.
+After installation, Installed apps shows the publisher as `winsmux`. This display name identifies the project; use the signer check above to verify the file and its `CN=winsmux release signing` certificate.
 
 ### Installer pages
 

@@ -975,7 +975,7 @@ fn desired_slots(root: &str, language: u32, total: u64) -> Result<Vec<Option<Raw
         sz("winsmux"),
         sz(&format!("\"{gui}\"")),
         sz(VERSION),
-        sz("github"),
+        sz("winsmux"),
         sz(&format!("\"{root}\"")),
         sz(&format!("\"{root}\\uninstall.exe\"")),
         dword(1),
@@ -992,6 +992,16 @@ fn desired_slots(root: &str, language: u32, total: u64) -> Result<Vec<Option<Raw
         ]);
     }
     Ok(vals.into_iter().map(Some).collect())
+}
+
+// Historical owned state and interruption journals may contain the G9 publisher.
+// Admission accepts that exact profile; new publications still use desired_slots.
+fn published_slots_match(registration: &[Option<RawValue>], root: &str, language: u32, total: u64) -> Result<bool> {
+    let mut expected = desired_slots(root, language, total)?;
+    if registration.get(6) == Some(&Some(sz("github"))) {
+        expected[6] = Some(sz("github"));
+    }
+    Ok(registration == expected)
 }
 
 thread_local! {
@@ -3070,7 +3080,7 @@ mod native {
             .members
             .iter()
             .try_fold(0u64, |n, m| n.checked_add(m.bytes).ok_or(Error::Plan))?;
-        if desired_slots(&s.root, language, total)? != s.registration {
+        if !published_slots_match(&s.registration, &s.root, language, total)? {
             return Err(Error::Plan);
         }
         Ok(())
@@ -3480,12 +3490,8 @@ mod native {
             } else {
                 return Err(Error::Pending);
             };
-            let desired = desired_slots(&p.root, language, total)?;
-            if p.slots[..22]
-                .iter()
-                .zip(desired)
-                .any(|(s, v)| s.desired != v)
-            {
+            let desired: Vec<_> = p.slots[..22].iter().map(|s| s.desired.clone()).collect();
+            if !published_slots_match(&desired, &p.root, language, total)? {
                 return Err(Error::Pending);
             }
         }
@@ -4765,6 +4771,27 @@ mod native {
             root: Dirs,
             ctx: Context,
             plan_bytes: Vec<u8>,
+            // Dropped after root and its directory handles.
+            _scratch: FixtureScratch,
+        }
+        struct FixtureScratch(PathBuf);
+        impl Drop for FixtureScratch {
+            fn drop(&mut self) {
+                hooks::MOCK.with(|m| *m.borrow_mut() = None);
+                if let Err(error) = fs::remove_dir_all(&self.0) {
+                    if error.kind() != std::io::ErrorKind::NotFound && !std::thread::panicking() {
+                        panic!("remove owned fixture scratch {}: {error}", self.0.display());
+                    }
+                }
+            }
+        }
+        #[test]
+        fn fixture_scratch_is_removed_after_drop() {
+            let f = fixture();
+            let base = f.base.clone();
+            assert!(base.is_dir());
+            drop(f);
+            assert!(!base.exists(), "fixture left synthetic-native scratch: {}", base.display());
         }
         #[derive(Clone, Copy)]
         enum FullLicenseProfile { Current, OldManaged }
@@ -5581,14 +5608,12 @@ mod native {
         }
 
         fn fixture() -> Fixture {
-            let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .unwrap()
-                .join("synthetic-native")
-                .join(uuid::Uuid::new_v4().to_string());
+            let base = std::env::temp_dir()
+                .join(format!("winsmux-synthetic-native-{}", uuid::Uuid::new_v4()));
             fixture_at(base)
         }
         fn fixture_at(base: PathBuf) -> Fixture {
+            let scratch = FixtureScratch(base.clone());
             hooks::MOCK.with(|m| *m.borrow_mut() = None);
             fs::create_dir_all(base.join("source")).unwrap();
             fs::create_dir(base.join("installed")).unwrap();
@@ -5644,6 +5669,7 @@ mod native {
                 root,
                 ctx,
                 plan_bytes,
+                _scratch: scratch,
             }
         }
         fn legacy_fixture_setup(f: &Fixture) {
@@ -6092,6 +6118,113 @@ mod native {
             let link = f.base.join("source/hardlink.exe");
             fs::hard_link(&source, &link).unwrap();
             assert!(observe(&source, "winsmux.exe", false).is_err());
+        }
+        #[test]
+        fn publisher_display_keeps_existing_registry_paths() {
+            assert_eq!(slot_key(0).unwrap(), ("Software\\github\\winsmux", ""));
+            assert_eq!(slot_key(1).unwrap(), ("Software\\github\\winsmux", "Installer Language"));
+            assert_eq!(slot_key(6).unwrap(), ("Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\winsmux", "Publisher"));
+            assert_eq!(desired_slots("C:\\synthetic-winsmux", 1033, 1).unwrap()[6], Some(sz("winsmux")));
+        }
+        #[test]
+        fn publisher_github_install_can_update_and_uninstall() {
+            for update in [false, true] {
+                let mut f = fixture();
+                execute(&f).unwrap();
+                // Model an existing G9 install, including its persisted registration ownership.
+                let mut state = old(&f).unwrap().0;
+                state.registration[6] = Some(sz("github"));
+                hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().slots[6] = Some(sz("github")));
+                fs::write(f.root.path.join(CONTROL).join("installed.json"), serde_json::to_vec(&state).unwrap()).unwrap();
+                if update {
+                    assert!(execute(&f).unwrap().durable_commit);
+                    assert_eq!(read_slot(6).unwrap(), Some(sz("winsmux")));
+                    assert_eq!(old(&f).unwrap().0.registration[6], Some(sz("winsmux")));
+                    assert_eq!(read_slot(0).unwrap(), Some(sz(&path_text(&f.root.path).unwrap())));
+                }
+                f.ctx.action = Action::Uninstall;
+                assert!(execute(&f).unwrap().durable_commit);
+                for id in 0..22 { assert_eq!(read_slot(id).unwrap(), None); }
+            }
+        }
+        #[test]
+        fn publisher_profiles_reject_other_values_and_sibling_slot_changes() {
+            let mut f = fixture();
+            execute(&f).unwrap();
+            let state = old(&f).unwrap().0;
+            for value in [None, Some(sz("GitHub")), Some(sz("winsmux ")), Some(dword(1))] {
+                let mut bad = state.clone();
+                bad.registration[6] = value;
+                assert_eq!(validate_installed(&bad, &f.root, "S-1-5-21-100").err(), Some(Error::Plan));
+            }
+            for id in (0..22).filter(|id| *id != 6) {
+                let mut bad = state.clone();
+                bad.registration[6] = Some(sz("github"));
+                bad.registration[id] = Some(sz("foreign"));
+                assert_eq!(validate_installed(&bad, &f.root, "S-1-5-21-100").err(), Some(Error::Plan), "slot {id}");
+            }
+            for (stored, live) in [("winsmux", "foreign"), ("github", "winsmux"), ("winsmux", "github")] {
+                let mut previous = state.clone();
+                previous.registration[6] = Some(sz(stored));
+                let file = f.root.path.join(CONTROL).join("installed.json");
+                let before = serde_json::to_vec(&previous).unwrap();
+                fs::write(&file, &before).unwrap();
+                hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().slots[6] = Some(sz(live)));
+                for action in [Action::Install, Action::Uninstall] {
+                    f.ctx.action = action;
+                    assert_eq!(execute(&f).err(), Some(Error::Registration));
+                    assert_eq!(read_slot(6).unwrap(), Some(sz(live)));
+                    assert_eq!(fs::read(&file).unwrap(), before);
+                }
+            }
+        }
+        #[test]
+        fn publisher_github_pending_recovers_then_publishes_current_profile() {
+            let good = fixture();
+            let trace = operation_trace(&good);
+            for label in ["journal_after", "commit_before", "commit_after"] {
+                let mut f = fixture();
+                // The first journal save still has the import guard armed; an unwind
+                // deliberately removes its staged files. Use the next save, before any
+                // public mutation, to retain a real recoverable fixture after the cut.
+                let skip = usize::from(label == "journal_after");
+                let at = trace.iter().enumerate().filter(|(_, item)| *item == label).nth(skip).unwrap().0 + 1;
+                crash_at(&f, at);
+                let file = f.root.path.join(CONTROL).join("pending.json");
+                let mut journal = Journal::open(&file, false).unwrap();
+                let mut p = journal.load().unwrap();
+                p.slots[6].desired = Some(sz("github"));
+                // Both values are valid profiles, but their persisted representations must agree.
+                assert!(validate_pending(&p, &f.root, "S-1-5-21-100").is_err());
+                let bytes = serde_json::to_vec(&commit_state(&p, &f.root).unwrap()).unwrap();
+                let row = p.new.iter_mut().find(|row| row.domain == "state").unwrap();
+                let staged = if label == "commit_after" {
+                    live_path(&f.root.path, row).unwrap()
+                } else {
+                    private_path(&f.root.path, &p.operation_id, "new", row)
+                };
+                fs::write(&staged, &bytes).unwrap();
+                row.member = observe(&staged, "installed.json", false).unwrap().member;
+                p.commit_bytes = Some(bytes);
+                if p.slots[6].phase == SlotPhase::PublishedConfirmed {
+                    hooks::MOCK.with(|m| m.borrow_mut().as_mut().unwrap().slots[6] = Some(sz("github")));
+                }
+                journal.save(&p).unwrap();
+                drop(journal);
+                validate_pending(&p, &f.root, "S-1-5-21-100").unwrap();
+                recover_if_readable(&f).unwrap();
+                if label == "commit_after" {
+                    assert_eq!(read_slot(6).unwrap(), Some(sz("github")));
+                    assert_eq!(old(&f).unwrap().0.registration[6], Some(sz("github")));
+                } else {
+                    assert!(old(&f).is_none());
+                    assert_eq!(read_slot(6).unwrap(), None);
+                }
+                assert!(execute(&f).unwrap().durable_commit);
+                assert_eq!(read_slot(6).unwrap(), Some(sz("winsmux")));
+                f.ctx.action = Action::Uninstall;
+                assert!(execute(&f).unwrap().durable_commit);
+            }
         }
         #[test]
         fn install_reinstall_uninstall_and_project_preservation() {

@@ -12,7 +12,7 @@ const shims = {
   '@tauri-apps/api/webviewWindow': 'export const getCurrentWebviewWindow=()=>({label:"main"}); export class WebviewWindow { constructor(){throw Error("unexpected secondary window")} }',
   '@tauri-apps/api/event': 'export const listen=async(name,callback)=>{globalThis.fixture.listeners[name]=callback;return()=>{delete globalThis.fixture.listeners[name]}};',
   '@tauri-apps/plugin-dialog': 'export const open=async()=>null;',
-  xterm: 'export class Terminal { constructor(){this.cols=0;this.rows=0;this.options={};this.parser={registerCsiHandler:()=>({dispose(){}})}} loadAddon(){} open(slot){this.textarea=document.createElement("textarea");slot.append(this.textarea)} write(){} reset(){} onResize(){return{dispose(){}}} onData(handler){this.sendInput=handler;globalThis.fixture.term=this;return{dispose(){}}} onKey(){return{dispose(){}}} attachCustomKeyEventHandler(){} hasSelection(){return false} dispose(){} }',
+  xterm: 'export class Terminal { constructor(){this.cols=0;this.rows=0;this.options={};this.modes={sendFocusMode:false};this.parser={registerCsiHandler:()=>({dispose(){}})}} loadAddon(){} open(slot){this.textarea=document.createElement("textarea");slot.append(this.textarea)} write(){} reset(){} onResize(){return{dispose(){}}} onData(handler){this.sendInput=handler;globalThis.fixture.term=this;return{dispose(){}}} onKey(){return{dispose(){}}} attachCustomKeyEventHandler(){} hasSelection(){return false} dispose(){} }',
   '@xterm/addon-fit': 'export class FitAddon {fit(){}}',
 };
 const bundled = await build({ entryPoints: [resolve(app, 'src/workspace-ui/startup-mount.ts')], bundle: true, write: false,
@@ -54,7 +54,7 @@ try {
     Object.defineProperty(navigator, 'clipboard', { configurable: true,
       value: { writeText: async () => { f.browserCopies++; throw Error('browser clipboard intentionally unavailable'); } } });
     f.invoke = async (name, args) => {
-      if (name === 'startup_main_policy_ready' || name === 'startup_main_show') return null;
+        if (name === 'startup_main_policy_ready' || name === 'startup_main_show' || name === 'installer_startup_confirmed') return null;
       if (name === 'workspace_session_open') {
         f.openCalls++;
         if (f.failOpen) throw 'transport_uncertain';
@@ -534,6 +534,7 @@ try {
       let mounted; const opening = module.mountWorkspaceMain(root).then(value => { mounted = value; });
       for (let i = 0; i < 35 && (!mounted || !f.term?.sendInput); i++) await frame(); await opening;
       f.holdNextCapabilities = true;
+      window.dispatchEvent(new Event('focus'));
       for (let i = 0; i < 8 && !f.lateCapabilities; i++) await frame();
       check('A agent observation capabilities held for ' + arrival, !!f.lateCapabilities);
       const late = f.lateCapabilities;

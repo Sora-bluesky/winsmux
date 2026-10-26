@@ -90,6 +90,7 @@ try {
    f.calls.push({name,args});
    if(name==='startup_main_policy_ready'){if(!f.native||f.label!=='main')throw Error('main policy caller denied');return null;}
    if(name==='startup_main_show'){if(!f.native||f.label!=='main')throw Error('main show caller denied');f.shows++;return null;}
+    if(name==='installer_startup_confirmed')return null;
    if(name.startsWith('workspace_input_guard_')){
     if(!f.native||f.label!=='main')throw Error('input main caller denied');
     const q=JSON.parse(args.requestJson);
