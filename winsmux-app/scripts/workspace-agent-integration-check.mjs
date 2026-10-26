@@ -36,7 +36,7 @@ try {
     const other = { project_id: Q, path: 'C:/fixture/other', display_name: 'Other', root_state: 'verified' };
     const pane = { pane_id: N, project_id: P, display_name: 'Terminal', path: project.path, current_run_id: null, observation: null };
     f.invoke = async (name, args) => {
-      if (name === 'startup_main_policy_ready' || name === 'startup_main_show') return null;
+        if (name === 'startup_main_policy_ready' || name === 'startup_main_show' || name === 'installer_startup_confirmed') return null;
       if (name === 'workspace_session_open') { f.sessions++; return { instance_id: f.instanceId, schema_version: 1 }; }
       if (name === 'workspace_host_status') return { instance_id: f.instanceId, generation: f.ownerGeneration, revision: f.ownerGeneration, phase: 'Ready', force_offer: 'none' };
       if (name === 'desktop_initial_project_dir') return null;
