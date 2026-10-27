@@ -45,6 +45,8 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',
   'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',
   'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt',
+  'scripts/winsmux-pester.psm1', 'winsmux-app/src-tauri/wix/installer.wxs',
+  'tests/workspace-package/desktop-publisher-contract.mjs',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -136,9 +138,13 @@ const desktopAssetPaths = Object.freeze([
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
 // so only the 5a94dd8a before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
+  '.github/workflows/test.yml': '72f786f0327c51a784b4f5643cb79680e7f33bd1c8cfe4561fa0bf7c60fcfe32',
   'scripts/integrated-publication-origins.mjs': '0db24fac21b69b1c401aba76ebd34e24fc330dffd3616502ecb4a2945e8b1ace',
+  'scripts/winsmux-pester.psm1': '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5',
   'tests/workspace-gate-map/gate-map.json': 'bbf7e6c2bc8e3ac5ee9ae888665bf4647e6b9110aae446c29214fb5e8e1aeb7f',
+  'tests/workspace-package/desktop-publisher-contract.mjs': 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',
+  'winsmux-app/src-tauri/wix/installer.wxs': '5457dfaa366882c3e2255fa045f52aaae847cae5712fe10f274a21b622598939',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);

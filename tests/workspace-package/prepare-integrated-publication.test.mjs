@@ -47,6 +47,10 @@ const s5Changes = Object.freeze([
   { path: 'scripts/integrated-publication-origins.mjs', before_sha256: '0db24fac21b69b1c401aba76ebd34e24fc330dffd3616502ecb4a2945e8b1ace', after_sha256: 'd'.repeat(64) },
   { path: 'tests/workspace-package/prepare-integrated-publication.test.mjs', before_sha256: '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56', after_sha256: 'e'.repeat(64) },
   { path: 'tests/workspace-gate-map/gate-map.json', before_sha256: 'bbf7e6c2bc8e3ac5ee9ae888665bf4647e6b9110aae446c29214fb5e8e1aeb7f', after_sha256: 'f'.repeat(64) },
+  { path: '.github/workflows/test.yml', before_sha256: '72f786f0327c51a784b4f5643cb79680e7f33bd1c8cfe4561fa0bf7c60fcfe32', after_sha256: '3'.repeat(64) },
+  { path: 'scripts/winsmux-pester.psm1', before_sha256: '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5', after_sha256: '4'.repeat(64) },
+  { path: 'winsmux-app/src-tauri/wix/installer.wxs', before_sha256: '5457dfaa366882c3e2255fa045f52aaae847cae5712fe10f274a21b622598939', after_sha256: '5'.repeat(64) },
+  { path: 'tests/workspace-package/desktop-publisher-contract.mjs', before_sha256: 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a', after_sha256: '6'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -163,7 +167,7 @@ check(()=>{
 });
 
 // Final-source applicability is exactly the S rows with their 5a94dd8a before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,46); assert.equal(new Set(publicationCutoverPaths).size,46); });
+check(() => { assert.equal(publicationCutoverPaths.length,49); assert.equal(new Set(publicationCutoverPaths).size,49); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [

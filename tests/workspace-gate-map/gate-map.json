@@ -6542,61 +6542,67 @@
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
+   "invokes": "tests/BumpVersionReleaseBoundary.Tests.ps1"
+  },
+  {
+   "source": ".github/workflows/test.yml",
+   "line": 305,
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/DesktopInstallReceipt.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/EnterpriseStrategyAlignment.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/GitHubWritePreflight.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/McpServerContract.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/NpmReleasePackage.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/PublicSurfacePolicy.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/ReviewLatencyHardening.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/ThreatModelContract.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/UpstreamReevaluation.Tests.ps1"
   },
   {
    "source": ".github/workflows/test.yml",
    "line": 305,
-   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1",
+   "text": "paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1",
    "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
@@ -7411,7 +7417,31 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 141,
+   "line": 48,
+   "text": "'scripts/winsmux-pester.psm1', 'winsmux-app/src-tauri/wix/installer.wxs',",
+   "invokes": "scripts/winsmux-pester.psm1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 49,
+   "text": "'tests/workspace-package/desktop-publisher-contract.mjs',",
+   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 143,
+   "text": "'scripts/winsmux-pester.psm1': '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5',",
+   "invokes": "scripts/winsmux-pester.psm1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 145,
+   "text": "'tests/workspace-package/desktop-publisher-contract.mjs': 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a',",
+   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 146,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
@@ -8869,115 +8899,121 @@
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 141,
+   "line": 139,
+   "text": "'tests/BumpVersionReleaseBoundary.Tests.ps1'",
+   "invokes": "tests/BumpVersionReleaseBoundary.Tests.ps1"
+  },
+  {
+   "source": "scripts/winsmux-pester.psm1",
+   "line": 142,
    "text": "'tests/BuilderWorktree.Tests.ps1'",
    "invokes": "tests/BuilderWorktree.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 142,
+   "line": 143,
    "text": "'tests/codex-subagent-worktree-guard.Tests.ps1'",
    "invokes": "tests/codex-subagent-worktree-guard.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 143,
+   "line": 144,
    "text": "'tests/OrchestraPreflight.Tests.ps1'",
    "invokes": "tests/OrchestraPreflight.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 144,
+   "line": 145,
    "text": "'tests/PaneBorder.Tests.ps1'",
    "invokes": "tests/PaneBorder.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 145,
+   "line": 146,
    "text": "'tests/V03618ReleaseHardening.Tests.ps1'",
    "invokes": "tests/V03618ReleaseHardening.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 146,
+   "line": 147,
    "text": "'tests/AgentReadiness.Tests.ps1'",
    "invokes": "tests/AgentReadiness.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 147,
+   "line": 148,
    "text": "'tests/GitGuard.Tests.ps1'",
    "invokes": "tests/GitGuard.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 150,
+   "line": 151,
    "text": "'tests/V03619RepoAudit.Tests.ps1'",
    "invokes": "tests/V03619RepoAudit.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 153,
+   "line": 154,
    "text": "'tests/V03620CoordinatorFoundation.Tests.ps1'",
    "invokes": "tests/V03620CoordinatorFoundation.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 156,
+   "line": 157,
    "text": "'tests/V03621LocalRouterShadow.Tests.ps1'",
    "invokes": "tests/V03621LocalRouterShadow.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 157,
+   "line": 158,
    "text": "'tests/V03638RouterReliability.Tests.ps1'",
    "invokes": "tests/V03638RouterReliability.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 160,
+   "line": 161,
    "text": "'tests/V03626DesktopSplitGate.Tests.ps1'",
    "invokes": "tests/V03626DesktopSplitGate.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 163,
+   "line": 164,
    "text": "'tests/V03627CompatPerformanceGate.Tests.ps1'",
    "invokes": "tests/V03627CompatPerformanceGate.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 164,
+   "line": 165,
    "text": "'tests/Task781RuntimeCompatibility.Tests.ps1'",
    "invokes": "tests/Task781RuntimeCompatibility.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 167,
+   "line": 168,
    "text": "'tests/V03628RaceAbnormalSoak.Tests.ps1'",
    "invokes": "tests/V03628RaceAbnormalSoak.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 170,
+   "line": 171,
    "text": "'tests/V03628RuntimeReliabilityGate.Tests.ps1'",
    "invokes": "tests/V03628RuntimeReliabilityGate.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 173,
+   "line": 174,
    "text": "'tests/V03628PackagedRestoreGate.Tests.ps1'",
    "invokes": "tests/V03628PackagedRestoreGate.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 176,
+   "line": 177,
    "text": "'tests/V03630DesktopDebugGateProcess.Tests.ps1'",
    "invokes": "tests/V03630DesktopDebugGateProcess.Tests.ps1"
   },
   {
    "source": "scripts/winsmux-pester.psm1",
-   "line": 179,
+   "line": 180,
    "text": "'tests/planning-model.Tests.ps1'",
    "invokes": "tests/planning-model.Tests.ps1"
   },
@@ -10831,61 +10867,73 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 170,
+   "line": 51,
+   "text": "{ path: 'scripts/winsmux-pester.psm1', before_sha256: '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5', after_sha256: '4'.repeat(64) },",
+   "invokes": "scripts/winsmux-pester.psm1"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 53,
+   "text": "{ path: 'tests/workspace-package/desktop-publisher-contract.mjs', before_sha256: 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a', after_sha256: '6'.repeat(64) },",
+   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 174,
    "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 171,
+   "line": 175,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 173,
+   "line": 177,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='c7634d32ad08aeef487da93b5de9a51e3f45782f6df05faaf5083d509667aa29'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 179,
+   "line": 183,
    "text": "value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'163ae789ef9c6d0d4138cebd82c2f2beaabd0df6f8b6a5eb1b7404b7fbdad48a',after_sha256:'1'.repeat(64)}); },",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 180,
+   "line": 184,
    "text": "value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'a112bfbaf9f139af412623f9042ac5fd17090af327b039f66281eb81846ec7ed',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 181,
+   "line": 185,
    "text": "value => { value.source.changes.push({path:'tests/workspace-package/publication-native-v2.test.ps1',before_sha256:'df5f9aa5d28eb22a2729194c762c9940245da6bd804d3100908768fd4ca03b36',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 182,
+   "line": 186,
    "text": "value => { value.source.changes.push({path:'tests/workspace-package/publication-npm-native.test.ps1',before_sha256:'c188e7fffba1f89128c5a767d5dee9859e32ac2dd25f76eec808f2417929444b',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 183,
+   "line": 187,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 185,
+   "line": 189,
    "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 188,
+   "line": 192,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
