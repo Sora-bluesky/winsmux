@@ -59,29 +59,29 @@ export function readOriginFile(row) {
     return { bytes, identity: identity(after) };
   } finally { fs.closeSync(fd); }
 }
-const fixedBase = 'f8f735452109af1bc24adcc8160f0106fa607d81';
-const fixedTree = 'f327febf341cd11b79b573c7fe2ae14c22aa821b';
+const fixedBase = '5a94dd8ab09886294b7843860d23fe0f6bd42d11';
+const fixedTree = '9b03d3ac8b91ed0db42193f592316b56649b147b';
 // Core/npm keep their true original producer coordinates; signed Desktop uses final source S.
 // The assembly receipt binds CH1: the retained helper keeps its 9158bf27 origin,
 // is not rebuilt, and does not claim a strict-current collector or hosted build.
 const producerCoordinates = freeze({
   "core": {
     "kind": "private-core-assembly",
-    "source_commit": "f8f735452109af1bc24adcc8160f0106fa607d81",
-    "source_tree": "f327febf341cd11b79b573c7fe2ae14c22aa821b",
-    "run": "local-assembly-eb01f410-65ec-4cf7-ab4f-af8f75ee8ed3",
+    "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
+    "source_tree": "9b03d3ac8b91ed0db42193f592316b56649b147b",
+    "run": "local-assembly-a88efefc-68da-491f-8791-5eb74c60cc94",
     "inner_origins": [
       {
         "kind": "windows-x64",
-        "source_commit": "f8f735452109af1bc24adcc8160f0106fa607d81",
-        "run": "local-g10-50da02e8-ecc5-4a26-8def-e9133fcada41",
-        "receipt_sha256": "82f639f7923351313c3f74c63022eab8ae7e111e28a96dccc4dfb231d5d40e0a"
+        "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
+        "run": "local-g10-67c911ba-ffbf-4992-b74d-1fa485c864af",
+        "receipt_sha256": "7fa855f72d536f2d892f0c9f1b498d7bdb23c5a28c34b5b6014e37873e1382f9"
       },
       {
         "kind": "windows-arm64",
-        "source_commit": "f8f735452109af1bc24adcc8160f0106fa607d81",
-        "run": "local-g10-50da02e8-ecc5-4a26-8def-e9133fcada41",
-        "receipt_sha256": "91e2013b5bde14b1b66f1f1f0ec9addaee5746d9a792164c7c6d4fd44bf58111"
+        "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
+        "run": "local-g10-67c911ba-ffbf-4992-b74d-1fa485c864af",
+        "receipt_sha256": "18c8c7af0e05be962f8060ba48ba8efb2c3aac47ddce661d81d00080b48d5d4c"
       },
       {
         "kind": "linux-helper",
@@ -92,7 +92,7 @@ const producerCoordinates = freeze({
     ],
     "original_receipt": {
       "bytes": 7633,
-      "sha256": "1d5edb9d18491d22f5c3dfcb485a27de616715126bce333f15fc93d90bd4371f"
+      "sha256": "acfbb40c5f8141e15b7618adf73c6a7441d2d113ba5c133319cd5a1bfa522b3c"
     },
     "asset_paths": [
       "core/SHA256SUMS",
@@ -105,20 +105,20 @@ const producerCoordinates = freeze({
   },
   "npm": {
     "kind": "local-npm-producer",
-    "source_commit": "f8f735452109af1bc24adcc8160f0106fa607d81",
-    "source_tree": "f327febf341cd11b79b573c7fe2ae14c22aa821b",
-    "run": "local-npm-f8f73545",
+    "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
+    "source_tree": "9b03d3ac8b91ed0db42193f592316b56649b147b",
+    "run": "local-npm-5a94dd8a",
     "inner_origins": [
       {
         "kind": "local-npm-pack-and-windows-help-version",
-        "source_commit": "f8f735452109af1bc24adcc8160f0106fa607d81",
-        "run": "local-npm-f8f73545",
-        "receipt_sha256": "ef5422e084f4f06e1af71c44fe5807f39ad26a805c2866235e59322ca19701e6"
+        "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
+        "run": "local-npm-5a94dd8a",
+        "receipt_sha256": "1db46db17bf5f87e854274f61dc959856ebb5fe3b91bf616232b45255821001d"
       }
     ],
     "original_receipt": {
       "bytes": 252,
-      "sha256": "ef5422e084f4f06e1af71c44fe5807f39ad26a805c2866235e59322ca19701e6"
+      "sha256": "1db46db17bf5f87e854274f61dc959856ebb5fe3b91bf616232b45255821001d"
     },
     "asset_paths": [
       "npm/winsmux-0.38.0.tgz"
@@ -134,11 +134,11 @@ const desktopAssetPaths = Object.freeze([
   "desktop/winsmux_0.38.0_x64_en-US.msi"
 ]);
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
-// so only the f8f73545 before bytes are pinned here; the host observes the after digests.
+// so only the 5a94dd8a before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
-  'scripts/integrated-publication-origins.mjs': '4bf4c81e2d565df332930b52cfcf167c756ac1d376b0189e19478d204966f324',
-  'tests/workspace-gate-map/gate-map.json': 'a49ca73e55e05a4449b3ef1734ace74cdb039c6e5d47ed9101d96ce02ecccfb1',
-  'tests/workspace-package/prepare-integrated-publication.test.mjs': '4538ecd4de03885d00aba622e471cd949545612ed34eedfbfa5a6447a306aa32',
+  'scripts/integrated-publication-origins.mjs': '0db24fac21b69b1c401aba76ebd34e24fc330dffd3616502ecb4a2945e8b1ace',
+  'tests/workspace-gate-map/gate-map.json': 'bbf7e6c2bc8e3ac5ee9ae888665bf4647e6b9110aae446c29214fb5e8e1aeb7f',
+  'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);
