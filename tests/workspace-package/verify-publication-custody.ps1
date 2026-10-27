@@ -61,13 +61,31 @@ try {
     Assert-Check $rejected 'Native custody accepted an extra inventory asset.'
 } finally { [IO.File]::Delete($extraInventory) }
 $custody = [IntegratedPublicationCustody]::new($bundleRoot, [string[]]$fixture.names, [string[]]$fixture.hashes)
-$npmSource = Join-Path $fixture.fixture_root 'npm-cli.js'
+$sourceDir = Join-Path $fixture.fixture_root 'source'
+[void][IO.Directory]::CreateDirectory($sourceDir)
+$npmSource = Join-Path $sourceDir 'npm-cli.js'
 [IO.File]::WriteAllText($npmSource, '// Synthetic npm interpreter source only', [Text.UTF8Encoding]::new($false))
 $npmHash = (Get-FileHash -LiteralPath $npmSource -Algorithm SHA256).Hash.ToLowerInvariant()
 try {
+    # HoldNpmCli admits only npm-cli.js inside the fixed runtime source closure.
+    $inventoryProgram = @'
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const root=fs.realpathSync.native(process.argv[1]);
+const identity=file=>Object.fromEntries(['dev','ino','nlink','size','mtimeNs','ctimeNs'].map(key=>[key,String(fs.lstatSync(file,{bigint:true})[key])]));
+const names=fs.readdirSync(root).sort();
+if(JSON.stringify(names)!==JSON.stringify(['npm-cli.js']))throw Error('Closed fixture sources required');
+console.log(JSON.stringify({files:names.map(name=>{const file=path.join(root,name),raw=fs.readFileSync(file);return {path:file,bytes:raw.length,sha256:crypto.createHash('sha256').update(raw).digest('hex'),identity:identity(file)};}),directories:[{path:root,names,identity:identity(root)}],publication_admitted:false}));
+'@
+    $manifestJson = & node '-e' $inventoryProgram $sourceDir
+    if ($LASTEXITCODE -ne 0) { throw 'Runtime source inventory failed.' }
+    $sourceManifest = Join-Path $fixture.fixture_root 'runtime-source-manifest.json'
+    [IO.File]::WriteAllText($sourceManifest, ($manifestJson -join "`n"), [Text.UTF8Encoding]::new($false))
+    $guard = Join-Path $repoRoot 'scripts/publication-node-source-guard.mjs'
+    Assert-Check ($custody.FixRuntimeSources($sourceManifest, (Get-FileHash -LiteralPath $sourceManifest -Algorithm SHA256).Hash.ToLowerInvariant(),
+        $guard, (Get-FileHash -LiteralPath $guard -Algorithm SHA256).Hash.ToLowerInvariant()) -eq 1) 'Runtime source closure was not fixed.'
     Assert-Check (-not $custody.NpmCliHeld) 'npm input was held before observation.'
     $wrongHashRefused = $false
-    try { $custody.HoldNpmCli($npmSource, ('0' * 64)) } catch { $wrongHashRefused = $_.Exception.ToString().Contains('input hash differs') }
+    try { $custody.HoldNpmCli($npmSource, ('0' * 64)) } catch { $wrongHashRefused = $_.Exception.ToString().Contains('Exact original runtime npm source required') }
     Assert-Check $wrongHashRefused 'Wrong npm source hash was accepted.'
     Assert-Check (-not $custody.NpmCliHeld -and $custody.NativeCreateCalls -eq 0) 'Wrong source started publication.'
     $custody.HoldNpmCli($npmSource, $npmHash)
@@ -77,7 +95,7 @@ try {
     Assert-SharingRefusal { [IO.File]::Move($npmSource, $npmSource + '.renamed') }
     Assert-Check ([IO.File]::ReadAllText($npmSource) -eq '// Synthetic npm interpreter source only') 'npm consumer read differs.'
     $replacementRefused = $false
-    try { $custody.HoldNpmCli($npmSource, $npmHash) } catch { $replacementRefused = $_.Exception.ToString().Contains('already fixed') }
+    try { $custody.HoldNpmCli($npmSource, $npmHash) } catch { $replacementRefused = $_.Exception.ToString().Contains('npm source pre-hold closed') }
     Assert-Check $replacementRefused 'Fixed npm source was replaced.'
     Assert-Check ($custody.HeldFileCount -eq 14) 'Complete asset custody missing.'
     foreach ($name in $fixture.names) {
