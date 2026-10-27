@@ -702,6 +702,7 @@ $whitelistPatterns = @(
     'tests/workspace-package/publication-environment.test.ps1',
     'tests/workspace-package/publication-fixture.mjs',
     'tests/workspace-package/publication-keeper-fixture.ps1',
+    'tests/workspace-package/publication-long-path.test.ps1',
     'tests/workspace-package/publication-npm-guard.test.mjs',
     'tests/workspace-package/publication-npm-native.test.ps1',
     'tests/workspace-package/publication-output.test.ps1',

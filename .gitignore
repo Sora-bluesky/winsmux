@@ -111,6 +111,7 @@ tests/workspace-gate-map/*
 !tests/workspace-package/verify-publication-owner-recovery.ps1
 !tests/workspace-package/prepare-integrated-publication.test.mjs
 !tests/workspace-package/publication-keeper-fixture.ps1
+!tests/workspace-package/publication-long-path.test.ps1
 !tests/workspace-package/integrated-npm-tarball.test.mjs
 !tests/workspace-package/verified-npm-candidate.test.mjs
 !tests/workspace-package/github-required-checks.test.mjs

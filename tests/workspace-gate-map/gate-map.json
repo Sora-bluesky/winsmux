@@ -5792,108 +5792,114 @@
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
    "line": 705,
+   "text": "'tests/workspace-package/publication-long-path.test.ps1',",
+   "invokes": "tests/workspace-package/publication-long-path.test.ps1"
+  },
+  {
+   "source": ".githooks/pre-commit-whitelist.ps1",
+   "line": 706,
    "text": "'tests/workspace-package/publication-npm-guard.test.mjs',",
    "invokes": "tests/workspace-package/publication-npm-guard.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 706,
+   "line": 707,
    "text": "'tests/workspace-package/publication-npm-native.test.ps1',",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 707,
+   "line": 708,
    "text": "'tests/workspace-package/publication-output.test.ps1',",
    "invokes": "tests/workspace-package/publication-output.test.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 708,
+   "line": 709,
    "text": "'tests/workspace-package/publication-owner-death-fixture.ps1',",
    "invokes": "tests/workspace-package/publication-owner-death-fixture.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 709,
+   "line": 710,
    "text": "'tests/workspace-package/publication-owner-freeze-fixture.mjs',",
    "invokes": "tests/workspace-package/publication-owner-freeze-fixture.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 710,
+   "line": 711,
    "text": "'tests/workspace-package/publication-plan.test.mjs',",
    "invokes": "tests/workspace-package/publication-plan.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 711,
+   "line": 712,
    "text": "'tests/workspace-package/publication-source-guard.test.mjs',",
    "invokes": "tests/workspace-package/publication-source-guard.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 712,
+   "line": 713,
    "text": "'tests/workspace-package/publication-source-tree.test.mjs',",
    "invokes": "tests/workspace-package/publication-source-tree.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 713,
+   "line": 714,
    "text": "'tests/workspace-package/publication-tools.test.mjs',",
    "invokes": "tests/workspace-package/publication-tools.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 714,
+   "line": 715,
    "text": "'tests/workspace-package/run.ps1',",
    "invokes": "tests/workspace-package/run.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 715,
+   "line": 716,
    "text": "'tests/workspace-package/stage-ci-artifact.test.mjs',",
    "invokes": "tests/workspace-package/stage-ci-artifact.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 716,
+   "line": 717,
    "text": "'tests/workspace-package/verified-npm-candidate.test.mjs',",
    "invokes": "tests/workspace-package/verified-npm-candidate.test.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 717,
+   "line": 718,
    "text": "'tests/workspace-package/verify-publication-child-custody.ps1',",
    "invokes": "tests/workspace-package/verify-publication-child-custody.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 718,
+   "line": 719,
    "text": "'tests/workspace-package/verify-publication-custody.ps1',",
    "invokes": "tests/workspace-package/verify-publication-custody.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 719,
+   "line": 720,
    "text": "'tests/workspace-package/verify-publication-owner-recovery.ps1',",
    "invokes": "tests/workspace-package/verify-publication-owner-recovery.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 720,
+   "line": 721,
    "text": "'tests/workspace-package/version-contract.ps1',",
    "invokes": "tests/workspace-package/version-contract.ps1"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 728,
+   "line": 729,
    "text": "'winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs',",
    "invokes": "winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs"
   },
   {
    "source": ".githooks/pre-commit-whitelist.ps1",
-   "line": 729,
+   "line": 730,
    "text": "'winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs',",
    "invokes": "winsmux-app/src-tauri/scripts/prepare-companion-cli.mjs"
   },
@@ -11040,6 +11046,12 @@
    "invokes": "scripts/hold-publication-job.ps1"
   },
   {
+   "source": "tests/workspace-package/publication-long-path.test.ps1",
+   "line": 8,
+   "text": ". (Join-Path $PSScriptRoot 'publication-keeper-fixture.ps1')",
+   "invokes": "tests/workspace-package/publication-keeper-fixture.ps1"
+  },
+  {
    "source": "tests/workspace-package/publication-native-v2.test.ps1",
    "line": 78,
    "text": ". (Join-Path $PSScriptRoot 'publication-keeper-fixture.ps1')",
@@ -15341,6 +15353,14 @@
   {
    "path": "tests/workspace-package/publication-keeper-fixture.ps1",
    "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "tests/workspace-package/publication-long-path.test.ps1",
+   "kind": "script_test",
    "q_ids": [
     "Q-GATES"
    ],

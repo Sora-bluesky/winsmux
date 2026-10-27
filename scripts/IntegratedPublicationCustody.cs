@@ -221,7 +221,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             if (!Guid.TryParseExact(pipeName, "D", out _) || observationTimeout <= 0 || bootstrapArguments == null || bootstrapArguments.Any(x => x == null))
                 throw new ArgumentException("Fixed bootstrap and one-attempt pipe required");
             actorImage = Path.GetFullPath(actorImage); actorScript = Path.GetFullPath(actorScript);
-            workingDirectory = Path.GetFullPath(workingDirectory); HoldAncestors(workingDirectory);
+            workingDirectory = CurrentDirectory(Path.GetFullPath(workingDirectory)); HoldAncestors(workingDirectory);
             HoldKeeperInput(actorImage, imageHash); HoldKeeperInput(actorScript, scriptHash); VerifyUnsafe(); EnsureJob();
             if (sourceManifest != null && !sourceFiles.ContainsKey(actorScript)) throw new InvalidOperationException("Authority bootstrap is outside fixed runtime sources");
             string[] prefix = sourceManifest == null ? new[] { actorScript } : new[] { "--no-addons", "--import", new Uri(sourceGuard).AbsoluteUri, actorScript };
@@ -234,7 +234,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             ProcessInformation process; string environmentHash;
             using (var environment = IntegratedPublicationEnvironment.Create(sourceManifest == null ? "fixture" : "authority", RuntimeTemp(), actorImage, sourceManifest, sourceManifestHash)) {
                 environmentHash = environment.Sha256;
-                Check(CreateProcessW(actorImage, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
+                Check(CreateProcessW(Native(actorImage), new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
                     0x08000004u | IntegratedPublicationEnvironment.UnicodeFlag, environment.Block, workingDirectory, ref startup, out process));
             }
             // Retain the actual stopped process even if persistence or membership
@@ -888,14 +888,15 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                 "-Attempt", attempt, "-CandidateHash", candidateHash, "-ObservationTimeout", timeout.ToString(CultureInfo.InvariantCulture) };
             string command = QuoteArgument(Path.GetFullPath(executable)) + " " + String.Join(" ", arguments.Select(QuoteArgument));
             if (command.Length >= 32767) throw new ArgumentException("Keeper command too long");
+            string keeperDirectory = CurrentDirectory(Path.GetDirectoryName(Path.GetFullPath(script)));
             var startup = new StartupEx(); startup.Startup.Size = (uint)Marshal.SizeOf(typeof(Startup));
             ProcessInformation process; string environmentHash; KeeperNativeCreateCalls++;
             // A keeper is not a publication Job member. Its measured identity
             // is persisted while suspended, before it can retain any Job.
             using (var environment = IntegratedPublicationEnvironment.Create("keeper", RuntimeTemp(), Path.GetFullPath(executable), null, null)) {
                 environmentHash = environment.Sha256;
-                Check(CreateProcessW(Path.GetFullPath(executable), new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
-                    0x08000004u | IntegratedPublicationEnvironment.UnicodeFlag, environment.Block, Path.GetDirectoryName(Path.GetFullPath(script)), ref startup, out process));
+                Check(CreateProcessW(Native(Path.GetFullPath(executable)), new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000004u | IntegratedPublicationEnvironment.UnicodeFlag, environment.Block, keeperDirectory, ref startup, out process));
             }
             keeperNativeProcess = process.Process; keeperNativeThread = process.Thread;
             keeper = new KeeperIdentity { Pid = process.Pid, CreationFileTime = CreationTime(process.Process),
@@ -992,8 +993,20 @@ public sealed class IntegratedPublicationCustody : IDisposable {
         } finally { CloseHandle(priorJob); }
     }
     static void Check(bool value) { if (!value) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+    // The hosting process is not long-path aware, so plain paths of MAX_PATH
+    // or more fail in Win32. Only the argument handed to Win32 is converted.
+    static string Native(string path) {
+        if (path.StartsWith("\\\\?\\", StringComparison.Ordinal) || path.StartsWith("\\\\.\\", StringComparison.Ordinal)) return path;
+        if (path.StartsWith("\\\\", StringComparison.Ordinal)) return "\\\\?\\UNC\\" + path.Substring(2);
+        return Path.IsPathFullyQualified(path) ? "\\\\?\\" + path : path;
+    }
+    // CreateProcessW refuses a longer current directory even in extended-length form.
+    static string CurrentDirectory(string directory) {
+        if (directory.Length > 258) throw new PathTooLongException("Child working directory exceeds the 258-character Win32 current-directory limit: " + directory);
+        return directory;
+    }
     static void Plain(string target, bool directory) {
-        uint attrs = GetFileAttributesW(target);
+        uint attrs = GetFileAttributesW(Native(target));
         if (attrs == uint.MaxValue) throw new Win32Exception(Marshal.GetLastWin32Error());
         if ((attrs & 0x400) != 0 || ((attrs & 0x10) != 0) != directory)
             throw new InvalidOperationException("Linked or incorrectly typed custody path");
@@ -1014,7 +1027,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
     void HoldDirectory(string directory) {
         if (directoryPaths.Contains(directory)) return;
         Plain(directory, true);
-        var handle = CreateFileW(directory, 0, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        var handle = CreateFileW(Native(directory), 0, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
         int error = Marshal.GetLastWin32Error();
         if (handle.IsInvalid) { handle.Dispose(); throw new Win32Exception(error); }
         try { Identity(handle, false); } catch { handle.Dispose(); throw; }
@@ -1132,7 +1145,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             if (authority != null && persistStopped == null) throw new InvalidOperationException("Native stopped-child persistence missing");
             if (released || sealedLaunches || persistInFlight == null) throw new InvalidOperationException("Child launch closed or parent persistence missing");
             VerifyUnsafe();
-            executable = Path.GetFullPath(executable); directory = Path.GetFullPath(directory);
+            executable = Path.GetFullPath(executable); directory = CurrentDirectory(Path.GetFullPath(directory));
             if (executable.StartsWith("\\\\", StringComparison.Ordinal) || directory.StartsWith("\\\\", StringComparison.Ordinal) || arguments == null) throw new ArgumentException("Local exact image and arguments required");
             bool guardedNode = sourceManifest != null && Path.GetFileName(executable) == "node.exe";
             if (guardedNode && operation == null) {
@@ -1184,7 +1197,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                         if (authority != null) authority.RequireDecision("create", operationBinding, operation == null ? null : operation.Id);
                         if(operation!=null) RequireOperationAdmission(operation); else RequireAuthorityLive();
                         NativeCreateCalls++;
-                        Check(CreateProcessW(executable, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, true,
+                        Check(CreateProcessW(Native(executable), new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, true,
                             0x08080004u | IntegratedPublicationEnvironment.UnicodeFlag, environment.Block, directory, ref startup, out process));
                     }
                     var child = new Child(this, process, image); children.Add(child); retained = true;
