@@ -1076,7 +1076,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             throw new ArgumentException("Exact integrated asset paths and SHA256 required");
         // Every fixed publication operation runs with the bundle root as its
         // working directory, so refuse it before any hold, Job or child exists.
-        CurrentDirectory(root, "Bundle root (fixed publication working directory)");
+        root = CurrentDirectory(root, "Bundle root (fixed publication working directory)");
         try {
             // Retain ancestors too: held files must not acquire a different
             // pathname through a parent-directory rename during custody.

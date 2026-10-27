@@ -11001,7 +11001,7 @@
   },
   {
    "source": "tests/workspace-package/publication-long-path.test.ps1",
-   "line": 135,
+   "line": 139,
    "text": "[IO.File]::Copy((Join-Path $repoRoot 'scripts/hold-publication-job.ps1'), $longScript)",
    "invokes": "scripts/hold-publication-job.ps1"
   },

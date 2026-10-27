@@ -79,8 +79,12 @@ try {
     Assert-Check ($held.HeldFileCount -eq 14) 'a: 258-character bundle root custody missing.'
     $held.Verify()
     $trailing = [IntegratedPublicationCustody]::new($bundleRoot + '\', $names, $hashes)
-    $trailing.Verify(); $trailing.Dispose()
+    $trailing.Verify()
+    $trailingTemp = $trailing.GetType().GetMethod('RuntimeTemp', [Reflection.BindingFlags]'NonPublic,Instance').Invoke($trailing, $null)
+    $trailing.Dispose(); [IO.Directory]::Delete($trailingTemp)
     Assert-Check $trailing.Released 'a: 258-character bundle root with a trailing separator was not accepted.'
+    Assert-Check ([IO.Path]::GetDirectoryName($trailingTemp) -ceq [IO.Path]::GetDirectoryName($bundleRoot) -and
+        -not $trailingTemp.StartsWith($bundleRoot + '\', [StringComparison]::OrdinalIgnoreCase)) ('a: trailing-separator runtime temp is not beside the bundle root: ' + $trailingTemp)
 
     $refusedRoot = New-ExactDirectory (Join-Path $fixtureRoot 'b') 259
     $refusedHashes = Write-Bundle $refusedRoot
