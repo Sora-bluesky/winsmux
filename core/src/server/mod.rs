@@ -1559,7 +1559,10 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         use std::io::Write as _;
                         static SRV_LOG: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> = std::sync::OnceLock::new();
                         let log = SRV_LOG.get_or_init(|| {
-                            let p = std::path::PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\gj".into())).join("psmux_server_latency.log");
+                            let p = std::env::var("USERPROFILE")
+                                .map(std::path::PathBuf::from)
+                                .unwrap_or_else(|_| std::env::temp_dir())
+                                .join("psmux_server_latency.log");
                             std::sync::Mutex::new(std::fs::File::create(p).expect("create latency log"))
                         });
                         if let Ok(mut f) = log.lock() {
