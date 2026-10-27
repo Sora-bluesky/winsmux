@@ -32,8 +32,12 @@ export function assertDesktopPublisherContract(repo, flavor) {
     assert.equal(productRows.length, 6, 'Both prior-directory searches and all product registrations must be checked');
     for (const row of productRows) {
       assert.ok(row[0].includes('Root="HKCU"'), 'MSI must keep the current-user registry root');
-      const key = row[2].replaceAll('{{manufacturer}}', publisher).replaceAll('{{product_name}}', config.productName);
-      assert.equal(key.replaceAll('\\\\', '\\'), productKey, 'MSI must reuse the existing product key');
+      // tauri renders the template with handlebars: `\\{{x}}` becomes `\` + value, other `\\` stay doubled.
+      const values = { manufacturer: publisher, product_name: config.productName };
+      const key = row[2].replace(/\\\\\{\{(manufacturer|product_name)\}\}/g, (_, name) => '\\' + values[name])
+        .replace(/\{\{(manufacturer|product_name)\}\}/g, (_, name) => values[name]);
+      assert.ok(!key.includes('\\\\'), `MSI product key must not render a doubled backslash: ${key}`);
+      assert.equal(key, productKey, 'MSI must reuse the existing product key');
     }
     for (const name of ['PrevInstallDirNoName', 'PrevInstallDirWithName']) assert.ok(template.includes(`Id="${name}"`));
   }
