@@ -2,31 +2,31 @@ name: T-09 Cross-Version Update Probe on Fixed Core Candidate
 
 on:
   push:
-    branches: [codex/t09-crossversion-probe]
+    branches: [codex/t09-crossversion-probe-tpp]
 
 permissions:
   contents: read
 
 env:
-  SOURCE_COMMIT: 'c7b62eb4aa7001c7fce28cbe5a0bc0ecbdc71bbd'
-  SOURCE_TREE: '4c45f4d70b30bdfb9000ab9212b9a849d0e349b1'
+  SOURCE_COMMIT: '5a94dd8ab09886294b7843860d23fe0f6bd42d11'
+  SOURCE_TREE: '9b03d3ac8b91ed0db42193f592316b56649b147b'
   # source_inventory_sha256 of core-candidate.json; the rebuilt tree must reproduce it.
-  SOURCE_INVENTORY: 'ef7b856c27b57cb757084bbd015077652454ac7e7b9a202d5e0a66a466b41926'
-  # Unpublished draft release 422126341 (codex-task879-core-c7b62eb4, target c7b62eb4aa7001c7fce28cbe5a0bc0ecbdc71bbd): id, bytes, sha256, name.
+  SOURCE_INVENTORY: '5766f0c2c3e673431f767b6448f167962dacc10d47fbb2321ae1b376d50063ca'
+  # Unpublished draft release DRAFT_RELEASE_ID (codex-task879-core-5a94dd8a, target 5a94dd8ab09886294b7843860d23fe0f6bd42d11): id, bytes, sha256, name.
   # Ids stay placeholders, which the manifest check refuses, until
   # .github/task879/fill-draft-asset-ids.py fills them from a GET of that draft.
   TASK879_ASSETS: |
-    669859143 18447872 15bedc0864b3587d354bb84280f57c504e72ba9ebf645e203de7a7588c277973 winsmux-x64.exe
-    669859304 6724597 97a3644cc68a6ba942849ffbc34cb8672f82d7d3786520b9ec4fc7ab9c15a401 winsmux-x64.exe.licenses.zip
-    669859419 177 aeafd51b88c734f5b07c69241e329fa4e4f3965cc9f6946e64296ac13efc32f4 SHA256SUMS
-    669859453 1785 9e60b45e455c3857eae509d17c1f914a7b4d1d64bbf860794d614f4eb5845133 core-candidate.json
-    669859493 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
+    DRAFT_ASSET_ID 18441216 1afa8ab0893bd8b5be81ff4e7ad28327ee61ef7901e6413ba00944f69164510d winsmux-x64.exe
+    DRAFT_ASSET_ID 6723765 2edb7204cd100cd4356479df24a2c93e2ecd6f72cd5832ab8be701eeefada655 winsmux-x64.exe.licenses.zip
+    DRAFT_ASSET_ID 177 90ab23d84354facb45306612aa84f1654266d6af58717f6234f4ff75362552b6 SHA256SUMS
+    DRAFT_ASSET_ID 1789 7fa855f72d536f2d892f0c9f1b498d7bdb23c5a28c34b5b6014e37873e1382f9 core-candidate.json
+    DRAFT_ASSET_ID 36268 f38d727fdd5f1296dcd3a7a5c3a4de7fce543abd177bbdc92d6f0d26051ae2e5 winsmux-0.38.0.tgz
 
 jobs:
   fetch:
     permissions:
       contents: write
-    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe'
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe-tpp'
     runs-on: ubuntu-latest
     steps:
       - name: Download the fixed unpublished Core assets
@@ -68,7 +68,7 @@ jobs:
     needs: fetch
     permissions:
       contents: read
-    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe'
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe-tpp'
     runs-on: windows-latest
     timeout-minutes: 40
     strategy:
@@ -443,7 +443,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe'
+    if: github.repository == 'Sora-bluesky/winsmux' && github.ref == 'refs/heads/codex/t09-crossversion-probe-tpp'
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -452,13 +452,13 @@ jobs:
       OLD_MSI_SHA256: '2a55c4838714386fe8493ffc85fd23927a64d62dc8c1a3be6e49b66510c135a2'
       # Only a completed, successful release-desktop.yml dispatch on the final candidate commit
       # is accepted as the signed MSI source.
-      MSI_SOURCE_RUN_ID: '40146706797'
-      MSI_SOURCE_SHA: 'b86e3cdf1eebfe1cae0a8915c4b0997f8067eb62'
+      MSI_SOURCE_RUN_ID: '40517990144'
+      MSI_SOURCE_SHA: '3f4ac4739e90ed1962af4463c9f5b6b61dbfaf25'
       MSI_ARTIFACT: 'winsmux-desktop-bundles'
       MSI_CANDIDATE_NAME: 'winsmux_0.38.0_x64_en-US.msi'
       # 64 hex pins the file; 'unpinned' accepts the run-bound file and records its sha256.
-      MSI_CANDIDATE_SHA256: '87baef330a63f39457b53eaf8d7a0dcc64d18f2d7e3762eb5df607db64b5bc71'
-      MSI_CANDIDATE_BYTES: '34934784'
+      MSI_CANDIDATE_SHA256: '51e4dc8278c3b88ef7f585a747fb08aafcd683387b2fea3970db53400508d281'
+      MSI_CANDIDATE_BYTES: '34975744'
     steps:
       - name: Check out the MSI probe from the calling commit
         uses: actions/checkout@v6
