@@ -11052,6 +11052,12 @@
    "invokes": "tests/workspace-package/publication-keeper-fixture.ps1"
   },
   {
+   "source": "tests/workspace-package/publication-long-path.test.ps1",
+   "line": 99,
+   "text": "[IO.File]::Copy((Join-Path $repoRoot 'scripts/hold-publication-job.ps1'), $longScript)",
+   "invokes": "scripts/hold-publication-job.ps1"
+  },
+  {
    "source": "tests/workspace-package/publication-native-v2.test.ps1",
    "line": 78,
    "text": ". (Join-Path $PSScriptRoot 'publication-keeper-fixture.ps1')",

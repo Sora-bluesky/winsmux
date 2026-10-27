@@ -221,7 +221,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             if (!Guid.TryParseExact(pipeName, "D", out _) || observationTimeout <= 0 || bootstrapArguments == null || bootstrapArguments.Any(x => x == null))
                 throw new ArgumentException("Fixed bootstrap and one-attempt pipe required");
             actorImage = Path.GetFullPath(actorImage); actorScript = Path.GetFullPath(actorScript);
-            workingDirectory = CurrentDirectory(Path.GetFullPath(workingDirectory)); HoldAncestors(workingDirectory);
+            workingDirectory = CurrentDirectory(Path.GetFullPath(workingDirectory), "Authority actor working directory"); HoldAncestors(workingDirectory);
             HoldKeeperInput(actorImage, imageHash); HoldKeeperInput(actorScript, scriptHash); VerifyUnsafe(); EnsureJob();
             if (sourceManifest != null && !sourceFiles.ContainsKey(actorScript)) throw new InvalidOperationException("Authority bootstrap is outside fixed runtime sources");
             string[] prefix = sourceManifest == null ? new[] { actorScript } : new[] { "--no-addons", "--import", new Uri(sourceGuard).AbsoluteUri, actorScript };
@@ -880,6 +880,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             if (released || sealedLaunches || keeper != null || children.Count != 0 || persistKeeper == null) throw new InvalidOperationException("Keeper startup closed or persistence missing");
             if (!Guid.TryParseExact(attempt, "D", out _) || timeout <= 0) throw new ArgumentException("Fixed attempt and host observation timeout required");
             Digest(candidateHash); VerifyUnsafe();
+            string keeperDirectory = CurrentDirectory(Path.GetDirectoryName(Path.GetFullPath(script)), "Keeper working directory");
             HoldKeeperInput(executable, executableHash); HoldKeeperInput(script, scriptHash); HoldKeeperInput(implementation, implementationHash);
             EnsureJob(); observationTimeout = timeout;
             string[] arguments = new[] { "-NoLogo", "-NoProfile", "-File", Path.GetFullPath(script), "-Implementation", Path.GetFullPath(implementation),
@@ -888,7 +889,6 @@ public sealed class IntegratedPublicationCustody : IDisposable {
                 "-Attempt", attempt, "-CandidateHash", candidateHash, "-ObservationTimeout", timeout.ToString(CultureInfo.InvariantCulture) };
             string command = QuoteArgument(Path.GetFullPath(executable)) + " " + String.Join(" ", arguments.Select(QuoteArgument));
             if (command.Length >= 32767) throw new ArgumentException("Keeper command too long");
-            string keeperDirectory = CurrentDirectory(Path.GetDirectoryName(Path.GetFullPath(script)));
             var startup = new StartupEx(); startup.Startup.Size = (uint)Marshal.SizeOf(typeof(Startup));
             ProcessInformation process; string environmentHash; KeeperNativeCreateCalls++;
             // A keeper is not a publication Job member. Its measured identity
@@ -994,15 +994,18 @@ public sealed class IntegratedPublicationCustody : IDisposable {
     }
     static void Check(bool value) { if (!value) throw new Win32Exception(Marshal.GetLastWin32Error()); }
     // The hosting process is not long-path aware, so plain paths of MAX_PATH
-    // or more fail in Win32. Only the argument handed to Win32 is converted.
+    // or more fail in Win32. Only such an argument handed to Win32 is converted;
+    // the extended-length form skips normalization, so it must already be exact.
     static string Native(string path) {
-        if (path.StartsWith("\\\\?\\", StringComparison.Ordinal) || path.StartsWith("\\\\.\\", StringComparison.Ordinal)) return path;
+        if (path.Length < 260 || path.StartsWith("\\\\?\\", StringComparison.Ordinal) || path.StartsWith("\\\\.\\", StringComparison.Ordinal)) return path;
+        if (!String.Equals(Path.GetFullPath(path), path, StringComparison.Ordinal))
+            throw new ArgumentException("Extended-length Win32 path must be a normalized full path: " + path);
         if (path.StartsWith("\\\\", StringComparison.Ordinal)) return "\\\\?\\UNC\\" + path.Substring(2);
-        return Path.IsPathFullyQualified(path) ? "\\\\?\\" + path : path;
+        return "\\\\?\\" + path;
     }
     // CreateProcessW refuses a longer current directory even in extended-length form.
-    static string CurrentDirectory(string directory) {
-        if (directory.Length > 258) throw new PathTooLongException("Child working directory exceeds the 258-character Win32 current-directory limit: " + directory);
+    static string CurrentDirectory(string directory, string use) {
+        if (directory.Length > 258) throw new PathTooLongException(use + " exceeds the 258-character Win32 current-directory limit: " + directory);
         return directory;
     }
     static void Plain(string target, bool directory) {
@@ -1060,6 +1063,9 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             !names.SequenceEqual(Names) || hashes.Length != Names.Length ||
             hashes.Any(hash => hash == null || hash.Length != 64 || hash.Any(c => !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f'))))
             throw new ArgumentException("Exact integrated asset paths and SHA256 required");
+        // Every fixed publication operation runs with the bundle root as its
+        // working directory, so refuse it before any hold, Job or child exists.
+        CurrentDirectory(root, "Bundle root (fixed publication working directory)");
         try {
             // Retain ancestors too: held files must not acquire a different
             // pathname through a parent-directory rename during custody.
@@ -1145,7 +1151,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             if (authority != null && persistStopped == null) throw new InvalidOperationException("Native stopped-child persistence missing");
             if (released || sealedLaunches || persistInFlight == null) throw new InvalidOperationException("Child launch closed or parent persistence missing");
             VerifyUnsafe();
-            executable = Path.GetFullPath(executable); directory = CurrentDirectory(Path.GetFullPath(directory));
+            executable = Path.GetFullPath(executable); directory = CurrentDirectory(Path.GetFullPath(directory), "Child working directory");
             if (executable.StartsWith("\\\\", StringComparison.Ordinal) || directory.StartsWith("\\\\", StringComparison.Ordinal) || arguments == null) throw new ArgumentException("Local exact image and arguments required");
             bool guardedNode = sourceManifest != null && Path.GetFileName(executable) == "node.exe";
             if (guardedNode && operation == null) {
