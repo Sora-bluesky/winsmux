@@ -136,6 +136,7 @@ function Get-WinsmuxPesterShardRegistry {
             'tests/EnterpriseStrategyAlignment.Tests.ps1'
             'tests/ReviewLatencyHardening.Tests.ps1'
             'tests/UpstreamReevaluation.Tests.ps1'
+            'tests/BumpVersionReleaseBoundary.Tests.ps1'
         ) -ResultFile 'test-results-release-public.xml')
         (New-WinsmuxPesterMatrixRow -Ordinal 17 -ShardId 'shell-support' -TimeoutMinutes 15 -TestPaths @(
             'tests/BuilderWorktree.Tests.ps1'

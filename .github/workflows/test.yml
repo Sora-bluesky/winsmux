@@ -302,7 +302,7 @@ jobs:
           - name: release-public
             result: release-public
             timeout_minutes: 20
-            paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1
+            paths: tests/PublicSurfacePolicy.Tests.ps1;tests/VersionSurface.Tests.ps1;tests/DesktopInstallReceipt.Tests.ps1;tests/NpmReleasePackage.Tests.ps1;tests/GitHubWritePreflight.Tests.ps1;tests/McpServerContract.Tests.ps1;tests/ThreatModelContract.Tests.ps1;tests/EnterpriseStrategyAlignment.Tests.ps1;tests/ReviewLatencyHardening.Tests.ps1;tests/UpstreamReevaluation.Tests.ps1;tests/BumpVersionReleaseBoundary.Tests.ps1
           - name: shell-support
             result: shell-support
             timeout_minutes: 15
