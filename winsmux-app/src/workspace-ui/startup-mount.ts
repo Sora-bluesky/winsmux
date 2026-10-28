@@ -732,7 +732,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
           if (!current() || stopped) return;
           if (agentLease && !agentOwner.getState().busy) { admission.release(agentLease); agentLease = null; }
           const pending = controller.getPending();
-          if (pending) await controller.refresh();
+          if (pending || controller.getSnapshot().availability === 'unavailable') await controller.refresh();
           if (!current() || stopped) return;
           const framed = projectFrame(controller.getSnapshot());
           const key = JSON.stringify([framed.project?.project_id ?? null, framed.pane?.pane_id ?? null, framed.pane?.current_run_id ?? null]);

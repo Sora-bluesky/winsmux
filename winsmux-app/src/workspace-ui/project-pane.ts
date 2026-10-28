@@ -145,7 +145,7 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   function settle(ticket: number, result: Settlement) {
     if (disposed || !pending || pending.ticket !== ticket) return false;
     if (result.disposition === 'unknown') {
-      if (pending.disposition === 'unknown') return false;
+      if (pending.disposition === 'unknown' && pending.message === result.message) return false;
       pending.disposition = 'unknown'; pending.message = result.message;
       if (modal?.phase === 'submitted' && modal.ticket === ticket) modal = { ...modal, outcome: 'unknown', message: result.message };
       updateAdmission(); return true;

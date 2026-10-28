@@ -3839,8 +3839,9 @@ fn real_conpty_save_stop_new_host_restore_keeps_layout_without_runs() {
         "{}",
         String::from_utf8_lossy(&first_exit.output)
     );
-    assert_eq!(std::fs::read(&backup).expect("B after stop"), first_c);
+    assert!(!backup.exists(), "unchanged stop must not invent B");
     let stop_c = std::fs::read(&confirmed).expect("C after stop");
+    assert_eq!(stop_c, first_c, "unchanged stop must preserve C bytes");
     assert!(!stop_c
         .windows(run_id.len())
         .any(|part| part == run_id.as_bytes()));
@@ -3903,13 +3904,15 @@ fn real_conpty_save_stop_new_host_restore_keeps_layout_without_runs() {
         "target_not_found",
     );
     assert_eq!(std::fs::read(&confirmed).expect("restore leaves C"), stop_c);
-    assert_eq!(std::fs::read(&backup).expect("restore leaves B"), first_c);
+    assert!(!backup.exists(), "restore must leave B absent");
     let second_stop = assert_success(
         &stop_after_provider_cleanup(&mut second, second_instance),
         "host.stop",
     );
     assert_eq!(second_stop["result"]["data"]["stopped"], json!(true));
     assert_eq!(second.wait_for_exit().code, 0);
+    assert_eq!(std::fs::read(&confirmed).expect("C after restored stop"), stop_c);
+    assert!(!backup.exists(), "unchanged restored stop must leave B absent");
 }
 
 #[test]

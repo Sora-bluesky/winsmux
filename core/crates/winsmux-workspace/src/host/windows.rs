@@ -1718,6 +1718,8 @@ fn accept_loop(
                 );
             })
             .map_err(map_supervisor_io)?;
+        #[cfg(test)]
+        public_pipe_busy_tests::after_accept();
         let next = match create_public_pipe(&pipe_name, &identity, false, &server_capability) {
             Ok(next) => next,
             Err(error) => return Err(error),
@@ -2915,5 +2917,139 @@ mod close_authentication_tests {
             assert_eq!(accept.join().unwrap(), Ok(()));
             assert_eq!(supervisor.reap_completed(), Ok(0));
         }
+    }
+}
+
+
+#[cfg(test)]
+mod public_pipe_busy_tests {
+    use super::*;
+    use crate::client::{PublicCancellation, PublicClient, PIPE_OPEN_OBSERVER};
+    use std::cell::RefCell;
+    use std::time::Duration;
+    use windows_sys::Win32::Foundation::ERROR_PIPE_BUSY;
+
+    const WAIT: Duration = Duration::from_secs(30);
+    thread_local! {
+        static ACCEPT_GATE: RefCell<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>> = const { RefCell::new(None) };
+    }
+    pub(super) fn after_accept() {
+        ACCEPT_GATE.with(|slot| {
+            if let Some((reached, release)) = slot.borrow_mut().take() {
+                reached.send(()).unwrap();
+                release.recv_timeout(WAIT).unwrap();
+            }
+        });
+    }
+    struct Fixture {
+        harness: crate::auth::testing::Harness,
+        discovery: Discovery,
+        authorization: Arc<Authorization>,
+        cancel: Arc<CancelEvent>,
+        supervisor: ConnectionSupervisor,
+        thread: Option<JoinHandle<Result<(), IoError>>>,
+        reached: mpsc::Receiver<()>,
+        release: Option<mpsc::Sender<()>>,
+    }
+    impl Fixture {
+        fn start() -> Self {
+            let identity = Identity::current().unwrap();
+            let capability = ServerCapabilityToken::create(&identity).unwrap();
+            let key = Arc::new(ServerKey::generate().unwrap());
+            let harness = crate::auth::testing::Harness::new(Vec::new());
+            let authorization = harness.authorization();
+            let root = std::env::temp_dir().join(format!("winsmux-busy-{}", uuid::Uuid::new_v4()));
+            assert!(authorization.testing_install_isolated_layout(&root));
+            let discovery = Discovery::for_server(&identity, authorization.instance_id().clone(), key.fingerprint()).unwrap();
+            let listener = create_public_pipe(&discovery.pipe_name, &identity, true, &capability).unwrap();
+            let cancel = Arc::new(CancelEvent::new().unwrap());
+            let supervisor = ConnectionSupervisor::new(authorization.clone(), cancel.clone()).unwrap();
+            let (arrived, reached) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let args = (discovery.clone(), authorization.clone(), cancel.clone(), supervisor.clone());
+            let thread = std::thread::spawn(move || {
+                ACCEPT_GATE.with(|slot| *slot.borrow_mut() = Some((arrived, released)));
+                accept_loop(args.0.pipe_name, identity, capability, key, args.0.instance_id,
+                    args.1, args.2, args.3, listener)
+            });
+            Self { harness, discovery, authorization, cancel, supervisor, thread: Some(thread), reached, release: Some(release) }
+        }
+        fn client(&self) -> JoinHandle<Result<PublicClient, HostError>> {
+            let discovery = self.discovery.clone();
+            std::thread::spawn(move || PublicClient::connect(&discovery, &PublicCancellation::new().unwrap()))
+        }
+        fn release(&mut self) { self.release.take().unwrap().send(()).unwrap(); }
+        fn capabilities(&self, client: &mut PublicClient) {
+            let request = product_request("capabilities.get", Some(self.discovery.instance_id.as_str()), serde_json::json!({}));
+            let response = client.request(&request, &PublicCancellation::new().unwrap()).unwrap();
+            assert!(response.accepted);
+            assert!(matches!(response.result.0, Some(crate::contract::Success::CapabilitiesGet(_))));
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            if let Some(release) = self.release.take() { let _ = release.send(()); }
+            self.cancel.signal();
+            let closed = self.authorization.close_generation();
+            closed.signal_cancellations(); closed.reap_jobs();
+            self.supervisor.close_and_reap().unwrap();
+            self.thread.take().unwrap().join().unwrap().unwrap();
+        }
+    }
+
+    #[test]
+    fn busy_public_pipe_reopens_after_real_accept_replenishes_listener() {
+        let mut fixture = Fixture::start();
+        let first = fixture.client();
+        fixture.reached.recv_timeout(WAIT).unwrap();
+        let mut first = first.join().unwrap().unwrap();
+        fixture.capabilities(&mut first);
+        let (observed, busy) = mpsc::channel();
+        let discovery = fixture.discovery.clone();
+        let second = std::thread::spawn(move || {
+            PIPE_OPEN_OBSERVER.with(|slot| *slot.borrow_mut() = Some(observed));
+            PublicClient::connect(&discovery, &PublicCancellation::new().unwrap())
+        });
+        assert_eq!(busy.recv_timeout(WAIT).unwrap(), ERROR_PIPE_BUSY);
+        fixture.release();
+        let mut second = second.join().unwrap().expect("busy public pipe must wait for the next listener");
+        fixture.capabilities(&mut second);
+        let listed = fixture.harness.owner(&product_request("connection.list", Some(fixture.discovery.instance_id.as_str()), serde_json::json!({})));
+        let rows = serde_json::to_value(listed).unwrap();
+        let rows = rows["result"]["data"]["connections"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0]["connection_id"], rows[1]["connection_id"]);
+    }
+
+    #[test]
+    fn busy_public_pipe_wait_respects_cancellation() {
+        let mut fixture = Fixture::start();
+        let first = fixture.client();
+        fixture.reached.recv_timeout(WAIT).unwrap();
+        let _first = first.join().unwrap().unwrap();
+        let cancel = PublicCancellation::new().unwrap();
+        let worker_cancel = cancel.clone();
+        let discovery = fixture.discovery.clone();
+        let (observed, busy) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            PIPE_OPEN_OBSERVER.with(|slot| *slot.borrow_mut() = Some(observed));
+            PublicClient::connect(&discovery, &worker_cancel)
+        });
+        assert_eq!(busy.recv_timeout(WAIT).unwrap(), ERROR_PIPE_BUSY);
+        cancel.cancel();
+        assert!(matches!(second.join().unwrap(), Err(HostError::Cancelled)), "busy wait must report cancellation");
+        fixture.release();
+    }
+
+    #[test]
+    fn nonbusy_public_pipe_open_failure_returns_immediately() {
+        let mut fixture = Fixture::start();
+        fixture.discovery.pipe_name = fixture.discovery.pipe_name.replace(fixture.discovery.validate_for(&Identity::current().unwrap()).unwrap(), &"0".repeat(64));
+        let discovery = fixture.discovery.clone();
+        let cancel = PublicCancellation::new().unwrap();
+        let (done, result) = mpsc::channel();
+        let worker = std::thread::spawn(move || { let _ = done.send(PublicClient::connect(&discovery, &cancel)); });
+        assert!(matches!(result.recv_timeout(Duration::from_secs(1)).expect("non-busy open errors must not wait"), Err(HostError::Transport)));
+        worker.join().unwrap();
     }
 }

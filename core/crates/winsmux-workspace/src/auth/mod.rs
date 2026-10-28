@@ -1570,6 +1570,7 @@ struct State {
     runtime: std::sync::Arc<crate::runtime::RuntimeService>,
     layout: crate::store::layout::LayoutStore,
     layout_baseline: crate::contract::Snapshot,
+    layout_baseline_trusted: bool,
     #[cfg(debug_assertions)]
     registration_fail_key: Option<[u8; 36]>,
     #[cfg(debug_assertions)]
@@ -1809,6 +1810,7 @@ impl Authorization {
                 runtime: runtime.clone(),
                 layout,
                 layout_baseline,
+                layout_baseline_trusted: true,
                 #[cfg(debug_assertions)]
                 registration_fail_key: None,
                 #[cfg(debug_assertions)]

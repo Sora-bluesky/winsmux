@@ -12,7 +12,7 @@ mod windows {
     use std::io::{BufRead, IsTerminal, Write};
     use std::ptr::null_mut;
     use std::sync::{mpsc, Arc, Mutex, MutexGuard};
-    use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_PIPE_BUSY, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0, WAIT_TIMEOUT};
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, SECURITY_IDENTIFICATION,
         SECURITY_SQOS_PRESENT,
@@ -1037,7 +1037,7 @@ mod windows {
                 != windows_sys::Win32::Foundation::WAIT_TIMEOUT { return Err(HostError::Cancelled); }
             let identity = Identity::current().map_err(map_io)?;
             let fingerprint = discovery.validate_for(&identity)?.to_owned();
-            let handle = connect(&discovery.pipe_name)?;
+            let handle = connect(&discovery.pipe_name, cancel)?;
             authenticate_server(&handle, discovery, &fingerprint, cancel)?;
             if unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(cancel.raw(), 0) }
                 != windows_sys::Win32::Foundation::WAIT_TIMEOUT { return Err(HostError::Cancelled); }
@@ -1062,23 +1062,54 @@ mod windows {
         }
     }
 
-    pub(crate) fn connect(pipe_name: &str) -> Result<OwnedHandle, HostError> {
+    #[cfg(test)]
+    thread_local! {
+        pub(crate) static PIPE_OPEN_OBSERVER: std::cell::RefCell<Option<mpsc::Sender<u32>>> = const { std::cell::RefCell::new(None) };
+    }
+
+    // Listener replenishment is a local handoff. Match the 2s/5ms admission
+    // window in ProductHost::connect_stalled, but wait on cancellation instead
+    // of sleeping. This bounds only open; no sent frame is ever retried here.
+    const PUBLIC_PIPE_OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+    const PUBLIC_PIPE_OPEN_POLL_MS: u32 = 5;
+
+    pub(crate) fn connect(pipe_name: &str, cancel: &CancelEvent) -> Result<OwnedHandle, HostError> {
         let wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                PIPE_DATA_ACCESS,
-                0,
-                null_mut(),
-                OPEN_EXISTING,
-                FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
-                null_mut(),
-            )
-        };
-        if handle == INVALID_HANDLE_VALUE {
-            return Err(HostError::Transport);
+        let deadline = std::time::Instant::now() + PUBLIC_PIPE_OPEN_WAIT;
+        loop {
+            match unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(cancel.raw(), 0) } {
+                WAIT_TIMEOUT => {}
+                WAIT_OBJECT_0 => return Err(HostError::Cancelled),
+                _ => return Err(HostError::Transport),
+            }
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    PIPE_DATA_ACCESS,
+                    0,
+                    null_mut(),
+                    OPEN_EXISTING,
+                    FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION,
+                    null_mut(),
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                return unsafe { OwnedHandle::from_raw(handle) }.map_err(map_io);
+            }
+            let error = unsafe { GetLastError() };
+            #[cfg(test)]
+            PIPE_OPEN_OBSERVER.with(|slot| { if let Some(tx) = slot.borrow_mut().take() { let _ = tx.send(error); } });
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if error != ERROR_PIPE_BUSY || remaining.is_zero() {
+                return Err(HostError::Transport);
+            }
+            let wait_ms = remaining.as_millis().min(PUBLIC_PIPE_OPEN_POLL_MS as u128).max(1) as u32;
+            match unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(cancel.raw(), wait_ms) } {
+                WAIT_TIMEOUT => {}
+                WAIT_OBJECT_0 => return Err(HostError::Cancelled),
+                _ => return Err(HostError::Transport),
+            }
         }
-        unsafe { OwnedHandle::from_raw(handle) }.map_err(map_io)
     }
 
     fn authenticate_server(
@@ -1117,7 +1148,7 @@ mod windows {
     ) -> bool {
         let mut sidecar = discovery.clone();
         sidecar.pipe_name = discovery.artifact_review_pipe_name();
-        let Ok(handle) = connect(&sidecar.pipe_name) else { return false };
+        let Ok(handle) = connect(&sidecar.pipe_name, cancel) else { return false };
         if authenticate_server(&handle, &sidecar, expected_fingerprint, cancel).is_err() {
             return false;
         }
@@ -1820,3 +1851,6 @@ pub(crate) use windows::probe_artifact_review;
 pub fn run_connect() -> Result<(), crate::host::HostError> {
     Err(crate::host::HostError::Startup)
 }
+
+#[cfg(all(windows, test))]
+pub(crate) use windows::PIPE_OPEN_OBSERVER;

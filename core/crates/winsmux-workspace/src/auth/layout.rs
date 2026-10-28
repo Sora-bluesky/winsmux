@@ -79,6 +79,9 @@ fn save_current_layout(
     auth: &Authorization,
     state: &mut State,
 ) -> Result<(U, U), ErrorCode> {
+    // An error may follow confirmed replacement. Only a successful save can
+    // make the in-memory baseline safe for the automatic-save shortcut again.
+    state.layout_baseline_trusted = false;
     let (generation, topology) = observe_save_preparation!("layout_identity", layout_identity(state))?;
     let snapshot = observe_save_preparation!("snapshot_build", state.workspace.snapshot(generation.clone(), topology.clone()))?;
     let observed = observe_save_preparation!("snapshot_roots", observe_snapshot_roots(&snapshot, &auth.shared.allocations))?;
@@ -91,6 +94,7 @@ fn save_current_layout(
         AllocationPool::ActiveOwner,
     )?;
     state.layout_baseline = snapshot;
+    state.layout_baseline_trusted = true;
     drop(observed);
     Ok((generation, topology))
 }
@@ -99,6 +103,9 @@ fn save_changed_layout(
     auth: &Authorization,
     state: &mut State,
 ) -> Result<(U, U), ErrorCode> {
+    if !state.layout_baseline_trusted {
+        return save_current_layout(auth, state);
+    }
     // Runtime revisions change on restore and on edits that are later undone.
     // Compare the persisted content using the baseline's metadata instead.
     let baseline = &state.layout_baseline;
@@ -106,7 +113,11 @@ fn save_changed_layout(
         baseline.generation.clone(),
         baseline.topology_revision.clone(),
     )?;
-    if snapshot == *baseline {
+    let current_bytes = crate::contract::serialize_snapshot(&snapshot)
+        .map_err(|_| ErrorCode::PersistenceFailed)?;
+    let baseline_bytes = crate::contract::serialize_snapshot(baseline)
+        .map_err(|_| ErrorCode::PersistenceFailed)?;
+    if current_bytes == baseline_bytes {
         // Keep the existing live-root close guard even when persistence is a no-op.
         let _observed = observe_snapshot_roots(&snapshot, &auth.shared.allocations)?;
         return layout_identity(state);
@@ -1155,6 +1166,67 @@ mod tests {
             assert_eq!(auth.testing_connection_owned_bytes().1, 0);
             supervisor.close_and_reap().unwrap();
         }
+    }
+
+    fn round2_request(h: &Harness, operation: &str, params: serde_json::Value) -> Request {
+        let topology = matches!(operation, "project.open" | "project.forget" | "project.select" | "layout.restore");
+        crate::contract::parse_request(&serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1, "instance_id": h.instance_id(),
+            "operation_id": uuid::Uuid::new_v4().to_string(),
+            "expected_topology_revision": if topology { Some(h.authorization().testing_counters().1) } else { None },
+            "operation": operation, "params": params,
+        })).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn layout_failed_stop_then_forget_back_to_empty_baseline_saves_current_state() {
+        let h = Harness::new(Vec::new());
+        let root = isolate(&h);
+        change_layout(&h, &root);
+        let project = h.authorization().shared.inner.lock().unwrap().workspace.projects()[0].id.clone();
+        assert!(h.authorization().testing_inject_layout_fault(LayoutStoreFault::ConfirmedReadback));
+        let first = h.owner(&round2_request(&h, "host.stop", serde_json::json!({})));
+        assert_eq!(error_of(&first), ErrorCode::PersistenceFailed);
+        assert_eq!(crate::parse_snapshot(&fs::read(root.join("confirmed.json")).unwrap()).unwrap().projects.len(), 1);
+        assert!(h.owner(&round2_request(&h, "project.forget", serde_json::json!({"project_id": project}))).accepted);
+        assert!(h.authorization().testing_inject_layout_fault(LayoutStoreFault::None));
+        let stopped = h.owner(&round2_request(&h, "host.stop", serde_json::json!({})));
+        assert!(stopped.accepted);
+        let saved = crate::parse_snapshot(&fs::read(root.join("confirmed.json")).unwrap()).unwrap();
+        assert!(saved.projects.is_empty(), "successful stop must persist the final empty state");
+        assert!(h.generation_is_closed());
+    }
+
+    #[test]
+    fn layout_failed_stop_then_select_restored_baseline_saves_current_selection() {
+        let seed = Harness::new(Vec::new());
+        let root = isolate(&seed);
+        let mut ids = Vec::new();
+        for name in ["A", "B"] {
+            let folder = root.join(name); fs::create_dir_all(&folder).unwrap();
+            assert!(seed.owner(&round2_request(&seed, "project.open", serde_json::json!({"path": folder.to_string_lossy()}))).accepted);
+            let authorization = seed.authorization();
+            let state = authorization.shared.inner.lock().unwrap();
+            ids = state.workspace.projects().iter().map(|p| p.id.clone()).collect();
+        }
+        assert_eq!(ids.len(), 2);
+        assert!(seed.owner(&round2_request(&seed, "project.select", serde_json::json!({"project_id": ids[0]}))).accepted);
+        assert!(seed.owner(&round2_request(&seed, "layout.save", serde_json::json!({}))).accepted);
+        drop(seed);
+        let h = Harness::new(Vec::new());
+        assert!(h.authorization().testing_install_isolated_layout(&root));
+        assert!(h.owner(&round2_request(&h, "layout.restore", serde_json::json!({}))).accepted);
+        assert!(h.owner(&round2_request(&h, "project.select", serde_json::json!({"project_id": ids[1]}))).accepted);
+        assert!(h.authorization().testing_inject_layout_fault(LayoutStoreFault::ConfirmedReadback));
+        let first = h.owner(&round2_request(&h, "host.stop", serde_json::json!({})));
+        assert_eq!(error_of(&first), ErrorCode::PersistenceFailed);
+        assert_eq!(crate::parse_snapshot(&fs::read(root.join("confirmed.json")).unwrap()).unwrap().selected_project_id.0, Some(ids[1].clone()));
+        assert!(h.owner(&round2_request(&h, "project.select", serde_json::json!({"project_id": ids[0]}))).accepted);
+        assert!(h.authorization().testing_inject_layout_fault(LayoutStoreFault::None));
+        assert!(h.owner(&round2_request(&h, "host.stop", serde_json::json!({}))).accepted);
+        let saved = crate::parse_snapshot(&fs::read(root.join("confirmed.json")).unwrap()).unwrap();
+        assert_eq!(saved.selected_project_id.0, Some(ids[0].clone()), "successful stop must persist the final selection");
+        assert!(h.generation_is_closed());
     }
 
     #[test]

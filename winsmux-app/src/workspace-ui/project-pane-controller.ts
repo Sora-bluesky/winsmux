@@ -213,7 +213,7 @@ export function guardedCloseParams(input: unknown): PaneCloseParams {
 }
 type Params = Request['params'];
 type Spec = { operation: OperationName; params: Params; kind?: 'interrupt'; remaining?: boolean; needsData?: boolean; target?: boolean; next?: (data: Obj) => Spec };
-type Stage = { facts: StageFacts; request: Request; spec: Spec; revision: U; payload: Obj | null; code?: ErrorCode };
+type Stage = { facts: StageFacts; request: Request; spec: Spec; revision: U; payload: Obj | null; code?: ErrorCode; runReadError?: ErrorCode };
 type Pending = { ticket: number; intent: ControlIntent; ownerKey: OwnerKey; stage: Stage | null; resolve(result: Settlement): void; answered: boolean; working: boolean };
 const refusal = '要求は拒否されました。確認済みの前段は保持しています。';
 const unknownMessage = '要求の結果または対象を確認できません。同じ要求を送り直さず、状態の読み直しで確認してください。';
@@ -333,6 +333,7 @@ export function createProjectPaneController(options: ControllerOptions) {
     const cleanup = s.facts.remaining && !s.facts.fenced && s.facts.dataComplete;
     const response = await exchange(request('run.get', cleanup ? { include_cleanup: true, run_id: p.intent.runId } : { run_id: p.intent.runId }, s.revision));
     if (!alive(p, s)) return;
+    s.runReadError = response?.error?.code;
     const data = response?.accepted && response.result?.operation === 'run.get' ? response.result.data : null;
     s.facts = foldRunReadiness(s.facts, runReadData(data, p.intent.runId, cleanup), p.intent.paneId);
   }
@@ -362,7 +363,7 @@ export function createProjectPaneController(options: ControllerOptions) {
     } else if (decision === 'settle_refused' || decision === 'settle_partial_refused' || decision === 'settle_completed') {
       await finish(p, s, { disposition: decision === 'settle_completed' ? 'completed' : 'refused', message: decision === 'settle_completed' ? '要求した操作と必要な終了確認が完了しました。' : decision === 'settle_partial_refused' ? '元操作の結果を確認しました。確認済みの前段を保持し、残る操作は送信していません。' : s.facts.targetFact === 'changed' ? '確認した対象が変わったため、後続の閉鎖を送信していません。' : refusal }); return;
     }
-    if (alive(p, s) && decision !== 'await_rpc' && decision !== 'ignore') { snapshot = { ...snapshot, error: s.facts.kind === 'interrupt' && s.facts.knowledge === 'success' ? '同じ実行の中断・終了を確認中です。' : unknownMessage }; notify(p, { disposition: 'unknown', message: snapshot.error }); emit(); }
+    if (alive(p, s) && decision !== 'await_rpc' && decision !== 'ignore') { snapshot = { ...snapshot, error: s.runReadError ? `中断・終了の確認が拒否されました（${s.runReadError}）。${s.runReadError === 'target_not_found' ? '対象の実行が見つかりません。' : ''}中断・終了は未確認です。操作ID: ${s.request.operation_id}、実行ID: ${'runId' in p.intent ? p.intent.runId : ''}` : s.facts.kind === 'interrupt' && s.facts.knowledge === 'success' ? '同じ実行の中断・終了を確認中です。' : unknownMessage }; notify(p, { disposition: 'unknown', message: snapshot.error }); emit(); }
   }
   function control(intent: ControlIntent, ticket: number): Promise<Settlement> {
     if (disposed || pending || !Number.isSafeInteger(ticket) || ticket <= lastTicket || !validateIntent(intent)) return Promise.resolve({ disposition: 'refused', message: '操作対象または操作受付を確認できません。' });
@@ -404,6 +405,8 @@ export function createProjectPaneController(options: ControllerOptions) {
           else apply(p, s, { kind: saved.phase === 'unknown' ? 'record_absent' : 'record_wait' });
         }
       }
+      // Display topology must stay current while the original result is pending.
+      await serial(() => readSnapshot());
       if (alive(p, s)) await drive(p, s, true);
     } finally { if (alive(p)) p.working = false; }
   }

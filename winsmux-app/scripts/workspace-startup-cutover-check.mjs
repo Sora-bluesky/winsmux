@@ -349,11 +349,11 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
    const f=globalThis.fixture,original=f.invoke,results=[];
    const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
    const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
-   for(const mode of ['external-close','interrupt-after-read-failure','interrupt-pending-output','unknown-host','state-unknown']){
+   for(const mode of ['external-close','interrupt-after-read-failure','interrupt-pending-output','list-retry','interrupt-target-gone','unknown-host','state-unknown']){
     const I='11111111-1111-4111-8111-111111111111',P='22222222-2222-4222-8222-222222222222';
     const closedPane=crypto.randomUUID(),closedRun=crypto.randomUUID(),pane=crypto.randomUUID(),runId=crypto.randomUUID();
     const root=document.createElement('main');document.body.append(root);
-    const state={revision:1,seq:1,rows:mode==='interrupt-pending-output'?[pane]:[closedPane,pane],requests:[],failRead:mode!=='interrupt-pending-output',interrupted:false,exited:false,unknown:false};
+    const state={revision:1,seq:1,rows:mode==='interrupt-pending-output'?[pane]:[closedPane,pane],requests:[],failRead:mode!=='interrupt-pending-output',interrupted:false,exited:false,unknown:false,rejectList:false,listRejections:0};
     const observation=(id)=>({run_id:id===pane?runId:closedRun,pane_id:id,current:true,process:state.exited&&id===pane?'exited':'running',work:state.exited&&id===pane?'interrupted':'unknown',evidence:state.exited&&id===pane?'process_exit':'unavailable',exit_code:state.exited&&id===pane?-1073741510:null,observed_at:'2026-10-28T00:00:00Z'});
     const tree=rows=>rows.length===0?null:rows.length===1?{kind:'leaf',pane_id:rows[0]}:{kind:'split',axis:'horizontal',ratio:0.5,first:{kind:'leaf',pane_id:rows[0]},second:tree(rows.slice(1))};
     const externalChange=rows=>{state.rows=rows;state.revision++;state.seq++;};
@@ -366,8 +366,8 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
      switch(q.operation){
       case'capabilities.get':data={schema_version:1,operations:['capabilities.get','project.list','pane.list','run.get','run.interrupt','operation.get','events.wait','output.read','pane.resize','connection.list'],max_message_bytes:1048576,providers:[],shell_profile_ids:['pwsh'],replay_capacity:{retained_bytes:134217728,active_bytes:268435456}};break;
       case'project.list':data={projects:[{project_id:P,path:f.root,display_name:'Fixture',root_state:'verified'}],selected_project_id:P};break;
-      case'pane.list':data={project_id:P,selected_pane_id:state.rows.includes(pane)?pane:state.rows[0]??null,root:tree(state.rows),panes:state.rows.map(id=>({pane_id:id,project_id:P,path:f.root,display_name:id,current_run_id:observation(id).run_id,observation:observation(id)}))};break;
-      case'run.get':data={run:observation(q.params.run_id===runId?pane:closedPane)};break;
+      case'pane.list':if(state.rejectList){state.rejectList=false;state.listRejections++;return response(false,null,{code:'resource_exhausted',message:'Resource limit reached.',retryable:true,target_id:null});}data={project_id:P,selected_pane_id:state.rows.includes(pane)?pane:state.rows[0]??null,root:tree(state.rows),panes:state.rows.map(id=>({pane_id:id,project_id:P,path:f.root,display_name:id,current_run_id:mode==='interrupt-target-gone'&&id!==pane&&id!==closedPane?null:observation(id).run_id,observation:mode==='interrupt-target-gone'&&id!==pane&&id!==closedPane?null:observation(id)}))};break;
+      case'run.get':if(mode==='interrupt-target-gone'&&!state.rows.includes(pane))return response(false,null,{code:'target_not_found',message:'Target not found.',retryable:false,target_id:q.params.run_id});data={run:observation(q.params.run_id===runId?pane:closedPane)};break;
       case'events.wait':data=q.params.after_event_seq<state.seq?{events:[{event_seq:state.seq,observed_at:'2026-10-28T00:00:00Z',data:{kind:'topology_changed',project_id:P,pane_id:null,topology_revision:state.revision}}],next_event_seq:state.seq,status:'events'}:{events:[],next_event_seq:state.seq,status:'no_change'};break;
       case'output.read':
        if(state.failRead){
@@ -392,7 +392,26 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
     try{
      mount=await f.awaitMount(module.mountWorkspaceMain(root));
      await pump();await pump();
-     if(mode==='external-close'){
+     if(mode==='list-retry'){
+       const added=crypto.randomUUID();state.rejectList=true;externalChange([pane,added]);
+       await pump();check('topology list read was rejected once',state.listRejections===1&&!visible(added));
+       await pump();await pump();
+       check('incomplete list refresh retries on no-change cycles',visible(added)&&visible(pane));
+       externalChange([pane]);await pump();await pump();
+       check('observation follows later changes after list recovery',!visible(added)&&visible(pane));
+      }else if(mode==='interrupt-target-gone'){
+       root.querySelector(`.workspace-pane[data-pane-id="${pane}"] [data-action="interrupt-run"]`)?.click();
+       for(let n=0;n<12;n++)await tick();
+       const operation=state.requests.find(q=>q.operation==='run.interrupt');
+       check('interrupt was accepted before external close',state.interrupted&&!!operation);
+       externalChange([]);await pump();await pump();
+       check('pending result still refreshes the pane list after target closes',!visible(pane)&&!visible(closedPane));
+       const text=()=>root.querySelector('.workspace-project-pane')?.textContent??'';
+       check('lost interrupt target is a visible persistent rejection',text().includes('target_not_found')&&text().includes(operation?.operation_id));
+       const added=crypto.randomUUID();externalChange([added]);await pump();await pump();
+       check('later external panes update while original interrupt remains unresolved',visible(added)&&!visible(pane));
+       check('target loss never becomes interrupt success or resends it',state.requests.filter(q=>q.operation==='run.interrupt').length===1&&state.requests.filter(q=>q.operation==='run.get').every(q=>q.params.run_id===runId)&&text().includes('target_not_found')&&!text().includes('操作と必要な終了確認が完了'));
+      }else if(mode==='external-close'){
       check('output.read raced a real external topology removal',!state.failRead&&!state.rows.includes(closedPane));
       check('closed target is removed without manual reread',!visible(closedPane)&&visible(pane));
       const added=crypto.randomUUID();externalChange([pane,added]);await pump();await pump();

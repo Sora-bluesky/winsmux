@@ -81,6 +81,27 @@ try {
   const flush = async () => { for (let n = 0; n < 12; n++) await new Promise(resolve => setImmediate(resolve)); };
   const perform = async (h, intent, ticket = 1) => { const outcome = await h.controller.control(intent, ticket); await flush(); return outcome; };
 
+  for (const kind of ['interrupt-run', 'close-pane']) await test(`pending ${kind} refreshes lists and retains rejected original target`, async () => {
+    let closed = false;
+    const h = await ready({ override(req, api) {
+      if (closed && req.operation === 'pane.list') return api.response(req, { project_id: P, selected_pane_id: null, root: null, panes: [] });
+      if (closed && req.operation === 'run.get') return api.error(req, 'target_not_found');
+    } });
+    await perform(h, h.intent(kind, kind === 'close-pane' ? { interruptFirst: true } : {}));
+    const original = h.controller.getPending();
+    closed = true;
+    for (let n = 0; n < 3; n++) await h.controller.refresh();
+    assert.equal(h.controller.getSnapshot().availability, 'available');
+    assert.deepEqual(h.controller.getSnapshot().panes.panes, []);
+    const pending = h.controller.getPending();
+    assert.equal(pending.request.operation_id, original.request.operation_id);
+    assert.equal(pending.intent.runId, R);
+    assert.notEqual(pending.facts.exitFact, 'exited_same');
+    assert.equal(h.settlements.at(-1).disposition, 'unknown');
+    assert.match(h.settlements.at(-1).message, /target_not_found/);
+    assert.deepEqual(h.effects().map(req => req.operation), ['run.interrupt']);
+  });
+
   for (const remaining of [false, true]) for (const cleanup of [false, true]) for (const fenced of [false, true]) await test(`shared historical exit separates completion from continuation remaining=${remaining}/cleanup=${cleanup}/fenced=${fenced}`, () => {
     const base = { kind: 'interrupt', remaining, fenced, knowledge: 'success', exitFact: 'running', targetFact: remaining ? 'awaiting' : 'not_required', dataComplete: true, contradiction: false, live: true, nextIssued: false, continuationCleanup: remaining ? 'awaiting' : 'not_required' };
     const data = { run: obs(R, B, 'exited', 'process_exit', false), ...(cleanup ? { cleanup_complete: true, cleanup_pending: [] } : {}) };

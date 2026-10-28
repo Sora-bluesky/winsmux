@@ -1775,3 +1775,31 @@ fn layout_stop_after_unrestored_open_and_forget_keeps_original_layout() {
     assert_accepted(&owner(&harness, "host.stop", None, json!({})), "snapshot equals session start");
     assert_saved_layout_bytes(&root, &confirmed, &backup);
 }
+
+
+#[test]
+fn layout_stop_unchanged_restore_with_reverse_pane_ids_preserves_both_files() {
+    let (root, _folders, confirmed, backup) = saved_layout_for_stop("stop-reverse-panes");
+    let mut snapshot = parse_snapshot(&confirmed).unwrap();
+    snapshot.projects.sort_by(|a, b| a.project_id.cmp(&b.project_id));
+    let pane_ids = [
+        "40000000-0000-4000-8000-000000000002",
+        "40000000-0000-4000-8000-000000000001",
+    ];
+    for (project, id) in snapshot.projects.iter().zip(pane_ids) {
+        let pane_id = PaneId::new(id).unwrap();
+        snapshot.panes.push(winsmux_workspace::contract::SavedPane {
+            pane_id: pane_id.clone(), project_id: project.project_id.clone(),
+            shell_profile_id: winsmux_workspace::contract::NonEmpty::new("pwsh").unwrap(),
+            provider_profile: Nullable(None),
+        });
+        snapshot.layouts.iter_mut().find(|row| row.project_id == project.project_id).unwrap().root =
+            Nullable(Some(LayoutNode::leaf(pane_id)));
+    }
+    let confirmed = serialize_snapshot(&snapshot).unwrap();
+    fs::write(confirmed_path(&root), &confirmed).unwrap();
+    let harness = harness_on(&root);
+    assert_accepted(&owner(&harness, "layout.restore", Some(current_revision(&harness)), json!({})), "reverse pane restore");
+    assert_accepted(&owner(&harness, "host.stop", None, json!({})), "unchanged stop");
+    assert_saved_layout_bytes(&root, &confirmed, &backup);
+}

@@ -78,7 +78,9 @@ try {
     check('pending never states real process success', document.querySelector('[role=status]').textContent.includes('確認待ち'));
     check('wrong ticket cannot release', !view.settle(999, { disposition: 'completed' }) && action('select-pane').disabled);
     await flush(); check('unknown keeps admission', action('select-pane').disabled);
-    check('duplicate unknown settlement no effect', !view.settle(calls[0].ticket, { disposition: 'unknown', message: 'duplicate' }));
+    const rejectedRead = { disposition: 'unknown', message: '対象の実行が見つかりません（target_not_found）。' };
+    check('same pending item refines rejection without releasing admission', view.settle(calls[0].ticket, rejectedRead) && action('select-pane').disabled && document.querySelector('[role=status]').textContent.includes(rejectedRead.message));
+    check('duplicate unknown settlement no effect', !view.settle(calls[0].ticket, rejectedRead));
     click(global('reread')); click(global('dismiss-error')); check('reread cannot release unknown', inspections.at(-1).kind === 'reread' && action('select-pane').disabled);
     current.generation = 'g2'; current.topologyRevision = 8; current.panes.selected_pane_id = 'pane-2'; render();
     check('render selection and revision never release or retry', calls.length === 1 && action('select-pane').disabled && document.querySelector('[role=status]').textContent.includes('pane-1'));
