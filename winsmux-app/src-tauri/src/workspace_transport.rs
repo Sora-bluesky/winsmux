@@ -83,20 +83,20 @@ enum ForceOffer {
     Waiting,
     Refused(CloseRefusal),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Default)]
 enum Escape {
     #[default]
     Idle,
-    Prompting,
-    Confirmed,
+    Prompting(Arc<CompletionReservation>),
+    Confirmed { input_unconfirmed: bool },
 }
 #[derive(Clone)]
 enum ForcePrompt {
     Unknown(Arc<CompletionReservation>),
     Waiting(Arc<CompletionReservation>),
-    Refused(CloseRefusal),
+    Refused(CloseRefusal, Arc<CompletionReservation>),
 }
-/// A refused user close that closing again cannot clear.
+/// The reason a completed user close was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CloseRefusal {
     Persistence,
@@ -104,10 +104,11 @@ enum CloseRefusal {
     InputUnconfirmed,
 }
 /// Generation-scoped: a new owner never inherits an old refusal.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 struct RefusedClose {
     generation: u64,
     refusal: CloseRefusal,
+    ticket: Arc<CompletionReservation>,
 }
 impl CloseRefusal {
     fn from_code(code: &str) -> Option<Self> {
@@ -152,7 +153,6 @@ struct Completion {
     stopped: bool,
     helper_started: bool,
     input_key: Option<InputKey>,
-    escape: Escape,
 }
 struct Lifecycle {
     phase: Phase,
@@ -173,8 +173,8 @@ struct Lifecycle {
     input_deadline: Option<Instant>,
     interrupt: Option<OwnerInterrupt>,
     interrupted_generation: Option<u64>,
-    // Open refused-exit dialog. Cleared on either answer and on lease drop.
-    refused_prompt_open: bool,
+    // The dialog owns its reservation across guard replies, expiry and host IO.
+    escape: Escape,
 }
 impl Default for Lifecycle {
     fn default() -> Self {
@@ -197,7 +197,7 @@ impl Default for Lifecycle {
             input_deadline: None,
             interrupt: None,
             interrupted_generation: None,
-            refused_prompt_open: false,
+            escape: Escape::Idle,
         }
     }
 }
@@ -271,6 +271,9 @@ impl Lifecycle {
         stopped: bool,
     ) -> Arc<CompletionReservation> {
         self.refused_close = None;
+        if !matches!(intent, Intent::ForceExit) || !matches!(self.escape, Escape::Confirmed { .. }) {
+            self.escape = Escape::Idle;
+        }
         let ticket = Arc::new(CompletionReservation {
             id: self.next_id(),
             terminal: Mutex::new(None),
@@ -286,7 +289,6 @@ impl Lifecycle {
             stopped,
             helper_started: false,
             input_key,
-            escape: Escape::Idle,
         });
         ticket
     }
@@ -382,7 +384,7 @@ impl Lifecycle {
                 }
             }
             Outcome::Unknown => {
-                let reason = if self.completion.as_ref().is_some_and(|c| c.escape == Escape::Confirmed) {
+                let reason = if matches!(self.escape, Escape::Confirmed { .. }) {
                     "force_exit_confirmed"
                 } else {
                     "transport_uncertain"
@@ -430,21 +432,15 @@ impl Lifecycle {
         &mut self,
         incoming: Intent,
     ) -> Result<(Arc<CompletionReservation>, bool), &'static str> {
-        // The open refused dialog is the close. A new close or exit joins it and
-        // must not start another stop or erase the refusal record.
-        if self.refused_prompt_open && matches!(incoming, Intent::CloseMain | Intent::ExitApp(_)) {
-            return Ok((
-                Arc::new(CompletionReservation {
-                    id: 0,
-                    terminal: Mutex::new(None),
-                }),
-                false,
-            ));
+        if let Some(ticket) = self.join_force_dialog() {
+            return if matches!(incoming, Intent::CloseMain | Intent::ExitApp(_)) {
+                Ok((ticket, false))
+            } else {
+                Err("shutdown_conflict")
+            };
         }
-        // Repeated title-bar closes retain the settled input refusal and its one choice.
-        if matches!(incoming, Intent::CloseMain) && self.completion.is_none()
-            && self.force_offer() == ForceOffer::Refused(CloseRefusal::InputUnconfirmed) {
-            return Ok((Arc::new(CompletionReservation { id: 0, terminal: Mutex::new(None) }), false));
+        if matches!(self.escape, Escape::Confirmed { .. }) {
+            return Err("transport_uncertain");
         }
         if matches!(self.phase, Phase::Unknown | Phase::ForcePrompt) {
             return Err("transport_uncertain");
@@ -717,6 +713,7 @@ impl Lifecycle {
             return Err("shutdown_failed");
         }
         c.worker = false;
+        if matches!(self.escape, Escape::Confirmed { .. }) { self.escape = Escape::Idle; }
         if exit {
             self.phase = Phase::ExitReleased;
         }
@@ -727,25 +724,20 @@ impl Lifecycle {
     /// Waiting is CloseMain or ExitApp only, while that close is still Idle.
     /// Update is not a waiting offer. Unknown is phase Unknown with no flight.
     fn force_offer(&self) -> ForceOffer {
+        if matches!(self.escape, Escape::Confirmed { .. }) { return ForceOffer::None; }
         if self.phase == Phase::Unknown && self.flight.is_none() {
             return ForceOffer::Unknown;
-        }
-        if self.completion.as_ref().is_some_and(|c| {
-            matches!(c.intent, Intent::CloseMain | Intent::ExitApp(_))
-                && c.input_key.is_some_and(|key| self.input_key_is_pending(key))
-        }) {
-            return ForceOffer::Refused(CloseRefusal::InputUnconfirmed);
         }
         let waiting = matches!(self.phase, Phase::Busy | Phase::Stopping)
             && self.flight.as_ref().is_some_and(|flight| matches!(flight.kind, IoKind::Ordinary | IoKind::Stop))
             && self.completion.as_ref().is_some_and(|completion| {
                 matches!(completion.intent, Intent::CloseMain | Intent::ExitApp(_))
-                    && completion.escape == Escape::Idle
+                    && matches!(self.escape, Escape::Idle)
             });
         if waiting {
             return ForceOffer::Waiting;
         }
-        if let Some(record) = self.refused_close {
+        if let Some(record) = &self.refused_close {
             if record.generation == self.generation
                 && self.completion.is_none()
                 && (matches!(self.phase, Phase::Ready | Phase::Busy)
@@ -770,45 +762,49 @@ impl Lifecycle {
     fn owner_interrupted(&self) -> bool {
         self.interrupted_generation == Some(self.generation)
     }
+    fn join_force_dialog(&self) -> Option<Arc<CompletionReservation>> {
+        match &self.escape {
+            Escape::Prompting(ticket) => Some(ticket.clone()),
+            _ => None,
+        }
+    }
     fn begin_force(&mut self) -> Result<ForcePrompt, &'static str> {
+        if self.join_force_dialog().is_some() { return Err("force_exit_unavailable"); }
         match self.force_offer() {
             ForceOffer::None => Err("force_exit_unavailable"),
             ForceOffer::Unknown => {
                 let ticket = self.new_completion(Intent::ForceExit, false, false);
                 self.phase = Phase::ForcePrompt;
+                if !matches!(self.escape, Escape::Confirmed { .. }) {
+                    self.escape = Escape::Prompting(ticket.clone());
+                }
                 Ok(ForcePrompt::Unknown(ticket))
             }
             ForceOffer::Waiting => {
                 let ticket = self.completion.as_ref().expect("waiting close").ticket.clone();
-                self.completion.as_mut().expect("waiting close").escape = Escape::Prompting;
+                self.escape = Escape::Prompting(ticket.clone());
                 self.next_id();
                 Ok(ForcePrompt::Waiting(ticket))
             }
             ForceOffer::Refused(refusal) => {
-                if self.refused_prompt_open {
-                    return Err("force_exit_unavailable");
-                }
-                self.refused_prompt_open = true;
-                Ok(ForcePrompt::Refused(refusal))
+                let ticket = self.refused_close.as_ref().expect("refused close").ticket.clone();
+                self.escape = Escape::Prompting(ticket.clone());
+                Ok(ForcePrompt::Refused(refusal, ticket))
             }
         }
     }
     fn cancel_force(&mut self, prompt: &ForcePrompt) {
-        match prompt {
-            ForcePrompt::Refused(_) => self.refused_prompt_open = false,
-            ForcePrompt::Unknown(ticket) => {
-                if self.current(ticket) && self.phase == Phase::ForcePrompt {
-                    self.next_id();
-                    self.completion = None;
-                    self.phase = Phase::Unknown;
-                    Self::seal_ticket(ticket, Err("force_exit_cancelled".into()));
-                }
-            }
-            ForcePrompt::Waiting(ticket) => {
-                if self.current(ticket) && self.completion.as_ref().is_some_and(|c| c.escape == Escape::Prompting) {
-                    self.completion.as_mut().expect("prompting close").escape = Escape::Idle;
-                }
-            }
+        let ticket = match prompt {
+            ForcePrompt::Unknown(ticket) | ForcePrompt::Waiting(ticket)
+                | ForcePrompt::Refused(_, ticket) => ticket,
+        };
+        if !self.join_force_dialog().is_some_and(|open| Arc::ptr_eq(&open, ticket)) { return; }
+        self.escape = Escape::Idle;
+        if matches!(prompt, ForcePrompt::Unknown(_)) && self.current(ticket) && self.phase == Phase::ForcePrompt {
+            self.next_id();
+            self.completion = None;
+            self.phase = Phase::Unknown;
+            Self::seal_ticket(ticket, Err("force_exit_cancelled".into()));
         }
     }
     fn note_refused_close(&mut self, flight: &Flight, error: &str, abandoned: bool) {
@@ -826,37 +822,35 @@ impl Lifecycle {
             .map(|refusal| RefusedClose {
                 generation: self.generation,
                 refusal,
+                ticket: self.completion.as_ref().expect("refused completion").ticket.clone(),
             });
     }
     fn confirm_refused(
         &mut self,
         refusal: CloseRefusal,
+        ticket: &Arc<CompletionReservation>,
     ) -> Result<Option<OwnerInterrupt>, &'static str> {
-        if self.force_offer() != ForceOffer::Refused(refusal) {
+        if !self.refused_close.as_ref().is_some_and(|record| record.generation == self.generation
+            && record.refusal == refusal && Arc::ptr_eq(&record.ticket, ticket)) {
             return Err("force_exit_moot");
         }
-        if refusal == CloseRefusal::InputUnconfirmed {
-            if let Some(key) = self.completion.as_ref().and_then(|c| c.input_key) {
-                self.refuse_input(key, "force_exit_confirmed");
-            }
-        }
-        self.refused_prompt_open = false;
-        self.refused_close = None;
-        self.interrupted_generation = Some(self.generation);
-        self.next_id();
-        if self.flight.is_none() {
-            self.phase = Phase::Unknown;
-        }
-        Ok(self.interrupt.clone())
+        self.confirm_waiting(ticket)
+    }
+    fn begin_confirmed_force(&mut self) -> Option<Arc<CompletionReservation>> {
+        if self.phase != Phase::Unknown || self.flight.is_some() || !self.owner_interrupted()
+            || !matches!(self.escape, Escape::Confirmed { .. }) { return None; }
+        let ticket = self.new_completion(Intent::ForceExit, false, false);
+        self.phase = Phase::ForcePrompt;
+        Some(ticket)
     }
     fn settle_refused(&mut self) -> Option<Settled> {
         if self.flight.is_some() {
             return None;
         }
         if self.phase == Phase::Unknown && self.owner_interrupted() {
-            return match self.begin_force() {
-                Ok(ForcePrompt::Unknown(ticket)) => Some(Settled::Force(ticket)),
-                _ => {
+            return match self.begin_confirmed_force() {
+                Some(ticket) => Some(Settled::Force(ticket)),
+                None => {
                     self.note_refused_confirm_failed();
                     Some(Settled::Moot)
                 }
@@ -869,7 +863,7 @@ impl Lifecycle {
     }
     // After the owner interrupt, a confirm that cannot proceed is the unknown-host offer.
     fn note_refused_confirm_failed(&mut self) {
-        self.refused_prompt_open = false;
+        self.escape = Escape::Idle;
         if self.flight.is_none()
             && self.owner_interrupted()
             && !matches!(
@@ -886,12 +880,20 @@ impl Lifecycle {
         }
     }
     fn confirm_waiting(&mut self, close: &CompletionReservation) -> Result<Option<OwnerInterrupt>, &'static str> {
-        let prompting = self.current(close) && self.completion.as_ref().is_some_and(|c| c.escape == Escape::Prompting && !c.stopped);
-        if !prompting {
+        let owns_dialog = self.join_force_dialog().is_some_and(|open| open.id == close.id);
+        let refused = self.refused_close.as_ref().filter(|record| record.generation == self.generation && record.ticket.id == close.id);
+        let active = self.current(close) && self.completion.as_ref().is_some_and(|c| !c.stopped);
+        if !owns_dialog || !(active || refused.is_some() || self.phase == Phase::Unknown) {
             return Err("force_exit_moot");
         }
+        let input_unconfirmed = refused.is_some_and(|record| record.refusal == CloseRefusal::InputUnconfirmed);
+        if let Some(key) = self.completion.as_ref().and_then(|c| c.input_key) {
+            self.refuse_input(key, InputRefusal::ForceConfirmed);
+        }
+        self.refused_close = None;
         self.interrupted_generation = Some(self.generation);
-        self.completion.as_mut().expect("prompting close").escape = Escape::Confirmed;
+        self.escape = Escape::Confirmed { input_unconfirmed };
+        self.next_id();
         if self.flight.is_none() {
             Self::seal_ticket(close, Err("force_exit_confirmed".into()));
             self.phase = Phase::Unknown;
@@ -904,10 +906,10 @@ impl Lifecycle {
             return None;
         }
         if self.phase == Phase::Unknown {
-            return match self.begin_force() {
-                Ok(ForcePrompt::Unknown(ticket)) => Some(Settled::Force(ticket)),
-                _ => Some(Settled::Moot),
-            };
+            return Some(match self.begin_confirmed_force() {
+                Some(ticket) => Settled::Force(ticket),
+                None => Settled::Moot,
+            });
         }
         Some(Settled::Moot)
     }
@@ -919,7 +921,11 @@ impl Lifecycle {
             return Err("transport_uncertain");
         }
         let Some(session) = self.session.take() else {
-            // Explicit consent still closes an empty/already-collected owner; no IO is needed.
+            // Only an expired-input consent may skip collection, with no owner or IO left.
+            if !matches!(self.escape, Escape::Confirmed { input_unconfirmed: true })
+                || self.discovery.is_some() || self.flight.is_some() || self.interrupt.is_some() {
+                return Err("transport_uncertain");
+            }
             let c = self.completion.as_mut().expect("current");
             c.stopped = true;
             c.worker = true;
@@ -965,6 +971,17 @@ const INPUT_GUARD_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 struct InputKey { ticket: u64, lease: u64 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InputState { Pending, Approved, Released }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InputRefusal { Pending, Expired, ForceConfirmed }
+impl InputRefusal {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Pending => "input_pending",
+            Self::Expired => "input_guard_timeout",
+            Self::ForceConfirmed => "force_exit_confirmed",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct InputFence { key: InputKey, state: InputState }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1016,21 +1033,21 @@ impl Lifecycle {
             self.input_fence = Some(InputFence { key, state: InputState::Approved });
             self.next_id();
         } else {
-            self.refuse_input(key, "input_pending");
+            self.refuse_input(key, InputRefusal::Pending);
         }
         Ok(())
     }
     fn expire_input_at(&mut self, key: InputKey, now: Instant) -> bool {
         if !self.input_key_is_pending(key) || !self.input_deadline.is_some_and(|deadline| now >= deadline) { return false; }
-        self.refuse_input(key, "input_guard_timeout")
+        self.refuse_input(key, InputRefusal::Expired)
     }
-    fn refuse_input(&mut self, key: InputKey, reason: &str) -> bool {
+    fn refuse_input(&mut self, key: InputKey, reason: InputRefusal) -> bool {
         if !self.input_key_is_pending(key) { return false; }
         let c = self.completion.take().expect("current fenced completion");
-        Self::seal_ticket(&c.ticket, Err(reason.into()));
+        Self::seal_ticket(&c.ticket, Err(reason.code().into()));
         self.permit_input_resume(&c);
-        if reason == "input_guard_timeout" && matches!(c.intent, Intent::CloseMain | Intent::ExitApp(_)) {
-            self.refused_close = Some(RefusedClose { generation: self.generation, refusal: CloseRefusal::InputUnconfirmed });
+        if reason == InputRefusal::Expired && matches!(c.intent, Intent::CloseMain | Intent::ExitApp(_)) {
+            self.refused_close = Some(RefusedClose { generation: self.generation, refusal: CloseRefusal::InputUnconfirmed, ticket: c.ticket.clone() });
         }
         if self.flight.is_none() { self.phase = if self.session.is_some() { Phase::Ready } else { Phase::Empty }; }
         self.next_id(); // existing identity sequence also orders private projections
@@ -1049,7 +1066,7 @@ impl Lifecycle {
         // Unknown/abandon/failed effect is still independently fail-closed.
         // SessionOnly/new owner may temporarily deny admission but never erase proof.
         (fence.state == InputState::Released && self.input_lease == Some(fence.key.lease)
-            && self.admission().is_ok()).then_some(fence.key)
+            && !self.owner_interrupted() && self.admission().is_ok()).then_some(fence.key)
     }
     fn input_projection(&self, lease: u64) -> Result<InputProjection, &'static str> {
         if self.input_lease != Some(lease) { return Err("input_guard_owned"); }
@@ -1959,9 +1976,10 @@ impl Drop for ForcePromptLease {
             let mut state = self.manager.state.lock().unwrap_or_else(|e| e.into_inner());
             let prompt = self.prompt.clone();
             match &prompt {
-                ForcePrompt::Refused(_) | ForcePrompt::Waiting(_) => state.cancel_force(&prompt),
+                ForcePrompt::Refused(_, _) | ForcePrompt::Waiting(_) => state.cancel_force(&prompt),
                 ForcePrompt::Unknown(ticket) => {
-                    if state.current(ticket) && state.phase == Phase::ForcePrompt {
+                    if state.current(ticket) && state.phase == Phase::ForcePrompt
+                        && state.join_force_dialog().is_some_and(|open| Arc::ptr_eq(&open, ticket)) {
                         state.cancel_force(&prompt);
                     } else {
                         state.abandon(ticket);
@@ -2248,11 +2266,11 @@ fn force_dialog(prompt: &ForcePrompt) -> (&'static str, &'static str) {
         ForcePrompt::Unknown(_) | ForcePrompt::Waiting(_) => {
             (FORCE_EXIT_DIALOG_TITLE, FORCE_EXIT_DIALOG_BODY)
         }
-        ForcePrompt::Refused(CloseRefusal::Persistence) => {
+        ForcePrompt::Refused(CloseRefusal::Persistence, _) => {
             (PERSISTENCE_EXIT_TITLE, PERSISTENCE_EXIT_BODY)
         }
-        ForcePrompt::Refused(CloseRefusal::Runtime) => (RUNTIME_EXIT_TITLE, RUNTIME_EXIT_BODY),
-        ForcePrompt::Refused(CloseRefusal::InputUnconfirmed) => (INPUT_UNCONFIRMED_EXIT_TITLE, INPUT_UNCONFIRMED_EXIT_BODY),
+        ForcePrompt::Refused(CloseRefusal::Runtime, _) => (RUNTIME_EXIT_TITLE, RUNTIME_EXIT_BODY),
+        ForcePrompt::Refused(CloseRefusal::InputUnconfirmed, _) => (INPUT_UNCONFIRMED_EXIT_TITLE, INPUT_UNCONFIRMED_EXIT_BODY),
     }
 }
 
@@ -2299,10 +2317,10 @@ async fn force_exit_flow(
     }
     match prompt.prompt.clone() {
         ForcePrompt::Unknown(ticket) => run_confirmed_force(app, manager, &mut prompt, ticket).await,
-        ForcePrompt::Refused(refusal) => {
+        ForcePrompt::Refused(refusal, close) => {
             {
                 let mut state = manager.state.lock().map_err(|_| "transport_uncertain")?;
-                let interrupt = state.confirm_refused(refusal)?;
+                let interrupt = state.confirm_refused(refusal, &close)?;
                 drop(state);
                 if let Some(interrupt) = interrupt {
                     interrupt.interrupt();
@@ -2740,18 +2758,18 @@ mod input_guard_tests {
             state.completion.as_mut().unwrap().stopped = stopped;
             assert!(state.force_permit(&ticket).is_err());
             let pending = state.input_fence;
-            let prompt = state.begin_force().unwrap();
-            // Expiry while the native dialog is open must join that same dialog.
             assert!(state.expire_input_at(key, state.input_deadline.unwrap()));
+            let prompt = state.begin_force().unwrap();
+            // A refused dialog owns the expired reservation until either answer.
             assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
             let (_, starts) = state.reserve(Intent::CloseMain).unwrap(); assert!(!starts);
             state.cancel_force(&prompt);
             assert_eq!(state.input_resume_key(), Some(key));
             assert!(state.flight.is_none() && !state.owner_interrupted() && !state.main_close_released);
             assert_eq!(pending.unwrap().key, key);
-            let ForcePrompt::Refused(refusal) = state.begin_force().unwrap() else { panic!("refused choice") };
-            state.confirm_refused(refusal).unwrap();
-            assert_eq!(state.confirm_refused(refusal).err(), Some("force_exit_moot"));
+            let ForcePrompt::Refused(refusal, close) = state.begin_force().unwrap() else { panic!("refused choice") };
+            state.confirm_refused(refusal, &close).unwrap();
+            assert_eq!(state.confirm_refused(refusal, &close).err(), Some("force_exit_moot"));
             let Some(Settled::Force(force)) = state.settle_refused() else { panic!("force after consent") };
             assert!(state.force_permit(&force).unwrap().is_none());
             assert!(state.force_permit(&force).is_err());
@@ -2877,11 +2895,13 @@ mod input_guard_tests {
             notified.send(key).unwrap(); Ok(())
         }));
         let CompletionAdmission::Started(mut worker) = manager.reserve(Intent::CloseMain).unwrap() else { panic!("worker") };
+        // Inject the deadline before starting the real worker; no wall-clock delay.
+        manager.state.lock().unwrap().input_deadline = Some(Instant::now());
         let runner = manager.clone(); let ticket = worker.ticket.clone();
         let (done, result) = mpsc::channel();
         let thread = std::thread::spawn(move || done.send(runner.finish_stop(&ticket)).unwrap());
         let key = notification.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
-        let outcome = result.recv_timeout(Duration::from_secs(6));
+        let outcome = result.recv_timeout(Duration::from_secs(2));
         // Unstick the old implementation so RED reports a failure instead of hanging.
         if outcome.is_err() { manager.reply_input_guard(lease, key.ticket, false).unwrap(); }
         thread.join().unwrap(); worker.completed = true;
@@ -2892,9 +2912,9 @@ mod input_guard_tests {
         assert_eq!(state.input_resume_key(), Some(key));
         assert_eq!(state.force_offer_label(), "input_unconfirmed");
         for safe in [true, false] { assert_eq!(state.input_reply(key, safe), Err("input_guard_stale")); }
-        let (_, starts) = state.reserve(Intent::CloseMain).unwrap(); assert!(!starts);
-        assert!(matches!(user_close_action(Ok(CompletionAdmission::Coalesced), state.force_offer()), UserClose::Prompt));
         let prompt = state.begin_force().unwrap();
+        let (joined, starts) = state.reserve(Intent::CloseMain).unwrap(); assert!(!starts);
+        assert!(Arc::ptr_eq(&joined, &worker.ticket));
         assert!(force_dialog(&prompt).1.contains("変換中の文字や送信前に保持している文字"));
         assert!(force_dialog(&prompt).1.contains("ペインのプロセスを終了して閉じますか"));
         assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
@@ -2904,15 +2924,13 @@ mod input_guard_tests {
         assert!(notification.try_iter().all(|key| key.is_none()));
     }
     #[test]
-    fn repeated_close_during_input_wait_offers_one_explicit_choice_and_cancel_keeps_input() {
+    fn repeated_close_during_input_wait_keeps_waiting_without_a_premature_refusal() {
         let mut state = Lifecycle::default(); state.register_input("main").unwrap();
         let (ticket, key) = challenge(&mut state, Intent::CloseMain);
         let (_, starts) = state.reserve(Intent::CloseMain).unwrap(); assert!(!starts);
-        assert!(matches!(user_close_action(Ok(CompletionAdmission::Coalesced), state.force_offer()), UserClose::Prompt));
-        assert_eq!(state.force_offer_label(), "input_unconfirmed");
-        let prompt = state.begin_force().unwrap();
+        assert!(matches!(user_close_action(Ok(CompletionAdmission::Coalesced), state.force_offer()), UserClose::Nothing));
+        assert_eq!(state.force_offer_label(), "none");
         assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
-        state.cancel_force(&prompt);
         assert!(state.current(&ticket) && ticket.terminal.lock().unwrap().is_none());
         assert_eq!(state.input_fence, Some(InputFence { key, state: InputState::Pending }));
         assert!(state.flight.is_none() && !state.owner_interrupted() && !state.main_close_released);
@@ -3020,7 +3038,7 @@ mod lifecycle_tests {
         assert_eq!(manager.state.lock().unwrap().phase, Phase::ForcePrompt);
         let force_id = match &b_prompt {
             ForcePrompt::Unknown(ticket) | ForcePrompt::Waiting(ticket) => ticket.id,
-            ForcePrompt::Refused(_) => panic!("refused prompt has no ticket"),
+            ForcePrompt::Refused(_, ticket) => ticket.id,
         };
         assert_eq!(
             manager
@@ -3420,7 +3438,7 @@ mod lifecycle_tests {
         let (mut forced, _, _) = pending(IoKind::Force, Intent::CloseMain);
         offer_unavailable(&mut forced);
         let (mut prompting, _, _) = pending(IoKind::Stop, Intent::CloseMain);
-        prompting.completion.as_mut().unwrap().escape = Escape::Prompting;
+        prompting.escape = Escape::Prompting(prompting.completion.as_ref().unwrap().ticket.clone());
         offer_unavailable(&mut prompting);
         let (mut updating, _, _) = pending(IoKind::Stop, update("first.exe"));
         offer_unavailable(&mut updating);
@@ -3440,7 +3458,7 @@ mod lifecycle_tests {
         let (mut state, flight, close) = pending(IoKind::Stop, Intent::CloseMain);
         let prompt = state.begin_force().unwrap();
         state.cancel_force(&prompt);
-        assert!(matches!(state.completion.as_ref().unwrap().escape, Escape::Idle));
+        assert!(matches!(state.escape, Escape::Idle));
         assert_eq!(state.force_offer(), ForceOffer::Waiting);
         assert!(state.current(&close));
         assert!(close.terminal.lock().unwrap().is_none());
@@ -3459,7 +3477,7 @@ mod lifecycle_tests {
         assert_eq!(manager.state.lock().unwrap().confirm_waiting(&close).err(), Some("force_exit_moot"));
         drop(ForcePromptLease { manager: Arc::clone(&manager), prompt, completed: true });
         let state = manager.state.lock().unwrap();
-        assert!(matches!(state.completion.as_ref().unwrap().escape, Escape::Prompting));
+        assert!(matches!(state.escape, Escape::Prompting(_)));
         assert!(!matches!(state.completion.as_ref().unwrap().intent, Intent::ForceExit));
     }
     #[test]
@@ -3536,7 +3554,7 @@ mod lifecycle_tests {
         let prompt = manager.state.lock().unwrap().begin_force().unwrap();
         drop(ForcePromptLease { manager: Arc::clone(&manager), prompt, completed: false });
         let state = manager.state.lock().unwrap();
-        assert!(matches!(state.completion.as_ref().unwrap().escape, Escape::Idle));
+        assert!(matches!(state.escape, Escape::Idle));
         assert!(state.current(&close));
         assert!(close.terminal.lock().unwrap().is_none());
         assert!(!state.completion.as_ref().unwrap().abandoned);
@@ -3581,10 +3599,11 @@ mod lifecycle_tests {
 
     #[test]
     fn confirmed_refused_exit_becomes_the_unknown_force() {
-        let (mut state, flight, _) = pending(IoKind::Stop, Intent::CloseMain);
+        let (mut state, flight, refused_ticket) = pending(IoKind::Stop, Intent::CloseMain);
         state.publish(&flight, None, Outcome::Refused("persistence_failed".into()));
         assert_eq!(state.phase, Phase::Ready);
-        assert!(state.confirm_refused(CloseRefusal::Persistence).is_ok());
+        state.begin_force().unwrap();
+        assert!(state.confirm_refused(CloseRefusal::Persistence, &refused_ticket).is_ok());
         assert_eq!(state.phase, Phase::Unknown);
         let Settled::Force(ticket) = state.settle_refused().expect("settled") else {
             panic!("refused confirm did not become a force");
@@ -3594,7 +3613,7 @@ mod lifecycle_tests {
                 && Arc::ptr_eq(&completion.ticket, &ticket)
         }));
         assert_eq!(
-            state.confirm_refused(CloseRefusal::Persistence).err(),
+            state.confirm_refused(CloseRefusal::Persistence, &refused_ticket).err(),
             Some("force_exit_moot")
         );
 
@@ -3616,10 +3635,10 @@ mod lifecycle_tests {
             close_problem_title("transport_uncertain"),
             "winsmux — 閉鎖を確認できません（transport_uncertain）"
         );
-        let (title, body) = force_dialog(&ForcePrompt::Refused(CloseRefusal::Persistence));
+        let (title, body) = force_dialog(&ForcePrompt::Refused(CloseRefusal::Persistence, ticket.clone()));
         assert_eq!(title, "winsmux — 保存せずに終了しますか");
         assert!(body.ends_with("保存せずに終了しますか？"));
-        let (title, body) = force_dialog(&ForcePrompt::Refused(CloseRefusal::Runtime));
+        let (title, body) = force_dialog(&ForcePrompt::Refused(CloseRefusal::Runtime, ticket.clone()));
         assert_eq!(title, "winsmux — ペインのプロセスを終了しますか");
         assert!(body.contains("すべてのペインのプロセスを止め"));
     }
@@ -3636,24 +3655,21 @@ mod lifecycle_tests {
         let (mut state, flight, _) = pending(IoKind::Stop, Intent::CloseMain);
         state.publish(&flight, None, Outcome::Refused("persistence_failed".into()));
         let prompt = state.begin_force().unwrap();
-        assert!(matches!(prompt, ForcePrompt::Refused(CloseRefusal::Persistence)));
+        assert!(matches!(prompt, ForcePrompt::Refused(CloseRefusal::Persistence, _)));
         assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
         let sequence = state.sequence;
         let (close, close_starts) = state.reserve(Intent::CloseMain).unwrap();
         let (exit, exit_starts) = state.reserve(Intent::ExitApp(None)).unwrap();
         assert!(!close_starts && !exit_starts);
-        assert_eq!(close.id, 0);
-        assert_eq!(exit.id, 0);
+        assert!(Arc::ptr_eq(&close, &exit));
+        assert_ne!(close.id, 0);
         assert!(state.flight.is_none());
         assert!(state.completion.is_none());
         assert_eq!(state.sequence, sequence);
-        assert_eq!(
-            state.refused_close,
-            Some(RefusedClose {
-                generation: 7,
-                refusal: CloseRefusal::Persistence,
-            })
-        );
+        let record = state.refused_close.as_ref().unwrap();
+        assert_eq!(record.generation, 7);
+        assert_eq!(record.refusal, CloseRefusal::Persistence);
+        assert!(Arc::ptr_eq(&record.ticket, &close));
         assert_eq!(state.force_offer_label(), "persistence_refused");
         assert!(matches!(
             user_close_action(
@@ -3664,7 +3680,7 @@ mod lifecycle_tests {
         ));
 
         state.cancel_force(&prompt);
-        assert!(!state.refused_prompt_open);
+        assert!(state.join_force_dialog().is_none());
         assert_eq!(state.force_offer_label(), "persistence_refused");
 
         let prompt = state.begin_force().unwrap();
@@ -3675,17 +3691,17 @@ mod lifecycle_tests {
             completed: false,
         });
         let mut state = std::mem::take(&mut *manager.state.lock().unwrap());
-        assert!(!state.refused_prompt_open);
+        assert!(state.join_force_dialog().is_none());
         assert_eq!(state.force_offer_label(), "persistence_refused");
         assert!(matches!(
             state.begin_force(),
-            Ok(ForcePrompt::Refused(CloseRefusal::Persistence))
+            Ok(ForcePrompt::Refused(CloseRefusal::Persistence, _))
         ));
 
         let ordinary = state.new_flight(IoKind::Ordinary, None);
         assert_eq!(state.force_offer_label(), "persistence_refused");
-        state.confirm_refused(CloseRefusal::Persistence).unwrap();
-        assert!(!state.refused_prompt_open);
+        state.confirm_refused(CloseRefusal::Persistence, &close).unwrap();
+        assert!(state.join_force_dialog().is_none());
         assert!(state.refused_close.is_none());
         assert!(state.owner_interrupted());
         assert_eq!(state.phase, Phase::Busy);
@@ -3730,5 +3746,231 @@ mod release_lifetime_tests {
         let OpenAdmission::Start(f) = s.admit_open().unwrap() else { panic!("open") };
         s.publish(&f, None, Outcome::StartupFailed);
         assert_eq!(s.input_resume_key(), Some(k), "opening reservation is not input-fence authority");
+    }
+}
+
+#[cfg(test)]
+mod close_revision_tests {
+    use super::*;
+
+    fn pending_close(kind: Option<IoKind>) -> (Lifecycle, Arc<CompletionReservation>, InputKey) {
+        let mut state = Lifecycle::default();
+        state.register_input("main").unwrap();
+        if let Some(kind) = kind { state.new_flight(kind, None); }
+        let (ticket, starts) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(starts);
+        let Advance::AwaitInput(key) = state.advance(&ticket) else { panic!("guard query") };
+        (state, ticket, key)
+    }
+
+    #[test]
+    fn double_close_before_deadline_has_no_refusal_or_lingering_dialog() {
+        let (mut state, ticket, key) = pending_close(None);
+        let (joined, starts) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(Arc::ptr_eq(&ticket, &joined) && !starts);
+        assert_eq!(state.host_status().force_offer, "none");
+        assert!(matches!(user_close_action(Ok(CompletionAdmission::Coalesced), state.force_offer()), UserClose::Nothing));
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        state.input_reply(key, true).unwrap();
+        assert!(matches!(state.advance(&ticket), Advance::Stopped));
+        assert!(matches!(state.effect_intent(&ticket), Ok(Intent::CloseMain)));
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        assert!(!state.owner_interrupted());
+    }
+
+    #[test]
+    fn busy_double_close_before_deadline_uses_existing_waiting_offer() {
+        for kind in [IoKind::Ordinary, IoKind::Stop] {
+            let (mut state, ticket, _) = pending_close(Some(kind));
+            let (_, starts) = state.reserve(Intent::CloseMain).unwrap();
+            assert!(!starts);
+            assert_eq!(state.host_status().force_offer, "waiting");
+            let ForcePrompt::Waiting(dialog) = state.begin_force().unwrap() else { panic!("waiting dialog") };
+            assert!(Arc::ptr_eq(&ticket, &dialog));
+            assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        }
+    }
+
+    #[test]
+    fn true_guard_reply_keeps_one_dialog_and_its_reservation_consent() {
+        for kind in [IoKind::Ordinary, IoKind::Stop] {
+            let (mut state, ticket, key) = pending_close(Some(kind));
+            let prompt = state.begin_force().unwrap();
+            state.input_reply(key, true).unwrap();
+            let (joined, starts) = state.reserve(Intent::CloseMain).unwrap();
+            assert!(Arc::ptr_eq(&ticket, &joined) && !starts);
+            assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+            match prompt {
+                ForcePrompt::Waiting(close) => { state.confirm_waiting(&close).unwrap(); }
+                ForcePrompt::Refused(refusal, close) => { state.confirm_refused(refusal, &close).unwrap(); }
+                _ => panic!("close dialog"),
+            }
+            assert!(state.owner_interrupted());
+            assert_eq!(state.confirm_waiting(&ticket).err(), Some("force_exit_moot"));
+        }
+    }
+
+    #[test]
+    fn force_without_session_cannot_skip_a_possibly_live_host() {
+        let mut state = Lifecycle::default();
+        state.discovery = Some(serde_json::from_value(serde_json::json!({
+            "instance_id": "11111111-1111-4111-8111-111111111111",
+            "pipe_name": r"\\.\pipe\winsmux-workspace-v1-fixture", "schema_version": 1,
+        })).unwrap());
+        state.phase = Phase::Unknown;
+        let ForcePrompt::Unknown(ticket) = state.begin_force().unwrap() else { panic!("unknown prompt") };
+        assert_eq!(state.force_permit(&ticket).err(), Some("transport_uncertain"));
+        assert_eq!(state.phase, Phase::ForcePrompt);
+        assert!(!state.completion.as_ref().unwrap().stopped);
+        assert!(state.discovery.is_some() && state.flight.is_none());
+        assert!(state.cleanup_permit(&ticket).is_err());
+        assert!(state.effect_intent(&ticket).is_err());
+        assert!(!state.cleanup_done && !state.main_close_released);
+        assert_eq!(state.confirmed_exit_code, None);
+    }
+
+    #[test]
+    fn ordinary_unknown_force_without_session_has_no_empty_owner_exception() {
+        let mut state = Lifecycle::default();
+        state.phase = Phase::Unknown;
+        let ForcePrompt::Unknown(ticket) = state.begin_force().unwrap() else { panic!("unknown prompt") };
+        assert_eq!(state.force_permit(&ticket).err(), Some("transport_uncertain"));
+        assert!(!state.completion.as_ref().unwrap().stopped);
+    }
+
+    #[test]
+    fn waiting_dialog_owns_reservation_after_transport_becomes_unknown() {
+        let (mut state, ticket, key) = pending_close(Some(IoKind::Ordinary));
+        let flight = state.flight.as_ref().unwrap().clone();
+        let prompt = state.begin_force().unwrap();
+        state.input_reply(key, true).unwrap();
+        state.publish(&flight, None, Outcome::Unknown);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        let (joined, starts) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(Arc::ptr_eq(&ticket, &joined) && !starts);
+        match prompt {
+            ForcePrompt::Waiting(close) => { state.confirm_waiting(&close).unwrap(); }
+            ForcePrompt::Refused(refusal, close) => { state.confirm_refused(refusal, &close).unwrap(); }
+            _ => panic!("close dialog"),
+        }
+        assert!(state.owner_interrupted());
+    }
+
+    #[test]
+    fn confirmed_close_cannot_open_another_dialog_before_collection() {
+        let mut state = Lifecycle::default();
+        let flight = state.new_flight(IoKind::Ordinary, None);
+        let (close, _) = state.reserve(Intent::CloseMain).unwrap();
+        state.begin_force().unwrap();
+        state.confirm_waiting(&close).unwrap();
+        state.publish(&flight, None, Outcome::Unknown);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        assert!(matches!(state.settle_waiting(&close), Some(Settled::Force(_))));
+    }
+
+    // Expiry-specific cases below use the production clock boundary directly.
+    #[test]
+    fn expired_close_requeries_recovered_guard_for_close_and_exit_symmetrically() {
+        for first_exit in [false, true] {
+            for next_exit in [false, true] {
+                for safe in [true, false] {
+                    let mut state = Lifecycle::default(); state.register_input("main").unwrap();
+                    let first = if first_exit { Intent::ExitApp(Some(23)) } else { Intent::CloseMain };
+                    let (old, _) = state.reserve(first).unwrap();
+                    let Advance::AwaitInput(old_key) = state.advance(&old) else { panic!("first query") };
+                    assert!(state.expire_input_at(old_key, state.input_deadline.unwrap()));
+                    assert_eq!(state.force_offer_label(), "input_unconfirmed");
+                    let next = if next_exit { Intent::ExitApp(Some(23)) } else { Intent::CloseMain };
+                    let (ticket, starts) = state.reserve(next).unwrap();
+                    assert!(starts && ticket.id > old.id, "a fresh reservation must re-query the guard");
+                    let Advance::AwaitInput(key) = state.advance(&ticket) else { panic!("fresh query") };
+                    assert_ne!(key, old_key);
+                    assert_eq!(state.force_offer_label(), "none");
+                    assert_eq!(state.input_reply(old_key, true), Err("input_guard_stale"));
+                    state.input_reply(key, safe).unwrap();
+                    if safe {
+                        assert!(matches!(state.advance(&ticket), Advance::Stopped));
+                        assert!(matches!((next_exit, state.effect_intent(&ticket)),
+                            (true, Ok(Intent::ExitApp(Some(23)))) | (false, Ok(Intent::CloseMain))));
+                    } else {
+                        assert!(matches!(state.advance(&ticket), Advance::Terminal(Err(e)) if e == "input_pending"));
+                        assert_eq!(state.input_resume_key(), Some(key));
+                    }
+                    assert!(state.flight.is_none() && !state.owner_interrupted());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn expired_waiting_dialog_owns_real_ticket_and_consent_after_expiry() {
+        let (mut state, ticket, key) = pending_close(Some(IoKind::Ordinary));
+        let prompt = state.begin_force().unwrap();
+        assert!(state.expire_input_at(key, state.input_deadline.unwrap()));
+        let (joined, starts) = state.reserve(Intent::ExitApp(Some(23))).unwrap();
+        assert!(Arc::ptr_eq(&ticket, &joined) && !starts, "join the existing reservation, never id zero");
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        match prompt {
+            ForcePrompt::Waiting(close) => { state.confirm_waiting(&close).unwrap(); }
+            ForcePrompt::Refused(refusal, close) => { state.confirm_refused(refusal, &close).unwrap(); }
+            _ => panic!("close dialog"),
+        }
+        assert!(state.owner_interrupted());
+        assert_eq!(state.input_resume_key(), None);
+        assert!(state.reserve(Intent::CloseMain).is_err());
+    }
+
+    #[test]
+    fn expiry_retry_silent_guard_replaces_refusal_and_cancel_allows_another_query() {
+        let (mut state, old, old_key) = pending_close(None);
+        assert!(state.expire_input_at(old_key, state.input_deadline.unwrap()));
+        let (ticket, starts) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(starts && ticket.id > old.id);
+        let Advance::AwaitInput(key) = state.advance(&ticket) else { panic!("retry query") };
+        assert!(state.expire_input_at(key, state.input_deadline.unwrap()));
+        let prompt = state.begin_force().unwrap();
+        let (joined, starts) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(Arc::ptr_eq(&ticket, &joined) && !starts);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        state.cancel_force(&prompt);
+        assert_eq!(state.input_resume_key(), Some(key));
+        assert!(state.flight.is_none() && !state.owner_interrupted() && !state.main_close_released);
+        let (next, starts) = state.reserve(Intent::CloseMain).unwrap();
+        assert!(starts && next.id > ticket.id);
+        assert!(matches!(state.advance(&next), Advance::AwaitInput(new_key) if new_key != key));
+    }
+
+    #[test]
+    fn stale_refused_dialog_cannot_cancel_a_new_reservations_dialog() {
+        let (mut state, _, key) = pending_close(None);
+        assert!(state.expire_input_at(key, state.input_deadline.unwrap()));
+        let old_prompt = state.begin_force().unwrap();
+        state.cancel_force(&old_prompt);
+        let (next, starts) = state.reserve(Intent::ExitApp(None)).unwrap(); assert!(starts);
+        let Advance::AwaitInput(key) = state.advance(&next) else { panic!("new query") };
+        assert!(state.expire_input_at(key, state.input_deadline.unwrap()));
+        let current_prompt = state.begin_force().unwrap();
+        state.cancel_force(&old_prompt);
+        assert_eq!(state.begin_force().err(), Some("force_exit_unavailable"));
+        state.cancel_force(&current_prompt);
+        assert!(!state.owner_interrupted());
+        assert_eq!(state.input_resume_key(), Some(key));
+    }
+
+    #[test]
+    fn expired_input_consent_still_requires_collecting_a_possibly_live_host() {
+        let (mut state, _, key) = pending_close(None);
+        state.discovery = Some(serde_json::from_value(serde_json::json!({
+            "instance_id": "11111111-1111-4111-8111-111111111111",
+            "pipe_name": r"\\.\pipe\winsmux-workspace-v1-fixture", "schema_version": 1,
+        })).unwrap());
+        assert!(state.expire_input_at(key, state.input_deadline.unwrap()));
+        let ForcePrompt::Refused(refusal, close) = state.begin_force().unwrap() else { panic!("refused") };
+        state.confirm_refused(refusal, &close).unwrap();
+        let Some(Settled::Force(ticket)) = state.settle_refused() else { panic!("confirmed force") };
+        assert_eq!(state.force_permit(&ticket).err(), Some("transport_uncertain"));
+        assert!(!state.completion.as_ref().unwrap().stopped);
+        assert!(state.discovery.is_some() && state.flight.is_none());
+        assert!(!state.cleanup_done && !state.main_close_released);
     }
 }
