@@ -57,6 +57,13 @@ export const publicationCutoverPaths = Object.freeze([
   'core/crates/winsmux-workspace/src/store/layout.rs',
   'core/crates/winsmux-workspace/tests/layout_restore.rs',
   'winsmux-app/scripts/workspace-connection-integration-check.mjs',
+  'core/crates/winsmux-workspace/src/client/mod.rs',
+  'core/crates/winsmux-workspace/src/host/windows.rs',
+  'core/tests-rs/workspace_host_e2e.rs',
+  'winsmux-app/scripts/workspace-project-pane-check.mjs',
+  'winsmux-app/scripts/workspace-project-pane-controller-check.mjs',
+  'winsmux-app/src/workspace-ui/project-pane-controller.ts',
+  'winsmux-app/src/workspace-ui/project-pane.ts',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -165,6 +172,13 @@ const expectedSourceChanges = Object.freeze({
   'core/crates/winsmux-workspace/src/store/layout.rs': 'b97c69d2bd651d79b6309bc3b615fb44164cbe2887c566212b0159d1f2395d94',
   'core/crates/winsmux-workspace/tests/layout_restore.rs': '4a286b366d2183a498cc851642733b792f58909d8ea04b42367623436a38959e',
   'winsmux-app/scripts/workspace-connection-integration-check.mjs': 'b14e576e7ea73ecec39744ea58ac7a9a6551b6f377af417cd68284b8fa286ca3',
+  'core/crates/winsmux-workspace/src/client/mod.rs': '4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1',
+  'core/crates/winsmux-workspace/src/host/windows.rs': 'c27bb75a743a2107257d94e22313ce1ffc7313ed2f8c7ccaa8a6872288f32eb8',
+  'core/tests-rs/workspace_host_e2e.rs': '1af4736b0058e715b390df9356c0ada869bde5b9b8f216bc6118fe73de172b36',
+  'winsmux-app/scripts/workspace-project-pane-check.mjs': '0d458b39318d2e95a2c4491e42d378a4bce5102f77676ca4ed6dcd84fcea1c14',
+  'winsmux-app/scripts/workspace-project-pane-controller-check.mjs': '16899a596fb14e350e231e3122fd0e3f8409a352bc8723beb6b481a1faacedf5',
+  'winsmux-app/src/workspace-ui/project-pane-controller.ts': 'd1b5d613da67063b5de47b3e4661835117bfd41137003aa89f1643e644570c83',
+  'winsmux-app/src/workspace-ui/project-pane.ts': '72b68679983d78481d6d5ef0a7861df19ecaec158a697e1078f482cd36339d70',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);

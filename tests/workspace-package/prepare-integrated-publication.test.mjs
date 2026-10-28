@@ -61,6 +61,13 @@ const s5Changes = Object.freeze([
   { path: 'core/crates/winsmux-workspace/src/store/layout.rs', before_sha256: 'b97c69d2bd651d79b6309bc3b615fb44164cbe2887c566212b0159d1f2395d94', after_sha256: 'c'.repeat(64) },
   { path: 'core/crates/winsmux-workspace/tests/layout_restore.rs', before_sha256: '4a286b366d2183a498cc851642733b792f58909d8ea04b42367623436a38959e', after_sha256: 'c'.repeat(64) },
   { path: 'winsmux-app/scripts/workspace-connection-integration-check.mjs', before_sha256: 'b14e576e7ea73ecec39744ea58ac7a9a6551b6f377af417cd68284b8fa286ca3', after_sha256: 'c'.repeat(64) },
+  { path: 'core/crates/winsmux-workspace/src/client/mod.rs', before_sha256: '4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1', after_sha256: 'c'.repeat(64) },
+  { path: 'core/crates/winsmux-workspace/src/host/windows.rs', before_sha256: 'c27bb75a743a2107257d94e22313ce1ffc7313ed2f8c7ccaa8a6872288f32eb8', after_sha256: 'c'.repeat(64) },
+  { path: 'core/tests-rs/workspace_host_e2e.rs', before_sha256: '1af4736b0058e715b390df9356c0ada869bde5b9b8f216bc6118fe73de172b36', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/scripts/workspace-project-pane-check.mjs', before_sha256: '0d458b39318d2e95a2c4491e42d378a4bce5102f77676ca4ed6dcd84fcea1c14', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/scripts/workspace-project-pane-controller-check.mjs', before_sha256: '16899a596fb14e350e231e3122fd0e3f8409a352bc8723beb6b481a1faacedf5', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/project-pane-controller.ts', before_sha256: 'd1b5d613da67063b5de47b3e4661835117bfd41137003aa89f1643e644570c83', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/project-pane.ts', before_sha256: '72b68679983d78481d6d5ef0a7861df19ecaec158a697e1078f482cd36339d70', after_sha256: 'c'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -177,7 +184,7 @@ check(()=>{
 });
 
 // Final-source applicability is exactly the S rows with their 5a94dd8a before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,59); assert.equal(new Set(publicationCutoverPaths).size,59); });
+check(() => { assert.equal(publicationCutoverPaths.length,66); assert.equal(new Set(publicationCutoverPaths).size,66); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [
