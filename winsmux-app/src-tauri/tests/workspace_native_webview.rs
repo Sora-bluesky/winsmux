@@ -773,6 +773,18 @@ fn native_block_snapshot_temp(
 }
 
 #[tauri::command]
+fn native_layout_bytes(inputs: tauri::State<'_, NativeInputs>) -> Result<Value, &'static str> {
+    let confirmed_path = confirmed_snapshot_path(&inputs);
+    let confirmed = std::fs::read(&confirmed_path).map_err(|_| "confirmed snapshot unreadable")?;
+    let backup = match std::fs::read(confirmed_path.with_file_name("backup.json")) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("backup snapshot unreadable"),
+    };
+    Ok(json!({"confirmed": confirmed, "backup": backup}))
+}
+
+#[tauri::command]
 fn native_snapshot_unchanged(
     inputs: tauri::State<'_, NativeInputs>,
     baseline: tauri::State<'_, SnapshotBaseline>,
@@ -1482,8 +1494,11 @@ fn validate_report(report: &Value, inputs: &NativeInputs) -> Result<(), &'static
     {
         return Err("restored pane mismatch");
     }
-    if report["finalClose"]["accepted"] != json!(true) {
-        return Err("reopened host close refused");
+    if report["finalClose"]["accepted"] != json!(true)
+        || !report["restoredBytesBeforeClose"]["confirmed"].is_array()
+        || report["restoredBytesAfterClose"] != report["restoredBytesBeforeClose"]
+    {
+        return Err("unchanged restored host close refused or changed snapshot bytes");
     }
     if report["unrelatedBeforeClose"] != json!(true)
         || report["unrelatedAfterClose"] != json!(true)
@@ -1492,6 +1507,8 @@ fn validate_report(report: &Value, inputs: &NativeInputs) -> Result<(), &'static
         return Err("unrelated CLI was stopped by workspace owner lifecycle");
     }
     if report["saveFailureRestore"]["accepted"] != json!(true)
+        || report["saveFailureChange"]["accepted"] != json!(true)
+        || report["saveFailureChange"]["result"]["data"]["selected_project_id"] != report["opened"]["result"]["data"]["project_id"]
         || report["saveFailure"]["accepted"] != json!(false)
         || report["saveFailure"]["error"]["code"] != json!("persistence_failed")
         || report["snapshotUnchanged"] != json!(true)
@@ -1767,6 +1784,7 @@ fn main() {
             native_unrelated_cli_close,
             native_block_snapshot_temp,
             native_snapshot_unchanged,
+            native_layout_bytes,
             native_crash_kill,
             native_crash_snapshot_unchanged,
             native_crash_report,
@@ -1912,6 +1930,7 @@ fn main() {
     output.closedPane=await send('pane.close',{pane_id:paneId},output.exited.topology_revision); check('exited pane close accepted',output.closedPane.accepted);
     const current=await send('project.list',{});
     output.forgotten=await send('project.forget',{project_id:projectId},current.topology_revision); check('empty project forget accepted',output.forgotten.accepted);
+    output.saved=await send('layout.save',{}); check('empty layout explicitly saved before final close',output.saved.accepted);
     output.beforeFinal=await invoke('native_lifecycle_state');
     check('real host remains before final normal close',output.beforeFinal.has_session);
     check('wake metadata contains no text',output.wakes.every(wake=>Object.keys(wake).sort().join(',')==='lease,revision'));
@@ -2295,8 +2314,12 @@ fn main() {
                         output.hostIdentity=await invoke('native_record_owned_host');
                         output.save=await invoke('workspace_request',{requestJson:request('layout.save')});
                         if(!output.save.accepted)throw new Error('baseline save refused '+JSON.stringify(output.save));
-                        output.before=await invoke('native_lifecycle_state');
                         const accepted=output.scenario.endsWith('-accepted'),prewire=output.scenario.endsWith('-prewire');
+                        if(!accepted&&!prewire){
+                            output.change=await invoke('workspace_request',{requestJson:request('project.open',{path:__PROJECT_PATH_JSON__},output.save.topology_revision)});
+                            if(!output.change.accepted)throw new Error('persisted change before refusal failed '+JSON.stringify(output.change));
+                        }
+                        output.before=await invoke('native_lifecycle_state');
                         if(!accepted&&!prewire)await invoke('native_block_snapshot_temp',{block:true});
                         const stopArgs=output.scenario.includes('-direct-')?{requestJson:prewire?JSON.stringify({...JSON.parse(request('host.stop')),instance_id:'87000000-0000-4000-8000-000000000001'}):request('host.stop')}:undefined;
                         const stopCommand=stopArgs?'workspace_request':'workspace_session_close';
@@ -2380,7 +2403,7 @@ fn main() {
                         await invoke('native_lifecycle_release',{point:'Finishing'});
                         if(updateRetry){output.preHelper=await wait(state=>state.points.includes('BeforeHelper'));output.fixture=await invoke('native_update_fixture_control',{mode:'inspect'});if(!output.preHelper.runtime.shutdown_requested||output.fixture.events.length)throw new Error('update helper preceded actual cleanup');await invoke('native_lifecycle_report',{value:output});await invoke('native_lifecycle_release',{point:'BeforeHelper'});}
                     }catch(error){output.failure=String(error);await invoke('native_lifecycle_report',{value:output});}
-                })();"#.replace("__SCENARIO__",&serde_json::to_string(&scenario).unwrap());
+                })();"#.replace("__SCENARIO__",&serde_json::to_string(&scenario).unwrap()).replace("__PROJECT_PATH_JSON__", &project_literal);
                 webview.eval(&script).expect("actual shared-result command journey");
                 return;
             }
@@ -2454,7 +2477,9 @@ fn main() {
                     await invoke('native_install_companion', {valid: true});
                     await invoke('pty_spawn', {paneId:'task870-legacy',cols:80,rows:24});
                     await invoke('native_legacy_start_report');
-                    await invoke('workspace_session_open');
+                    const session = await invoke('workspace_session_open');
+                    const saved = await invoke('workspace_request', {requestJson: JSON.stringify({schema_version:1,instance_id:session.instance_id,operation_id:'87000000-0000-4000-8000-000000000001',expected_topology_revision:null,operation:'layout.save',params:{}})});
+                    if (!saved.accepted) throw new Error('close-only baseline save refused');
                     await invoke('native_unrelated_cli_start');
                     for (let attempt = 0; attempt < 60; attempt++) {
                         await invoke('native_request_window_close');
@@ -2571,11 +2596,13 @@ fn main() {
                     output.restored = await send('layout.restore', {}, 0);
                     output.restoredProjects = await send('project.list', {});
                     output.restoredPanes = await send('pane.list', {project_id: projectId});
+                    output.restoredBytesBeforeClose = await invoke('native_layout_bytes');
                     for (let attempt = 0; attempt < 60; attempt++) {
                         output.finalClose = await invoke('workspace_session_close');
                         if (output.finalClose.accepted || !['operation_conflict', 'runtime_failed'].includes(output.finalClose.error?.code)) break;
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
+                    output.restoredBytesAfterClose = await invoke('native_layout_bytes');
                     await invoke('native_install_rollback_companion');
                     output.unrelatedAfterClose = await invoke('native_unrelated_cli_alive');
                     try { await invoke('workspace_session_open'); }
@@ -2584,6 +2611,10 @@ fn main() {
                     output.saveFailureSession = await invoke('workspace_session_open');
                     currentInstance = output.saveFailureSession.instance_id;
                     output.saveFailureRestore = await send('layout.restore', {}, 0);
+                    output.saveFailureBeforeChange = await send('project.list', {});
+                    if (output.saveFailureBeforeChange.result?.data?.selected_project_id !== null) throw new Error('save failure fixture must restore an unselected project');
+                    output.saveFailureChange = await send('project.select', {project_id: projectId}, output.saveFailureRestore.topology_revision);
+                    if (!output.saveFailureChange.accepted) throw new Error('persisted selection change refused');
                     await invoke('native_block_snapshot_temp', {block: true});
                     for (let attempt = 0; attempt < 60; attempt++) {
                         output.saveFailure = await invoke('workspace_session_close');

@@ -520,8 +520,8 @@ $nativeStart = @($nativeRows | Where-Object { $_.class -eq 'actual CLI/ConPTY na
 $nativeEnd = @($nativeRows | Where-Object { $_.class -eq 'native family termination' -and
     $_.default_logical_preserved -eq $true -and $_.lease_released -eq $true -and $_.owner_normal_exit -eq $true })
 $nativeSave = @($nativeRows | Where-Object { $_.class -eq 'native store save' -and
-    $_.backup_matches_pre_stop_confirmed -eq $true -and $_.post_stop_confirmed_logical_empty -eq $true -and
-    $_.positive_advanced_equal_revision -eq $true })
+    $_.confirmed_unchanged_on_stop -eq $true -and $_.backup_unchanged_on_stop -eq $true -and
+    $_.post_stop_confirmed_logical_empty -eq $true -and $_.positive_confirmed_prior_backup_revision -eq $true })
 $controlOutput = @($nativeRows |
     Where-Object { $_.class -eq 'normal MCP actual operator-granted pane run resize input output and cleanup' -and
         $_.MCP_pane_close -eq $true -and $_.MCP_run_interrupt_actual_exit -eq $true -and

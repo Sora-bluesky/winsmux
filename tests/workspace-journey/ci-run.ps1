@@ -298,8 +298,9 @@ function Assert-StoreInvariant {
         $backup = $afterProof[$Paths[4]]
         if ($confirmed.generation -ne 0 -or $backup.generation -ne 0 -or
             $confirmed.topology_revision -le $Before[$Paths[3]].topology_revision -or
-            $backup.topology_revision -ne $confirmed.topology_revision) {
-            throw 'Saved store counters do not match the owner stop snapshot'
+            $backup.topology_revision -ne $Before[$Paths[3]].topology_revision -or
+            $backup.sha256 -cne $Before[$Paths[3]].sha256) {
+            throw 'Saved store counters do not match the explicit save snapshot'
         }
     }
 }
@@ -467,7 +468,7 @@ if ($SelfTest) {
         Assert-StoreInvariant -Paths $proofPaths -Before $baseline
 
         $savedConfirmed = [Text.Encoding]::UTF8.GetBytes('{"schema_version":1,"generation":0,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}')
-        $savedBackup = [Text.Encoding]::UTF8.GetBytes('{"schema_version":1,"generation":0,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}')
+        $savedBackup = $bytes
         [IO.File]::WriteAllBytes($confirmedPath, $savedConfirmed)
         [IO.File]::WriteAllBytes($backupPath, $savedBackup)
         Assert-StoreInvariant -Paths $proofPaths -Before $baseline -SavedEmpty
@@ -475,8 +476,8 @@ if ($SelfTest) {
         [IO.File]::WriteAllBytes($backupPath, $wrongBackup)
         $rejected = $false
         try { Assert-StoreInvariant -Paths $proofPaths -Before $baseline -SavedEmpty }
-        catch { $rejected = $_.Exception.Message -ceq 'Saved store counters do not match the owner stop snapshot' }
-        if (-not $rejected) { throw 'Stale backup revision accepted' }
+        catch { $rejected = $_.Exception.Message -ceq 'Saved store counters do not match the explicit save snapshot' }
+        if (-not $rejected) { throw 'Backup revision different from the pre-save confirmed snapshot accepted' }
         [IO.File]::WriteAllBytes($backupPath, $savedBackup)
         foreach ($invalid in @(
             '{"schema_version":2,"generation":0,"topology_revision":2,"projects":[],"panes":[],"layouts":[],"selected_project_id":null,"selected_pane_id":null}',

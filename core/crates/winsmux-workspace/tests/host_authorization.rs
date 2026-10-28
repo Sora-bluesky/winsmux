@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::mpsc;
 use winsmux_workspace::auth::testing::Harness;
-use winsmux_workspace::contract::{parse_request, parse_snapshot, ProjectId, Request, Response};
+use winsmux_workspace::contract::{parse_request, ProjectId, Request, Response};
 use winsmux_workspace::host::testing::{
     run_framing_probes, run_generation_closure_probes, run_generation_io_probes,
     run_host_epilogue_probes, run_os_authentication_probes, run_server_capability_probes,
@@ -32,6 +32,8 @@ fn close_guard_pipe_race(public_close: bool, expected_null: bool) {
     let owner = |operation: &str, revision, params| host.owner_request(&guard_request(&instance, operation, revision, params)).expect("owner pipe response");
     let opened = assert_success(&owner("project.open", Some(0), json!({"path":project_path.to_string_lossy()})), "project.open");
     let project = opened["result"]["data"]["project_id"].as_str().unwrap().to_owned();
+    // A distinct first snapshot gives the guarded-close checks a real backup to preserve.
+    assert_success(&owner("layout.save", None, json!({})), "layout.save");
     let created = assert_success(&owner("pane.create", Some(1), json!({"project_id":project,"shell_profile_id":"pwsh"})), "pane.create");
     let pane = created["result"]["data"]["pane_id"].as_str().unwrap().to_owned();
     let first = created["result"]["data"]["run_id"].as_str().unwrap().to_owned();
@@ -427,7 +429,7 @@ fn capabilities_and_connection_state_follow_the_frozen_decision_table() {
 }
 
 #[test]
-fn owner_stop_accepts_an_empty_isolated_workspace_and_writes_c() {
+fn owner_stop_accepts_an_empty_isolated_workspace_without_writing_snapshots() {
     let root = std::env::temp_dir().join(format!(
         "winsmux-866-host-auth-stop-{}",
         uuid::Uuid::new_v4()
@@ -437,13 +439,7 @@ fn owner_stop_accepts_an_empty_isolated_workspace_and_writes_c() {
     let stopped = assert_success(&owner(&harness, "host.stop", json!({})), "host.stop");
     assert_eq!(stopped["result"]["data"]["stopped"], json!(true));
     assert!(harness.generation_is_closed());
-    let confirmed = std::fs::read(root.join("confirmed.json")).expect("confirmed C");
-    let snapshot = parse_snapshot(&confirmed).expect("valid C");
-    assert!(snapshot.projects.is_empty());
-    assert!(snapshot.panes.is_empty());
-    assert!(snapshot.layouts.is_empty());
-    assert!(snapshot.selected_project_id.0.is_none());
-    assert!(snapshot.selected_pane_id.0.is_none());
+    assert!(!root.join("confirmed.json").exists());
     assert!(!root.join("backup.json").exists());
 }
 

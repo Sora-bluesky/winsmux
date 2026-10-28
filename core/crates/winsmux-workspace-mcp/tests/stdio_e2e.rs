@@ -1655,10 +1655,12 @@ mod native {
         }
         let pre_stop_confirmed=std::fs::read(store.join("confirmed.json")).unwrap();
         logical_empty(&pre_stop_confirmed);
+        let pre_stop_backup=std::fs::read(store.join("backup.json")).unwrap();
         owner.finish(recovery,recovery_name,serve_provider_wait);
         let post_stop_backup=std::fs::read(store.join("backup.json")).unwrap();
-        assert_eq!(post_stop_backup,pre_stop_confirmed,"backup must contain exact pre-stop confirmed bytes");
+        assert_eq!(post_stop_backup,pre_stop_backup,"unchanged stop must preserve exact backup bytes");
         let post_stop_confirmed=std::fs::read(store.join("confirmed.json")).unwrap();
+        assert_eq!(post_stop_confirmed,pre_stop_confirmed,"unchanged stop must preserve exact confirmed bytes");
         logical_empty(&post_stop_confirmed);
         if persist_for_success {
             let previous:Value=serde_json::from_slice(&pre_stop_confirmed).unwrap();
@@ -1667,9 +1669,9 @@ mod native {
             assert_eq!(previous["generation"],0);assert_eq!(confirmed["generation"],0);assert_eq!(backup["generation"],0);
             assert!(previous["topology_revision"].as_u64().is_some_and(|revision|revision>0));
             assert_eq!(confirmed["topology_revision"],previous["topology_revision"]);
-            assert_eq!(backup["topology_revision"],previous["topology_revision"]);
+            assert!(backup["topology_revision"].as_u64().unwrap()<previous["topology_revision"].as_u64().unwrap(),"explicit save retains the prior confirmed revision in backup");
         }
-        println!("{}",json!({"class":"native store save","backup_matches_pre_stop_confirmed":true,"post_stop_confirmed_logical_empty":true,"positive_advanced_equal_revision":persist_for_success}));
+        println!("{}",json!({"class":"native store save","confirmed_unchanged_on_stop":true,"backup_unchanged_on_stop":true,"post_stop_confirmed_logical_empty":true,"positive_confirmed_prior_backup_revision":persist_for_success}));
     }
     fn recover_cleanup(owner:&mut CliOwner,pipe:&Handle,name:&str,project:Option<&str>,pane:Option<&str>,run:Option<&str>) {
         // The fixture keeps its ConPTY input/output ownership alive. Parent can send
@@ -1915,7 +1917,10 @@ mod native {
         assert_eq!(logical_empty(&std::fs::read(root.join("confirmed.json")).unwrap()),before);
         assert_eq!(root_identity(&root),identity);
         let lease_path:Vec<u16>=root.join("lease").as_os_str().encode_wide().chain(Some(0)).collect();
-        let lease=Handle::new(unsafe {CreateFileW(lease_path.as_ptr(),GENERIC_READ|GENERIC_WRITE,0,null(),OPEN_EXISTING,0,null_mut())});drop(lease);
+        let lease=unsafe {CreateFileW(lease_path.as_ptr(),GENERIC_READ|GENERIC_WRITE,0,null(),OPEN_EXISTING,0,null_mut())};
+        if lease==INVALID_HANDLE_VALUE {
+            assert_eq!(unsafe {GetLastError()},ERROR_FILE_NOT_FOUND,"a stop without a save need not create a lease");
+        } else {drop(Handle::new(lease));} // Existing leases must be released for exclusive acquisition.
         for directory in &owner.owned_directories {
             assert!(directory.starts_with(&fixture)&&directory!=&fixture);
             assert!(std::fs::read_dir(directory).unwrap().next().is_none());std::fs::remove_dir(directory).unwrap();
