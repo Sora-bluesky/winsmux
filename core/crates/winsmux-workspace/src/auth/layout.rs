@@ -79,8 +79,8 @@ fn save_current_layout(
     auth: &Authorization,
     state: &mut State,
 ) -> Result<(U, U), ErrorCode> {
-    // An error may follow confirmed replacement. Only a successful save can
-    // make the in-memory baseline safe for the automatic-save shortcut again.
+    // An error may follow confirmed replacement. A successful save or restore
+    // must reestablish baseline trust before the automatic-save shortcut is safe.
     state.layout_baseline_trusted = false;
     let (generation, topology) = observe_save_preparation!("layout_identity", layout_identity(state))?;
     let snapshot = observe_save_preparation!("snapshot_build", state.workspace.snapshot(generation.clone(), topology.clone()))?;
@@ -417,6 +417,7 @@ pub(crate) fn dispatch_owner_layout_restore(
     state.workspace = replacement;
     // Restore loads the saved content; only subsequent edits need an automatic save.
     state.layout_baseline = snapshot.clone();
+    state.layout_baseline_trusted = true;
     state.artifacts.invalidate_all();
     publish_topology_change(allocations, &mut state, topology_credit, None, None);
     write_success_data(
@@ -1227,6 +1228,61 @@ mod tests {
         let saved = crate::parse_snapshot(&fs::read(root.join("confirmed.json")).unwrap()).unwrap();
         assert_eq!(saved.selected_project_id.0, Some(ids[0].clone()), "successful stop must persist the final selection");
         assert!(h.generation_is_closed());
+    }
+
+    #[test]
+    fn layout_failed_stop_then_successful_restore_preserves_both_files() {
+        let seed = Harness::new(Vec::new());
+        let root = isolate(&seed);
+        change_layout(&seed, &root);
+        assert!(seed.owner(&round2_request(&seed, "layout.save", serde_json::json!({}))).accepted);
+        let layout_a = fs::read(root.join("confirmed.json")).unwrap();
+        assert_eq!(crate::parse_snapshot(&layout_a).unwrap().projects.len(), 1);
+        drop(seed);
+
+        let h = Harness::new(Vec::new());
+        assert!(h.authorization().testing_install_isolated_layout(&root));
+        let folder_b = root.join("project-b");
+        fs::create_dir(&folder_b).unwrap();
+        assert!(h.owner(&round2_request(
+            &h,
+            "project.open",
+            serde_json::json!({"path": folder_b.to_string_lossy()}),
+        )).accepted);
+        assert!(h.authorization().testing_inject_layout_fault(LayoutStoreFault::ConfirmedReadback));
+        let failed_stop = h.owner(&round2_request(&h, "host.stop", serde_json::json!({})));
+        assert!(!failed_stop.accepted);
+        assert_eq!(error_of(&failed_stop), ErrorCode::PersistenceFailed);
+        assert!(h.authorization().generation_is_open());
+
+        let confirmed_b = fs::read(root.join("confirmed.json")).unwrap();
+        let snapshot_b = crate::parse_snapshot(&confirmed_b).unwrap();
+        assert_eq!(snapshot_b.projects.len(), 1);
+        let canonical_folder_b = fs::canonicalize(&folder_b).unwrap();
+        assert_eq!(snapshot_b.projects[0].path.as_str(), canonical_folder_b.to_str().unwrap());
+        assert_ne!(confirmed_b, layout_a);
+        assert_eq!(fs::read(root.join("backup.json")).unwrap(), layout_a);
+
+        assert!(h.authorization().testing_inject_layout_fault(LayoutStoreFault::None));
+        assert!(h.owner(&round2_request(&h, "layout.restore", serde_json::json!({}))).accepted);
+        let confirmed_after_restore = fs::read(root.join("confirmed.json")).unwrap();
+        let backup_after_restore = fs::read(root.join("backup.json")).unwrap();
+        assert_eq!(confirmed_after_restore, confirmed_b);
+        assert_eq!(backup_after_restore, layout_a);
+
+        assert!(h.owner(&round2_request(&h, "host.stop", serde_json::json!({}))).accepted);
+        assert!(h.generation_is_closed());
+        assert_eq!(
+            fs::read(root.join("confirmed.json")).unwrap(),
+            confirmed_after_restore,
+            "unchanged stop after successful restore must preserve confirmed bytes",
+        );
+        assert_eq!(
+            fs::read(root.join("backup.json")).unwrap(),
+            backup_after_restore,
+            "unchanged stop after successful restore must preserve backup bytes",
+        );
+        assert!(!root.join("temp.json").exists());
     }
 
     #[test]
