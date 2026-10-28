@@ -3823,5 +3823,45 @@ export const ROWS = [
         }
       ]
     }
+  },
+  {
+    "match": {
+      "type": "metric-decrease",
+      "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+      "metric": "rust_assert",
+      "old": 185
+    },
+    "body": {
+      "disposition": "guarded",
+      "reason": "53959eda replaces obsolete confirmed-snapshot content assertions with successful unchanged stop, closed generation, and absent confirmed/backup assertions. Guarded-close races explicitly save distinct snapshots so their confirmed/backup byte-preservation checks remain exercised.",
+      "selectors": [
+        {
+          "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+          "fn": "owner_stop_accepts_an_empty_isolated_workspace_without_writing_snapshots"
+        },
+        {
+          "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+          "fn": "close_guard_pipe_race"
+        }
+      ]
+    }
+  },
+  {
+    "match": {
+      "type": "name-absent",
+      "kind": "rust",
+      "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+      "name": "owner_stop_accepts_an_empty_isolated_workspace_and_writes_c"
+    },
+    "body": {
+      "disposition": "guarded",
+      "reason": "53959eda renames the empty-host stop test to match the accepted no-automatic-save rule. Its successor asserts stop success, generation closure, and that neither confirmed nor backup is created.",
+      "selectors": [
+        {
+          "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+          "fn": "owner_stop_accepts_an_empty_isolated_workspace_without_writing_snapshots"
+        }
+      ]
+    }
   }
 ];

@@ -271,6 +271,31 @@
   },
   {
    "type": "metric-decrease",
+   "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+   "metric": "rust_assert",
+   "old": 185,
+   "new": 181,
+   "bases": [
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "53959eda replaces obsolete confirmed-snapshot content assertions with successful unchanged stop, closed generation, and absent confirmed/backup assertions. Guarded-close races explicitly save distinct snapshots so their confirmed/backup byte-preservation checks remain exercised.",
+   "selectors": [
+    {
+     "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+     "fn": "owner_stop_accepts_an_empty_isolated_workspace_without_writing_snapshots",
+     "body_sha256": "e18f398e7b1a21e0d2c4207e329318a0b55044d1cdc59fa980f8c3d102be126c"
+    },
+    {
+     "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+     "fn": "close_guard_pipe_race",
+     "body_sha256": "7e113fa01235ecb95ef1b2620f26b8a8e3416994b3f6d00ebdb83dcca84b3bcb"
+    }
+   ]
+  },
+  {
+   "type": "metric-decrease",
    "path": "core/tests-rs/operator_cli.rs",
    "metric": "rust_assert",
    "old": 1283,
@@ -679,6 +704,25 @@
      "path": "tests/McpServerContract.Tests.ps1",
      "it": "documents the separate control-pipe and Rust workspace MCP surfaces",
      "body_sha256": "2af51301e5f7068813d9b906db466f7ad944a269be8330208dd9587b33c3070b"
+    }
+   ]
+  },
+  {
+   "type": "name-absent",
+   "kind": "rust",
+   "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+   "name": "owner_stop_accepts_an_empty_isolated_workspace_and_writes_c",
+   "bases": [
+    "prior_task882_inventory_baseline",
+    "rebuild_base"
+   ],
+   "disposition": "guarded",
+   "reason": "53959eda renames the empty-host stop test to match the accepted no-automatic-save rule. Its successor asserts stop success, generation closure, and that neither confirmed nor backup is created.",
+   "selectors": [
+    {
+     "path": "core/crates/winsmux-workspace/tests/host_authorization.rs",
+     "fn": "owner_stop_accepts_an_empty_isolated_workspace_without_writing_snapshots",
+     "body_sha256": "e18f398e7b1a21e0d2c4207e329318a0b55044d1cdc59fa980f8c3d102be126c"
     }
    ]
   },
@@ -7249,261 +7293,51 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 23,
-   "text": "'scripts/integrated-publication-contract.mjs', 'scripts/integrated-publication-origins.mjs',",
-   "invokes": "scripts/integrated-publication-contract.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 24,
-   "text": "'scripts/prepare-integrated-publication.mjs', 'scripts/integrated-publication-assets.mjs',",
-   "invokes": "scripts/integrated-publication-assets.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 24,
-   "text": "'scripts/prepare-integrated-publication.mjs', 'scripts/integrated-publication-assets.mjs',",
-   "invokes": "scripts/prepare-integrated-publication.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 25,
-   "text": "'scripts/IntegratedPublicationCustody.cs', 'scripts/observe-publication-destinations.mjs',",
-   "invokes": "scripts/observe-publication-destinations.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 27,
-   "text": "'tests/workspace-package/integrated-publication-contract.test.mjs',",
-   "invokes": "tests/workspace-package/integrated-publication-contract.test.mjs"
+   "line": 26,
+   "text": "'tests/workspace-gate-map/dispositions.mjs',",
+   "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
    "line": 28,
-   "text": "'tests/workspace-package/integrated-publication-assets.test.mjs',",
-   "invokes": "tests/workspace-package/integrated-publication-assets.test.mjs"
+   "text": "'tests/workspace-journey/ci-run.ps1',",
+   "invokes": "tests/workspace-journey/ci-run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
    "line": 29,
+   "text": "'tests/workspace-journey/run.ps1',",
+   "invokes": "tests/workspace-journey/run.ps1"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 30,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 30,
-   "text": "'tests/workspace-package/publication-native-v2.test.ps1',",
-   "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 31,
-   "text": "'tests/workspace-package/publication-npm-native.test.ps1',",
-   "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 32,
-   "text": "'.githooks/pre-commit-whitelist.ps1', '.gitignore',",
-   "invokes": ".githooks/pre-commit-whitelist.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 33,
-   "text": "'scripts/test-public-release.ps1',",
-   "invokes": "scripts/test-public-release.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 34,
-   "text": "'scripts/observe-github-candidate-artifacts.mjs', 'scripts/stage-desktop-msi-plan.mjs',",
-   "invokes": "scripts/observe-github-candidate-artifacts.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 34,
-   "text": "'scripts/observe-github-candidate-artifacts.mjs', 'scripts/stage-desktop-msi-plan.mjs',",
-   "invokes": "scripts/stage-desktop-msi-plan.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 35,
-   "text": "'scripts/desktop-install-inventory.ps1',",
-   "invokes": "scripts/desktop-install-inventory.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 36,
-   "text": "'tests/workspace-package/github-candidate-artifacts.test.mjs',",
-   "invokes": "tests/workspace-package/github-candidate-artifacts.test.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 37,
-   "text": "'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',",
-   "invokes": "tests/workspace-package/desktop-msi-plan.test.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 37,
-   "text": "'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',",
-   "invokes": "tests/workspace-package/stage-ci-artifact.test.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 38,
-   "text": "'tests/DesktopInstallReceipt.Tests.ps1', 'tests/VersionSurface.Tests.ps1',",
-   "invokes": "tests/DesktopInstallReceipt.Tests.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 38,
-   "text": "'tests/DesktopInstallReceipt.Tests.ps1', 'tests/VersionSurface.Tests.ps1',",
-   "invokes": "tests/VersionSurface.Tests.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 39,
-   "text": "'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',",
-   "invokes": "tests/CliBakeoff.Tests.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 39,
-   "text": "'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',",
-   "invokes": "tests/PublicSurfacePolicy.Tests.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 39,
-   "text": "'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',",
-   "invokes": "tests/ThreatModelContract.Tests.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 40,
-   "text": "'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',",
-   "invokes": "tests/workspace-update/install-lifecycle.test.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 40,
-   "text": "'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',",
-   "invokes": "tests/workspace-update/run.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 44,
-   "text": "'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',",
-   "invokes": "tests/workspace-gate-map/check-map.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 45,
-   "text": "'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',",
-   "invokes": "tests/workspace-gate-map/run.ps1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 46,
-   "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
-   "invokes": "tests/workspace-gate-map/build-map.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 46,
-   "text": "'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',",
+   "line": 126,
+   "text": "'tests/workspace-gate-map/dispositions.mjs': '3e4c677b8a0f1664944f5e89720ecb169f386148c037f5828acf10a80c9ac315',",
    "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 48,
-   "text": "'scripts/winsmux-pester.psm1', 'winsmux-app/src-tauri/wix/installer.wxs',",
-   "invokes": "scripts/winsmux-pester.psm1"
+   "line": 128,
+   "text": "'tests/workspace-journey/ci-run.ps1': '3b406b98b521a049b929c31747df09ca22af36b09230f2d6d641cc658978e96d',",
+   "invokes": "tests/workspace-journey/ci-run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 49,
-   "text": "'tests/workspace-package/desktop-publisher-contract.mjs',",
-   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
+   "line": 129,
+   "text": "'tests/workspace-journey/run.ps1': '839262845c117081ea784a5e61a3c9a1b8e55cd7f1c8803f7c6c775d3a05bbe6',",
+   "invokes": "tests/workspace-journey/run.ps1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 50,
-   "text": "'winsmux-app/scripts/workspace-ime-focus-check.mjs',",
-   "invokes": "winsmux-app/scripts/workspace-ime-focus-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 51,
-   "text": "'winsmux-app/scripts/workspace-startup-cutover-check.mjs',",
-   "invokes": "winsmux-app/scripts/workspace-startup-cutover-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 59,
-   "text": "'winsmux-app/scripts/workspace-connection-integration-check.mjs',",
-   "invokes": "winsmux-app/scripts/workspace-connection-integration-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 63,
-   "text": "'winsmux-app/scripts/workspace-project-pane-check.mjs',",
-   "invokes": "winsmux-app/scripts/workspace-project-pane-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 64,
-   "text": "'winsmux-app/scripts/workspace-project-pane-controller-check.mjs',",
-   "invokes": "winsmux-app/scripts/workspace-project-pane-controller-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 160,
-   "text": "'scripts/winsmux-pester.psm1': '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5',",
-   "invokes": "scripts/winsmux-pester.psm1"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 162,
-   "text": "'tests/workspace-package/desktop-publisher-contract.mjs': 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a',",
-   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 163,
-   "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',",
+   "line": 130,
+   "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': '629b0cbb2f7751834530b1fbb95f7ed7fc5d29fab18baf39c15d38d460623afc',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 164,
-   "text": "'winsmux-app/scripts/workspace-ime-focus-check.mjs': '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6',",
-   "invokes": "winsmux-app/scripts/workspace-ime-focus-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 165,
-   "text": "'winsmux-app/scripts/workspace-startup-cutover-check.mjs': '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559',",
-   "invokes": "winsmux-app/scripts/workspace-startup-cutover-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 174,
-   "text": "'winsmux-app/scripts/workspace-connection-integration-check.mjs': 'b14e576e7ea73ecec39744ea58ac7a9a6551b6f377af417cd68284b8fa286ca3',",
-   "invokes": "winsmux-app/scripts/workspace-connection-integration-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 178,
-   "text": "'winsmux-app/scripts/workspace-project-pane-check.mjs': '0d458b39318d2e95a2c4491e42d378a4bce5102f77676ca4ed6dcd84fcea1c14',",
-   "invokes": "winsmux-app/scripts/workspace-project-pane-check.mjs"
-  },
-  {
-   "source": "scripts/integrated-publication-origins.mjs",
-   "line": 179,
-   "text": "'winsmux-app/scripts/workspace-project-pane-controller-check.mjs': '16899a596fb14e350e231e3122fd0e3f8409a352bc8723beb6b481a1faacedf5',",
-   "invokes": "winsmux-app/scripts/workspace-project-pane-controller-check.mjs"
   },
   {
    "source": "scripts/invoke-headless-startup-actor.ps1",
@@ -10441,7 +10275,7 @@
   },
   {
    "source": "tests/workspace-journey/ci-run.ps1",
-   "line": 659,
+   "line": 660,
    "text": "$output = & pwsh -NoProfile -File (Join-Path $PSScriptRoot 'run.ps1') `",
    "invokes": "tests/workspace-journey/run.ps1"
   },
@@ -10921,109 +10755,85 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 47,
-   "text": "{ path: 'scripts/integrated-publication-origins.mjs', before_sha256: '0db24fac21b69b1c401aba76ebd34e24fc330dffd3616502ecb4a2945e8b1ace', after_sha256: 'd'.repeat(64) },",
+   "line": 49,
+   "text": "{ path: 'scripts/integrated-publication-origins.mjs', before_sha256: 'e552acfcf14120349d9cdbb678538479cdb2ff22dc3231a341d7dcd715df245a', after_sha256: 'd'.repeat(64) },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 51,
-   "text": "{ path: 'scripts/winsmux-pester.psm1', before_sha256: '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5', after_sha256: '4'.repeat(64) },",
-   "invokes": "scripts/winsmux-pester.psm1"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 53,
-   "text": "{ path: 'tests/workspace-package/desktop-publisher-contract.mjs', before_sha256: 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a', after_sha256: '6'.repeat(64) },",
-   "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
    "line": 54,
-   "text": "{ path: 'winsmux-app/scripts/workspace-ime-focus-check.mjs', before_sha256: '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6', after_sha256: '7'.repeat(64) },",
-   "invokes": "winsmux-app/scripts/workspace-ime-focus-check.mjs"
+   "text": "{ path: 'tests/workspace-journey/ci-run.ps1', before_sha256: '3b406b98b521a049b929c31747df09ca22af36b09230f2d6d641cc658978e96d', after_sha256: 'c'.repeat(64) },",
+   "invokes": "tests/workspace-journey/ci-run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
    "line": 55,
-   "text": "{ path: 'winsmux-app/scripts/workspace-startup-cutover-check.mjs', before_sha256: '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559', after_sha256: '8'.repeat(64) },",
-   "invokes": "winsmux-app/scripts/workspace-startup-cutover-check.mjs"
+   "text": "{ path: 'tests/workspace-journey/run.ps1', before_sha256: '839262845c117081ea784a5e61a3c9a1b8e55cd7f1c8803f7c6c775d3a05bbe6', after_sha256: 'c'.repeat(64) },",
+   "invokes": "tests/workspace-journey/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 63,
-   "text": "{ path: 'winsmux-app/scripts/workspace-connection-integration-check.mjs', before_sha256: 'b14e576e7ea73ecec39744ea58ac7a9a6551b6f377af417cd68284b8fa286ca3', after_sha256: 'c'.repeat(64) },",
-   "invokes": "winsmux-app/scripts/workspace-connection-integration-check.mjs"
+   "line": 57,
+   "text": "{ path: 'tests/workspace-gate-map/dispositions.mjs', before_sha256: '3e4c677b8a0f1664944f5e89720ecb169f386148c037f5828acf10a80c9ac315', after_sha256: 'a'.repeat(64) },",
+   "invokes": "tests/workspace-gate-map/dispositions.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 67,
-   "text": "{ path: 'winsmux-app/scripts/workspace-project-pane-check.mjs', before_sha256: '0d458b39318d2e95a2c4491e42d378a4bce5102f77676ca4ed6dcd84fcea1c14', after_sha256: 'c'.repeat(64) },",
-   "invokes": "winsmux-app/scripts/workspace-project-pane-check.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 68,
-   "text": "{ path: 'winsmux-app/scripts/workspace-project-pane-controller-check.mjs', before_sha256: '16899a596fb14e350e231e3122fd0e3f8409a352bc8723beb6b481a1faacedf5', after_sha256: 'c'.repeat(64) },",
-   "invokes": "winsmux-app/scripts/workspace-project-pane-controller-check.mjs"
-  },
-  {
-   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 191,
+   "line": 178,
    "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 192,
+   "line": 179,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 194,
+   "line": 181,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='c7634d32ad08aeef487da93b5de9a51e3f45782f6df05faaf5083d509667aa29'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 200,
+   "line": 187,
    "text": "value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'163ae789ef9c6d0d4138cebd82c2f2beaabd0df6f8b6a5eb1b7404b7fbdad48a',after_sha256:'1'.repeat(64)}); },",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 201,
+   "line": 188,
    "text": "value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'a112bfbaf9f139af412623f9042ac5fd17090af327b039f66281eb81846ec7ed',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 202,
+   "line": 189,
    "text": "value => { value.source.changes.push({path:'tests/workspace-package/publication-native-v2.test.ps1',before_sha256:'df5f9aa5d28eb22a2729194c762c9940245da6bd804d3100908768fd4ca03b36',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 203,
+   "line": 190,
    "text": "value => { value.source.changes.push({path:'tests/workspace-package/publication-npm-native.test.ps1',before_sha256:'c188e7fffba1f89128c5a767d5dee9859e32ac2dd25f76eec808f2417929444b',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 204,
+   "line": 191,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 206,
+   "line": 193,
    "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 209,
+   "line": 196,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
@@ -12052,30 +11862,6 @@
    "line": 289,
    "text": "const runnerPath = path.resolve(context.appDir, \"scripts\", \"desktop-pane-e2e.mjs\");",
    "invokes": "winsmux-app/scripts/desktop-pane-e2e.mjs"
-  },
-  {
-   "source": "winsmux-app/scripts/workspace-connection-integration-check.mjs",
-   "line": 4,
-   "text": "import './workspace-copy-gate-check.mjs';",
-   "invokes": "winsmux-app/scripts/workspace-copy-gate-check.mjs"
-  },
-  {
-   "source": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
-   "line": 49,
-   "text": "const launcher=readFileSync(resolve(app,'../scripts/start-cli-bakeoff-desktop.ps1'),'utf8');",
-   "invokes": "scripts/start-cli-bakeoff-desktop.ps1"
-  },
-  {
-   "source": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
-   "line": 50,
-   "text": "const runner=read('scripts/run-cli-bakeoff.mjs');",
-   "invokes": "winsmux-app/scripts/run-cli-bakeoff.mjs"
-  },
-  {
-   "source": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
-   "line": 596,
-   "text": "const result=spawnSync(process.execPath,['--import',pathToFileURL(preloadPath).href,resolve(app,'scripts/run-cli-bakeoff.mjs'),'--project-dir',evidence,'--dry-run'],{encoding:'utf8',env:{...process.env,WINSMUX_RUNNER_FIXTURE:mode}});",
-   "invokes": "winsmux-app/scripts/run-cli-bakeoff.mjs"
   },
   {
    "source": "winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs",
@@ -16093,54 +15879,6 @@
   },
   {
    "path": "winsmux-app/scripts/workflow-gate-check.mjs",
-   "kind": "ci_script",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "winsmux-app/scripts/workspace-connection-integration-check.mjs",
-   "kind": "ci_script",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "winsmux-app/scripts/workspace-copy-gate-check.mjs",
-   "kind": "ci_script",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "winsmux-app/scripts/workspace-ime-focus-check.mjs",
-   "kind": "ci_script",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "winsmux-app/scripts/workspace-project-pane-check.mjs",
-   "kind": "ci_script",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "winsmux-app/scripts/workspace-project-pane-controller-check.mjs",
-   "kind": "ci_script",
-   "q_ids": [
-    "Q-GATES"
-   ],
-   "plan_tasks": []
-  },
-  {
-   "path": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
    "kind": "ci_script",
    "q_ids": [
     "Q-GATES"

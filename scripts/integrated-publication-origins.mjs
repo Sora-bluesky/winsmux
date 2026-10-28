@@ -20,50 +20,15 @@ function freeze(value) {
   return value;
 }
 export const publicationCutoverPaths = Object.freeze([
-  'scripts/integrated-publication-contract.mjs', 'scripts/integrated-publication-origins.mjs',
-  'scripts/prepare-integrated-publication.mjs', 'scripts/integrated-publication-assets.mjs',
-  'scripts/IntegratedPublicationCustody.cs', 'scripts/observe-publication-destinations.mjs',
-  '.github/workflows/release-desktop.yml', '.github/workflows/release-npm.yml',
-  'tests/workspace-package/integrated-publication-contract.test.mjs',
-  'tests/workspace-package/integrated-publication-assets.test.mjs',
+  'core/crates/winsmux-workspace-mcp/tests/stdio_e2e.rs',
+  'core/crates/winsmux-workspace/tests/host_authorization.rs',
+  'scripts/integrated-publication-origins.mjs',
+  'tests/workspace-gate-map/dispositions.mjs',
+  'tests/workspace-gate-map/gate-map.json',
+  'tests/workspace-journey/ci-run.ps1',
+  'tests/workspace-journey/run.ps1',
   'tests/workspace-package/prepare-integrated-publication.test.mjs',
-  'tests/workspace-package/publication-native-v2.test.ps1',
-  'tests/workspace-package/publication-npm-native.test.ps1',
-  '.githooks/pre-commit-whitelist.ps1', '.gitignore',
-  'scripts/test-public-release.ps1',
-  'scripts/observe-github-candidate-artifacts.mjs', 'scripts/stage-desktop-msi-plan.mjs',
-  'scripts/desktop-install-inventory.ps1',
-  'tests/workspace-package/github-candidate-artifacts.test.mjs',
-  'tests/workspace-package/desktop-msi-plan.test.mjs', 'tests/workspace-package/stage-ci-artifact.test.mjs',
-  'tests/DesktopInstallReceipt.Tests.ps1', 'tests/VersionSurface.Tests.ps1',
-  'tests/ThreatModelContract.Tests.ps1', 'tests/CliBakeoff.Tests.ps1', 'tests/PublicSurfacePolicy.Tests.ps1',
-  'tests/workspace-update/run.ps1', 'tests/workspace-update/install-lifecycle.test.ps1',
-  'docs/provider-and-model-support.md', 'docs/provider-and-model-support.ja.md',
-  'README.md', 'README.ja.md', 'docs/installation.md', 'docs/installation.ja.md',
-  'docs/quickstart.md', 'docs/quickstart.ja.md', 'docs/TROUBLESHOOTING.md', 'docs/TROUBLESHOOTING.ja.md',
-  'tests/workspace-gate-map/check-map.mjs', 'tests/workspace-gate-map/gate-map.json',
-  'tests/workspace-gate-map/run.ps1', '.github/workflows/test.yml',
-  'tests/workspace-gate-map/build-map.mjs', 'tests/workspace-gate-map/dispositions.mjs',
-  'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt',
-  'scripts/winsmux-pester.psm1', 'winsmux-app/src-tauri/wix/installer.wxs',
-  'tests/workspace-package/desktop-publisher-contract.mjs',
-  'winsmux-app/scripts/workspace-ime-focus-check.mjs',
-  'winsmux-app/scripts/workspace-startup-cutover-check.mjs',
-  'winsmux-app/src-tauri/src/workspace_transport.rs',
-  'winsmux-app/src/workspace-ui/startup-mount.ts',
-  'winsmux-app/src/workspaceClient.ts',
-  'core/crates/winsmux-workspace/src/auth/layout.rs',
-  'core/crates/winsmux-workspace/src/auth/mod.rs',
-  'core/crates/winsmux-workspace/src/store/layout.rs',
-  'core/crates/winsmux-workspace/tests/layout_restore.rs',
-  'winsmux-app/scripts/workspace-connection-integration-check.mjs',
-  'core/crates/winsmux-workspace/src/client/mod.rs',
-  'core/crates/winsmux-workspace/src/host/windows.rs',
-  'core/tests-rs/workspace_host_e2e.rs',
-  'winsmux-app/scripts/workspace-project-pane-check.mjs',
-  'winsmux-app/scripts/workspace-project-pane-controller-check.mjs',
-  'winsmux-app/src/workspace-ui/project-pane-controller.ts',
-  'winsmux-app/src/workspace-ui/project-pane.ts',
+  'winsmux-app/src-tauri/tests/workspace_native_webview.rs',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -78,29 +43,29 @@ export function readOriginFile(row) {
     return { bytes, identity: identity(after) };
   } finally { fs.closeSync(fd); }
 }
-const fixedBase = '5a94dd8ab09886294b7843860d23fe0f6bd42d11';
-const fixedTree = '9b03d3ac8b91ed0db42193f592316b56649b147b';
+const fixedBase = 'e29de959ceb6d5502fd05bef676482f2941d9cb6';
+const fixedTree = 'c40417425a0d029c47dff7f396a6676c71e284e8';
 // Core/npm keep their true original producer coordinates; signed Desktop uses final source S.
 // The assembly receipt binds CH1: the retained helper keeps its 9158bf27 origin,
 // is not rebuilt, and does not claim a strict-current collector or hosted build.
 const producerCoordinates = freeze({
   "core": {
     "kind": "private-core-assembly",
-    "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
-    "source_tree": "9b03d3ac8b91ed0db42193f592316b56649b147b",
-    "run": "local-assembly-a88efefc-68da-491f-8791-5eb74c60cc94",
+    "source_commit": "e29de959ceb6d5502fd05bef676482f2941d9cb6",
+    "source_tree": "c40417425a0d029c47dff7f396a6676c71e284e8",
+    "run": "local-assembly-06d9fd4c-41a0-4d14-b5d3-bbb5a7e5975d",
     "inner_origins": [
       {
         "kind": "windows-x64",
-        "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
-        "run": "local-g10-67c911ba-ffbf-4992-b74d-1fa485c864af",
-        "receipt_sha256": "7fa855f72d536f2d892f0c9f1b498d7bdb23c5a28c34b5b6014e37873e1382f9"
+        "source_commit": "e29de959ceb6d5502fd05bef676482f2941d9cb6",
+        "run": "local-g10-3a0b6eb3-1cc1-4c3f-af5e-c8b815b87158",
+        "receipt_sha256": "240a5fd2183bab12296c73865a5c1044b51973c4c1828ebcad3affe9019ead0a"
       },
       {
         "kind": "windows-arm64",
-        "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
-        "run": "local-g10-67c911ba-ffbf-4992-b74d-1fa485c864af",
-        "receipt_sha256": "18c8c7af0e05be962f8060ba48ba8efb2c3aac47ddce661d81d00080b48d5d4c"
+        "source_commit": "e29de959ceb6d5502fd05bef676482f2941d9cb6",
+        "run": "local-g10-3a0b6eb3-1cc1-4c3f-af5e-c8b815b87158",
+        "receipt_sha256": "80611015df33cf5a389974f6b4b1a20926366d5fbfc90253a8f5a036bc5de7e0"
       },
       {
         "kind": "linux-helper",
@@ -111,7 +76,7 @@ const producerCoordinates = freeze({
     ],
     "original_receipt": {
       "bytes": 7633,
-      "sha256": "acfbb40c5f8141e15b7618adf73c6a7441d2d113ba5c133319cd5a1bfa522b3c"
+      "sha256": "f8c7e580953e19f5b7f1ab99cfd038960df89c167a1068a652f7bedac4e8684b"
     },
     "asset_paths": [
       "core/SHA256SUMS",
@@ -124,20 +89,20 @@ const producerCoordinates = freeze({
   },
   "npm": {
     "kind": "local-npm-producer",
-    "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
-    "source_tree": "9b03d3ac8b91ed0db42193f592316b56649b147b",
-    "run": "local-npm-5a94dd8a",
+    "source_commit": "e29de959ceb6d5502fd05bef676482f2941d9cb6",
+    "source_tree": "c40417425a0d029c47dff7f396a6676c71e284e8",
+    "run": "local-npm-e29de959",
     "inner_origins": [
       {
         "kind": "local-npm-pack-and-windows-help-version",
-        "source_commit": "5a94dd8ab09886294b7843860d23fe0f6bd42d11",
-        "run": "local-npm-5a94dd8a",
-        "receipt_sha256": "1db46db17bf5f87e854274f61dc959856ebb5fe3b91bf616232b45255821001d"
+        "source_commit": "e29de959ceb6d5502fd05bef676482f2941d9cb6",
+        "run": "local-npm-e29de959",
+        "receipt_sha256": "3926bee9672c32e3eb503fac7a474511123a188d5a7f7f30a8a6f2425f0c3d8b"
       }
     ],
     "original_receipt": {
       "bytes": 252,
-      "sha256": "1db46db17bf5f87e854274f61dc959856ebb5fe3b91bf616232b45255821001d"
+      "sha256": "3926bee9672c32e3eb503fac7a474511123a188d5a7f7f30a8a6f2425f0c3d8b"
     },
     "asset_paths": [
       "npm/winsmux-0.38.0.tgz"
@@ -153,32 +118,17 @@ const desktopAssetPaths = Object.freeze([
   "desktop/winsmux_0.38.0_x64_en-US.msi"
 ]);
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
-// so only the 5a94dd8a before bytes are pinned here; the host observes the after digests.
+// so only the e29de959 before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
-  '.github/workflows/test.yml': '72f786f0327c51a784b4f5643cb79680e7f33bd1c8cfe4561fa0bf7c60fcfe32',
-  'scripts/integrated-publication-origins.mjs': '0db24fac21b69b1c401aba76ebd34e24fc330dffd3616502ecb4a2945e8b1ace',
-  'scripts/winsmux-pester.psm1': '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5',
-  'tests/workspace-gate-map/gate-map.json': 'bbf7e6c2bc8e3ac5ee9ae888665bf4647e6b9110aae446c29214fb5e8e1aeb7f',
-  'tests/workspace-package/desktop-publisher-contract.mjs': 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a',
-  'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',
-  'winsmux-app/scripts/workspace-ime-focus-check.mjs': '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6',
-  'winsmux-app/scripts/workspace-startup-cutover-check.mjs': '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559',
-  'winsmux-app/src-tauri/src/workspace_transport.rs': 'fa5586817c3defde8d5ebd35352e45994e242f694e6b568fb211985caa98ea2d',
-  'winsmux-app/src-tauri/wix/installer.wxs': '5457dfaa366882c3e2255fa045f52aaae847cae5712fe10f274a21b622598939',
-  'winsmux-app/src/workspace-ui/startup-mount.ts': 'ec11761c283d0ec8df072802066e059f25e44b8916bbdffef1fcc31034df4221',
-  'winsmux-app/src/workspaceClient.ts': '37d3e163618ef665ce41991c112c328fca7afd7bd0dd5001dca40ab2f48fa27c',
-  'core/crates/winsmux-workspace/src/auth/layout.rs': '0be9dfa656e32d96754b27d92cb6c74aa622e7d13d5f439a45481e78e70a3906',
-  'core/crates/winsmux-workspace/src/auth/mod.rs': '8557dcf7ba71c02c1ab780139d8c063d619d5fa324578007591e6f3240008cf2',
-  'core/crates/winsmux-workspace/src/store/layout.rs': 'b97c69d2bd651d79b6309bc3b615fb44164cbe2887c566212b0159d1f2395d94',
-  'core/crates/winsmux-workspace/tests/layout_restore.rs': '4a286b366d2183a498cc851642733b792f58909d8ea04b42367623436a38959e',
-  'winsmux-app/scripts/workspace-connection-integration-check.mjs': 'b14e576e7ea73ecec39744ea58ac7a9a6551b6f377af417cd68284b8fa286ca3',
-  'core/crates/winsmux-workspace/src/client/mod.rs': '4fd2ab3e0cc2635d1dad6f774a31b1ed9076672f0d823167eb8d7606d9157ea1',
-  'core/crates/winsmux-workspace/src/host/windows.rs': 'c27bb75a743a2107257d94e22313ce1ffc7313ed2f8c7ccaa8a6872288f32eb8',
-  'core/tests-rs/workspace_host_e2e.rs': '1af4736b0058e715b390df9356c0ada869bde5b9b8f216bc6118fe73de172b36',
-  'winsmux-app/scripts/workspace-project-pane-check.mjs': '0d458b39318d2e95a2c4491e42d378a4bce5102f77676ca4ed6dcd84fcea1c14',
-  'winsmux-app/scripts/workspace-project-pane-controller-check.mjs': '16899a596fb14e350e231e3122fd0e3f8409a352bc8723beb6b481a1faacedf5',
-  'winsmux-app/src/workspace-ui/project-pane-controller.ts': 'd1b5d613da67063b5de47b3e4661835117bfd41137003aa89f1643e644570c83',
-  'winsmux-app/src/workspace-ui/project-pane.ts': '72b68679983d78481d6d5ef0a7861df19ecaec158a697e1078f482cd36339d70',
+  'core/crates/winsmux-workspace-mcp/tests/stdio_e2e.rs': 'a360918da5e8552c70598264713c8fb657bb681357c9247bef39139ac150a3fd',
+  'core/crates/winsmux-workspace/tests/host_authorization.rs': 'bab48e4a807bfbd5d3e51df87fcb0dd7f1439aa5f4471343611257dbdc205892',
+  'scripts/integrated-publication-origins.mjs': 'e552acfcf14120349d9cdbb678538479cdb2ff22dc3231a341d7dcd715df245a',
+  'tests/workspace-gate-map/dispositions.mjs': '3e4c677b8a0f1664944f5e89720ecb169f386148c037f5828acf10a80c9ac315',
+  'tests/workspace-gate-map/gate-map.json': 'b7d0e71316ef56b55f69bff6c0e68c323954969cf2df31f584f08f9fd0ce3306',
+  'tests/workspace-journey/ci-run.ps1': '3b406b98b521a049b929c31747df09ca22af36b09230f2d6d641cc658978e96d',
+  'tests/workspace-journey/run.ps1': '839262845c117081ea784a5e61a3c9a1b8e55cd7f1c8803f7c6c775d3a05bbe6',
+  'tests/workspace-package/prepare-integrated-publication.test.mjs': '629b0cbb2f7751834530b1fbb95f7ed7fc5d29fab18baf39c15d38d460623afc',
+  'winsmux-app/src-tauri/tests/workspace_native_webview.rs': '7c06b1f65a14e378954c20cb4e3e32a7cac7216ab89617f7eecc7ea7dcb15984',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);
