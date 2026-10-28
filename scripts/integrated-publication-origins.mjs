@@ -47,6 +47,11 @@ export const publicationCutoverPaths = Object.freeze([
   'distribution/windows-licenses/MICROSOFT-COMPONENT-TERMS.ja.txt',
   'scripts/winsmux-pester.psm1', 'winsmux-app/src-tauri/wix/installer.wxs',
   'tests/workspace-package/desktop-publisher-contract.mjs',
+  'winsmux-app/scripts/workspace-ime-focus-check.mjs',
+  'winsmux-app/scripts/workspace-startup-cutover-check.mjs',
+  'winsmux-app/src-tauri/src/workspace_transport.rs',
+  'winsmux-app/src/workspace-ui/startup-mount.ts',
+  'winsmux-app/src/workspaceClient.ts',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -144,7 +149,12 @@ const expectedSourceChanges = Object.freeze({
   'tests/workspace-gate-map/gate-map.json': 'bbf7e6c2bc8e3ac5ee9ae888665bf4647e6b9110aae446c29214fb5e8e1aeb7f',
   'tests/workspace-package/desktop-publisher-contract.mjs': 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',
+  'winsmux-app/scripts/workspace-ime-focus-check.mjs': '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6',
+  'winsmux-app/scripts/workspace-startup-cutover-check.mjs': '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559',
+  'winsmux-app/src-tauri/src/workspace_transport.rs': 'fa5586817c3defde8d5ebd35352e45994e242f694e6b568fb211985caa98ea2d',
   'winsmux-app/src-tauri/wix/installer.wxs': '5457dfaa366882c3e2255fa045f52aaae847cae5712fe10f274a21b622598939',
+  'winsmux-app/src/workspace-ui/startup-mount.ts': 'ec11761c283d0ec8df072802066e059f25e44b8916bbdffef1fcc31034df4221',
+  'winsmux-app/src/workspaceClient.ts': '37d3e163618ef665ce41991c112c328fca7afd7bd0dd5001dca40ab2f48fa27c',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);

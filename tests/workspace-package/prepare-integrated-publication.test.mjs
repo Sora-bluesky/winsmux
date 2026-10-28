@@ -51,6 +51,11 @@ const s5Changes = Object.freeze([
   { path: 'scripts/winsmux-pester.psm1', before_sha256: '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5', after_sha256: '4'.repeat(64) },
   { path: 'winsmux-app/src-tauri/wix/installer.wxs', before_sha256: '5457dfaa366882c3e2255fa045f52aaae847cae5712fe10f274a21b622598939', after_sha256: '5'.repeat(64) },
   { path: 'tests/workspace-package/desktop-publisher-contract.mjs', before_sha256: 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a', after_sha256: '6'.repeat(64) },
+  { path: 'winsmux-app/scripts/workspace-ime-focus-check.mjs', before_sha256: '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6', after_sha256: '7'.repeat(64) },
+  { path: 'winsmux-app/scripts/workspace-startup-cutover-check.mjs', before_sha256: '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559', after_sha256: '8'.repeat(64) },
+  { path: 'winsmux-app/src-tauri/src/workspace_transport.rs', before_sha256: 'fa5586817c3defde8d5ebd35352e45994e242f694e6b568fb211985caa98ea2d', after_sha256: '9'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/startup-mount.ts', before_sha256: 'ec11761c283d0ec8df072802066e059f25e44b8916bbdffef1fcc31034df4221', after_sha256: 'a'.repeat(64) },
+  { path: 'winsmux-app/src/workspaceClient.ts', before_sha256: '37d3e163618ef665ce41991c112c328fca7afd7bd0dd5001dca40ab2f48fa27c', after_sha256: 'b'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -167,7 +172,7 @@ check(()=>{
 });
 
 // Final-source applicability is exactly the S rows with their 5a94dd8a before bytes, independent of producer coordinates.
-check(() => { assert.equal(publicationCutoverPaths.length,49); assert.equal(new Set(publicationCutoverPaths).size,49); });
+check(() => { assert.equal(publicationCutoverPaths.length,54); assert.equal(new Set(publicationCutoverPaths).size,54); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
 for (const change of [

@@ -7429,21 +7429,45 @@
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 143,
+   "line": 50,
+   "text": "'winsmux-app/scripts/workspace-ime-focus-check.mjs',",
+   "invokes": "winsmux-app/scripts/workspace-ime-focus-check.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 51,
+   "text": "'winsmux-app/scripts/workspace-startup-cutover-check.mjs',",
+   "invokes": "winsmux-app/scripts/workspace-startup-cutover-check.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 148,
    "text": "'scripts/winsmux-pester.psm1': '1340ad2f22f53fd7db1cdf2eed909336422956f4c0da40522591933895dc72b5',",
    "invokes": "scripts/winsmux-pester.psm1"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 145,
+   "line": 150,
    "text": "'tests/workspace-package/desktop-publisher-contract.mjs': 'b2cd4f61bf7364ac9641aa9451935b32ceb13c374fe44660561539d9289d6c6a',",
    "invokes": "tests/workspace-package/desktop-publisher-contract.mjs"
   },
   {
    "source": "scripts/integrated-publication-origins.mjs",
-   "line": 146,
+   "line": 151,
    "text": "'tests/workspace-package/prepare-integrated-publication.test.mjs': '945368f95cd869f92d6f5912432637f1f416701acae200f43e11a19175508e56',",
    "invokes": "tests/workspace-package/prepare-integrated-publication.test.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 152,
+   "text": "'winsmux-app/scripts/workspace-ime-focus-check.mjs': '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6',",
+   "invokes": "winsmux-app/scripts/workspace-ime-focus-check.mjs"
+  },
+  {
+   "source": "scripts/integrated-publication-origins.mjs",
+   "line": 153,
+   "text": "'winsmux-app/scripts/workspace-startup-cutover-check.mjs': '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559',",
+   "invokes": "winsmux-app/scripts/workspace-startup-cutover-check.mjs"
   },
   {
    "source": "scripts/invoke-headless-startup-actor.ps1",
@@ -10879,61 +10903,73 @@
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 174,
+   "line": 54,
+   "text": "{ path: 'winsmux-app/scripts/workspace-ime-focus-check.mjs', before_sha256: '07f272ef581bbfba4ca2fd740f90fecf5eb3888418ffc86053fe348bacd0a8d6', after_sha256: '7'.repeat(64) },",
+   "invokes": "winsmux-app/scripts/workspace-ime-focus-check.mjs"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 55,
+   "text": "{ path: 'winsmux-app/scripts/workspace-startup-cutover-check.mjs', before_sha256: '962c6c60f6bfc93fe59d4ff3992af74d7ed84a6017f4a11017d1c2779a78d559', after_sha256: '8'.repeat(64) },",
+   "invokes": "winsmux-app/scripts/workspace-startup-cutover-check.mjs"
+  },
+  {
+   "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
+   "line": 179,
    "text": "value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 175,
+   "line": 180,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 177,
+   "line": 182,
    "text": "value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='c7634d32ad08aeef487da93b5de9a51e3f45782f6df05faaf5083d509667aa29'; },",
    "invokes": "scripts/integrated-publication-origins.mjs"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 183,
+   "line": 188,
    "text": "value => { value.source.changes.push({path:'scripts/test-public-release.ps1',before_sha256:'163ae789ef9c6d0d4138cebd82c2f2beaabd0df6f8b6a5eb1b7404b7fbdad48a',after_sha256:'1'.repeat(64)}); },",
    "invokes": "scripts/test-public-release.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 184,
+   "line": 189,
    "text": "value => { value.source.changes.push({path:'tests/VersionSurface.Tests.ps1',before_sha256:'a112bfbaf9f139af412623f9042ac5fd17090af327b039f66281eb81846ec7ed',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/VersionSurface.Tests.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 185,
+   "line": 190,
    "text": "value => { value.source.changes.push({path:'tests/workspace-package/publication-native-v2.test.ps1',before_sha256:'df5f9aa5d28eb22a2729194c762c9940245da6bd804d3100908768fd4ca03b36',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/workspace-package/publication-native-v2.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 186,
+   "line": 191,
    "text": "value => { value.source.changes.push({path:'tests/workspace-package/publication-npm-native.test.ps1',before_sha256:'c188e7fffba1f89128c5a767d5dee9859e32ac2dd25f76eec808f2417929444b',after_sha256:'1'.repeat(64)}); },",
    "invokes": "tests/workspace-package/publication-npm-native.test.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 187,
+   "line": 192,
    "text": "value => { value.source.changes.push({path:'tests/workspace-update/run.ps1',before_sha256:null,after_sha256:'d'.repeat(64)}); },",
    "invokes": "tests/workspace-update/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 189,
+   "line": 194,
    "text": "value => { value.source.changes.push({path:'tests/workspace-gate-map/run.ps1',before_sha256:null,after_sha256:'c'.repeat(64)}); },",
    "invokes": "tests/workspace-gate-map/run.ps1"
   },
   {
    "source": "tests/workspace-package/prepare-integrated-publication.test.mjs",
-   "line": 192,
+   "line": 197,
    "text": "reject(() => { const value=projection(); value.source.changes.push({path:'scripts/desktop-install-inventory.ps1',before_sha256:'0'.repeat(64),after_sha256:'d'.repeat(64)}); validateOriginProjection(value); }, /applicability/);",
    "invokes": "scripts/desktop-install-inventory.ps1"
   },
@@ -11962,6 +11998,24 @@
    "line": 289,
    "text": "const runnerPath = path.resolve(context.appDir, \"scripts\", \"desktop-pane-e2e.mjs\");",
    "invokes": "winsmux-app/scripts/desktop-pane-e2e.mjs"
+  },
+  {
+   "source": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
+   "line": 49,
+   "text": "const launcher=readFileSync(resolve(app,'../scripts/start-cli-bakeoff-desktop.ps1'),'utf8');",
+   "invokes": "scripts/start-cli-bakeoff-desktop.ps1"
+  },
+  {
+   "source": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
+   "line": 50,
+   "text": "const runner=read('scripts/run-cli-bakeoff.mjs');",
+   "invokes": "winsmux-app/scripts/run-cli-bakeoff.mjs"
+  },
+  {
+   "source": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
+   "line": 496,
+   "text": "const result=spawnSync(process.execPath,['--import',pathToFileURL(preloadPath).href,resolve(app,'scripts/run-cli-bakeoff.mjs'),'--project-dir',evidence,'--dry-run'],{encoding:'utf8',env:{...process.env,WINSMUX_RUNNER_FIXTURE:mode}});",
+   "invokes": "winsmux-app/scripts/run-cli-bakeoff.mjs"
   },
   {
    "source": "winsmux-app/src-tauri/scripts/check-bundled-distribution.mjs",
@@ -15979,6 +16033,22 @@
   },
   {
    "path": "winsmux-app/scripts/workflow-gate-check.mjs",
+   "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/scripts/workspace-ime-focus-check.mjs",
+   "kind": "ci_script",
+   "q_ids": [
+    "Q-GATES"
+   ],
+   "plan_tasks": []
+  },
+  {
+   "path": "winsmux-app/scripts/workspace-startup-cutover-check.mjs",
    "kind": "ci_script",
    "q_ids": [
     "Q-GATES"
