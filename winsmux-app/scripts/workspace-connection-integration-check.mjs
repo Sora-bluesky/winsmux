@@ -280,7 +280,7 @@ try {
       mounted.dispose(); root.remove(); frames.length = 0; f.failNextEvents = false; f.nextStatus = null;
     }
     for (const refused of [
-      { offer: 'persistence_refused', code: 'persistence_failed', button: '保存せずに終了', status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。' },
+      { offer: 'persistence_refused', code: 'persistence_failed', button: '保存せずに終了', status: '配置の保存を確認できないため閉じられませんでした。保存済みの配置ファイルを手で空にしたり、編集したりしないでください。' },
       { offer: 'runtime_refused', code: 'runtime_failed', button: 'ペインのプロセスを終了して閉じる', status: '作業中の処理（動いているペインのプロセスや起動の途中のペイン）があるため閉じられませんでした。そのペインを閉じるか、処理の終了を待ってから閉じ直してください。' },
     ]) {
       Object.assign(f, { calls: [], host: 'Ready', nextStatus: null, guardLease: '1', guardStatus: null,

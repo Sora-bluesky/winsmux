@@ -90,8 +90,28 @@ fn save_current_layout(
         &auth.shared.allocations,
         AllocationPool::ActiveOwner,
     )?;
+    state.layout_baseline = snapshot;
     drop(observed);
     Ok((generation, topology))
+}
+
+fn save_changed_layout(
+    auth: &Authorization,
+    state: &mut State,
+) -> Result<(U, U), ErrorCode> {
+    // Runtime revisions change on restore and on edits that are later undone.
+    // Compare the persisted content using the baseline's metadata instead.
+    let baseline = &state.layout_baseline;
+    let snapshot = state.workspace.snapshot(
+        baseline.generation.clone(),
+        baseline.topology_revision.clone(),
+    )?;
+    if snapshot == *baseline {
+        // Keep the existing live-root close guard even when persistence is a no-op.
+        let _observed = observe_snapshot_roots(&snapshot, &auth.shared.allocations)?;
+        return layout_identity(state);
+    }
+    save_current_layout(auth, state)
 }
 
 fn complete_workspace_quiescence(
@@ -384,6 +404,8 @@ pub(crate) fn dispatch_owner_layout_restore(
     close_open_connections(allocations, &mut state);
     let _ = bump_topology(&mut state);
     state.workspace = replacement;
+    // Restore loads the saved content; only subsequent edits need an automatic save.
+    state.layout_baseline = snapshot.clone();
     state.artifacts.invalidate_all();
     publish_topology_change(allocations, &mut state, topology_credit, None, None);
     write_success_data(
@@ -455,7 +477,7 @@ pub(crate) fn dispatch_owner_host_stop(
     {
         return deny(auth, &state, request, out, ErrorCode::ResourceExhausted);
     }
-    let saved = save_current_layout(auth, &mut state);
+    let saved = save_changed_layout(auth, &mut state);
     #[cfg(debug_assertions)] crate::store::layout::stop_observation::save_result(&saved);
     if let Err(code) = saved {
         return fail_retained(auth, &mut state, request, out, code);
@@ -909,6 +931,15 @@ mod tests {
         })).unwrap()).unwrap()
     }
 
+    fn change_layout(h: &Harness, root: &std::path::Path) {
+        let project = root.join("project");
+        fs::create_dir(&project).unwrap();
+        let request = owner_request(h, 251, Action::ProjectOpen(crate::contract::ProjectOpenParams {
+            path: crate::contract::NonEmpty::new(project.to_string_lossy().into_owned()).unwrap(),
+        }), Some(h.authorization().testing_counters().1));
+        assert!(h.owner(&request).accepted);
+    }
+
     fn grant_metadata(h: &Harness, c: &super::super::testing::Client) {
         assert!(c.request(&json_request(h, "connection.request", serde_json::json!({
             "project_ids":[],"scopes":["metadata"]
@@ -922,6 +953,7 @@ mod tests {
     fn host_stop_waits_outside_auth_lock_preserves_sends_and_reserves_new_work() {
         let h = std::sync::Arc::new(Harness::new(Vec::new()));
         let root = isolate(&h);
+        change_layout(&h, &root);
         let client = h.connect("existing-client");
         grant_metadata(&h, &client);
         let before = h.authorization().testing_connection_snapshot(&client.connection_id());
@@ -1139,7 +1171,8 @@ mod tests {
         assert!(!harness.generation_is_closed());
 
         let stop_harness = Harness::new(Vec::new());
-        isolate(&stop_harness);
+        let root = isolate(&stop_harness);
+        change_layout(&stop_harness, &root);
         assert!(stop_harness
             .authorization()
             .testing_inject_layout_fault(LayoutStoreFault::TempWrite));
@@ -1268,6 +1301,7 @@ mod tests {
                 ));
                 assert!(saved.accepted);
             }
+            change_layout(&harness, &root);
             let auth = harness.authorization();
             let runtime = std::sync::Arc::clone(&auth.shared.inner.lock().unwrap().runtime);
             runtime.testing_install_ready_providers();

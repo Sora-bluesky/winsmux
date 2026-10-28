@@ -1569,6 +1569,7 @@ struct State {
     owner_observation: ObservationSlot,
     runtime: std::sync::Arc<crate::runtime::RuntimeService>,
     layout: crate::store::layout::LayoutStore,
+    layout_baseline: crate::contract::Snapshot,
     #[cfg(debug_assertions)]
     registration_fail_key: Option<[u8; 36]>,
     #[cfg(debug_assertions)]
@@ -1772,6 +1773,9 @@ impl Authorization {
         let projects: Vec<ProjectId> = registered_projects.into_iter().collect();
         let mut workspace =
             WorkspaceService::new(&allocations).expect("workspace table initializes");
+        let layout_baseline = workspace
+            .snapshot(U::new(0).expect("zero generation"), U::new(0).expect("zero topology"))
+            .expect("initial empty layout");
         let artifacts = artifact_service::ArtifactRegistry::new(&allocations);
         workspace
             .seed(&allocations, &projects)
@@ -1804,6 +1808,7 @@ impl Authorization {
                 owner_observation,
                 runtime: runtime.clone(),
                 layout,
+                layout_baseline,
                 #[cfg(debug_assertions)]
                 registration_fail_key: None,
                 #[cfg(debug_assertions)]

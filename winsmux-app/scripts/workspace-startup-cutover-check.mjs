@@ -158,7 +158,7 @@ try {
   const refusalFallback='閉鎖の完了を確認できません。対象と要求を保持しています。';
   const refusalCopy=[
     ['input_guard_timeout','入力の安全を確認する応答が届かないため閉じられませんでした。変換中・配送中・保持中の入力はそのまま残しています。'],
-    ['persistence_failed','配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。'],
+    ['persistence_failed','配置の保存を確認できないため閉じられませんでした。保存済みの配置ファイルを手で空にしたり、編集したりしないでください。'],
     ['runtime_failed','作業中の処理（動いているペインのプロセスや起動の途中のペイン）があるため閉じられませんでした。そのペインを閉じるか、処理の終了を待ってから閉じ直してください。'],
     ['resource_exhausted','記録の容量が尽きたため閉じられませんでした。容量が空いてから閉じ直してください。'],
     ['state_unknown','作業状態が変わったため閉じられませんでした。もう一度閉じてください。'],
@@ -344,6 +344,87 @@ await asyncTest('raw clear while policy pending stops publication and submit, te
  writeFileSync(resolve(evidence,'agent-live-state.json'),JSON.stringify(agentLiveProof,null,2)+'\n');
  checks.push('idle agent pumps wait for events without rereading capabilities, projects, panes, or runs');
  for(const proof of agentLiveProof){if(!proof.before.enabled||proof.interrupts!==1||!proof.process.includes('終了を観測'))throw Error('Actual mounted first '+proof.provider+' interrupt: '+JSON.stringify(proof));checks.push('production main first '+proof.provider+' interrupt dispatches once and displays actual exit');if(!proof.updatedCli.includes('2.3.4')||!proof.updatedProcess.includes('終了を観測'))throw Error('Actual mounted '+proof.provider+' detection update at same runtime sequence: '+JSON.stringify(proof));checks.push('production main '+proof.provider+' detection update at unchanged runtime event preserves exit');}
+  console.log(JSON.stringify({fixture_stage:'layout-loop-regressions'}));
+  const loopProof=await page.evaluate(async code=>{
+   const f=globalThis.fixture,original=f.invoke,results=[];
+   const tick=()=>new Promise(resolve=>setTimeout(resolve,0));
+   const module=await import(URL.createObjectURL(new Blob([code],{type:'text/javascript'})));
+   for(const mode of ['external-close','interrupt-after-read-failure','interrupt-pending-output','unknown-host','state-unknown']){
+    const I='11111111-1111-4111-8111-111111111111',P='22222222-2222-4222-8222-222222222222';
+    const closedPane=crypto.randomUUID(),closedRun=crypto.randomUUID(),pane=crypto.randomUUID(),runId=crypto.randomUUID();
+    const root=document.createElement('main');document.body.append(root);
+    const state={revision:1,seq:1,rows:mode==='interrupt-pending-output'?[pane]:[closedPane,pane],requests:[],failRead:mode!=='interrupt-pending-output',interrupted:false,exited:false,unknown:false};
+    const observation=(id)=>({run_id:id===pane?runId:closedRun,pane_id:id,current:true,process:state.exited&&id===pane?'exited':'running',work:state.exited&&id===pane?'interrupted':'unknown',evidence:state.exited&&id===pane?'process_exit':'unavailable',exit_code:state.exited&&id===pane?-1073741510:null,observed_at:'2026-10-28T00:00:00Z'});
+    const tree=rows=>rows.length===0?null:rows.length===1?{kind:'leaf',pane_id:rows[0]}:{kind:'split',axis:'horizontal',ratio:0.5,first:{kind:'leaf',pane_id:rows[0]},second:tree(rows.slice(1))};
+    const externalChange=rows=>{state.rows=rows;state.revision++;state.seq++;};
+    f.native=true;f.label='main';f.initial=null;f.frames=[];
+    f.invoke=async(name,args)=>{
+     if(name==='workspace_host_status'&&state.unknown)return{instance_id:I,generation:'1',revision:'2',phase:'Unknown',force_offer:'unknown'};
+     if(name!=='workspace_request')return original(name,args);
+     const q=JSON.parse(args.requestJson);state.requests.push(q);let data;
+     const response=(accepted,data,error=null)=>({schema_version:1,instance_id:I,operation_id:q.operation_id,accepted,topology_revision:state.revision,event_seq:state.seq,result:accepted?{operation:q.operation,data}:null,error});
+     switch(q.operation){
+      case'capabilities.get':data={schema_version:1,operations:['capabilities.get','project.list','pane.list','run.get','run.interrupt','operation.get','events.wait','output.read','pane.resize','connection.list'],max_message_bytes:1048576,providers:[],shell_profile_ids:['pwsh'],replay_capacity:{retained_bytes:134217728,active_bytes:268435456}};break;
+      case'project.list':data={projects:[{project_id:P,path:f.root,display_name:'Fixture',root_state:'verified'}],selected_project_id:P};break;
+      case'pane.list':data={project_id:P,selected_pane_id:state.rows.includes(pane)?pane:state.rows[0]??null,root:tree(state.rows),panes:state.rows.map(id=>({pane_id:id,project_id:P,path:f.root,display_name:id,current_run_id:observation(id).run_id,observation:observation(id)}))};break;
+      case'run.get':data={run:observation(q.params.run_id===runId?pane:closedPane)};break;
+      case'events.wait':data=q.params.after_event_seq<state.seq?{events:[{event_seq:state.seq,observed_at:'2026-10-28T00:00:00Z',data:{kind:'topology_changed',project_id:P,pane_id:null,topology_revision:state.revision}}],next_event_seq:state.seq,status:'events'}:{events:[],next_event_seq:state.seq,status:'no_change'};break;
+      case'output.read':
+       if(state.failRead){
+        state.failRead=false;
+        if(mode==='unknown-host'){state.unknown=true;throw 'transport_uncertain';}
+        if(mode!=='state-unknown')externalChange([pane]);
+        return response(false,null,{code:mode==='state-unknown'?'state_unknown':'target_not_found',message:'The read target was closed.',retryable:false,target_id:q.params.run_id});
+       }
+       data={run_id:q.params.run_id,text:state.interrupted?'OUTPUT WHILE INTERRUPT PENDING\r\n':'output\r\n',next_cursor:'cursor-'+state.requests.length,gap:false,truncated:false};break;
+      case'connection.list':data={connections:[]};break;
+      case'pane.resize':data=structuredClone(q.params);break;
+      case'run.interrupt':state.interrupted=true;data={run_id:runId,phase:'accepted'};break;
+      default:throw Error('loop fixture unmodeled '+q.operation);
+     }
+     return response(true,data);
+    };
+    let mount;
+    const checks=[],failures=[];
+    const check=(name,ok)=>{(ok?checks:failures).push(name);};
+    const pump=async()=>{const callback=f.frames.shift();if(callback)callback(0);for(let n=0;n<12;n++)await tick();};
+    const visible=id=>!!root.querySelector(`.workspace-pane[data-pane-id="${id}"]`);
+    try{
+     mount=await f.awaitMount(module.mountWorkspaceMain(root));
+     await pump();await pump();
+     if(mode==='external-close'){
+      check('output.read raced a real external topology removal',!state.failRead&&!state.rows.includes(closedPane));
+      check('closed target is removed without manual reread',!visible(closedPane)&&visible(pane));
+      const added=crypto.randomUUID();externalChange([pane,added]);await pump();await pump();
+      check('later external pane creation is visible',visible(added));
+      externalChange([pane]);await pump();await pump();
+      check('later external pane closure is visible',!visible(added)&&visible(pane));
+     }else if(mode.startsWith('interrupt-')){
+      const button=root.querySelector(`.workspace-pane[data-pane-id="${pane}"] [data-action="interrupt-run"]`);
+      check('interrupt is available after one target read rejection',button&&!button.disabled);
+      button?.click();for(let n=0;n<12;n++)await tick();
+      check('interrupt accepted but same run is initially still running',state.interrupted&&!state.exited&&root.querySelector(`.workspace-pane[data-pane-id="${pane}"] [data-action="interrupt-run"]`)?.disabled);
+      await pump();await pump();
+      check('terminal renders host output while interrupt is pending',root.querySelector(`.workspace-pane[data-pane-id="${pane}"] .workspace-terminal`)?.textContent.includes('OUTPUT WHILE INTERRUPT PENDING'));
+      check('running observation never completes interrupt by time',root.querySelector(`.workspace-pane[data-pane-id="${pane}"] [data-action="interrupt-run"]`)?.disabled);
+      state.exited=true;state.seq++;await pump();await pump();await pump();
+      check('same run exit -1073741510 clears pending without manual reread',!root.querySelector(`.workspace-pane[data-pane-id="${pane}"] [data-action="interrupt-run"]`)?.disabled);
+      const interrupts=state.requests.filter(q=>q.operation==='run.interrupt');
+      check('confirmation keeps the original run and sends interrupt once',interrupts.length===1&&interrupts[0].params.run_id===runId&&state.requests.filter(q=>q.operation==='run.get'&&q.params.run_id===runId).length>=2);
+     }else{
+      const before=state.requests.length;await pump();await pump();
+      check('unknown host stops shared loop',state.requests.length===before);
+      if(mode==='unknown-host')check('unknown host still disables operations',root.dataset.startupState==='unknown'&&root.querySelector('.workspace-project-pane')?.closest('[inert]')!==null);
+     }
+    }finally{mount?.dispose();root.remove();f.frames=[];}
+    results.push({mode,checks,failures});
+   }
+   f.invoke=original;return results;
+  },outputs['startup-mount']);
+  writeFileSync(resolve(evidence,'layout-loop-regressions.json'),JSON.stringify(loopProof,null,2)+'\n');
+  for(const proof of loopProof){console.log(JSON.stringify(proof));checks.push(...proof.checks);}
+  const loopFailures=loopProof.flatMap(proof=>proof.failures.map(name=>proof.mode+': '+name));
+  if(loopFailures.length)throw Error('Shared loop regressions: '+loopFailures.join('; '));
  console.log(JSON.stringify({fixture_stage:'selected-terminal-focus'}));
  await page.setContent('<main id="workspace-startup"></main>');
  const selectedTerminalChecks=await page.evaluate(async code=>{

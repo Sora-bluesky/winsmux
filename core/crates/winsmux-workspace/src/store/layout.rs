@@ -690,6 +690,9 @@ impl LayoutTransaction {
     observe_store_scope!("snapshot_save", "store", {
         let intended = observe_store_scope!("snapshot_serialize", "preparation", { serialize_snapshot(snapshot).map_err(|_| ErrorCode::PersistenceFailed) })?;
         let confirmed = self.classify_confirmed(authority, pool)?;
+        if confirmed.as_ref().is_some_and(|(proved, _)| proved == &intended) {
+            return Ok(());
+        }
         let backup = self.classify_backup(authority, pool)?;
         match (confirmed, backup) {
             (None, None) => self.stage_replace(
@@ -2003,6 +2006,28 @@ mod tests {
         save_once(&store, &empty(2, 3), &authority).expect("first save ignores T");
         assert_eq!(disk(&store, CONFIRMED_NAME), bytes(&empty(2, 3)));
         assert!(!store.v1.join(BACKUP_NAME).exists());
+    }
+
+    #[test]
+    fn identical_save_is_noop_for_confirmed_backup_and_temp() {
+        let (_guard, mut store, authority) = fixture();
+        let previous = empty(4, 5);
+        let current = empty(6, 7);
+        save_once(&store, &previous, &authority).expect("first");
+        save_once(&store, &current, &authority).expect("changed");
+        plant(&store, TEMP_NAME, b"untouched-temp");
+        let confirmed_key = file_key_path(&store.v1.join(CONFIRMED_NAME));
+        let backup_key = file_key_path(&store.v1.join(BACKUP_NAME));
+        let temp_key = file_key_path(&store.v1.join(TEMP_NAME));
+        save_once(&store, &current, &authority).expect("identical save");
+        assert_eq!(disk(&store, BACKUP_NAME), bytes(&previous));
+        assert_eq!(disk(&store, CONFIRMED_NAME), bytes(&current));
+        assert_eq!(disk(&store, TEMP_NAME), b"untouched-temp");
+        assert_eq!(file_key_path(&store.v1.join(CONFIRMED_NAME)), confirmed_key);
+        assert_eq!(file_key_path(&store.v1.join(BACKUP_NAME)), backup_key);
+        assert_eq!(file_key_path(&store.v1.join(TEMP_NAME)), temp_key);
+        store.inject_fault(LayoutStoreFault::TempWrite);
+        save_once(&store, &current, &authority).expect("identical save does not attempt a write");
     }
 
     #[test]

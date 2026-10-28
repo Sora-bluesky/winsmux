@@ -1691,3 +1691,87 @@ fn pane_limit_restores_a_snapshot_with_five_panes() {
     assert_eq!(second.authorization().testing_spawn_counts(), spawns);
     drop(owned);
 }
+
+
+// Both snapshots are non-empty and distinct, so an empty fixture cannot hide data loss.
+fn saved_layout_for_stop(label: &str) -> (PathBuf, Vec<PathBuf>, Vec<u8>, Vec<u8>) {
+    let root = unique_store_root(label);
+    let harness = harness_on(&root);
+    let (first, _) = open_project(&harness);
+    assert_accepted(&owner(&harness, "layout.save", None, json!({})), "first layout");
+    let (second, _) = open_project(&harness);
+    assert_accepted(&owner(&harness, "layout.save", None, json!({})), "second layout");
+    let confirmed = fs::read(confirmed_path(&root)).expect("non-empty confirmed");
+    let backup = fs::read(backup_path(&root)).expect("non-empty backup");
+    assert_eq!(parse_snapshot(&confirmed).unwrap().projects.len(), 2);
+    assert_eq!(parse_snapshot(&backup).unwrap().projects.len(), 1);
+    assert_ne!(confirmed, backup);
+    (root, vec![first, second], confirmed, backup)
+}
+
+fn assert_saved_layout_bytes(root: &Path, confirmed: &[u8], backup: &[u8]) {
+    assert_eq!(fs::read(confirmed_path(root)).unwrap(), confirmed, "confirmed bytes preserved");
+    assert_eq!(fs::read(backup_path(root)).unwrap(), backup, "backup bytes preserved");
+    assert!(!temp_path(root).exists(), "unchanged stop must not stage a temp file");
+}
+
+#[test]
+fn layout_stop_without_restore_preserves_nonempty_disk_across_two_sessions() {
+    let (root, _folders, confirmed, backup) = saved_layout_for_stop("stop-unrestored");
+    for _ in 0..2 {
+        let harness = harness_on(&root);
+        assert_eq!(project_list(&harness)["projects"], json!([]));
+        assert_accepted(&owner(&harness, "host.stop", None, json!({})), "normal stop");
+        assert!(harness.generation_is_closed());
+        assert_saved_layout_bytes(&root, &confirmed, &backup);
+    }
+}
+
+#[test]
+fn layout_stop_after_refused_restore_preserves_nonempty_disk_across_two_sessions() {
+    let (root, folders, confirmed, backup) = saved_layout_for_stop("stop-refused");
+    fs::rename(&folders[0], folders[0].with_extension("original")).expect("keep original root");
+    fs::create_dir(&folders[0]).expect("replace root identity");
+    for _ in 0..2 {
+        let harness = harness_on(&root);
+        let restore = owner(&harness, "layout.restore", Some(current_revision(&harness)), json!({}));
+        assert_error(&restore, "root_changed", "restore correctly refused");
+        assert_accepted(&owner(&harness, "host.stop", None, json!({})), "normal stop after refusal");
+        assert_saved_layout_bytes(&root, &confirmed, &backup);
+    }
+}
+
+#[test]
+fn layout_stop_after_restore_and_remove_all_saves_empty_with_original_backup() {
+    let (root, _folders, confirmed, _) = saved_layout_for_stop("stop-remove-all");
+    let harness = harness_on(&root);
+    assert_accepted(&owner(&harness, "layout.restore", Some(current_revision(&harness)), json!({})), "restore");
+    let projects = project_list(&harness);
+    for project in projects["projects"].as_array().unwrap() {
+        assert_accepted(&owner(&harness, "project.forget", Some(current_revision(&harness)),
+            json!({"project_id": project["project_id"]})), "deliberate removal");
+    }
+    assert_accepted(&owner(&harness, "host.stop", None, json!({})), "save deliberate empty layout");
+    assert!(load_snapshot(&root).projects.is_empty());
+    assert_eq!(fs::read(backup_path(&root)).unwrap(), confirmed);
+}
+
+#[test]
+fn layout_stop_after_unchanged_restore_does_not_rotate_backup() {
+    let (root, _folders, confirmed, backup) = saved_layout_for_stop("stop-restored-unchanged");
+    let harness = harness_on(&root);
+    assert_accepted(&owner(&harness, "layout.restore", Some(current_revision(&harness)), json!({})), "restore");
+    assert_accepted(&owner(&harness, "host.stop", None, json!({})), "unchanged restored stop");
+    assert_saved_layout_bytes(&root, &confirmed, &backup);
+}
+
+#[test]
+fn layout_stop_after_unrestored_open_and_forget_keeps_original_layout() {
+    let (root, _folders, confirmed, backup) = saved_layout_for_stop("stop-return-to-start");
+    let harness = harness_on(&root);
+    let (_temporary, project) = open_project(&harness);
+    assert_accepted(&owner(&harness, "project.forget", Some(current_revision(&harness)),
+        json!({"project_id": project})), "remove temporary registration");
+    assert_accepted(&owner(&harness, "host.stop", None, json!({})), "snapshot equals session start");
+    assert_saved_layout_bytes(&root, &confirmed, &backup);
+}

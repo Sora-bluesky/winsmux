@@ -85,7 +85,7 @@ function shapeEvent(value: unknown) {
 const CLOSE_REFUSAL_FALLBACK = '閉鎖の完了を確認できません。対象と要求を保持しています。';
 const CLOSE_REFUSAL_COPY: Record<string, { status: string; button?: string }> = {
   persistence_failed: {
-    status: '配置を保存できないため閉じられませんでした。保存済みの配置ファイルは変更していません。',
+    status: '配置の保存を確認できないため閉じられませんでした。保存済みの配置ファイルを手で空にしたり、編集したりしないでください。',
     button: '保存せずに終了',
   },
   runtime_failed: {
@@ -668,7 +668,11 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       const read = async (operation: 'events.wait' | 'output.read', params: Request['params']) => {
         const request = { schema_version: 1, instance_id: session.instance_id, operation_id: crypto.randomUUID(), expected_topology_revision: null, operation, params } as Request;
         const response = await port.exchange(request);
-        if (!response.accepted && response.error?.code === 'resource_exhausted') return null;
+        if (!response.accepted && response.error) {
+          if (response.error.code === 'state_unknown') throw new Error('state_unknown');
+          if (operation === 'output.read' && response.error.code !== 'resource_exhausted') await controller.refresh();
+          return null;
+        }
         if (!validReadResponse(request, response)) throw new Error('protocol_failed'); return response;
       };
       async function refreshAgentObservation(): Promise<boolean> {
@@ -748,7 +752,6 @@ export async function mountWorkspaceMain(root: HTMLElement) {
             if (data.status !== 'no_change') { await controller.refresh(); if (!current() || stopped) return; void connectionOwner?.refresh(); } }
           if (!current() || stopped) return;
           for (const terminal of terminals.values()) {
-            if (controller.getSnapshot().busy) break;
             const captured = terminal.readTarget(); if (!captured) continue;
             if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('protocol_failed');
             const output = await read('output.read', { run_id: captured.runId, cursor: captured.cursor, max_bytes: maxBytes });
