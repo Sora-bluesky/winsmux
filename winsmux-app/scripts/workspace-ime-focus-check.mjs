@@ -260,6 +260,19 @@ try {
    document.querySelector('#root').append(view);f.view=view;f.origin=view.querySelector('textarea');f.heading=view.querySelector('h2');f.main=view.querySelector('main');f.other=view.querySelector('button');f.panel=document.querySelector('#root .workspace-input-confirmation');f.recheck=[...f.panel.querySelectorAll('button')].find(b=>b.textContent==='入力の受付状態を再確認');return f;
   }
   const pendingStatus=nonce=>({lease:'1',revision:nonce,fence:{nonce,state:'pending'},resume_allowed:false,admission_error:'shutdown_in_progress'});
+  for(const inputKind of ['composition','in-flight','held']){
+   const f=await fixture();f.mode=inputKind==='in-flight'?'defer':'prewire';
+   if(inputKind==='composition')f.producer.pending(8,true);else {f.producer.offer('保持する日本語');await flush();}
+   const records=JSON.stringify(f.owner.inspect().records),calls=f.calls.length;
+   const invoke=f.guard.invoke;let rejectReply;
+   f.guard.invoke=(name,args)=>name==='workspace_input_guard_reply'?new Promise((_,reject)=>{rejectReply=reject;}):invoke(name,args);
+   f.status=pendingStatus('2');const waiting=f.owner.recoverGuard();await flush();
+   f.status={lease:'1',revision:'3',fence:{nonce:'2',state:'released'},resume_allowed:true,admission_error:null};
+   await f.owner.recoverGuard();rejectReply('input_guard_stale');await waiting;await flush();
+   check('deadline release and stale reply retain '+inputKind+' without replay',JSON.stringify(f.owner.inspect().records)===records&&f.calls.length===calls&&(inputKind!=='composition'||f.owner.hasPendingComposition())&&!f.owner.inspect().frozen);
+   if(inputKind==='in-flight'){f.deliver();await flush();check('deadline keeps original in-flight settlement once',f.calls.length===1&&f.owner.inspect().records.length===0);}
+   f.owner.dispose();
+  }
   let focusCase=await focusFixture();focusCase.origin.focus();focusCase.producer.pending(8,true);
   check('ordinary preedit keeps focus and root confirmation hidden',focusCase.panel.hidden&&document.activeElement===focusCase.origin);
   const originalInvoke=focusCase.guard.invoke;const replyRequests=[];let releaseReply;

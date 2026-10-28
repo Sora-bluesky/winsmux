@@ -55,7 +55,7 @@ function validHostStatus(value: unknown): value is WorkspaceHostStatus {
     && (value.instance_id === null || uuid(value.instance_id)) && decimalU64(value.generation)
     && decimalU64(value.revision) && hostPhases.has(value.phase as string)
     && typeof value.force_offer === 'string'
-    && ['none', 'unknown', 'waiting', 'persistence_refused', 'runtime_refused'].includes(value.force_offer as string);
+    && ['none', 'unknown', 'waiting', 'persistence_refused', 'runtime_refused', 'input_unconfirmed'].includes(value.force_offer as string);
 }
 export function validSession(value: unknown): value is WorkspaceSession & { schema_version: 1 } { return shape(value, ['instance_id', 'schema_version']) && uuid(value.instance_id) && value.schema_version === 1; }
 export function validReadResponse(request: Request, value: unknown): value is Response {
@@ -90,6 +90,10 @@ const CLOSE_REFUSAL_COPY: Record<string, { status: string; button?: string }> = 
   },
   runtime_failed: {
     status: '作業中の処理（動いているペインのプロセスや起動の途中のペイン）があるため閉じられませんでした。そのペインを閉じるか、処理の終了を待ってから閉じ直してください。',
+    button: 'ペインのプロセスを終了して閉じる',
+  },
+  input_guard_timeout: {
+    status: '入力の安全を確認する応答が届かないため閉じられませんでした。変換中・配送中・保持中の入力はそのまま残しています。',
     button: 'ペインのプロセスを終了して閉じる',
   },
   resource_exhausted: { status: '記録の容量が尽きたため閉じられませんでした。容量が空いてから閉じ直してください。' },
@@ -162,8 +166,9 @@ export async function mountWorkspaceMain(root: HTMLElement) {
       return;
     }
     const refused = offer === 'persistence_refused' ? CLOSE_REFUSAL_COPY.persistence_failed
-      : offer === 'runtime_refused' ? CLOSE_REFUSAL_COPY.runtime_failed : undefined;
-    if (refused?.button) { forceExit.textContent = refused.button; return; }
+      : offer === 'runtime_refused' ? CLOSE_REFUSAL_COPY.runtime_failed
+      : offer === 'input_unconfirmed' ? CLOSE_REFUSAL_COPY.input_guard_timeout : undefined;
+    if (refused?.button) { forceExit.textContent = refused.button; if (offer === 'input_unconfirmed') status.textContent = refused.status; return; }
     forceExit.textContent = '状態不明の host を強制終了';
   }
   let hostProbeStarted = false;
