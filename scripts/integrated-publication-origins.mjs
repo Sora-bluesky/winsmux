@@ -52,6 +52,11 @@ export const publicationCutoverPaths = Object.freeze([
   'winsmux-app/src-tauri/src/workspace_transport.rs',
   'winsmux-app/src/workspace-ui/startup-mount.ts',
   'winsmux-app/src/workspaceClient.ts',
+  'core/crates/winsmux-workspace/src/auth/layout.rs',
+  'core/crates/winsmux-workspace/src/auth/mod.rs',
+  'core/crates/winsmux-workspace/src/store/layout.rs',
+  'core/crates/winsmux-workspace/tests/layout_restore.rs',
+  'winsmux-app/scripts/workspace-connection-integration-check.mjs',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -155,6 +160,11 @@ const expectedSourceChanges = Object.freeze({
   'winsmux-app/src-tauri/wix/installer.wxs': '5457dfaa366882c3e2255fa045f52aaae847cae5712fe10f274a21b622598939',
   'winsmux-app/src/workspace-ui/startup-mount.ts': 'ec11761c283d0ec8df072802066e059f25e44b8916bbdffef1fcc31034df4221',
   'winsmux-app/src/workspaceClient.ts': '37d3e163618ef665ce41991c112c328fca7afd7bd0dd5001dca40ab2f48fa27c',
+  'core/crates/winsmux-workspace/src/auth/layout.rs': '0be9dfa656e32d96754b27d92cb6c74aa622e7d13d5f439a45481e78e70a3906',
+  'core/crates/winsmux-workspace/src/auth/mod.rs': '8557dcf7ba71c02c1ab780139d8c063d619d5fa324578007591e6f3240008cf2',
+  'core/crates/winsmux-workspace/src/store/layout.rs': 'b97c69d2bd651d79b6309bc3b615fb44164cbe2887c566212b0159d1f2395d94',
+  'core/crates/winsmux-workspace/tests/layout_restore.rs': '4a286b366d2183a498cc851642733b792f58909d8ea04b42367623436a38959e',
+  'winsmux-app/scripts/workspace-connection-integration-check.mjs': 'b14e576e7ea73ecec39744ea58ac7a9a6551b6f377af417cd68284b8fa286ca3',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
 const expectedSourceAdditions = Object.freeze([]);
