@@ -44,7 +44,6 @@ function Wait-Observed([scriptblock]$Condition, [string]$Reason) {
 }
 $node = @(Get-Command node -CommandType Application)[0].Source
 $nodeHash = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
-$childScript = Join-Path $PSScriptRoot 'publication-custody-child.mjs'
 $held = [IntegratedPublicationCustody]::new($fixture.bundle_root, [string[]]$fixture.names, [string[]]$fixture.hashes)
 $script:flightPath = Join-Path $fixture.fixture_root 'in-flight.json'
 $script:createdPath = Join-Path $fixture.fixture_root 'created.json'
@@ -56,12 +55,33 @@ $created = [Action[uint32,long,string]] { param($childPid, $creationTime, $jobNa
 }
 $root = $null
 try {
-    $npmSource = Join-Path $fixture.fixture_root 'npm-cli.js'
+    # HoldNpmCli admits only npm-cli.js inside the fixed runtime source closure, and a
+    # Node child entry must be inside it too once that closure is fixed.
+    $sourceDir = Join-Path $fixture.fixture_root 'source'
+    [void][IO.Directory]::CreateDirectory($sourceDir)
+    $npmSource = Join-Path $sourceDir 'npm-cli.js'
     [IO.File]::WriteAllText($npmSource, '// Synthetic source retained through descendant exit', [Text.UTF8Encoding]::new($false))
     $npmHash = (Get-FileHash -LiteralPath $npmSource -Algorithm SHA256).Hash.ToLowerInvariant()
+    $childScript = Join-Path $sourceDir 'publication-custody-child.mjs'
+    [IO.File]::Copy((Join-Path $PSScriptRoot 'publication-custody-child.mjs'), $childScript)
+    $inventoryProgram = @'
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const root=fs.realpathSync.native(process.argv[1]);
+const identity=file=>Object.fromEntries(['dev','ino','nlink','size','mtimeNs','ctimeNs'].map(key=>[key,String(fs.lstatSync(file,{bigint:true})[key])]));
+const names=fs.readdirSync(root).sort();
+if(JSON.stringify(names)!==JSON.stringify(['npm-cli.js','publication-custody-child.mjs']))throw Error('Closed fixture sources required');
+console.log(JSON.stringify({files:names.map(name=>{const file=path.join(root,name),raw=fs.readFileSync(file);return {path:file,bytes:raw.length,sha256:crypto.createHash('sha256').update(raw).digest('hex'),identity:identity(file)};}),directories:[{path:root,names,identity:identity(root)}],publication_admitted:false}));
+'@
+    $manifestJson = & $node '-e' $inventoryProgram $sourceDir
+    if ($LASTEXITCODE -ne 0) { throw 'Runtime source inventory failed.' }
+    $sourceManifest = Join-Path $fixture.fixture_root 'runtime-source-manifest.json'
+    [IO.File]::WriteAllText($sourceManifest, ($manifestJson -join "`n"), [Text.UTF8Encoding]::new($false))
+    $guard = Join-Path $repoRoot 'scripts/publication-node-source-guard.mjs'
+    Assert-Check ($held.FixRuntimeSources($sourceManifest, (Get-FileHash -LiteralPath $sourceManifest -Algorithm SHA256).Hash.ToLowerInvariant(),
+        $guard, (Get-FileHash -LiteralPath $guard -Algorithm SHA256).Hash.ToLowerInvariant()) -eq 2) 'Runtime source closure was not fixed.'
     $held.HoldNpmCli($npmSource, $npmHash)
     Assert-Check $held.NpmCliHeld 'npm source was not pinned before child creation.'
-    Assert-Refused { $held.CreateChild($node, ('0' * 64), [string[]]@($childScript, 'root', $fixture.fixture_root), $fixture.fixture_root, $flight) } 'Child image hash differs'
+    Assert-Refused { $held.CreateChild($node, ('0' * 64), [string[]]@($childScript, 'root', $fixture.fixture_root), $fixture.fixture_root, $flight) } 'Child image identity or hash differs'
     Assert-Check ($held.NativeCreateCalls -eq 0 -and -not [IO.File]::Exists($script:flightPath)) 'Changed image reached creation or persistence.'
     Assert-Refused { $held.CreateChild($node, $nodeHash, [string[]]@($childScript, 'root', $fixture.fixture_root), $fixture.fixture_root, $flight) } 'Keeper native ready missing'
     Assert-Check ($held.NativeCreateCalls -eq 0 -and -not [IO.File]::Exists($script:flightPath)) 'Missing keeper created a publication process.'

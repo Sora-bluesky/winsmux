@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 # It never reads a credential store or resumes an actual gh/npm payload.
 $repoRoot=Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
 $implementation=Join-Path $repoRoot 'scripts/IntegratedPublicationCustody.cs'
-$expectedImplementation='e818758b4ae0a1933e98d14ad97f8744b2798a05fdf0fd22ce1b6479dbaf2067'
+$expectedImplementation='723b9e60e598e058f9e8ba07f6bc8ad6d9b963a53af2768e84dd5b64c758a86d'
 if(-not $IsWindows -or (Get-FileHash -LiteralPath $implementation -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expectedImplementation){throw 'Exact candidate Windows implementation required'}
 if($NodeHash -cne 'd702daa815eabbff763c7d3808e235cf031cf2ca70211b56847bc72f51e240e5' -or (Get-FileHash -LiteralPath $NodeImage -Algorithm SHA256).Hash.ToLowerInvariant() -cne $NodeHash){throw 'Fixed Node image differs'}
 $lease=[IO.FileStream]::new($implementation,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)

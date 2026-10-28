@@ -20,8 +20,9 @@ function Get-Refusal([scriptblock]$Action) {
     }
     return $null
 }
-function Test-NamedRefusal([object]$Refusal, [string]$Use) {
-    return $Refusal -is [IO.PathTooLongException] -and $Refusal.Message.StartsWith($Use + ' exceeds the 258-character Win32 current-directory limit', [StringComparison]::Ordinal)
+function Test-NamedRefusal([object]$Refusal, [string]$Use, [int]$Length = 259) {
+    return $Refusal -is [IntegratedPublicationCustody+WorkingDirectoryLimitException] -and $Refusal.Use -ceq $Use -and $Refusal.Length -eq $Length -and
+        $Refusal.Limit -eq 258 -and $Refusal.Message.StartsWith($Use + ' exceeds the 258-character Win32 current-directory limit', [StringComparison]::Ordinal)
 }
 function New-ExactDirectory([string]$Parent, [int]$Length, [bool]$Create = $true) {
     $path = $Parent
@@ -77,6 +78,13 @@ try {
     $held = [IntegratedPublicationCustody]::new($bundleRoot, $names, $hashes)
     Assert-Check ($held.HeldFileCount -eq 14) 'a: 258-character bundle root custody missing.'
     $held.Verify()
+    $trailing = [IntegratedPublicationCustody]::new($bundleRoot + '\', $names, $hashes)
+    $trailing.Verify()
+    $trailingTemp = $trailing.GetType().GetMethod('RuntimeTemp', [Reflection.BindingFlags]'NonPublic,Instance').Invoke($trailing, $null)
+    $trailing.Dispose(); [IO.Directory]::Delete($trailingTemp)
+    Assert-Check $trailing.Released 'a: 258-character bundle root with a trailing separator was not accepted.'
+    Assert-Check ([IO.Path]::GetDirectoryName($trailingTemp) -ceq [IO.Path]::GetDirectoryName($bundleRoot) -and
+        -not $trailingTemp.StartsWith($bundleRoot + '\', [StringComparison]::OrdinalIgnoreCase)) ('a: trailing-separator runtime temp is not beside the bundle root: ' + $trailingTemp)
 
     $refusedRoot = New-ExactDirectory (Join-Path $fixtureRoot 'b') 259
     $refusedHashes = Write-Bundle $refusedRoot
@@ -90,11 +98,43 @@ try {
     $refusal = Get-Refusal { [void][IntegratedPublicationCustody]::new($absentRoot, $names, $refusedHashes) }
     Assert-Check ((Test-NamedRefusal $refusal 'Bundle root (fixed publication working directory)') -and -not [IO.Directory]::Exists($absentRoot)) ('b: refusal did not precede every filesystem hold: ' + $refusal)
 
+    $actorRoot = Join-Path $fixtureRoot 'e'
+    $actorHeld = [IntegratedPublicationCustody]::new($actorRoot, $names, (Write-Bundle $actorRoot))
+    try {
+        $actorImage = Copy-Image (Join-Path $fixtureRoot 'e-tool')
+        $actorScript = Join-Path $fixtureRoot 'e-tool/actor.mjs'
+        [IO.File]::WriteAllText($actorScript, '// synthetic actor bootstrap', [Text.UTF8Encoding]::new($false))
+        $actorHash = (Get-FileHash -LiteralPath $actorImage -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actorScriptHash = (Get-FileHash -LiteralPath $actorScript -Algorithm SHA256).Hash.ToLowerInvariant()
+        $persistActor = [Action[IntegratedPublicationCustody+ActorIdentity]] { param($identity) throw 'e: refused actor reached persistence.' }
+        $authorityField = [IntegratedPublicationCustody].GetField('authority', [Reflection.BindingFlags]'NonPublic,Instance')
+        $refusal = Get-Refusal { [void]$actorHeld.StartAuthorityActor([Guid]::NewGuid().ToString('D'), $actorImage, $actorHash, $actorScript, $actorScriptHash,
+            [string[]]@(), (New-ExactDirectory (Join-Path $fixtureRoot 'e-refused') 259), 15000, $persistActor) }
+        Assert-Check (Test-NamedRefusal $refusal 'Authority actor working directory') ('e: 259-character actor working directory was not refused by name: ' + $refusal)
+        Assert-Check ($null -eq $actorHeld.JobName -and $null -eq $authorityField.GetValue($actorHeld)) 'e: actor refusal followed authority or Job creation.'
+        foreach ($heldInput in @($actorImage, $actorScript)) { [IO.File]::Open($heldInput, 'Open', 'ReadWrite', 'None').Dispose() }
+        $refusal = Get-Refusal { [void]$actorHeld.StartAuthorityActor([Guid]::NewGuid().ToString('D'), $actorImage, ('0' * 64), $actorScript, $actorScriptHash,
+            [string[]]@(), (New-ExactDirectory (Join-Path $fixtureRoot 'e-accepted') 258), 15000, $persistActor) }
+        Assert-Check ($refusal -is [InvalidOperationException] -and $refusal.Message -ceq 'Keeper input hash differs') ('e: 258-character actor working directory did not pass the limit: ' + $refusal)
+        Assert-Check ($null -eq $actorHeld.JobName -and $null -eq $authorityField.GetValue($actorHeld)) 'e: refused actor image created authority or Job.'
+    } finally { $actorHeld.Dispose() }
+    Assert-Check $actorHeld.Released 'e: actor fixture custody failed to release.'
+
+    $native = [IntegratedPublicationCustody].GetMethod('Native', [Reflection.BindingFlags]'NonPublic,Static')
+    [string]$plain = New-ExactDirectory (Join-Path $fixtureRoot 'n') 259 $false
+    Assert-Check ($native.Invoke($null, [object[]]@($plain)) -ceq $plain) 'n: 259-character path was converted.'
+    [string]$plain = New-ExactDirectory (Join-Path $fixtureRoot 'n') 260 $false
+    Assert-Check ($native.Invoke($null, [object[]]@($plain)) -ceq ('\\?\' + $plain)) 'n: 260-character path lacks the extended-length prefix.'
+    [string]$unc = New-ExactDirectory '\\server\share\n' 260 $false
+    Assert-Check ($native.Invoke($null, [object[]]@($unc)) -ceq ('\\?\UNC\' + $unc.Substring(2))) 'n: 260-character UNC path lacks the extended-length UNC prefix.'
+
     $fixture = [pscustomobject]@{ fixture_root = $fixtureRoot; candidate_identity = [pscustomobject]@{ attempt = [Guid]::NewGuid().ToString('D') } }
     $candidateManifest = Join-Path $fixtureRoot 'publication-assets.json'
     [IO.File]::WriteAllText($candidateManifest, '{"synthetic":true}', [Text.UTF8Encoding]::new($false))
     $pwshImage = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-    $implementation = Join-Path $repoRoot 'scripts/IntegratedPublicationCustody.cs'
+    $implementation = Join-Path $fixtureRoot 'impl/IntegratedPublicationCustody.cs'
+    [void][IO.Directory]::CreateDirectory((Split-Path $implementation -Parent))
+    [IO.File]::Copy((Join-Path $repoRoot 'scripts/IntegratedPublicationCustody.cs'), $implementation)
     $longScript = Join-Path (New-ExactDirectory (Join-Path $fixtureRoot 'k') 259) 'hold-publication-job.ps1'
     [IO.File]::Copy((Join-Path $repoRoot 'scripts/hold-publication-job.ps1'), $longScript)
     $persist = [Action[IntegratedPublicationCustody+KeeperIdentity]] { param($identity) throw 'k: refused keeper reached persistence.' }
@@ -104,17 +144,23 @@ try {
         $fixture.candidate_identity.attempt, (Get-FileHash -LiteralPath $candidateManifest -Algorithm SHA256).Hash.ToLowerInvariant(), 15000, $persist) }
     Assert-Check (Test-NamedRefusal $refusal 'Keeper working directory') ('k: 259-character keeper directory was not refused by name: ' + $refusal)
     Assert-Check ($null -eq $held.JobName -and $held.KeeperNativeCreateCalls -eq 0 -and $null -eq $held.Keeper) 'k: keeper refusal followed Job creation or native creation.'
+    foreach ($heldInput in @($longScript, $implementation)) { [IO.File]::Open($heldInput, 'Open', 'ReadWrite', 'None').Dispose() }
     Start-FixtureKeeper $held $fixture $repoRoot
 
     $shortImage = Copy-Image (Join-Path $fixtureRoot 'tool')
     $script:imageHash = (Get-FileHash -LiteralPath $shortImage -Algorithm SHA256).Hash.ToLowerInvariant()
-    Invoke-Child $shortImage (New-ExactDirectory (Join-Path $fixtureRoot 'c') 258) 'c: 258-character working directory'
+    $acceptedDirectory = New-ExactDirectory (Join-Path $fixtureRoot 'c') 258
+    Invoke-Child $shortImage $acceptedDirectory 'c: 258-character working directory'
+    Invoke-Child $shortImage ($acceptedDirectory + '\') 'c: 258-character working directory with a trailing separator'
     $before = $held.NativeCreateCalls
     $script:flightPath = Join-Path $fixtureRoot 'in-flight-refused.json'
     $longDirectory = New-ExactDirectory (Join-Path $fixtureRoot 'c-refused') 259
     $refusal = Get-Refusal { [void]$held.CreateChild($shortImage, $script:imageHash, [string[]]@('/?'), $longDirectory, $flight) }
     Assert-Check (Test-NamedRefusal $refusal 'Child working directory') ('c: 259-character child working directory was not refused by name: ' + $refusal)
     Assert-Check ($held.NativeCreateCalls -eq $before -and -not [IO.File]::Exists($script:flightPath)) 'c: over-long working directory reached persistence or native creation.'
+    $refusal = Get-Refusal { [void]$held.CreateChild($shortImage, $script:imageHash, [string[]]@('/?'), ($longDirectory + '\'), $flight) }
+    Assert-Check (Test-NamedRefusal $refusal 'Child working directory') ('c: 259-character child working directory with a trailing separator was not refused by name: ' + $refusal)
+    Assert-Check ($held.NativeCreateCalls -eq $before -and -not [IO.File]::Exists($script:flightPath)) 'c: trailing-separator refusal reached persistence or native creation.'
     $script:flightPath = Join-Path $fixtureRoot 'in-flight.json'
 
     $longImage = Copy-Image (New-ExactDirectory (Join-Path $fixtureRoot 'd') 270)

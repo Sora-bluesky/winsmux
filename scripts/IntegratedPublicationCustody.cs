@@ -1003,9 +1003,20 @@ public sealed class IntegratedPublicationCustody : IDisposable {
         if (path.StartsWith("\\\\", StringComparison.Ordinal)) return "\\\\?\\UNC\\" + path.Substring(2);
         return "\\\\?\\" + path;
     }
+    // Owners never forward the path-bearing message, so the refused limit is
+    // also carried as fixed values that name no path.
+    public sealed class WorkingDirectoryLimitException : PathTooLongException {
+        public string Use { get; }
+        public int Length { get; }
+        public int Limit { get; }
+        internal WorkingDirectoryLimitException(string use, string directory, int limit)
+            : base(use + " exceeds the 258-character Win32 current-directory limit: " + directory) { Use = use; Length = directory.Length; Limit = limit; }
+    }
     // CreateProcessW refuses a longer current directory even in extended-length form.
+    // A trailing separator is not counted; the root keeps its own.
     static string CurrentDirectory(string directory, string use) {
-        if (directory.Length > 258) throw new PathTooLongException(use + " exceeds the 258-character Win32 current-directory limit: " + directory);
+        directory = Path.TrimEndingDirectorySeparator(directory);
+        if (directory.Length > 258) throw new WorkingDirectoryLimitException(use, directory, 258);
         return directory;
     }
     static void Plain(string target, bool directory) {
@@ -1065,7 +1076,7 @@ public sealed class IntegratedPublicationCustody : IDisposable {
             throw new ArgumentException("Exact integrated asset paths and SHA256 required");
         // Every fixed publication operation runs with the bundle root as its
         // working directory, so refuse it before any hold, Job or child exists.
-        CurrentDirectory(root, "Bundle root (fixed publication working directory)");
+        root = CurrentDirectory(root, "Bundle root (fixed publication working directory)");
         try {
             // Retain ancestors too: held files must not acquire a different
             // pathname through a parent-directory rename during custody.

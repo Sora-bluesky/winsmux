@@ -11001,7 +11001,7 @@
   },
   {
    "source": "tests/workspace-package/publication-long-path.test.ps1",
-   "line": 99,
+   "line": 139,
    "text": "[IO.File]::Copy((Join-Path $repoRoot 'scripts/hold-publication-job.ps1'), $longScript)",
    "invokes": "scripts/hold-publication-job.ps1"
   },
@@ -11391,15 +11391,39 @@
   },
   {
    "source": "tests/workspace-package/verify-publication-child-custody.ps1",
-   "line": 47,
-   "text": "$childScript = Join-Path $PSScriptRoot 'publication-custody-child.mjs'",
+   "line": 65,
+   "text": "$childScript = Join-Path $sourceDir 'publication-custody-child.mjs'",
    "invokes": "tests/workspace-package/publication-custody-child.mjs"
+  },
+  {
+   "source": "tests/workspace-package/verify-publication-child-custody.ps1",
+   "line": 66,
+   "text": "[IO.File]::Copy((Join-Path $PSScriptRoot 'publication-custody-child.mjs'), $childScript)",
+   "invokes": "tests/workspace-package/publication-custody-child.mjs"
+  },
+  {
+   "source": "tests/workspace-package/verify-publication-child-custody.ps1",
+   "line": 72,
+   "text": "if(JSON.stringify(names)!==JSON.stringify(['npm-cli.js','publication-custody-child.mjs']))throw Error('Closed fixture sources required');",
+   "invokes": "tests/workspace-package/publication-custody-child.mjs"
+  },
+  {
+   "source": "tests/workspace-package/verify-publication-child-custody.ps1",
+   "line": 79,
+   "text": "$guard = Join-Path $repoRoot 'scripts/publication-node-source-guard.mjs'",
+   "invokes": "scripts/publication-node-source-guard.mjs"
   },
   {
    "source": "tests/workspace-package/verify-publication-custody.ps1",
    "line": 8,
    "text": "$fixtureOutput = & node (Join-Path $PSScriptRoot 'prepare-publication-custody-fixture.mjs') $OperatorRoot",
    "invokes": "tests/workspace-package/prepare-publication-custody-fixture.mjs"
+  },
+  {
+   "source": "tests/workspace-package/verify-publication-custody.ps1",
+   "line": 83,
+   "text": "$guard = Join-Path $repoRoot 'scripts/publication-node-source-guard.mjs'",
+   "invokes": "scripts/publication-node-source-guard.mjs"
   },
   {
    "source": "tests/workspace-package/verify-publication-owner-recovery.ps1",
