@@ -3,7 +3,7 @@ import type { InputProducer } from './terminal-input';
 import { scalarText } from './terminal-input';
 
 type Baseline={value:string;start:number;end:number};
-type NativeSession={kind:'composition'|'panel'|'implicit';confirm:'pending'|'held'|'released';capturedCode:string|null;tail:boolean};
+type NativeSession={kind:'composition'|'panel'|'implicit';confirm:'pending'|'held'|'released';capturedCode:string|null;tail:boolean;committed:boolean};
 type FinalReceipt={kind:'input'|'end';text:string};
 type Composition={session:NativeSession;baseline:Baseline;value:string;ended:boolean;blocked:boolean;token:number;finalText:string|null;finalInput:boolean;awaitingFinal:boolean;after:string};
 const bytes=(s:string)=>new TextEncoder().encode(s).byteLength;
@@ -62,9 +62,11 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     producer.pending(receipt?bytes(receipt.text):0,false);
     const text=part+c.after;
     if (text && !producer.offer(text)) {producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after),true);block(c,'確定入力を受け付けられません。取消して入力を確認してください。');return false;}
+    c.session.committed=true;
+    if(c.session.confirm==='pending'&&c.finalInput)c.session.confirm='released';
     clear();finalReceipt=receipt;if(receipt)producer.pending(bytes(receipt.text),false);return true;
   }
-  function begin(base=baseline(),nativeSession:NativeSession={kind:'composition',confirm:'pending',capturedCode:null,tail:false}) {
+  function begin(base=baseline(),nativeSession:NativeSession={kind:'composition',confirm:'pending',capturedCode:null,tail:false,committed:false}) {
     finalReceipt=null;
     session=nativeSession;
     const c:Composition={session,baseline:base,value:textarea.value,ended:false,blocked:false,token:++token,finalText:null,finalInput:false,awaitingFinal:false,after:''};composition=c;update(c,textarea.value);return c;
@@ -91,7 +93,11 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
       return;
     }
     if(!composition&&!producer.canAccept()){textarea.value=pendingNative?.value??'';pendingNative=null;explain('終了確認中のため新しい変換入力を受け付けていません。');return;}
-    const c=composition??begin(pendingNative??baseline());update(c,textarea.value);c.ended=true;
+    const c=composition??begin(pendingNative??baseline());
+    // A final input snapshot remains authoritative if later VT keys let xterm
+    // clear the textarea before the matching compositionend arrives.
+    if(!c.finalInput)update(c,textarea.value);
+    c.ended=true;
     c.finalText=(event as CompositionEvent).data;
     c.awaitingFinal=difference(c.baseline,c.value)!==c.finalText;
     c.session.kind='composition';c.session.tail=true;
@@ -118,16 +124,18 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     if(!c&&finalReceipt!==null){
       const receipt=finalReceipt;finalReceipt=null;producer.pending(0,false);
       if(receipt.kind==='input'&&native.data===receipt.text&&(textarea.value===receipt.text||pendingNative&&difference(pendingNative,textarea.value)===receipt.text)){
+        if(session?.confirm==='pending')session.confirm='released';
         textarea.value='';pendingNative=null;return;
       }
     }
     if(!c&&session&&session.kind!=='composition'&&!compositionInput(native.inputType)&&!native.isComposing)c=begin(pendingNative??baseline(),session);
     if(c&&c.session.kind!=='composition'&&!compositionInput(native.inputType)&&!native.isComposing){
-      update(c,textarea.value);c.ended=true;c.awaitingFinal=false;commit(c);return;
+      update(c,textarea.value);c.ended=true;c.awaitingFinal=false;c.finalInput=true;commit(c);return;
     }
     if(c&&!c.ended){
       if(native.isComposing||compositionInput(native.inputType))c.session.kind='composition';
-      if(native.inputType==='insertFromComposition')c.finalInput=true;update(c,textarea.value);return;
+      if(native.inputType==='insertFromComposition'||!native.isComposing&&!compositionInput(native.inputType))c.finalInput=true;
+      update(c,textarea.value);return;
     }
     if(c?.ended){
       if(c.awaitingFinal){
@@ -159,7 +167,7 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   };
   const blur=(event:Event)=>{
     if(!relevant(event)||retired||!composition)return;
-    event.stopImmediatePropagation();delayedBlur=true;update(composition,textarea.value);
+    event.stopImmediatePropagation();delayedBlur=true;if(!composition.finalInput)update(composition,textarea.value);
   };
   const focus=()=>{delayedBlur=false;};
   // One capture owner handles every keyboard phase, including Process/229 and
@@ -171,23 +179,14 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     const native=key.isComposing||key.keyCode===229;
     if(key.type==='keydown'){
       const panel=key.metaKey&&(key.key==='.'||key.key===';'||key.code==='Period'||key.code==='Semicolon');
-      if(!composition&&(panel||native&&(!session||session.confirm==='released'))&&producer.canAccept()){
-        begin(baseline(),{kind:panel?'panel':'implicit',confirm:'pending',capturedCode:null,tail:false});
+      if(!composition&&(panel||native&&(!session||session.confirm==='released')&&!(enter&&session?.committed))&&producer.canAccept()){
+        begin(baseline(),{kind:panel?'panel':'implicit',confirm:'pending',capturedCode:null,tail:false,committed:false});
       }
       const current=session;
       if(current&&!key.repeat){current.capturedCode=null;current.tail=false;}
       if(!enter&&!native&&(current?.kind!=='panel'||current.confirm==='released')&&(!composition||composition.ended&&!composition.awaitingFinal)){
         session=null;if(finalReceipt!==null){finalReceipt=null;producer.pending(0,false);}
-      }else if(current){
-        if(enter&&current.confirm==='released'&&composition&&(!composition.ended||composition.awaitingFinal)){
-          // The next, separate Enter must wait behind the final native DOM text.
-          const c=composition;
-          event.preventDefault();event.stopImmediatePropagation();current.capturedCode=key.code;
-          if(!producer.canAccept())explain('入力の受付を止めているためEnterを送信していません。');
-          else if(producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after)+1,true))c.after+='\r';
-          else explain('保持できる入力の上限を超えるためEnterを送信していません。');
-          return;
-        }
+      }else if(current&&(native||current.confirm!=='released')){
         if(native||composition&&!composition.ended||enter&&current.confirm!=='released'||current.kind==='panel'&&current.confirm!=='released'||key.repeat&&current.capturedCode!==null){
           current.capturedCode=key.code;
           if(enter){current.confirm='held';if(composition&&current.kind!=='composition'){composition.ended=true;composition.awaitingFinal=true;}}
@@ -229,8 +228,9 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     if(retired)return false;
     // Returning false without canceling the keydown lets the browser deliver its paste event.
     if(event.ctrlKey&&!event.altKey&&!event.metaKey&&event.key.toLowerCase()==='v')return false;
-    if(event.isComposing||event.keyCode===229||composition&&!composition.ended)return false;
-    if(composition&&!commit(composition)){event.preventDefault();return false;}
+    const waiting=composition&&composition.session.confirm==='released'&&!composition.blocked&&(!composition.ended||composition.awaitingFinal);
+    if(event.isComposing||event.keyCode===229||composition&&!composition.ended&&!waiting)return false;
+    if(composition&&!waiting&&!commit(composition)){event.preventDefault();return false;}
     if(event.type==='keyup'&&doc.activeElement!==textarea)return false;
     if(event.ctrlKey&&event.shiftKey&&!event.altKey&&!event.metaKey&&event.key.toLowerCase()==='c'){
       if(event.type==='keydown'){event.preventDefault();if(!event.repeat&&terminal.hasSelection())copySelection();}
@@ -245,6 +245,15 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const data=terminal.onData(text=>{
     if(retired||!text)return;
     if(isFocusReport(text,terminal.modes.sendFocusMode)){producer.focus(text);return;}
+    const c=composition;
+    if(c&&c.session.confirm==='released'&&(!c.ended||c.awaitingFinal)){
+      // Keep xterm's encoding (including terminal modes) and queue all ordinary
+      // keys at the same boundary until the final native insertion is ready.
+      if(!producer.canAccept())explain('入力の受付を止めているため後続のキーを送信していません。');
+      else if(producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after)+bytes(text),true))c.after+=text;
+      else explain('保持できる入力の上限を超えるため後続のキーを送信していません。');
+      return;
+    }
     producer.offer(text);
   });
   const key=terminal.onKey(({domEvent})=>{domEvent.preventDefault();});
