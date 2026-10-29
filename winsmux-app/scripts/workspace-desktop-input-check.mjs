@@ -13,7 +13,8 @@ const evidence = resolve(app, '../verification-evidence/t6-input');
 mkdirSync(evidence, { recursive: true });
 // Load every product module from the frozen base without stashing or altering the worktree.
 const baseline = process.argv.includes('--baseline');
-const sourceRef = baseline ? 'fa510131c2a0347e9f2e0e9b016b92ee99dc5b60' : null;
+const sourceIndex = process.argv.indexOf('--source-ref');
+const sourceRef = sourceIndex >= 0 ? process.argv[sourceIndex + 1] : baseline ? 'fa510131c2a0347e9f2e0e9b016b92ee99dc5b60' : null;
 const source = path => sourceRef ? execFileSync('git', ['show', `${sourceRef}:winsmux-app/${relative(app, path).replaceAll('\\', '/')}`], { cwd: app, encoding: 'utf8' }) : readFileSync(path, 'utf8');
 const plugins = sourceRef ? [{ name: 'frozen-product-source', setup(builder) {
   builder.onLoad({ filter: /[\\/]src[\\/].*\.ts$/ }, args => ({ contents: source(args.path), loader: 'ts', resolveDir: dirname(args.path) }));
@@ -47,7 +48,7 @@ try {
       if (enter(f, 'keydown')) enter(f, 'keypress');
       enter(f, 'keyup');
     };
-    const ordinaryKey = (f, name, repeat = false) => {
+    const ordinaryKey = (f, name) => {
       const options = {
         Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
         Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
@@ -55,13 +56,20 @@ try {
         'Ctrl+C': { key: 'c', code: 'KeyC', keyCode: 67, ctrlKey: true },
         x: { key: 'x', code: 'KeyX', keyCode: 88 },
       }[name];
-      if (key(f, 'keydown', { ...options, repeat })) key(f, 'keypress', { ...options, charCode: name === 'x' ? 120 : 0 });
+      if (key(f, 'keydown', options)) key(f, 'keypress', { ...options, charCode: name === 'x' ? 120 : 0 });
       key(f, 'keyup', options);
     };
+    const nativeInput = (name, options) => {
+      const event = new InputEvent(name, options);
+      // Chromium's constructor drops insertFromComposition; retain the exact
+      // native type under test rather than silently testing an empty inputType.
+      if (event.inputType !== options.inputType) Object.defineProperty(event, 'inputType', { value: options.inputType });
+      return event;
+    };
     const input = (f, text, type = 'insertText', composing = false) => {
-      f.ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: type, data: text, isComposing: composing }));
+      f.ta.dispatchEvent(nativeInput('beforeinput', { bubbles: true, cancelable: true, inputType: type, data: text, isComposing: composing }));
       f.ta.value += text;
-      f.ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: type, data: text, isComposing: composing }));
+      f.ta.dispatchEvent(nativeInput('input', { bubbles: true, inputType: type, data: text, isComposing: composing }));
     };
     const fixture = () => {
       const slot = document.createElement('div'); slot.className = 'workspace-terminal'; slot.style.cssText = 'width:800px;height:300px'; document.body.append(slot);
@@ -75,7 +83,7 @@ try {
     const vt = { Enter: '\r', Tab: '\t', Backspace: '\x7f', 'Ctrl+C': '\x03', x: 'x' };
     // A final DOM insertion without an observed confirming press completes the
     // native transaction. The next ordinary key belongs to the shell.
-    for (const source of ['ime-end-first', 'ime-input-first', 'panel', 'panel-end']) {
+    for (const source of ['ime-end-first', 'ime-input-first', 'ime-text-end-first', 'ime-text-input-first', 'panel', 'panel-end']) {
       for (const next of ['Enter', 'Tab', 'Ctrl+C', 'x', 'Backspace']) {
         const f = fixture();
         const text = source.startsWith('ime') ? '日本語' : '😀';
@@ -83,11 +91,12 @@ try {
         if (source.startsWith('ime')) {
           f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
           input(f, text, 'insertCompositionText', true);
-          if (source === 'ime-end-first') end();
-          f.ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertFromComposition', data: text }));
+          const inputType = source.includes('text') ? 'insertText' : 'insertFromComposition';
+          if (source.endsWith('end-first')) end();
+          f.ta.dispatchEvent(nativeInput('beforeinput', { bubbles: true, cancelable: true, inputType, data: text }));
           f.ta.value = text;
-          f.ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromComposition', data: text }));
-          if (source === 'ime-input-first') end();
+          f.ta.dispatchEvent(nativeInput('input', { bubbles: true, inputType, data: text }));
+          if (source.endsWith('input-first')) end();
         } else {
           key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
           key(f, 'keyup', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
@@ -102,21 +111,24 @@ try {
       }
     }
     // xterm remains the VT encoder while final native text is pending. Every
-    // later key, including control keys and repeats, follows that text once.
-    for (const source of ['composition', 'panel', 'implicit']) {
+    // later key, including control keys, follows that text once.
+    for (const source of ['composition', 'composition-final-first', 'panel', 'implicit']) {
       for (const endBeforeRelease of [false, true]) {
         for (const sequence of [['x'], ['Tab'], ['Backspace'], ['Ctrl+C'], ['x', 'Tab', 'Backspace', 'Ctrl+C', 'Enter', 'x']]) {
           const f = fixture();
-          if (source === 'composition') f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+          if (source.startsWith('composition')) f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
           if (source === 'panel') key(f, 'keydown', { key: '.', code: 'Period', metaKey: true });
           const end = () => f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
           enter(f, 'keydown', { keyCode: 229 });
           if (source === 'composition' && endBeforeRelease) end();
+          if (source === 'composition-final-first' && endBeforeRelease) input(f, '日本語', 'insertFromComposition');
           enter(f, 'keyup');
+          if (source === 'composition-final-first' && !endBeforeRelease) input(f, '日本語', 'insertFromComposition');
           for (const next of sequence) ordinaryKey(f, next);
           check('B2 keys wait for native text ' + source + '/' + endBeforeRelease + '/' + sequence.join(','), f.out, []);
           if (source === 'composition' && !endBeforeRelease) end();
-          input(f, '日本語', source === 'composition' ? 'insertFromComposition' : 'insertText');
+          if (source === 'composition-final-first') { f.ta.blur(); f.ta.focus(); end(); }
+          else input(f, '日本語', source === 'composition' ? 'insertFromComposition' : 'insertText');
           await tick();
           check('B2 keys follow native text once ' + source + '/' + endBeforeRelease + '/' + sequence.join(','), f.out.join(''), '日本語' + sequence.map(next => vt[next]).join(''));
           f.dispose();
@@ -143,9 +155,9 @@ try {
             if (step === 'up') enter(f, 'keyup');
             if (step === 'end') f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
             if (step === 'final') {
-              f.ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertFromComposition', data: '日本語' }));
+              f.ta.dispatchEvent(nativeInput('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertFromComposition', data: '日本語' }));
               f.ta.value = '日本語';
-              f.ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromComposition', data: '日本語' }));
+              f.ta.dispatchEvent(nativeInput('input', { bubbles: true, inputType: 'insertFromComposition', data: '日本語' }));
             }
             await tick();
             if (!earlyNextEnter || order.indexOf(step) <= order.indexOf('up')) confirmLeaked ||= f.out.join('').includes('\r');
@@ -259,9 +271,9 @@ try {
         if (source === 'implicit-preedit') input(f, 'にほんご', 'insertCompositionText', true);
         enter(f, 'keydown', { keyCode: 229 });
         const final = () => {
-          f.ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: '日本語' }));
+          f.ta.dispatchEvent(nativeInput('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: '日本語' }));
           f.ta.value = '日本語';
-          f.ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: '日本語' }));
+          f.ta.dispatchEvent(nativeInput('input', { bubbles: true, inputType: 'insertText', data: '日本語' }));
         };
         const end = () => f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
         if (endFirst) { end(); await tick(); final(); } else { final(); await tick(); end(); }
@@ -427,7 +439,7 @@ try {
     }, forcedColors));
   }
 } finally { await browser.close(); }
-writeFileSync(resolve(evidence, baseline ? 'desktop-input-before.json' : 'desktop-input.json'), JSON.stringify({ sourceRef, sources,
+writeFileSync(resolve(evidence, baseline ? 'desktop-input-before.json' : sourceRef ? 'desktop-input-reference.json' : 'desktop-input.json'), JSON.stringify({ sourceRef, sources,
   scope: 'installed xterm in headless Edge; synthetic IME DOM events; stub PTY producer and native zoom setter; trusted Ctrl+V paste event with synthetic clipboard text', results }, null, 2) + '\n', 'utf8');
 for (const result of results) console.log(`${result.passed ? 'PASS' : 'FAIL'} ${result.name}${result.passed ? '' : ' ' + JSON.stringify(result)}`);
 console.log(`desktop input: ${results.filter(result => result.passed).length}/${results.length} passed`);
