@@ -47,6 +47,17 @@ try {
       if (enter(f, 'keydown')) enter(f, 'keypress');
       enter(f, 'keyup');
     };
+    const ordinaryKey = (f, name, repeat = false) => {
+      const options = {
+        Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
+        Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
+        Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+        'Ctrl+C': { key: 'c', code: 'KeyC', keyCode: 67, ctrlKey: true },
+        x: { key: 'x', code: 'KeyX', keyCode: 88 },
+      }[name];
+      if (key(f, 'keydown', { ...options, repeat })) key(f, 'keypress', { ...options, charCode: name === 'x' ? 120 : 0 });
+      key(f, 'keyup', options);
+    };
     const input = (f, text, type = 'insertText', composing = false) => {
       f.ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: type, data: text, isComposing: composing }));
       f.ta.value += text;
@@ -61,6 +72,57 @@ try {
       return f;
     };
     globalThis.makeDesktopInputFixture = fixture;
+    const vt = { Enter: '\r', Tab: '\t', Backspace: '\x7f', 'Ctrl+C': '\x03', x: 'x' };
+    // A final DOM insertion without an observed confirming press completes the
+    // native transaction. The next ordinary key belongs to the shell.
+    for (const source of ['ime-end-first', 'ime-input-first', 'panel', 'panel-end']) {
+      for (const next of ['Enter', 'Tab', 'Ctrl+C', 'x', 'Backspace']) {
+        const f = fixture();
+        const text = source.startsWith('ime') ? '日本語' : '😀';
+        const end = () => f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
+        if (source.startsWith('ime')) {
+          f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+          input(f, text, 'insertCompositionText', true);
+          if (source === 'ime-end-first') end();
+          f.ta.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertFromComposition', data: text }));
+          f.ta.value = text;
+          f.ta.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertFromComposition', data: text }));
+          if (source === 'ime-input-first') end();
+        } else {
+          key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
+          key(f, 'keyup', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
+          input(f, text);
+          if (source === 'panel-end') end();
+        }
+        await tick();
+        check('B1 mouse commit completes ' + source + '/' + next, f.out.join(''), text);
+        ordinaryKey(f, next);
+        check('B1 mouse commit releases ' + source + '/' + next, f.out.join(''), text + vt[next]);
+        f.dispose();
+      }
+    }
+    // xterm remains the VT encoder while final native text is pending. Every
+    // later key, including control keys and repeats, follows that text once.
+    for (const source of ['composition', 'panel', 'implicit']) {
+      for (const endBeforeRelease of [false, true]) {
+        for (const sequence of [['x'], ['Tab'], ['Backspace'], ['Ctrl+C'], ['x', 'Tab', 'Backspace', 'Ctrl+C', 'Enter', 'x']]) {
+          const f = fixture();
+          if (source === 'composition') f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+          if (source === 'panel') key(f, 'keydown', { key: '.', code: 'Period', metaKey: true });
+          const end = () => f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+          enter(f, 'keydown', { keyCode: 229 });
+          if (source === 'composition' && endBeforeRelease) end();
+          enter(f, 'keyup');
+          for (const next of sequence) ordinaryKey(f, next);
+          check('B2 keys wait for native text ' + source + '/' + endBeforeRelease + '/' + sequence.join(','), f.out, []);
+          if (source === 'composition' && !endBeforeRelease) end();
+          input(f, '日本語', source === 'composition' ? 'insertFromComposition' : 'insertText');
+          await tick();
+          check('B2 keys follow native text once ' + source + '/' + endBeforeRelease + '/' + sequence.join(','), f.out.join(''), '日本語' + sequence.map(next => vt[next]).join(''));
+          f.dispose();
+        }
+      }
+    }
     // Class-wide ordering table: the physical down/press/up stay ordered; final
     // DOM insertion and compositionend may occur on either side of every phase.
     // A second press after keyup may precede either final notification.
@@ -74,7 +136,9 @@ try {
           input(f, 'にほんご', 'insertCompositionText', true);
           let confirmLeaked = false;
           for (const step of order) {
-            if (step === 'down') enter(f, 'keydown');
+            // Once both final notifications precede keydown, only a native
+            // marker distinguishes this confirming press from B1's ordinary Enter.
+            if (step === 'down') enter(f, 'keydown', order.indexOf('down') > order.indexOf('end') && order.indexOf('down') > order.indexOf('final') ? { keyCode: 229 } : {});
             if (step === 'press') enter(f, 'keypress');
             if (step === 'up') enter(f, 'keyup');
             if (step === 'end') f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
@@ -123,7 +187,7 @@ try {
       key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
       key(f, 'keyup', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
       if (order === 'text-before-confirm') input(f, '😀');
-      enter(f, 'keydown');
+      enter(f, 'keydown', order === 'text-before-confirm' ? { keyCode: 229 } : {});
       if (order === 'text-after-keydown') input(f, '😀');
       key(f, 'keypress', { key: 'あ', code: 'Enter', keyCode: 12354, charCode: 12354 });
       enter(f, 'keyup');
@@ -209,7 +273,7 @@ try {
     {
       const f = fixture();
       key(f, 'keydown', { key: '.', code: 'Period', metaKey: true });
-      input(f, '😀'); input(f, '😀'); enter(f, 'keydown'); enter(f, 'keyup'); separateEnter(f);
+      input(f, '😀'); input(f, '😀'); enter(f, 'keydown', { keyCode: 229 }); enter(f, 'keyup'); separateEnter(f);
       check('C2 separate same emoji insertions are never deduplicated', f.out.join(''), '😀😀\r');
       f.dispose();
     }
@@ -221,7 +285,7 @@ try {
         f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '😀' }));
         await tick();
       }
-      enter(f, 'keydown'); enter(f, 'keyup'); separateEnter(f);
+      enter(f, 'keydown', { keyCode: 229 }); enter(f, 'keyup'); separateEnter(f);
       check('C2 committed native input with optional end stays independent', f.out.join(''), '😀😀\r');
       f.dispose();
     }

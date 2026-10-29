@@ -233,6 +233,14 @@ pub fn startup_main_show(window: WebviewWindow, invocation: ipc::Request<'_>) ->
 #[cfg(all(test, windows))]
 mod tests {
     #[test]
+    fn main_window_does_not_grant_cross_webview_zoom() {
+        let capability: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert!(!capability["permissions"].as_array().unwrap().iter().any(|permission| {
+            permission.as_str().or_else(|| permission["identifier"].as_str()) == Some("core:webview:allow-set-webview-zoom")
+        }), "zoom must target the invoking main webview without accepting another label");
+    }
+
+    #[test]
     fn main_window_allows_zoom_without_restoring_browser_accelerators() {
         let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         let main = config["app"]["windows"].as_array().unwrap().iter()
