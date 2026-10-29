@@ -20,6 +20,7 @@ function freeze(value) {
   return value;
 }
 export const publicationCutoverPaths = Object.freeze([
+  '.githooks/pre-commit-whitelist.ps1',
   'core/crates/winsmux-workspace-mcp/tests/stdio_e2e.rs',
   'core/crates/winsmux-workspace/tests/host_authorization.rs',
   'scripts/integrated-publication-origins.mjs',
@@ -28,7 +29,17 @@ export const publicationCutoverPaths = Object.freeze([
   'tests/workspace-journey/ci-run.ps1',
   'tests/workspace-journey/run.ps1',
   'tests/workspace-package/prepare-integrated-publication.test.mjs',
+  'winsmux-app/scripts/fixtures/ime-probe-win11-edge.txt',
+  'winsmux-app/scripts/workspace-desktop-input-check.mjs',
+  'winsmux-app/src-tauri/src/lib.rs',
+  'winsmux-app/src-tauri/src/webview_accelerators.rs',
+  'winsmux-app/src-tauri/tauri.conf.json',
   'winsmux-app/src-tauri/tests/workspace_native_webview.rs',
+  'winsmux-app/src/workspace-ui/focus.ts',
+  'winsmux-app/src/workspace-ui/project-pane.css',
+  'winsmux-app/src/workspace-ui/project-pane.ts',
+  'winsmux-app/src/workspace-ui/startup-mount.ts',
+  'winsmux-app/src/workspace-ui/terminal-input-codec.ts',
 ].sort());
 export function readOriginFile(row) {
   need(exact(row, ['path', 'bytes', 'sha256']) && typeof row.path === 'string'
@@ -120,6 +131,7 @@ const desktopAssetPaths = Object.freeze([
 // The final source S differs from fixedBase only in these paths. Their after bytes include this module,
 // so only the e29de959 before bytes are pinned here; the host observes the after digests.
 const expectedSourceChanges = Object.freeze({
+  '.githooks/pre-commit-whitelist.ps1': '44718f56d74c461f5cc9f89a666a5a301957c37641f02f60d6df88fcafdbdd28',
   'core/crates/winsmux-workspace-mcp/tests/stdio_e2e.rs': 'a360918da5e8552c70598264713c8fb657bb681357c9247bef39139ac150a3fd',
   'core/crates/winsmux-workspace/tests/host_authorization.rs': 'bab48e4a807bfbd5d3e51df87fcb0dd7f1439aa5f4471343611257dbdc205892',
   'scripts/integrated-publication-origins.mjs': 'e552acfcf14120349d9cdbb678538479cdb2ff22dc3231a341d7dcd715df245a',
@@ -128,10 +140,21 @@ const expectedSourceChanges = Object.freeze({
   'tests/workspace-journey/ci-run.ps1': '3b406b98b521a049b929c31747df09ca22af36b09230f2d6d641cc658978e96d',
   'tests/workspace-journey/run.ps1': '839262845c117081ea784a5e61a3c9a1b8e55cd7f1c8803f7c6c775d3a05bbe6',
   'tests/workspace-package/prepare-integrated-publication.test.mjs': '629b0cbb2f7751834530b1fbb95f7ed7fc5d29fab18baf39c15d38d460623afc',
+  'winsmux-app/src-tauri/src/lib.rs': '9d558cc6308d27d3236f88c8e4a9ed462795114e9bea852ce917c45a9666aae8',
+  'winsmux-app/src-tauri/src/webview_accelerators.rs': '42ebb3066987fadc14b47078d38d899d96025b8ea8519521fc8748154c1a8853',
+  'winsmux-app/src-tauri/tauri.conf.json': '0d89cb8325baa0bfd781082e13078fa72713554e50d74f132e0dd4ac32e6074e',
   'winsmux-app/src-tauri/tests/workspace_native_webview.rs': '7c06b1f65a14e378954c20cb4e3e32a7cac7216ab89617f7eecc7ea7dcb15984',
+  'winsmux-app/src/workspace-ui/focus.ts': '7e246888c333e44c998f16be11ced127a86f7933900c3c6e64176995a971ebdc',
+  'winsmux-app/src/workspace-ui/project-pane.css': 'c5af16daf7dec3408a880895390bbb587fb87664e66f7949f4c15f9797a5f2f1',
+  'winsmux-app/src/workspace-ui/project-pane.ts': '4abb4f8167cce53dcd6f6b537107936f0cfe08585a52cd64e41bdb5905355d3b',
+  'winsmux-app/src/workspace-ui/startup-mount.ts': '85b79561b04d1b735b3f69f1b055319cd0ef410a246cfca0db92d756b6dccbc2',
+  'winsmux-app/src/workspace-ui/terminal-input-codec.ts': 'a9b3fc1fa3be269b2015dbbbe78391c91ecf2700f5c046a645a3a96c9776a890',
 });
 // Paths absent at fixedBase; their rows carry before_sha256 null.
-const expectedSourceAdditions = Object.freeze([]);
+const expectedSourceAdditions = Object.freeze([
+  'winsmux-app/scripts/fixtures/ime-probe-win11-edge.txt',
+  'winsmux-app/scripts/workspace-desktop-input-check.mjs',
+]);
 const expectedSourcePaths = Object.freeze([...Object.keys(expectedSourceChanges), ...expectedSourceAdditions].sort());
 // Pure projection is exported for finite positive/negative tests. It never
 // issues an origin capability and never makes an original producer current.

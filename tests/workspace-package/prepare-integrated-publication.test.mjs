@@ -55,6 +55,17 @@ const s5Changes = Object.freeze([
   { path: 'tests/workspace-journey/run.ps1', before_sha256: '839262845c117081ea784a5e61a3c9a1b8e55cd7f1c8803f7c6c775d3a05bbe6', after_sha256: 'c'.repeat(64) },
   { path: 'winsmux-app/src-tauri/tests/workspace_native_webview.rs', before_sha256: '7c06b1f65a14e378954c20cb4e3e32a7cac7216ab89617f7eecc7ea7dcb15984', after_sha256: 'c'.repeat(64) },
   { path: 'tests/workspace-gate-map/dispositions.mjs', before_sha256: '3e4c677b8a0f1664944f5e89720ecb169f386148c037f5828acf10a80c9ac315', after_sha256: 'a'.repeat(64) },
+  { path: '.githooks/pre-commit-whitelist.ps1', before_sha256: '44718f56d74c461f5cc9f89a666a5a301957c37641f02f60d6df88fcafdbdd28', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/scripts/fixtures/ime-probe-win11-edge.txt', before_sha256: null, after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/scripts/workspace-desktop-input-check.mjs', before_sha256: null, after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src-tauri/src/lib.rs', before_sha256: '9d558cc6308d27d3236f88c8e4a9ed462795114e9bea852ce917c45a9666aae8', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src-tauri/src/webview_accelerators.rs', before_sha256: '42ebb3066987fadc14b47078d38d899d96025b8ea8519521fc8748154c1a8853', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src-tauri/tauri.conf.json', before_sha256: '0d89cb8325baa0bfd781082e13078fa72713554e50d74f132e0dd4ac32e6074e', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/focus.ts', before_sha256: '7e246888c333e44c998f16be11ced127a86f7933900c3c6e64176995a971ebdc', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/project-pane.css', before_sha256: 'c5af16daf7dec3408a880895390bbb587fb87664e66f7949f4c15f9797a5f2f1', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/project-pane.ts', before_sha256: '4abb4f8167cce53dcd6f6b537107936f0cfe08585a52cd64e41bdb5905355d3b', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/startup-mount.ts', before_sha256: '85b79561b04d1b735b3f69f1b055319cd0ef410a246cfca0db92d756b6dccbc2', after_sha256: 'c'.repeat(64) },
+  { path: 'winsmux-app/src/workspace-ui/terminal-input-codec.ts', before_sha256: 'a9b3fc1fa3be269b2015dbbbe78391c91ecf2700f5c046a645a3a96c9776a890', after_sha256: 'c'.repeat(64) },
 ]);
 const rowOf = (value, file) => value.source.changes.find(row => row.path === file);
 const pin={path:npmProof.candidate_receipt_path,bytes:fs.statSync(npmProof.candidate_receipt_path).size,sha256:npmProof.candidate_receipt_sha256};
@@ -174,6 +185,10 @@ check(()=>{
 check(() => { assert.deepEqual(publicationCutoverPaths, s5Changes.map(row => row.path).sort()); assert.equal(new Set(publicationCutoverPaths).size,s5Changes.length); });
 const projection = () => Object.fromEntries(Object.entries(observers).map(([key, observer]) => [key, observer()]));
 check(() => assert.deepEqual(validateOriginProjection(projection()).source.changes, [...s5Changes]));
+for (const row of s5Changes.filter(row => row.before_sha256 === null)) {
+  const value = projection(); rowOf(value, row.path).before_sha256 = '0'.repeat(64);
+  reject(() => validateOriginProjection(value), /applicability/);
+}
 for (const change of [
   value => { rowOf(value,'tests/workspace-package/prepare-integrated-publication.test.mjs').before_sha256=rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256; },
   value => { rowOf(value,'scripts/integrated-publication-origins.mjs').before_sha256='bf6648e0c277f0c2ba89615302ca9abfa069f3b8ef0cbb83403734fb4a3d6090'; },
