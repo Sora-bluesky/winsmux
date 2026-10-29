@@ -20,6 +20,7 @@
         "width": 800,
         "height": 600,
         "visible": false,
+        "zoomHotkeysEnabled": true,
         "backgroundColor": "#0b0f14"
       }
     ],

@@ -8,7 +8,7 @@ import { createProjectPaneController, runReadData, type OwnerKey } from './proje
 import { createProjectPaneView, type ViewSnapshot } from './project-pane';
 import { mountProjectPaneTerminal } from './project-pane-terminal';
 import { createTerminalInputOwner } from './terminal-input';
-import { restoreWorkspaceFocus } from './focus';
+import { installWorkspaceZoom, restoreWorkspaceFocus } from './focus';
 import { createDetailsController } from './details-controller';
 import { createAgentControls, type AgentControlsSnapshot } from './agent-controls';
 import { createAgentCommandSession, type AgentCommandIntent } from './agent-commands';
@@ -149,6 +149,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     shown = true; await invoke<void>('startup_main_show');
   };
   const status = document.createElement('p'); status.setAttribute('role', 'status');
+  const removeZoom=installWorkspaceZoom(root,factor=>getCurrentWebviewWindow().setZoom(factor),message=>{status.textContent=message;});
   const reconnect = document.createElement('button'); reconnect.type = 'button'; reconnect.textContent = '接続を確認し直す'; reconnect.hidden = true;
   const forceExit = document.createElement('button'); forceExit.type = 'button'; forceExit.textContent = '状態不明の host を強制終了'; forceExit.hidden = true;
   forceExit.onclick = async () => { forceExit.disabled = true; try { await forceExitUncertainWorkspace(); } catch (error) {
@@ -280,7 +281,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
   const visibility = () => { if (!disposed && document.hidden && frame !== null) { cancelAnimationFrame(frame); frame = null; } };
   document.addEventListener('visibilitychange', visibility);
   const recoveryWatch = input.observe(() => { if (recoveryPending) showRecoveryShell(); });
-  const dispose = () => { if (disposed) return; disposed = true; requestGate?.retire(); requestGate = null; generation++; creations.dispose(); input.disconnect(); window.removeEventListener('storage', observeCreation); active?.(); active = null; connectionView?.dispose(); connectionView = null; connectionOwner?.retire(); connectionOwner = null; retiringAgent?.retireHost(); retiringAgent = null; if (connectedHost) admission.retireHost(connectedHost); connectedHost = null; closeDetails?.(); closeDetails = null; details?.disconnect(); details = null; recoveryWatch(); input.dispose(); if (frame !== null) cancelAnimationFrame(frame); frame = null; unlisten?.(); unlisten = null; reconnect.onclick = null; forceExit.onclick = null; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('unload', dispose); root.dataset.startupState = 'disposed'; delete root.dataset.session; };
+  const dispose = () => { if (disposed) return; disposed = true; removeZoom(); requestGate?.retire(); requestGate = null; generation++; creations.dispose(); input.disconnect(); window.removeEventListener('storage', observeCreation); active?.(); active = null; connectionView?.dispose(); connectionView = null; connectionOwner?.retire(); connectionOwner = null; retiringAgent?.retireHost(); retiringAgent = null; if (connectedHost) admission.retireHost(connectedHost); connectedHost = null; closeDetails?.(); closeDetails = null; details?.disconnect(); details = null; recoveryWatch(); input.dispose(); if (frame !== null) cancelAnimationFrame(frame); frame = null; unlisten?.(); unlisten = null; reconnect.onclick = null; forceExit.onclick = null; document.removeEventListener('visibilitychange', visibility); window.removeEventListener('unload', dispose); root.dataset.startupState = 'disposed'; delete root.dataset.session; };
   window.addEventListener('unload', dispose, { once: true });
   async function connect(automatic = false) {
     const claim = (stage: InstallerStartupClaim) => { if (automatic) startupClaim(stage); };

@@ -36,6 +36,7 @@ interface PaneElements {
   sizeError: HTMLElement; mounted: boolean; unmount?: () => void;
 }
 const MAX_PANES_PER_PROJECT = 4;
+let keyboardHelpSequence=0;
 const paneLimitReason = '1つのプロジェクトのペインは4つまでです。';
 const processText = { starting: '起動を確認中', running: '稼働中', exited: '終了を観測', unknown: '未確認' };
 const workText = { unknown: '未確認', running: '作業中', awaiting_input: '入力待ち', succeeded: '完了', failed: '失敗', interrupted: '中断済み' };
@@ -63,6 +64,8 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   toolbar.append(listToggle, title, open, inspect, create, forget, search, reread, cancel);
   const shortcuts=make('input');shortcuts.type='checkbox';shortcuts.checked=true;
   const shortcutLabel=make('label','アプリのショートカットを使う（Ctrl+Shift+P/T/W）');shortcutLabel.prepend(shortcuts);toolbar.append(shortcutLabel);
+  const keyboardHelp=make('p','F6 / Shift+F6：操作ボタンとターミナルを順に移動。ターミナル内のTabはシェルの補完に使います。Ctrl + ＋ / − / 0、Ctrl + ホイール：表示倍率を変更。');
+  keyboardHelp.id=`workspace-keyboard-${++keyboardHelpSequence}`;
   const message = make('p'); message.setAttribute('role', 'status');
   const body = make('div'); body.className = 'workspace-body';
   const aside = make('nav'); aside.setAttribute('aria-label', 'プロジェクト一覧');
@@ -71,7 +74,7 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
   const empty = make('p'); const layout = make('div'); layout.className = 'workspace-layout';
   const details = make('details'); const summary = make('summary', '選択したペインの詳細');
   const detailText = make('p'); details.append(summary, detailText); main.append(empty, layout, details);
-  body.append(aside, main); root.append(toolbar, message, body); container.append(root);
+  body.append(aside, main); root.append(toolbar, keyboardHelp, message, body); container.append(root);
   const dialog = make('dialog'); dialog.setAttribute('aria-label', '実行中のペインを閉じる');
   const dialogTitle = make('h2', '実行中のペインを閉じる'); const dialogTarget = make('p');
   const dialogReason = make('p'); dialogReason.setAttribute('role', 'status');
@@ -287,6 +290,7 @@ export function createProjectPaneView(container: HTMLElement, initial: ViewSnaps
     }
     const sizeError = make('p'); sizeError.setAttribute('role', 'status'); size.append(sizeError);
     const slot = make('div'); slot.className = 'workspace-terminal'; slot.tabIndex = 0;
+    slot.setAttribute('aria-describedby',keyboardHelp.id);
     section.append(heading, status, controls, size, slot);
     const elements: PaneElements = { section, heading, status, slot, buttons, rows, cols, sizeError, mounted: false };
     panes.set(pane.pane_id, elements); return elements;

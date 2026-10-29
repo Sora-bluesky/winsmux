@@ -90,6 +90,11 @@ fn hwnd<R: Runtime>(window: &WebviewWindow<R>) -> Result<usize, String> {
 }
 
 #[cfg(windows)]
+fn accelerator_policy_ready(browser_keys_enabled: bool, zoom_enabled: bool) -> bool {
+    !browser_keys_enabled && zoom_enabled
+}
+
+#[cfg(windows)]
 fn disable_browser_accelerators(view: tauri::webview::PlatformWebview) -> bool {
     let result = (|| -> windows::core::Result<bool> {
         let core = unsafe { view.controller().CoreWebView2()? };
@@ -97,9 +102,12 @@ fn disable_browser_accelerators(view: tauri::webview::PlatformWebview) -> bool {
         let settings3: ICoreWebView2Settings3 = settings.cast()?;
         unsafe {
             settings3.SetAreBrowserAcceleratorKeysEnabled(false)?;
+            settings.SetIsZoomControlEnabled(true)?;
             let mut enabled = BOOL::default();
+            let mut zoom_enabled = BOOL::default();
             settings3.AreBrowserAcceleratorKeysEnabled(&mut enabled)?;
-            Ok(!enabled.as_bool())
+            settings.IsZoomControlEnabled(&mut zoom_enabled)?;
+            Ok(accelerator_policy_ready(enabled.as_bool(), zoom_enabled.as_bool()))
         }
     })();
     matches!(result, Ok(true))
@@ -224,6 +232,26 @@ pub fn startup_main_show(window: WebviewWindow, invocation: ipc::Request<'_>) ->
 
 #[cfg(all(test, windows))]
 mod tests {
+    #[test]
+    fn main_window_allows_zoom_without_restoring_browser_accelerators() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let main = config["app"]["windows"].as_array().unwrap().iter()
+            .find(|window| window["label"] == "main").unwrap();
+        assert_eq!(main["zoomHotkeysEnabled"], true, "window zoom must be enabled");
+        let capability: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert!(capability["permissions"].as_array().unwrap().iter()
+            .any(|permission| permission == "core:webview:allow-set-webview-zoom"));
+    }
+
+    #[test]
+    fn policy_requires_browser_accelerators_disabled_and_zoom_enabled() {
+        for browser_keys in [false, true] {
+            for zoom in [false, true] {
+                assert_eq!(accelerator_policy_ready(browser_keys, zoom), !browser_keys && zoom);
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

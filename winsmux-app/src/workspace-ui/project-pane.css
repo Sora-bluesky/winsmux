@@ -24,6 +24,7 @@
 .workspace-pane label { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem; max-width: 100%; min-width: 0; }
 .workspace-pane input { flex: 0 1 6.5rem; width: 6.5rem; min-width: 0; max-width: 100%; }
 .workspace-terminal { min-height: 12rem; min-width: 0; overflow: auto; border: 1px solid ButtonBorder; }
+.workspace-terminal:focus-within { outline: 3px solid Highlight; outline-offset: 2px; }
 .workspace-project-pane dialog { color: CanvasText; background: Canvas; border: 2px solid ButtonBorder; max-width: min(40rem, 95vw); max-height: 90vh; overflow: auto; overflow-wrap: anywhere; }
 .workspace-project-pane dialog button { margin: .3rem; }
 .workspace-project-pane dialog::backdrop { background: rgb(0 0 0 / .35); }
