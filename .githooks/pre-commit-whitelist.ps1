@@ -1,4 +1,4 @@
-﻿$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()

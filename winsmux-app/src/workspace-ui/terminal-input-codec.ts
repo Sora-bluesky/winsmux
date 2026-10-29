@@ -3,9 +3,8 @@ import type { InputProducer } from './terminal-input';
 import { scalarText } from './terminal-input';
 
 type Baseline={value:string;start:number;end:number};
-type NativeSession={kind:'composition'|'panel'|'implicit';confirm:'pending'|'held'|'released';capturedCode:string|null;tail:boolean;committed:boolean};
 type FinalReceipt={kind:'input'|'end';text:string};
-type Composition={session:NativeSession;baseline:Baseline;value:string;ended:boolean;blocked:boolean;token:number;finalText:string|null;finalInput:boolean;awaitingFinal:boolean;after:string};
+type Composition={baseline:Baseline;value:string;ended:boolean;blocked:boolean;token:number;finishing:boolean;finalText:string|null;finalInput:boolean;awaitingFinal:boolean;after:string};
 const bytes=(s:string)=>new TextEncoder().encode(s).byteLength;
 const compositionInput=(type:string)=>['insertCompositionText','insertFromComposition','deleteCompositionText'].includes(type);
 function difference(base:Baseline,value:string):string|null {
@@ -28,9 +27,9 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const cancel=doc.createElement('button'); cancel.type='button';cancel.textContent='変換を取消';cancel.hidden=true;
   slot.before(preview,cancel);
   let retired=false;let composition:Composition|null=null;let pendingNative:Baseline|null=null;let token=0;let delayedBlur=false;
-  // The native session outlives its text snapshot: DOM commit and physical key
-  // release are independent boundaries, and neither may release the other's work.
-  let session:NativeSession|null=null;let finalReceipt:FinalReceipt|null=null;
+  // A native press owns only its own key phases, up to the next ordinary down.
+  // Text receipts never suppress keys; they consume only a matching DOM notice.
+  let nativeCode:string|null=null;let panelEscape=false;let finalReceipt:FinalReceipt|null=null;
   const baseline=():Baseline=>({value:textarea.value,start:textarea.selectionStart??textarea.value.length,end:textarea.selectionEnd??textarea.value.length});
   const relevant=(event:Event)=>event.target===textarea;
   function block(c:Composition,message:string) {
@@ -56,32 +55,28 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     if (!producer.canAccept()) {explain('終了確認中のため変換文字を送信していません。確定または取消しを確認してください。');return false;}
     const part=difference(c.baseline,c.value);
     if (part===null || !scalarText(part)) {block(c,'確定文字をUnicode文字として確認できません。送信していません。');return false;}
-    // A sent snapshot and its late final DOM notification are one transaction.
-    // Keep the receipt charged until that notification or a new native gesture.
-    const receipt:FinalReceipt|null=!part?null:c.finalText!==null&&!c.finalInput?{kind:'input',text:part}:c.session.kind!=='composition'?{kind:'end',text:part}:null;
+    // Keep one bounded receipt across ordinary VT keys: a late final insertion
+    // is still the same text even when a subsequent key has already been sent.
+    const receipt:FinalReceipt|null=!part?null:{kind:c.finalText!==null&&!c.finalInput?'input':'end',text:part};
     producer.pending(receipt?bytes(receipt.text):0,false);
     const text=part+c.after;
     if (text && !producer.offer(text)) {producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after),true);block(c,'確定入力を受け付けられません。取消して入力を確認してください。');return false;}
-    c.session.committed=true;
-    if(c.session.confirm==='pending'&&c.finalInput)c.session.confirm='released';
     clear();finalReceipt=receipt;if(receipt)producer.pending(bytes(receipt.text),false);return true;
   }
-  function begin(base=baseline(),nativeSession:NativeSession={kind:'composition',confirm:'pending',capturedCode:null,tail:false,committed:false}) {
+  function begin(base=baseline()) {
     finalReceipt=null;
-    session=nativeSession;
-    const c:Composition={session,baseline:base,value:textarea.value,ended:false,blocked:false,token:++token,finalText:null,finalInput:false,awaitingFinal:false,after:''};composition=c;update(c,textarea.value);return c;
+    const c:Composition={baseline:base,value:textarea.value,ended:false,blocked:false,token:++token,finishing:false,finalText:null,finalInput:false,awaitingFinal:false,after:''};composition=c;update(c,textarea.value);return c;
   }
   const start=(event:Event)=>{
     if(!relevant(event)||retired)return;event.stopImmediatePropagation();
-    // A Process/229 key may arrive before TSF announces the composition.
-    if(composition&&composition.session.kind!=='composition'){composition.session.kind='composition';composition.ended=false;composition.awaitingFinal=false;return;}
+    panelEscape=false;
     if(composition?.ended && !commit(composition))return;
     if(!producer.canAccept()){event.preventDefault();explain('入力の受付を止めています。保持入力を確認してください。');return;}
     begin();
   };
   const change=(event:Event)=>{if(!relevant(event)||retired)return;event.stopImmediatePropagation();
     if(!composition&&!producer.canAccept()){textarea.value=pendingNative?.value??'';pendingNative=null;explain('終了確認中のため新しい変換入力を受け付けていません。');return;}
-    const c=composition??begin(pendingNative??baseline());c.session.kind='composition';update(c,textarea.value);};
+    const c=composition??begin(pendingNative??baseline());update(c,textarea.value);};
   const end=(event:Event)=>{
     if(!relevant(event)||retired)return;event.stopImmediatePropagation();
     // TSF may first commit plain insertText, then announce its optional end.
@@ -89,7 +84,6 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     // next plain insertText remains independent, even if its text is identical.
     if(!composition&&finalReceipt?.kind==='end'&&finalReceipt.text===(event as CompositionEvent).data){
       finalReceipt=null;producer.pending(0,false);
-      if(session)session.tail=true;
       return;
     }
     if(!composition&&!producer.canAccept()){textarea.value=pendingNative?.value??'';pendingNative=null;explain('終了確認中のため新しい変換入力を受け付けていません。');return;}
@@ -100,8 +94,6 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     c.ended=true;
     c.finalText=(event as CompositionEvent).data;
     c.awaitingFinal=difference(c.baseline,c.value)!==c.finalText;
-    c.session.kind='composition';c.session.tail=true;
-    if(c.finalText===''&&c.session.confirm==='pending')c.session.confirm='released';
     const captured=c.token;
     // One DOM propagation boundary; callback reads the captured snapshot, never a later textarea.
     setTimeout(()=>{if(!retired&&composition===c&&c.token===captured)commit(c);},0);
@@ -109,7 +101,7 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const before=(event:Event)=>{
     if(!relevant(event)||retired)return;
     const input=event as InputEvent;
-    if(input.inputType==='insertLineBreak'&&session&&(session.capturedCode!==null||session.tail||session.confirm!=='released')){event.preventDefault();event.stopImmediatePropagation();return;}
+    if(input.inputType==='insertLineBreak'&&(nativeCode==='Enter'||nativeCode==='NumpadEnter')){event.preventDefault();event.stopImmediatePropagation();return;}
     if(composition?.ended && !compositionInput(input.inputType) && input.isComposing!==true) pendingNative=baseline();
     else if(!composition) pendingNative=baseline();
     if(!composition&&!producer.canAccept()&&event.cancelable){event.preventDefault();event.stopImmediatePropagation();}
@@ -124,16 +116,10 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     if(!c&&finalReceipt!==null){
       const receipt=finalReceipt;finalReceipt=null;producer.pending(0,false);
       if(receipt.kind==='input'&&native.data===receipt.text&&(textarea.value===receipt.text||pendingNative&&difference(pendingNative,textarea.value)===receipt.text)){
-        if(session?.confirm==='pending')session.confirm='released';
         textarea.value='';pendingNative=null;return;
       }
     }
-    if(!c&&session&&session.kind!=='composition'&&!compositionInput(native.inputType)&&!native.isComposing)c=begin(pendingNative??baseline(),session);
-    if(c&&c.session.kind!=='composition'&&!compositionInput(native.inputType)&&!native.isComposing){
-      update(c,textarea.value);c.ended=true;c.awaitingFinal=false;c.finalInput=true;commit(c);return;
-    }
     if(c&&!c.ended){
-      if(native.isComposing||compositionInput(native.inputType))c.session.kind='composition';
       if(native.inputType==='insertFromComposition'||!native.isComposing&&!compositionInput(native.inputType))c.finalInput=true;
       update(c,textarea.value);return;
     }
@@ -163,46 +149,48 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     const prior=pendingNative;pendingNative=null;
     const text=prior?difference(prior,textarea.value):typeof native.data==='string'&&textarea.value===native.data?textarea.value:null;
     if(text===null){explain('入力の確定した範囲を確認できません。送信していません。');return;}
-    if(text&&producer.offer(text))textarea.value='';
+    if(text){
+      // Reserve the optional end receipt before offering text into the same
+      // bounded producer. A failed reservation must not leave a phantom edit.
+      if(!producer.pending(bytes(text),false)){
+        producer.pending(0,false);explain('入力の保持上限を超えるため送信していません。入力を確認してください。');return;
+      }
+      if(producer.offer(text)){textarea.value='';finalReceipt={kind:'end',text};}
+      else producer.pending(0,false);
+    }
   };
   const blur=(event:Event)=>{
+    panelEscape=false;
     if(!relevant(event)||retired||!composition)return;
     event.stopImmediatePropagation();delayedBlur=true;if(!composition.finalInput)update(composition,textarea.value);
   };
-  const focus=()=>{delayedBlur=false;};
-  // One capture owner handles every keyboard phase, including Process/229 and
-  // Win+. / Win+; with no compositionstart. Only a new press after release is VT.
+  const focus=()=>{delayedBlur=false;panelEscape=false;};
+  // Classify the physical key, never the next Enter. Opening Win+. does not
+  // create a composition or reserve any subsequent shell key.
   const nativeKey=(event:Event)=>{
     if(!relevant(event)||retired)return;
     const key=event as KeyboardEvent;
     const enter=key.key==='Enter'||key.code==='Enter'||key.code==='NumpadEnter';
-    const native=key.isComposing||key.keyCode===229;
+    const code=key.code||key.key;
+    const native=key.isComposing||key.keyCode===229||key.key==='Process';
     if(key.type==='keydown'){
       const panel=key.metaKey&&(key.key==='.'||key.key===';'||key.code==='Period'||key.code==='Semicolon');
-      if(!composition&&(panel||native&&(!session||session.confirm==='released')&&!(enter&&session?.committed))&&producer.canAccept()){
-        begin(baseline(),{kind:panel?'panel':'implicit',confirm:'pending',capturedCode:null,tail:false,committed:false});
-      }
-      const current=session;
-      if(current&&!key.repeat){current.capturedCode=null;current.tail=false;}
-      if(!enter&&!native&&(current?.kind!=='panel'||current.confirm==='released')&&(!composition||composition.ended&&!composition.awaitingFinal)){
-        session=null;if(finalReceipt!==null){finalReceipt=null;producer.pending(0,false);}
-      }else if(current&&(native||current.confirm!=='released')){
-        if(native||composition&&!composition.ended||enter&&current.confirm!=='released'||current.kind==='panel'&&current.confirm!=='released'||key.repeat&&current.capturedCode!==null){
-          current.capturedCode=key.code;
-          if(enter){current.confirm='held';if(composition&&current.kind!=='composition'){composition.ended=true;composition.awaitingFinal=true;}}
-        }
+      if(native||panel||key.repeat&&nativeCode===code){
+        nativeCode=code;
+        if(panel)panelEscape=true;
+        if(enter&&composition)composition.finishing=true;
+      }else{
+        nativeCode=null;
+        // Escape is the optional panel's first closing key. Every other
+        // non-native down releases the hint and is handled normally by xterm.
+        if(key.key==='Escape'&&(panelEscape||composition&&!composition.ended))nativeCode=code;
+        panelEscape=false;
       }
     }
-    const current=session;
-    if(!native&&(!current||current.capturedCode===null&&!current.tail&&!(enter&&current.confirm!=='released')))return;
+    if(!native&&nativeCode!==code)return;
     event.stopImmediatePropagation();
     // Let Windows finish the native keydown; never let a synthetic keypress insert a second glyph.
     if(key.type==='keypress')event.preventDefault();
-    if(key.type==='keyup'&&current){
-      if(enter)current.confirm='released';
-      if(key.key==='Escape'&&current.kind!=='composition'){clear();session=null;}
-      current.tail=true;current.capturedCode=null;
-    }
   };
   const paste=(event:Event)=>{
     if(retired)return;
@@ -228,8 +216,8 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     if(retired)return false;
     // Returning false without canceling the keydown lets the browser deliver its paste event.
     if(event.ctrlKey&&!event.altKey&&!event.metaKey&&event.key.toLowerCase()==='v')return false;
-    const waiting=composition&&composition.session.confirm==='released'&&!composition.blocked&&(!composition.ended||composition.awaitingFinal);
-    if(event.isComposing||event.keyCode===229||composition&&!composition.ended&&!waiting)return false;
+    const waiting=composition&&!composition.blocked&&(composition.awaitingFinal||composition.finishing&&!composition.ended);
+    if(event.isComposing||event.keyCode===229||event.key==='Process'||composition&&!composition.ended&&!waiting)return false;
     if(composition&&!waiting&&!commit(composition)){event.preventDefault();return false;}
     if(event.type==='keyup'&&doc.activeElement!==textarea)return false;
     if(event.ctrlKey&&event.shiftKey&&!event.altKey&&!event.metaKey&&event.key.toLowerCase()==='c'){
@@ -246,7 +234,7 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     if(retired||!text)return;
     if(isFocusReport(text,terminal.modes.sendFocusMode)){producer.focus(text);return;}
     const c=composition;
-    if(c&&c.session.confirm==='released'&&(!c.ended||c.awaitingFinal)){
+    if(c&&(!c.ended||c.awaitingFinal)){
       // Keep xterm's encoding (including terminal modes) and queue all ordinary
       // keys at the same boundary until the final native insertion is ready.
       if(!producer.canAccept())explain('入力の受付を止めているため後続のキーを送信していません。');
@@ -260,14 +248,14 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const listeners:[string,EventListener][]=[['keydown',nativeKey],['keypress',nativeKey],['keyup',nativeKey],['compositionstart',start],['compositionupdate',change],['compositionend',end],['beforeinput',before],['input',input],['blur',blur],['paste',paste],['contextmenu',context]];
   for(const [name,listener]of listeners)slot.addEventListener(name,listener,true);
   textarea.addEventListener('focus',focus);
-  cancel.onclick=()=>{if(retired)return;session=null;clear();explain('未確定の変換を取消しました。確定した配送記録は保持しています。');textarea.focus();};
+  cancel.onclick=()=>{if(retired)return;nativeCode=null;panelEscape=false;clear();explain('未確定の変換を取消しました。確定した配送記録は保持しています。');textarea.focus();};
   return {
     isComposing:()=>composition!==null,
     retire(){
       if(retired)return;
       if(composition?.ended)commit(composition);
       else if(composition)explain('対象が変わったため未確定の変換を取消しました。確定入力は元の対象に保持しています。');
-      retired=true;composition=null;pendingNative=null;session=null;finalReceipt=null;producer.pending(0,false);producer.retire();
+      retired=true;composition=null;pendingNative=null;nativeCode=null;panelEscape=false;finalReceipt=null;producer.pending(0,false);producer.retire();
       for(const [name,listener]of listeners)slot.removeEventListener(name,listener,true);
       textarea.removeEventListener('focus',focus);data.dispose();key.dispose();preview.remove();cancel.remove();
       terminal.attachCustomKeyEventHandler(()=>false);
