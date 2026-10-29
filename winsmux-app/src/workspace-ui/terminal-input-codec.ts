@@ -3,7 +3,9 @@ import type { InputProducer } from './terminal-input';
 import { scalarText } from './terminal-input';
 
 type Baseline={value:string;start:number;end:number};
-type Composition={baseline:Baseline;value:string;ended:boolean;blocked:boolean;token:number};
+type NativeSession={kind:'composition'|'panel'|'implicit';confirm:'pending'|'held'|'released';capturedCode:string|null;tail:boolean};
+type FinalReceipt={kind:'input'|'end';text:string};
+type Composition={session:NativeSession;baseline:Baseline;value:string;ended:boolean;blocked:boolean;token:number;finalText:string|null;finalInput:boolean;awaitingFinal:boolean;after:string};
 const bytes=(s:string)=>new TextEncoder().encode(s).byteLength;
 const compositionInput=(type:string)=>['insertCompositionText','insertFromComposition','deleteCompositionText'].includes(type);
 function difference(base:Baseline,value:string):string|null {
@@ -15,7 +17,7 @@ function isFocusReport(text: string, sendFocusMode: boolean): text is '\x1b[I' |
   return sendFocusMode && (text==='\x1b[I' || text==='\x1b[O');
 }
 
-/** Capture owns composition and the Ctrl+Shift+C copy chord; xterm owns ordinary VT keys and bracketed paste. */
+/** Capture owns native text and its confirming press; xterm owns ordinary VT keys and paste. */
 export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, producer:InputProducer, explain:(message:string)=>void) {
   const candidate=terminal.textarea;
   if (!candidate) throw new Error('terminal_textarea_unavailable');
@@ -26,51 +28,74 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const cancel=doc.createElement('button'); cancel.type='button';cancel.textContent='変換を取消';cancel.hidden=true;
   slot.before(preview,cancel);
   let retired=false;let composition:Composition|null=null;let pendingNative:Baseline|null=null;let token=0;let delayedBlur=false;
+  // The native session outlives its text snapshot: DOM commit and physical key
+  // release are independent boundaries, and neither may release the other's work.
+  let session:NativeSession|null=null;let finalReceipt:FinalReceipt|null=null;
   const baseline=():Baseline=>({value:textarea.value,start:textarea.selectionStart??textarea.value.length,end:textarea.selectionEnd??textarea.value.length});
   const relevant=(event:Event)=>event.target===textarea;
   function block(c:Composition,message:string) {
     c.blocked=true;
-    if(!producer.pending(bytes(c.value)+bytes(c.baseline.value),true)) {
-      c.value='';c.baseline={value:'',start:0,end:0};producer.pending(0,true);
+    if(!producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after),true)) {
+      c.value='';c.baseline={value:'',start:0,end:0};c.after='';producer.pending(0,true);
     }
     preview.textContent='変換の内容を確認できません。取消して入力し直してください。';cancel.hidden=false;explain(message);
   }
   function update(c:Composition,value:string) {
     const part=difference(c.baseline,value);
     if (part===null) {block(c,'変換の対象範囲を確認できません。送信していません。');return;}
-    if (!producer.pending(bytes(value)+bytes(c.baseline.value),true)) {block(c,'変換中の入力全体が上限を超えています。送信していません。');return;}
+    if (!producer.pending(bytes(value)+bytes(c.baseline.value)+bytes(c.after),true)) {block(c,'変換中の入力全体が上限を超えています。送信していません。');return;}
     c.value=value;preview.textContent=part;cancel.hidden=false;
   }
   function relayBlur() {
     if (!delayedBlur) return;delayedBlur=false;
     if (!retired && doc.activeElement!==textarea) textarea.dispatchEvent(new FocusEvent('blur'));
   }
-  function clear() {composition=null;pendingNative=null;producer.pending(0,false);preview.textContent='';cancel.hidden=true;textarea.value='';relayBlur();}
+  function clear() {composition=null;pendingNative=null;finalReceipt=null;producer.pending(0,false);preview.textContent='';cancel.hidden=true;textarea.value='';relayBlur();}
   function commit(c:Composition) {
-    if (retired || composition!==c || !c.ended || c.blocked) return false;
+    if (retired || composition!==c || !c.ended || c.blocked || c.awaitingFinal) return false;
     if (!producer.canAccept()) {explain('終了確認中のため変換文字を送信していません。確定または取消しを確認してください。');return false;}
     const part=difference(c.baseline,c.value);
     if (part===null || !scalarText(part)) {block(c,'確定文字をUnicode文字として確認できません。送信していません。');return false;}
-    producer.pending(0,false);
-    if (part && !producer.offer(part)) {producer.pending(bytes(c.value)+bytes(c.baseline.value),true);block(c,'確定入力を受け付けられません。取消して入力を確認してください。');return false;}
-    clear();return true;
+    // A sent snapshot and its late final DOM notification are one transaction.
+    // Keep the receipt charged until that notification or a new native gesture.
+    const receipt:FinalReceipt|null=!part?null:c.finalText!==null&&!c.finalInput?{kind:'input',text:part}:c.session.kind!=='composition'?{kind:'end',text:part}:null;
+    producer.pending(receipt?bytes(receipt.text):0,false);
+    const text=part+c.after;
+    if (text && !producer.offer(text)) {producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after),true);block(c,'確定入力を受け付けられません。取消して入力を確認してください。');return false;}
+    clear();finalReceipt=receipt;if(receipt)producer.pending(bytes(receipt.text),false);return true;
   }
-  function begin(base=baseline()) {
-    const c:Composition={baseline:base,value:textarea.value,ended:false,blocked:false,token:++token};composition=c;update(c,textarea.value);return c;
+  function begin(base=baseline(),nativeSession:NativeSession={kind:'composition',confirm:'pending',capturedCode:null,tail:false}) {
+    finalReceipt=null;
+    session=nativeSession;
+    const c:Composition={session,baseline:base,value:textarea.value,ended:false,blocked:false,token:++token,finalText:null,finalInput:false,awaitingFinal:false,after:''};composition=c;update(c,textarea.value);return c;
   }
   const start=(event:Event)=>{
     if(!relevant(event)||retired)return;event.stopImmediatePropagation();
+    // A Process/229 key may arrive before TSF announces the composition.
+    if(composition&&composition.session.kind!=='composition'){composition.session.kind='composition';composition.ended=false;composition.awaitingFinal=false;return;}
     if(composition?.ended && !commit(composition))return;
     if(!producer.canAccept()){event.preventDefault();explain('入力の受付を止めています。保持入力を確認してください。');return;}
     begin();
   };
   const change=(event:Event)=>{if(!relevant(event)||retired)return;event.stopImmediatePropagation();
     if(!composition&&!producer.canAccept()){textarea.value=pendingNative?.value??'';pendingNative=null;explain('終了確認中のため新しい変換入力を受け付けていません。');return;}
-    const c=composition??begin(pendingNative??baseline());update(c,textarea.value);};
+    const c=composition??begin(pendingNative??baseline());c.session.kind='composition';update(c,textarea.value);};
   const end=(event:Event)=>{
     if(!relevant(event)||retired)return;event.stopImmediatePropagation();
+    // TSF may first commit plain insertText, then announce its optional end.
+    // Its DOM insertion was already observed; the end is only a receipt. The
+    // next plain insertText remains independent, even if its text is identical.
+    if(!composition&&finalReceipt?.kind==='end'&&finalReceipt.text===(event as CompositionEvent).data){
+      finalReceipt=null;producer.pending(0,false);
+      if(session)session.tail=true;
+      return;
+    }
     if(!composition&&!producer.canAccept()){textarea.value=pendingNative?.value??'';pendingNative=null;explain('終了確認中のため新しい変換入力を受け付けていません。');return;}
     const c=composition??begin(pendingNative??baseline());update(c,textarea.value);c.ended=true;
+    c.finalText=(event as CompositionEvent).data;
+    c.awaitingFinal=difference(c.baseline,c.value)!==c.finalText;
+    c.session.kind='composition';c.session.tail=true;
+    if(c.finalText===''&&c.session.confirm==='pending')c.session.confirm='released';
     const captured=c.token;
     // One DOM propagation boundary; callback reads the captured snapshot, never a later textarea.
     setTimeout(()=>{if(!retired&&composition===c&&c.token===captured)commit(c);},0);
@@ -78,6 +103,7 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   const before=(event:Event)=>{
     if(!relevant(event)||retired)return;
     const input=event as InputEvent;
+    if(input.inputType==='insertLineBreak'&&session&&(session.capturedCode!==null||session.tail||session.confirm!=='released')){event.preventDefault();event.stopImmediatePropagation();return;}
     if(composition?.ended && !compositionInput(input.inputType) && input.isComposing!==true) pendingNative=baseline();
     else if(!composition) pendingNative=baseline();
     if(!composition&&!producer.canAccept()&&event.cancelable){event.preventDefault();event.stopImmediatePropagation();}
@@ -89,21 +115,40 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
       textarea.value=pendingNative?.value??'';pendingNative=null;
       explain('終了確認中のため新しい入力を受け付けていません。');return;
     }
-    if(c&&!c.ended){update(c,textarea.value);return;}
+    if(!c&&finalReceipt!==null){
+      const receipt=finalReceipt;finalReceipt=null;producer.pending(0,false);
+      if(receipt.kind==='input'&&native.data===receipt.text&&(textarea.value===receipt.text||pendingNative&&difference(pendingNative,textarea.value)===receipt.text)){
+        textarea.value='';pendingNative=null;return;
+      }
+    }
+    if(!c&&session&&session.kind!=='composition'&&!compositionInput(native.inputType)&&!native.isComposing)c=begin(pendingNative??baseline(),session);
+    if(c&&c.session.kind!=='composition'&&!compositionInput(native.inputType)&&!native.isComposing){
+      update(c,textarea.value);c.ended=true;c.awaitingFinal=false;commit(c);return;
+    }
+    if(c&&!c.ended){
+      if(native.isComposing||compositionInput(native.inputType))c.session.kind='composition';
+      if(native.inputType==='insertFromComposition')c.finalInput=true;update(c,textarea.value);return;
+    }
     if(c?.ended){
-      if(compositionInput(native.inputType)||native.isComposing){update(c,textarea.value);return;}
+      if(c.awaitingFinal){
+        update(c,textarea.value);
+        if(c.finalText!==null&&difference(c.baseline,c.value)!==c.finalText)return;
+        c.awaitingFinal=false;c.finalInput=true;commit(c);return;
+      }
+      if(compositionInput(native.inputType)||native.isComposing){c.finalInput=true;update(c,textarea.value);return;}
       const prior=pendingNative;
       const actual=textarea.value;
       // A separate insertion must be proved by its native range and DOM mutation.
       const inserted=prior?difference(prior,actual):null;
       const independent=prior!==null&&typeof native.data==='string'&&inserted===native.data&&actual===prior.value.slice(0,prior.start)+native.data+prior.value.slice(prior.end);
       if(independent){
+        c.finalInput=true;
         if(!commit(c))return;
         if(inserted){producer.offer(inserted);textarea.value='';}
         pendingNative=null;return;
       }
       // A final notification with no independent edit still belongs to this composition.
-      if(actual===c.value&&(prior===null||prior.value===c.value)){update(c,actual);pendingNative=null;return;}
+      if(actual===c.value&&(prior===null||prior.value===c.value)){c.finalInput=true;update(c,actual);pendingNative=null;return;}
       block(c,'確定通知と次の入力の対応を確認できません。入力を重複送信していません。');return;
     }
     if(native.isComposing||compositionInput(native.inputType)){c=begin(pendingNative??baseline());update(c,textarea.value);return;}
@@ -117,6 +162,49 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     event.stopImmediatePropagation();delayedBlur=true;update(composition,textarea.value);
   };
   const focus=()=>{delayedBlur=false;};
+  // One capture owner handles every keyboard phase, including Process/229 and
+  // Win+. / Win+; with no compositionstart. Only a new press after release is VT.
+  const nativeKey=(event:Event)=>{
+    if(!relevant(event)||retired)return;
+    const key=event as KeyboardEvent;
+    const enter=key.key==='Enter'||key.code==='Enter'||key.code==='NumpadEnter';
+    const native=key.isComposing||key.keyCode===229;
+    if(key.type==='keydown'){
+      const panel=key.metaKey&&(key.key==='.'||key.key===';'||key.code==='Period'||key.code==='Semicolon');
+      if(!composition&&(panel||native&&(!session||session.confirm==='released'))&&producer.canAccept()){
+        begin(baseline(),{kind:panel?'panel':'implicit',confirm:'pending',capturedCode:null,tail:false});
+      }
+      const current=session;
+      if(current&&!key.repeat){current.capturedCode=null;current.tail=false;}
+      if(!enter&&!native&&(current?.kind!=='panel'||current.confirm==='released')&&(!composition||composition.ended&&!composition.awaitingFinal)){
+        session=null;if(finalReceipt!==null){finalReceipt=null;producer.pending(0,false);}
+      }else if(current){
+        if(enter&&current.confirm==='released'&&composition&&(!composition.ended||composition.awaitingFinal)){
+          // The next, separate Enter must wait behind the final native DOM text.
+          const c=composition;
+          event.preventDefault();event.stopImmediatePropagation();current.capturedCode=key.code;
+          if(!producer.canAccept())explain('入力の受付を止めているためEnterを送信していません。');
+          else if(producer.pending(bytes(c.value)+bytes(c.baseline.value)+bytes(c.after)+1,true))c.after+='\r';
+          else explain('保持できる入力の上限を超えるためEnterを送信していません。');
+          return;
+        }
+        if(native||composition&&!composition.ended||enter&&current.confirm!=='released'||current.kind==='panel'&&current.confirm!=='released'||key.repeat&&current.capturedCode!==null){
+          current.capturedCode=key.code;
+          if(enter){current.confirm='held';if(composition&&current.kind!=='composition'){composition.ended=true;composition.awaitingFinal=true;}}
+        }
+      }
+    }
+    const current=session;
+    if(!native&&(!current||current.capturedCode===null&&!current.tail&&!(enter&&current.confirm!=='released')))return;
+    event.stopImmediatePropagation();
+    // Let Windows finish the native keydown; never let a synthetic keypress insert a second glyph.
+    if(key.type==='keypress')event.preventDefault();
+    if(key.type==='keyup'&&current){
+      if(enter)current.confirm='released';
+      if(key.key==='Escape'&&current.kind!=='composition'){clear();session=null;}
+      current.tail=true;current.capturedCode=null;
+    }
+  };
   const paste=(event:Event)=>{
     if(retired)return;
     if(!event.cancelable){event.stopImmediatePropagation();explain('貼り付けの既定挿入を取消せないため送信していません。');return;}
@@ -139,6 +227,8 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
   };
   terminal.attachCustomKeyEventHandler(event=>{
     if(retired)return false;
+    // Returning false without canceling the keydown lets the browser deliver its paste event.
+    if(event.ctrlKey&&!event.altKey&&!event.metaKey&&event.key.toLowerCase()==='v')return false;
     if(event.isComposing||event.keyCode===229||composition&&!composition.ended)return false;
     if(composition&&!commit(composition)){event.preventDefault();return false;}
     if(event.type==='keyup'&&doc.activeElement!==textarea)return false;
@@ -158,17 +248,17 @@ export function installTerminalInputCodec(slot:HTMLElement, terminal:Terminal, p
     producer.offer(text);
   });
   const key=terminal.onKey(({domEvent})=>{domEvent.preventDefault();});
-  const listeners:[string,EventListener][]=[['compositionstart',start],['compositionupdate',change],['compositionend',end],['beforeinput',before],['input',input],['blur',blur],['paste',paste],['contextmenu',context]];
+  const listeners:[string,EventListener][]=[['keydown',nativeKey],['keypress',nativeKey],['keyup',nativeKey],['compositionstart',start],['compositionupdate',change],['compositionend',end],['beforeinput',before],['input',input],['blur',blur],['paste',paste],['contextmenu',context]];
   for(const [name,listener]of listeners)slot.addEventListener(name,listener,true);
   textarea.addEventListener('focus',focus);
-  cancel.onclick=()=>{if(retired)return;clear();explain('未確定の変換を取消しました。確定した配送記録は保持しています。');textarea.focus();};
+  cancel.onclick=()=>{if(retired)return;session=null;clear();explain('未確定の変換を取消しました。確定した配送記録は保持しています。');textarea.focus();};
   return {
     isComposing:()=>composition!==null,
     retire(){
       if(retired)return;
       if(composition?.ended)commit(composition);
       else if(composition)explain('対象が変わったため未確定の変換を取消しました。確定入力は元の対象に保持しています。');
-      retired=true;composition=null;pendingNative=null;producer.pending(0,false);producer.retire();
+      retired=true;composition=null;pendingNative=null;session=null;finalReceipt=null;producer.pending(0,false);producer.retire();
       for(const [name,listener]of listeners)slot.removeEventListener(name,listener,true);
       textarea.removeEventListener('focus',focus);data.dispose();key.dispose();preview.remove();cancel.remove();
       terminal.attachCustomKeyEventHandler(()=>false);
