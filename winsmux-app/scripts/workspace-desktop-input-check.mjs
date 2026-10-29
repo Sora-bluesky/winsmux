@@ -16,6 +16,32 @@ const baseline = process.argv.includes('--baseline');
 const sourceIndex = process.argv.indexOf('--source-ref');
 const sourceRef = sourceIndex >= 0 ? process.argv[sourceIndex + 1] : baseline ? 'fa510131c2a0347e9f2e0e9b016b92ee99dc5b60' : null;
 const source = path => sourceRef ? execFileSync('git', ['show', `${sourceRef}:winsmux-app/${relative(app, path).replaceAll('\\', '/')}`], { cwd: app, encoding: 'utf8' }) : readFileSync(path, 'utf8');
+const probePath = resolve(app, 'scripts/fixtures/ime-probe-win11-edge.txt');
+const probe = readFileSync(probePath, 'utf8');
+const probeEvents = probe.trimEnd().split('\n').map((line, index) => {
+  const match = /^(\d+\.\d+) ms (\S+) (.*)$/.exec(line);
+  if (!match) throw Error(`Invalid probe line ${index + 1}`);
+  const event = { time: Number(match[1]), type: match[2], line: index + 1 };
+  for (const field of match[3].matchAll(/(\w+)=("(?:\\.|[^"\\])*"|true|false|null|\d+)/g)) event[field[1]] = JSON.parse(field[2]);
+  if (typeof event.value !== 'string') throw Error(`Missing probe value at line ${index + 1}`);
+  return event;
+});
+// Exact captured windows, including extra operations in S4-S6. No native event
+// inside a window is removed to make the capture agree with the intended task.
+// S1 excludes setup/corrections and an additional Enter between S1 and S2.
+const replayWindows = [
+  ['S1', 48804.6, 57937.6, '日本語\r'],
+  ['S2', 65031.3, 74800.7, '日本語\r'],
+  ['S3', 78443.1, 90302.5, '😊\r'],
+  ['S4', 96649.5, 118035.5, '👇👇\r'],
+  ['S5', 120005.4, 132937.5, '👇\r'],
+  ['S6', 138794.2, 181797.1, '日本語\rx\r'],
+  ['S7', 186066.0, 196640.4, '\r'],
+].map(([name, first, last, expected]) => {
+  const events = probeEvents.filter(event => event.time >= first && event.time <= last);
+  if (!events.length || events[0].time !== first || events.at(-1).time !== last) throw Error(`Invalid replay window ${name}`);
+  return { name, events, expected };
+});
 const plugins = sourceRef ? [{ name: 'frozen-product-source', setup(builder) {
   builder.onLoad({ filter: /[\\/]src[\\/].*\.ts$/ }, args => ({ contents: source(args.path), loader: 'ts', resolveDir: dirname(args.path) }));
 } }] : [];
@@ -33,10 +59,10 @@ try {
   await page.addStyleTag({ content: readFileSync(resolve(app, 'node_modules/xterm/css/xterm.css'), 'utf8') });
   await page.addScriptTag({ content: readFileSync(resolve(app, 'node_modules/xterm/lib/xterm.js'), 'utf8') });
   await page.evaluate(async text => { globalThis.product = await import(URL.createObjectURL(new Blob([text], { type: 'text/javascript' }))); }, bundle.outputFiles[0].text);
-  results.push(...await page.evaluate(async () => {
+  results.push(...await page.evaluate(async replayWindows => {
     const { installTerminalInputCodec, createProjectPaneView } = product;
     const results = [];
-    // The native transaction owns text, the entire confirming press, and its final DOM receipt.
+    // Native text and its physical Process/229 press have independent lifetimes.
     // End notifications, native input, and key release may cross DOM task boundaries.
     const check = (name, actual, expected) => results.push({ name, passed: JSON.stringify(actual) === JSON.stringify(expected), actual: structuredClone(actual), expected });
     const tick = () => new Promise(resolve => setTimeout(resolve, 5));
@@ -53,6 +79,7 @@ try {
         Enter: { key: 'Enter', code: 'Enter', keyCode: 13 },
         Tab: { key: 'Tab', code: 'Tab', keyCode: 9 },
         Backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 },
+        Escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
         'Ctrl+C': { key: 'c', code: 'KeyC', keyCode: 67, ctrlKey: true },
         x: { key: 'x', code: 'KeyX', keyCode: 88 },
       }[name];
@@ -81,6 +108,106 @@ try {
     };
     globalThis.makeDesktopInputFixture = fixture;
     const vt = { Enter: '\r', Tab: '\t', Backspace: '\x7f', 'Ctrl+C': '\x03', x: 'x' };
+    // Rebase only native textarea mutations: the probe's ordinary textarea kept
+    // earlier text, whereas xterm cancels VT defaults and the codec clears commits.
+    for (const { name, events, expected } of replayWindows) {
+      const f = fixture();
+      let compositionBase = null, nativeEdit = null, canceled = false;
+      for (const event of events) {
+        if (event.type === '---tick---') { await tick(); continue; }
+        if (event.type === 'focus') { f.ta.focus(); continue; }
+        if (event.type === 'blur') { f.ta.blur(); continue; }
+        if (event.type.startsWith('key')) {
+          if (event.type === 'keydown') canceled = false;
+          if (event.type === 'keypress' && canceled) continue;
+          const domEvent = new KeyboardEvent(event.type, { bubbles: true, cancelable: true, ...event,
+            charCode: event.type === 'keypress' ? event.keyCode : 0 });
+          f.ta.dispatchEvent(domEvent);
+          if (event.type !== 'keyup') canceled ||= domEvent.defaultPrevented;
+          continue;
+        }
+        if (event.type.startsWith('composition')) {
+          if (event.type === 'compositionstart') compositionBase = { recorded: event.value, local: f.ta.value };
+          f.ta.dispatchEvent(new CompositionEvent(event.type, { bubbles: true, data: event.data }));
+          if (event.type === 'compositionend') compositionBase = null;
+          continue;
+        }
+        if (canceled) continue; // A canceled key has no native default edit in xterm.
+        if (event.type === 'beforeinput') nativeEdit = { recorded: event.value, local: f.ta.value };
+        if (event.type === 'input') {
+          const base = compositionBase ?? nativeEdit;
+          if (!base || !event.value.startsWith(base.recorded)) {
+            // Conversion replaces the preedit; compositionBase is the original
+            // insertion boundary and must remain a prefix throughout that edit.
+            throw Error(`Unmapped native mutation ${name}:${event.line}`);
+          }
+          f.ta.value = base.local + event.value.slice(base.recorded.length);
+        }
+        f.ta.dispatchEvent(nativeInput(event.type, { bubbles: true, cancelable: event.type === 'beforeinput', ...event }));
+      }
+      await tick();
+      check('recorded replay ' + name, f.out.join(''), expected);
+      f.dispose();
+    }
+    // The requested seven journeys, including the canceled/immediate-x actions
+    // absent from the capture, remain explicit synthetic acceptance cases.
+    for (const scenario of ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7']) {
+      const f = fixture();
+      const canceled = scenario === 'S5' || scenario === 'S7';
+      const emoji = scenario === 'S3' || scenario === 'S4';
+      const text = emoji ? '😊' : '日本語';
+      if (emoji || canceled) key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
+      if (!canceled) {
+        if (scenario === 'S4') enter(f, 'keydown', { key: 'Process', keyCode: 229 });
+        f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+        input(f, text, 'insertCompositionText', true);
+        if (scenario === 'S1' || scenario === 'S6') enter(f, 'keydown', { key: 'Process', keyCode: 229, isComposing: true });
+        f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
+        await tick();
+        if (['S1', 'S4', 'S6'].includes(scenario)) enter(f, 'keyup', { key: 'Process', keyCode: 229 });
+        check('requested journey commit ' + scenario, f.out.join(''), text);
+      } else if (scenario === 'S5') ordinaryKey(f, 'Escape');
+      else { f.ta.blur(); f.ta.focus(); }
+      ordinaryKey(f, scenario === 'S6' ? 'x' : 'Enter');
+      check('requested journey ' + scenario, f.out.join(''), (canceled ? '' : text) + (scenario === 'S6' ? 'x' : '\r'));
+      f.dispose();
+    }
+    {
+      const f = fixture();
+      f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      input(f, '日本語', 'insertCompositionText', true);
+      f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+      await tick(); ordinaryKey(f, 'Enter');
+      check('R1 no final input never reserves the next Enter', f.out.join(''), '日本語\r');
+      f.dispose();
+    }
+    for (const next of ['x', 'Tab', 'Backspace', 'Ctrl+C']) {
+      const f = fixture();
+      f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      enter(f, 'keydown', { keyCode: 229 });
+      f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+      ordinaryKey(f, next);
+      enter(f, 'keyup'); input(f, '日本語', 'insertFromComposition'); await tick();
+      check('R2 key before confirm release is retained ' + next, f.out.join(''), '日本語' + vt[next]);
+      f.dispose();
+    }
+    {
+      const f = fixture();
+      key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
+      f.ta.blur(); f.ta.focus(); ordinaryKey(f, 'Enter');
+      check('R3 unopened selection never blocks ordinary Enter', f.out.join(''), '\r');
+      f.dispose();
+    }
+    for (const type of ['insertText', 'insertFromComposition']) {
+      const f = fixture();
+      f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      input(f, '日本語', 'insertCompositionText', true);
+      enter(f, 'keydown', { keyCode: 229 });
+      f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+      await tick(); enter(f, 'keyup'); ordinaryKey(f, 'x'); input(f, '日本語', type); await tick();
+      check('R4 ordinary key preserves late final receipt ' + type, f.out.join(''), '日本語x');
+      f.dispose();
+    }
     // A final DOM insertion without an observed confirming press completes the
     // native transaction. The next ordinary key belongs to the shell.
     for (const source of ['ime-end-first', 'ime-input-first', 'ime-text-end-first', 'ime-text-input-first', 'panel', 'panel-end']) {
@@ -148,9 +275,9 @@ try {
           input(f, 'にほんご', 'insertCompositionText', true);
           let confirmLeaked = false;
           for (const step of order) {
-            // Once both final notifications precede keydown, only a native
-            // marker distinguishes this confirming press from B1's ordinary Enter.
-            if (step === 'down') enter(f, 'keydown', order.indexOf('down') > order.indexOf('end') && order.indexOf('down') > order.indexOf('final') ? { keyCode: 229 } : {});
+            // The capture marks the confirming key itself as Process/229. An
+            // unmarked Enter after end is an ordinary shell key (R1/S2/S3).
+            if (step === 'down') enter(f, 'keydown', { key: 'Process', keyCode: 229 });
             if (step === 'press') enter(f, 'keypress');
             if (step === 'up') enter(f, 'keyup');
             if (step === 'end') f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
@@ -180,7 +307,7 @@ try {
       const end = () => f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
       if (order === 'end-before-down' || order === 'end-task-before-down') end();
       if (order === 'end-task-before-down') await tick();
-      enter(f, 'keydown', order === 'late-dom' ? { keyCode: 229 } : {});
+      enter(f, 'keydown', { key: 'Process', keyCode: 229 });
       if (order === 'end-between-down-press' || order === 'late-dom') end();
       await tick();
       enter(f, 'keypress');
@@ -199,7 +326,7 @@ try {
       key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
       key(f, 'keyup', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
       if (order === 'text-before-confirm') input(f, '😀');
-      enter(f, 'keydown', order === 'text-before-confirm' ? { keyCode: 229 } : {});
+      enter(f, 'keydown', { key: 'Process', keyCode: 229 });
       if (order === 'text-after-keydown') input(f, '😀');
       key(f, 'keypress', { key: 'あ', code: 'Enter', keyCode: 12354, charCode: 12354 });
       enter(f, 'keyup');
@@ -393,7 +520,7 @@ try {
     }
     zoomRoot.remove();
     return results;
-  }));
+  }, replayWindows));
   await page.evaluate(() => {
     const f = globalThis.browserPasteFixture = makeDesktopInputFixture();
     f.nativePastes = 0;
@@ -440,7 +567,9 @@ try {
   }
 } finally { await browser.close(); }
 writeFileSync(resolve(evidence, baseline ? 'desktop-input-before.json' : sourceRef ? 'desktop-input-reference.json' : 'desktop-input.json'), JSON.stringify({ sourceRef, sources,
-  scope: 'installed xterm in headless Edge; synthetic IME DOM events; stub PTY producer and native zoom setter; trusted Ctrl+V paste event with synthetic clipboard text', results }, null, 2) + '\n', 'utf8');
+  probe: { path: relative(app, probePath).replaceAll('\\', '/'), sha256: createHash('sha256').update(probe).digest('hex'),
+    windows: replayWindows.map(({ name, events, expected }) => ({ name, firstLine: events[0].line, lastLine: events.at(-1).line, expected })) },
+  scope: 'installed xterm in headless Edge; recorded Win11 native event replay and synthetic IME DOM events; stub PTY producer and native zoom setter; trusted Ctrl+V paste event with synthetic clipboard text', results }, null, 2) + '\n', 'utf8');
 for (const result of results) console.log(`${result.passed ? 'PASS' : 'FAIL'} ${result.name}${result.passed ? '' : ' ' + JSON.stringify(result)}`);
 console.log(`desktop input: ${results.filter(result => result.passed).length}/${results.length} passed`);
 if (results.some(result => !result.passed)) process.exitCode = 1;

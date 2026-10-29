@@ -250,6 +250,7 @@ $whitelistPatterns = @(
     'sdk/examples/adapter-walkthrough.py',
     'winsmux-app/scripts/*.mjs',
     'winsmux-app/scripts/*.ps1',
+    'winsmux-app/scripts/fixtures/ime-probe-win11-edge.txt',
     'winsmux-app/public/**',
     'winsmux-app/package.json',
     'winsmux-app/package-lock.json',
