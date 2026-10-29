@@ -221,6 +221,13 @@ pub async fn startup_main_policy_ready(window: WebviewWindow, invocation: ipc::R
 }
 
 #[tauri::command]
+pub fn startup_main_zoom(window: WebviewWindow, invocation: ipc::Request<'_>, factor: f64) -> Result<(), String> {
+    if !crate::workspace_transport::main_local_webview(&window, &invocation) { return Err("wrong_window".into()); }
+    if !factor.is_finite() || !(0.5..=3.0).contains(&factor) { return Err("invalid_zoom".into()); }
+    window.set_zoom(factor).map_err(|_| "window_zoom_failed".into())
+}
+
+#[tauri::command]
 pub fn startup_main_show(window: WebviewWindow, invocation: ipc::Request<'_>) -> Result<(), String> {
     if !crate::workspace_transport::main_local_webview(&window, &invocation) { return Err("wrong_window".into()); }
     if let Err(error) = show_if_ready(&window) {
@@ -246,9 +253,6 @@ mod tests {
         let main = config["app"]["windows"].as_array().unwrap().iter()
             .find(|window| window["label"] == "main").unwrap();
         assert_eq!(main["zoomHotkeysEnabled"], true, "window zoom must be enabled");
-        let capability: serde_json::Value = serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
-        assert!(capability["permissions"].as_array().unwrap().iter()
-            .any(|permission| permission == "core:webview:allow-set-webview-zoom"));
     }
 
     #[test]

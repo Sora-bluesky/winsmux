@@ -149,7 +149,7 @@ export async function mountWorkspaceMain(root: HTMLElement) {
     shown = true; await invoke<void>('startup_main_show');
   };
   const status = document.createElement('p'); status.setAttribute('role', 'status');
-  const removeZoom=installWorkspaceZoom(root,factor=>getCurrentWebviewWindow().setZoom(factor),message=>{status.textContent=message;});
+  const removeZoom=installWorkspaceZoom(root,factor=>invoke<void>('startup_main_zoom',{factor}),message=>{status.textContent=message;});
   const reconnect = document.createElement('button'); reconnect.type = 'button'; reconnect.textContent = '接続を確認し直す'; reconnect.hidden = true;
   const forceExit = document.createElement('button'); forceExit.type = 'button'; forceExit.textContent = '状態不明の host を強制終了'; forceExit.hidden = true;
   forceExit.onclick = async () => { forceExit.disabled = true; try { await forceExitUncertainWorkspace(); } catch (error) {

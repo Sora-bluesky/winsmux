@@ -2230,6 +2230,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             webview_accelerators::startup_main_policy_ready,
             webview_accelerators::startup_main_show,
+            webview_accelerators::startup_main_zoom,
             install_startup_receipt::installer_startup_confirmed,
             install_startup_receipt::installer_startup_observed,
             remote_debug_gate::startup_secondary_creation_policy,
