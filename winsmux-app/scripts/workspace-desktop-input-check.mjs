@@ -237,23 +237,26 @@ try {
         f.dispose();
       }
     }
-    // xterm remains the VT encoder while final native text is pending. Every
-    // later key, including control keys, follows that text once.
+    // Every insertion in the capture has a compositionstart. The former panel
+    // and implicit cases guessed an invisible future insertion from 229 alone;
+    // keep their shortcut/key variants, but observe the native edit before
+    // asserting that later keys must follow it. A bare 229 owns only its press.
     for (const source of ['composition', 'composition-final-first', 'panel', 'implicit']) {
       for (const endBeforeRelease of [false, true]) {
         for (const sequence of [['x'], ['Tab'], ['Backspace'], ['Ctrl+C'], ['x', 'Tab', 'Backspace', 'Ctrl+C', 'Enter', 'x']]) {
           const f = fixture();
-          if (source.startsWith('composition')) f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
           if (source === 'panel') key(f, 'keydown', { key: '.', code: 'Period', metaKey: true });
+          if (source === 'implicit') key(f, 'keydown', { key: 'Process', code: 'KeyN', keyCode: 229 });
+          f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
           const end = () => f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
           enter(f, 'keydown', { keyCode: 229 });
-          if (source === 'composition' && endBeforeRelease) end();
+          if (source !== 'composition-final-first' && endBeforeRelease) end();
           if (source === 'composition-final-first' && endBeforeRelease) input(f, '日本語', 'insertFromComposition');
           enter(f, 'keyup');
           if (source === 'composition-final-first' && !endBeforeRelease) input(f, '日本語', 'insertFromComposition');
           for (const next of sequence) ordinaryKey(f, next);
           check('B2 keys wait for native text ' + source + '/' + endBeforeRelease + '/' + sequence.join(','), f.out, []);
-          if (source === 'composition' && !endBeforeRelease) end();
+          if (source !== 'composition-final-first' && !endBeforeRelease) end();
           if (source === 'composition-final-first') { f.ta.blur(); f.ta.focus(); end(); }
           else input(f, '日本語', source === 'composition' ? 'insertFromComposition' : 'insertText');
           await tick();
@@ -340,9 +343,9 @@ try {
     for (const panel of [false, true]) {
       const f = fixture(); input(f, 'echo ');
       if (panel) key(f, 'keydown', { key: '.', code: 'Period', keyCode: 190, metaKey: true });
-      else f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      f.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
       enter(f, 'keydown', { keyCode: 229 });
-      if (!panel) f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '日本語' }));
+      f.ta.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: panel ? '😀' : '日本語' }));
       enter(f, 'keyup'); await tick();
       enter(f, 'keydown'); enter(f, 'keyup');
       check('C1/C2 later Enter waits for final DOM ' + panel, f.out, ['echo ']);
@@ -379,16 +382,27 @@ try {
     }
     for (const code of ['Enter', 'NumpadEnter']) {
       const f = fixture(); input(f, 'echo ');
-      // TSF can report Process/229 and insertText without any composition events or Win+. shortcut.
+      // Without a native edit there is no text to wait for. Process/229 still
+      // suppresses its full press; the captured orders finish text before the
+      // separate ordinary Enter. Do not reserve that Enter for unseen input.
       key(f, 'keydown', { key: 'Process', code, keyCode: 229 });
       await tick();
       key(f, 'keypress', { key: 'あ', code, keyCode: 12354, charCode: 12354 });
       key(f, 'keyup', { key: 'Enter', code, keyCode: 13 });
-      enter(f, 'keydown'); enter(f, 'keyup');
-      check('C2 229 without composition waits for text ' + code, f.out, ['echo ']);
+      check('C2 229 without composition suppresses only its own press ' + code, f.out, ['echo ']);
       input(f, '😀'); await tick();
-      check('C2 229 without composition orders text before CR ' + code, f.out, ['echo ', '😀\r']);
+      enter(f, 'keydown'); enter(f, 'keyup');
+      check('C2 native text then separate Enter without composition ' + code, f.out.join(''), 'echo 😀\r');
       f.dispose();
+    }
+    for (const marker of [{ keyCode: 229 }, { key: 'Process', keyCode: 0 }, { isComposing: true }]) {
+      for (const next of ['Enter', 'x', 'Tab', 'Backspace', 'Ctrl+C']) {
+        const f = fixture();
+        enter(f, 'keydown', marker); enter(f, 'keypress'); enter(f, 'keyup');
+        ordinaryKey(f, next);
+        check('bare native marker never reserves a subsequent key ' + JSON.stringify(marker) + '/' + next, f.out.join(''), vt[next]);
+        f.dispose();
+      }
     }
     for (const source of ['panel', 'implicit', 'implicit-preedit']) {
       for (const endFirst of [false, true]) {
